@@ -289,7 +289,6 @@ test("keeps unknown and runner secret callbacks outside the closed public allowl
     ["sandbox", "advice", "callback"],
     ["sandbox", "advice-extra"],
     ["sandbox", "launch-sized-v2"],
-    ["sandbox", "launch-sized-v1", "callback"],
     ["golden", "size-policy", "callback"],
     ["golden", "size-policies"],
   ]) {
@@ -374,8 +373,7 @@ test("provider setup and sizing cross the real public-origin POST proxy over HTT
     // These bytes must reach control validation unchanged; the launch has no
     // version. Only the upstream is a fixture; the public POST handler is real.
     for (const [path, body] of [
-      ["sandbox/launch-sized-v1", '{ "golden": "golden-id", "size": "medium" }'],
-      ["sandbox/launch-sized-v1", '{"sizePolicyVersion":1,"golden":"golden-id","size":"medium"}'],
+      ["sandbox/launch", '{ "golden": "golden-id", "size": "medium" }'],
       ["golden/size-policy", '{"golden":"golden-id"}'],
       [
         "golden/size-policy",

@@ -12,8 +12,6 @@ Source of truth: browser-safe `@armada/core` exports from
 - For HTTP launch, use `POST /api/v1/sandbox/launch` with
   `sizePolicyVersion: 1` for an explicit size or when repository or golden sizing
   defaults are required. `SizedLaunchRequestV1` describes those fields.
-  The server continues to accept `SIZED_LAUNCH_ROUTE_V1` for released clients
-  during the [compatibility window](../launch-idempotency.md#launch-route-compatibility).
 - Keep using the MCP `launch_sized_v1` tool (`SIZED_LAUNCH_TOOL_V1`) with
   `size_policy_version: 1` when sizing matters. The MCP versioned tool rejects
   unsupported servers before allocation. Send each launch once.

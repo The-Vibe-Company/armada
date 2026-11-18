@@ -108,7 +108,6 @@ export interface LaunchOptionsResponse {
   providers: LaunchProviderOption[];
   modalRuntime?: {
     defaultPath?: "native" | "runtime";
-    version: number;
     enabled: boolean;
     followupVersion?: number;
     idleLaunchVersion?: number;
@@ -129,7 +128,6 @@ export interface LaunchOptionsResponse {
   };
   boatRuntime: {
     defaultPath?: "native" | "runtime";
-    version: number;
     diagnosticsVersion: number;
     followupVersion: number;
     checkpointVersion: number;

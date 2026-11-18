@@ -129,7 +129,7 @@ const TEMPLATE_LAUNCH_TIMEOUT_MS = 600_000;
  * row: the longest launch request timeout, so a slow but valid sibling launch is never misreported.
  */
 const SIBLING_ATTRIBUTION_WAIT_MS = TEMPLATE_LAUNCH_TIMEOUT_MS;
-const LAUNCH_PATH = /^(?:sandbox\/launch(?:-access-v1)?|templates\/launch)$/;
+const LAUNCH_PATH = /^(?:sandbox\/launch|templates\/launch)$/;
 type Lane = "templates" | "expiry" | "lifecycle";
 
 /** Wait for every concurrent unit, so all cleanups finish before the journal sweep; a thrown unit still throws. */
@@ -508,7 +508,7 @@ async function runPostDeploySmoke(
     const remaining = (cleaning ? cleanupDeadline : deadline) - io.now();
     if (remaining <= 0) fail("poll_limit_exceeded");
     const requestTimeoutMs = Math.min(timeoutMs, remaining);
-    const sandboxLaunch = /^sandbox\/launch(?:-access-v1)?$/.test(path);
+    const sandboxLaunch = path === "sandbox/launch";
     try {
       const response = await io.fetch(`${origin}/api/v1/${path}`, {
         method: body === undefined ? "GET" : "POST",
@@ -1437,7 +1437,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
       await saveSmokeJournal(path, [...deferred, ...earlierRows, ...rows]);
     },
     fetch: async (url, init) => {
-      const launch = /\/api\/v1\/(sandbox\/launch(?:-access-v1)?|templates\/launch)$/.test(url);
+      const launch = /\/api\/v1\/(sandbox\/launch|templates\/launch)$/.test(url);
       if (!launch) return io.fetch(url, init);
       const requestKey = `post-deploy-smoke:${crypto.randomUUID()}`;
       const org = JSON.parse(String(init.body)).org;

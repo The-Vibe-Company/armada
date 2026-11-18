@@ -2940,10 +2940,7 @@ const server = Bun.serve({
     if (url.pathname.startsWith("/__test/")) return control(url, body);
     if (url.pathname === "/mcp") return mcp(body as unknown as RpcMessage, viewer(request));
     const canonicalLaunch = url.pathname === "/api/v1/sandbox/launch";
-    if (
-      request.method === "POST" &&
-      (url.pathname === "/api/v1/sandbox/launch-access-v1" || (canonicalLaunch && body.armadaAccess))
-    ) {
+    if (canonicalLaunch && request.method === "POST" && body.armadaAccess) {
       if (
         body.armadaAccessVersion !== 1 ||
         body.harness !== "codex" ||
@@ -2955,13 +2952,6 @@ const server = Bun.serve({
           "invalid",
           "Armada access requires an explicit Codex account and bounded child access.",
         );
-      return launchRoute(body, viewer(request));
-    }
-    if (url.pathname === "/api/v1/sandbox/launch-sized-v1" && request.method === "POST") {
-      // #653's fail-closed route (ea501bd): an older replica does not know it, a newer one checks the version first.
-      // Either refusal comes before anything is allocated.
-      if (body.sizePolicyVersion !== 1)
-        return controlFail(400, "invalid", "The sized launch route requires sizePolicyVersion 1.");
       return launchRoute(body, viewer(request));
     }
     if (canonicalLaunch && request.method === "POST") return launchRoute(body, viewer(request));
