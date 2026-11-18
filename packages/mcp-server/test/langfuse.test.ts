@@ -40,7 +40,15 @@ const events: AgentEvent[] = [
   },
 ];
 test("completed turns use stable OTLP identities, durations and opt-in content", () => {
-  const metadata = langfuseSpans("sandbox", events, [], false);
+  const queued: AgentEvent = {
+    kind: "prompt",
+    id: "queued",
+    at: 900,
+    promptId: "turn",
+    status: "queued",
+    text: "customer_prompt",
+  };
+  const metadata = langfuseSpans("sandbox", [queued, ...events], [], false);
   expect(metadata).toHaveLength(2);
   expect(metadata[0]).toMatchObject({
     startTimeUnixNano: "1000000000",
@@ -125,10 +133,19 @@ test("native settlement exports once and a new server reads only its organizatio
     people.org,
     await encryptConfig(),
   ]);
+  let historyAvailable = true;
   const provider = {
     id: "boat",
-    getPrompt: async () => ({ promptId: "turn", status: "failed", done: true }),
-    events: async () => ({ events: events.slice(1), cursor: "native", hasMore: false }),
+    getPrompt: async () => ({ promptId: "turn", status: "finished", done: true }),
+    events: async () => {
+      if (!historyAvailable) throw Error("history_unavailable");
+      const history: AgentEvent[] = [
+        { kind: "prompt", id: "rewritten", at: 1000, promptId: "turn", status: "finished", text: "customer_prompt" },
+        events[1]!,
+        { kind: "other", id: "limit", at: 1200, promptId: "turn", type: "usage_limit", data: {} },
+      ];
+      return { events: history, cursor: "native", hasMore: false };
+    },
   } satisfies Pick<Provider, "id" | "events" | "getPrompt">;
   const signal = new AbortController().signal;
   const native = createNativeWebhookPrompts(db, async () => provider);
@@ -146,6 +163,10 @@ test("native settlement exports once and a new server reads only its organizatio
   expect(payload).toContain("customer_reply");
   expect(payload).toContain("customer_prompt");
   expect(payload).toContain("timing_incomplete");
+  const generation = JSON.parse(payload).resourceSpans[0].scopeSpans[0].spans[0];
+  expect(generation.status).toEqual({ code: 2 });
+  expect(generation.endTimeUnixNano).toBe(generation.startTimeUnixNano);
+  expect(BigInt(generation.endTimeUnixNano)).toBeGreaterThan(1200000000n);
   await db.query("select public.enqueue_webhook_turn($1,'turn','failed')", [id]);
   expect(await exporter.reconcileOne(signal)).toBe(false);
 
@@ -159,14 +180,35 @@ test("native settlement exports once and a new server reads only its organizatio
         orgs: [{ orgId, role: "admin" }],
       },
     }));
-    return (await route(new Request(`https://armada.test/api/v1/orgs/${orgId}/langfuse`)))?.json();
+    const response = await route(new Request(`https://armada.test/api/v1/orgs/${orgId}/langfuse`));
+    if (!response) throw Error("missing Langfuse response");
+    return (await response.json()) as { lastExportAt: string | null };
   };
-  expect(await read(people.org)).toEqual({
+  const beforeFailure = await read(people.org);
+  expect(beforeFailure).toEqual({
     enabled: true,
     content_mode: "full",
     counters: { exported: 1, failed: 0, dropped: 0 },
     lastExportAt: expect.any(String),
   });
+  payload = "";
+  historyAvailable = false;
+  await db.query("select public.enqueue_webhook_turn($1,'unavailable','finished')", [id]);
+  expect(await exporter.reconcileOne(signal)).toBe(true);
+  await db.query("select public.enqueue_webhook_turn($1,'disabled','finished')", [id]);
+  await db.query("update org_langfuse set enabled=false where org_id=$1", [people.org]);
+  expect(await exporter.reconcileOne(signal)).toBe(true);
+  expect(payload).toBe("");
+  expect(await read(people.org)).toEqual({
+    enabled: false,
+    content_mode: "full",
+    counters: { exported: 1, failed: 1, dropped: 1 },
+    lastExportAt: beforeFailure?.lastExportAt,
+  });
+  await db.query("select public.enqueue_webhook_turn($1,'settled_while_disabled','finished')", [id]);
+  await db.query("update org_langfuse set enabled=true where org_id=$1", [people.org]);
+  await db.query("select public.enqueue_webhook_turn($1,'settled_while_disabled','finished')", [id]);
+  expect(await exporter.reconcileOne(signal)).toBe(false);
   expect(await read(people.otherOrg)).toEqual({
     enabled: false,
     counters: { exported: 0, failed: 0, dropped: 0 },

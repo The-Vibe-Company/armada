@@ -58,17 +58,26 @@ export async function promptOutcome(
       promptId: request.promptId,
       ...(request.signal ? { signal: request.signal } : {}),
     }));
-  if (state.status === "interrupted" || state.status === "failed") {
-    const events = (observation?.events ?? (await promptEvents(provider, request))).filter(
-      (event) => event.promptId === request.promptId,
-    );
-    const reason = events
-      .filter((event) => event.promptId === request.promptId)
-      .find((event) => event.kind === "prompt" && event.reason);
+  const events =
+    state.status === "running" || state.status === "queued"
+      ? []
+      : (observation?.events ?? (await promptEvents(provider, request)));
+  return observedPromptOutcome(state.status, request.promptId, events);
+}
+
+/** Normalize a receipt using its already observed, potentially partial history. */
+export function observedPromptOutcome(
+  status: PromptState["status"],
+  promptId: string,
+  history: readonly AgentEvent[],
+): PromptOutcome {
+  const events = history.filter((event) => event.promptId === promptId);
+  if (status === "interrupted" || status === "failed") {
+    const reason = events.find((event) => event.kind === "prompt" && event.reason);
     const message = reason?.kind === "prompt" ? reason.reason : undefined;
     const interruption = turnInterruptionReason(message);
     if (interruption) return { state: "interrupted", reason: interruption };
-    if (state.status === "interrupted") return { state: "interrupted" };
+    if (status === "interrupted") return { state: "interrupted" };
     if (
       message?.split(":")[0] !== "authentication_failed" &&
       !events.some((event) => event.kind === "other" && event.type === "auth_expiry")
@@ -89,10 +98,8 @@ export async function promptOutcome(
       reason: promptFailureReason(message),
     };
   }
-  if (state.status !== "finished") return { state: "running" };
-  const stop = (observation?.events ?? (await promptEvents(provider, request)))
-    .filter((event) => event.promptId === request.promptId)
-    .find((event) => event.kind === "other" && FAILURE_EVENTS.has(event.type));
+  if (status !== "finished") return { state: "running" };
+  const stop = events.find((event) => event.kind === "other" && FAILURE_EVENTS.has(event.type));
   if (stop?.kind === "other") {
     const limit = stop.type === "usage_limit" ? planLimitData(stop.data) : undefined;
     return {

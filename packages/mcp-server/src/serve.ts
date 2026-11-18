@@ -255,10 +255,9 @@ export async function startServer(
     modalProviderFor,
     modalTokensFor: modal.modalTokensFor,
   });
-  const historicalProviderFor = createHistoricalSandboxProviderResolver(providers);
   subscriptionMigration = createSubscriptionMigration(
     sql,
-    historicalProviderFor,
+    createHistoricalSandboxProviderResolver(providers),
     (provider, id, caller, quiesced) => modelAuth.capture(provider, id, caller, quiesced),
     modelAuth.broker!,
   );
@@ -559,7 +558,10 @@ export async function startServer(
     scopedMcpUrl: orchestratorScopedMcpUrl(config.publicUrl),
   };
   const delegatedAccess = createSandboxAccessServices(sandboxAccessContext);
-  const langfuse = createLangfuse(sql, config.encryptionKey, (id) => historicalProviderFor(sql, id));
+  const nativeHistoryFor = createHistoricalSandboxProviderResolver({
+    resolve: (target, caller) => logProviders[target.provider](target, caller),
+  });
+  const langfuse = createLangfuse(sql, config.encryptionKey, (id) => nativeHistoryFor(sql, id));
   const runtimeEvents = createRuntimeEvents(
     runtimeEnrolments,
     config.encryptionKey,
@@ -721,7 +723,6 @@ export async function startServer(
     () => pruneServerRetention(sql, control.applicationVault, new Date()),
     [
       webhooks,
-      langfuse,
       createNativeWebhookPrompts(sql, createMcpSandboxProviderResolver(sql, providers, { terminalObservation: true })),
       delegatedAccess.childWorker,
       createFinishedDockerCleanup(sql, config.encryptionKey),
@@ -740,6 +741,7 @@ export async function startServer(
           : {}),
       }),
     ],
+    [langfuse],
   );
   const invitationWorker =
     env.ARMADA_INVITATION_MAIL === "supabase" && control.invitations

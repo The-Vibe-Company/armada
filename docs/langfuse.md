@@ -45,6 +45,8 @@ OpenCode uses the shared runtime. An export includes only the fields found in
 the applicable history. When start timing is unavailable, Armada emits an
 instant observation marked `timing_incomplete`. If the terminal event is
 missing, Armada uses the recorded settlement status and observation time.
+Boat native uses the settlement observation time because a rewritten prompt
+can still carry its original timestamp.
 Turns settled before export was enabled are not backfilled.
 
 Pending export identities survive server restarts. A worker leases each job and

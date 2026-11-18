@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
   type AgentEvent,
   isFinalPromptStatus,
+  observedPromptOutcome,
   type Provider,
   readPromptEvents,
   reportedTurnUsage,
@@ -26,9 +27,7 @@ export function langfuseSpans(sandboxId: string, events: AgentEvent[], turns: Tu
   for (const end of events) {
     if (end.kind !== "prompt" || end.status === "running" || end.status === "queued" || !end.promptId) continue;
     const history = events.filter((e) => e.promptId === end.promptId);
-    const start = history.find(
-      (e): e is TerminalEvent => e.kind === "prompt" && (e.status === "running" || e.status === "queued"),
-    );
+    const start = history.find((e): e is PromptEvent => e.kind === "prompt" && e.status === "running");
     const startAt = start?.at || end.at;
     const traceId = hash(sandboxId, 32);
     const spanId = hash(`${sandboxId}/${end.promptId}`, 16);
@@ -125,14 +124,14 @@ export function langfuseSpans(sandboxId: string, events: AgentEvent[], turns: Tu
 }
 
 const MAX_EXPORT_BYTES = 4 * 1024 * 1024;
-type TerminalEvent = Extract<AgentEvent, { kind: "prompt" }>;
+type PromptEvent = Extract<AgentEvent, { kind: "prompt" }>;
 interface ExportJob {
   sandbox_id: string;
   prompt_id: string;
   org_id: string;
   provider_sandbox_id: string;
   runtime_ack: string | null;
-  terminal_status: TerminalEvent["status"];
+  terminal_status: PromptEvent["status"];
   observed_ms: number;
   config_enc: Uint8Array<ArrayBuffer> | null;
   content_mode: string | null;
@@ -145,14 +144,20 @@ export function createLangfuse(
   nativeProviderFor: (id: string) => Promise<{ provider: Pick<Provider, "id" | "events">; providerSandboxId: string }>,
   send: typeof fetch = fetch,
 ) {
-  async function history(job: ExportJob, signal: AbortSignal): Promise<AgentEvent[] | null> {
+  async function history(
+    job: ExportJob,
+    signal: AbortSignal,
+  ): Promise<{ events: AgentEvent[]; mutablePromptTime?: boolean } | null> {
     if (job.runtime_ack === null) {
       const { provider, providerSandboxId } = await nativeProviderFor(job.sandbox_id);
       if (providerSandboxId !== job.provider_sandbox_id) return null;
       const request = { sandboxId: providerSandboxId, promptId: job.prompt_id, signal };
-      const read = await readPromptEvents(provider, request).catch(() => null);
+      const read = await readPromptEvents(provider, request);
       signal.throwIfAborted();
-      return (read?.events ?? []).filter((e) => e.promptId === job.prompt_id);
+      return {
+        events: read.events.filter((e) => e.promptId === job.prompt_id),
+        mutablePromptTime: provider.id === "boat",
+      };
     }
     // Bound archive memory before fetching ciphertext.
     const args = [job.sandbox_id, job.runtime_ack];
@@ -172,23 +177,26 @@ export function createLangfuse(
       const event = JSON.parse(await decryptSecret(event_enc, key)) as AgentEvent;
       if (event.promptId === job.prompt_id) events.push(event);
     }
-    return events;
+    return { events };
   }
 
   async function exportTurn(job: ExportJob, signal: AbortSignal): Promise<"exported" | "failed" | "dropped"> {
     if (!job.config_enc) return "dropped";
-    const events = await history(job, signal);
-    if (!events) return "dropped";
-    const terminal = events.findLast((e): e is TerminalEvent => e.kind === "prompt" && isFinalPromptStatus(e.status));
+    const evidence = await history(job, signal);
+    if (!evidence) return "dropped";
+    const { events, mutablePromptTime } = evidence;
+    const terminal = events.findLast((e): e is PromptEvent => e.kind === "prompt" && isFinalPromptStatus(e.status));
     const turnEvents = events.filter((e) => e.kind !== "prompt" || !isFinalPromptStatus(e.status));
+    const outcome = job.runtime_ack === null ? observedPromptOutcome(job.terminal_status, job.prompt_id, events) : null;
     turnEvents.push({
       kind: "prompt",
       id: job.prompt_id,
       promptId: job.prompt_id,
       text: "",
       ...terminal,
-      at: terminal?.at || job.observed_ms,
-      status: job.terminal_status,
+      at: mutablePromptTime ? job.observed_ms : terminal?.at || job.observed_ms,
+      status: outcome && outcome.state !== "running" ? outcome.state : job.terminal_status,
+      ...(outcome?.state === "failed" && job.terminal_status === "finished" ? { reason: outcome.reason } : {}),
     });
     const persisted = job.usage_turns?.filter((turn) => turn.promptId === job.prompt_id) ?? [];
     const usage = persisted.some((turn) => turn.model !== null || turn.inputTokens != null || turn.outputTokens != null)

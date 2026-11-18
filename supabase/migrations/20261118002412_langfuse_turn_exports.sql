@@ -5,11 +5,12 @@ create table public.langfuse_turn_exports (
   org_id uuid not null references public.orgs(id) on delete cascade,
   provider_sandbox_id text not null,
   runtime_ack bigint,
-  terminal_status text not null check (terminal_status in ('finished','failed','interrupted')),
+  terminal_status text check (terminal_status in ('finished','failed','interrupted')),
   observed_at timestamptz not null default clock_timestamp(),
   lease_id uuid,
   lease_until timestamptz,
   completed_at timestamptz,
+  check (terminal_status is not null or completed_at is not null),
   primary key (sandbox_id,prompt_id)
 );
 create index langfuse_turn_exports_due on public.langfuse_turn_exports(observed_at) where completed_at is null;
@@ -25,6 +26,17 @@ alter table public.org_langfuse_export_stats enable row level security;
 revoke all on public.langfuse_turn_exports,public.org_langfuse_export_stats from public,anon,authenticated;
 grant all on public.langfuse_turn_exports,public.org_langfuse_export_stats to service_role;
 
+-- Remember native terminal identities that were already observed before rollout.
+insert into public.langfuse_turn_exports(sandbox_id,prompt_id,org_id,provider_sandbox_id,completed_at)
+select s.id,known.prompt_id,s.org_id,s.provider_sandbox_id,clock_timestamp()
+from (
+  select sandbox_id,prompt_id from public.native_webhook_prompts where completed_at is not null
+  union
+  select sandbox_id,prompt_id from public.runtime_idle_turns where settled
+) known join public.sandboxes s on s.id=known.sandbox_id
+where s.provider in ('boat','modal') and s.provider_sandbox_id is not null
+  and not s.boat_runtime and s.runtime_transport is distinct from 'dialout';
+
 -- This existing settlement boundary is shared by runtime ingestion, native
 -- receipt observation, and native lifecycle reconciliation.
 create or replace function public.enqueue_webhook_turn(sandbox uuid,prompt text,status text) returns void
@@ -38,13 +50,20 @@ begin
   if prompt is null or status not in ('finished','failed','interrupted') then return; end if;
   select * into saved from public.sandboxes where id=sandbox;
   if not found then return; end if;
-  insert into public.langfuse_turn_exports(sandbox_id,prompt_id,org_id,provider_sandbox_id,runtime_ack,terminal_status)
+  -- Record native identities even while disabled: lifecycle can observe the
+  -- same receipt again after an operator enables full-content export.
+  insert into public.langfuse_turn_exports(
+    sandbox_id,prompt_id,org_id,provider_sandbox_id,runtime_ack,terminal_status,completed_at
+  )
   select saved.id,prompt,saved.org_id,saved.provider_sandbox_id,
     case when saved.boat_runtime or saved.provider='docker' or saved.runtime_transport='dialout' then
       coalesce((select max(sequence) from public.runtime_events where sandbox_id=saved.id),0) end,
-    status
-  from public.org_langfuse c
-  where c.org_id=saved.org_id and c.enabled and saved.provider_sandbox_id is not null
+    status,case when not coalesce(c.enabled,false) then clock_timestamp() end
+  from (values (saved.org_id)) as owner(org_id)
+  left join public.org_langfuse c on c.org_id=owner.org_id
+  where saved.provider_sandbox_id is not null
+    and (c.enabled or (not saved.boat_runtime and saved.provider in ('boat','modal')
+      and saved.runtime_transport is distinct from 'dialout'))
   on conflict do nothing;
   event_type := case when status='finished' then 'turn.finished' else 'turn.failed' end;
   for endpoint in select id from public.outbound_webhook_endpoints
