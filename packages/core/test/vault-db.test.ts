@@ -491,7 +491,7 @@ describe("named model accounts", () => {
       });
       const models = await listConnectionModels(store, KEY, { userId: people.stan, orgId: org.id });
       expect(models).toEqual([
-        { id: account.id, scope: "user", models: [{ model: "morph-custom", input: null, output: null }] },
+        { id: account.id!, scope: "user", models: [{ model: "morph-custom", input: null, output: null }] },
       ]);
       const resolved = await resolveCredentials(store, KEY, {
         userId: people.stan,
