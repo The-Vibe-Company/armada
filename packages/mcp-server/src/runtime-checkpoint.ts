@@ -13,6 +13,36 @@ interface Intent {
   watermark: string | null;
   archive?: string;
 }
+/** The runtime checkpoint acknowledgement for this epoch and command, or undefined when Armada rejects it. */
+function checkpointProof(reply: unknown, epoch: string, commandId: string): { watermark: number } | undefined {
+  const result = reply as {
+    status?: number;
+    epoch?: string;
+    requestId?: string;
+    body?: {
+      version?: number;
+      requestId?: string;
+      error?: unknown;
+      result?: { generation?: string; watermark?: number; acknowledgedSequence?: number };
+    };
+  };
+  const proof = result?.body?.result;
+  if (
+    result?.status !== 200 ||
+    result.epoch !== epoch ||
+    result.requestId !== commandId ||
+    result.body?.version !== 1 ||
+    result.body.requestId !== result.requestId ||
+    result.body.error !== undefined ||
+    proof?.generation !== epoch ||
+    typeof proof.watermark !== "number" ||
+    !Number.isSafeInteger(proof.watermark) ||
+    proof.watermark < 0 ||
+    proof.acknowledgedSequence !== proof.watermark
+  )
+    return undefined;
+  return { watermark: proof.watermark };
+}
 export interface RuntimeCheckpointInput {
   id: string;
   request_id: string;
@@ -125,31 +155,8 @@ export function createRuntimeCheckpoint(
       } catch {
         throw new VaultError("unavailable", "Runtime checkpoint receipt is unavailable.");
       }
-      const result = body as {
-        status?: number;
-        epoch?: string;
-        requestId?: string;
-        body?: {
-          version?: number;
-          requestId?: string;
-          error?: unknown;
-          result?: { generation?: string; watermark?: number; acknowledgedSequence?: number };
-        };
-      };
-      const proof = result?.body?.result;
-      if (
-        result?.status !== 200 ||
-        result.epoch !== intent.epoch ||
-        result.requestId !== `checkpoint_${requestId}` ||
-        result.body?.version !== 1 ||
-        result.body.requestId !== result.requestId ||
-        result.body.error !== undefined ||
-        proof?.generation !== intent.epoch ||
-        typeof proof.watermark !== "number" ||
-        !Number.isSafeInteger(proof.watermark) ||
-        proof.watermark < 0 ||
-        proof.acknowledgedSequence !== proof.watermark
-      )
+      const proof = checkpointProof(body, intent.epoch, `checkpoint_${requestId}`);
+      if (!proof)
         throw new VaultError(
           "conflict",
           "Runtime did not acknowledge a complete checkpoint; inspect or stop without claiming resume.",
@@ -234,12 +241,12 @@ export function createRuntimeCheckpoint(
       return { epoch: scope.epoch, current_epoch: scope.epoch, request_id: requestId, watermark: null };
     });
     try {
-      await commands.call(caller.userId, {
-        version: 1,
-        sandboxId: sandbox.id,
-        requestId: `checkpoint_${requestId}`,
-        op: "checkpoint",
-      });
+      // The boundary records `ok` only for the acknowledgement `finish` will publish.
+      await commands.call(
+        caller.userId,
+        { version: 1, sandboxId: sandbox.id, requestId: `checkpoint_${requestId}`, op: "checkpoint" },
+        { accept: (reply) => checkpointProof(reply, intent.epoch, `checkpoint_${requestId}`) !== undefined },
+      );
     } catch {
       throw new VaultError(
         "conflict",

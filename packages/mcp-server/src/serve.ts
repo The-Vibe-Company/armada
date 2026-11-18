@@ -14,7 +14,6 @@ import {
   resolveBoatKey,
   VaultError,
 } from "@armada/core/server";
-import { createBoatProvider } from "@armada/provider-boat";
 import { settleDetachedModalCollections } from "@armada/provider-modal";
 import { repairHistoricalTurnModels } from "./account-model-upgrade.ts";
 import { createAccountTurnQueue } from "./account-turn-queue.ts";
@@ -61,9 +60,12 @@ import { createModelAuthOwnership } from "./model-auth.ts";
 import { createModelUsageApi } from "./model-usage.ts";
 import type { NamedLaunchCredentials } from "./named-credentials.ts";
 import { createNativeWebhookPrompts } from "./native-webhook-prompts.ts";
+import { createObservedBoatProvider } from "./observed-boat.ts";
 import { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import { createOutboundWebhooks } from "./outbound-webhooks.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
+import { BUN_REQUEST_BODY_BACKSTOP, ingressRequest } from "./request-body-ceiling.ts";
+import { currentRequestId, observeRequest, REQUEST_ID_HEADER } from "./request-observability.ts";
 import { pruneServerRetention } from "./retention-maintenance.ts";
 import { startRoutineWorker } from "./routine-worker.ts";
 import { createRuntimeAgent } from "./runtime-agent.ts";
@@ -192,7 +194,7 @@ export async function startServer(
     throw error;
   }
   const providerFor = (apiKey: string, caller?: { userId: string; orgId: string }) => {
-    const provider = createBoatProvider({
+    const provider = createObservedBoatProvider({
       apiKey,
       sanitizeEvents: async (provider, id, events) => {
         if (!caller) throw Error("Native events require trusted Armada caller scope.");
@@ -232,7 +234,7 @@ export async function startServer(
     sql,
     vault: store,
     encryptionKey: config.encryptionKey,
-    providerFor: (apiKey) => createBoatProvider({ apiKey }),
+    providerFor: (apiKey) => createObservedBoatProvider({ apiKey }),
   });
   const modal = await createModalIntegration({
     resumeRefused: (provider, id) => modelAuth.releaseProviderCapacity(provider, id),
@@ -305,7 +307,7 @@ export async function startServer(
       credentials: launchCredentials(store, config.encryptionKey, undefined, modelAuth, { store, app: githubApp }),
       connections: runtimeMcp.connections,
       provider: async (actor, golden) =>
-        createBoatProvider({
+        createObservedBoatProvider({
           apiKey: (
             await resolveBoatKey(store, config.encryptionKey, {
               userId: actor.userId,
@@ -487,7 +489,7 @@ export async function startServer(
         }
       : {}),
     ...(runtimeLaunch
-      ? { boatRuntimeLaunch: runtimeLaunch, runtimeHostFor: (apiKey: string) => createBoatProvider({ apiKey }) }
+      ? { boatRuntimeLaunch: runtimeLaunch, runtimeHostFor: (apiKey: string) => createObservedBoatProvider({ apiKey }) }
       : {}),
     launch,
     publicUrl: config.publicUrl,
@@ -698,19 +700,30 @@ export async function startServer(
   });
   mcp.startBackground();
   dockerLaunch?.startBackground();
-  const requestDrain = createServerRequestDrain(handler);
+  const requestDrain = createServerRequestDrain(handler, options.logError);
   const { fetch, requests } = requestDrain;
   const server = Object.assign(
     Bun.serve<RuntimeSocketData>({
       port: config.port,
       hostname: "0.0.0.0",
-      // Keep Bun's 128 MiB ingress budget explicit: MCP prompts/tool arguments have no
-      // smaller aggregate cap. Control JSON (128 KiB) and broker (1 KiB) are bounded per route.
-      maxRequestBodySize: 128 * 1024 * 1024,
+      // The 128 MiB ingress ceiling is enforced by the observed handler, so its 413 carries the
+      // request ID and record; Bun's own limit is only a backstop. Control JSON (128 KiB) and
+      // broker (1 KiB) stay bounded per route.
+      maxRequestBodySize: BUN_REQUEST_BODY_BACKSTOP,
       fetch: (request, instance) =>
         new URL(request.url).pathname === "/api/runtime/channel"
-          ? runtimeSockets.upgrade(request, (data) => instance.upgrade(request, { data }))
+          ? observeRequest(() => {
+              // Read the ID here: the upgrade callback runs inside a database session callback.
+              const requestId = currentRequestId()!;
+              return runtimeSockets.upgrade(request, (data) =>
+                instance.upgrade(request, { data, headers: { [REQUEST_ID_HEADER]: requestId } }),
+              );
+            }, options.logError)
           : fetch(request),
+      error: (error) =>
+        observeRequest(() => {
+          throw error;
+        }, options.logError),
       websocket: runtimeSockets.websocket,
     }),
     {
@@ -720,7 +733,7 @@ export async function startServer(
   // Cold image pulls/bootstrap can exceed Bun's default ten-second idle window.
   // Only authenticated normal Docker launches opt out; their service deadline
   // remains bounded, and other providers/routes keep their existing timeouts.
-  control.configureDockerLaunchRequest = (request) => server.timeout(request, 0);
+  control.configureDockerLaunchRequest = (request) => server.timeout(ingressRequest(request), 0);
   const { accountTurns: _queue, ...unqueuedControl } = control;
   accountTurns.setDispatch((caller, input) =>
     dispatchControlCommand(

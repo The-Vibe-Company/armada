@@ -1,10 +1,10 @@
 import { HARNESSES, MACHINE_SIZES, MAX_SANDBOX_EXTENSION_TTL_SECONDS, VERSION } from "@armada/core";
 import { DelegatedAuthorityDenied } from "@armada/core/server";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import type { Route } from "./http.ts";
+import { createObservedMcpTransport } from "./observed-mcp-transport.ts";
 import type { createSandboxChildren } from "./sandbox-access-children.ts";
 import { InvalidOrchestratorBody, readOrchestratorBody } from "./sandbox-access-http-body.ts";
 
@@ -177,7 +177,7 @@ export function createSandboxScopedGateway(
             }
           },
         );
-      const transport = new WebStandardStreamableHTTPServerTransport({ enableJsonResponse: true });
+      const transport = createObservedMcpTransport();
       await server.connect(transport);
       try {
         return await transport.handleRequest(new Request(request, { body: raw }));

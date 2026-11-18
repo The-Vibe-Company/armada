@@ -58,15 +58,20 @@ export function createDockerLaunchEnvironment(
           harness: row.harness,
           variables,
         };
-        await createRuntimeCommands(locked, key, clock).enqueue(caller.userId, request, scope.epoch);
-        return { request, epoch: scope.epoch };
+        const { fresh } = await createRuntimeCommands(locked, key, clock).enqueue(caller.userId, request, scope.epoch);
+        return { request, epoch: scope.epoch, fresh };
       });
     });
     const {
       request: { requestId },
       epoch,
     } = prepared;
-    const reply = await commands.call(caller.userId, prepared.request, { expectedEpoch: epoch, timeoutMs: 60000 });
+    const reply = await commands.call(caller.userId, prepared.request, {
+      expectedEpoch: epoch,
+      admitted: prepared.fresh,
+      timeoutMs: 60000,
+      accept: (candidate) => (candidate.body.result as { acknowledged?: boolean } | undefined)?.acknowledged === true,
+    });
     const result = reply.body.result as { acknowledged?: boolean } | undefined;
     if (reply.status !== 200 || reply.body.requestId !== requestId || result?.acknowledged !== true)
       throw new VaultError("unavailable", "Runtime variable delivery is unavailable.");

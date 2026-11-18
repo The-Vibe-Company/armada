@@ -28,6 +28,7 @@ import {
 import { hostDrainingSql } from "./docker-host-drain.ts";
 import { authorizeSnapshotBuild, resolveDockerSnapshot } from "./docker-snapshot-data.ts";
 import { recordLaunchStage, recordLaunchStageForActivation } from "./launch-stage-record.ts";
+import { noteAdmission } from "./request-observability.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
 
 type Actor = { userId: string; orgId: string };
@@ -214,9 +215,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
         bound_operation: null,
       }),
     };
-    await tx.query(
+    const inserted = await tx.query(
       `insert into public.docker_host_jobs(request_id,host_id,input_enc,bound_sandbox_id,bound_actor_id,bound_actor_epoch,bound_operation,snapshot_id)
-       values($1,$2,$3,$4,$5,$6,$7,$8) on conflict do nothing`,
+       values($1,$2,$3,$4,$5,$6,$7,$8) on conflict do nothing returning request_id`,
       [
         job.requestId,
         hostId,
@@ -239,6 +240,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
       )
     )
       deny();
+    // A conflicting row is a replay of an already admitted request: no new host work.
+    if (inserted.rows.length) noteAdmission();
     return { requestId: job.requestId };
   }
   async function readJob(row: StoredJob): Promise<Job> {

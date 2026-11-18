@@ -31,6 +31,7 @@ import { createDockerRuntimeLifecycle } from "../src/docker-runtime-lifecycle.ts
 import { createDockerSandboxControls } from "../src/docker-sandbox-controls.ts";
 import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
+import { observeRequest } from "../src/request-observability.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
@@ -1007,9 +1008,34 @@ test("Docker mutations reuse the fenced runtime mailbox and reconcile identical 
       },
     },
   });
-  await expect(
-    invoke(caller(f.actor), "steer", { id: f.sandbox.id, request_id: randomUUID(), text: "late" }, refusing),
-  ).rejects.toMatchObject({ provider: "docker", code: "no_running_turn" });
+  // Under an HTTP request a runtime refusal is one runtime record (no duplicate control record),
+  // and a status read, which only reads Armada's database, is not a provider call.
+  const lines: string[] = [];
+  let refusal: unknown;
+  const refused = await observeRequest(
+    async () => {
+      await invoke(
+        caller(f.actor),
+        "steer",
+        { id: f.sandbox.id, request_id: randomUUID(), text: "late" },
+        refusing,
+      ).catch((error: unknown) => {
+        refusal = error;
+      });
+      await invoke(caller(f.actor), "status", { id: f.sandbox.id }, refusing);
+      return new Response(null, { status: 409 });
+    },
+    (line) => lines.push(line),
+  );
+  expect(refusal).toMatchObject({ provider: "docker", code: "no_running_turn" });
+  expect(lines.map((line) => JSON.parse(line)).filter((event) => event.event === "provider_call")).toEqual([
+    expect.objectContaining({
+      requestId: refused?.headers.get("x-request-id"),
+      provider: "docker",
+      operation: "runtime.steer",
+      outcome: "error",
+    }),
+  ]);
   await db.query("update public.sandboxes set application_secret_tainted=true where id=$1", [f.sandbox.id]);
   await expect(
     invoke(caller(f.actor), "exec", { id: f.sandbox.id, request_id: randomUUID(), command: "true" }, controller),

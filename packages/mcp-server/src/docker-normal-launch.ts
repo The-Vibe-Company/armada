@@ -52,6 +52,7 @@ import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import { resolveDockerSnapshot } from "./docker-snapshot-data.ts";
 import { recordLaunchStageQuietly } from "./launch-stage-record.ts";
+import { continueRequest, currentRequestId, noteAdmission, observeProviderCall } from "./request-observability.ts";
 import { createRuntimeAgent } from "./runtime-agent.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
@@ -93,6 +94,8 @@ type Manifest = {
   promptId: string;
   conversationId?: string;
   preparation?: { skills: string[]; connections: string[] };
+  /** Server-generated ID of the admitting HTTP request; a deferred worker reports its outcome under it. */
+  correlationId?: string;
 };
 type Receipt = {
   epoch: string;
@@ -594,6 +597,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           if (!options.mcp) throw failure("unavailable");
           await options.mcp.connections.validate(actor, connections, "private");
         }
+        const correlationId = currentRequestId();
         const manifest: Manifest = {
           ...(source ? { snapshotConfig: source.config } : {}),
           request,
@@ -604,6 +608,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           promptId: randomUUID(),
           conversationId: randomUUID(),
           preparation: { skills, connections },
+          ...(correlationId ? { correlationId } : {}),
         };
 
         // The transaction queues host work atomically; a lost commit reply is ambiguous.
@@ -674,6 +679,8 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       const manifest = state.manifest;
       if (!manifest || !state.row) throw failure("unavailable");
       if (options.deferLaunch && !admission && !workerId) return envelope(state.row);
+      // From here this call drives the host itself, even when it resumes a retried launch.
+      noteAdmission();
       let phase: string = DOCKER_LAUNCH_FAILURE_MESSAGES.startup;
       try {
         if (workerId && (request.repos?.length || manifest.snapshotConfig?.repos.length)) {
@@ -959,7 +966,9 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       }
     } catch (error) {
       // Never log raw exception messages: account/provider errors can contain secrets.
+      const requestId = currentRequestId();
       console.warn("docker_launch_failed", {
+        ...(requestId ? { requestId } : {}),
         reason,
         ...(reason === "reservation"
           ? { statement: "reservation_transaction", ...reservationDatabaseDiagnostic(error) }
@@ -998,6 +1007,8 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
     ...(options.mcp ? { prepareMcp: options.mcp.prepare } : {}),
     ...(options.github ? { prepareSnapshotGitHub: options.github.prepareLaunch } : {}),
   });
+  /** A replay can report a durable failure without throwing; that is not a successful launch. */
+  const launched = (result: DockerLaunchResult) => result.sandbox.status !== "failed";
   let stopping = false;
   let timer: ReturnType<typeof setInterval> | undefined;
   const working = new Set<Promise<void>>();
@@ -1039,16 +1050,29 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       try {
         const manifest = JSON.parse(await decryptSecret(candidate.request_enc, key)) as Manifest;
         const { image: _image, credentialId, credentialVersion, prompt, ...body } = manifest.request;
-        await launch(
-          { userId: candidate.owner_id, orgs: [{ orgId: candidate.org_id, role: candidate.role }], via: "service" },
-          {
-            ...body,
-            ...(credentialId === null ? {} : { credentialId }),
-            ...(credentialVersion === null ? {} : { credentialVersion }),
-            ...(prompt === null ? {} : { prompt }),
-          },
-          undefined,
-          workerId,
+        // The admitting request recorded only `launch.admit`; the real outcome joins its ID here.
+        await continueRequest(manifest.correlationId, () =>
+          observeProviderCall(
+            "docker",
+            "launch",
+            () =>
+              launch(
+                {
+                  userId: candidate.owner_id,
+                  orgs: [{ orgId: candidate.org_id, role: candidate.role }],
+                  via: "service",
+                },
+                {
+                  ...body,
+                  ...(credentialId === null ? {} : { credentialId }),
+                  ...(credentialVersion === null ? {} : { credentialVersion }),
+                  ...(prompt === null ? {} : { prompt }),
+                },
+                undefined,
+                workerId,
+              ),
+            launched,
+          ),
         );
       } catch {
         // Phase-specific safe reason is durable; never log raw build/authorization errors.
@@ -1066,8 +1090,23 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
     return work;
   }
   return {
-    launch: (caller: Caller, body: Record<string, unknown>, admission?: Parameters<typeof launch>[2]) =>
-      launch(caller, body, admission),
+    launch: (caller: Caller, body: Record<string, unknown>, admission?: Parameters<typeof launch>[2]) => {
+      // A deferred launch returns at admission: record that as `launch.admit`, never as a launch outcome.
+      // A retry answered from a durable receipt or a pending admission reaches no host: no record, so
+      // the worker's outcome stays joined to the one admitting request.
+      let operation = "launch";
+      return observeProviderCall(
+        "docker",
+        () => operation,
+        async () => {
+          const result = await launch(caller, body, admission);
+          if (result.sandbox.status === "starting") operation = "launch.admit";
+          return result;
+        },
+        launched,
+        { replayable: true },
+      );
+    },
     drain,
     drainQueued: promptWorker.drain,
     startBackground() {
