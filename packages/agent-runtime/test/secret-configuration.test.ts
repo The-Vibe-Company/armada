@@ -45,9 +45,13 @@ test("marked launch values reach the selected harness and are redacted from its 
     expect(prompt.status).toBe(200);
     const events = await runner.handleDialout({ ...command, requestId: "events_fixture", op: "events" });
     const body = await events.json();
-    expect(body.result.events).toContainEqual(
-      expect.objectContaining({ type: "harness_stderr", data: { text: "[REDACTED] fixture_region" } }),
-    );
+    expect(body).toMatchObject({
+      result: {
+        events: expect.arrayContaining([
+          expect.objectContaining({ type: "harness_stderr", data: { text: "[REDACTED] fixture_region" } }),
+        ]),
+      },
+    });
     expect(JSON.stringify(body)).not.toContain(JSON.stringify(secret).slice(1, -1));
     expect(journal.db.query("select 1 from requests where id=?").get(command.requestId)).toBeNull();
   } finally {
