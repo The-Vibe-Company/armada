@@ -11,6 +11,7 @@ import {
   type GoldenRepo,
   HARNESSES,
   type Harness,
+  isExternalRef,
   type LaunchCredentialResolver,
   LaunchError,
   normalizeGitHubGoldenConfig,
@@ -86,6 +87,7 @@ type Request = {
   credentialId: string | null;
   credentialVersion: number | null;
   requestId: string;
+  externalRef?: string;
   model: string;
   reasoningEffort: string;
   ttlSeconds: number;
@@ -134,6 +136,7 @@ type Row = {
   docker_snapshot_id: string | null;
   status: DockerSandboxRecord["status"];
   status_reason: string | null;
+  external_ref: string | null;
   conversation_ids: string[];
   created_at: Date | string;
   stopped_at: Date | string | null;
@@ -200,6 +203,8 @@ function normalize(body: Record<string, unknown>, image: string): Request {
     Array.isArray(body) ||
     Object.keys(body).some((field) => !DOCKER_LAUNCH_FIELDS.includes(field)) ||
     body.provider !== "docker" ||
+    body.idempotencyKey !== undefined ||
+    (body.externalRef !== undefined && !isExternalRef(body.externalRef)) ||
     (body.stopWhenWorkMerged !== undefined && typeof body.stopWhenWorkMerged !== "boolean") ||
     !HARNESSES.includes(body.harness as Harness) ||
     (body.visibility !== undefined && body.visibility !== "private") ||
@@ -279,6 +284,7 @@ function normalize(body: Record<string, unknown>, image: string): Request {
     credentialId: body.credentialId === undefined ? null : identifier(body.credentialId),
     credentialVersion: (body.credentialVersion as number | undefined) ?? null,
     requestId: identifier(body.requestId),
+    ...(isExternalRef(body.externalRef) ? { externalRef: body.externalRef } : {}),
     model: choice.model,
     reasoningEffort: choice.reasoningEffort,
     ttlSeconds,
@@ -341,7 +347,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       await tx.query<Row>(
         `select id,org_id,owner_id,provider,harness,provider_sandbox_id,docker_host_id,docker_image,docker_snapshot_id,status,status_reason,
         conversation_ids,created_at,stopped_at,deleted_at,stop_requested_at,expires_at,effective_ttl_seconds,
-        lifecycle_generation,requested_ttl_seconds,credential_id,credential_version,model,reasoning_effort,skills,
+        lifecycle_generation,requested_ttl_seconds,credential_id,credential_version,model,reasoning_effort,skills,external_ref,
         expires_at<=now() as expired from public.sandboxes where id=$1`,
         [request.requestId],
       )
@@ -433,6 +439,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       effectiveTtlSeconds: row.effective_ttl_seconds,
       requestedTtlSeconds: row.requested_ttl_seconds,
       skills: row.skills ?? [],
+      ...(row.external_ref ? { externalRef: row.external_ref } : {}),
     };
     return {
       sandbox,
@@ -622,6 +629,11 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
             launchAdmission?.beforeReserve,
             request.snapshotId,
           );
+          if (request.externalRef !== undefined)
+            await tx.query("update public.sandboxes set external_ref=$2 where id=$1", [
+              request.requestId,
+              request.externalRef,
+            ]);
           if (resolved.usagePricing)
             await createSqlSandboxStore(scopedRuntimeSql(tx), { turnModels: true }).recordUsagePricingContext?.(
               request.requestId,
@@ -801,44 +813,42 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           if (!options.github) throw failure("unavailable");
           const github = await options.github.prepare(caller, request.requestId);
           receipt.github = { status: "connected", login: github.login };
-          if (manifest.request.repos) {
-            reason = "repository_checkout";
-            phase = DOCKER_LAUNCH_FAILURE_MESSAGES.checkout;
-            const command = dockerRepositoryCheckout(manifest.request.repos, "/home/user");
-            const commands = createRuntimeCommands(createRuntimeEnrolments(sql, key), key);
-            const id = `docker_checkout_${request.requestId}`;
-            await commands.enqueue(
-              actor.userId,
-              {
-                version: 1,
-                requestId: id,
-                sandboxId: request.requestId,
-                op: "exec",
-                input: { sandboxId: request.requestId, command, cwd: "/home/user", timeoutSeconds: 600 },
-              },
-              receipt.epoch,
-            );
-            for (;;) {
-              await live();
-              const response = await commands.result(actor.userId, request.requestId, id, receipt.epoch);
-              if (response.state === "finished") {
-                const result = response.reply.body.result as Record<string, unknown> | undefined;
-                if (
-                  response.reply.status !== 200 ||
-                  !result ||
-                  result.detached !== false ||
-                  result.exitCode !== 0 ||
-                  result.timedOut !== false
-                )
-                  throw failure("sandbox_not_ready");
-                break;
-              }
-              if (response.state !== "pending") throw failure("sandbox_not_ready");
-              await wait();
+          reason = "repository_checkout";
+          phase = DOCKER_LAUNCH_FAILURE_MESSAGES.checkout;
+          const command = dockerRepositoryCheckout(manifest.request.repos, "/home/user");
+          const commands = createRuntimeCommands(createRuntimeEnrolments(sql, key), key);
+          const id = `docker_checkout_${request.requestId}`;
+          await commands.enqueue(
+            actor.userId,
+            {
+              version: 1,
+              requestId: id,
+              sandboxId: request.requestId,
+              op: "exec",
+              input: { sandboxId: request.requestId, command, cwd: "/home/user", timeoutSeconds: 600 },
+            },
+            receipt.epoch,
+          );
+          for (;;) {
+            await live();
+            const response = await commands.result(actor.userId, request.requestId, id, receipt.epoch);
+            if (response.state === "finished") {
+              const result = response.reply.body.result as Record<string, unknown> | undefined;
+              if (
+                response.reply.status !== 200 ||
+                !result ||
+                result.detached !== false ||
+                result.exitCode !== 0 ||
+                result.timedOut !== false
+              )
+                throw failure("sandbox_not_ready");
+              break;
             }
-            // #2560: the requested repositories were cloned successfully.
-            await recordLaunchStageQuietly(sql, request.requestId, "checkout_done");
+            if (response.state !== "pending") throw failure("sandbox_not_ready");
+            await wait();
           }
+          // #2560: the requested repositories were cloned successfully.
+          await recordLaunchStageQuietly(sql, request.requestId, "checkout_done");
         }
         reason = "skills";
         phase = DOCKER_LAUNCH_FAILURE_MESSAGES.preparation;

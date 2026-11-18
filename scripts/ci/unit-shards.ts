@@ -1,6 +1,8 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { MIGRATED_DATABASE_TEMPLATE_ENV, migratedTemplate } from "../test-support/migrated-database.ts";
 import durations from "./test-durations.json";
 
 export const SHARD_COUNT = 6;
@@ -130,33 +132,43 @@ if (import.meta.main) {
     let failed = false;
     const files = shards[index - 1]!;
     const batches = workerBatches(files, sources, durations.workers);
-    const run = async (batch: string[]) => {
-      const started = performance.now();
-      const child = Bun.spawn([process.execPath, "test", "--no-orphans", ...batch.map((path) => `./${path}`)], {
-        cwd: root,
-        stdin: "inherit",
-        stdout: "inherit",
-        stderr: "inherit",
-      });
-      const code = await child.exited;
-      if (code !== 0) failed = true;
-      const elapsed = ((performance.now() - started) / 1000).toFixed(3);
-      if (batch.length === 1) console.log(`Completed ${batch[0]} in ${elapsed}s`);
-      else console.log(`Completed SQL worker in ${elapsed}s: ${batch.join(", ")}`);
-    };
-    // This existing test rebuilds a repository artifact read by other suites.
-    // Keep its write exclusive; new artifact fixtures must use temporary paths.
-    const writer = "packages/mcp-server/test/github-boat.test.ts";
-    for (const batch of batches.filter((batch) => batch.includes(writer))) await run(batch);
-    const parallel = batches.filter((batch) => !batch.includes(writer));
-    let next = 0;
-    // Two isolated processes fit the measured SQL-worker memory envelope; never
-    // fan out every file. This uses runner cores without requesting more jobs.
-    await Promise.all(
-      Array.from({ length: 2 }, async () => {
-        while (next < parallel.length) await run(parallel[next++]!);
-      }),
-    );
-    process.exit(failed ? 1 : 0);
+    const templateDirectory = mkdtempSync(join(tmpdir(), "armada-unit-schema-"));
+    const templatePath = join(templateDirectory, "schema.tar");
+    try {
+      // Replaying the entire migration history in concurrent workers can exceed
+      // Bun's setup-hook timeout. Share only the pristine, checkout-local bytes.
+      await Bun.write(templatePath, await migratedTemplate());
+      const run = async (batch: string[]) => {
+        const started = performance.now();
+        const child = Bun.spawn([process.execPath, "test", "--no-orphans", ...batch.map((path) => `./${path}`)], {
+          cwd: root,
+          env: { ...process.env, [MIGRATED_DATABASE_TEMPLATE_ENV]: templatePath },
+          stdin: "inherit",
+          stdout: "inherit",
+          stderr: "inherit",
+        });
+        const code = await child.exited;
+        if (code !== 0) failed = true;
+        const elapsed = ((performance.now() - started) / 1000).toFixed(3);
+        if (batch.length === 1) console.log(`Completed ${batch[0]} in ${elapsed}s`);
+        else console.log(`Completed SQL worker in ${elapsed}s: ${batch.join(", ")}`);
+      };
+      // This existing test rebuilds a repository artifact read by other suites.
+      // Keep its write exclusive; new artifact fixtures must use temporary paths.
+      const writer = "packages/mcp-server/test/github-boat.test.ts";
+      for (const batch of batches.filter((batch) => batch.includes(writer))) await run(batch);
+      const parallel = batches.filter((batch) => !batch.includes(writer));
+      let next = 0;
+      // Two isolated processes fit the measured SQL-worker memory envelope; never
+      // fan out every file. This uses runner cores without requesting more jobs.
+      await Promise.all(
+        Array.from({ length: 2 }, async () => {
+          while (next < parallel.length) await run(parallel[next++]!);
+        }),
+      );
+    } finally {
+      rmSync(templateDirectory, { recursive: true, force: true });
+    }
+    process.exitCode = failed ? 1 : 0;
   }
 }

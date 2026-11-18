@@ -29,6 +29,7 @@ export type Receipt = {
   expired?: true;
   cleaned?: true;
   expiryReported?: true;
+  expiryOutputsPending?: true;
 } & (
   | { operation: "create" | "stop" | "delete" }
   | { operation: "bootstrap" | "resume"; inputHash: string }
@@ -114,6 +115,7 @@ export interface Api {
     }
   >;
   result(state: State, receipt: Receipt, expired?: true): Promise<void>;
+  retainedOutputs?(state: State, requestId: string, read: () => Promise<Uint8Array<ArrayBuffer> | null>): Promise<void>;
   claim?(state: State, requestId: string, accepted: boolean): Promise<void>;
   cleaned?(state: State, requestId: string, reason?: "retention_elapsed" | "disk_pressure"): Promise<void>;
 }
@@ -137,6 +139,55 @@ export interface Executor {
   stoppedAt?(request: DockerMachineRequest): Promise<number | null>;
   isStopped?(request: DockerMachineRequest): Promise<boolean>;
 }
+/** One independent archive read/upload per host. Expiry reporting and cleanup remain independent. */
+export function createExpiryOutputSweep(
+  store: Store,
+  upload: NonNullable<Api["retainedOutputs"]>,
+  read: (request: DockerMachineRequest) => Promise<Uint8Array<ArrayBuffer> | null>,
+  now = Date.now,
+) {
+  let pending: Promise<void> | undefined;
+  let after: string | undefined;
+  const retryAfter = new Map<string, number>();
+  async function capture() {
+    const state = await store.load();
+    const candidates = state.receipts.filter(
+      (item) => item.expiryReported && !item.cleaned && item.expiryOutputsPending,
+    );
+    const ids = new Set(candidates.map(({ requestId }) => requestId));
+    for (const id of retryAfter.keys()) if (!ids.has(id)) retryAfter.delete(id);
+    const cursor = candidates.findIndex((receipt) => receipt.requestId === after);
+    const time = now();
+    const receipt = [...candidates.slice(cursor + 1), ...candidates.slice(0, cursor + 1)].find(
+      ({ requestId }) => (retryAfter.get(requestId) ?? 0) <= time,
+    );
+    if (!receipt) return;
+    after = receipt.requestId;
+    retryAfter.set(receipt.requestId, time + 120_000);
+    await upload(state, receipt.requestId, () => read(receipt.request));
+    await exclusive(store, async () => {
+      const current = await store.load();
+      const target = current.receipts.find((item) => item.requestId === receipt.requestId);
+      if (!target || target.cleaned) return;
+      delete target.expiryOutputsPending;
+      await store.save(current);
+    });
+    retryAfter.delete(receipt.requestId);
+  }
+  return {
+    sweep() {
+      pending ??= capture()
+        .catch(() => {})
+        .finally(() => {
+          pending = undefined;
+        });
+    },
+    async drain() {
+      await pending;
+    },
+  };
+}
+
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export function validId(value: unknown): value is string {
   return typeof value === "string" && uuid.test(value);
@@ -546,14 +597,12 @@ async function admitLocked(
   // allocation first would destroy the workspace the resume is claiming. Local
   // retention still runs while offline: the poll error is rethrown after it.
   // The poll may be held open by the server, so it runs outside the ledger
-  // section: running jobs keep completing meanwhile. Only their completions can
-  // write the ledger in that window, so with jobs running it is saved before
-  // and reloaded after. A ledger that cannot be saved first could not be
-  // reconciled with a completion saved during the poll, and a later write of it
-  // would erase that completion and its replay fence. That save error therefore
+  // section: running jobs and the independent output sweep can save meanwhile.
+  // Save before releasing the lock and reload afterward when either can write.
+  // A save error therefore
   // ends this tick before polling: everything computed above is derived again
   // from the durable ledger on the next tick, and physical expiry runs on its own.
-  const reload = Boolean(options.running?.size);
+  const reload = Boolean(options.running?.size || api.retainedOutputs);
   if (reload) await store.save(state);
   lock.release();
   let polled: Awaited<ReturnType<Api["poll"]>> | undefined;
@@ -837,6 +886,7 @@ async function admitLocked(
       await store.save(state);
       await api.result(state, report, true);
       report.expiryReported = true;
+      if (api.retainedOutputs) report.expiryOutputsPending = true;
       await store.save(state);
     } catch {
       // Offline/unknown ACK: retry this same durable fact on a later fair turn.
@@ -1107,7 +1157,7 @@ export function compactReceipts(state: State): void {
       receipt.operation === "stop" ||
       receipt.operation === "delete" ||
       receipt.operation === "buildSnapshot" ||
-      (receipt.expired && receipt.expiryReported);
+      (receipt.expired && receipt.expiryReported && !receipt.expiryOutputsPending);
     if (!closed) return true;
     if (
       receipt.operation !== "delete" &&

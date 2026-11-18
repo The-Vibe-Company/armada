@@ -14,6 +14,7 @@ export const REST_LAUNCH_RESPONSE = z
         provider: z.string(),
         providerSandboxId: z.string(),
         status: z.string(),
+        externalRef: z.string().optional().describe("Opaque caller reference, when provided."),
       })
       .passthrough(),
     golden: z

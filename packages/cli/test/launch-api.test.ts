@@ -119,9 +119,7 @@ describe("launch through the Armada API", () => {
         });
         expect(calls).toHaveLength(1);
         const launchRequest = calls.at(-1);
-        expect(launchRequest?.url).toBe(
-          `https://armada.thevibecompany.co/api/v1/sandbox/${repo === undefined ? "launch" : "launch-sized-v1"}`,
-        );
+        expect(launchRequest?.url).toBe(`https://armada.thevibecompany.co/api/v1/sandbox/launch`);
         expect(launchRequest?.headers.get("authorization")).toBe(`Bearer ${token}`);
         expect(await launchRequest?.json()).toEqual({
           skills: ["example/notes@1.0.0", "other@2.0.0"],
@@ -219,7 +217,7 @@ describe("launch through the Armada API", () => {
     expect(code).toBe(1);
     expect(out).toBe("");
     expect(calls).toHaveLength(1);
-    expect(calls[0]?.url).toEndWith("/api/v1/sandbox/launch-sized-v1");
+    expect(calls[0]?.url).toEndWith("/api/v1/sandbox/launch");
   });
   test("mixed-version launch retains created sandbox JSON and warns when override evidence is missing", async () => {
     let out = "";

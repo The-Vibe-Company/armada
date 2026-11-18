@@ -667,7 +667,7 @@ checkpoint and restore paths. Native Boat has no OpenCode harness alias and stay
 unsupported. Apply `20261115071000_boat_runtime_opencode.sql` through the normal
 release migration path and deploy matching server/runtime artifacts first.
 
-Use `sandbox/launch-runtime-v1` with `runtimeVersion:1`, `boatRuntime:true`,
+Use `sandbox/launch` with `runtimeVersion:1`, `boatRuntime:true`,
 `provider:"boat"`, `harness:"opencode"` and an authorized OpenCode account/model.
 `launch/options.boatRuntime.opencodeVersion:1` advertises explicit runtime support.
 Ordinary launches also work when the operator has already selected the Boat runtime

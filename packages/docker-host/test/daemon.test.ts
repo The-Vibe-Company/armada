@@ -8,6 +8,7 @@ import { createDockerMachineExecutor, DockerMachineError } from "../../core/src/
 import {
   type Api,
   compactReceipts,
+  createExpiryOutputSweep,
   createPhysicalExpirySweep,
   type Executor,
   type Job,
@@ -330,6 +331,72 @@ test("offline TTL stop confirmation survives restart and lost ACK without replay
   expect(reports).toBe(2);
   expect(attempts).toBe(3);
   expect(f.executed).toEqual(["create"]);
+});
+
+test("expired outputs retry with backoff independently of the physical stop report", async () => {
+  const f = fixture();
+  await tick(f.store, f.api, f.executor);
+  let attempts = 0,
+    reports = 0,
+    now = 0;
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let holdPoll = false;
+  const api: Api = {
+    ...f.api,
+    async poll() {
+      if (holdPoll) {
+        entered.resolve();
+        await release.promise;
+      }
+      return { job: null };
+    },
+    async result(_state, _receipt, expired) {
+      if (expired) reports++;
+    },
+    async retainedOutputs(_state, id, read) {
+      expect(id).toBe(f.job.requestId);
+      attempts++;
+      if (attempts === 1) throw Error("temporary upload failure");
+      expect(await read()).toEqual(new Uint8Array([1, 2, 3]));
+    },
+  };
+  await tick(f.store, api, {
+    ...f.executor,
+    async stopIfExpired() {
+      return true;
+    },
+  });
+  const sweep = createExpiryOutputSweep(
+    f.store,
+    api.retainedOutputs!,
+    async () => new Uint8Array([1, 2, 3]),
+    () => now,
+  );
+  sweep.sweep();
+  await sweep.drain();
+  expect(reports).toBe(1);
+  expect(attempts).toBe(1);
+  now = 119_999;
+  sweep.sweep();
+  await sweep.drain();
+  expect(attempts).toBe(1);
+  now++;
+  holdPoll = true;
+  const polled = tick(f.store, api, f.executor);
+  await entered.promise;
+  try {
+    sweep.sweep();
+    await sweep.drain();
+  } finally {
+    release.resolve();
+    await polled;
+  }
+  expect(attempts).toBe(2);
+  expect(f.state().receipts[0]?.expiryOutputsPending).toBeUndefined();
+  sweep.sweep();
+  await sweep.drain();
+  expect(attempts).toBe(2);
 });
 
 test("bounded TTL sweeps retire confirmed generations while reporting fairly across restarted ticks", async () => {

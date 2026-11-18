@@ -6,12 +6,15 @@ import {
   DOCKER_SNAPSHOT_FAILURE_MESSAGES,
   type DockerHostSummary,
   type DockerJobFailureReason,
+  OUTPUT_DIRECTORY,
+  OUTPUT_MAX_READ_BYTES,
   type Sql,
 } from "@armada/core";
 import {
   decryptSecret,
   encryptSecret,
   isSnapshotBaselineTool,
+  readOutputArchive,
   type SnapshotBaselineTool,
   VaultError,
 } from "@armada/core/server";
@@ -35,6 +38,7 @@ import { hostDrainingSql } from "./docker-host-drain.ts";
 import { dockerHostSupportsSnapshotBaseline } from "./docker-host-version.ts";
 import { authorizeSnapshotBuild, resolveDockerSnapshot } from "./docker-snapshot-data.ts";
 import { recordLaunchStage, recordLaunchStageForActivation } from "./launch-stage-record.ts";
+import { collectOutputTransfers, DOCKER_RETAINED_OUTPUT_STOP } from "./output-transfers.ts";
 import { noteAdmission } from "./request-observability.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
 
@@ -1346,6 +1350,67 @@ export function createDockerHostStore(sql: Sql, key: string) {
           [logical.id, result.cleanupReason ?? "retention_elapsed"],
         );
       });
+    },
+    async retainedOutputs(
+      hostToken: string,
+      installationId: string,
+      requestId: string,
+      body: ReadableStream<Uint8Array> | null,
+      signal: AbortSignal,
+    ): Promise<202 | 204> {
+      function authorize(expectedGeneration?: string) {
+        return transaction(async (tx) => {
+          id(requestId);
+          const host = await authenticate(tx, hostToken, installationId);
+          const job =
+            (
+              await tx.query<StoredJob>(
+                `select * from public.docker_host_jobs where host_id=$1 and request_id=$2
+               and bound_operation in ('create','bootstrap','resume') and bound_sandbox_id is not null`,
+                [host.id, requestId],
+              )
+            ).rows[0] ?? deny();
+          const logical = await boundMachine(tx, job, host, installationId);
+          const predicate = `id=$1 and not application_secret_tainted and ${DOCKER_RETAINED_OUTPUT_STOP}`;
+          return (
+            await tx.query<{ id: string; generation: string; scan: string; provider_sandbox_id: string }>(
+              expectedGeneration !== undefined
+                ? `update public.sandboxes set outputs_checked_at=clock_timestamp() where ${predicate}
+                   and lifecycle_generation=$2::bigint
+                   returning id,lifecycle_generation::text as generation,outputs_checked_at::text as scan,provider_sandbox_id`
+                : `select id,lifecycle_generation::text as generation,outputs_checked_at::text as scan,provider_sandbox_id
+                   from public.sandboxes where ${predicate}`,
+              expectedGeneration === undefined ? [logical.id] : [logical.id, expectedGeneration],
+            )
+          ).rows[0];
+        });
+      }
+      const admitted = await authorize();
+      if (!admitted) return 204;
+      if (!body) return 202;
+      const root = OUTPUT_DIRECTORY.slice(OUTPUT_DIRECTORY.lastIndexOf("/") + 1);
+      const snapshot = await readOutputArchive(body, signal, { root });
+      signal.throwIfAborted();
+      // Claim after the entire copy is validated. A failed or truncated copy cannot supersede
+      // an in-progress publication or modify the prior downloadable snapshot.
+      const row = await authorize(admitted.generation);
+      if (!row) return 204;
+      await collectOutputTransfers(
+        sql,
+        {
+          outputReadBytes: OUTPUT_MAX_READ_BYTES,
+          listOutputEntries: async () => snapshot.entries,
+          readOutputChunk: async ({ chunk: { entry, offset, length } }) =>
+            snapshot.files.get(entry.name)?.subarray(offset, offset + (length ?? OUTPUT_MAX_READ_BYTES)) ?? null,
+        },
+        row.id,
+        { sandboxId: row.provider_sandbox_id, signal },
+        row.scan,
+        key,
+        undefined,
+        row.generation,
+      );
+      return 204;
     },
     expired(hostToken: string, installationId: string, result: { requestId: string }) {
       return transaction(async (tx) => {

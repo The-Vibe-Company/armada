@@ -111,7 +111,7 @@ export async function operation(
     const ttl = single(args, "--ttl");
     if (ttl === undefined || [...args.options.keys()].some((key) => !["--ttl", "--org", "--json"].includes(key)))
       throw new GoldenError("invalid_config", "Run armada extend <sandbox-id> --ttl <duration> [--org UUID] [--json].");
-    body.ttl_seconds = parseTtl(ttl);
+    body.ttlSeconds = parseTtl(ttl);
   }
   if (command === "bind-credential") {
     const credentialId = single(args, "--credential-id");

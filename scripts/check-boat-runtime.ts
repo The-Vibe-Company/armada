@@ -310,7 +310,7 @@ try {
     ? `Remember token ${memory}. ${mcpInstruction} After it succeeds, reply exactly ${marker}. Do not change files.`
     : `${followup ? `Remember token ${memory}. ` : ""}Reply exactly ${marker}. Do not use tools or change files.`;
   const launchStarted = performance.now();
-  const launched = await api(ordinaryMode ? "sandbox/launch" : "sandbox/launch-runtime-v1", {
+  const launched = await api("sandbox/launch", {
     ...(ordinaryMode ? {} : { runtimeVersion: 1, boatRuntime: true }),
     provider: "boat",
     harness,

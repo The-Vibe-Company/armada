@@ -88,7 +88,7 @@ account; several without a default is `ambiguous` and the person chooses), repos
 and size choices, and TTL presets within the golden's provider limit. Nothing is
 hardcoded: an unknown harness or model is offered with its raw id.
 `SandboxLaunchDraft.request(catalog:)` mirrors the server's checks and builds the body of
-`sandbox/launch-sized-v1` (`sizePolicyVersion: 1`, the route `armada launch --sized` and
+`sandbox/launch` (`sizePolicyVersion: 1`, the route `armada launch --sized` and
 the dashboard use); omitted optionals keep the server defaults.
 
 `launchSandbox(_:)` has no idempotency key: it is sent once with a ten-minute timeout and

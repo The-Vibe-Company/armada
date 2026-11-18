@@ -233,7 +233,7 @@ private func json(_ request: URLRequest) throws -> [String: Any] {
     #expect(result.sandbox.id == newSandbox)
     #expect(result.promptId == "p1")
     let request = try #require(await transport.requests.last)
-    #expect(request.url?.path == "/api/v1/sandbox/launch-sized-v1")
+    #expect(request.url?.path == "/api/v1/sandbox/launch")
     #expect(request.timeoutInterval == 600)
     #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer fixture-access")
 }

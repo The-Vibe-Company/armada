@@ -119,6 +119,21 @@ test("published launch request is either a golden launch or a Docker launch, nev
   expect(launch.safeParse({ golden: "web", harness: "codex", provider: "docker" }).success).toBe(false);
 });
 
+test("published Docker launch requests require exactly one replay key and validate external references", async () => {
+  const { publishedRequest } = await import("./published-response.ts");
+  const launch = publishedRequest("sandbox/launch");
+  const id = "11111111-1111-4111-8111-111111111111";
+  for (const placement of [{ hostId: id }, { snapshotId: id }]) {
+    const body = { provider: "docker", harness: "codex", ...placement };
+    const keyed = { ...body, idempotencyKey: "customer_launch_1", externalRef: "customer:42" };
+    expect(launch.safeParse(keyed).success).toBe(true);
+    expect(launch.safeParse(body).success).toBe(false);
+    expect(launch.safeParse({ ...keyed, requestId: id }).success).toBe(false);
+    expect(launch.safeParse({ ...keyed, idempotencyKey: "short" }).success).toBe(false);
+    expect(launch.safeParse({ ...keyed, externalRef: "customer\n42" }).success).toBe(false);
+  }
+});
+
 test("published Docker launch request accepts the mixed-case UUIDs launch admission normalizes", async () => {
   const { publishedRequest } = await import("./published-response.ts");
   const launch = publishedRequest("sandbox/launch");

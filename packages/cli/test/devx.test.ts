@@ -7,6 +7,7 @@ import { memorySessionStore } from "../src/session.ts";
 function fixture(responses: Record<string, unknown>) {
   let out = "";
   const paths: string[] = [];
+  let hostOrg: string | undefined;
   const auth: AuthIo = {
     out: (text) => {
       out += text;
@@ -16,9 +17,12 @@ function fixture(responses: Record<string, unknown>) {
     session: memorySessionStore(),
     now: () => new Date(0),
     open: () => {},
-    fetch: async (url) => {
+    fetch: async (url, init) => {
       const path = new URL(String(url)).pathname;
       paths.push(path);
+      if (path === "/api/v1/docker/hosts/list" && hostOrg) {
+        expect(JSON.parse(String(init?.body))).toEqual({ org: hostOrg });
+      }
       if (!(path in responses)) throw new Error(`Unexpected API: ${path}`);
       const response = responses[path];
       return response instanceof Response
@@ -26,7 +30,14 @@ function fixture(responses: Record<string, unknown>) {
         : Response.json(response);
     },
   };
-  return { auth, paths, output: () => out };
+  return {
+    auth,
+    paths,
+    output: () => out,
+    expectHostOrg: (org: string) => {
+      hostOrg = org;
+    },
+  };
 }
 
 test.each([VERSION, "0.0.1", null])(
@@ -217,6 +228,7 @@ test("guided Docker launch respects explicit organization and remembered visible
   const first = "22222222-2222-4222-8222-222222222222";
   const selected = "33333333-3333-4333-8333-333333333333";
   const f = fixture({
+    "/api/v1/org/list": { orgs: [{ id: org, name: "Team", role: "admin" }] },
     "/api/v1/launch/options": {
       providers: [{ id: "docker", enabled: true, capabilities: { launch: true }, harnesses: ["codex"] }],
       harnesses: [{ id: "codex", credentialKinds: ["openai"] }],
@@ -233,6 +245,7 @@ test("guided Docker launch respects explicit organization and remembered visible
     },
     "/api/v1/creds/list": { user: [{ id: "account", kind: "openai", status: "active" }], orgs: [] },
   });
+  f.expectHostOrg(org);
   f.auth.interactive = true;
   f.auth.launchPreferences = {
     read: async (key) => (key.endsWith("/host") ? selected : undefined),
@@ -246,9 +259,9 @@ test("guided Docker launch respects explicit organization and remembered visible
     expect(preferred).toBe(selected);
     return preferred ?? "";
   };
-  expect(await prepareLaunch(["--org", org], f.auth)).toEqual([
+  expect(await prepareLaunch(["--org", "team"], f.auth)).toEqual([
     "--org",
-    org,
+    "team",
     "--provider",
     "docker",
     "--agent",
@@ -259,6 +272,6 @@ test("guided Docker launch respects explicit organization and remembered visible
     "account",
   ]);
   expect(questions).toBe(1);
-  expect(f.paths).not.toContain("/api/v1/org/list");
+  expect(f.paths).toContain("/api/v1/org/list");
   expect(f.paths).not.toContain("/api/v1/golden/list");
 });

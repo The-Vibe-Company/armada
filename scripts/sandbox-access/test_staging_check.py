@@ -93,13 +93,13 @@ class Safety(unittest.TestCase):
             output = io.StringIO()
             with self.subTest(status=status), contextlib.redirect_stdout(output):
                 if status == 200:
-                    run.call("sandbox/launch-access-v1", {})
+                    run.call("sandbox/launch", {"armadaAccessVersion": 1})
                 else:
                     with self.assertRaises(check.Failure):
-                        run.call("sandbox/launch-access-v1", {})
+                        run.call("sandbox/launch", {"armadaAccessVersion": 1})
             trace = json.loads(output.getvalue())
             self.assertEqual(set(trace), {"step", "route", "status", "code", "reason"})
-            self.assertEqual(trace, {"step": "parent_launch", "route": "sandbox/launch-access-v1", "status": status, "code": code, "reason": reason})
+            self.assertEqual(trace, {"step": "parent_launch", "route": "sandbox/launch", "status": status, "code": code, "reason": reason})
             self.assertTrue(response.closed)
             for private in ("private body", "owner-secret", "grant-secret", ENV["STAGING_URL"]):
                 self.assertNotIn(private, output.getvalue())
@@ -160,7 +160,7 @@ class Safety(unittest.TestCase):
         run.opener.open.side_effect = None
         run.opener.open.return_value = answer({"error": {"code": "invalid_config"}}, 400)
         with contextlib.redirect_stdout(BrokenOutput()), self.assertRaisesRegex(check.Failure, "api_refused_or_unexpected"):
-            run.call("sandbox/launch-access-v1", {})
+            run.call("sandbox/launch", {"armadaAccessVersion": 1})
 
     def test_interrupt_cleanup_and_unverified_reports_never_claim_pass(self):
         for problem in (KeyboardInterrupt(), check.Failure("request_outcome_unknown"), SystemExit("never-echo-this"), None):
@@ -313,8 +313,8 @@ class Safety(unittest.TestCase):
                 if route == "sandbox/list":
                     self_test.assertEqual((body["owner"], body["golden"], body["page"]), ("me", ID, 1))
                     return {"sandboxes": list(self.rows.values()), "hasMore": False}
-                if route in ("sandbox/launch-access-v1", "sandbox/launch"):
-                    resource = parent if route.endswith("access-v1") else control
+                if route == "sandbox/launch":
+                    resource = parent if body.get("armadaAccessVersion") == 1 else control
                     self_test.assertEqual((body["credentialId"], body["harness"], body["connections"], body["skills"]), (OTHER, "codex", [], []))
                     if resource == parent:
                         self_test.assertEqual(body["armadaAccess"], {"maxActiveChildren": 1})
@@ -411,7 +411,7 @@ class Safety(unittest.TestCase):
 
             class RefusedParent(Fixture):
                 def _request(self, route, body, *args):
-                    if route == "sandbox/launch-access-v1":
+                    if route == "sandbox/launch" and body.get("armadaAccessVersion") == 1:
                         response = io.BytesIO(json.dumps({"error": {"code": "dependency_unavailable", "message": "private server body"}}).encode())
                         response.code = 503
                         self.opener = mock.Mock()
@@ -427,7 +427,7 @@ class Safety(unittest.TestCase):
             self.assertEqual(summary["resources"], [])
             self.assertEqual(summary["checks"], [])
             self.assertEqual(summary["cause"], "api_refused_or_unexpected")
-            self.assertIn({"step": "parent_launch", "route": "sandbox/launch-access-v1", "status": 503,
+            self.assertIn({"step": "parent_launch", "route": "sandbox/launch", "status": 503,
                            "code": "dependency_unavailable", "reason": None}, lines)
             self.assertNotIn("private server body", output.getvalue())
 
@@ -437,7 +437,7 @@ class Safety(unittest.TestCase):
                     self.assertEqual(check.main(ARGS + ["--repo", selector], ENV), 1)
                 summary = json.loads(output.getvalue().splitlines()[-1])
                 self.assertEqual(summary["status"], "UNVERIFIED")
-                bodies = [body for route, body in instances[-1].requests if route in ("sandbox/launch-access-v1", "sandbox/launch")]
+                bodies = [body for route, body in instances[-1].requests if route == "sandbox/launch"]
                 self.assertEqual([body["repo"] for body in bodies], [expected, expected])
                 child_selection, _ = json.JSONDecoder().raw_decode(bodies[0]["prompt"].split("selection ", 1)[1])
                 self.assertEqual(child_selection["repo"], expected)
@@ -447,7 +447,7 @@ class Safety(unittest.TestCase):
                     self.assertEqual(check.main(ARGS + ["--repo", selector], ENV), 1)
                 summary = json.loads(output.getvalue().splitlines()[-1])
                 self.assertEqual(summary["reason"], "repository_path_not_configured")
-                self.assertFalse(any(route in ("sandbox/launch-access-v1", "sandbox/launch") for route, _ in instances[-1].requests))
+                self.assertFalse(any(route == "sandbox/launch" for route, _ in instances[-1].requests))
                 self.assertFalse(instances[-1].unknown_allocation)
                 self.assertFalse(instances[-1].delegated_uncertain)
 
@@ -555,7 +555,7 @@ class Safety(unittest.TestCase):
             class ForeignReceipt(Fixture):
                 def _request(self, route, body, *args):
                     value = super()._request(route, body, *args)
-                    if route == "sandbox/launch-access-v1":
+                    if route == "sandbox/launch" and body.get("armadaAccessVersion") == 1:
                         self.rows[foreign] = dict(self.row(foreign), ownerId=str(__import__("uuid").UUID(int=14)))
                     if route == "logs/read" and body["id"] == parent:
                         value["events"][0]["tools"][0]["result"]["output"]["structuredContent"]["result"]["sandboxId"] = foreign
@@ -574,7 +574,7 @@ class Safety(unittest.TestCase):
             class UnmarkedReceipt(Fixture):
                 def _request(self, route, body, *args):
                     value = super()._request(route, body, *args)
-                    if route == "sandbox/launch-access-v1":
+                    if route == "sandbox/launch" and body.get("armadaAccessVersion") == 1:
                         self.stopped.discard(child)
                     if route == "logs/read" and body["id"] == child:
                         value["events"][0]["text"] = "unrelated task without this run's initial marker"
@@ -590,7 +590,7 @@ class Safety(unittest.TestCase):
 
             class Forged(Fixture):
                 def _request(self, route, body, *args):
-                    if route == "sandbox/launch-access-v1":
+                    if route == "sandbox/launch" and body.get("armadaAccessVersion") == 1:
                         result = super()._request(route, body, *args)
                         del self.rows[child]  # Delegated allocation has no published owner row yet.
                         self.stopped.discard(child)  # Its compute may still be live.
