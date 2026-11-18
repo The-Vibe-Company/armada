@@ -131,7 +131,7 @@ function originOf(value: string): string | null {
  * Transport policy only. The adapters below deliberately interpret the same JSON differently.
  * Race the entire exchange so even a stalled body reader cannot outlive the request deadline.
  */
-async function transport(options: Options, path: string, body: object) {
+async function transport(options: Options, path: string, body?: object, method = "POST") {
   const origin = originOf(options.serverUrl);
   if (!origin) throw new ControlError("The Armada server is not configured for this dashboard.");
   const url = new URL(path, origin);
@@ -151,9 +151,9 @@ async function transport(options: Options, path: string, body: object) {
       aborted,
       (async () => {
         const response = await (options.fetch ?? fetch)(url, {
-          method: "POST",
+          method,
           headers: { "content-type": "application/json", authorization: `Bearer ${options.token}` },
-          body: JSON.stringify(body),
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
           redirect: "error",
           cache: "no-store",
           signal,
@@ -600,4 +600,16 @@ function controlFallback(status: number): string {
   return status >= 500 || status === 408
     ? "The request could not be confirmed because the Armada server returned an unreadable error. Reload to check the current state before retrying."
     : "The Armada server refused the request without a readable reason. Reload and check your selection and access before retrying.";
+}
+
+/** Resource requests share the signed-in control transport and its deadline. */
+export async function controlResource(
+  options: Options,
+  path: string,
+  method: "GET" | "PUT" | "POST" | "DELETE",
+  body?: object,
+): Promise<unknown> {
+  const { response, parsed } = await transport(options, path, body, method);
+  if (!response.ok) throw new ControlError(controlFallback(response.status), response.status);
+  return parsed;
 }

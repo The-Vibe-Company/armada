@@ -1,10 +1,22 @@
-import { PUBLIC_CONTROL_ROUTES } from "@armada/core";
+import { CONTROL_BODY_MAX_BYTES, PUBLIC_CONTROL_ROUTES } from "@armada/core";
 import { NextResponse } from "next/server";
 
 const CONTROL_PREFIX = "/api/v1/";
-const MAX_BODY_BYTES = 128 * 1024;
+const MAX_BODY_BYTES = CONTROL_BODY_MAX_BYTES;
 
-const PRIVATE_POST_PATHS = new Set([
+/**
+ * Routes with path parameters that the public endpoint forwards with a bearer, beyond the
+ * static route tables. The matchers in `forwardControl` admit exactly these shapes; the
+ * proxy test fills each in and checks it is forwarded and published or given a reason.
+ */
+export const PARAMETERIZED_CONTROL_ROUTES = [
+  { method: "DELETE", path: "sandboxes/{id}" },
+  { method: "GET", path: "sandboxes/{id}/outputs" },
+  { method: "GET", path: "sandboxes/{id}/outputs/{name}" },
+] as const;
+
+/** POST routes the public endpoint forwards with a bearer. */
+export const PRIVATE_POST_PATHS: ReadonlySet<string> = new Set([
   "golden/adopt",
   "github/runtime-status",
   "sandbox/resume",
@@ -141,9 +153,19 @@ const PRIVATE_POST_PATHS = new Set([
 type ControlVerb = "GET" | "POST" | "DELETE";
 const SANDBOX_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-function fail(status: number, error: string): Response {
+/** Failures the proxy raises itself use the API's typed envelope, so integrations decode one shape. */
+const PROXY_FAILURE_CODE = {
+  400: "invalid",
+  401: "unauthorized",
+  404: "unknown_route",
+  413: "invalid",
+  502: "upstream",
+  503: "dependency_unavailable",
+} as const;
+
+function fail(status: keyof typeof PROXY_FAILURE_CODE, message: string): Response {
   return NextResponse.json(
-    status === 404 ? { error: { code: "unknown_route", message: "Unknown route." } } : { error },
+    { error: { code: PROXY_FAILURE_CODE[status], message: status === 404 ? "Unknown route." : message } },
     { status, headers: { "cache-control": "no-store" } },
   );
 }
@@ -252,6 +274,15 @@ export async function forwardControl(
   // Preserve the configured Armada upstream's fixed, numeric phase timings.
   const serverTiming = response.headers.get("server-timing");
   if (serverTiming) headers.set("server-timing", serverTiming);
+  // Clients schedule retries from the upstream's delay; forward only well-formed values.
+  const retryAfter = response.headers.get("retry-after")?.trim();
+  if (
+    retryAfter &&
+    (/^\d{1,10}$/.test(retryAfter) ||
+      (/^[a-z]{3}, \d{2} [a-z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT$/i.test(retryAfter) &&
+        Number.isFinite(Date.parse(retryAfter))))
+  )
+    headers.set("retry-after", retryAfter);
   if (sandboxOutputs) {
     // A download must stay an attachment the browser never sniffs; the length is exact only for an unencoded body.
     for (const name of ["content-disposition", "x-content-type-options"]) {

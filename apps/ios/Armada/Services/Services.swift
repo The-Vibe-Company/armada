@@ -11,7 +11,7 @@ protocol SandboxService: Sendable {
     /// reads the latest page, or the one before an older cursor (#812).
     func sandboxEvents(id: String, orgID: String, cursor: String?, backward: Bool) async throws(ServiceFailure) -> ConversationEventPage
     /// `POST /api/v1/sandbox/send`: sent exactly once. `.uncertain` means it may have been
-    /// delivered; it is never resent automatically because the route has no idempotency key.
+    /// delivered; it is never resent automatically because native providers ignore its request_id.
     func sendPrompt(sandboxID: String, orgID: String, text: String) async throws(ServiceFailure) -> SandboxPromptAcceptance
     /// `POST /api/v1/sandbox/stop`: reports whether work retention needs attention.
     func stopSandbox(id: String, orgID: String) async throws(ServiceFailure) -> SandboxStopOutcome

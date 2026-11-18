@@ -1,7 +1,7 @@
 import { readBoundedText } from "@armada/auth";
-import { VaultError } from "@armada/core/server";
+import { CONTROL_BODY_MAX_BYTES, VAULT_CONTROL_BODY_MAX_BYTES, VaultError } from "@armada/core/server";
 
-const MAX_BODY_BYTES = 128 * 1024;
+const MAX_BODY_BYTES = CONTROL_BODY_MAX_BYTES;
 
 export async function readBody(request: Request, maxBytes = MAX_BODY_BYTES): Promise<Record<string, unknown>> {
   return readJsonBody(request, false, maxBytes);
@@ -29,7 +29,7 @@ async function readJsonBody(
         const chunk = await reader.read();
         if (chunk.done) break;
         bytes += chunk.value.byteLength;
-        if (bytes > (vault ? 64 * 1024 : MAX_BODY_BYTES)) {
+        if (bytes > (vault ? VAULT_CONTROL_BODY_MAX_BYTES : MAX_BODY_BYTES)) {
           // Do not drain an untrusted stream, or wait for its producer to finish cancellation.
           void reader.cancel().catch(() => {});
           throw invalid("The request is too large.");

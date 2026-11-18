@@ -29,10 +29,14 @@ import {
 } from "@armada/core/server";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { z } from "zod";
 import { dockerLaunchBody, launchedDockerSandbox } from "../../../apps/dashboard/src/lib/docker-launch.ts";
+import { Armada, ArmadaError, type DockerSendInput, type SendInput } from "../../sdk/src/index.ts";
+import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import { apiFailureCode } from "../src/api-failure.ts";
 import type { Caller } from "../src/caller.ts";
-import { type ControlOptions, handleControlRequest } from "../src/control.ts";
+import { type ControlOptions, dispatchControlCommand, handleControlRequest } from "../src/control.ts";
+import { readLogs } from "../src/control-logs.ts";
 import { createSqlData } from "../src/data.ts";
 import { createDockerBootstrapService } from "../src/docker-bootstrap-service.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
@@ -43,14 +47,16 @@ import { createDockerSandboxControls } from "../src/docker-sandbox-controls.ts";
 import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
 import { createDockerSnapshots } from "../src/docker-snapshots.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
+import { responseJsonSchema } from "../src/launch-response-schemas.ts";
 import { observeRequest } from "../src/request-observability.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeGitHub } from "../src/runtime-github.ts";
 import { createRuntimeMcp } from "../src/runtime-mcp.ts";
-import { createArmadaServer } from "../src/tools.ts";
+import { createArmadaServer, LOGS_OUTPUT } from "../src/tools.ts";
 import { migratedDatabase } from "./migrated-database.ts";
+import { publishedRequest, publishedResponse } from "./published-response.ts";
 
 let connection: Awaited<ReturnType<typeof migratedDatabase>> | undefined;
 function database() {
@@ -625,6 +631,30 @@ test("normal admission rejects unsupported input before resolution, scopes owner
   expect((await counts(f))?.claims).toBe(0);
 });
 
+test("the published Docker launch schema admits a first prompt exactly when launch admission does", async () => {
+  const f = await fixture();
+  const published = publishedRequest("sandbox/launch");
+  const { prompt: _prompt, ...base } = f.body;
+  const snapshot = { ...base, hostId: undefined, snapshotId: randomUUID() };
+  const cases: [string | undefined, boolean][] = [
+    [undefined, true],
+    ["Fix the failing test.", true],
+    ["  padded  ", true],
+    ["", false],
+    ["   ", false],
+    ["\t\n", false],
+    ["  ﻿", false],
+  ];
+  for (const [prompt, admitted] of cases) {
+    const body = prompt === undefined ? base : { ...base, prompt };
+    expect(published.safeParse(body).success).toBe(admitted);
+    expect(published.safeParse(prompt === undefined ? snapshot : { ...snapshot, prompt }).success).toBe(admitted);
+    // Normalization runs before the placement switch: a disabled service answers an admitted body with unavailable.
+    await rejected(f.service(sql, false).launch(f.caller, body), admitted ? "unavailable" : "invalid_request");
+  }
+  expect(await counts(f)).toEqual({ sandboxes: 0, claims: 0, jobs: 0, commands: 0 });
+});
+
 test("admission and bound create roll back together when claim persistence fails; revoked host cannot allocate", async () => {
   const f = await fixture();
   const failClaim: Sql = {
@@ -776,18 +806,8 @@ test("normal publication uses the runtime epoch rather than the independent life
   ).toEqual({ generation: "7", epoch: "1", runtime_generation: "7" });
 });
 
-test("the normal HTTP route accepts the dashboard body and returns a launched sandbox readable through normal controls", async () => {
-  const f = await fixture();
-  const body = dockerLaunchBody({
-    org: f.actor.orgId,
-    hostId: f.hostId,
-    harness: "codex",
-    credentialId: f.body.credentialId,
-    requestId: f.body.requestId,
-    model: "normal-http-model",
-    reasoningEffort: "high",
-    prompt: f.body.prompt,
-  });
+/** The public REST control surface over a fixture's Docker services, authenticated as its owner. */
+function restControl(f: Awaited<ReturnType<typeof fixture>>, overrides: Partial<ControlOptions> = {}) {
   const options: ControlOptions = {
     store: createSqlVaultStore(sql),
     encryptionKey: key,
@@ -806,6 +826,7 @@ test("the normal HTTP route accepts the dashboard body and returns a launched sa
       anonKey: "fixture-anon",
       fetch: async () => Response.json({ id: f.actor.userId }),
     },
+    ...overrides,
   };
   const bearer = `eyJhbGciOiJIUzI1NiJ9.${Buffer.from(JSON.stringify({ sub: f.actor.userId })).toString("base64url")}.sig`;
   async function post(path: string, input: object) {
@@ -818,10 +839,170 @@ test("the normal HTTP route accepts the dashboard body and returns a launched sa
       options,
     );
     if (!response) throw Error("Missing normal control route");
-    expect(response.status).toBe(200);
+    const result = await response.json();
+    expect({ path, status: response.status, result }).toMatchObject({ path, status: 200 });
     expect(response.headers.get("cache-control")).toBe("no-store");
-    return response.json();
+    return result;
   }
+  return { options, bearer, post };
+}
+
+test("SDK sends to a Docker sandbox meet the published Docker variant exactly when Docker admission accepts them", async () => {
+  const f = await fixture();
+  // A running sandbox: the keyed send is admitted natively, so no queued work outlives this test.
+  await f.service().launch(f.caller, f.body);
+  const controls = createDockerSandboxControls(sql, key, {
+    clock: f.clock,
+    send: createDockerNormalSend(sql, key, { enabled: true, clock: f.clock }),
+  });
+  const { options, bearer } = restControl(f, { dockerControls: controls });
+  const sdk = new Armada({
+    token: bearer,
+    url: "https://armada.example",
+    fetch: async (url, init) => {
+      const response = await handleControlRequest(new Request(String(url), init), options);
+      if (!response) throw Error("Missing normal control route");
+      return response;
+    },
+  });
+  const published = publishedRequest("sandbox/send");
+  const docker = publishedRequest("sandbox/send", "Docker sandbox send");
+  const ref = { org: f.actor.orgId, id: f.body.requestId };
+  const keyed: DockerSendInput = { ...ref, prompt: "Keyed follow-up", request_id: randomUUID() };
+  expect(docker.safeParse(keyed).success).toBe(true);
+  expect(await sdk.send(keyed)).toMatchObject({ requestId: keyed.request_id, promptId: expect.any(String) });
+  expect(f.native.at(-1)).toMatchObject({ op: "prompt", input: { text: keyed.prompt } });
+  // Docker admission alone would take this 150 KiB prompt; the REST body limit refuses it
+  // first, and the published variant says so in advance.
+  const oversized: DockerSendInput = { ...ref, prompt: "x".repeat(150 * 1024), request_id: randomUUID() };
+  expect(docker.safeParse(oversized).success).toBe(false);
+  const dispatched = f.native.length;
+  expect(await sdk.send(oversized).catch((caught: unknown) => caught)).toMatchObject({
+    code: "invalid",
+    status: 413,
+    outcomeUnknown: false,
+  });
+  expect(f.native.length).toBe(dispatched);
+  // The account queue keys a keyless Docker send before dispatch (covered below), so the published
+  // variant accepts it.
+  expect(docker.safeParse({ ...ref, prompt: "No request key" }).success).toBe(true);
+  const refused: SendInput[] = [
+    { ...ref, prompt: "Per-turn model", request_id: randomUUID(), model: "normal-http-model" },
+  ];
+  for (const input of refused) {
+    // It stays a valid golden send, so only the Docker variant can tell the caller in advance.
+    expect(published.safeParse(input).success).toBe(true);
+    expect(docker.safeParse(input).success).toBe(false);
+    const error = await sdk.send(input).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ArmadaError);
+    expect(error).toMatchObject({ code: "invalid_request", status: 400, outcomeUnknown: false });
+  }
+  // A REST caller reads Docker send guidance, not the generic launch-settings help.
+  const raw = await handleControlRequest(
+    new Request("https://armada.example/api/v1/sandbox/send", {
+      method: "POST",
+      headers: { authorization: `Bearer ${bearer}` },
+      body: JSON.stringify(refused[0]),
+    }),
+    options,
+  );
+  expect(raw?.status).toBe(400);
+  expect(await raw?.json()).toEqual({
+    error: {
+      code: "invalid_request",
+      message: expect.stringContaining("model and reasoning_effort are refused"),
+    },
+  });
+  // @ts-expect-error A Docker sandbox keeps the model chosen at launch.
+  const override: DockerSendInput = { ...keyed, model: "normal-http-model" };
+  void override;
+});
+
+test("Docker sends through the production-wired account queue key a legacy body, replay a keyed one, refuse overrides before queuing, and dispatch admitted rows", async () => {
+  const f = await fixture();
+  await f.service().launch(f.caller, f.body);
+  // Wired as serve.ts does: REST sends reach the account queue first, and the queue
+  // dispatches through the same route without itself, with Docker in dispatch mode.
+  const accountTurns = createAccountTurnQueue(sql, key);
+  const dockerControls = (dispatchQueued: boolean) =>
+    createDockerSandboxControls(sql, key, {
+      clock: f.clock,
+      send: createDockerNormalSend(sql, key, { enabled: true, clock: f.clock, dispatchQueued }),
+    });
+  const { options, bearer, post } = restControl(f, { dockerControls: dockerControls(false), accountTurns });
+  const { accountTurns: _queue, ...unqueued } = options;
+  accountTurns.setDispatch((caller, input) =>
+    dispatchControlCommand("sandbox/send", caller, { ...input }, { ...unqueued, dockerControls: dockerControls(true) }),
+  );
+  const sdk = new Armada({
+    token: bearer,
+    url: "https://armada.example",
+    fetch: async (url, init) => {
+      const response = await handleControlRequest(new Request(String(url), init), options);
+      if (!response) throw Error("Missing normal control route");
+      return response;
+    },
+  });
+  const ref = { org: f.actor.orgId, id: f.body.requestId };
+  const rows = async () =>
+    (
+      await database().query<{ request_id: string }>(
+        "select request_id::text from public.account_turn_queue where sandbox_id=$1",
+        [ref.id],
+      )
+    ).rows.map((row) => row.request_id);
+  const refused: SendInput[] = [
+    { ...ref, prompt: "Per-turn model", request_id: randomUUID(), model: "normal-http-model" },
+    { ...ref, prompt: "   ", request_id: randomUUID() },
+  ];
+  for (const input of refused)
+    expect(await sdk.send(input).catch((caught: unknown) => caught)).toMatchObject({
+      code: "invalid_request",
+      status: 400,
+      outcomeUnknown: false,
+    });
+  expect(await rows()).toEqual([]);
+  // The body installed iOS builds send (id, org, prompt): queued under a server-generated key.
+  const legacy = { id: ref.id, org: ref.org, prompt: "Legacy keyless follow-up" };
+  expect(await post("sandbox/send", legacy)).toMatchObject({ requestId: expect.any(String), status: "queued" });
+  const generated = await rows();
+  expect(generated).toEqual([expect.stringMatching(/^[0-9a-f-]{36}$/)]);
+  const keyed: DockerSendInput = { ...ref, prompt: "Queued keyed follow-up", request_id: randomUUID() };
+  const receipt = await sdk.send(keyed);
+  expect(receipt).toMatchObject({ requestId: keyed.request_id, status: "queued" });
+  // An identical retry returns the same durable receipt instead of queuing again.
+  expect(await sdk.send(keyed)).toMatchObject({ requestId: keyed.request_id, promptId: receipt.promptId });
+  expect((await rows()).sort()).toEqual([...generated, String(keyed.request_id)].sort());
+  const dispatched = f.native.length;
+  // The launch turn has finished, so the sandbox is free for the queued turn.
+  await database().query(
+    "insert into public.runtime_idle_turns(sandbox_id,prompt_id,settled) select id,task_prompt_id,true from public.sandboxes where id=$1",
+    [ref.id],
+  );
+  expect(await accountTurns.reconcileOne(new AbortController().signal)).toBe(true);
+  await accountTurns.drain();
+  // The oldest queued row, the legacy send, dispatches under its server-generated key.
+  expect(f.native.slice(dispatched)).toEqual([
+    expect.objectContaining({
+      op: "prompt",
+      requestId: `docker_prompt_${generated[0]}`,
+      input: expect.objectContaining({ text: legacy.prompt }),
+    }),
+  ]);
+});
+test("the normal HTTP route accepts the dashboard body and returns a launched sandbox readable through normal controls", async () => {
+  const f = await fixture();
+  const body = dockerLaunchBody({
+    org: f.actor.orgId,
+    hostId: f.hostId,
+    harness: "codex",
+    credentialId: f.body.credentialId,
+    requestId: f.body.requestId,
+    model: "normal-http-model",
+    reasoningEffort: "high",
+    prompt: f.body.prompt,
+  });
+  const { options, bearer, post } = restControl(f);
   // An acknowledged timeout must preserve the dashboard's stable request key.
   f.setDrive(false);
   options.dockerLaunch = f.service(sql, true, 250);
@@ -837,7 +1018,10 @@ test("the normal HTTP route accepts the dashboard body and returns a launched sa
   expect(await pending?.json()).toMatchObject({ error: { code: "outcome_unknown" } });
   f.setDrive(true);
   options.dockerLaunch = f.service();
+  // The published contract describes the dashboard's Docker request and its receipt.
+  publishedRequest("sandbox/launch").parse(body);
   const launched = (await post("sandbox/launch", body)) as DockerLaunchResult;
+  publishedResponse("sandbox/launch").parse(launched);
   expect(launchedDockerSandbox(launched)).toBe(f.body.requestId);
   expect(launched).toMatchObject({
     sandbox: {
@@ -1188,6 +1372,26 @@ test.each([false, true])(
       handled: true,
       result: { prompt: { promptId: queued.promptId, state: "queued" }, settled: false },
     });
+    // The public REST routes (and so the SDK) observe the queued turn within the published contract.
+    const rest = restControl(f, { dockerControls: controls });
+    const ref = { org: f.actor.orgId, id: f.body.requestId, prompt_id: queued.promptId };
+    for (const [route, input] of [
+      ["sandbox/status", ref],
+      ["sandbox/detail", ref],
+      ["sandbox/wait", { ...ref, timeout_seconds: 0 }],
+    ] as const) {
+      const report = await rest.post(route, input);
+      expect(report).toMatchObject({ prompt: { promptId: queued.promptId, state: "queued" }, settled: false });
+      publishedResponse(route).parse(report);
+    }
+    // Logs report the queued turn. The published REST response and the MCP `logs` output schema
+    // (closed, as MCP clients validate it) both accept it.
+    const queuedLogs = await readLogs({ dockerControls: controls }, f.caller, f.body.requestId, {});
+    expect(queuedLogs).toMatchObject({ queuedPrompt: { promptId: queued.promptId, state: "queued" } });
+    publishedResponse("logs/read").parse(queuedLogs);
+    z.fromJSONSchema(responseJsonSchema(z.object(LOGS_OUTPUT)) as Parameters<typeof z.fromJSONSchema>[0]).parse(
+      queuedLogs,
+    );
     await server.drain();
     if (initial) {
       await server.drainQueued();
@@ -2572,6 +2776,17 @@ test.each(["private", "org"] as const)(
       expect(f.resolutions()).toBe(resolutions);
     }
     const { hostId: _, ...body } = f.body;
+    // The published launch contract and the handler agree on the Docker source shapes:
+    // a snapshot body without hostId is valid; no source, or a snapshot with repos, is refused by both.
+    const published = publishedRequest("sandbox/launch");
+    published.parse({ ...body, snapshotId: id });
+    published.parse({ ...f.body, snapshotId: id });
+    const repos = [{ url: "https://github.com/example/project.git" }];
+    for (const refused of [body, { ...body, snapshotId: id, repos }, { ...f.body, snapshotId: id, repos }]) {
+      const attempt = { ...refused, requestId: randomUUID() };
+      expect(published.safeParse(attempt).success).toBe(false);
+      await rejected(f.service().launch(f.caller, attempt), "invalid_request");
+    }
     const launched = await f.service().launch(f.caller, { ...body, snapshotId: id });
     expect(launched.sandbox).toMatchObject({ image, snapshotId: id, hostId: f.hostId });
     expect(f.jobs[0]).toMatchObject({ request: { image, snapshot: { id, ownerId: creator.userId, visibility } } });

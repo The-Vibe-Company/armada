@@ -126,8 +126,8 @@ public struct SandboxStopReceipt: Decodable, Sendable, Equatable {
     }
 }
 
-/// How a failed sandbox mutation must be presented. `sandbox/send` carries no idempotency key, so
-/// an outcome that is not a definite refusal is unconfirmed and is never retried automatically:
+/// How a failed sandbox mutation must be presented. Docker and runtime sandboxes deduplicate the
+/// `sandbox/send` request_id but native providers do not, so an outcome that is not a definite refusal is unconfirmed and is never retried automatically:
 /// resending could run the prompt twice. The conversation shows the prompt if it was delivered.
 public enum SandboxMutationFailure: Sendable, Equatable {
     case signedOut
@@ -200,9 +200,13 @@ extension ArmadaClient {
     }
 
     /// Sends one prompt as a new turn. Sent once: a failure is classified with
-    /// `SandboxMutationFailure.classify` and never resent by this client.
+    /// `SandboxMutationFailure.classify` and never resent by this client. The pending prompt's
+    /// UUID travels as the lowercase `request_id`, the key Docker and runtime sandboxes deduplicate on.
     public func sendSandboxPrompt(id: String, text: String) async throws -> SandboxPromptReceipt {
-        struct Send: Encodable, Sendable { let id: String; let org: String; let prompt: String }
+        struct Send: Encodable, Sendable {
+            let id: String; let org: String; let prompt: String; let requestID: String
+            enum CodingKeys: String, CodingKey { case id, org, prompt, requestID = "request_id" }
+        }
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ArmadaError.invalidRequest }
         let target = try sandboxID(id), org = try sandboxOrganization()
         guard !pendingSandboxPrompts.contains(where: { $0.orgID == org && $0.sandboxID.lowercased() == target.lowercased() }) else {
@@ -213,7 +217,7 @@ extension ArmadaClient {
         // dispatch another prompt while this one's outcome is open.
         try saveSandboxPrompts(pendingSandboxPrompts + [saved])
         do {
-            let result: SandboxPromptReceipt = try await post("sandbox/send", Send(id: target, org: org, prompt: text))
+            let result: SandboxPromptReceipt = try await post("sandbox/send", Send(id: target, org: org, prompt: text, requestID: saved.id.uuidString.lowercased()))
             guard result.id.lowercased() == id.lowercased() else { throw ArmadaError.invalidResponse }
             try retireSandboxPrompt(saved.id)
             return result

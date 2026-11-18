@@ -7,6 +7,7 @@ import {
   PUBLIC_CONTROL_ROUTES,
   parseMachineSizePolicy,
   VERSION,
+  vaultControlRoute,
 } from "@armada/core";
 import {
   type ApplicationVault,
@@ -53,6 +54,7 @@ import { controlFailureResponse } from "./control-errors.ts";
 import { optional, required, requiredNumber, UUID } from "./control-input.ts";
 import { readLogs } from "./control-logs.ts";
 import { fail } from "./control-response.ts";
+import { CONTROL_TOOL_ROUTES } from "./control-tool-routes.ts";
 import type { CredentialBindingRecovery } from "./credential-binding-recovery.ts";
 import { listControlCredentials } from "./credential-list.ts";
 import type { createSqlCredentialList } from "./credential-list-sql.ts";
@@ -253,26 +255,11 @@ async function timedControlRequest(
     return fail(405, "invalid", deletion ? "Use DELETE." : "Use POST.");
   try {
     const caller = await timing.measure("auth", () => authenticatedCaller(request, options));
-    if (
-      (route === "skillpack/catalog" ||
-        route === "skillpack/versions" ||
-        route.startsWith("skills/defaults/") ||
-        route.startsWith("templates/") ||
-        route.startsWith("routines/") ||
-        route.startsWith("variables/") ||
-        route.startsWith("secrets/")) &&
-      url.search
-    )
+    if (vaultControlRoute(route) && url.search)
       throw new VaultError("invalid", "Parameters must be in the request body.");
     const body = deletion
       ? { id: deletion[1], org: url.searchParams.get("org") ?? undefined }
-      : route === "skillpack/catalog" ||
-          route === "skillpack/versions" ||
-          route.startsWith("skills/defaults/") ||
-          route.startsWith("templates/") ||
-          route.startsWith("routines/") ||
-          route.startsWith("variables/") ||
-          route.startsWith("secrets/")
+      : vaultControlRoute(route)
         ? await readVaultBody(request)
         : await readBody(request, route === "logs/read" ? 512 * 1024 : undefined);
     if (
@@ -539,31 +526,7 @@ export async function dispatchControlCommand(
     );
     return { id: found.id, test };
   }
-  const toolName = (
-    {
-      "golden/capabilities": "golden_capabilities",
-      "golden/adopt": "golden_adopt",
-      "github/refresh": "github_refresh",
-      "github/runtime-status": "runtime_github_status",
-      "sandbox/list": "list",
-      "sandbox/detail": "status",
-      "sandbox/status": "status",
-      "sandbox/recovery": "work_recovery",
-      "sandbox/advice": "resource_advice",
-      "sandbox/send": "send",
-      "sandbox/resume": "resume",
-      "sandbox/checkpoint-runtime-v1": "runtime_checkpoint",
-      "sandbox/resume-runtime-v1": "runtime_resume",
-      "sandbox/report": "report",
-      "sandbox/stop": "stop",
-      "sandbox/extend": "extend",
-      "sandbox/delete": "delete",
-      "sandbox/wait": "wait",
-      "sandbox/exec": "exec",
-      "sandbox/steer": "steer",
-      "sandbox/interrupt": "interrupt",
-    } as Record<string, string>
-  )[route];
+  const toolName = CONTROL_TOOL_ROUTES[route];
   if (toolName) {
     if (
       route === "sandbox/extend" &&

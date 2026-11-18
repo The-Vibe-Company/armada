@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-type Step = { id?: string; run?: string };
+type Step = { id?: string; name?: string; run?: string };
 const workflow = Bun.YAML.parse(
   readFileSync(resolve(import.meta.dir, "../../.github/workflows/release.yml"), "utf8"),
 ) as { jobs: Record<string, { steps: Step[] }> };
@@ -234,4 +234,13 @@ test("the production consumer rechecks its configuration in its actual first ste
     expect(result.output).toBe("");
     expect(result.calls).toEqual([]);
   }
+});
+
+test("npm publication installs workspace dependencies without lifecycle scripts before staging bundles the SDK", () => {
+  const steps = workflow.jobs.publish?.steps ?? [];
+  const install = steps.findIndex((step) => step.run === "bun install --frozen-lockfile --ignore-scripts");
+  const stage = steps.findIndex((step) => step.name === "Stage and pack every package");
+  expect(stage).toBeGreaterThan(-1);
+  expect(install).toBeGreaterThan(-1);
+  expect(install).toBeLessThan(stage);
 });

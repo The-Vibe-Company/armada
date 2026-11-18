@@ -45,11 +45,13 @@ import type { createDockerBootstrapService } from "./docker-bootstrap-service.ts
 import { resolveDockerLaunchAccount } from "./docker-launch-account.ts";
 import { createDockerLaunchEnvironment } from "./docker-launch-environment.ts";
 import { dockerLaunchRequestHash, matchesDockerLaunchRequestHash } from "./docker-launch-identity.ts";
+import { DOCKER_LAUNCH_FIELDS } from "./docker-launch-request-schema.ts";
 import { createDockerPromptWorker } from "./docker-prompt-worker.ts";
 import { dockerRepositoryCheckout } from "./docker-repository-checkout.ts";
 import { reservationDatabaseDiagnostic, reservationSql } from "./docker-reservation-sql.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
+import { DOCKER_PROMPT } from "./docker-send-request-schema.ts";
 import { resolveDockerSnapshot } from "./docker-snapshot-data.ts";
 import { recordLaunchStageQuietly } from "./launch-stage-record.ts";
 import { continueRequest, currentRequestId, noteAdmission, observeProviderCall } from "./request-observability.ts";
@@ -186,31 +188,7 @@ function normalize(body: Record<string, unknown>, image: string): Request {
     !body ||
     typeof body !== "object" ||
     Array.isArray(body) ||
-    Object.keys(body).some(
-      (field) =>
-        ![
-          "repos",
-          "variables",
-          "secrets",
-          "snapshotId",
-          "org",
-          "provider",
-          "hostId",
-          "harness",
-          "credentialId",
-          "credentialVersion",
-          "requestId",
-          "model",
-          "reasoningEffort",
-          "prompt",
-          "ttlSeconds",
-          "visibility",
-          "skills",
-          "connections",
-          "skipSkillDefaults",
-          "stopWhenWorkMerged",
-        ].includes(field),
-    ) ||
+    Object.keys(body).some((field) => !DOCKER_LAUNCH_FIELDS.includes(field)) ||
     body.provider !== "docker" ||
     (body.stopWhenWorkMerged !== undefined && typeof body.stopWhenWorkMerged !== "boolean") ||
     !HARNESSES.includes(body.harness as Harness) ||
@@ -219,8 +197,7 @@ function normalize(body: Record<string, unknown>, image: string): Request {
       (!Number.isSafeInteger(body.credentialVersion) || (body.credentialVersion as number) < 1)) ||
     (body.model !== undefined && typeof body.model !== "string") ||
     (body.reasoningEffort !== undefined && typeof body.reasoningEffort !== "string") ||
-    (body.prompt !== undefined &&
-      (typeof body.prompt !== "string" || !body.prompt.trim() || Buffer.byteLength(body.prompt) > 262144))
+    (body.prompt !== undefined && !DOCKER_PROMPT.safeParse(body.prompt).success)
   )
     throw failure("invalid_request");
   const ttlSeconds = body.ttlSeconds === undefined ? DEFAULT_LAUNCH_TTL_SECONDS : body.ttlSeconds;

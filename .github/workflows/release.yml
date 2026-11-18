@@ -505,6 +505,9 @@ jobs:
           sparse-checkout: scripts/publish-npm.sh
           sparse-checkout-cone-mode: false
       - uses: ./.github/actions/setup-bun
+      # Staging bundles the SDK from workspace sources and emits its declarations with TypeScript.
+      # No dependency lifecycle scripts while this job holds id-token: write.
+      - run: bun install --frozen-lockfile --ignore-scripts
       # npm 11 supports Trusted Publishing. CI never needs a long-lived npm token.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:

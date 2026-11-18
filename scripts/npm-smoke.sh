@@ -50,4 +50,78 @@ if command -v bun > /dev/null; then
   check "bun add, bun x" bun x armada
 fi
 
+# The SDK installs alone, outside the monorepo: no workspace dependency, nothing but its bundle.
+sdk="$tarballs/the-vibe-company-armada-sdk-$expected.tgz"
+test -f "$sdk" || { echo "::error::missing $sdk"; exit 1; }
+listed=$(tar -tzf "$sdk" | LC_ALL=C sort | tr '\n' ' ')
+test "$listed" = "package/LICENSE package/README.md package/index.d.ts package/index.js package/package.json " \
+  || { echo "::error::unexpected files in $sdk: $listed"; exit 1; }
+mkdir -p "$work/sdk" && cd "$work/sdk"
+echo '{ "name": "sdk-smoke", "private": true, "type": "module" }' > package.json
+npm install --no-audit --no-fund --offline "$sdk"
+test -z "$(jq -r '.dependencies // {} | keys[]' node_modules/@the-vibe-company/armada-sdk/package.json)"
+cat > smoke.mjs <<'EOF'
+import { createHmac } from "node:crypto";
+import { Armada, ArmadaError, verifyWebhookSignature } from "@the-vibe-company/armada-sdk";
+const seen = [];
+const armada = new Armada({ token: "smoke", url: "https://armada.invalid", fetch: async (url) => {
+  seen.push(new URL(String(url)).pathname);
+  return Response.json({ error: { code: "outcome_unknown" } }, { status: 503 });
+} });
+const error = await armada.status({ id: "sandbox" }).catch((caught) => caught);
+if (!(error instanceof ArmadaError) || error.code !== "outcome_unknown" || seen.length !== 1) {
+  throw new Error(`unexpected SDK result ${error} for ${seen}`);
+}
+const { inspect } = await import("node:util");
+let bearer;
+const logged = new Armada({ token: "smoke_secret", url: "https://armada.invalid", fetch: async (_url, init) => {
+  bearer = new Headers(init.headers).get("authorization");
+  return Response.json({ id: "s" });
+} });
+if (JSON.stringify(logged).includes("smoke_secret") || inspect(logged, { depth: 10, showHidden: true }).includes("smoke_secret")) {
+  throw new Error("a serialized or inspected SDK client exposes its token");
+}
+await logged.status({ id: "s" });
+if (bearer !== "Bearer smoke_secret") throw new Error(`unexpected SDK authorization ${bearer}`);
+const body = "{}", id = "evt", timestamp = String(Math.floor(Date.now() / 1000));
+const signature = `v1=${createHmac("sha256", "secret").update(`${timestamp}.${id}.${body}`).digest("hex")}`;
+const headers = { "armada-webhook-id": id, "armada-webhook-timestamp": timestamp, "armada-webhook-signature": signature };
+if (!(await verifyWebhookSignature({ secret: "secret", body, headers: new Headers(headers) }))) {
+  throw new Error("webhook signature rejected");
+}
+const docker = { org: "o", provider: "docker", hostId: "h", harness: "codex", requestId: "r" };
+let launchBody;
+const receipt = await new Armada({ token: "smoke", url: "https://armada.invalid", fetch: async (_url, init) => {
+  launchBody = init.body;
+  return Response.json({ sandbox: { id: "s", provider: "docker", status: "running", hostId: "h" }, golden: null,
+    ttlSeconds: 60, expiresAt: "2026-01-01T00:00:00.000Z" });
+} }).launch(docker);
+if (launchBody !== JSON.stringify(docker) || receipt.golden !== null || receipt.sandbox.id !== "s") {
+  throw new Error(`unexpected Docker launch ${launchBody} -> ${JSON.stringify(receipt)}`);
+}
+EOF
+node smoke.mjs
+echo "SDK install: node import passed."
+tsc="$root/node_modules/.bin/tsc"
+test -x "$tsc" || { echo "::error::missing $tsc: run bun install --frozen-lockfile first"; exit 1; }
+cat > smoke.ts <<'EOF'
+import { Armada, type FailureCode } from "@the-vibe-company/armada-sdk";
+const code: FailureCode = "outcome_unknown";
+export const launched = new Armada({ token: code }).launch({ golden: "worker", harness: "codex" });
+export async function docker(): Promise<{ golden: null; host: string; prompt: string | undefined }> {
+  const receipt = await new Armada({ token: code }).launch({
+    org: "o", provider: "docker", hostId: "h", harness: "codex", requestId: "r",
+  });
+  return { golden: receipt.golden, host: receipt.sandbox.hostId, prompt: receipt.promptId };
+}
+EOF
+# No ambient types: the declarations must resolve on their own, with the standard DOM fetch types.
+cat > tsconfig.json <<'EOF'
+{ "compilerOptions": { "noEmit": true, "strict": true, "exactOptionalPropertyTypes": true, "target": "es2022",
+  "module": "nodenext", "moduleResolution": "nodenext", "lib": ["es2023", "dom"], "types": [] },
+  "files": ["smoke.ts"] }
+EOF
+"$tsc" -p tsconfig.json
+echo "SDK install: TypeScript declarations passed."
+
 echo "npm package smoke test passed for $target."

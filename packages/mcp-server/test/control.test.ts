@@ -34,6 +34,7 @@ import { modalLaunchEnvironment } from "../src/modal-launch-environment.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
 import { createOrdinaryLaunchReceipts } from "../src/ordinary-launch-receipts.ts";
 import { createProviderMetadata } from "../src/provider-metadata.ts";
+import { PUBLISHED_REST_ROUTES } from "../src/public-rest-routes.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
@@ -41,6 +42,7 @@ import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import { createRuntimeHistory } from "../src/runtime-history.ts";
 import { createRuntimeStartup } from "../src/runtime-startup.ts";
 import { callSharedTool } from "../src/tool-api.ts";
+import { publishedRequest, publishedResponse } from "./published-response.ts";
 import { rowOnlyConnection } from "./row-only-database.ts";
 import { fakeBoat } from "./support.ts";
 
@@ -890,6 +892,33 @@ describe("control API", () => {
     });
   });
 
+  test("every published route refuses a body over its published limit with its published status", async () => {
+    await withServer(async ({ options }) => {
+      const published = (await import("../../../docs/openapi.json")).default as unknown as {
+        paths: Record<
+          string,
+          { post: { requestBody: { "x-max-body-bytes": number; "x-oversized-body-status": number } } }
+        >;
+      };
+      const authorization = `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`;
+      // The server reads logs/read with a 512 KiB limit; the dashboard endpoint's lower bound is
+      // covered in apps/dashboard/test/control-proxy.test.ts.
+      for (const route of PUBLISHED_REST_ROUTES.filter((route) => route !== "logs/read")) {
+        const { requestBody } = published.paths[`/api/v1/${route}`]!.post;
+        const limit = requestBody["x-max-body-bytes"];
+        const response = await handleControlRequest(
+          new Request(`https://armada.test/api/v1/${route}`, {
+            method: "POST",
+            headers: { authorization },
+            body: JSON.stringify({ pad: "x".repeat(limit) }),
+          }),
+          options,
+        );
+        expect({ route, status: response?.status }).toEqual({ route, status: requestBody["x-oversized-body-status"] });
+      }
+    });
+  });
+
   test("launch/options publishes the server's harness, model, size and TTL catalogs to a signed-in caller", async () => {
     await withServer(async ({ options }) => {
       const call = (init: RequestInit) =>
@@ -901,6 +930,7 @@ describe("control API", () => {
       const response = await call({ method: "POST", headers, body: "{}" });
       expect(response?.status).toBe(200);
       const body = (await response?.json()) as LaunchOptionsResponse;
+      publishedResponse("launch/options").parse(body);
       expect(body.providers.find((provider) => provider.id === "boat")).toMatchObject({
         enabled: true,
         launchSources: ["golden"],
@@ -1180,9 +1210,12 @@ describe("control API", () => {
         idempotencyKey: "tender-0001-launch",
         externalRef: "tender:1",
       };
+      publishedRequest("sandbox/launch").parse({ org, ...request });
       const first = await call("sandbox/launch", request);
       expect(first?.status).toBe(200);
-      const launched = ((await first!.json()) as { sandbox: { id: string; externalRef?: string } }).sandbox;
+      const receipt = await first!.json();
+      publishedResponse("sandbox/launch").parse(receipt);
+      const launched = (receipt as { sandbox: { id: string; externalRef?: string } }).sandbox;
       expect(launched.externalRef).toBe("tender:1");
       const replay = await call("sandbox/launch", request);
       expect(replay?.status).toBe(200);
@@ -1386,9 +1419,12 @@ describe("control API", () => {
       const serviceResponse = await list(`Bearer ${service}`);
       if (!serviceResponse) throw new Error("missing response");
       expect(serviceResponse.status).toBe(200);
-      expect(
-        ((await serviceResponse.json()) as { goldens: { name: string }[] }).goldens.map((golden) => golden.name),
-      ).toEqual(["shared", "stan-private"]);
+      const listed = await serviceResponse.json();
+      publishedResponse("golden/list").parse(listed);
+      expect((listed as { goldens: { name: string }[] }).goldens.map((golden) => golden.name)).toEqual([
+        "shared",
+        "stan-private",
+      ]);
       expect((await list(""))?.status).toBe(401);
     });
   });
