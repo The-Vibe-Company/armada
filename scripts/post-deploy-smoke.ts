@@ -76,9 +76,16 @@ class SmokeFailure extends Error {
   constructor(
     readonly code: Code,
     readonly status?: number,
+    readonly waitResponse?: Record<string, string | boolean | number>,
   ) {
     super(code);
   }
+}
+function jsonShape(value: unknown): string {
+  if (value === null) return "null";
+  if (value === undefined) return "missing";
+  if (Array.isArray(value)) return "array";
+  return typeof value;
 }
 function fail(code: Code): never {
   throw new SmokeFailure(code);
@@ -306,6 +313,7 @@ async function runPostDeploySmoke(
                   ? error.code
                   : "invalid_response",
               ...(error instanceof TemplateSkillSmokeFailure ? error.details : {}),
+              ...(error instanceof SmokeFailure && error.waitResponse ? { waitResponse: error.waitResponse } : {}),
             }),
       }),
     );
@@ -528,6 +536,11 @@ async function runPostDeploySmoke(
           fail("invalid_response");
         return result as T;
       } catch {
+        if (path === "sandbox/wait")
+          throw new SmokeFailure("invalid_response", response.status, {
+            body: "unparseable",
+            httpStatus: response.status,
+          });
         fail("invalid_response");
       }
     } catch (error) {
@@ -955,16 +968,34 @@ async function runPostDeploySmoke(
         await step(phase ? `${phase}_wait` : "wait", () =>
           poll(
             () =>
-              sandbox<{ prompt: { promptId: string; state: string } | null }>("wait", {
+              sandbox<{
+                prompt?: { promptId?: unknown; state?: unknown } | null;
+                settled?: unknown;
+                timedOut?: unknown;
+              } | null>("wait", {
                 id: sandboxId,
                 prompt_id: turn.promptId,
                 timeout_seconds: 0,
               }),
             (result) => {
-              if (!result?.prompt || result.prompt.promptId !== turn.promptId) fail("invalid_response");
-              if (result.prompt.state === "failed" || result.prompt.state === "interrupted") fail("turn_failed");
-              if (result.prompt.state !== "running" && result.prompt.state !== "finished") fail("invalid_response");
-              return result.prompt.state === "finished";
+              const prompt = result?.prompt;
+              const state = prompt?.state;
+              const matches = prompt?.promptId === turn.promptId;
+              if (matches && (state === "failed" || state === "interrupted")) fail("turn_failed");
+              if (matches && (state === "running" || state === "finished")) return state === "finished";
+              // Use fixed field names and closed values. A malformed body may contain arbitrary secrets.
+              throw new SmokeFailure("invalid_response", undefined, {
+                body: jsonShape(result),
+                prompt: jsonShape(prompt),
+                promptId: jsonShape(prompt?.promptId),
+                promptIdMatches: matches,
+                state:
+                  state === "running" || state === "finished" || state === "failed" || state === "interrupted"
+                    ? state
+                    : jsonShape(state),
+                settled: typeof result?.settled === "boolean" ? result.settled : jsonShape(result?.settled),
+                timedOut: typeof result?.timedOut === "boolean" ? result.timedOut : jsonShape(result?.timedOut),
+              });
             },
           ),
         );
