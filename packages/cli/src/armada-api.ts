@@ -25,14 +25,14 @@ function isSandboxLaunchPath(path: string): boolean {
 const TEMPLATE_LAUNCH_UNKNOWN =
   "Template launch outcome unknown. Retry with the same template ID, request key and body; never use a new key while the outcome is unknown.";
 
-export interface ArmadaApiIo {
+interface ArmadaApiIo {
   env: NodeJS.ProcessEnv;
   fetch: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
   session: SessionStore;
   timeoutMs?: number;
 }
 
-export interface ArmadaApiOptions {
+interface ArmadaApiOptions {
   /** The CLI --url value. It takes precedence over ARMADA_URL and the default origin. */
   url?: string;
   /** Retain safe server error codes for versioned API clients. */
@@ -64,7 +64,6 @@ export class ArmadaApiError extends AuthError {
 }
 
 export type ArmadaCommandClient = ReturnType<typeof commandClient>;
-export type ArmadaApiClient = ArmadaCommandClient;
 
 /**
  * Create an authenticated client for Armada's own API.

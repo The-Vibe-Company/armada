@@ -36,19 +36,6 @@ describe("Armada API client", () => {
     expect(calls[0]?.url).toBe("https://flag.armada.test/api/v1/example");
   });
 
-  test("prefers ARMADA_TOKEN and works without a saved session", async () => {
-    let authorization = "";
-    const state = io({ ARMADA_TOKEN: token });
-    state.session = memorySessionStore();
-    state.fetch = (async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
-      authorization = new Headers(init?.headers).get("authorization") ?? "";
-      return Response.json({ ok: true });
-    }) as unknown as typeof fetch;
-    const client = await createArmadaApiClient(state);
-    await client.request("/healthz");
-    expect(authorization).toBe(`Bearer ${token}`);
-  });
-
   test("does not make provider URLs valid API origins", () => {
     expect(() => armadaApiUrl("https://project.supabase.co/rest/v1")).toThrow("HTTP(S) Armada API URL");
     expect(() => armadaApiUrl("https://user:pass@armada.test")).toThrow("HTTP(S) Armada API URL");
@@ -71,8 +58,9 @@ describe("Armada API client", () => {
 });
 
 describe("API client origin and session safety", () => {
-  test("does not read a malformed saved session when ARMADA_TOKEN is set", async () => {
+  test("uses ARMADA_TOKEN without reading the saved session", async () => {
     let reads = 0;
+    let authorization = "";
     const client = await createArmadaApiClient({
       env: { ARMADA_TOKEN: token },
       session: {
@@ -83,10 +71,14 @@ describe("API client origin and session safety", () => {
         write: async () => undefined,
         clear: async () => undefined,
       },
-      fetch: async () => Response.json({ goldens: [] }),
+      fetch: async (_input, init) => {
+        authorization = new Headers(init?.headers).get("authorization") ?? "";
+        return Response.json({ goldens: [] });
+      },
     });
-    await client.request("/api/v1/golden/list");
+    await client.golden("list", {});
     expect(reads).toBe(0);
+    expect(authorization).toBe(`Bearer ${token}`);
   });
 
   test("refuses protocol-relative and backslash paths that escape the API origin", async () => {
