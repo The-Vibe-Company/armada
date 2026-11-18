@@ -2,6 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import type { AgentEvent, Sql } from "@armada/core";
 import { createSqlVaultStore, encryptSecret } from "@armada/core/server";
+import { createSqlData } from "../src/data.ts";
 import { createDockerBootstrapService } from "../src/docker-bootstrap-service.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
 import { createDockerRuntimeLifecycle, DockerRuntimeDenied } from "../src/docker-runtime-lifecycle.ts";
@@ -340,14 +341,20 @@ test("a reported outcome clears with its turn at the next prompt and keeps the r
   const receipt = { promptId: randomUUID(), conversationId: randomUUID(), status: "queued" as const };
   await complete(session, receipt);
   await service.prompt(f.actor, f.sandbox.id, input);
-  const outcome = { state: "ready", prNumber: 42 };
-  const reportKey = `${session.epoch}:${receipt.promptId}`;
-  // The persisted shape of a Docker report for the finished turn.
-  await db.query(
-    `update public.sandboxes set status='ready',task_outcome=$2::text::jsonb,
-     pull_request_reports=jsonb_build_object($3::text,$2::text::jsonb) where id=$1`,
-    [f.sandbox.id, JSON.stringify(outcome), reportKey],
-  );
+  const outcome = { state: "ready" as const, prNumber: 42 };
+  // The turn finished: the report route's own writer persists the outcome and its history.
+  await db.query("update public.sandboxes set status='ready' where id=$1", [f.sandbox.id]);
+  const generation = (
+    await db.query<{ g: string }>("select lifecycle_generation::text as g from public.sandboxes where id=$1", [
+      f.sandbox.id,
+    ])
+  ).rows[0]?.g;
+  await createSqlData(sql)({
+    userId: f.actor.userId,
+    orgs: [{ orgId: f.actor.orgId, role: "member" }],
+    via: "mcp",
+  }).sandboxes.reportTaskOutcome!(f.sandbox.id, receipt.promptId, outcome, Number(generation));
+  const reportKey = `${generation}:${receipt.promptId}`;
   const next = { requestId: randomUUID(), text: "Address review", conversationId: receipt.conversationId };
   expect(await service.prompt(f.actor, f.sandbox.id, next)).toEqual({ state: "pending" });
   const row = await db.query<{ task_outcome: unknown; task_prompt_id: string | null; pull_request_reports: unknown }>(

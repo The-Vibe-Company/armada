@@ -419,6 +419,7 @@ test.each([
   "merged after closed at moved head",
   "merged after closed before launch",
   "merged before launch at pushed commit",
+  "reported PR merged before launch",
   "ledger gap",
   "ledger hook missing",
   "ledger hook restored",
@@ -494,6 +495,11 @@ test.each([
     await f.data.sandboxes.reportTaskOutcome!(f.id, "turn", { state: "ready", prNumber: 4 });
     await f.data.sandboxes.reportTaskOutcome!(f.id, "turn", { state: "ready", prNumber: 12 });
   }
+  if (state === "reported PR merged before launch") {
+    // The agent names an old PR whose head it recreated: not this sandbox's work.
+    await f.db.query("update sandboxes set status='ready' where id=$1", [f.id]);
+    await f.data.sandboxes.reportTaskOutcome!(f.id, "turn", { state: "ready", prNumber: 12 });
+  }
   if (state === "out-of-grant report") {
     // A report outside the launch grant vetoes the stop but must not hide the
     // pushed, verified and merged pull request in the grant.
@@ -518,7 +524,7 @@ test.each([
     },
     // A PR merged a day before launch whose branch the sandbox recreated at its
     // head commit: an exact match that is not this sandbox's work.
-    ...(state === "merged before launch at pushed commit"
+    ...(state === "merged before launch at pushed commit" || state === "reported PR merged before launch"
       ? { merged_at: new Date(f.at - 86_400_000).toISOString(), closed_at: new Date(f.at - 86_400_000).toISOString() }
       : {}),
     base: { repo: { full_name: repository } },

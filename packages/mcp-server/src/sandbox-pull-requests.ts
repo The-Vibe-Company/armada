@@ -478,6 +478,9 @@ export function createSandboxPullRequests(
               const pull = githubPull.parse(await get(repository, `/pulls/${number}`));
               if (pull.number !== number) throw Error("Pull request number changed.");
               record(repository, pull);
+              // Discovery already excludes PRs closed before launch; a report
+              // naming one cannot be this sandbox's work and withholds the stop.
+              if (pull.state !== "open" && Date.parse(pull.closed_at ?? "") < launchedAt) complete = false;
             }),
           );
           for (const result of batch) if (result.status === "rejected") throw result.reason;
