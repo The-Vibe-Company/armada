@@ -762,6 +762,15 @@ test("idle evidence upgrades long archives, survives enrolment renewal, and bloc
   await sweep();
   expect(admitted).toBe(1);
   await f.db.query("delete from runtime_commands where sandbox_id=$1", [f.id]);
+  // An output read past its deadline is abandoned: nobody awaits it, so it never blocks idle.
+  await f.db.query(
+    `insert into runtime_commands(sandbox_id,epoch,request_id,request_enc)
+     values($1,$2,$3,$4)`,
+    [f.id, active.epoch, `outputs_${now + 60000}_expired`, ciphertext],
+  );
+  await sweep();
+  expect(admitted).toBe(2);
+  await f.db.query("delete from runtime_commands where sandbox_id=$1", [f.id]);
   expect(
     (
       await f.publish(active, [
@@ -770,7 +779,7 @@ test("idle evidence upgrades long archives, survives enrolment renewal, and bloc
     ).status,
   ).toBe(200);
   await sweep();
-  expect(admitted).toBe(1);
+  expect(admitted).toBe(2);
 });
 
 test("runtime retry metadata is published without a status read and clears on progress", async () => {

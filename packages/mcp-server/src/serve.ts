@@ -36,6 +36,7 @@ import { createDockerHostRoutes } from "./docker-host-routes.ts";
 import { createDockerHostStore } from "./docker-host-store.ts";
 import { createDockerNormalLaunch } from "./docker-normal-launch.ts";
 import { createDockerNormalSend } from "./docker-normal-send.ts";
+import { captureDockerStopOutputs, createDockerOutputReader } from "./docker-outputs.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
 import { createDockerSandboxControls } from "./docker-sandbox-controls.ts";
 import { createDockerSandboxRoutes } from "./docker-sandbox-routes.ts";
@@ -89,6 +90,7 @@ import { createSandboxBillingAccount } from "./sandbox-billing-account.ts";
 import { createFinishedDockerCleanup } from "./sandbox-finish.ts";
 import { createSandboxLifecycle } from "./sandbox-lifecycle.ts";
 import { createSandboxPullRequests } from "./sandbox-pull-requests.ts";
+import { createSandboxOutputs } from "./sandbox-outputs.ts";
 import { createServerRequestDrain } from "./server-request-drain.ts";
 import { createServerRoutineScheduler } from "./server-routines.ts";
 import { installServerShutdown } from "./server-shutdown.ts";
@@ -569,6 +571,13 @@ export async function startServer(
   );
   const runtimeSockets = createRuntimeSockets(runtimeEnrolments, runtimeCommands);
   const commitSha = sourceIdentity.commit ?? env.RAILWAY_GIT_COMMIT_SHA;
+  const outputs = createSandboxOutputs(
+    sql,
+    config.encryptionKey,
+    // Only live rows are sampled; stopped workspaces are never read.
+    createMcpSandboxProviderResolver(sql, providers),
+    ...(config.encryptionKey ? [createDockerOutputReader(sql, config.encryptionKey)] : []),
+  );
   const handler = createHandler({
     ...(dockerControls ? { dockerControls } : {}),
     runtimeSend,
@@ -611,6 +620,13 @@ export async function startServer(
     modalTokensFor: modal.modalTokensFor,
     goldenTarget: modal.goldenTarget,
     routes: [
+      outputs.route((request) =>
+        authenticateCaller(request.headers.get("authorization"), {
+          store: authStore,
+          supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
+          now: new Date(),
+        }),
+      ),
       webhooks.route((request) =>
         authenticateCaller(request.headers.get("authorization"), {
           store: authStore,
@@ -743,6 +759,7 @@ export async function startServer(
             ),
           ]
         : []),
+      outputs,
       webhooks,
       createNativeWebhookPrompts(sql, createMcpSandboxProviderResolver(sql, providers, { terminalObservation: true })),
       delegatedAccess.childWorker,
@@ -752,12 +769,15 @@ export async function startServer(
         delayMs: idleDelayMs,
         ...(dockerBootstrap
           ? {
-              dockerStop: (actor, id, requestId) =>
-                createDockerHostStore(sql, config.encryptionKey).enqueueSandbox(actor, id, {
+              dockerStop: async (actor, id, requestId) => {
+                // The runtime refuses commands once the stop is admitted: capture first.
+                await captureDockerStopOutputs(sql, config.encryptionKey, id);
+                return createDockerHostStore(sql, config.encryptionKey).enqueueSandbox(actor, id, {
                   operation: "stop",
                   requestId,
                   idleCheckpointRequest: requestId,
-                }),
+                });
+              },
             }
           : {}),
       }),

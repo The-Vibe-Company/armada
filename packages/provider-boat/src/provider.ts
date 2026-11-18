@@ -39,7 +39,12 @@ import {
   redact,
   validateReadableVariables,
 } from "@armada/core";
-import { isNonMutatingProviderRefusal, sshReadableVariables } from "@armada/core/server";
+import {
+  isNonMutatingProviderRefusal,
+  OUTPUT_COLLECTOR,
+  parseCollectorOutput,
+  sshReadableVariables,
+} from "@armada/core/server";
 import {
   BoatApi,
   Configuration,
@@ -406,6 +411,26 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
         },
         request.idempotencyKey,
       );
+    },
+
+    async readOutputs({ sandboxId, signal }) {
+      // Live disk only: the fixed collector through the Boat command API. onlyIfRunning refuses a
+      // stopping or stopped sandbox instead of resuming it; its retained disk is not read (#2570 scope).
+      const result = await provider
+        .exec({
+          sandboxId,
+          command: OUTPUT_COLLECTOR,
+          onlyIfRunning: true,
+          timeoutSeconds: 10,
+          signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(20_000)]) : AbortSignal.timeout(20_000),
+        })
+        .catch((error: unknown) => {
+          // Not live (stopping, stopped): unavailable, as on Modal.
+          if (error instanceof ProviderError && error.code === "sandbox_not_ready") return null;
+          throw error;
+        });
+      if (!result || result.detached || result.exitCode !== 0 || result.truncated || result.timedOut) return null;
+      return parseCollectorOutput(result.stdout);
     },
 
     async observeResources(sandboxId) {
