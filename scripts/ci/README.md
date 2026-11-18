@@ -67,3 +67,12 @@ the exact paths and SHA-256 hashes of existing violations while #2713 is in
 progress. Delete the corresponding entry when a file is removed or made
 compliant. CI compares the inventory with the base commit of the checked-out candidate
 and rejects additions or hash changes.
+
+## Landmines
+
+`bun run lint` runs Landmines through Oxlint with Node 22.18 or newer.
+For existing violations, lower the count in `landmines-baseline.json` or
+the native allowance in the root `.oxlintrc.json`. At zero, remove the entry
+and any matching override path. CI compares both sets of counts with the
+candidate's base and rejects additions and increases. The lint step logs
+Landmines wall time on shard 1.

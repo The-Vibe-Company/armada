@@ -30,6 +30,10 @@ jobs:
           fetch-depth: 1
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        if: matrix.shard == 1
+        with:
+          node-version: ">=22.18.0 <23"
       - run: bun run lint
         if: matrix.shard == 1
       - run: bun scripts/generate-ios-harness.ts --check
@@ -40,7 +44,7 @@ jobs:
         if: matrix.shard == 1
         run: bun scripts/ci/unit-shards.ts --check
 
-      - name: Check migrations and docs allowlist against the current base
+      - name: Check migrations and shrink-only lint baselines against the base
         if: matrix.shard == 1
         env:
           BASE_BRANCH: ${{ github.base_ref || 'main' }}
@@ -71,6 +75,7 @@ jobs:
           fi
           bun scripts/db/check-migrations.ts "$base"
           bun scripts/ci/docs-guard.ts "${PR_BASE_SHA:-$base}"
+          bun scripts/ci/landmines.ts "${PR_BASE_SHA:-$base}"
       - name: Test migration guard
         if: matrix.shard == 1
         run: bun test scripts/db/check-migrations.test.ts

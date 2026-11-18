@@ -1,0 +1,67 @@
+{
+  "categories": {
+    "correctness": "off"
+  },
+  "extends": ["./node_modules/@interfere/landmines/configs/recommended.json"],
+  "plugins": [],
+  "rules": {
+    "landmines-style/no-comments": [
+      "error",
+      {
+        "publicApi": ["/packages/sdk/"]
+      }
+    ]
+  },
+  "overrides": [
+    {
+      "files": ["scripts/post-deploy-smoke.test.ts"],
+      "rules": {
+        "landmines-testing/no-fixed-sleep": [
+          "error",
+          {
+            "allow": {
+              "scripts/post-deploy-smoke.test.ts": 1
+            }
+          }
+        ]
+      }
+    },
+    {
+      "files": [
+        "packages/core/src/routine-schedule.ts",
+        "packages/core/test/github-reconnect-postgres.release.ts",
+        "packages/core/test/golden-os.probe.ts",
+        "packages/core/test/golden-scan.probe.ts",
+        "packages/mcp-server/test/github-boat-os.test.ts",
+        "packages/mcp-server/test/mcp-codex-bridge.release.ts",
+        "packages/mcp-server/test/serve-database-boot.test.ts",
+        "packages/provider-boat/test/integration.coordinator.ts",
+        "packages/provider-boat/test/native-claude-mcp.test.ts",
+        "packages/provider-boat/test/native-install-race.conformance.ts",
+        "packages/provider-modal/test/artifact.release.ts",
+        "packages/provider-modal/test/ssh-os.test.ts"
+      ],
+      "rules": {
+        "landmines-testing/no-flake-masking": [
+          "error",
+          {
+            "allow": {
+              "packages/core/src/routine-schedule.ts": 1,
+              "packages/core/test/github-reconnect-postgres.release.ts": 1,
+              "packages/core/test/golden-os.probe.ts": 1,
+              "packages/core/test/golden-scan.probe.ts": 1,
+              "packages/mcp-server/test/github-boat-os.test.ts": 1,
+              "packages/mcp-server/test/mcp-codex-bridge.release.ts": 1,
+              "packages/mcp-server/test/serve-database-boot.test.ts": 1,
+              "packages/provider-boat/test/integration.coordinator.ts": 1,
+              "packages/provider-boat/test/native-claude-mcp.test.ts": 1,
+              "packages/provider-boat/test/native-install-race.conformance.ts": 1,
+              "packages/provider-modal/test/artifact.release.ts": 1,
+              "packages/provider-modal/test/ssh-os.test.ts": 1
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
