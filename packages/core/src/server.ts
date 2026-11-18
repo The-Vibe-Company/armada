@@ -108,7 +108,6 @@ export * from "./skill-defaults.ts";
 export { mergeSkillPins } from "./skill-merge.ts";
 export * from "./skillpack.ts";
 export {
-  SNAPSHOT_BASELINE_BUN,
   SNAPSHOT_BASELINE_VERSION,
   snapshotBaselineInstall,
   snapshotBaselineVerify,

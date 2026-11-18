@@ -46,6 +46,8 @@ export function snapshotBaselineInstall(
     `curl -fsSL --retry 3 -o node.tar.xz "https://nodejs.org/dist/v${NODE}/node-v${NODE}-linux-$arch.tar.xz"`,
     `printf '%s  node.tar.xz\\n' "$node_sha" | sha256sum -c -; tar -xJf node.tar.xz --strip-components=1 -C /usr/local`,
     `npm install -g --force --no-audit --no-fund bun@${SNAPSHOT_BASELINE_BUN}; npm cache clean --force`,
+    "install -d -m 755 /opt/armada/runtime-bun",
+    "install -m 555 /usr/local/lib/node_modules/bun/bin/bun.exe /opt/armada/runtime-bun/bun",
     `curl -fsSL --retry 3 -o git.tar.xz 'https://www.kernel.org/pub/software/scm/git/git-${GIT}.tar.xz'`,
     `printf '%s  git.tar.xz\\n' 3cd8fee86f69a949cb610fee8cd9264e6873d07fa58411f6060b3d62729ed7c5 | sha256sum -c -; tar -xJf git.tar.xz; cd git-${GIT}`,
     "make -s -j2 prefix=/usr NO_GETTEXT=YesPlease NO_TCLTK=YesPlease NO_PYTHON=YesPlease INSTALL_SYMLINKS=YesPlease install",
@@ -59,7 +61,8 @@ const checks = {
   "python3-pip": "python3 -m pip --version",
   node: `[ "$(node --version)" = 'v${NODE}' ]`,
   npm: `[ "$(npm --version)" = '${NPM}' ]`,
-  bun: `[ "$(bun --version)" = '${SNAPSHOT_BASELINE_BUN}' ]`,
+  // The golden recipe can select a different project Bun on PATH.
+  bun: `bun --version && [ "$(/opt/armada/runtime-bun/bun --version)" = '${SNAPSHOT_BASELINE_BUN}' ]`,
   git: `[ "$(/usr/bin/git --version)" = 'git version ${GIT}' ] && [ "$(git --version)" = 'git version ${GIT}' ]`,
   gh: "gh --version",
   "build-essential": "cc --version && c++ --version && make --version && test -r /usr/include/stdio.h",

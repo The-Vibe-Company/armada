@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
-import { SNAPSHOT_BASELINE_BUN, snapshotBaselineInstall, snapshotBaselineVerify } from "@armada/core/server";
+import { snapshotBaselineInstall, snapshotBaselineVerify } from "@armada/core/server";
 import type { ModalClient, Sandbox } from "modal";
 import { refusal } from "./errors.ts";
 import type { Machine, RunnerDistribution } from "./ports.ts";
@@ -75,7 +75,7 @@ export function createRunnerDistribution(options: DistributionOptions): RunnerDi
           },
           [`openssh-server=${options.apt.opensshServer}`, `sudo=${options.apt.sudo}`],
         )} && rm -f /etc/ssh/ssh_host_*`,
-        `RUN npm install -g @anthropic-ai/claude-agent-sdk@0.3.322 @anthropic-ai/claude-code@2.1.322 @openai/codex@0.167.0 && install -d -m 755 /opt/armada/runtime-bun && install -m 555 /usr/local/lib/node_modules/bun/bin/bun.exe /opt/armada/runtime-bun/bun && test "$(/opt/armada/runtime-bun/bun --version)" = ${SNAPSHOT_BASELINE_BUN} && npm cache clean --force`,
+        `RUN npm install -g @anthropic-ai/claude-agent-sdk@0.3.322 @anthropic-ai/claude-code@2.1.322 @openai/codex@0.167.0 && npm cache clean --force`,
         "RUN useradd --create-home --shell /bin/bash --password '*' user && mkdir -p /opt/armada /home/user/repos && chown -R user:user /home/user && printf '%s\\n' 'user ALL=(ALL:ALL) NOPASSWD: ALL' > /etc/sudoers.d/armada-build-user && chmod 440 /etc/sudoers.d/armada-build-user && visudo -cf /etc/sudoers.d/armada-build-user",
         ...artifactRuns,
         `RUN ${snapshotBaselineVerify}`,
