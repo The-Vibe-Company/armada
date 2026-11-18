@@ -282,13 +282,17 @@ test("a Docker stop during an in-flight sample queues its final read behind it b
     writeFileSync(join(f.outputs, "memo.txt"), "draft");
     // The periodic sample is queued and awaits its reply.
     expect(await f.service.reconcileOne(new AbortController().signal)).toBe(true);
-    await sampleQueued.promise;
+    expect(
+      await Promise.race([sampleQueued.promise.then(() => "queued"), f.service.drain().then(() => "finished")]),
+    ).toBe("queued");
     expect(await queued()).toBe(1);
     writeFileSync(join(f.outputs, "memo.txt"), "final");
     // The pre-stop capture queues its own read behind the sample's instead of skipping.
     f.hold.onWait = captureQueued.resolve;
     capture = captureDockerStopOutputs(f.sql, ENCRYPTION_KEY, f.id, { reader: f.reader });
-    await captureQueued.promise;
+    expect(await Promise.race([captureQueued.promise.then(() => "queued"), capture.then(() => "finished")])).toBe(
+      "queued",
+    );
     expect(await queued()).toBe(2);
     gate.resolve();
     await capture;
