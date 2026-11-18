@@ -1,5 +1,7 @@
 import { OUTPUT_ARCHIVE_LIMIT, OUTPUT_DIRECTORY, OUTPUT_MAX_ENTRIES } from "./sandbox-output-limits.ts";
 
+export const DOCKER_OUTPUT_DIRECTORY_MISSING = 4;
+
 /** Run only in the official collector image, with the stopped workspace mounted read-only.
  * Python propagates enumeration and read errors to Docker's exit status. Docker's own cp
  * can emit an apparently complete archive after skipping entries that failed to read. */
@@ -9,8 +11,11 @@ flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 fd = os.open("/", flags)
 try:
     for component in ${JSON.stringify(OUTPUT_DIRECTORY.split("/").filter(Boolean))}:
-        # A missing directory is unavailable. An existing empty directory is a valid capture.
-        child = os.open(component, flags, dir_fd=fd)
+        # A missing directory preserves the last capture. An existing empty directory is a valid capture.
+        try:
+            child = os.open(component, flags, dir_fd=fd)
+        except FileNotFoundError:
+            sys.exit(${DOCKER_OUTPUT_DIRECTORY_MISSING})
         os.close(fd)
         fd = child
     root = ${JSON.stringify(OUTPUT_DIRECTORY.split("/").at(-1))}

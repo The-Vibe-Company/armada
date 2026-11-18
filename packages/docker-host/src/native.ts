@@ -4,6 +4,7 @@ import { lstat, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { DOCKER_HOST_SNAPSHOT_BASELINE_HEADER } from "../../core/src/docker-host-upgrade.ts";
 import type { DockerMachineCli } from "../../core/src/docker-machine.ts";
+import { DOCKER_OUTPUT_DIRECTORY_MISSING } from "../../core/src/docker-output-archive.ts";
 import { type DockerHostResources, dockerHostResources } from "../../core/src/docker-resources.ts";
 import { OUTPUT_ARCHIVE_LIMIT } from "../../core/src/sandbox-output-limits.ts";
 import { SNAPSHOT_BASELINE_VERSION } from "../../core/src/snapshot-baseline.ts";
@@ -507,7 +508,7 @@ export const dockerCli: DockerMachineCli = {
 };
 
 /** Binary collector output with a hard byte budget. Never expose Docker diagnostics. */
-export async function readDockerOutputArchive(argv: readonly string[]): Promise<Uint8Array<ArrayBuffer>> {
+export async function readDockerOutputArchive(argv: readonly string[]): Promise<Uint8Array<ArrayBuffer> | null> {
   const child = Bun.spawn(["docker", ...argv], {
     stdin: "ignore",
     stdout: "pipe",
@@ -526,7 +527,9 @@ export async function readDockerOutputArchive(argv: readonly string[]): Promise<
       if (size > OUTPUT_ARCHIVE_LIMIT) throw new Error("Docker output archive exceeds its byte budget");
       parts.push(next.value);
     }
-    if ((await child.exited) !== 0) throw new Error("Docker output archive unavailable");
+    const exitCode = await child.exited;
+    if (exitCode === DOCKER_OUTPUT_DIRECTORY_MISSING && size === 0) return null;
+    if (exitCode !== 0) throw new Error("Docker output archive unavailable");
     return Buffer.concat(parts, size);
   } finally {
     if (child.exitCode === null) child.kill("SIGKILL");

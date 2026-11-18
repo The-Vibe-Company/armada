@@ -81,7 +81,7 @@ export function createDockerMachineExecutor(options: {
   hostId: string;
   cli: DockerMachineCli;
   now: () => number;
-  readArchive?: (argv: readonly string[]) => Promise<Uint8Array<ArrayBuffer>>;
+  readArchive?: (argv: readonly string[]) => Promise<Uint8Array<ArrayBuffer> | null>;
   limits?: () => DockerSandboxLimits;
   /**
    * Host directory of verified digest-named public artifacts, bind-mounted read-only at

@@ -1328,7 +1328,7 @@ test.each([true, false])(
     const read = boat.provider.openRetainedOutputs!({ sandboxId: ID, signal: new AbortController().signal });
     if (complete) {
       const snapshot = await read;
-      if (!snapshot || snapshot === "gone") throw Error("missing retained outputs");
+      if (!snapshot || typeof snapshot === "string") throw Error("missing retained outputs");
       expect(snapshot.entries.map(({ name, size }) => ({ name, size }))).toEqual([
         { name: "late.pdf", size: report.length },
       ]);
@@ -1388,8 +1388,29 @@ test("Boat does not publish an older snapshot without verification for the curre
     },
   });
   const snapshot = await boat.provider.openRetainedOutputs!({ sandboxId: ID, signal: new AbortController().signal });
-  expect(snapshot).toBeNull();
+  expect(snapshot).toBe("gone");
   expect(boat.requests).toHaveLength(1);
+});
+
+test("Boat finishes retained collection if the sandbox disappears after its metadata lookup", async () => {
+  const completedAt = "2026-11-18T10:00:00Z";
+  const boat = fakeBoat(
+    {
+      body: {
+        sandbox: sandbox({
+          state: "archived",
+          snapshotAvailable: true,
+          snapshotCompletedAt: completedAt,
+          stoppedAt: completedAt,
+        }),
+      },
+    },
+    errorBody(404, "not_found", "Sandbox not found"),
+  );
+  expect(await boat.provider.openRetainedOutputs!({ sandboxId: ID, signal: new AbortController().signal })).toBe(
+    "gone",
+  );
+  expect(boat.requests).toHaveLength(2);
 });
 
 test("Boat reports a missing sandbox as a definitive retained-output result", async () => {

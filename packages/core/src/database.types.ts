@@ -4833,6 +4833,7 @@ export type Database = {
           stop_when_work_merged: boolean;
           transition_context: Json | null;
           outputs_retained_generation: number | null;
+          outputs_attempt_count: number;
         };
         Insert: {
           id?: string;
@@ -4909,6 +4910,7 @@ export type Database = {
           stop_when_work_merged?: boolean;
           transition_context?: Json | null;
           outputs_retained_generation?: number | null;
+          outputs_attempt_count?: number;
         };
         Update: {
           id?: string;
@@ -4985,6 +4987,7 @@ export type Database = {
           stop_when_work_merged?: boolean;
           transition_context?: Json | null;
           outputs_retained_generation?: number | null;
+          outputs_attempt_count?: number;
         };
         Relationships: [
           {
