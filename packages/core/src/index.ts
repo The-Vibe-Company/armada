@@ -356,6 +356,7 @@ export {
   ProviderError,
   type ProviderErrorCode,
   type ProviderErrorInit,
+  type ProviderInventoryMachine,
   type ResumeStageObserver,
   SANDBOX_STATES,
   type SandboxInfo,

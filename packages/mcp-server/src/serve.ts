@@ -64,6 +64,7 @@ import { createObservedBoatProvider } from "./observed-boat.ts";
 import { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import { createOutboundWebhooks } from "./outbound-webhooks.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
+import { createProviderReaper, type ProviderReaperSource } from "./provider-reaper.ts";
 import { BUN_REQUEST_BODY_BACKSTOP, ingressRequest } from "./request-body-ceiling.ts";
 import { currentRequestId, observeRequest, REQUEST_ID_HEADER } from "./request-observability.ts";
 import { pruneServerRetention } from "./retention-maintenance.ts";
@@ -112,6 +113,7 @@ export async function startServer(
   env: Record<string, string | undefined>,
   options: {
     routes?: readonly Route[];
+    providerReaperSources?: readonly ProviderReaperSource[];
     log?: (line: string) => void;
     /** Failures the server absorbs (an unavailable auth lookup, a tool that failed inside). Redacted. Defaults to stderr. */
     logError?: (line: string) => void;
@@ -807,7 +809,11 @@ export async function startServer(
           : {}),
       }),
     ],
-    [langfuse, nativePrompts.steerRecovery],
+    [
+      langfuse,
+      nativePrompts.steerRecovery,
+      ...(options.providerReaperSources ?? []).map((source) => createProviderReaper(source, options.log)),
+    ],
   );
   const invitationWorker =
     env.ARMADA_INVITATION_MAIL === "supabase" && control.invitations

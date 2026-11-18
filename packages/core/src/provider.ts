@@ -24,7 +24,20 @@ export interface GitHubRuntimeConfiguration {
   identity?: { name: string; email: string };
 }
 
+export interface ProviderInventoryMachine {
+  /** Immutable physical machine identity within this inventory source. */
+  machineId: string;
+  /** Provider-scoped logical sandbox identity, when available. */
+  sandboxId?: string;
+  /** Physical incarnation, independent of Armada's lifecycle activity counter. */
+  generation?: string;
+  deploymentId: string;
+  createdAt: Date;
+}
+
 export interface Provider {
+  /** Physical inventory belonging to this source's bound deployment and provider account. */
+  listInventory?(signal?: AbortSignal): AsyncIterable<ProviderInventoryMachine>;
   /** Private GitHub-only configuration, never exec argv or a public command receipt. */
   configureGitHub?(request: {
     sandboxId: string;
