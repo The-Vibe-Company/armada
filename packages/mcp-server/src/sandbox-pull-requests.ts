@@ -1,4 +1,4 @@
-import { PUSH_LEDGER_FILE, PUSH_LEDGER_MARKER, type SandboxPullRequest } from "@armada/core";
+import { PUSH_LEDGER_FILE, PUSH_LEDGER_MARKER, pushLedgerInstall, type SandboxPullRequest } from "@armada/core";
 import {
   type ExecRequest,
   type ExecResult,
@@ -65,12 +65,14 @@ const maxPushesPerBranch = 16;
 // A local branch name or matching SHA alone also describes a checkout made by
 // another sandbox. Only pushes qualify for discovery: the launch-installed
 // ledger (which survives a pruned or deleted tracking ref) and reflog records
-// written by a push. Output lists each branch's pushes newest first. A missing
-// ledger hook, or a reflog push the ledger lacks, prints `!untracked`: pushes
-// may have gone unrecorded, so the scan can no longer prove coverage.
+// written by a push. Output lists each branch's pushes newest first. A reflog
+// push the ledger lacks prints `!untracked`: pushes escaped the ledger, so
+// coverage is never provable again. A missing hook (a tool such as husky can
+// move core.hooksPath) prints `!unproven` and is reinstalled when the path is
+// free: that scan cannot prove coverage, and the next one cross-checks the gap.
 export const readPushEvidence = `hook="$(git rev-parse --git-path hooks)/reference-transaction" || exit 1
 ledger="$(git rev-parse --git-common-dir)/${PUSH_LEDGER_FILE}" || exit 1
-if [ ! -x "$hook" ] || [ "$(sed -n 2p "$hook")" != '${PUSH_LEDGER_MARKER}' ]; then echo '!untracked'; fi
+if [ ! -x "$hook" ] || [ "$(sed -n 2p "$hook")" != '${PUSH_LEDGER_MARKER}' ]; then echo '!unproven'; ${pushLedgerInstall}; fi
 entries=$(if [ -f "$ledger" ]; then cat "$ledger"; fi) || exit 1
 logs=$(git reflog show --all --date=unix --format='%gD%x09%gs%x09%H') || exit 1
 { printf '%s\\n' "$logs"; if [ -n "$entries" ]; then printf '%s\\n' "$entries" | awk '{ print "L\\t" $0 }'; fi; } |
@@ -154,6 +156,7 @@ export function createSandboxPullRequests(
     ).rows[0];
     if (!row) return;
     try {
+      let unproven = false;
       const configured = repos.parse(row.repositories);
       const scan = row.pull_request_scan ?? { pushes: {}, discovered: [] };
       const branches = new Map<string, Map<string, string[]>>();
@@ -192,6 +195,10 @@ export function createSandboxPullRequests(
         for (const line of lines) {
           if (line === "!untracked") {
             scan.untracked = true;
+            continue;
+          }
+          if (line === "!unproven") {
+            unproven = true;
             continue;
           }
           const [ref, sha] = line.split("\t");
@@ -363,6 +370,7 @@ export function createSandboxPullRequests(
         row.launch_authorized &&
         complete &&
         !scan.untracked &&
+        !unproven &&
         list.length > 0 &&
         list.every((pr) => pr.state === "merged")
           ? {

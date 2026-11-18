@@ -6,7 +6,7 @@ import { pushLedgerInstall } from "@armada/core";
 import { readPushEvidence } from "../src/sandbox-pull-requests.ts";
 
 // The ledger and its reader are shell run inside the sandbox; only real Git proves them.
-test("push evidence survives a pruned tracking ref and stops proving coverage without the hook", () => {
+test("push evidence survives a pruned tracking ref and proves coverage only through its hook", () => {
   const root = mkdtempSync(join(tmpdir(), "armada-push-ledger-"));
   const env = {
     ...process.env,
@@ -41,8 +41,13 @@ test("push evidence survives a pruned tracking ref and stops proving coverage wi
     sh(work, "git fetch -q --prune origin");
     expect(sh(work, "git for-each-ref --format='%(refname)' refs/remotes/origin/first")).toBe("");
     expect(sh(work, `set -- 0; ${readPushEvidence}`)).toBe(`second\t${second}\nfirst\t${first}\n`);
+    // A tool such as husky replaced the hooks: no proof now, and the hook comes back.
     sh(work, "rm .git/hooks/reference-transaction");
-    expect(sh(work, `set -- 0; ${readPushEvidence}`)).toBe(`!untracked\nsecond\t${second}\nfirst\t${first}\n`);
+    expect(sh(work, `set -- 0; ${readPushEvidence}`)).toBe(`!unproven\nsecond\t${second}\nfirst\t${first}\n`);
+    expect(sh(work, `set -- 0; ${readPushEvidence}`)).toBe(`second\t${second}\nfirst\t${first}\n`);
+    // A push that escaped the ledger makes coverage unprovable.
+    sh(work, "git -c core.hooksPath=/nonexistent push -q origin HEAD:refs/heads/third");
+    expect(sh(work, `set -- 0; ${readPushEvidence}`).split("\n")).toContain("!untracked");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
