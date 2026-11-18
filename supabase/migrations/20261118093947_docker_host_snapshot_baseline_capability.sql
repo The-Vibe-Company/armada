@@ -4,7 +4,11 @@ alter table public.docker_hosts
 
 -- Only jobs admitted by a baseline-aware server require a verified receipt.
 alter table public.docker_snapshots
-  add column required_baseline_version integer check (required_baseline_version > 0);
+  add column required_baseline_version integer check (required_baseline_version > 0),
+  add constraint docker_snapshots_required_baseline_check check (
+    status <> 'ready' or required_baseline_version is null
+    or (baseline_version is not null and baseline_version >= required_baseline_version)
+  );
 
 alter table public.docker_snapshots drop constraint docker_snapshots_failure_reason_check;
 alter table public.docker_snapshots add constraint docker_snapshots_failure_reason_check

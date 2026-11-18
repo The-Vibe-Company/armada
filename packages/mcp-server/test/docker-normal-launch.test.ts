@@ -3137,11 +3137,16 @@ test("a downgrade after snapshot admission cannot publish an unverified snapshot
   const f = await snapshotFixture();
   const input = { org: f.actor.orgId, hostId: f.hostId, requestId: randomUUID(), name: "downgrade", config: f.config };
   await f.snapshots.command(f.caller, "create", input);
+  const image = `sha256:${"d".repeat(64)}`;
+  // An old replica does not read the new requirement before publishing.
+  await expect(
+    database().query("update docker_snapshots set status='ready',image_id=$2 where id=$1", [input.requestId, image]),
+  ).rejects.toThrow("docker_snapshots_required_baseline_check");
   expect((await hosts.poll(f.hostToken, f.installationId, "2.54.0"))?.requestId).toBe(input.requestId);
   await hosts.complete(f.hostToken, f.installationId, {
     requestId: input.requestId,
     outcome: "completed",
-    imageId: `sha256:${"d".repeat(64)}`,
+    imageId: image,
   });
   expect(await f.snapshots.command(f.caller, "get", { org: f.actor.orgId, id: input.requestId })).toMatchObject({
     snapshot: { status: "failed", image: null, failureReason: expect.stringContaining("Update the host daemon") },
