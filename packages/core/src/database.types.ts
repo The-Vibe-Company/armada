@@ -2529,18 +2529,21 @@ export type Database = {
           after_prompt_id: string | null;
           steer_id: string;
           pending_since: string | null;
+          pending_steers: number;
         };
         Insert: {
           sandbox_id: string;
           after_prompt_id?: string | null;
           steer_id: string;
           pending_since?: string | null;
+          pending_steers?: number;
         };
         Update: {
           sandbox_id?: string;
           after_prompt_id?: string | null;
           steer_id?: string;
           pending_since?: string | null;
+          pending_steers?: number;
         };
         Relationships: [
           {

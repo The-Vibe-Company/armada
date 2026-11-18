@@ -173,7 +173,10 @@ export function createSandboxLifecycle(
         const host = isSandboxProvider(provider.id) ? HOST_CAPABILITIES[provider.id] : undefined;
         physicalExit = info.physicalExitConfirmed === true;
         // A steer accepted without a provable run left a durable cursor. Register
-        // each later run as a native receipt so shared settlement exports it.
+        // each later run as a native receipt so shared settlement exports it. Only
+        // a newly registered run answers an unresolved steer: a run seen after the
+        // oldest baseline does not identify the replacement of a later steer, so
+        // the cursor stays pending until every accepted steer has its own run.
         if (native && row.steer_id) {
           try {
             const later = await operation(signal, () =>
@@ -187,14 +190,20 @@ export function createSandboxLifecycle(
                     and s.reconcile_lease_until>now() and s.provider in ('boat','modal') and not s.boat_runtime
                     and s.runtime_transport is distinct from 'dialout'
                     and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id)
-                ), advanced as (
-                  update public.native_steer_cursors c set after_prompt_id=$6,
-                    pending_since=case when $7 then null else c.pending_since end
-                  from target t where c.sandbox_id=t.id and c.steer_id=$4::uuid returning c.sandbox_id
-                ) insert into public.native_webhook_prompts(sandbox_id,prompt_id,provider,provider_sandbox_id,owner_id,org_id)
+                ), cursor_row as (
+                  select c.sandbox_id,c.pending_steers from public.native_steer_cursors c
+                  join target t on t.id=c.sandbox_id where c.steer_id=$4::uuid for update of c
+                ), registered as (
+                  insert into public.native_webhook_prompts(sandbox_id,prompt_id,provider,provider_sandbox_id,owner_id,org_id)
                   select t.id,p.id,t.provider,t.provider_sandbox_id,t.owner_id,t.org_id
-                  from target t join advanced a on a.sandbox_id=t.id cross join unnest($5::text[]) as p(id)
-                  on conflict do nothing`,
+                  from target t join cursor_row r on r.sandbox_id=t.id cross join unnest($5::text[]) as p(id)
+                  on conflict do nothing returning prompt_id
+                ), remaining as (
+                  select r.sandbox_id,greatest(r.pending_steers-(select count(*) from registered),0)::integer as n
+                  from cursor_row r
+                ) update public.native_steer_cursors c set after_prompt_id=$6,pending_steers=m.n,
+                    pending_since=case when $7 and m.n=0 then null else c.pending_since end
+                  from remaining m where c.sandbox_id=m.sandbox_id`,
                 [
                   row.id,
                   token,
