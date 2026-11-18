@@ -48,20 +48,30 @@ sandbox carries no external reference and `sandbox/list` with `externalRef`
 never finds it. Instead:
 
 - `requestId`, a fresh UUID you generate and store before launching, is the
-  sandbox ID and the replay key. The same `requestId` and body return the same
-  sandbox ID and the recorded launch receipt (`promptId` and `conversationId`
-  when the launch sent a prompt) with the sandbox's current metadata. The
-  status is the current one, for example `stopped` or `deleted` after a stop
-  or delete, not the status of the first response. While the first launch is
-  still in progress, a replay resumes or waits for it. The comparison uses the
-  normalized request: spelling out a default such as `ttlSeconds` is not a
-  change. A changed body returns `conflict` (409).
+  sandbox ID and the replay key. The comparison uses the normalized request:
+  spelling out a default such as `ttlSeconds` is not a change. A changed body
+  returns `conflict` (409).
 - `org` is the organization UUID. `hostId` names the Docker host, unless
   `snapshotId` names a Docker snapshot, which selects its own host.
 
-After an uncertain Docker launch, replay with the same `requestId` and body,
-or read `sandbox/status` with that UUID as `id`. Do not launch with a new
-`requestId` until you know that the first launch failed. See [Docker hosts](docker-host-daemon.md) for an example body.
+The launch call returns once Armada admits the launch, normally with
+`"status":"starting"` and no `promptId` or `conversationId`. A worker starts
+the sandbox and sends the prompt afterwards. A replay with the same
+`requestId` and body never launches twice:
+
+- Before the worker publishes the launch receipt, the replay returns the same
+  pending answer: the sandbox ID, `starting` and no prompt receipt.
+- After it publishes the receipt, the replay returns the same sandbox ID and
+  the recorded `promptId` and `conversationId` (when the launch sent a prompt)
+  with the sandbox's current metadata. The status is the current one, for
+  example `stopped` or `deleted` after a stop or delete, not the status of an
+  earlier response.
+
+After an uncertain Docker launch, poll `sandbox/status` with that UUID as
+`id`. To read the prompt receipt, replay the same request until it returns a
+status other than `starting`. `failed` means the launch failed. Do not launch with a new
+`requestId` until you know that the first launch failed. See
+[Docker hosts](docker-host-daemon.md) for an example body.
 The rest of this page covers Boat and Modal launches.
 
 ## Retry contract for an uncertain launch

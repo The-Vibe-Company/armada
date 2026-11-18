@@ -90,13 +90,7 @@ reference, and `sandbox/list` with `externalRef` never returns it.
 
 - `org` is required and must be the organization UUID.
 - `requestId` is required and must be a fresh UUID. It becomes the sandbox ID
-  and is the replay key, so store it before you launch. A replay with the same
-  `requestId` and body returns the same sandbox ID and the recorded launch
-  receipt (`promptId` and `conversationId` when the launch sent a prompt),
-  with the sandbox's current metadata. Its status is the current one (for
-  example `stopping`, `stopped`, `failed` or `deleted`), not the status the
-  first response carried. While the first launch is still in progress, a
-  replay resumes or waits for it rather than starting another. Armada compares the
+  and is the replay key, so store it before you launch. Armada compares the
   normalized request, so supplying a default explicitly (for example the
   default `ttlSeconds`) is not a change. A changed body returns 409 `conflict`.
 - `hostId` (a Docker host UUID) is required, unless you launch from a Docker
@@ -107,9 +101,25 @@ reference, and `sandbox/list` with `externalRef` never returns it.
   `credentialVersion`, `model`, `reasoningEffort`, `prompt`, `ttlSeconds`,
   `repos`, `skills` and `"visibility":"private"`.
 
-After a dropped response, replay with the same `requestId` and body, or call
-`sandbox/status` with that UUID as `id`. Do not launch with a new `requestId`
-until you know that the first launch failed. See
+The launch call returns as soon as Armada admits the launch. A worker then
+starts the sandbox on the host and sends the prompt. The first response
+therefore normally carries `"status":"starting"` and no `promptId` or
+`conversationId`. To follow the launch, call `sandbox/status` with the
+`requestId` as `id`. A replay with the same `requestId` and body never starts
+a second launch:
+
+- While the worker has not published the launch receipt, the replay returns
+  the same pending answer: the sandbox ID, `starting` and no prompt receipt.
+- Once the worker has published the receipt, the replay returns the same
+  sandbox ID and the recorded `promptId` and `conversationId` (when the launch
+  sent a prompt), with the sandbox's current metadata. Its status is the
+  current one (for example `running`, `stopped`, `failed` or `deleted`), not
+  the status of an earlier response.
+
+After a dropped response, poll `sandbox/status` with the `requestId` as `id`.
+To read the prompt receipt, replay the same request until it returns a
+status other than `starting`. A `failed` status means the launch failed. Do not launch with a new
+`requestId` until you know that the first launch failed. See
 [Docker hosts](../docker-host-daemon.md) for an example body.
 
 ## Embed the conversation
@@ -121,11 +131,12 @@ browser. The token expires after five minutes and is bound to one sandbox.
 Renew it through the same backend authorization flow.
 
 Minting needs only read access: the token's issuer must be able to read the
-sandbox's logs. Every viewer call then runs as that issuer. `viewer/status`,
-`viewer/logs` and `viewer/events` work for anyone who can read the sandbox, but
+sandbox's logs, which requires the sandbox owner or an organization admin,
+whatever the sandbox's visibility. Every viewer call then runs as that issuer.
+`viewer/status`, `viewer/logs` and `viewer/events` work for either, but
 `viewer/send` succeeds only when the issuing service token belongs to the
 sandbox owner. Otherwise it returns HTTP 404 `not_found` ("No owned sandbox"),
-even for an organization admin who can read an organization-visible sandbox.
+even for an organization admin.
 For an interactive embed, mint with a service token created by the sandbox
 owner, and check that your product user may send prompts to this sandbox
 before you hand over the token.
@@ -137,9 +148,12 @@ sandbox with its own service token owns that sandbox. If it reuses that token
 to mint for a view-only user, that user can send prompts with
 `viewer/send`. For a read-only embed, do one of the following:
 
-- Mint with a service token created by another organization member who can
-  read the sandbox, for example on an organization-visible sandbox. Sends from
-  that token return 404 `not_found`.
+- Mint with a service token created by an organization admin who does not
+  own the sandbox. Minting requires the owner or an organization admin, even
+  on an organization-visible sandbox, so an ordinary member's token cannot
+  mint. Sends from the admin's token are refused, with 404 `not_found` or,
+  for a sandbox that cannot take a send, 409 `sandbox_terminal` (see the send
+  checks below).
 - Keep the bearer on your backend and expose only proxy routes for
   `viewer/status`, `viewer/logs` and `viewer/events`. Do not give the browser
   the viewer token or a route to `viewer/send`.
@@ -185,10 +199,8 @@ Send rules depend on the sandbox:
 Before the queue or the provider sees a send, Armada checks the sandbox, in
 this order:
 
-1. HTTP 404 `not_found` when the caller does not own the sandbox. Read access
-   is not enough: an organization member or admin who can read an
-   organization-visible sandbox still gets 404 on send. Send with a service
-   token created by the sandbox owner.
+1. HTTP 404 `not_found` when the caller is neither the sandbox owner nor an
+   admin of its organization.
 2. HTTP 409 `credential_binding_required` for a Modal sandbox without a model
    account binding that could otherwise accept the send, including a stopped
    and retained one. A `request_id` does not bypass this check. The sandbox
@@ -203,6 +215,11 @@ this order:
    Docker sandbox stopped any other way refuses sends. Its owner can try
    `POST /api/v1/sandbox/resume` with `id` and a `request_id` UUID, which
    restarts the same allocation when it is still retained.
+4. HTTP 404 `not_found` ("No owned sandbox") when the caller does not own the
+   sandbox. Read access is not enough: an organization admin who passes the
+   first check still gets 404 here. Because this check comes last, the same
+   admin gets 409 `sandbox_terminal` for a sandbox that cannot take a send.
+   Send with a service token created by the sandbox owner.
 
 Sends that pass these checks to a sandbox with a pinned model account, which
 includes every Docker sandbox, then pass through the account turn queue. For runtime and Docker

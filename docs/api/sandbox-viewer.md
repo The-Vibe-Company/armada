@@ -2,14 +2,17 @@
 
 Your backend calls `POST /api/v1/sandbox/viewer-token` with its Armada service
 bearer and JSON `{ "id": "<sandbox UUID>" }`. It must authorize its own product
-user before minting. Minting needs only read access to the sandbox, but
+user before minting. Minting needs only read access to the sandbox's
+logs (the sandbox owner or an organization admin), but
 sending needs ownership (see `viewer/send` below). For an interactive embed,
 mint with a service token created by the sandbox owner, and check that your
 product user may send prompts to this sandbox before you hand over the token.
 The viewer token has no read-only scope: a token minted with the owner's
 service token can send, even in a view-only product screen. For a read-only
-embed, mint with a service token created by a non-owner organization member
-who can read the sandbox, or keep the viewer token on your backend and proxy
+embed, mint with a service token created by an organization admin who does
+not own the sandbox (an ordinary member cannot mint, even for an
+organization-visible sandbox, because minting requires the owner or an
+organization admin), or keep the viewer token on your backend and proxy
 only `viewer/status`, `viewer/logs` and `viewer/events`.
 The response is `{ token, expiresAt }`. When the browser holds a
 token, forward only this opaque token. It expires after five minutes; renew through your
@@ -24,7 +27,9 @@ The viewer bearer works only on these routes:
   still applies (busy turns may refuse a new message). Send runs as the issuing
   service token and requires that token to belong to the sandbox owner. Read
   access is not enough: otherwise send returns HTTP 404 `not_found`, even for
-  an organization admin who can read the sandbox.
+  an organization admin who can read the sandbox. That admin gets HTTP 409
+  `sandbox_terminal` instead when the sandbox cannot take a send (for example
+  after it failed), because the state check runs before the ownership check.
 - `GET /api/v1/viewer/events?cursor=<URL-encoded opaque cursor>`: SSE over fetch
   with `Authorization: Bearer <viewer token>`. Native EventSource cannot set this
   header. Each `page` event contains the ordinary logs response. Save its JSON
