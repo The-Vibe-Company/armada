@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { createSqlAuthStore } from "@armada/auth";
 import {
   type AgentEvent,
+  DOCKER_HOST_SNAPSHOT_BASELINE_HEADER,
   DOCKER_IMAGE_UNAVAILABLE_MESSAGE,
   DOCKER_LAUNCH_FAILURE_MESSAGES,
   type DockerLaunchResult,
@@ -31,6 +32,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { z } from "zod";
 import { dockerLaunchBody, launchedDockerSandbox } from "../../../apps/dashboard/src/lib/docker-launch.ts";
+import { httpApi } from "../../docker-host/src/native.ts";
 import { Armada, ArmadaError, type DockerSendInput, type SendInput } from "../../sdk/src/index.ts";
 import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import { apiFailureCode } from "../src/api-failure.ts";
@@ -39,6 +41,7 @@ import { type ControlOptions, dispatchControlCommand, handleControlRequest } fro
 import { readLogs } from "../src/control-logs.ts";
 import { createSqlData } from "../src/data.ts";
 import { createDockerBootstrapService } from "../src/docker-bootstrap-service.ts";
+import { createDockerHostRoutes } from "../src/docker-host-routes.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
 import { createDockerNormalLaunch } from "../src/docker-normal-launch.ts";
 import { createDockerNormalSend } from "../src/docker-normal-send.ts";
@@ -2485,7 +2488,9 @@ test.each([false, true])(
           .rows[0],
       ).toEqual({ docker_snapshot_id: snapshotId, docker_image: `sha256:${"d".repeat(64)}` });
       expect(f.native).toContainEqual(expect.objectContaining({ op: "workspaceExec" }));
-      await db.query("update docker_snapshots set status='failed',image_id=null where id=$1", [snapshotId]);
+      await db.query("update docker_snapshots set status='failed',image_id=null,baseline_version=null where id=$1", [
+        snapshotId,
+      ]);
     }
     expect(await templates.command(f.caller, "launch", input, runtime)).toEqual(result);
     expect(dispatches).toBe(1);
@@ -2587,6 +2592,7 @@ test("a lost Docker template response retains one reconciling claim and never re
 async function snapshotFixture(enabled = true, options: Parameters<typeof fixture>[0] = {}, defaultBranch = "main") {
   const db = database();
   const f = await fixture(options);
+  await hosts.poll(f.hostToken, f.installationId, "2.55.0");
   for (const [userId, githubId, access] of [
     [f.actor.userId, 123, "offline-snapshot-access"],
     [f.admin.userId, 124, "offline-admin-access"],
@@ -2644,6 +2650,7 @@ async function readyTemplateSnapshot(f: Awaited<ReturnType<typeof snapshotFixtur
     requestId: snapshotId,
     outcome: "completed",
     imageId: `sha256:${"d".repeat(64)}`,
+    baselineVersion: 1,
   });
   return snapshotId;
 }
@@ -2685,7 +2692,9 @@ test.each([
     await db.query("update docker_snapshots set host_id=$2 where id=$1", [snapshotId, other.hostId]);
   }
   if (scenario === "unready")
-    await db.query("update docker_snapshots set status='building',image_id=null where id=$1", [snapshotId]);
+    await db.query("update docker_snapshots set status='building',image_id=null,baseline_version=null where id=$1", [
+      snapshotId,
+    ]);
   if (scenario === "replaced")
     await db.query("update docker_snapshots set installation_id=$2 where id=$1", [snapshotId, randomUUID()]);
   if (scenario !== "removed_before_launch") {
@@ -2695,7 +2704,9 @@ test.each([
     return;
   }
   const created = await templates.command(f.caller, "create", request);
-  await db.query("update docker_snapshots set status='failed',image_id=null where id=$1", [snapshotId]);
+  await db.query("update docker_snapshots set status='failed',image_id=null,baseline_version=null where id=$1", [
+    snapshotId,
+  ]);
   const stores = createSqlData(sql)(f.caller);
   const launchDocker = () => {
     throw Error("unavailable snapshot must never dispatch");
@@ -2729,7 +2740,8 @@ test.each(["private", "org"] as const)(
     const daemonVersion = visibility === "private" ? VERSION : "2.51.0";
     const f = await snapshotFixture(true, {}, branch),
       id = randomUUID();
-    expect(await hosts.poll(f.hostToken, f.installationId, daemonVersion)).toBeNull();
+    // Admission needs a baseline-capable daemon; the org case downgrades before it builds a legacy queued request.
+    expect(await hosts.poll(f.hostToken, f.installationId, VERSION)).toBeNull();
     const creator = visibility === "private" ? f.caller : f.adminCaller;
     const input = {
       org: f.actor.orgId,
@@ -2776,6 +2788,9 @@ test.each(["private", "org"] as const)(
       ).rejects.toMatchObject({ code: "invalid" });
     expect(build.build.token).toBe(visibility === "private" ? "offline-snapshot-access" : "offline-admin-access");
     const image = `sha256:${"d".repeat(64)}`;
+    // A build queued before the baseline requirement keeps its legacy receipt contract.
+    if (visibility === "org")
+      await db.query("update docker_snapshots set required_baseline_version=null where id=$1", [id]);
     const result = {
       requestId: id,
       outcome: "completed",
@@ -2895,6 +2910,7 @@ test("snapshot caller-access port refuses before Docker host admission with the 
     requestId: id,
     outcome: "completed",
     imageId: `sha256:${"f".repeat(64)}`,
+    baselineVersion: 1,
   });
   const { hostId: _, ...body } = f.body;
   const before = await counts(f);
@@ -2929,6 +2945,7 @@ test.each([false, true])(
       requestId: id,
       outcome: "completed",
       imageId: `sha256:${"a".repeat(64)}`,
+      baselineVersion: 1,
     });
     const { hostId: _, ...body } = f.body;
     const service = f.service(sql, true, 10000, officialImage, deferred);
@@ -2978,6 +2995,7 @@ test.each(["timeout", "stop"] as const)(
       requestId: id,
       outcome: "completed",
       imageId: `sha256:${"c".repeat(64)}`,
+      baselineVersion: 1,
     });
     const { hostId: _, ...body } = f.body;
     const startedAt = f.clock.now();
@@ -3012,6 +3030,7 @@ test.each(["auth", "auth-deferred", "network"] as const)(
       requestId: id,
       outcome: "completed",
       imageId: `sha256:${"e".repeat(64)}`,
+      baselineVersion: 1,
     });
     const { hostId: _, ...body } = f.body;
     const request = { ...body, snapshotId: id };
@@ -3144,6 +3163,7 @@ test.each([
       requestId: id,
       outcome: "completed",
       imageId: `sha256:${"e".repeat(64)}`,
+      baselineVersion: 1,
     });
   else expect(await hosts.poll(f.hostToken, f.installationId)).toBeNull();
   expect((await db.query("select status,image_id from public.docker_snapshots where id=$1", [id])).rows[0]).toEqual({
@@ -3207,6 +3227,7 @@ test("launching a saved snapshot on a draining host names the uninstall, not an 
     requestId: id,
     outcome: "completed",
     imageId: `sha256:${"b".repeat(64)}`,
+    baselineVersion: 1,
   });
   await db.query(`update public.docker_hosts set draining_at=now() where id=$1`, [f.hostId]);
   const { hostId: _, ...body } = f.body;
@@ -3235,6 +3256,7 @@ test("a retry of an already-admitted launch from a saved snapshot replays it aft
     requestId: id,
     outcome: "completed",
     imageId: `sha256:${"e".repeat(64)}`,
+    baselineVersion: 1,
   });
   const { hostId: _, ...body } = f.body;
   const launched = await f.service().launch(f.caller, { ...body, snapshotId: id });
@@ -3261,6 +3283,7 @@ test("rebuilding a snapshot on a draining host names the uninstall, not a missin
     requestId: id,
     outcome: "completed",
     imageId: `sha256:${"c".repeat(64)}`,
+    baselineVersion: 1,
   });
   await db.query(`update public.docker_hosts set draining_at=now() where id=$1`, [f.hostId]);
   await expect(
@@ -3314,6 +3337,114 @@ test("old or unreported Docker daemons get an actionable resume refusal before a
   }
 });
 
+test("snapshot admission distinguishes daemon builds that report the same release", async () => {
+  const f = await snapshotFixture();
+  const route = createDockerHostRoutes(hosts, async () => ({ ok: true, caller: f.caller }), {
+    snapshots: f.snapshots,
+  });
+  const poll = (capable: boolean) =>
+    route(
+      new Request("https://fixture.example/api/docker-host/poll", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${f.hostToken}`,
+          ...(capable ? { [DOCKER_HOST_SNAPSHOT_BASELINE_HEADER]: "1" } : {}),
+        },
+        body: JSON.stringify({ installationId: f.installationId, version: "2.54.0" }),
+      }),
+    );
+  const requestId = randomUUID();
+  const create = () =>
+    route(
+      new Request("https://fixture.example/api/v1/docker/snapshots/create", {
+        method: "POST",
+        body: JSON.stringify({
+          org: f.actor.orgId,
+          hostId: f.hostId,
+          requestId,
+          name: "baseline-required",
+          config: f.config,
+        }),
+      }),
+    );
+  expect(await (await poll(false))?.json()).toMatchObject({ job: null });
+  const response = await create();
+  expect(response?.status).toBe(409);
+  expect(await response?.json()).toMatchObject({
+    error: {
+      code: "host_update_required",
+      message: expect.stringContaining("verify the developer baseline"),
+    },
+  });
+  expect(await (await poll(true))?.json()).toMatchObject({ job: null });
+  expect((await create())?.status).toBe(200);
+});
+
+test("a verified receipt survives retry from an older replica to the current route", async () => {
+  const f = await snapshotFixture();
+  const requestId = randomUUID();
+  await f.snapshots.command(f.caller, "create", {
+    org: f.actor.orgId,
+    hostId: f.hostId,
+    requestId,
+    name: "mixed-replicas",
+    config: f.config,
+  });
+  const job = await hosts.poll(f.hostToken, f.installationId);
+  if (job?.operation !== "buildSnapshot") throw Error("Missing build job");
+  const route = createDockerHostRoutes(hosts, async () => ({ ok: false }));
+  let firstRequest = true;
+  const request = (async (url, init) => {
+    if (firstRequest) {
+      firstRequest = false;
+      expect(JSON.parse(String(init?.body)).baselineVersion).toBe(1);
+      return new Response(null, { status: 400 });
+    }
+    return (await route(new Request(String(url), init))) ?? new Response(null, { status: 404 });
+  }) as typeof fetch;
+  await httpApi(request).result(
+    {
+      server: "https://fixture.example",
+      hostId: f.hostId,
+      installationId: f.installationId,
+      hostToken: f.hostToken,
+      receipts: [],
+    },
+    {
+      requestId,
+      request: job.request,
+      operation: "buildSnapshot",
+      inputHash: "fixture",
+      outcome: "completed",
+      imageId: `sha256:${"a".repeat(64)}`,
+      baselineVersion: 1,
+    },
+  );
+  expect(await f.snapshots.command(f.caller, "get", { org: f.actor.orgId, id: requestId })).toMatchObject({
+    snapshot: { status: "ready", baselineVersion: 1 },
+  });
+});
+
+test("a downgrade after snapshot admission cannot publish an unverified snapshot", async () => {
+  const f = await snapshotFixture();
+  const input = { org: f.actor.orgId, hostId: f.hostId, requestId: randomUUID(), name: "downgrade", config: f.config };
+  await f.snapshots.command(f.caller, "create", input);
+  const image = `sha256:${"d".repeat(64)}`;
+  // An old replica does not read the new requirement before publishing.
+  await expect(
+    database().query("update docker_snapshots set status='ready',image_id=$2 where id=$1", [input.requestId, image]),
+  ).rejects.toThrow("docker_snapshots_required_baseline_check");
+  expect((await hosts.poll(f.hostToken, f.installationId, "2.54.0"))?.requestId).toBe(input.requestId);
+  await hosts.complete(f.hostToken, f.installationId, {
+    requestId: input.requestId,
+    outcome: "completed",
+    imageId: image,
+  });
+  expect(await f.snapshots.command(f.caller, "get", { org: f.actor.orgId, id: input.requestId })).toMatchObject({
+    snapshot: { status: "failed", image: null, failureReason: expect.stringContaining("Update the host daemon") },
+  });
+});
+
 test.each(["private", "org"] as const)(
   "snapshot rebuild %s publishes a new immutable build and retains its source and retry receipt",
   async (visibility) => {
@@ -3330,12 +3461,13 @@ test.each(["private", "org"] as const)(
       visibility,
       config: f.config,
     });
-    const job = await hosts.poll(f.hostToken, f.installationId);
+    const job = await hosts.poll(f.hostToken, f.installationId, "2.55.0");
     if (job?.operation !== "buildSnapshot") throw Error("Missing source build");
     await hosts.complete(f.hostToken, f.installationId, {
       requestId: id,
       outcome: "completed",
       imageId: `sha256:${"d".repeat(64)}`,
+      baselineVersion: 1,
     });
     const source = await f.snapshots.command(creator, "get", { org: f.actor.orgId, id });
     const input = { org: f.actor.orgId, id, requestId };
@@ -3522,7 +3654,12 @@ test.each(["poll", "complete"] as const)(
         ),
     };
     const store = createDockerHostStore(failing, key);
-    const result = { requestId: id, outcome: "completed" as const, imageId: `sha256:${"a".repeat(64)}` };
+    const result = {
+      requestId: id,
+      outcome: "completed" as const,
+      imageId: `sha256:${"a".repeat(64)}`,
+      baselineVersion: 1,
+    };
     await expect(
       operation === "poll"
         ? store.poll(f.hostToken, f.installationId)

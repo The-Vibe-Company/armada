@@ -76,6 +76,7 @@ function parseHost(value: unknown): DockerHost | null {
       value.diskFreeBytes !== null &&
       (!Number.isSafeInteger(value.diskFreeBytes) || Number(value.diskFreeBytes) < 0)) ||
     (value.canManageLimits !== undefined && typeof value.canManageLimits !== "boolean") ||
+    (value.snapshotBuildSupported !== undefined && typeof value.snapshotBuildSupported !== "boolean") ||
     (value.limitsSupported !== undefined && typeof value.limitsSupported !== "boolean") ||
     (value.running !== undefined && (!Number.isSafeInteger(value.running) || Number(value.running) < 0)) ||
     (value.resources !== undefined && value.resources !== null && !validDockerHostResources(value.resources))
@@ -99,6 +100,9 @@ function parseHost(value: unknown): DockerHost | null {
       : { stoppedSandboxBytes: value.stoppedSandboxBytes as number | null }),
     ...(value.diskFreeBytes === undefined ? {} : { diskFreeBytes: value.diskFreeBytes as number | null }),
     ...(value.canManageLimits === undefined ? {} : { canManageLimits: value.canManageLimits as boolean }),
+    ...(typeof value.snapshotBuildSupported === "boolean"
+      ? { snapshotBuildSupported: value.snapshotBuildSupported }
+      : {}),
     ...(value.limitsSupported === undefined ? {} : { limitsSupported: value.limitsSupported as boolean }),
     ...(value.running === undefined ? {} : { running: value.running as number }),
     ...(value.resources === undefined
@@ -119,6 +123,8 @@ export function parseDockerHostList(value: unknown): DockerHostList | null {
   return {
     placement: value.placement,
     ...(typeof value.serverVersion === "string" ? { serverVersion: value.serverVersion } : {}),
+    ...(typeof value.targetVersion === "string" ? { targetVersion: value.targetVersion } : {}),
+    ...(typeof value.minimumVersion === "string" ? { minimumVersion: value.minimumVersion } : {}),
     hosts: list,
     skipped: value.hosts.length - list.length,
   };

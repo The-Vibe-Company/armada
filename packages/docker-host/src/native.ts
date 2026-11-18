@@ -2,9 +2,10 @@ import { spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { DOCKER_HOST_UPDATE_FAILURE_HEADER } from "../../core/src/docker-host-upgrade.ts";
+import { DOCKER_HOST_SNAPSHOT_BASELINE_HEADER, DOCKER_HOST_UPDATE_FAILURE_HEADER } from "../../core/src/docker-host-upgrade.ts";
 import type { DockerMachineCli } from "../../core/src/docker-machine.ts";
 import { type DockerHostResources, dockerHostResources } from "../../core/src/docker-resources.ts";
+import { SNAPSHOT_BASELINE_VERSION } from "../../core/src/snapshot-baseline.ts";
 import { VERSION } from "../../core/src/version.ts";
 import { type Api, compactReceipts, type State, type Store, serverOrigin, validId, validToken } from "./daemon.ts";
 
@@ -168,6 +169,7 @@ export function httpApi(
     token: string,
     body: unknown,
     timeoutMs = 8_000,
+    snapshotBaseline = endpoint === "poll" ? SNAPSHOT_BASELINE_VERSION : undefined,
   ): Promise<unknown> {
     const failure = endpoint === "poll" ? await update?.failure() : undefined;
     const response = await request(`${serverOrigin(server)}/api/docker-host/${endpoint}`, {
@@ -178,6 +180,7 @@ export function httpApi(
         authorization: `Bearer ${token}`,
         "content-type": "application/json",
         ...(failure ? { [DOCKER_HOST_UPDATE_FAILURE_HEADER]: failure } : {}),
+        ...(snapshotBaseline === undefined ? {} : { [DOCKER_HOST_SNAPSHOT_BASELINE_HEADER]: String(snapshotBaseline) }),
       },
       body: JSON.stringify(body),
     });
@@ -423,10 +426,10 @@ export function httpApi(
           ...(missingRefIndex === undefined ? {} : { missingRefIndex }),
         });
       } catch (error) {
-        // An older server may refuse optional receipt metadata (400): the plain outcome is still the machine
-        // fact. Any other failure is retried with the reason on the next tick.
+        // Older replicas may reject optional body fields. Carry verified baseline metadata in a header
+        // so a retry routed to a newer replica still receives the complete receipt.
         if (!(error instanceof HostRequestDenied) || error.status !== 400) throw error;
-        await post(state.server, "results", state.hostToken, body);
+        await post(state.server, "results", state.hostToken, body, undefined, baselineVersion);
       }
     },
   };

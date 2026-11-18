@@ -704,6 +704,73 @@ stop/resume and a third same-conversation recall, then confirmed stop/delete. Ke
 real-host run.
 
 
+## Daemon update design (#2647)
+
+The daemon reports its installed version on each poll. The server reports
+the target release and the minimum supported daemon version on that same
+connection. Target follows the server release. The minimum changes when
+server functionality requires a newer daemon. Old daemons can still poll
+and run existing workloads. New snapshot builds require a daemon that
+verifies and reports the developer baseline.
+
+The self-update follow-up will use these states: idle, draining, staged,
+health check, and applied or rolled back. The daemon will stop claiming
+work, wait for active builds and launches to finish and report their
+results, then restart and reconcile. Running containers and their volumes
+stay in Docker. A daemon restart only replaces the daemon process.
+
+A Linux systemd user service will supervise the update independently of
+the candidate daemon so a binary that fails before its first poll can
+still be rolled back. The previous executable will be kept next to the
+managed binary, with the candidate version and outcome recorded in the
+instance's private state. The updater will verify a fresh authenticated
+poll from the candidate before discarding the previous binary, restore
+it atomically on failure, and persist the failed target so a restart
+cannot retry it in a loop. Each named instance owns its own files and
+lock. The design uses the existing unprivileged account and Docker
+access. Managed installation currently supports Linux systemd user
+services. macOS launchd is outside this rollout.
+
+The intended update channel is the same HTTPS release manifest and
+SHA-256-addressed Linux artifact used by the installer. The poll supplies
+version numbers. The updater will use fixed installer endpoints, require
+an exact manifest version and verify the artifact before execution.
+The updater can execute release code as the Docker service account.
+Detached signing and staged rollout are follow-ups.
+
+This change delivers version reporting and the snapshot compatibility
+check. Continue using the managed installer to update manually.
+Automatic updates, rollback, and per-host policy will ship separately.
+
+On the owner's Linux host after a versioned release:
+
+1. Before upgrading the daemon, run `armada host list --json` against
+   that release. Check that the host's last reported `version` matches
+   its installed binary and that `targetVersion` matches the server
+   release. The host page should flag an installed version below
+   `minimumVersion`. With a daemon at 2.54.0 and authorized GitHub
+   access, try a new snapshot build and confirm HTTP 409
+   `host_update_required` with no build queued.
+2. Let any active build or launch finish. Follow the managed installer
+   instructions for that same server and account. Verify the systemd
+   user service reconnects, the same host ID reports the target version,
+   and the upgrade warning clears. Check that an existing sandbox
+   is still running with the same container and workspace.
+3. Build or rebuild a snapshot and confirm it reaches `ready`, with
+   `baselineVersion: 1` and `baselineOutdated: false` in snapshot get.
+   An existing snapshot created by an older daemon can still be used.
+
+Baseline verification first shipped in 2.55.0, the minimum version. So
+that a source build still stamped with an older version is judged by what
+it can do, the daemon's authenticated poll also advertises the baseline
+it can verify. The
+host list reports `snapshotBuildSupported`. Successful new snapshot
+builds must return a verification receipt matching the baseline
+required when the build was queued. If the daemon changes after
+admission and returns no receipt, the build fails with upgrade guidance.
+Already queued legacy builds can still finish and existing snapshots
+keep their launch behavior.
+
 ## Managed owner installation (#1453)
 
 The server image publishes Linux x64/arm64 host executables by SHA-256 alongside

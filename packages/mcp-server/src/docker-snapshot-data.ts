@@ -35,6 +35,7 @@ export type SnapshotRow = {
   base_image: string;
   built_on_version: string | null;
   baseline_version: number | null;
+  required_baseline_version: number | null;
   baseline_failure_tool: string | null;
   missing_ref_index: number | null;
   build_expires_at: Date | string;
