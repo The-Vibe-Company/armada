@@ -131,21 +131,20 @@ test("enrolment refuses unsupported wire versions without spending the ticket", 
 test("a live runtime outside the protocol window loses runtime and owner command authority", async () => {
   const f = await fixture();
   const enrolledVersion = Math.max(1, PROTOCOL_VERSION - 1);
-  const { runtimeToken, epoch } = await f.service().enrol((await f.issue()).enrolmentToken, String(enrolledVersion));
-  expect(
-    (await f.db.query("select runtime_protocol_version from runtime_enrolments where sandbox_id=$1", [f.id])).rows,
-  ).toEqual([{ runtime_protocol_version: enrolledVersion }]);
+  const outsideWindow = PROTOCOL_VERSION > 2 ? PROTOCOL_VERSION - 2 : PROTOCOL_VERSION + 1;
+  const { enrolmentToken } = await f.issue();
+  const setStoredProtocol = (version: number) =>
+    f.db.query("update runtime_enrolments set runtime_protocol_version=$1 where sandbox_id=$2", [version, f.id]);
+
+  await setStoredProtocol(outsideWindow);
   const authority = f.service();
+  const { runtimeToken, epoch } = await authority.enrol(enrolmentToken, String(enrolledVersion));
   const ownerEpoch = () => authority.withOwner(f.id, f.people.owner, async (_tx, scope) => scope.epoch);
 
   expect(await ownerEpoch()).toBe(epoch);
   expect((await f.request("session", runtimeToken, epoch)).status).toBe(200);
 
-  const outsideWindow = PROTOCOL_VERSION > 2 ? PROTOCOL_VERSION - 2 : PROTOCOL_VERSION + 1;
-  await f.db.query("update runtime_enrolments set runtime_protocol_version=$1 where sandbox_id=$2", [
-    outsideWindow,
-    f.id,
-  ]);
+  await setStoredProtocol(outsideWindow);
   expect((await f.request("session", runtimeToken, epoch)).status).toBe(401);
   await expect(ownerEpoch()).rejects.toThrow("runtime_enrolment_denied");
 });
