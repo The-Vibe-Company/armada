@@ -28,6 +28,7 @@ import { scopedOrg } from "./control-caller.ts";
 import { isLaunchConnectionList, optional, required, requiredNumber, UUID } from "./control-input.ts";
 import type { ScopedData } from "./data.ts";
 import { providerForGolden } from "./golden-control.ts";
+import { prepareGoldenLaunchAccount } from "./launch-account-admission.ts";
 import { launchCredentials } from "./launch-credentials.ts";
 import { parseSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 
@@ -103,55 +104,71 @@ export async function launchRoute(
     throw new VaultError("unavailable", "Sandbox Armada access is unavailable for this provider/harness.");
   if (runtime && golden.provider !== (modalRuntime ? "modal" : "boat"))
     throw new VaultError("invalid", "Runtime v1 requires a Boat golden.");
-  const provider = modalRuntime
-    ? await options.modalRuntimeHostFor!({ ...golden, runtimeTransport: "dialout" }, caller)
-    : runtimeHost
-      ? runtimeHost(
-          (
-            await resolveBoatKey(options.store, options.encryptionKey, {
-              userId: caller.userId,
-              orgId: actor.orgId,
-              visibility: golden.visibility,
-            })
-          ).key,
-        )
-      : await providerForGolden(
-          options,
-          caller,
-          modalRuntime
-            ? { ...golden, runtimeTransport: "dialout" }
-            : armadaAccess
-              ? { ...golden, visibility: "private", sourceGoldenVisibility: golden.visibility }
-              : golden,
-        );
+  const credentialId = body.credentialId;
+  const launchOptions: import("@armada/core").LaunchOptions = {
+    ...options.launch,
+    ...(runtimePolicy ? (modalRuntime ? { runtime: runtimePolicy } : { boatRuntime: runtimePolicy }) : {}),
+  };
+  const credentials = launchCredentials(
+    options.store,
+    options.encryptionKey,
+    runtime || !options.github
+      ? undefined
+      : {
+          store: options.store,
+          app: options.github.app,
+          ...(options.github?.fetch ? { fetch: options.github.fetch } : {}),
+          ...(options.github?.now ? { now: options.github.now } : {}),
+        },
+    options.modelAuth,
+    runtime && options.github ? { ...options.github, store: options.store } : undefined,
+  );
+  const prepare = async () => {
+    const account =
+      credentialId === undefined || typeof credentialId === "string"
+        ? await prepareGoldenLaunchAccount(actor, golden, { harness, credentialId }, credentials, launchOptions)
+        : { credentials, options: launchOptions };
+    const provider = modalRuntime
+      ? await options.modalRuntimeHostFor!({ ...golden, runtimeTransport: "dialout" }, caller)
+      : runtimeHost
+        ? runtimeHost(
+            (
+              await resolveBoatKey(options.store, options.encryptionKey, {
+                userId: caller.userId,
+                orgId: actor.orgId,
+                visibility: golden.visibility,
+              })
+            ).key,
+          )
+        : await providerForGolden(
+            options,
+            caller,
+            modalRuntime
+              ? { ...golden, runtimeTransport: "dialout" }
+              : armadaAccess
+                ? { ...golden, visibility: "private", sourceGoldenVisibility: golden.visibility }
+                : golden,
+          );
+    return { ...account, provider };
+  };
+  let prepared: ReturnType<typeof prepare> | undefined;
+  const prepareOnce = () => (prepared ??= prepare());
   const connectionLifecycle = runtime ? options.runtimeMcp?.connections : options.connections;
   // The receipt id becomes the sandbox id, so a retried key answers with the same sandbox.
   const dispatch = async (receiptId?: string) => {
+    const account = await prepareOnce();
     const result = await launchSandbox(
-      provider,
+      account.provider,
       {
         ...(options.skillDefaults ? { skillDefaults: options.skillDefaults } : {}),
         goldens: data.goldens,
         sandboxes: data.sandboxes,
         ...(connectionLifecycle ? { connections: connectionLifecycle } : {}),
-        credentials: launchCredentials(
-          options.store,
-          options.encryptionKey,
-          runtime || !options.github
-            ? undefined
-            : {
-                store: options.store,
-                app: options.github.app,
-                ...(options.github?.fetch ? { fetch: options.github.fetch } : {}),
-                ...(options.github?.now ? { now: options.github.now } : {}),
-              },
-          options.modelAuth,
-          runtime && options.github ? { ...options.github, store: options.store } : undefined,
-        ),
+        credentials: account.credentials,
       },
       actor,
       {
-        ...(body.credentialId !== undefined ? { credentialId: required(body, "credentialId") } : {}),
+        ...(credentialId === undefined ? {} : { credentialId: required(body, "credentialId") }),
         golden: name,
         ...(body.size === undefined ? {} : { size: parseMachineSize(body.size) }),
         provider: golden.provider,
@@ -169,9 +186,8 @@ export async function launchRoute(
         ...(body.externalRef === undefined ? {} : { externalRef: body.externalRef as string }),
       },
       {
-        ...options.launch,
+        ...account.options,
         ...(receiptId ? { newId: () => receiptId } : {}),
-        ...(runtimePolicy ? (modalRuntime ? { runtime: runtimePolicy } : { boatRuntime: runtimePolicy }) : {}),
         ...(armadaAccess
           ? {
               privateVisibility: true as const,
@@ -192,10 +208,16 @@ export async function launchRoute(
   };
   if (idempotencyKey === undefined) return dispatch();
   const target = armadaAccess ? { ...golden, visibility: "private" as const } : golden;
+  const { provider } = await prepareOnce();
   const management = await provider.managementIdentity?.();
   const backendId = (await provider.backendIdentity?.())?.id;
   if (!management || !backendId)
     throw new VaultError("unavailable", "This launch path cannot pin allocation authority; idempotencyKey is refused.");
+  const authority = {
+    target: { provider: target.provider, orgId: target.orgId, visibility: target.visibility, modal: target.modal },
+    management,
+    backendId,
+  };
   const { idempotencyKey: _key, ...request } = body;
   // Same key and same request replays the recorded answer; a different request under the key is refused.
   return options.ordinaryLaunchReceipts!.run(
@@ -208,11 +230,7 @@ export async function launchRoute(
       goldenId: golden.id,
     },
     dispatch,
-    {
-      target: { provider: target.provider, orgId: target.orgId, visibility: target.visibility, modal: target.modal },
-      management,
-      backendId,
-    },
+    authority,
   );
 }
 

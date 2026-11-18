@@ -4176,6 +4176,7 @@ export type Database = {
           result_enc: string | null;
           correlation_id: string | null;
           created_at: string | null;
+          accepted_prompt_id: string | null;
         };
         Insert: {
           sandbox_id: string;
@@ -4186,6 +4187,7 @@ export type Database = {
           result_enc?: string | null;
           correlation_id?: string | null;
           created_at?: string | null;
+          accepted_prompt_id?: string | null;
         };
         Update: {
           sandbox_id?: string;
@@ -4196,6 +4198,7 @@ export type Database = {
           result_enc?: string | null;
           correlation_id?: string | null;
           created_at?: string | null;
+          accepted_prompt_id?: string | null;
         };
         Relationships: [
           {

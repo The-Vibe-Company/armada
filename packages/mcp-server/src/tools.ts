@@ -19,7 +19,6 @@ import {
   type GoldenRecord,
   goldenForLaunch,
   HARNESSES,
-  type LaunchCredentialResolver,
   LaunchError,
   type LaunchOptions,
   type LaunchStores,
@@ -52,6 +51,7 @@ import { INTERNAL_FAILURE_MESSAGE } from "./control-response.ts";
 import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
 import { DataError, type SandboxView, type ScopedData } from "./data.ts";
 import { MAX_LOG_PAGES, readEventPages, validateLogPagination } from "./event-pagination.ts";
+import { type GoldenLaunchCredentials, prepareGoldenLaunchAccount } from "./launch-account-admission.ts";
 import { publicLogEvents } from "./model-usage.ts";
 import type { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import { recordOperatorFailure } from "./request-observability.ts";
@@ -85,7 +85,7 @@ export interface ToolContext {
   caller: Caller;
   data: ScopedData;
   /** The launch's credentials: the caller's own for the harness, else the golden's org's. Decrypted in this process. */
-  launchCredentials: LaunchCredentialResolver;
+  launchCredentials: GoldenLaunchCredentials;
   /** The caller's own and one org's model credentials, decrypted, for redacting command output. */
   exposedSecrets(orgId: string): Promise<string[]>;
   /** A provider paying with the boat.dev key of a golden of this org and visibility. The key never leaves the server. */
@@ -878,15 +878,27 @@ export function createArmadaServer(context: ToolContext, version: string, option
       const actor = await launchActor(args.golden, args.org);
       const chosen: GoldenRecord = await goldenForLaunch(data.goldens, actor, args.golden, args.provider);
       resolveRepositoryDir(chosen, args.repo);
-      const provider = await context.provider(chosen);
+      const prepare = async () => {
+        const account = await prepareGoldenLaunchAccount(
+          actor,
+          chosen,
+          args,
+          context.launchCredentials,
+          context.launch ?? {},
+        );
+        return { ...account, provider: await context.provider(chosen) };
+      };
+      let prepared: ReturnType<typeof prepare> | undefined;
+      const prepareOnce = () => (prepared ??= prepare());
       const dispatch = async (receiptId?: string) => {
+        const { provider, credentials, options } = await prepareOnce();
         const result = await launchSandbox(
           provider,
           {
             ...(context.skillDefaults ? { skillDefaults: context.skillDefaults } : {}),
             goldens: data.goldens,
             sandboxes: data.sandboxes,
-            credentials: context.launchCredentials,
+            credentials,
             ...(context.connections ? { connections: context.connections } : {}),
           },
           actor,
@@ -909,7 +921,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
             ...(args.stopWhenWorkMerged === undefined ? {} : { stopWhenWorkMerged: args.stopWhenWorkMerged }),
             ...(args.externalRef === undefined ? {} : { externalRef: args.externalRef }),
           },
-          { ...context.launch, ...(receiptId ? { newId: () => receiptId } : {}) },
+          { ...options, ...(receiptId ? { newId: () => receiptId } : {}) },
         );
         return {
           ...launchResponse(result),
@@ -921,29 +933,31 @@ export function createArmadaServer(context: ToolContext, version: string, option
         if (args.idempotencyKey) throw new ToolError("invalid", "Durable launch receipts are not configured.");
         return dispatch();
       }
+      const { provider } = await prepareOnce();
+      const authority = {
+        target: {
+          provider: chosen.provider,
+          orgId: chosen.orgId,
+          visibility: chosen.visibility,
+          modal: chosen.modal,
+        },
+        management:
+          (await provider.managementIdentity?.()) ??
+          (() => {
+            throw new ToolError("invalid", "Provider cannot pin management authority.");
+          })(),
+        backendId:
+          (await provider.backendIdentity?.())?.id ??
+          (() => {
+            throw new ToolError("invalid", "Provider cannot pin allocation authority.");
+          })(),
+      };
       return context.ordinaryLaunchReceipts.run(
         actor,
         args.idempotencyKey ?? crypto.randomUUID(),
         { ...args, goldenId: chosen.id },
         dispatch,
-        {
-          target: {
-            provider: chosen.provider,
-            orgId: chosen.orgId,
-            visibility: chosen.visibility,
-            modal: chosen.modal,
-          },
-          management:
-            (await provider.managementIdentity?.()) ??
-            (() => {
-              throw new ToolError("invalid", "Provider cannot pin management authority.");
-            })(),
-          backendId:
-            (await provider.backendIdentity?.())?.id ??
-            (() => {
-              throw new ToolError("invalid", "Provider cannot pin allocation authority.");
-            })(),
-        },
+        authority,
       );
     },
   );
