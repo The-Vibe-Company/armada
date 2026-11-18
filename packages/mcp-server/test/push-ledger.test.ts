@@ -194,3 +194,20 @@ test("local work no confirmed push carries withholds coverage, even after a push
   ).trim();
   expect(read()).toBe(`^\t${away}\n^\t${left}\ntopic\t${topic}\n`);
 });
+
+test("a relative hooks path still resolves in each linked worktree once the ledger is installed", () => {
+  const root = tempRoot();
+  sh(root, "git init -q --bare -b main remote.git && git clone -q remote.git work 2>/dev/null");
+  const work = join(root, "work");
+  // The primary checkout's pre-commit allows; the linked worktree's branch refuses.
+  sh(
+    work,
+    `mkdir .githooks && printf '#!/bin/sh\\nexit 0\\n' >.githooks/pre-commit && chmod +x .githooks/pre-commit && git config --local core.hooksPath .githooks && git add .githooks && git commit -q -m allow && git worktree add -q -b strict ../linked && printf '#!/bin/sh\\nexit 1\\n' >../linked/.githooks/pre-commit && git -C ../linked commit -q --no-verify -am refuse`,
+  );
+  const linked = join(root, "linked");
+  expect(() => sh(linked, "git commit -q --allow-empty -m before")).toThrow();
+  sh(work, pushLedgerInstall);
+  expect(sh(work, "git config --local core.hooksPath")).toContain("armada-hooks");
+  expect(() => sh(linked, "git commit -q --allow-empty -m after")).toThrow();
+  sh(work, "git commit -q --allow-empty -m primary");
+});
