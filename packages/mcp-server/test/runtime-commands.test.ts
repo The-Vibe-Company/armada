@@ -1133,3 +1133,51 @@ test("a retried runtime command answered by its stored reply records no second p
   expect(retried.reply).toEqual(first.reply);
   expect(retried.records).toEqual([]);
 });
+
+test("a command answered before its first result read still records the fenced admission, unlike a later replay", async () => {
+  const { observeRequest } = await import("../src/request-observability.ts");
+  const f = await fixture();
+  const active = await f.enrol();
+  const command = f.command("fast-reply");
+  const runtime = f.bridge();
+  const observed = async (work: () => Promise<unknown>) => {
+    const lines: Record<string, unknown>[] = [];
+    let reply: unknown;
+    const response = await observeRequest(
+      async () => {
+        reply = await work();
+        return new Response(null, { status: 204 });
+      },
+      (line) => lines.push(JSON.parse(line)),
+    );
+    return {
+      reply,
+      requestId: response?.headers.get("x-request-id"),
+      records: lines.filter((line) => line.event === "provider_call"),
+    };
+  };
+  // Callers admit under their own fenced transaction, then wait outside it. The runner answers in between.
+  const first = await observed(async () => {
+    const { fresh } = await runtime.enqueue(f.people.owner, command);
+    const { command: delivered } = await runtime.next(active.runtimeToken, active.epoch);
+    expect(delivered?.requestId).toBe(command.requestId);
+    await runtime.complete(active.runtimeToken, active.epoch, {
+      epoch: active.epoch,
+      requestId: command.requestId,
+      status: 200,
+      body: { version: 1, requestId: command.requestId, result: {} },
+    });
+    return runtime.call(f.people.owner, command, { admitted: fresh });
+  });
+  expect(first.records).toEqual([
+    expect.objectContaining({ requestId: first.requestId, operation: `runtime.${command.op}`, outcome: "ok" }),
+  ]);
+  // A later request with the same identity is answered from the database: no provider record.
+  const replay = await observed(async () => {
+    const { fresh } = await runtime.enqueue(f.people.owner, command);
+    expect(fresh).toBe(false);
+    return runtime.call(f.people.owner, command, { admitted: fresh });
+  });
+  expect(replay.reply).toEqual(first.reply);
+  expect(replay.records).toEqual([]);
+});

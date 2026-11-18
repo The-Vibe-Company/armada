@@ -178,10 +178,12 @@ export function createRuntimeMcp(options: {
     signal: AbortSignal | undefined,
     failure: string,
     accept: (reply: Awaited<ReturnType<typeof options.commands.call>>) => boolean,
+    admitted?: boolean,
   ) => {
     const reply = await options.commands.call(s.ownerId, request, {
       expectedEpoch,
       accept,
+      ...(admitted ? { admitted } : {}),
       ...(signal ? { signal } : {}),
     });
     if (
@@ -285,8 +287,12 @@ export function createRuntimeMcp(options: {
       // grants can never queue an older snapshot behind a newer configuration.
       const local: Sql = { query: tx.query.bind(tx), transaction: async (work) => work(local) };
       signal?.throwIfAborted();
-      await createRuntimeCommands(createRuntimeEnrolments(local, key), key).enqueue(s.ownerId, wire, live.epoch);
-      return { ...p, epoch: live.epoch, wire };
+      const { fresh } = await createRuntimeCommands(createRuntimeEnrolments(local, key), key).enqueue(
+        s.ownerId,
+        wire,
+        live.epoch,
+      );
+      return { ...p, epoch: live.epoch, wire, fresh };
     });
     await call(
       s,
@@ -296,6 +302,7 @@ export function createRuntimeMcp(options: {
       "Runtime MCP configuration was not acknowledged.",
       (acknowledged) =>
         (acknowledged.body.result as { revision?: unknown } | undefined)?.revision === prepared.configuration.revision,
+      prepared.fresh,
     );
     await authority.withOwner(s.id, s.ownerId, async (tx, live) => {
       const p = await plan(tx, caller, s, live.epoch, initial.selection);

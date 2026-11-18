@@ -130,7 +130,8 @@ export function createRuntimeCommands(
         );
         noteAdmission();
       }
-      return { epoch: scope.epoch, requestId: request.requestId, provider: scope.provider };
+      // `fresh`: this call inserted the command (see `call`'s `admitted`).
+      return { epoch: scope.epoch, requestId: request.requestId, provider: scope.provider, fresh: !previous };
     });
   }
   /** Keep admission fenced through synchronous socket enqueue; never await network I/O here. */
@@ -253,6 +254,9 @@ export function createRuntimeCommands(
    * reply. Callers keep their public fallbacks.
    * Docker launch, send, resume and preview runtime routes admit some commands in their own
    * transaction (enqueue + result); those are recorded by the enclosing Docker provider record.
+   * A caller that enqueued in its own fenced transaction passes that enqueue's `fresh` as
+   * `admitted`: the runner may answer before the first result read, so only the original insert
+   * tells a fresh admission from a replay.
    */
   async function call(
     ownerId: string,
@@ -262,6 +266,7 @@ export function createRuntimeCommands(
       timeoutMs?: number;
       expectedEpoch?: string;
       accept?: (reply: RuntimeCommandReply) => boolean;
+      admitted?: boolean;
     } = {},
   ): Promise<RuntimeCommandReply> {
     let provider: RuntimeOwnerScope["provider"];
@@ -281,6 +286,7 @@ export function createRuntimeCommands(
         const deadline = time.now() + timeout;
         const admitted = await enqueue(ownerId, request, options.expectedEpoch);
         provider = admitted.provider;
+        if (options.admitted) noteAdmission();
         while (true) {
           signal.throwIfAborted();
           const response = await result(ownerId, request.sandboxId, request.requestId, admitted.epoch);

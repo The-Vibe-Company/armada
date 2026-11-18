@@ -51,6 +51,7 @@ export function createRuntimeServing(sql: Sql, key: string) {
       {
         async call(ownerId, request, options) {
           // This serving adapter uses private health only for connection checks.
+          let admitted = false;
           if (request.op === "steer" || request.op === "testModelConnection" || request.op === "health") {
             if (!sql.transaction) throw new VaultError("unavailable", "Transactional runtime control unavailable.");
             await sql.transaction(async (tx) => {
@@ -104,14 +105,15 @@ export function createRuntimeServing(sql: Sql, key: string) {
                   throw new VaultError("conflict", "Runtime connection binding is no longer current.");
               }
               const local = runtimeTransaction(tx);
-              await createRuntimeCommands(createRuntimeEnrolments(local, key), key).enqueue(
+              ({ fresh: admitted } = await createRuntimeCommands(createRuntimeEnrolments(local, key), key).enqueue(
                 ownerId,
                 request,
                 options?.expectedEpoch,
-              );
+              ));
             });
           }
-          return commands.call(ownerId, request, options);
+          // A reply may land before the first result read; carry this fenced admission to the observer.
+          return commands.call(ownerId, request, { ...options, admitted });
         },
       },
       sandbox.ownerId,
