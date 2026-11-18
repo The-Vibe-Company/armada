@@ -273,7 +273,7 @@ describe("on the database client production uses", () => {
     expect(result.isError).toBe(true);
     expect(result._meta.requestId).toBe(requestId);
     const failure = JSON.stringify(result);
-    expect(failure).toContain("Armada could not complete the call.");
+    expect(failure).toContain("Check the current state before retrying.");
     expect(failure).toContain("error code: internal");
     expect(failure).not.toContain("hunter2");
     expect(lines).toHaveLength(2);

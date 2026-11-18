@@ -499,7 +499,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           ? await resolveDockerSnapshot(sql, { userId: caller.userId, orgId: org }, snapshotId)
           : undefined;
       const sourceHost = snapshotId ? (frozen?.hostId ?? source?.host_id) : undefined,
-        sourceImage = snapshotId ? (frozen?.image ?? source?.image_id) : undefined;
+        sourceImage = frozen?.image ?? source?.image_id;
       if (sourceHost && body.hostId !== undefined && identifier(body.hostId) !== sourceHost) throw failure("not_found");
       reason = "official_image";
       let image: string;

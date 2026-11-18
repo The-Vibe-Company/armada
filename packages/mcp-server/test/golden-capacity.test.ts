@@ -173,7 +173,7 @@ test("unexpected SQL and provider failures stay server errors rather than becomi
       );
       expect(response?.status).toBe(500);
       expect(await response!.json()).toEqual({
-        error: { code: "internal", message: "The server could not complete the request." },
+        error: { code: "internal", message: expect.stringContaining("Check the current state before retrying.") },
       });
       const mcp = await call(client, "golden_create", body);
       expect(mcp.isError).toBe(true);

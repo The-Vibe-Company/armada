@@ -190,7 +190,11 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
     // A structured refusal is definitive; transport failures, malformed receipts and
     // server/gateway failures still need the stable request identity for recovery.
     if (
-      !(error instanceof ArmadaApiError && error.status < 500 && error.serverCode !== "outcome_unknown") &&
+      !(
+        error instanceof ArmadaApiError &&
+        (error.serverCode === "provider_routing_unavailable" ||
+          (error.status < 500 && error.serverCode !== "outcome_unknown"))
+      ) &&
       !(error instanceof AuthError && error.code === "unauthorized")
     )
       io.err(

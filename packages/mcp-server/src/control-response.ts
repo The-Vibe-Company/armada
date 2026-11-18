@@ -1,6 +1,9 @@
 import type { LaunchError, VaultErrorCode } from "@armada/core/server";
 import type { ToolApiError } from "./tool-api.ts";
 
+export const INTERNAL_FAILURE_MESSAGE =
+  "Armada could not complete the request because of an internal error. Check the current state before retrying. If it keeps happening, contact the Armada administrator.";
+
 export function fail(
   status: number,
   code: string,

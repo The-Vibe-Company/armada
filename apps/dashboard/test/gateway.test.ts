@@ -108,6 +108,20 @@ describe("gateway", () => {
     });
   });
 
+  test("a gateway outage gives recovery guidance without exposing the proxy response", async () => {
+    const gateway = createGateway({
+      url: "https://mcp.example/mcp",
+      token: "user-jwt",
+      fetch: async () => new Response("Private proxy diagnostics", { status: 503 }),
+    });
+    const error = await gateway.call("stop", {}).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(GatewayError);
+    const { status, message } = error as GatewayError;
+    expect(status).toBe(503);
+    expect(message).toContain("Reload to check the current state before retrying.");
+    expect(message).not.toContain("Private proxy diagnostics");
+  });
+
   test("a refused session and an unreachable server are told apart", async () => {
     const refused = createGateway({
       url: "https://mcp.example/mcp",

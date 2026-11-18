@@ -80,6 +80,7 @@ export class ToolApiError extends Error {
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { INTERNAL_FAILURE_MESSAGE } from "./control-response.ts";
 import { createArmadaServer, type ToolContext } from "./tools.ts";
 
 /** HTTP and MCP run precisely the same validated operations and authorization context. */
@@ -122,7 +123,11 @@ export async function callSharedTool(context: ToolContext, name: string, args: R
             : decoded.success && Object.keys(decoded.data).length
               ? decoded.data
               : undefined;
-      throw new ToolApiError(code, structured?.message ?? block?.text ?? "Operation failed.", details);
+      throw new ToolApiError(
+        code,
+        structured?.message ?? (block !== marker ? block?.text : undefined) ?? INTERNAL_FAILURE_MESSAGE,
+        details,
+      );
     }
     return result.structuredContent;
   } finally {

@@ -596,7 +596,7 @@ export function createRoutineControl(options: ArmadaApiOptions) {
 }
 
 /** No upstream body is safe to display when the control error envelope is missing. */
-function controlFallback(status: number): string {
+export function controlFallback(status: number): string {
   return status >= 500 || status === 408
     ? "The request could not be confirmed because the Armada server returned an unreadable error. Reload to check the current state before retrying."
     : "The Armada server refused the request without a readable reason. Reload and check your selection and access before retrying.";

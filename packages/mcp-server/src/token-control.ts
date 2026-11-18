@@ -12,7 +12,9 @@ import type { ControlOptions } from "./control.ts";
 import { readBody } from "./control-body.ts";
 import { authenticatedCaller, Unauthorized } from "./control-caller.ts";
 import { optional, required, UUID } from "./control-input.ts";
-import { fail, VAULT_STATUS as STATUS } from "./control-response.ts";
+import { fail, INTERNAL_FAILURE_MESSAGE, VAULT_STATUS as STATUS } from "./control-response.ts";
+
+import { recordOperatorFailure } from "./request-observability.ts";
 
 type TokenControlOptions = Pick<ControlOptions, "authStore" | "supabase" | "now">;
 
@@ -43,7 +45,8 @@ function tokenRouteFailure(error: unknown, revoking = false): Response {
     return revoking
       ? fail(403, "forbidden", "Token revocation was refused.")
       : fail(400, "invalid", "Invalid token request.");
-  return fail(500, "internal", "The server could not complete the request.");
+  recordOperatorFailure("control.token", error);
+  return fail(500, "internal", INTERNAL_FAILURE_MESSAGE);
 }
 
 export async function tokenRevokeRoute(request: Request, options: TokenControlOptions): Promise<Response> {
