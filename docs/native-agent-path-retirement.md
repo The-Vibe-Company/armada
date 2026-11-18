@@ -1,18 +1,10 @@
 # Native agent path retirement plan
 
-[#2602](https://github.com/The-Vibe-Company/armada/issues/2602) covers the investigation and plan. The owner decides whether and when to change either provider default and authorize deletion. The design decision is to retire the provider-specific agent paths in favor of Armada's enrolled runtime while retaining provider-specific compute and storage. A selector change affects future launches. Existing sandbox rows, generations, history cursors and request receipts retain their original routing.
+This is the Step 1 design note for [#2733](https://github.com/The-Vibe-Company/armada/issues/2733). It supersedes [#2602](https://github.com/The-Vibe-Company/armada/issues/2602) under the owner decisions D2, D3 and NC in [#2835](https://github.com/The-Vibe-Company/armada/issues/2835). Armada retires the provider-specific agent paths and keeps provider-specific compute and storage. During the rollout, a selector change affects future launches. Existing sandboxes keep their persisted route until drained.
 
 ## What runs today
 
 Code baseline `4c78a45da09efd9810e1f2a22b817d6ce1bf4a83`. [Server config](../packages/mcp-server/src/config.ts) defaults both `ARMADA_BOAT_AGENT_PATH` and `ARMADA_MODAL_AGENT_PATH` to `native`. [Server assembly](../packages/mcp-server/src/serve.ts) requires installed Boat runtime artifacts for its runtime default. Modal's runtime default requires `ARMADA_MODAL_DIALOUT=1` and a matching manifest. [Placement](../packages/core/src/launch-placement.ts) and [launch admission](../packages/core/src/launch.ts) route before allocation. A refusal or runtime failure never retries on native.
-
-| Environment | Boat effective default | Modal effective default | Evidence |
-| --- | --- | --- | --- |
-| Repository baseline | Native | Native | Config fallback when both settings are unset |
-| Staging | Unverified | Unverified | No current coordinator config read or authenticated discovery output supplied |
-| Production | Unverified | Unverified | No current coordinator config read or authenticated discovery output supplied |
-
-[Railway IaC](../.railway/railway.ts) leaves variables owner-managed. A deploy manifest or an older smoke result cannot attest to today's settings. Before cutover, the coordinator records the exact server deployment SHA, environment and UTC timestamp, and reads only the selector values (including unset), Modal dial-out enablement and runtime artifact presence/version from the effective server configuration. Cross-check with authenticated `launch/options` (`boatRuntime.defaultPath`, `modalRuntime.defaultPath`, explicit runtime and OpenCode capability) and a read-only aggregate of existing Boat and Modal rows by harness, persisted route and status. Record counts for retained/stopped rows as well as running rows. Keep credentials, manifest contents and sandbox identifiers out of the ledger. Discovery establishes the default, the row aggregate establishes existing routing, and an actual receipt and history establish the exercised launch path. This ticket provides the code-derived matrix below pending those environment readings.
 
 | Provider | Harness | With repository defaults | Enrolled replacement and harness-specific evidence still required |
 | --- | --- | --- | --- |
@@ -26,26 +18,77 @@ Code baseline `4c78a45da09efd9810e1f2a22b817d6ce1bf4a83`. [Server config](../pac
 | Docker host | Codex | Enrolled runtime | Regression control for reasoning, usage, stop/wake and resumed context on the owner-enabled host. |
 | Docker host | OpenCode | Enrolled runtime | Regression control for ACP launch, send and remembered context on the owner-enabled host. |
 
-The [Boat](boat-runtime-first-prompt.md) and [Modal](modal-runtime-first-prompt.md) runtime notes track incremental support and acceptance. Later entries supersede earlier refusals where code now supports the flow. Keep these explicit decisions open for both cloud providers before switching:
+## Decisions and parity prerequisites
 
-- **Admission and account compatibility.** Ordinary enrolled launches require an authorized model-account binding. Inventory unbound legacy credentials, private/scoped child launches and requested helper capabilities. Provide parity or get explicit owner approval for the transition of each affected cohort. Verify account/version pinning and failure before allocation.
-- **Templates and tooling.** Raw application-secret bindings and pinned local stdio MCP remain refused by the runtime. Cover plain templates and routines, frozen readable variables, remote MCP, skills, workdir/init and GitHub renewal. For secrets and stdio, require an approved replacement or an explicit scope decision with caller-visible outcomes and migration guidance. Preserve resource authorization and secret isolation.
-- **Conversation lifecycle.** Runtime follow-up accepts the first turn or an existing conversation. Arbitrary additional conversations and corresponding parallel activity need a parity or product decision. Verify the admitted per-turn override matrix separately from new-conversation support. Existing native sessions and provider cursors need a drain or historical-read plan.
-- **Operational parity.** Verify launch with and without prompt, first/later send, wait/status/logs, steer/interrupt/exec by harness capability, webhooks, usage/cost, outputs and work preservation. Exercise owner/scoped access, empty and populated stop/wake, generation fencing, cleanup and deterministic replay. Record matched cold, warm and resume timings against native where applicable. Keep unsupported features recorded as refusals.
+- Raw application secrets follow Docker's delivery boundary on Modal (#2734) and Boat (#2735). Runtime templates may use pinned local stdio MCP (#2736). Verify authorization, scoped access, secret isolation, frozen configuration and GitHub renewal.
+- Refuse launches using unbound legacy model credentials before allocation. Guide callers to connect or import a model account and select its binding (#2737).
+- A sandbox has one conversation. First send opens it and subsequent turns reuse it. Refuse a request to start a second conversation (#2738).
+- Enrolment accepts the current and immediately previous runtime protocol. Refuse older versions with a stable error, leave the sandbox resumable and re-bootstrap the current verified runtime artifact on resume (#2739, #2857). Runtime and Docker daemon protocol overlap and database deploy overlap are independent of native agent-path retirement.
+- Drain old native rows (#2742). Delete the native routes, cursors and history readers with their callers. The retirement release ships without a historical decoder or native fallback.
 
-## Ordered work and acceptance evidence
+## Release and drain sequence
 
-| Step | Change or decision | Evidence required before proceeding |
+| Phase | Required evidence and next action |
+| --- | --- |
+| Parity | Land #2734–#2739 in dependency order. Use the [Modal runbook](modal-runtime-first-prompt.md) for Modal and owner-enabled Docker staging evidence. Boat evidence is coordinator-only and on demand, outside CI, staging acceptance and the release gate. |
+| Modal default (#2740) | Release with the runtime default on for new Modal launches. Complete one release cycle with that default, pass the production checklist and confirm the previous release is recoverable. This evidence gates the Modal drain and the Boat default change. |
+| Boat default (#2741) | Release with the runtime default on for new Boat launches after Modal's checklist passes and #2735 lands. Complete one release cycle with that default, pass the production checklist and confirm the previous release is recoverable. The coordinator checks Boat on its own sandbox using the [Boat runbook](boat-runtime-first-prompt.md) and production parity with `--only boat --production-boat`. Release gating reports `boat: not part of the release gate`. |
+| Drain (#2742) | Record counts by provider, persisted path and status before the run. For each eligible native sandbox, use existing work preservation and then the normal delete operation. Repeat the inventory and reconcile pending prompt/steer work and account leases. Leave a row in place if preservation or deletion has failed and record it for retry. |
+| Delete (#2743–#2748) | After the default-on release cycle, checklist, recoverable previous release and successful drain, remove that provider's native path in the next release. Shared deletions wait for both providers and their owning tickets. Delete old public surfaces outright and update the Armada skill and coordinator commands where those surfaces break. |
+| Drop schema (#2749) | Verify the code that last used the objects is deployed and its predecessor has drained. Ship the drop one deploy later, after the 180-second overlap, with one append-only migration. |
+
+The coordinator records the previous release SHA and verifies that it can be restored under the deployed schema and runtime/daemon protocol versions before authorizing removal. During the default-on cycle, the selector can restore native admission for future launches. A cycle with a reverted default cannot qualify. Keep the runtime path available for existing enrolled rows during recovery.
+
+### Production checklist
+
+Record the release, deployment SHA, UTC date, effective settings and pass/fail evidence for each applicable item. Complete the checklist for Modal and again after the Boat default release. Exercise the Docker server alongside the cloud provider under check.
+
+1. Launch through the ordinary default path and confirm the enrolled runtime receipt and first turn.
+2. Send a follow-up and verify that it reaches the same conversation and appears in history.
+3. Stop and resume. Confirm retained work and follow-up context, then clean up the checklist sandbox.
+4. Exercise launch, follow-up, stop and resume on the Docker server.
+5. Verify account counters and capacity settlement for the exercised turns.
+
+### Drain invariants and crash boundaries
+
+The coordinator owns the drain run. Existing turn, stop/resume, retention and deletion workers or user operations can still contend for the same sandbox. Use the existing preservation and delete operations with their lifecycle fences. The drain must not bypass them or delete provider machines directly. Resolve active turns through the normal lifecycle before preservation. Reconcile uncertain results from the persisted row and operation state before retrying.
+
+| Persisted state | Drain outcome and recovery |
+| --- | --- |
+| Native and active, stopped or retained | Preserve recoverable work first. A failed or uncertain preservation leaves the row for reconciliation. |
+| Preservation complete | A crash before or during the delete call leaves the preserved work available. On restart, re-read the row and use the normal idempotent delete path. |
+| Delete requested or in progress | A crash before the response or report leaves the normal deletion owner responsible for reconciliation. Report completion only after terminal deletion is verified. |
+| Deleted | A rerun skips the row. A crash before recording the report is recovered from the next inventory. |
+
+| Provider | Native path | Enrolled path |
 | --- | --- | --- |
-| 1. Baseline and decide parity scope | Coordinator captures both deployed defaults and existing row cohorts. Owner resolves every admitted native feature gap and approves explicit transitions for unsupported cohorts. | Signed-off matrix with deployment SHAs, sanitized discovery and row counts, actual feature usage, named owners for gaps and preserved contracts. |
-| 2. Land parity changes separately | Address admission/account, secrets/stdio/helpers, scoped access and conversation gaps in bounded PRs. Keep both selectors and old row routing. | Deterministic tests at each owning boundary and a recorded outcome for each refused flow. Prove authorization, replay and failure without fallback. No new required check. |
-| 3. Promote Modal first | Exercise explicit dial-out, then ordinary launch with the coordinator-selected Modal staging default. Preserve native controls for existing rows. | Exact-SHA staging receipts with `runtime.kind`, epoch, persisted `runtimeTransport:dialout`, runtime history and matched timings. Run the ordinary and explicit cases in the [Modal runbook](modal-runtime-first-prompt.md) for each supported harness and account class. Include owner-enabled Docker regression checks. Existing native reads/controls and enrolled reads/controls both work. |
-| 4. Decide Boat separately | Coordinator validates explicit and ordinary Boat runtime parity on its own sandbox under separately authorized conditions. Boat stays outside CI, staging acceptance and the release gate. | Coordinator-only, on-demand Boat evidence using the [Boat runbook](boat-runtime-first-prompt.md) and provider parity's `--only boat --production-boat` for production parity. Record actual `boatRuntime`, enrolled receipt, archive source, cleanup, matched timings and all admitted harness/account classes. Record `boat: not part of the release gate` for release gating. |
-| 5. Authorize new-launch cutover per provider | After its evidence is accepted, the owner authorizes each provider's production default change through the normal deployment process. Record exact SHA, settings, approval and time. | Ordinary launches use enrolled routing and existing rows keep their routes. Observe at least one full successful production day per provider after the switch, including admission/finish errors, latency, event continuity and recovery. Any rollback changes only the affected provider selector to native for future launches. Keep enrolled artifacts and old routing available. A rollback restarts that observation window. |
-| 6. Drain and retire admission | After the owner approves retirement, split deletion into a provider-scoped new-launch cleanup and subsequent compatibility cleanup. Gate each change on that provider independently. | Owner approves the compatible-release recovery point before removing native admission. Verify no new native allocations or unexpected native-only callers. Document terminal/retained native rows, pending/replayed requests, outstanding capacity leases, cursor/receipt handling and approved historical access. Keep compatibility while any old row can wake, be read or require preservation. |
-| 7. Delete provider-specific control and data paths | Separate Modal tunnel teardown from Boat SDK agent teardown. Remove shared native launch only after both providers and compatibility callers have cleared it. Split any additive schema retirement into later owner-authorized work. | Zero remaining consumers of each removed capability, with measured row/ingest/queue counts and approved history handling. Verify provider binding, snapshots, machine lifecycle, bootstrap exec, outputs, scoped access, auth publication and runtime resume are still served. Verify deploy and rollback paths against the removal SHA before authorizing cleanup. |
+| Modal | Drain after the Modal gate. | Keep existing rows on enrolled routing. |
+| Boat | Drain after the Boat gate, coordinator only. | Keep existing rows on enrolled routing. |
+| Docker host | No native cohort. | Exercise as the regression control. |
 
-While native admission remains, roll back future launches using the affected provider's selector and keep the matching artifacts available. Once native launch admission is removed, recovery requires a compatible application release even if old-row controls still work. Confirm a recoverable release before deleting events or schema. A successful production day gates deletion, and the old-row drain independently gates deletion.
+[#2742](https://github.com/The-Vibe-Company/armada/issues/2742) owns the implementation design, including the concrete awaits after durable writes and lease ownership. This note covers the rollout and deletion sequence. Config changes, the drain runner, provider operations, schema changes and deployed verification belong to their respective delivery tickets.
+
+### Coordinator ledger
+
+[Railway IaC](../.railway/railway.ts) leaves these settings owner-managed. Record effective selector values (including unset), Modal dial-out enablement, runtime artifact version, deployment SHA and UTC timestamp. Cross-check authenticated `launch/options` while the discovery fields exist. A repository default does not establish a deployed setting.
+
+| Environment | Boat effective default | Modal effective default | Runtime artifact / dial-out | SHA / UTC / evidence |
+| --- | --- | --- | --- | --- |
+| Repository baseline | Native | Native | See server config and assembly above | Code-derived |
+| Staging | Unverified | Unverified | Unverified | Pending coordinator record |
+| Production | Unverified | Unverified | Unverified | Pending coordinator record |
+
+Before #2742, capture a read-only aggregate grouped by provider and status for rows on the persisted native route. Include all observed statuses, including stopped and retained cohorts, and explicit zero counts for empty cohorts. Repeat after the drain. Keep identifiers, credentials and manifest contents out of the shared ledger.
+
+| Provider | Status | Native count before #2742 | Native count after #2742 | SHA / UTC / evidence |
+| --- | --- | --- | --- | --- |
+| Modal | Record each observed status | Unverified | Unverified | Pending coordinator record |
+| Boat | Record each observed status | Unverified | Unverified | Pending coordinator record |
+
+| Provider | Default-on release / UTC | Checklist evidence | Recoverable previous release | Drain report / deletion release |
+| --- | --- | --- | --- | --- |
+| Modal | Pending | Pending | Pending | Pending |
+| Boat | Pending | Pending | Pending | Pending |
 
 ## Deletion inventory
 
@@ -69,7 +112,7 @@ Counts are physical lines, including comments and blanks, at the baseline above.
 | [`packages/mcp-server/src/native-webhook-prompts.ts`](../packages/mcp-server/src/native-webhook-prompts.ts) | 227 |
 | [`packages/mcp-server/src/subscription-boat.ts`](../packages/mcp-server/src/subscription-boat.ts) | 46 |
 
-Also retire the owning tests and fixtures when their last caller goes away. Boat examples include `native-cwd.test.ts`, `native-claude-mcp.test.ts`, `native-usage.test.ts`, `native-usage-capture-v1.py`, `native-writer.conformance.ts` and `native-install-race.conformance.ts`. Server examples include `native-idle.test.ts` and `native-webhook-prompts.test.ts`. Retain tests of shared behavior, historical data and enrolled runtime security contracts.
+Also retire the owning tests and fixtures when their last caller goes away. Boat examples include `native-cwd.test.ts`, `native-claude-mcp.test.ts`, `native-usage.test.ts`, `native-usage-capture-v1.py`, `native-writer.conformance.ts` and `native-install-race.conformance.ts`. Server examples include `native-idle.test.ts` and `native-webhook-prompts.test.ts`. Retain tests of shared behavior and enrolled runtime security contracts.
 
 ### Branches in shared files
 
@@ -96,13 +139,13 @@ Also retire the owning tests and fixtures when their last caller goes away. Boat
 | [`provider-modal/provider.ts:1829–1867`](../packages/provider-modal/src/provider.ts#L1829-L1867) | 39 | Native quiescence/retention during stop. Keep host lifecycle |
 | [`provider-modal/distribution.ts:38–115`](../packages/provider-modal/src/distribution.ts#L38-L115) | 78 | Native artifact install, runner start and environment restore. Keep shared image and snapshot preparation |
 | [`provider-modal/composed.ts:114–176`](../packages/provider-modal/src/composed.ts#L114-L176) | 63 | Runner transport, signing, distribution and ingest assembly. Keep scoped binding |
-| [`provider-modal/store.ts:218–273`](../packages/provider-modal/src/store.ts#L218-L273) | 56 | Native stored event reads and ingest writes. Keep machine/image storage and approved historical reads |
+| [`provider-modal/store.ts:218–273`](../packages/provider-modal/src/store.ts#L218-L273) | 56 | Native stored event reads and ingest writes. Keep machine/image storage |
 | [`mcp-server/config.ts:104–116`](../packages/mcp-server/src/config.ts#L104-L116) | 13 | Provider selectors and fail-closed startup requirements during transition |
 | [`mcp-server/serve.ts:288–325`](../packages/mcp-server/src/serve.ts#L288-L325) | 38 | Boat default and custom endpoint policy assembly |
 | [`mcp-server/serve.ts:380–408`](../packages/mcp-server/src/serve.ts#L380-L408) | 29 | Modal default policy assembly |
 | [`mcp-server/serve.ts:566–576`](../packages/mcp-server/src/serve.ts#L566-L576) | 11 | Legacy history lookup for Langfuse |
 | [`mcp-server/serve.ts:753–807`](../packages/mcp-server/src/serve.ts#L753-L807) | 55 | Native prompt settlement and steer recovery workers |
-| [`mcp-server/control.ts:356–415`](../packages/mcp-server/src/control.ts#L356-L415) | 60 | Native subscription capabilities and launch discovery shapes. Preserve compatible client discovery |
+| [`mcp-server/control.ts:356–415`](../packages/mcp-server/src/control.ts#L356-L415) | 60 | Native subscription capabilities and launch discovery shapes. Remove native discovery keys with their client readers |
 | [`mcp-server/launch-control.ts:200–215`](../packages/mcp-server/src/launch-control.ts#L200-L215) | 16 | Record native versus enrolled launch route |
 | [`mcp-server/http.ts:267–330`](../packages/mcp-server/src/http.ts#L267-L330) | 64 | Native provider routing and first output observation |
 | [`mcp-server/tools.ts:535–590`](../packages/mcp-server/src/tools.ts#L535-L590) | 56 | Native prompt IDs and history routing |
@@ -114,7 +157,7 @@ Also retire the owning tests and fixtures when their last caller goes away. Boat
 | [`mcp-server/mcp-lifecycle.ts:201–251`](../packages/mcp-server/src/mcp-lifecycle.ts#L201-L251) | 51 | Native MCP install and binding checks |
 | [`mcp-server/sandbox-lifecycle.ts:132–285`](../packages/mcp-server/src/sandbox-lifecycle.ts#L132-L285) | 154 | Native lease reconciliation, terminal observation and idle stop |
 | [`mcp-server/work-preservation.ts:207–275`](../packages/mcp-server/src/work-preservation.ts#L207-L275) | 69 | Native versus enrolled preservation before stop |
-| [`core/launch-secrets.ts:1–56`](../packages/core/src/launch-secrets.ts#L1-L56) | 56 | Native secret template delivery and taint. Preserve taint for historical rows |
+| [`core/launch-secrets.ts:1–56`](../packages/core/src/launch-secrets.ts#L1-L56) | 56 | Native secret template delivery and taint. Keep taint for enrolled rows where required |
 | [`core/launch-plan.ts:1–48`](../packages/core/src/launch-plan.ts#L1-L48) | 48 | Native cwd/preparation fields |
 | [`core/launch-variables.ts:1–34`](../packages/core/src/launch-variables.ts#L1-L34) | 34 | Native readable variable writer and enrolled configuration boundary |
 | [`mcp-server/mcp-native.ts:1–172`](../packages/mcp-server/src/mcp-native.ts#L1-L172) | 172 | Native bootstrap and configuration writers. Keep snapshot scrub where still used |
@@ -142,8 +185,18 @@ Also retire the owning tests and fixtures when their last caller goes away. Boat
 | [`dashboard/app/api/sandboxes/[id]/events/route.ts:42–74`](../apps/dashboard/src/app/api/sandboxes/[id]/events/route.ts#L42-L74) | 33 | Native event pagination route and cursor policy |
 | [`dashboard/app/actions/sandboxes.ts:169–200`](../apps/dashboard/src/app/actions/sandboxes.ts#L169-L200) | 32 | Provider-specific native turn override policy |
 
-### Deletion PR boundaries
+### Deletion tickets and PR boundaries
 
-- **Modal tunnel removal.** Trace references to the generation grant, runner port/authenticated transport, ingest route, stored event cursor, usage projection and runner artifact before deleting them. Keep image creation, snapshot/retention, SSH used for goldens, Modal binding, common runtime distribution and host bootstrap. If retained native logs still require the store, keep a read-only decoder until the history policy is fulfilled.
-- **Boat agent API removal.** Trace SDK prompt/status/conversations/events/steer/interrupt, native cwd/MCP/usage scripts, native credential preparation and subscription observation. Preserve golden exec, VM activation/stop/delete, provider authentication, work preservation and output access. Keep native event decoding where historical clients still need it.
-- **Shared compatibility cleanup.** Follow the inventory through package exports, client discovery, worker registration, fixture and release packaging references. Drain or account for native webhook and steer rows, native capacity mappings and old Modal event rows before any data cleanup. Handle schema in separately approved append-only migrations. The runtime still uses harness-native Codex/Claude drivers and session IDs, auth publication, native login/import and shared failure normalization. Preserve those contracts, including `runtime-native-auth.ts` and native runtime artifact validation. The word “native” in a filename alone gives no removal authority.
+The path references below point to inventory rows above. Counts give baseline range sizes or whole-file sizes. Measure native-only edits and include tests, fixtures and call sites in the actual diff budget. Every PR stays within 600 non-generated changed lines and one module. Split oversized work into parts under its ticket before review. Shared files are divided by the branch named here.
+
+| Step and ticket | Inventory rows and owned removal |
+| --- | --- |
+| 1-11 · #2743 | Modal provider. `transport.ts` (107), `ingest.ts` (91), `grants.ts` (42), and native parts of `provider.ts` (10 / 35 / 299 / 39), `distribution.ts` (78), `composed.ts` (63), `store.ts` (56), `artifact.ts` (18), `embedded.ts` (11), `ports.ts` (220), and native process scopes. Split the runner/distribution removal from the ingest/transport work where needed. Keep host lifecycle, snapshots, Modal binding and enrolled bootstrap. |
+| 1-12 · #2744 | Modal server integration. `modal-event-usage.ts` (46), native parts of `modal-integration.ts` (320), `modal-launch-environment.ts` (181), `mcp-native.ts` (172), and Modal tunnel parts of `control.ts` and `tools.ts` listed above. Separate agent-runtime part for the external listener, journal upload and legacy generation grant in `main.ts` (18 / 17 / 8) and the boundary at `runtime.ts` (24). Keep shared command admission and enrolled auth publication. |
+| 1-13 · #2745 | Boat cwd and MCP installation. `native-cwd.ts` (665), `native-claude-mcp.ts` (110), the cwd install in `provider.ts` (30), and setup in the 172-line range. The cwd file alone exceeds the cap. Remove independent cwd routines and callers in bounded parts before deleting the rest of the file. Include the cwd/MCP tests and conformance fixtures in those parts. |
+| 1-14 · #2746 | Boat events, cursor and usage. `native-usage.ts` (396), `event-cursor.ts` (50), `events.ts` (111), the Boat conversations range (18), and usage/event pieces of the 172 / 126 / 120-line `provider.ts` ranges. Split usage from events/cursors and put `subscription-boat.ts` (46) in a separate server part. Keep host exec and work preservation. |
+| 1-15 · #2747 | Shared admission and native lanes. Core part covers `launch-native.ts` (176), the eight `launch.ts` ranges (24 / 33 / 32 / 14 / 46 / 21 / 27 / 34), `launch-secrets.ts` (56), `launch-plan.ts` (48) and `launch-variables.ts` (34). Server parts cover `native-idle.ts` (57), `native-webhook-prompts.ts` (227), native branches in `serve.ts` (11 / 55), `launch-control.ts` (16), `http.ts` (64), remaining native `tools.ts` ranges (56 / 57 / 86 / 80 / 32 / 109), `data.ts` (41), `mcp-lifecycle.ts` (51), `mcp-sandbox-provider.ts` (46), `sandbox-lifecycle.ts` (154), `work-preservation.ts` (69), `launch-credentials.ts` (323), `model-auth.ts` (573), `subscription-migration.ts` (237), `account-turn-queue.ts` (553), `turns.ts` (601), and the native delegated access files (175 / 216 / 119 / 104 / 34). Remove provider-native auth wiring associated with `runtime-native-auth.ts` only after tracing consumers. Keep enrolled auth publication, account accounting, scoped access and shared work preservation. |
+| 1-16 · #2748 | Selector and provider interface. Core parts cover `launch-placement.ts` (12), `sandbox-provider.ts` (7) and the provider agent operations in `provider.ts`. Server part covers `config.ts` (13), selector wiring in `serve.ts` (38 / 29) and remaining native discovery in `control.ts` (60). Client parts cover the dashboard events route (33), turn override action (32), and affected discovery readers in dashboard, CLI, SDK and iOS. Update the Armada skill and coordinator commands with the breaking surfaces. |
+| 1-17 · #2749 | Native persistence behind the ingest, selector and worker rows above. Re-inventory schema at execution time, including `modal_events`, `native_webhook_prompts`, `native_steer_cursors` and route columns such as `runtime_transport`. Drop only confirmed native-only objects after the deploy overlap and regenerate database types. |
+
+Trace shared consumers before deleting code. Enrolled Codex and Claude drivers, harness session IDs, native login/import, runtime artifact validation, common auth publication, and shared failure normalization remain runtime contracts.
