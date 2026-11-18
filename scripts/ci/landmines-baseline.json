@@ -638,7 +638,6 @@
     "packages/core/src/claude-endpoint.ts": 1,
     "packages/core/src/client-config.ts": 2,
     "packages/core/src/codex-endpoint.ts": 2,
-    "packages/core/src/compatible-providers.ts": 1,
     "packages/core/src/connection-presets.ts": 17,
     "packages/core/src/connections.ts": 13,
     "packages/core/src/contract.ts": 1,

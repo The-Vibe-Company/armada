@@ -1,9 +1,12 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { COMPATIBLE_MODEL_PROVIDERS } from "../packages/core/src/compatible-providers.ts";
 import { MODEL_CATALOG } from "../packages/core/src/models.ts";
 import catalog from "../packages/core/src/pricing/model-catalog.json";
-import { CONNECTION_MODELS } from "../packages/core/src/pricing/model-options.generated.ts";
+import {
+  CONNECTION_MODELS,
+  MORPH_ENDPOINTS,
+  MORPH_MODEL_IDS,
+} from "../packages/core/src/pricing/model-options.generated.ts";
 import overlay from "../packages/core/src/pricing/model-overlay.json";
 import { buildModelCatalog, snapshotModels } from "./refresh-model-prices.ts";
 
@@ -64,12 +67,13 @@ test("the vendored model catalog preserves the pre-consolidation values", () => 
   const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
   expect(buildModelCatalog(catalog.snapshot, overlay)).toEqual(catalog);
   expect(MODEL_CATALOG).toEqual(catalog.harnesses);
-  expect<unknown>(COMPATIBLE_MODEL_PROVIDERS).toEqual(catalog.compatibleProviders);
+  const generatedMorph = { models: MORPH_MODEL_IDS, ...MORPH_ENDPOINTS };
+  expect<unknown>(generatedMorph).toEqual(catalog.compatibleProviders.morph);
   expect<unknown>(CONNECTION_MODELS).toEqual(catalog.snapshot.providers);
   // Captured from the original catalogs at 22f9482b, before switching them to generated data.
   expect({
     harnesses: digest(MODEL_CATALOG),
-    compatibleProviders: digest(COMPATIBLE_MODEL_PROVIDERS),
+    compatibleProviders: digest({ morph: generatedMorph }),
     models: digest(catalog.snapshot.models),
     providers: digest(CONNECTION_MODELS),
   }).toEqual({
