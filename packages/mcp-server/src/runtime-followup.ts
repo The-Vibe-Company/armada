@@ -132,23 +132,27 @@ export function createRuntimeFollowup(
           )
         )
           throw new VaultError("conflict", "Runtime admission changed; inspect status before retrying.");
-        const checkpoint = (
-          await locked.query("select 1 from public.runtime_checkpoints where sandbox_id=$1 and epoch=$2", [
-            found.id,
-            scope.epoch,
-          ])
-        ).rows[0];
-        if (checkpoint)
-          throw new VaultError(
-            "conflict",
-            "Runtime checkpoint is pending or complete; stop it before a fresh enrolment.",
-          );
+        // The durable command identity decides first: an admitted turn may have executed, so the
+        // checkpoint fence below refuses only new work and never hides a stored reply.
         const saved = (
           await locked.query<{ epoch: string; finished: boolean }>(
             "select epoch::text,result_enc is not null as finished from public.runtime_commands where sandbox_id=$1 and request_id=$2",
             [found.id, commandId],
           )
         ).rows[0];
+        const checkpoint =
+          !saved &&
+          (
+            await locked.query("select 1 from public.runtime_checkpoints where sandbox_id=$1 and epoch=$2", [
+              found.id,
+              scope.epoch,
+            ])
+          ).rows[0];
+        if (checkpoint)
+          throw new VaultError(
+            "conflict",
+            "Runtime checkpoint is pending or complete; stop it before a fresh enrolment.",
+          );
         if (!saved && current.taskPromptId !== found.taskPromptId)
           throw new VaultError(
             "conflict",

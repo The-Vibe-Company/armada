@@ -437,7 +437,7 @@ export function LaunchLocation({
       </p>
       {provider === "docker" && (
         <p className="text-xs text-muted-foreground">
-          The first launch on your own server downloads Armada’s base image; it can take a few minutes.
+          The first launch on a Docker host downloads Armada’s base image; it can take a few minutes.
         </p>
       )}
     </div>

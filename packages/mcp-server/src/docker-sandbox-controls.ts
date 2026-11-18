@@ -41,6 +41,7 @@ import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.t
 import type { RuntimeGitHub } from "./runtime-github.ts";
 import { createRuntimeHistory } from "./runtime-history.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
+import { ToolError } from "./tools.ts";
 import { withServerCost } from "./turn-pricing.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -907,7 +908,8 @@ export function createDockerSandboxControls(
           ? await observeProviderCall("docker", name, dispatch, undefined, { replayable: true })
           : await dispatch();
       } catch (error) {
-        if (error instanceof ProviderError) throw error;
+        // ToolError is Armada request validation (Docker send admission) with public guidance.
+        if (error instanceof ProviderError || error instanceof ToolError) throw error;
         if (error instanceof DockerRetentionEnded)
           throw new ProviderError({
             provider: "docker",

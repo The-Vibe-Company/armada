@@ -27,7 +27,7 @@ or --golden UUID --provider boat|modal --agent claude|codex,
 or --host UUID --provider docker --agent claude|codex, optionally --model ID,
 --reasoning-effort LEVEL, --connection UUID (repeatable), --variable KEY:UUID:VERSION
 (repeatable), --secret KEY:UUID:VERSION (repeatable, references only), --skill PIN (repeatable),
---model-account UUID --model-account-version N. Publish creates a new immutable revision.
+--model-account UUID --model-account-version N. Publish creates a new immutable template version.
 With --org, create requires explicit --scope personal|org; otherwise scope defaults to personal
 in the organization selected by armada org use. Other actions use the target's existing scope.
 Names must be exact and unambiguous; use an ID if names collide across scopes.

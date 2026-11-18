@@ -3,6 +3,7 @@ import { OutputCollectionError, type OutputFile, type Provider, type Sql } from 
 import { captureFinalOutputs, createSandboxOutputs, drainFinalOutputs } from "../src/sandbox-outputs.ts";
 import { startServerWorkers } from "../src/server-workers.ts";
 import { preserveBeforeStop } from "../src/work-preservation.ts";
+import { publishedGetResponse } from "./published-response.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 
 const database = rowOnlyDatabase();
@@ -106,7 +107,15 @@ test("collected outputs survive stop, deduplicate webhook events and enforce int
   expect(response?.status).toBe(200);
   expect(response?.headers.get("content-type")).toBe("application/pdf");
   expect(await response?.text()).toBe("document");
-  expect((await routeFor(service, people.member, people.org)(new Request(url)))?.status).toBe(404);
+  // The list and a refusal parse with the published OpenAPI contract.
+  const list = await routeFor(service, people.owner, people.org)(new Request(url));
+  expect(publishedGetResponse("sandboxes/{id}/outputs", "200").parse(await list?.json())).toMatchObject({
+    directory: "/home/user/outputs",
+    files: [{ name: "memo.pdf", size: 8 }],
+  });
+  const refused = await routeFor(service, people.member, people.org)(new Request(url));
+  expect(refused?.status).toBe(404);
+  expect(publishedGetResponse("sandboxes/{id}/outputs", "404").safeParse(await refused?.json()).success).toBe(true);
   expect((await routeFor(service, people.owner, crypto.randomUUID())(new Request(url)))?.status).toBe(404);
   // Only a well-formed UUID reaches the uuid-typed query; anything else is not this route.
   const malformed = `https://armada.example/api/v1/sandboxes/${"-".repeat(36)}/outputs`;

@@ -82,6 +82,7 @@ import {
   PROVIDER_LABELS,
   providerCapacity,
 } from "@/lib/golden-form";
+import { DOCKER_HOST_LABEL, dockerHostGroup } from "@/lib/labels";
 import { boatOpenCodeAvailable } from "@/lib/launch-options";
 import { goldenSizing, sizePolicyBlocker } from "@/lib/machine-size";
 import type { LaunchAccounts } from "@/lib/model-accounts";
@@ -444,10 +445,10 @@ export default async function GoldensPage({ searchParams }: Props) {
   for (const hostId of hostIds) {
     const host = hosts.find((item) => item.id === hostId);
     const saved = snapshots.filter((item) => item.hostId === hostId);
-    const name = host?.name ?? saved[0]?.hostName ?? "Your server";
+    const name = host?.name ?? saved[0]?.hostName ?? DOCKER_HOST_LABEL;
     const blocker = host
       ? dockerLaunchBlocker(dockerOption, hostRead.state === "ready" && hostRead.list.placement, host)
-      : "This server is no longer connected. Register it again from Hosts.";
+      : "This Docker host is no longer connected. Register it again from Docker hosts.";
     const agents = dockerHarnesses(dockerOption);
     const action =
       selected && host && !blocker ? (
@@ -463,7 +464,7 @@ export default async function GoldensPage({ searchParams }: Props) {
       ) : null;
     groups.push({
       key: hostId,
-      label: `On your server ${name} · ${host?.state ?? "unavailable"}`,
+      label: dockerHostGroup(name, host?.state ?? "unavailable"),
       rows: [
         {
           catalog: { group: "docker", attention: !!blocker, footer: name },
@@ -987,7 +988,7 @@ function dockerSnapshotRow(
   const organization = context.orgs.get(snapshot.orgId)?.org.name ?? "Organization";
   const age = relativeAge(snapshot.createdAt, Date.now());
   const scope = snapshot.visibility === "private" ? "only you" : organization;
-  const meta = `${snapshot.hostName ?? "Your server"} · your own server · ${scope}`;
+  const meta = dockerHostGroup(snapshot.hostName, scope);
   const repoSummary = snapshot.config.repos.map((repo) => repo.dir).join(", ") || "No repository";
   const repos = snapshot.config.repos;
   const detailText =

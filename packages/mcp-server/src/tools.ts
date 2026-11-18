@@ -186,6 +186,15 @@ const golden = z.object({
   ownerId: z.string(),
   provider: providerOutput,
   providerSnapshotId: z.string().nullable(),
+  baselineVersion: z
+    .number()
+    .int()
+    .positive()
+    .nullable()
+    .describe("The developer baseline version the golden's snapshot was verified against; null when not recorded."),
+  baselineOutdated: z
+    .boolean()
+    .describe("True when the golden has a snapshot built against an older developer baseline than this server's."),
   providerSandboxId: z.string().nullable(),
   modal: z
     .object({ workspace: z.string(), environment: z.string(), appId: z.string() })
@@ -200,6 +209,9 @@ const golden = z.object({
   }),
 });
 
+/** The golden record shared by the MCP tools and the REST golden list. */
+export { golden as GOLDEN_OUTPUT };
+
 const taskOutcome = z.discriminatedUnion("state", [
   z
     .object({
@@ -208,7 +220,7 @@ const taskOutcome = z.discriminatedUnion("state", [
       prUrl: z.url().max(2048).optional(),
       headSha: z
         .string()
-        .regex(/^[a-f0-9]{40}$/i)
+        .regex(/^[A-Fa-f0-9]{40}$/)
         .optional(),
     })
     .strict(),
@@ -346,7 +358,7 @@ const prompt = z.object({
     .optional(),
   promptId: z.string(),
   conversationId: z.string().nullable(),
-  state: z.enum(["running", "finished", "interrupted", "failed"]),
+  state: z.enum(["queued", "running", "finished", "interrupted", "failed"]),
   reason: z.string().nullable(),
   requestedModel: z.string().nullable().optional(),
   observedModel: z.string().nullable().optional(),
@@ -438,6 +450,31 @@ const event = z.looseObject({
   promptId: z.string().optional(),
 });
 
+/** Output of the `logs` tool, also published (open) as the REST `logs/read` response (`REST_LOGS_RESPONSE`). */
+export const LOGS_OUTPUT = {
+  events: z.array(event),
+  cursor: z.string().nullable(),
+  olderCursor: z.string().optional(),
+  hasMore: z.boolean(),
+  settled: z.boolean().optional(),
+  source: z.literal("armada-runtime").optional(),
+  threadStatus: z
+    .object({ status: z.string(), statusMessage: z.string().nullable(), prompt: z.unknown(), usage: z.unknown() })
+    .optional(),
+  runtimeFailure: z.object({ status: z.literal("failed"), reason: z.string() }).optional(),
+  queuedPrompt: z
+    .object({
+      promptId: z.string(),
+      conversationId: z.string().nullable(),
+      state: z.string(),
+      reason: z.string().nullable(),
+    })
+    .optional()
+    .describe(
+      "Docker only: the latest prompt while the runtime has not admitted it (queued behind startup, or failed before admission).",
+    ),
+};
+
 export const sandboxListInput = z.object({
   harness: z.enum(HARNESSES).optional(),
   golden: z.string().uuid().optional().describe("Golden UUID, not a name."),
@@ -456,7 +493,8 @@ export function createArmadaServer(context: ToolContext, version: string, option
     { ...serverInfo, version },
     {
       instructions:
-        "Armada launches Claude Code or Codex agents in boat.dev sandboxes forked from a golden. " +
+        "Armada launches Claude Code, Codex and OpenCode agents in sandboxes. " +
+        "Provider and agent availability depend on server configuration. In these tools, a golden is a snapshot. " +
         "Typical flow: golden_list, launch (with a prompt to start at once), then wait or status, logs to read " +
         "what the agent did, send for the next instruction, and stop when done. Ids are Armada sandbox ids.",
     },
@@ -1541,7 +1579,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
       title: "Sandbox status",
       description:
         "Where a sandbox and its latest turn are. Modal uses authorized stored observations; physical state is refreshed by the lifecycle worker. Boat is read live. prompt.state is " +
-        "running, finished, interrupted or failed; failed includes a usage limit or an expired login, with " +
+        "queued (accepted by a starting Docker sandbox, not yet admitted by its runtime), running, finished, interrupted or failed; failed includes a usage limit or an expired login, with " +
         "the reason. settled is true when the agent is not working.",
       input: {
         id,
@@ -1607,18 +1645,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
         maxBytes: z.number().int().min(256).max(1048576).optional(),
         coalesce: z.boolean().optional(),
       },
-      output: {
-        events: z.array(event),
-        cursor: z.string().nullable(),
-        olderCursor: z.string().optional(),
-        hasMore: z.boolean(),
-        settled: z.boolean().optional(),
-        source: z.literal("armada-runtime").optional(),
-        threadStatus: z
-          .object({ status: z.string(), statusMessage: z.string().nullable(), prompt: z.unknown(), usage: z.unknown() })
-          .optional(),
-        runtimeFailure: z.object({ status: z.literal("failed"), reason: z.string() }).optional(),
-      },
+      output: LOGS_OUTPUT,
       readOnly: true,
     },
     async (args) => {

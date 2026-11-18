@@ -60,6 +60,8 @@ export type LaunchStartTarget = {
   provider: import("@armada/core").SandboxPlacementProviderId;
   snapshotId?: string;
   hostId?: string;
+  /** The Docker host name shown on the launch form; the group label is display text only. */
+  hostName?: string;
   repositories: readonly string[];
   sizing?: { policy: import("@armada/core").MachineSizePolicy | null };
   harnesses?: import("@armada/core").Harness[];

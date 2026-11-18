@@ -33,6 +33,7 @@ import { selectedOrganization } from "@/lib/data/selected-org";
 import type { Membership } from "@/lib/data/viewer";
 import { type DockerHost, HOSTS_PATH, hostState, sandboxCount } from "@/lib/docker-hosts";
 import { type DockerLaunchOption, dockerHarnesses, dockerLaunchBlocker, dockerUnavailable } from "@/lib/docker-launch";
+import { CLOUD_PROVIDERS_LABEL, DOCKER_HOSTS_LABEL } from "@/lib/labels";
 import type { LaunchAccounts } from "@/lib/model-accounts";
 import { CLOUD_PROVIDERS_PATH, isConfigured, SETUP_PROVIDERS } from "@/lib/provider-setup";
 import { relativeAge } from "@/lib/relative-time";
@@ -126,7 +127,7 @@ function SandboxProviders({
           <MachinesSection
             key={selected.org.id}
             initial={initial}
-            label="Cloud providers"
+            label={CLOUD_PROVIDERS_LABEL}
             rows={SETUP_PROVIDERS.map((provider) => {
               const state: ProviderRowState =
                 setup.state === "unavailable"
@@ -233,7 +234,7 @@ async function OwnServers({
       {cloud}
       <MachinesSection
         key={orgId}
-        label="Docker hosts"
+        label={DOCKER_HOSTS_LABEL}
         rows={rows}
         initial={requested}
         empty={
@@ -260,7 +261,7 @@ async function OwnServers({
       <div className="space-y-3">
         {!hosts.list.placement && (
           <p className="text-sm text-muted-foreground">
-            Launching on your own servers is not enabled here yet. You can still view their connections.
+            Docker host launches are disabled here. You can still view connected Docker hosts.
           </p>
         )}
 
@@ -281,7 +282,7 @@ async function OwnServers({
         {showSetup && (
           <p className="text-sm text-muted-foreground">
             {isAdmin
-              ? "These machines have not connected yet. If you no longer have the install command, unlink the entry and add the server again to get a new one. Unlinking an entry does not uninstall anything on your machine."
+              ? "These machines have not connected yet. If you no longer have the install command, unlink the entry and add the Docker host again to get a new one. Unlinking an entry does not uninstall anything on your machine."
               : "These machines have not connected yet. Ask an organization admin to finish setup or remove unused entries."}
           </p>
         )}

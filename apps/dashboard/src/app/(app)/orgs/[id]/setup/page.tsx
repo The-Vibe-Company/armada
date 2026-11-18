@@ -9,10 +9,11 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { isUuid } from "@/lib/action";
 import { isSelectedOrganization } from "@/lib/data/selected-org";
 import { listMemberships, requireViewer } from "@/lib/data/viewer";
+import { CLOUD_PROVIDERS_LABEL } from "@/lib/labels";
 import { CLOUD_PROVIDERS_PATH } from "@/lib/provider-setup";
 import { createClient } from "@/lib/supabase/server";
 
-export const metadata: Metadata = { title: "Sandbox providers" };
+export const metadata: Metadata = { title: CLOUD_PROVIDERS_LABEL };
 export const dynamic = "force-dynamic";
 
 type Props = { params: Promise<{ id: string }> };
@@ -32,7 +33,7 @@ export default async function ProviderSetupPage({ params }: Props) {
   const { org } = membership;
   return (
     <div className="max-w-2xl space-y-6">
-      <PageHeader title={`Sandbox providers for ${org.name}`}>
+      <PageHeader title={`${CLOUD_PROVIDERS_LABEL} for ${org.name}`}>
         <Button variant="outline" asChild>
           <Link href={`/orgs/${org.id}`}>Members</Link>
         </Button>

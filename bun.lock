@@ -133,6 +133,13 @@
         "modal": "0.11.1",
       },
     },
+    "packages/sdk": {
+      "name": "@armada/sdk",
+      "version": "2.54.0",
+      "dependencies": {
+        "@armada/core": "workspace:*",
+      },
+    },
   },
   "packages": {
     "@ai-sdk/provider": ["@ai-sdk/provider@4.0.37", "", { "dependencies": { "json-schema": "^0.4.0" } }, "sha512-4uPgZ3qiX/JaQFr0dQoibUzHImZit9u05ro2BxGUnJwU4fV28BOAbKUa2OjQvqtM1tMac3bTKkaXdyzGovQXqg=="],
@@ -196,6 +203,8 @@
     "@armada/provider-boat": ["@armada/provider-boat@workspace:packages/provider-boat"],
 
     "@armada/provider-modal": ["@armada/provider-modal@workspace:packages/provider-modal"],
+
+    "@armada/sdk": ["@armada/sdk@workspace:packages/sdk"],
 
     "@babel/runtime": ["@babel/runtime@7.29.13", "", {}, "sha512-v+oN26xP4YIlQsbQ/CbTH1WG5m/l/DjKKZNy/Kp3f/AFvbgt7Em/D0FeMM3O2hX0YzeN2M16W8lOpyhIkfCBcQ=="],
 

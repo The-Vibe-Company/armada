@@ -43,7 +43,7 @@ import { sandboxHostLabel } from "@/lib/docker-hosts";
 import { type DockerSandboxControls, dockerImageLabel, dockerSandboxControls } from "@/lib/docker-launch";
 import { mcpUrl } from "@/lib/env";
 import { isActiveStatus } from "@/lib/events";
-import { HARNESS_LABELS } from "@/lib/labels";
+import { DOCKER_HOST_LABEL, HARNESS_LABELS } from "@/lib/labels";
 import { launchTimingFact } from "@/lib/launch-timing";
 import { formatDuration, lifecycleView, readLifecycle } from "@/lib/lifecycle";
 import { describeEvidence } from "@/lib/machine-size";
@@ -163,7 +163,7 @@ export default async function SandboxPage({ params }: Props) {
     ["Snapshot", golden ? `${golden.name}${golden.removed_at ? " (removed)" : ""}` : "Unknown"],
     ["Org", org?.org.name ?? "Unknown"],
     ["Provider", sandbox.provider === "boat" ? "Boat cloud" : "Modal cloud"],
-    ["Harness", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
+    ["Agent", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
     ["Account", account.name],
     ["Billing type", account.billing],
     ["Model", sandbox.model ?? "Provider default"],
@@ -263,7 +263,7 @@ export default async function SandboxPage({ params }: Props) {
             <h2 className="text-xs font-medium text-muted-foreground">Agent</h2>
             <Facts
               facts={[
-                ["Harness", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
+                ["Agent", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
                 ["Model", sandbox.model ?? "Provider default"],
                 ["Effort", sandbox.reasoning_effort ?? "Provider default"],
               ]}
@@ -437,11 +437,11 @@ function DockerSandbox({
   const facts: Fact[] = [
     ["Sandbox ID", sandbox.id],
     ["Org", org],
-    ["Provider", `your server ${host}`],
-    ["Host", host],
+    ["Provider", `${DOCKER_HOST_LABEL} ${host}`],
+    [DOCKER_HOST_LABEL, host],
     ["Image", image.label, image.detail ?? undefined],
     ...(sandbox.provider_sandbox_id ? [["Container", sandbox.provider_sandbox_id] as Fact] : []),
-    ["Harness", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
+    ["Agent", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
     ["Account", billing.name],
     ["Billing type", billing.billing],
     ["Model", sandbox.model ?? "Provider default"],
@@ -499,9 +499,7 @@ function DockerSandbox({
       )}
       <SandboxAttention sandbox={sandbox} viewer={viewer} />
 
-      <p className="text-sm text-muted-foreground">
-        {life.remaining} · The time limit cannot be extended on your own server.
-      </p>
+      <p className="text-sm text-muted-foreground">{life.remaining} · Docker host sandboxes have a fixed time limit.</p>
       <div
         data-fit="body"
         className="grid items-start gap-2 md:gap-6 lg:grid-cols-[minmax(0,1fr)_19.5rem] lg:has-[[data-details-open=false]]:grid-cols-1"
@@ -560,7 +558,7 @@ function DockerSandbox({
             <h2 className="text-xs font-medium text-muted-foreground">Agent</h2>
             <Facts
               facts={[
-                ["Harness", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
+                ["Agent", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
                 ["Model", sandbox.model ?? "Provider default"],
                 ["Effort", sandbox.reasoning_effort ?? "Provider default"],
               ]}
@@ -575,7 +573,6 @@ function DockerSandbox({
                 ["Who can open it", "Owner and organization admins"],
               ]}
             />
-            <p className="text-muted-foreground">Sandboxes on your own server do not get tools yet.</p>
           </section>
           <PullRequestSection value={sandbox.pull_requests} />
           <details className="text-sm">
@@ -655,9 +652,9 @@ function RestrictedSandbox({ sandbox, owner }: { sandbox: SandboxListMetadata; o
   const facts: [string, string][] = [
     [
       "Provider",
-      sandbox.provider === "boat" ? "Boat cloud" : sandbox.provider === "modal" ? "Modal cloud" : "your server",
+      sandbox.provider === "boat" ? "Boat cloud" : sandbox.provider === "modal" ? "Modal cloud" : DOCKER_HOST_LABEL,
     ],
-    ["Harness", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
+    ["Agent", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
     ["Model", sandbox.model ?? "Provider default"],
     ["Reasoning effort", sandbox.reasoningEffort ?? "Provider default"],
     ["Machine size", sandbox.machineSize ? machineSizeLabel(sandbox.machineSize) : "Not recorded"],

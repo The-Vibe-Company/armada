@@ -9,7 +9,7 @@ import Observation
 /// status, the turn's state and the conversation are read in parallel, the composer depends on the
 /// state only, and the transcript shows what this session already read, otherwise its first page.
 ///
-/// `sandbox/send` has no idempotency key, so a prompt is sent exactly once. When its outcome is
+/// Native providers do not deduplicate `sandbox/send`, so a prompt is sent exactly once. When its outcome is
 /// unknown the bubble says so and offers only Dismiss: the transcript shows the prompt if Armada
 /// received it, and the person decides whether to write again.
 @MainActor

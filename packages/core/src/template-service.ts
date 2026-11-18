@@ -149,6 +149,23 @@ function dto(h: Header): LaunchTemplate {
   };
 }
 
+/** Every field the REST `templates/launch` route accepts; the published OpenAPI request lists exactly these. */
+export const TEMPLATE_LAUNCH_FIELDS = [
+  "org",
+  "id",
+  "revision",
+  "requestKey",
+  "prompt",
+  "ttlSeconds",
+  "size",
+  "repo",
+  "skills",
+  "skipSkillDefaults",
+  "modelAccount",
+  "externalRef",
+  "stopWhenWorkMerged",
+] as const;
+
 /** Service-role owner: both transports share validation, reference authorization and admission. */
 export function createTemplateService(sql: Sql, encryptionKey?: string) {
   async function transaction<T>(work: (tx: Sql) => Promise<T>): Promise<T> {
@@ -425,21 +442,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       get: ["org", "id", "revision"],
       publish: ["org", "id", "expectedRevision", "definition"],
       delete: ["org", "id", "expectedRevision"],
-      launch: [
-        "org",
-        "id",
-        "revision",
-        "requestKey",
-        "prompt",
-        "ttlSeconds",
-        "size",
-        "repo",
-        "skills",
-        "skipSkillDefaults",
-        "modelAccount",
-        "externalRef",
-        "stopWhenWorkMerged",
-      ],
+      launch: [...TEMPLATE_LAUNCH_FIELDS],
     };
     if (!allowed[operation]) invalid();
     fields(input, allowed[operation]!);

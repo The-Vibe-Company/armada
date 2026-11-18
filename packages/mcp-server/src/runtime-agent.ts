@@ -23,7 +23,7 @@ import {
   type SteerRequest,
 } from "@armada/core";
 import { PRIVATE_SKILL_FAILURES, PrivateSkillError } from "../../core/src/private-skill-error.ts";
-import type { createRuntimeCommands } from "./runtime-commands.ts";
+import { type createRuntimeCommands, RuntimeCommandRefused } from "./runtime-commands.ts";
 
 const errors: Record<string, ProviderErrorCode> = {
   not_found: "not_found",
@@ -150,6 +150,8 @@ export function createRuntimeAgent(
       });
     } catch (error) {
       if (error instanceof ProviderError) throw error;
+      // Refused before admission: nothing was written, so the refusal is definite.
+      if (error instanceof RuntimeCommandRefused) throw refusal("conflict");
       // A lost wait is not proof of non-execution. Preserve the exact identity for
       // reconciliation; never include transport errors or private payloads.
       throw refusal("conflict", command.requestId);

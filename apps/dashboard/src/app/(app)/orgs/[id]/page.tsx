@@ -4,6 +4,7 @@ import { notFound, redirect } from "next/navigation";
 import { inviteMember, resendInvitation, revokeInvitation } from "@/app/actions/invitations";
 import { InvitationList } from "@/components/invitations";
 import { InviteMemberDialog } from "@/components/invite-member-dialog";
+import { LangfuseSection } from "@/components/langfuse-section";
 import { MemberRoleForm, RemoveMember } from "@/components/member-controls";
 import { PageHeader, SectionHeader } from "@/components/page-header";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -181,6 +182,7 @@ export default async function OrgPage({ params, searchParams }: Props) {
           )}
         </section>
       )}
+      <LangfuseSection key={id} org={id} admin={isAdmin} now={now.getTime()} />
     </div>
   );
 }

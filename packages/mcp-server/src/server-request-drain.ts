@@ -1,5 +1,8 @@
 import { observeRequest } from "./request-observability.ts";
 
+/** Refusal sent before dispatch while the server drains; `openapi.ts` publishes this exact shape. */
+export const DRAIN_REFUSAL = { body: { error: "temporarily_unavailable" }, retryAfterSeconds: 5 } as const;
+
 interface ServerRequestDrain {
   fetch(request: Request): Response | Promise<Response>;
   readonly requests: ReadonlySet<Promise<unknown>>;
@@ -16,7 +19,11 @@ export function createServerRequestDrain(
   const fetch = (request: Request) => {
     if (draining)
       return observeRequest(
-        () => Response.json({ error: "temporarily_unavailable" }, { status: 503, headers: { "retry-after": "5" } }),
+        () =>
+          Response.json(DRAIN_REFUSAL.body, {
+            status: 503,
+            headers: { "retry-after": String(DRAIN_REFUSAL.retryAfterSeconds) },
+          }),
         log,
       );
     const pending = handler(request).then((response) => {
