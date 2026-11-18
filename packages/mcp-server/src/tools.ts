@@ -19,8 +19,6 @@ import {
   type GoldenRecord,
   goldenForLaunch,
   HARNESSES,
-  isNonMutatingProviderRefusal,
-  type LaunchCredentialResolver,
   LaunchError,
   type LaunchOptions,
   type LaunchStores,
