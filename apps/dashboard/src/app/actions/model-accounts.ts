@@ -21,6 +21,7 @@ import {
 import { connectionTestOutcome, matchesConnectionTestSandbox } from "@/lib/model-connection-check";
 import {
   customAccountValue,
+  morphAccountValue,
   presetAccountValue,
   presetReplacementValue,
   replacementClaudeAccountValue,
@@ -95,9 +96,11 @@ export async function addAccount(_previous: ActionResult | null, data: FormData)
   if (!name.ok) return fail(name.error);
   const value =
     fromPreset ??
-    (data.get("customEndpoint") === "on"
-      ? customAccountValue(kind as AccountKind, data)
-      : secret(kind as AccountKind, data.get("value")));
+    (kind === "morph"
+      ? morphAccountValue(data)
+      : data.get("customEndpoint") === "on"
+        ? customAccountValue(kind as AccountKind, data)
+        : secret(kind as AccountKind, data.get("value")));
   if (!value.ok) return fail(value.error);
 
   const maxAgents = formAgentLimit(data);
@@ -153,7 +156,9 @@ export async function replaceAccountSecret(_previous: ActionResult | null, data:
         ? replacementClaudeAccountValue(data)
         : kind === "opencode"
           ? replacementOpenCodeAccountValue(data)
-          : secret(kind as AccountKind, data.get("value")));
+          : kind === "morph"
+            ? morphAccountValue(data, { replacing: true })
+            : secret(kind as AccountKind, data.get("value")));
   if (!value.ok) return fail(value.error);
   try {
     const saved = await context.control.set({

@@ -1,4 +1,4 @@
-import { type AgentDefault, type Harness, MODEL_CATALOG, MORPH_MODEL_IDS } from "@armada/core";
+import { type AgentDefault, type Harness, MODEL_CATALOG } from "@armada/core";
 import { accountState, accountsFor, isUsable, launchDefault, type ModelAccount } from "./model-accounts";
 
 /** Capacity refuses new launches; it does not imply that existing agents cannot send messages. */
@@ -13,8 +13,9 @@ export function modelsPageStatus(account: ModelAccount, now: number) {
 
 /** Custom endpoints declare model IDs, but do not declare a default. Never invent one. */
 export function modelsPageModel(account: ModelAccount, harness: Harness): string {
+  if (account.kind === "morph") return account.models?.[0]?.model ?? "Model list unavailable";
   if (account.models?.length) return "the model you choose at launch";
-  return account.kind === "morph" ? MORPH_MODEL_IDS[0] : MODEL_CATALOG[harness].defaultModel;
+  return MODEL_CATALOG[harness].defaultModel;
 }
 
 /** A missing personal selection is broken, never silently replaced by another payer. */

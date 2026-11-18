@@ -32,6 +32,16 @@ test("custom endpoint models are not mistaken for a saved default", () => {
   expect(modelsPageModel(account, "codex")).toBe("gpt-6.2-sol");
 });
 
+test("the Morph account summary shows its first saved model as the default", () => {
+  const morph = {
+    ...account,
+    kind: "morph" as const,
+    models: [{ model: "owner/model-v2", input: null, output: null }],
+  };
+  expect(modelsPageModel(morph, "opencode")).toBe("owner/model-v2");
+  expect(modelsPageModel({ ...morph, models: undefined }, "opencode")).toBe("Model list unavailable");
+});
+
 test("personal per-agent accounts override account-wide defaults without billing fallback", () => {
   const shared = { ...account, id: "shared_account", kind: "morph" as const, isDefault: false, maxAgents: null };
   const defaults = [{ harness: "codex" as const, credentialId: shared.id, model: "morph-kimik31" }];
