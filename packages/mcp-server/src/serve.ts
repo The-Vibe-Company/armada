@@ -193,37 +193,40 @@ export async function startServer(
     await sql.close();
     throw error;
   }
-  const providerFor = (apiKey: string, caller?: { userId: string; orgId: string }) => {
-    const provider = createObservedBoatProvider({
-      apiKey,
-      sanitizeEvents: async (provider, id, events) => {
-        if (!caller) throw Error("Native events require trusted Armada caller scope.");
-        return modelAuth.redactEvents(provider, id, caller, events);
+  const providerFor = (apiKey: string, caller?: { userId: string; orgId: string }, sandboxId?: string) => {
+    const provider = createObservedBoatProvider(
+      {
+        apiKey,
+        sanitizeEvents: async (provider, id, events) => {
+          if (!caller) throw Error("Native events require trusted Armada caller scope.");
+          return modelAuth.redactEvents(provider, id, caller, events);
+        },
+        beforeStop: async (provider, id) => {
+          if (caller) await modelAuth.beforeStop(provider, id, caller);
+        },
+        afterPrompt: async (provider, id) => {
+          if (caller) await modelAuth.capture(provider, id, caller);
+        },
+        resumeRefused: (provider, id) => modelAuth.releaseProviderCapacity(provider, id),
+        beforeResume: async (provider, id) => {
+          if (!caller) throw Error("Native resume requires trusted Armada caller scope.");
+          await modelAuth.beforeResume(provider, id, caller);
+          return mcp.beforeResume(provider, id, caller);
+        },
+        beforePrompt: async (provider, id) => {
+          if (!caller) throw Error("Native prompt requires trusted Armada caller scope.");
+          await mcp.beforePrompt(provider, id, caller);
+          await modelAuth.beforePrompt(provider, id, caller);
+          await sandboxArmadaAccess.beforePrompt(provider, id);
+        },
+        beforeSnapshot: async (provider, id) => {
+          if (caller) await modelAuth.capture(provider, id, caller);
+          await sandboxArmadaAccess.beforeSnapshot(provider, id);
+          await mcp.beforeSnapshot(provider, id);
+        },
       },
-      beforeStop: async (provider, id) => {
-        if (caller) await modelAuth.beforeStop(provider, id, caller);
-      },
-      afterPrompt: async (provider, id) => {
-        if (caller) await modelAuth.capture(provider, id, caller);
-      },
-      resumeRefused: (provider, id) => modelAuth.releaseProviderCapacity(provider, id),
-      beforeResume: async (provider, id) => {
-        if (!caller) throw Error("Native resume requires trusted Armada caller scope.");
-        await modelAuth.beforeResume(provider, id, caller);
-        return mcp.beforeResume(provider, id, caller);
-      },
-      beforePrompt: async (provider, id) => {
-        if (!caller) throw Error("Native prompt requires trusted Armada caller scope.");
-        await mcp.beforePrompt(provider, id, caller);
-        await modelAuth.beforePrompt(provider, id, caller);
-        await sandboxArmadaAccess.beforePrompt(provider, id);
-      },
-      beforeSnapshot: async (provider, id) => {
-        if (caller) await modelAuth.capture(provider, id, caller);
-        await sandboxArmadaAccess.beforeSnapshot(provider, id);
-        await mcp.beforeSnapshot(provider, id);
-      },
-    });
+      sandboxId,
+    );
     if (config.githubRuntimeEnabled)
       provider.configureGitHub = ({ sandboxId, configuration }) =>
         configureBoatGitHub(provider, sandboxId, configuration);

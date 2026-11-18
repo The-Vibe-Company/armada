@@ -1527,13 +1527,19 @@ test("queued prompt receipt publication loss reconciles one native turn and pres
     clock: f.clock,
     send: createDockerNormalSend(sql, key, { enabled: true, clock: f.clock }),
   });
-  const queued = await controls.invoke(f.caller, "send", {
-    id: f.body.requestId,
-    request_id: randomUUID(),
-    prompt: "Dispatch exactly once",
-  });
-  if (!queued.handled) throw Error("not handled");
+  const input = { id: f.body.requestId, request_id: randomUUID(), prompt: "Dispatch exactly once" };
+  const admit = () =>
+    observeRequest(
+      async () => Response.json(await controls.invoke(f.caller, "send", input)),
+      () => {},
+    );
+  const accepted = await admit();
+  const queued = (await accepted?.json()) as Awaited<ReturnType<typeof controls.invoke>> | undefined;
+  if (!queued?.handled) throw Error("not handled");
   const { promptId } = queued.result as { promptId: string };
+  const replay = await admit();
+  expect(await replay?.json()).toEqual(queued);
+  expect(replay?.headers.get("x-request-id")).not.toBe(accepted?.headers.get("x-request-id"));
   await server.drain();
   await server.drainQueued();
   expect(lost).toBe(true);
@@ -1546,6 +1552,14 @@ test("queued prompt receipt publication loss reconciles one native turn and pres
   const recovered = f.service(sql, true, 10000, officialImage, true);
   await recovered.drainQueued();
   expect(f.native.filter((c) => (c as { op: string }).op === "prompt")).toHaveLength(1);
+  expect(
+    (
+      await database().query("select correlation_id from runtime_commands where sandbox_id=$1 and request_id=$2", [
+        input.id,
+        `docker_prompt_${input.request_id}`,
+      ])
+    ).rows,
+  ).toEqual([{ correlation_id: accepted?.headers.get("x-request-id") }]);
   expect(await controls.invoke(f.caller, "status", { id: f.body.requestId, prompt_id: promptId })).toMatchObject({
     handled: true,
     result: { prompt: { promptId, state: "finished" } },

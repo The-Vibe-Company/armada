@@ -1,4 +1,5 @@
-import type { RuntimeStartupFailure } from "../../core/src/runtime-startup-failure.ts";
+import type { RuntimeOperatorDiagnostic } from "../../core/src/runtime-operator-diagnostic.ts";
+import type { RuntimeHarnessFailureStage, RuntimeStartupFailure } from "../../core/src/runtime-startup-failure.ts";
 import type { IngestClient, RunnerRequest } from "./protocol.ts";
 
 const MAX_FRAME = 1048576;
@@ -147,11 +148,21 @@ export class RuntimeDialout implements IngestClient {
     if (batch.sandboxId !== this.session.sandboxId || batch.generation !== this.session.epoch) this.revoke();
     return (await this.post("events", batch)) as Awaited<ReturnType<IngestClient["append"]>>;
   }
-  async progress(stage: "enrolled" | "harness_started" | "runtime_failed", reason?: RuntimeStartupFailure) {
-    // Best effort and bounded independently of command delivery. No raw diagnostics.
+  async progress(
+    stage: "enrolled" | "harness_started" | "runtime_failed" | RuntimeHarnessFailureStage,
+    reason?: RuntimeStartupFailure,
+    diagnostic?: RuntimeOperatorDiagnostic,
+    commandId?: string,
+  ) {
+    // Best effort and bounded independently of command delivery.
     await this.post(
       "progress",
-      { stage, ...(stage === "runtime_failed" && reason ? { reason } : {}) },
+      {
+        stage,
+        ...(reason ? { reason } : {}),
+        ...(diagnostic ? { diagnostic } : {}),
+        ...(commandId ? { commandId } : {}),
+      },
       undefined,
       3000,
     );

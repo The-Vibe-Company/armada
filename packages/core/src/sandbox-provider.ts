@@ -146,6 +146,8 @@ export function sandboxRowModalBinding(row: {
 export interface ProviderTarget {
   /** Persisted sandbox hints; goldens never opt in. Runtime routing fails closed without id. */
   readonly id?: string;
+  /** Explicit logical sandbox identity for a projected target that omits the sandbox record. */
+  readonly sandboxId?: string;
   readonly boatRuntime?: true;
   readonly runtimeTransport?: "dialout";
   provider: SandboxProviderId;

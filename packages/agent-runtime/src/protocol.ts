@@ -59,6 +59,12 @@ export interface ExecEnvironment {
 export interface RunnerExecutionOptions {
   workspaceHost?: import("./workspace-exec.ts").WorkspaceExecutionHost;
   prepareWorkspace?: () => Promise<void>;
+  reportHarnessFailure?: (
+    stage: import("../../core/src/runtime-startup-failure.ts").RuntimeHarnessFailureStage,
+    error: unknown,
+    requestId: string,
+    reason?: string,
+  ) => void;
   /** Set by enrolled main after checkpoint/native verification. Null conversation means a verified empty journal. */
   restoredFrom?: { epoch: string; watermark: number; conversationId: string | null };
   /** Only runtime bootstrap supplies this callback; RPC cannot supply credentials or destinations. */

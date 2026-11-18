@@ -1,7 +1,12 @@
 import type { RunnerRequest } from "@armada/agent-runtime";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
 import type { Route } from "./http.ts";
-import { noteAdmission, observeProviderCall } from "./request-observability.ts";
+import {
+  currentRequestId,
+  noteAdmission,
+  observeProviderCall,
+  recordOperatorDiagnostic,
+} from "./request-observability.ts";
 import { type createRuntimeEnrolments, RuntimeEnrolmentDenied, type RuntimeOwnerScope } from "./runtime-enrolment.ts";
 import { runtimeHttpFailure } from "./runtime-http-failure.ts";
 
@@ -138,11 +143,16 @@ export function createRuntimeCommands(
         ) - 4; // Replace the JSON null with the already serialized command.
       if (Buffer.byteLength(serialized) + overhead > MAX_COMMAND) throw new RuntimeCommandRefused();
       await tx.query(
-        "insert into public.runtime_commands(sandbox_id,request_id,epoch,request_enc) values($1,$2,$3,$4)",
-        [scope.sandboxId, request.requestId, scope.epoch, sealed],
+        "insert into public.runtime_commands(sandbox_id,request_id,epoch,request_enc,correlation_id) values($1,$2,$3,$4,$5)",
+        [
+          scope.sandboxId,
+          request.requestId,
+          scope.epoch,
+          sealed,
+          request.op === "prompt" ? (currentRequestId() ?? null) : null,
+        ],
       );
       noteAdmission();
-      // `fresh`: this call inserted the command (see `call`'s `admitted`).
       return { epoch: scope.epoch, requestId: request.requestId, provider: scope.provider, fresh: true };
     });
   }
@@ -270,26 +280,41 @@ export function createRuntimeCommands(
    * reply. Callers keep their public fallbacks.
    * Docker launch, send, resume and preview runtime routes admit some commands in their own
    * transaction (enqueue + result); those are recorded by the enclosing Docker provider record.
-   * A caller that enqueued in its own fenced transaction passes that enqueue's `fresh` as
-   * `admitted`: the runner may answer before the first result read, so only the original insert
-   * tells a fresh admission from a replay.
    */
-  async function call(
+  type CallOptions = {
+    signal?: AbortSignal;
+    timeoutMs?: number;
+    expectedEpoch?: string;
+    accept?: (reply: RuntimeCommandReply) => boolean;
+  };
+
+  function call(ownerId: string, request: RunnerRequest, options: CallOptions = {}): Promise<RuntimeCommandReply> {
+    return callPrepared(ownerId, request.op, async () => ({ request, options }), undefined, request.sandboxId);
+  }
+
+  /** Admit under the caller's authority transaction, then wait after it commits. */
+  async function callPrepared(
     ownerId: string,
-    request: RunnerRequest,
-    options: {
-      signal?: AbortSignal;
-      timeoutMs?: number;
-      expectedEpoch?: string;
-      accept?: (reply: RuntimeCommandReply) => boolean;
-      admitted?: boolean;
-    } = {},
+    operation: RunnerRequest["op"],
+    prepare: () => Promise<{ request: RunnerRequest; options: CallOptions }>,
+    knownProvider?: RuntimeOwnerScope["provider"],
+    knownSandboxId?: string,
   ): Promise<RuntimeCommandReply> {
-    let provider: RuntimeOwnerScope["provider"];
+    let provider = knownProvider;
+    let sandboxId = knownSandboxId;
+    let acceptReply: (reply: RuntimeCommandReply) => boolean = () => false;
     return observeProviderCall(
       () => provider,
-      `runtime.${request.op}`,
+      `runtime.${operation}`,
       async () => {
+        const { request, options } = await prepare();
+        sandboxId = request.sandboxId;
+        acceptReply = (reply) =>
+          reply.status === 200 &&
+          reply.body.version === 1 &&
+          reply.body.requestId === request.requestId &&
+          reply.body.error === undefined &&
+          (options.accept?.(reply) ?? true);
         const timeout = options.timeoutMs ?? 120_000;
         if (
           !Number.isSafeInteger(timeout) ||
@@ -302,7 +327,6 @@ export function createRuntimeCommands(
         const deadline = time.now() + timeout;
         const admitted = await enqueue(ownerId, request, options.expectedEpoch);
         provider = admitted.provider;
-        if (options.admitted) noteAdmission();
         while (true) {
           signal.throwIfAborted();
           const response = await result(ownerId, request.sandboxId, request.requestId, admitted.epoch);
@@ -318,14 +342,21 @@ export function createRuntimeCommands(
           await time.wait(Math.min(interval, remaining), signal);
         }
       },
-      (reply) =>
-        reply.status === 200 &&
-        reply.body.version === 1 &&
-        reply.body.requestId === request.requestId &&
-        reply.body.error === undefined &&
-        (options.accept?.(reply) ?? true),
+      (reply) => {
+        if (acceptReply(reply)) return true;
+        recordOperatorDiagnostic(
+          `runtime.${operation}`,
+          {
+            errorClass: "RuntimeCommandReply",
+            message: `Runtime reply rejected (HTTP ${reply.status})`,
+            stack: [],
+          },
+          { sandboxId },
+        );
+        return false;
+      },
       // A retried request ID whose reply is already stored is answered from the database.
-      { replayable: true },
+      { replayable: true, sandboxId: () => sandboxId },
     );
   }
   const route: Route = async (request) => {
@@ -353,5 +384,5 @@ export function createRuntimeCommands(
       return runtimeHttpFailure(status, status === 409 ? "runtime_command_conflict" : undefined);
     }
   };
-  return { enqueue, next, withNext, complete, result, call, route };
+  return { enqueue, next, withNext, complete, result, call, callPrepared, route };
 }

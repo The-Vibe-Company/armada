@@ -701,6 +701,7 @@ export type Database = {
           worker_expires_at: string | null;
           created_at: string;
           conversation_id: string | null;
+          correlation_id: string | null;
         };
         Insert: {
           sandbox_id: string;
@@ -721,6 +722,7 @@ export type Database = {
           worker_expires_at?: string | null;
           created_at?: string;
           conversation_id?: string | null;
+          correlation_id?: string | null;
         };
         Update: {
           sandbox_id?: string;
@@ -741,6 +743,7 @@ export type Database = {
           worker_expires_at?: string | null;
           created_at?: string;
           conversation_id?: string | null;
+          correlation_id?: string | null;
         };
         Relationships: [
           {
@@ -4088,6 +4091,7 @@ export type Database = {
           epoch: number;
           request_enc: string;
           result_enc: string | null;
+          correlation_id: string | null;
         };
         Insert: {
           sandbox_id: string;
@@ -4096,6 +4100,7 @@ export type Database = {
           epoch: number;
           request_enc: string;
           result_enc?: string | null;
+          correlation_id?: string | null;
         };
         Update: {
           sandbox_id?: string;
@@ -4104,6 +4109,7 @@ export type Database = {
           epoch?: number;
           request_enc?: string;
           result_enc?: string | null;
+          correlation_id?: string | null;
         };
         Relationships: [
           {
@@ -4126,6 +4132,7 @@ export type Database = {
           runtime_hash: string | null;
           docker_issuer_fence: string | null;
           pricing_context: Json | null;
+          correlation_id: string | null;
         };
         Insert: {
           sandbox_id: string;
@@ -4137,6 +4144,7 @@ export type Database = {
           runtime_hash?: string | null;
           docker_issuer_fence?: string | null;
           pricing_context?: Json | null;
+          correlation_id?: string | null;
         };
         Update: {
           sandbox_id?: string;
@@ -4148,6 +4156,7 @@ export type Database = {
           runtime_hash?: string | null;
           docker_issuer_fence?: string | null;
           pricing_context?: Json | null;
+          correlation_id?: string | null;
         };
         Relationships: [
           {

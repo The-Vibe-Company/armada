@@ -27,51 +27,62 @@ export function createDockerLaunchEnvironment(
     const manifest = JSON.parse(await decryptSecret(row.request_enc, key));
     if (!Object.keys(manifest.variables ?? {}).length && !manifest.request.secrets?.length) return;
     if (!sql.transaction) throw new VaultError("unavailable", "Runtime environment delivery is unavailable.");
-    const prepared = await sql.transaction(async (tx) => {
-      const local = scopedRuntimeSql(tx);
-      const locked = createRuntimeEnrolments(local, key);
-      // Source members -> secret references -> host/sandbox/runtime. No runtime I/O under these locks.
-      await locked.lockSourceMembers(tx, id, caller.userId);
-      const current = (
-        await tx.query<{ org_id: string }>(
-          `select s.org_id from public.docker_launch_requests d join public.sandboxes s on s.id=d.sandbox_id
+    const transaction = sql.transaction.bind(sql);
+    let requestId: string | undefined;
+    const reply = await commands.callPrepared(
+      caller.userId,
+      "configureReadableVariables",
+      async () => {
+        const prepared = await transaction(async (tx) => {
+          const local = scopedRuntimeSql(tx);
+          const locked = createRuntimeEnrolments(local, key);
+          // Source members -> secret references -> host/sandbox/runtime. No runtime I/O under these locks.
+          await locked.lockSourceMembers(tx, id, caller.userId);
+          const current = (
+            await tx.query<{ org_id: string }>(
+              `select s.org_id from public.docker_launch_requests d join public.sandboxes s on s.id=d.sandbox_id
          join public.mcp_actor_epochs e on e.org_id=s.org_id and e.user_id=s.owner_id and e.epoch=d.actor_epoch
          where s.id=$1 and s.owner_id=$2 and s.org_id=any($3::uuid[])`,
-          [id, caller.userId, caller.orgs.map((org) => org.orgId)],
-        )
-      ).rows[0];
-      if (!current) throw new VaultError("forbidden", "Runtime environment delivery denied.");
-      const secrets = await resolveLaunchSecrets(
-        local,
-        { userId: caller.userId, orgId: current.org_id },
-        manifest.request.secrets ?? [],
-        key,
-      );
-      const variables = validateReadableVariables({ ...manifest.variables, ...secrets });
-      return locked.withOwner(id, caller.userId, async (_tx, scope) => {
-        const requestId = `docker_variables_${id}_${scope.epoch}`;
-        const request = {
-          version: 1 as const,
-          requestId,
-          sandboxId: id,
-          op: "configureReadableVariables" as const,
-          harness: row.harness,
-          variables,
+              [id, caller.userId, caller.orgs.map((org) => org.orgId)],
+            )
+          ).rows[0];
+          if (!current) throw new VaultError("forbidden", "Runtime environment delivery denied.");
+          const secrets = await resolveLaunchSecrets(
+            local,
+            { userId: caller.userId, orgId: current.org_id },
+            manifest.request.secrets ?? [],
+            key,
+          );
+          const variables = validateReadableVariables({ ...manifest.variables, ...secrets });
+          return locked.withOwner(id, caller.userId, async (_tx, scope) => {
+            const requestId = `docker_variables_${id}_${scope.epoch}`;
+            const request = {
+              version: 1 as const,
+              requestId,
+              sandboxId: id,
+              op: "configureReadableVariables" as const,
+              harness: row.harness,
+              variables,
+            };
+            await createRuntimeCommands(locked, key, clock).enqueue(caller.userId, request, scope.epoch);
+            return { request, epoch: scope.epoch };
+          });
+        });
+        requestId = prepared.request.requestId;
+        return {
+          request: prepared.request,
+          options: {
+            expectedEpoch: prepared.epoch,
+            timeoutMs: 60000,
+            accept: (candidate) =>
+              candidate.body.requestId === prepared.request.requestId &&
+              (candidate.body.result as { acknowledged?: boolean } | undefined)?.acknowledged === true,
+          },
         };
-        const { fresh } = await createRuntimeCommands(locked, key, clock).enqueue(caller.userId, request, scope.epoch);
-        return { request, epoch: scope.epoch, fresh };
-      });
-    });
-    const {
-      request: { requestId },
-      epoch,
-    } = prepared;
-    const reply = await commands.call(caller.userId, prepared.request, {
-      expectedEpoch: epoch,
-      admitted: prepared.fresh,
-      timeoutMs: 60000,
-      accept: (candidate) => (candidate.body.result as { acknowledged?: boolean } | undefined)?.acknowledged === true,
-    });
+      },
+      "docker",
+      id,
+    );
     const result = reply.body.result as { acknowledged?: boolean } | undefined;
     if (reply.status !== 200 || reply.body.requestId !== requestId || result?.acknowledged !== true)
       throw new VaultError("unavailable", "Runtime variable delivery is unavailable.");

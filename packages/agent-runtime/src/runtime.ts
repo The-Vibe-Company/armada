@@ -643,7 +643,7 @@ export class Runner {
       if (this.active.has(conversationId)) throw new RequestRefused("conversation_busy");
       const p: StoredPrompt = { promptId: crypto.randomUUID(), conversationId, status: "queued", request: r.input };
       this.journal.transition(p, "queued");
-      this.start(p);
+      this.start(p, r.requestId);
       return { promptId: p.promptId, conversationId, status: this.journal.get(p.promptId)?.status ?? "failed" };
     }
     const targets = r.conversationId
@@ -676,7 +676,7 @@ export class Runner {
     }
     throw new RequestRefused("invalid_operation");
   }
-  private start(p: StoredPrompt) {
+  private start(p: StoredPrompt, requestId: string) {
     const controller = new AbortController();
     this.journal.transition(p, "running");
     try {
@@ -699,19 +699,34 @@ export class Runner {
           }),
       });
       const active = { turn, controller, prompt: p, done: Promise.resolve(), terminal: false };
+      const publish = async () => {
+        try {
+          await this.publishNativeAuth?.();
+        } catch (error) {
+          this.execution.reportHarnessFailure?.("native_auth_publish_failed", error, requestId);
+          throw error;
+        }
+      };
       const done = turn.done
         .then(
           async (status) => {
             active.terminal = true;
-            await this.publishNativeAuth?.();
+            await publish();
             this.journal.transition(p, status);
           },
           async (error: unknown) => {
             const stopped = this.closing;
             active.terminal = true;
-            await this.publishNativeAuth?.();
             // A deliberate shutdown may make any native driver reject its pending RPC.
             // Preserve spontaneous child failures when the runner is still serving.
+            if (!stopped)
+              this.execution.reportHarnessFailure?.(
+                "harness_turn_failed",
+                error,
+                requestId,
+                error instanceof HarnessError ? error.reason : undefined,
+              );
+            await publish();
             this.journal.transition(
               p,
               stopped ? "interrupted" : "failed",
@@ -727,6 +742,12 @@ export class Runner {
       active.done = done;
       this.active.set(p.conversationId, active);
     } catch (error) {
+      this.execution.reportHarnessFailure?.(
+        "harness_start_failed",
+        error,
+        requestId,
+        error instanceof HarnessError ? error.reason : undefined,
+      );
       // Keep a definite start refusal's own code instead of flattening it into a generic failure.
       this.journal.transition(
         p,

@@ -7,6 +7,9 @@ import { runtimeHttpFailure } from "./runtime-http-failure.ts";
 const ENROL_PATH = "/api/runtime/enrol";
 const SESSION_PATH = "/api/runtime/session";
 const SOURCE_TRANSACTION = Symbol("runtime_source_transaction");
+
+import { currentRequestId } from "./request-observability.ts";
+
 export class RuntimeEnrolmentDenied extends Error {
   constructor() {
     super("runtime_enrolment_denied");
@@ -130,12 +133,12 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
       );
       const row = (
         await tx.query<{ epoch: string }>(
-          `insert into public.runtime_enrolments(sandbox_id,lifecycle_generation,enrolment_hash,enrolment_expires_at,configuration_enc,docker_issuer_fence,pricing_context)
-         values($1,$2,$3,now()+interval '5 minutes',$4,$5,$6::jsonb)
+          `insert into public.runtime_enrolments(sandbox_id,lifecycle_generation,enrolment_hash,enrolment_expires_at,configuration_enc,docker_issuer_fence,pricing_context,correlation_id)
+         values($1,$2,$3,now()+interval '5 minutes',$4,$5,$6::jsonb,$7)
          on conflict(sandbox_id) do update set lifecycle_generation=excluded.lifecycle_generation,
          enrolment_hash=excluded.enrolment_hash,enrolment_expires_at=excluded.enrolment_expires_at,
          configuration_enc=excluded.configuration_enc,docker_issuer_fence=excluded.docker_issuer_fence,
-         pricing_context=excluded.pricing_context,runtime_hash=null returning epoch::text`,
+         pricing_context=excluded.pricing_context,correlation_id=excluded.correlation_id,runtime_hash=null returning epoch::text`,
           [
             sandbox.id,
             sandbox.lifecycle_generation,
@@ -143,6 +146,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
             sealed,
             sandbox.docker_issuer_fence,
             JSON.stringify(pricing),
+            currentRequestId() ?? null,
           ],
         )
       ).rows[0];

@@ -18,23 +18,17 @@ import {
   type Sql,
   VERSION,
 } from "@armada/core/server";
-import {
-  AuthUnavailable,
-  authenticateCaller,
-  type CallerResult,
-  describeFailure,
-  type SupabaseProject,
-} from "./caller.ts";
+import { AuthUnavailable, authenticateCaller, type CallerResult, type SupabaseProject } from "./caller.ts";
 import type { DataSource } from "./data.ts";
 import { exposedSecrets, type GitHubLaunchOptions, launchCredentials } from "./launch-credentials.ts";
 import { observeNativeFirstToken } from "./launch-stage-record.ts";
-import { redactForLog } from "./log.ts";
 import type { ModelAuthOwnership } from "./model-auth.ts";
 import { createObservedMcpTransport } from "./observed-mcp-transport.ts";
 import type { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import type { ProviderMetadataFor } from "./provider-metadata.ts";
+import { diagnosticSandboxId } from "./provider-sandbox-target.ts";
 import { REQUEST_BODY_LIMIT_BYTES, withRequestBodyCeiling } from "./request-body-ceiling.ts";
-import { currentRequestId, observeRequest } from "./request-observability.ts";
+import { observeRequest, recordOperatorFailure } from "./request-observability.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
@@ -92,7 +86,7 @@ export interface HandlerOptions {
   goldenBuilds?: GoldenBuildJobs;
   goldenAdoption?: import("@armada/core/server").GoldenAdoption;
   /** A provider for one boat.dev key. The key is used in this process only. */
-  providerFor(apiKey: string, caller?: { userId: string; orgId: string }): Provider;
+  providerFor(apiKey: string, caller?: { userId: string; orgId: string }, sandboxId?: string): Provider;
   /**
    * The Modal provider for a Modal golden or sandbox, given the caller's resolved Modal token pair and the
    * golden's pinned binding. Absent until the Modal adapter (#513): a Modal record then gets a typed
@@ -141,8 +135,6 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
   const now = options.now ?? (() => new Date());
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const log = options.log ?? ((line: string) => console.error(line));
-
-  const logDiagnostic = (line: string) => log(`[request ${currentRequestId()}] ${line}`);
 
   const routeRequest = async (request: Request) => {
     const url = new URL(request.url);
@@ -194,7 +186,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
       });
     } catch (error) {
       if (!(error instanceof AuthUnavailable)) throw error;
-      logDiagnostic(redactForLog(`armada serve: /mcp authentication unavailable: ${describeFailure(error)}`));
+      recordOperatorFailure("mcp.authentication", error);
       return Response.json({ error: "temporarily_unavailable" }, { status: 503, headers: { "retry-after": "5" } });
     }
     if (!auth.ok) return oauthChallenge(options.publicUrl);
@@ -235,7 +227,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
         deletionProvider: (sandbox) => providerRegistry(options).resolve(sandbox, { userId: sandbox.ownerId }),
         now,
         sleep,
-        logError: logDiagnostic,
+        logError: log,
         ...(options.ordinaryLaunchReceipts ? { ordinaryLaunchReceipts: options.ordinaryLaunchReceipts } : {}),
         ...(options.launch ? { launch: options.launch } : {}),
         ...(options.goldenAdoption ? { goldenAdoption: options.goldenAdoption } : {}),
@@ -293,7 +285,10 @@ export function providerRegistry(
       });
       const provider = runtime
         ? await runtime(key, target, caller)
-        : native(options.providerFor(key, { userId: caller.userId, orgId: target.orgId }), target);
+        : native(
+            options.providerFor(key, { userId: caller.userId, orgId: target.orgId }, diagnosticSandboxId(target)),
+            target,
+          );
       const authority = Object.freeze({ scope, ownerId: scope === "org" ? target.orgId : caller.userId });
       // Keep source authority immutable even if a provider factory caches a shared client.
       return new Proxy(provider, {

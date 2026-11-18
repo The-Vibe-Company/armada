@@ -15,6 +15,7 @@ import { createSqlData } from "./data.ts";
 import { captureDockerStopOutputs } from "./docker-outputs.ts";
 import { isPrivateModelEvent } from "./model-usage.ts";
 import type { NamedLaunchCredentials } from "./named-credentials.ts";
+import { recordOperatorFailure } from "./request-observability.ts";
 import { launchSandboxChild } from "./sandbox-access-child-launch.ts";
 import type { SandboxChildExecutor } from "./sandbox-access-children.ts";
 import { createSandboxChildren } from "./sandbox-access-children.ts";
@@ -156,12 +157,9 @@ export function createSandboxAccessServices(input: {
           await scoped.recordNativePrompt?.(saved.id, saved.providerSandboxId, receipt.promptId);
           try {
             await stores.sandboxes.recordTurnModel?.(saved.id, receipt.promptId, saved.model);
-          } catch {
-            try {
-              console.error("armada: turn model request record unavailable; accepted prompt continues.");
-            } catch {
-              /* Logging must not change accepted work. */
-            }
+          } catch (error) {
+            // The accepted prompt continues; the structured line carries the request and sandbox IDs.
+            recordOperatorFailure("sandbox_access.send.turn_model_record", error, { sandboxId: saved.id });
           }
           return {
             result: undefined,
