@@ -894,7 +894,7 @@ describe("control API", () => {
 
   test("every published route refuses a body over its published limit with its published status", async () => {
     await withServer(async ({ options }) => {
-      const published = (await import("../../../docs/openapi.json")).default as unknown as {
+      const published = (await import("../openapi.json")).default as unknown as {
         paths: Record<
           string,
           { post: { requestBody: { "x-max-body-bytes": number; "x-oversized-body-status": number } } }
@@ -1012,9 +1012,14 @@ describe("control API", () => {
       const headers = {
         authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`,
       };
-      const unknown = await call("/api/v1/nope", { method: "POST", headers });
-      expect(unknown?.status).toBe(404);
-      expect(await unknown?.json()).toEqual({ error: { code: "unknown_route", message: "Unknown route." } });
+      const retiredLaunchPaths = ["sized", "access", "runtime", "modal-runtime"].map(
+        (variant) => `/api/v1/sandbox/${["launch", variant, "v1"].join("-")}`,
+      );
+      for (const path of ["/api/v1/nope", ...retiredLaunchPaths]) {
+        const unknown = await call(path, { method: "POST", headers, body: "{}" });
+        expect(unknown?.status).toBe(404);
+        expect(await unknown?.json()).toEqual({ error: { code: "unknown_route", message: "Unknown route." } });
+      }
       expect((await call("/api/v1/org/create", { method: "POST", headers, body: "{" }))?.status).toBe(400);
       expect((await call("/api/v1/org/create", { method: "POST", headers, body: "{}" }))?.status).toBe(400);
       expect((await call("/api/v1/org/list", { method: "POST", headers }))?.status).toBe(200);
@@ -2333,7 +2338,7 @@ test("access launch resolves an omitted account and grants only its persisted bi
     const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`;
     const stagingLaunch = (repo: string, placement: "boat" | "modal" = "modal") =>
       handleControlRequest(
-        new Request("https://armada.test/api/v1/sandbox/launch-access-v1", {
+        new Request("https://armada.test/api/v1/sandbox/launch", {
           method: "POST",
           headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" },
           body: JSON.stringify({
@@ -2776,7 +2781,7 @@ test("versioned runtime launch is explicit/default-off and never selects native 
       boatRuntime: true,
       runtimeVersion: 1,
     };
-    expect((await request("sandbox/launch-runtime-v1", body))?.status).toBe(503);
+    expect((await request("sandbox/launch", body))?.status).toBe(503);
     expect(host.forks).toHaveLength(0);
     const connection = "44444444-4444-4444-8444-444444444444";
     let mcpPrepared = false,
@@ -2867,7 +2872,7 @@ test("versioned runtime launch is explicit/default-off and never selects native 
       { ...body, connections: "invalid" },
       { ...body, skills: ["not-a-pin"] },
     ])
-      expect((await request("sandbox/launch-runtime-v1", bad))?.status).toBe(400);
+      expect((await request("sandbox/launch", bad))?.status).toBe(400);
     expect((await request("sandbox/launch", { ...body, runtimeTransport: "dialout" }))?.status).toBe(400);
     expect(host.forks).toHaveLength(0);
     const response = await request("sandbox/launch", { ...body, skills: [skillPin] });
@@ -3029,7 +3034,7 @@ test("versioned runtime launch is explicit/default-off and never selects native 
         throw Error("Expected timeout");
       },
     };
-    expect((await request("sandbox/launch-runtime-v1", body))?.status).toBeGreaterThanOrEqual(400);
+    expect((await request("sandbox/launch", body))?.status).toBeGreaterThanOrEqual(400);
     const failed = (
       await db.query<{ id: string; status_reason: string }>(
         "select id,status_reason from sandboxes where status='failed'",
@@ -3057,7 +3062,7 @@ test("versioned runtime launch is explicit/default-off and never selects native 
 // and no native agent/configuration fallback on the accepted model-only path.
 test.each([
   { harness: "codex" as const, fromDefaults: false, entry: "explicit" },
-  { harness: "claude" as const, fromDefaults: true, entry: "legacy" },
+  { harness: "claude" as const, fromDefaults: true, entry: "explicit" },
   { harness: "opencode" as const, fromDefaults: true, entry: "explicit" },
   { harness: "codex" as const, fromDefaults: true, entry: "ordinary-api" },
   { harness: "codex" as const, fromDefaults: true, entry: "ordinary-mcp" },
@@ -3082,10 +3087,9 @@ test.each([
         [org.id, STAN],
       );
       const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`;
-      const route = entry === "legacy" ? "sandbox/launch-modal-runtime-v1" : "sandbox/launch";
       const request = (body: object) =>
         handleControlRequest(
-          new Request(`https://armada.test/api/v1/${route}`, {
+          new Request("https://armada.test/api/v1/sandbox/launch", {
             method: "POST",
             headers: { authorization: `Bearer ${bearer}` },
             body: JSON.stringify(body),
@@ -3339,7 +3343,7 @@ test("Modal promptless HTTP launch publishes ready without inference and retains
     };
     const request = (input: object) =>
       handleControlRequest(
-        new Request("https://armada.test/api/v1/sandbox/launch-modal-runtime-v1", {
+        new Request("https://armada.test/api/v1/sandbox/launch", {
           method: "POST",
           headers: {
             authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`,

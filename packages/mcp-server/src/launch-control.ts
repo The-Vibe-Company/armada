@@ -64,8 +64,6 @@ export async function launchRoute(
   const runtimeHost = runtime && !modalRuntime ? options.runtimeHostFor : undefined;
   if (runtime && (!runtimePolicy || (!modalRuntime && !runtimeHost)))
     throw new VaultError("unavailable", "Experimental Boat runtime launch is not configured.");
-  if (!runtime && (body.boatRuntime !== undefined || body.runtimeTransport !== undefined))
-    throw new VaultError("invalid", "Use sandbox/launch-runtime-v1 for experimental runtime selection.");
   if (!options.data || !options.providerFor)
     throw new VaultError("unavailable", "Launching is not configured on this server.");
   if (body.visibility !== undefined && body.visibility !== "private" && body.visibility !== "org")

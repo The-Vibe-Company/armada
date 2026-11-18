@@ -272,7 +272,6 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
     return Response.json({
       modalRuntime: {
         defaultPath: defects.includes("ordinary-default-off") ? "native" : "runtime",
-        version: 1,
         enabled: !defects.includes("disabled"),
         followupVersion: defects.includes("old-followup") && !claude && !opencode && !idle && !ordinary ? 0 : 1,
         claudeVersion: defects.includes("claude-old-version") ? 0 : 1,

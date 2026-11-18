@@ -6,8 +6,8 @@ import { MIGRATED_DATABASE_TEMPLATE_ENV, migratedTemplate } from "../test-suppor
 import durations from "./test-durations.json";
 
 export const SHARD_COUNT = 6;
-// Measured lint/typecheck/guard work runs once in shard 1, sharing its setup.
-const STATIC_CHECK_SECONDS = 24;
+// Measured lint/typecheck/guard work runs once in shard 1, including the SDK declaration check.
+const STATIC_CHECK_SECONDS = 26;
 type WorkerObservation = { files: string[]; seconds: number };
 const workerKey = (files: readonly string[]) => [...files].sort().join(",");
 const root = fileURLToPath(new URL("../../", import.meta.url));

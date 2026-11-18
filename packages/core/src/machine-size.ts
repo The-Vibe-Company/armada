@@ -104,8 +104,6 @@ export interface MachineSizePolicyResult {
   policy: MachineSizePolicy | null;
 }
 
-/** Fail-closed launch transport: old replicas return 404. Never retry on the legacy route. */
-export const SIZED_LAUNCH_ROUTE_V1 = "/api/v1/sandbox/launch-sized-v1" as const;
 export const SIZED_LAUNCH_TOOL_V1 = "launch_sized_v1" as const;
 /** Required even when size is omitted and repository/golden policy semantics are relied upon. */
 export type SizedLaunchRequestV1 = LaunchRequest & { org?: string; sizePolicyVersion: 1 };
