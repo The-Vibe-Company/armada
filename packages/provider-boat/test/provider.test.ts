@@ -1339,6 +1339,36 @@ test.each([true, false])(
   },
 );
 
+test("Boat rejects a retained archive ending in zero-filled file bytes without tar end records", async () => {
+  const payload = new Uint8Array(1024);
+  const archive = await new Bun.Archive({ "zero.bin": payload }).bytes();
+  const completedAt = "2026-11-18T10:00:00Z";
+  const boat = fakeBoat(
+    {
+      body: {
+        sandbox: sandbox({
+          state: "archived",
+          snapshotAvailable: true,
+          snapshotCompletedAt: completedAt,
+          stoppedAt: completedAt,
+        }),
+      },
+    },
+    { body: { snapshot: { id: "retained", sandboxId: ID, status: "completed", completedAt } } },
+    new Response(archive.slice(0, 512 + payload.length), {
+      headers: {
+        "x-snapshot-entry-kind": "dir",
+        "x-snapshot-skipped-base-image-files": "0",
+        "x-snapshot-file-count": "1",
+        "x-snapshot-total-size-bytes": String(payload.length),
+      },
+    }),
+  );
+  await expect(
+    boat.provider.openRetainedOutputs!({ sandboxId: ID, signal: new AbortController().signal }),
+  ).rejects.toThrow("output_unavailable");
+});
+
 test("Boat does not publish an older snapshot without verification for the current stop", async () => {
   const boat = fakeBoat({
     body: {
