@@ -480,7 +480,13 @@ export function LaunchStart(
           {announcement}
         </p>
         {showBuild && options && (
-          <LaunchSnapshotBuild repository={repository} options={options} onBuilding={setBuilding} onSaved={onSaved} />
+          <LaunchSnapshotBuild
+            key={repository}
+            repository={repository}
+            options={options}
+            onBuilding={setBuilding}
+            onSaved={onSaved}
+          />
         )}
       </div>
     </LaunchRepositoryContext.Provider>
