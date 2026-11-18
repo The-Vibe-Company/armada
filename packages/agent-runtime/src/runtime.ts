@@ -38,6 +38,8 @@ export class Runner {
   private execChildren = new ChildOwner();
   private execReleases = new Set<Promise<void>>();
   private closing = false;
+  private outboxTimer?: ReturnType<typeof setTimeout>;
+  private outboxRetry?: ReturnType<typeof setInterval>;
   private shutdown: Promise<void> | undefined;
   private requests = new Set<Promise<Response>>();
   private active = new Map<
@@ -188,7 +190,18 @@ export class Runner {
         ...[...this.active.values()].map((active) => active.done),
       ]);
     }
-    await this.flushing?.catch(() => {});
+    if (this.outboxRetry !== undefined) {
+      clearInterval(this.outboxRetry);
+      this.outboxRetry = undefined;
+      this.journal.onAppend = undefined;
+    }
+    if (this.outboxTimer !== undefined) {
+      clearTimeout(this.outboxTimer);
+      this.outboxTimer = undefined;
+      await this.flushOutbox().catch(() => {});
+    } else {
+      await this.flushing?.catch(() => {});
+    }
     const failed = [...releases, ...owners].find((result) => result.status === "rejected");
     if (failed?.status === "rejected") throw failed.reason;
   }
@@ -737,7 +750,6 @@ export class Runner {
         .catch(() => this.journal.transition(p, "failed", "native_auth_state_unacknowledged"))
         .finally(() => {
           this.active.delete(p.conversationId);
-          void this.flushOutbox().catch(() => {});
         });
       active.done = done;
       this.active.set(p.conversationId, active);
@@ -759,6 +771,23 @@ export class Runner {
             : "harness_start_failed",
       );
     }
+  }
+  startOutboxDelivery(): void {
+    if (!this.ingest || this.closing || this.outboxRetry !== undefined) return;
+    const flush = () => {
+      void this.flushOutbox().catch(() => {});
+    };
+    this.journal.onAppend = () => {
+      if (this.outboxTimer !== undefined) return;
+      this.outboxTimer = setTimeout(() => {
+        this.outboxTimer = undefined;
+        flush();
+      }, 50).unref();
+    };
+    this.outboxRetry = setInterval(() => {
+      // A write near the retry tick still gets its full coalescing window.
+      if (this.outboxTimer === undefined) flush();
+    }, 1000).unref();
   }
   private flushing: Promise<void> | undefined;
   flushOutbox(): Promise<void> {
