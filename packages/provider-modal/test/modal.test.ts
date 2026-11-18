@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { type AgentEvent, ProviderError, type Sql } from "@armada/core";
 import {
@@ -454,13 +454,9 @@ test("detail verifies the App once per read and still rejects a changed binding"
   expect(appReads).toBe(2);
 });
 
-test("durable golden recovery persists an interrupted Modal builder before exact owned cleanup, never replays create", async () => {
-  const f = fixture();
-  const key = Buffer.alloc(32, 61).toString("base64");
-  // Admission now verifies repository access before reserving work. Seed a cached
-  // caller connection and synthetic GitHub responses; recovery still never clones.
+async function goldenBuildGitHub(key: string): Promise<typeof fetch> {
   await db.query(
-    "insert into github_connections(user_id,github_id,login,refresh_token_enc,access_token_enc,access_expires_at) values($1,77,'builder',$2,$3,now()+interval '8 hours')",
+    "insert into github_connections(user_id,github_id,login,refresh_token_enc,access_token_enc,access_expires_at) values($1,77,'builder',$2,$3,now()+interval '8 hours') on conflict (user_id) do update set refresh_token_enc=excluded.refresh_token_enc,access_token_enc=excluded.access_token_enc,access_expires_at=excluded.access_expires_at",
     [scope.userId, await encryptSecret("fixture-refresh", key), await encryptSecret("fixture-access", key)],
   );
   const githubFetch = (async (input: string | URL | Request) => {
@@ -471,6 +467,71 @@ test("durable golden recovery persists an interrupted Modal builder before exact
       return Response.json({ id: 1, name: "web", owner: { login: "acme" }, default_branch: "main", private: false });
     throw new Error("Unexpected fixture GitHub route");
   }) as typeof fetch;
+  return githubFetch;
+}
+
+test("a failed Modal builder image records safe diagnostics and frees capacity without creating a sandbox", async () => {
+  const f = fixture();
+  const key = Buffer.alloc(32, 60).toString("base64");
+  const githubFetch = await goldenBuildGitHub(key);
+  const provider = Object.assign(f.provider, { maxGoldens: 1 });
+  const upstream = "fatal error: openssl/ssl.h: No such file or directory";
+  const privateDetail = "synthetic_private_payload";
+  const image = {
+    imageId: "",
+    async build() {
+      throw new Error(`Image build for im-fixture failed with the exception:\n${upstream}\n${privateDetail}`);
+    },
+  };
+  f.distribution.image = async () => image as unknown as Image;
+  const sdkCreate = spyOn(f.client.sandboxes, "create").mockImplementation(async () => {
+    // The SDK normally runs this implicit build before submitting sandbox creation.
+    await image.build();
+    throw new Error("Fixture image build unexpectedly completed");
+  });
+  const jobs = new GoldenBuildJobs({
+    sql: db,
+    encryptionKey: key,
+    service: {
+      github: {
+        store: createSqlVaultStore(db),
+        encryptionKey: key,
+        app: { clientId: "fixture", clientSecret: "fixture" },
+        fetch: githubFetch,
+      },
+      fetch: githubFetch,
+      installationApp: null,
+    },
+    provider: async () => provider,
+  });
+  const actor = { userId: scope.userId, orgId: scope.orgId, role: "admin" as const };
+  const input = { name: "image-failed", visibility: "private" as const, repos: ["acme/web"], modal: scope.binding };
+  const job = await jobs.admit(provider, actor, input, crypto.randomUUID());
+  const log = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    expect(await jobs.runOne()).toBe(true);
+    const diagnostic = `Modal builder image failed. ${upstream}`;
+    expect(await jobs.status(scope.userId, job.jobId)).toMatchObject({
+      phase: "builder",
+      state: "failed",
+      failureReason: `detail:${diagnostic}`,
+    });
+    expect(log.mock.calls.map(([line]) => JSON.parse(String(line)))).toContainEqual(
+      expect.objectContaining({ event: "golden_build_failed", buildId: job.jobId, detail: diagnostic }),
+    );
+    expect(JSON.stringify(log.mock.calls)).not.toContain(privateDetail);
+    expect(sdkCreate).not.toHaveBeenCalled();
+    expect(await f.store.findByRequestKey(job.jobId)).toMatchObject({ phase: "deleted" });
+    expect((await db.query("select id from golden_backend_slots where org_id=$1", [scope.orgId])).rows).toEqual([]);
+  } finally {
+    log.mockRestore();
+  }
+});
+
+test("durable golden recovery persists an interrupted Modal builder before exact owned cleanup, never replays create", async () => {
+  const f = fixture();
+  const key = Buffer.alloc(32, 61).toString("base64");
+  const githubFetch = await goldenBuildGitHub(key);
   const actor = { userId: scope.userId, orgId: scope.orgId, role: "admin" as const };
   let concurrentAfterPersist: (() => Promise<void>) | undefined;
   const recoverySql: Sql = {

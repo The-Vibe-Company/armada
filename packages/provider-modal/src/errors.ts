@@ -55,6 +55,32 @@ export function modalError(error: unknown): ProviderError {
   });
 }
 
+/** Keep public build diagnostics and discard the rest of the upstream payload, including shell commands. */
+export function modalBuilderImageError(error: unknown): ProviderError {
+  const safe = modalError(error);
+  const text = error instanceof Error ? error.message : "";
+  const headerError = "fatal error: openssl/ssl.h: No such file or directory";
+  const exit = /\b(?:exit (?:status|code)|returned non-zero code:)\s+([1-9]\d{0,2})\b/.exec(text)?.[1];
+  const reason = text.includes(headerError)
+    ? headerError
+    : exit
+      ? `Build command exited with status ${exit}.`
+      : /^Image build for im-[\w]+ timed out\./.test(text)
+        ? "Image build timed out."
+        : /^Image build for im-[\w]+ terminated due to external shut-down\./.test(text)
+          ? "Image build was terminated by Modal."
+          : safe.status === undefined
+            ? "Modal returned no recognized build diagnostic."
+            : `Modal returned gRPC status ${safe.status}.`;
+  return new ProviderError({
+    provider: "modal",
+    code: "unavailable",
+    providerCode: "modal_builder_image_failed",
+    message: `Modal builder image failed. ${reason}`,
+    retryable: false,
+  });
+}
+
 /** Retains only sanitized operation metadata and explicit resource provenance, never an upstream cause. */
 export class ModalOperationError extends ProviderError {
   readonly receipt: import("./ports.ts").ModalResourceReceipt;
