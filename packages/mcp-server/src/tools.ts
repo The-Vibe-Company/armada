@@ -2275,7 +2275,7 @@ async function readLogs(
 }
 
 function errorResult(error: unknown, tool: string, logError: (line: string) => void): CallToolResult {
-  const { code, message } = describe(error);
+  const { code, message } = describeToolFailure(error);
   if (
     [
       "internal",
@@ -2326,7 +2326,7 @@ function errorResult(error: unknown, tool: string, logError: (line: string) => v
   };
 }
 
-function describe(error: unknown): { code: string; message: string } {
+export function describeToolFailure(error: unknown): { code: string; message: string } {
   const failure = apiFailureCode(error);
   if (failure) return { code: failure, message: error instanceof Error ? error.message : failure };
   if (error instanceof ToolError) return { code: error.code, message: error.message };

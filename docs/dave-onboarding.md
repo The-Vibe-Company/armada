@@ -384,7 +384,7 @@ bearer_token_env_var = "ARMADA_TOKEN"
 
 ## 8. Drive an agent through MCP
 
-The sandbox tools are `launch`, `list`, `status`, `wait`, `logs`, `send`, `steer`, `interrupt`, `exec` and `stop`. Snapshot tools (`golden_list`, `golden_create`, `golden_update`, `golden_build_status`, `golden_snapshot`, `golden_adopt`) list, build and maintain snapshots. You see your org's snapshots and sandboxes and your own private ones, never another member's private ones. Example arguments:
+The sandbox tools are `launch`, `list`, `status`, `wait`, `logs`, `send`, `steer`, `interrupt`, `exec` and `stop`. Snapshot tools (`golden_list`, `golden_create`, `golden_update`, `golden_build_status`, `golden_snapshot`) list, build and maintain snapshots. You see your org's snapshots and sandboxes and your own private ones, never another member's private ones. Example arguments:
 
 ```jsonc
 // golden_list: the snapshots you can launch, with their orgId

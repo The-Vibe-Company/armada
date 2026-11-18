@@ -6,6 +6,7 @@ import {
   OPENCODE_ENDPOINT_ENV,
   PUBLIC_CONTROL_ROUTES,
   parseMachineSizePolicy,
+  providerRateLimitDetails,
   VERSION,
   vaultControlRoute,
 } from "@armada/core";
@@ -114,7 +115,7 @@ import type { RuntimeResume } from "./runtime-resume.ts";
 import type { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 import { tokenCreateRoute, tokenListRoute, tokenRevokeRoute } from "./token-control.ts";
 import { callSharedTool, ToolApiError } from "./tool-api.ts";
-import { sandboxListInput } from "./tools.ts";
+import { describeToolFailure, sandboxListInput } from "./tools.ts";
 
 import { viewerControl } from "./viewer-control.ts";
 
@@ -480,16 +481,25 @@ export async function dispatchControlCommand(
     }
     if (!options.goldenAdoption) throw new ToolApiError("unsupported", "Canonical adoption is not configured.");
     const data = options.data(scoped);
-    for (const { orgId, role } of scoped.orgs) {
-      const golden = (await data.goldens.list(orgId)).find((row) => row.id === input.data.id);
-      if (!golden) continue;
-      const actor = { userId: scoped.userId, orgId, role };
-      assertGoldenMutation(actor, golden);
-      const providers = options.providers;
-      const provider = await measureRequestPhase(options.timing, "provider", () => providers.resolve(golden, scoped));
-      return options.goldenAdoption(provider, actor, golden, input.data.confirmation);
+    try {
+      for (const { orgId, role } of scoped.orgs) {
+        const golden = (await data.goldens.list(orgId)).find((row) => row.id === input.data.id);
+        if (!golden) continue;
+        const actor = { userId: scoped.userId, orgId, role };
+        assertGoldenMutation(actor, golden);
+        const providers = options.providers;
+        const provider = await measureRequestPhase(options.timing, "provider", () => providers.resolve(golden, scoped));
+        return await options.goldenAdoption(provider, actor, golden, input.data.confirmation);
+      }
+      throw new GoldenError("not_found", "Canonical adoption unavailable.");
+    } catch (error) {
+      const { code, message } = describeToolFailure(error);
+      const details =
+        error instanceof ProviderError && code === "rate_limited"
+          ? providerRateLimitDetails({ ...error.details, retryAfterSeconds: error.retryAfterSeconds })
+          : undefined;
+      throw new ToolApiError(code, message, details);
     }
-    throw new GoldenError("not_found", "Canonical adoption unavailable.");
   }
   if (route === "sandbox/test-model-connection") {
     if (Object.keys(body).some((key) => !["id", "model", "org"].includes(key)))
