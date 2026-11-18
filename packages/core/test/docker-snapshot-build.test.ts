@@ -75,6 +75,14 @@ test("snapshot builds mount credentials privately, publish automatic ownership l
           const dockerfile = await readFile(join(directory, "Dockerfile"), "utf8");
           expect(dockerfile).toContain(`FROM ghcr.io/the-vibe-company/armada-sandbox@sha256:${"a".repeat(64)}\n`);
           expect(dockerfile).toContain("uid=0,gid=0,mode=0400");
+          const lines = dockerfile.trimEnd().split("\n");
+          expect(lines.find((line) => line.startsWith("RUN set -eu"))).toContain("python3-pip");
+          expect(lines.at(-2)).toBe("USER 1000:1000");
+          const verification = lines.at(-1)!;
+          expect(verification).toStartWith("RUN ");
+          const result = Bun.spawnSync(["/bin/sh", "-c", verification.slice(4)], { env: { PATH: "" } });
+          expect(result.exitCode).toBe(1);
+          expect(result.stderr.toString().trim()).toBe("ARMADA_BASELINE_1_FAILED python3");
           // A snapshot materializes only the selected head; the unchanged scan still checks every fetched object.
           expect(await readFile(join(directory, "public/checkout.sh"), "utf8")).toContain(
             "git clone --depth=1 --branch 'main' --single-branch https://github.com/example/project.git /home/user/project",

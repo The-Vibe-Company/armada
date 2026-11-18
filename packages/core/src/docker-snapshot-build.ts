@@ -10,6 +10,7 @@ import { SNAPSHOT_INIT_SUPERVISOR } from "./docker-snapshot-init.ts";
 import { normalizeGitHubGoldenConfig } from "./golden-config.ts";
 import { goldenCheckoutScript } from "./golden-create-service.ts";
 import { goldenScanScript } from "./golden-scan.ts";
+import { snapshotBaselineInstall, snapshotBaselineVerify } from "./snapshot-baseline.ts";
 
 /** BuildKit secret mount and shared golden checkout/init/scan. No credential file or model account. */
 export async function buildDockerSnapshot(
@@ -119,12 +120,10 @@ export async function buildDockerSnapshot(
       .join(" && ");
     const directories = config.repos.map((repo) => `'/home/user/${repo.dir}'`).join(" ");
     const dockerfile = `# syntax=docker/dockerfile:1
-FROM oven/bun:1.4.2 AS armada-tools
 FROM ${job.request.image}
 USER root
-RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm python3 git gh ca-certificates util-linux && rm -rf /var/lib/apt/lists/*
+RUN ${snapshotBaselineInstall({}, ["util-linux"])}
 RUN (id user >/dev/null 2>&1 || useradd --create-home --uid 1000 user) && mkdir -p /home/user && chown 1000:1000 /home/user
-COPY --from=armada-tools /usr/local/bin/bun /usr/local/bin/bun
 ENV HOME=/home/user
 WORKDIR /home/user
 COPY public/ /opt/armada-build/
@@ -132,6 +131,7 @@ RUN chmod 0755 /opt/armada-build && chmod 0444 /opt/armada-build/*
 ARG ARMADA_SNAPSHOT_BUILD_ID
 RUN --mount=type=secret,id=github,uid=0,gid=0,mode=0400,required=true test -n "$ARMADA_SNAPSHOT_BUILD_ID" && bash /opt/armada-build/checkout.sh && chown -h -R -P -- user:user ${directories} ${initCommands ? `&& ${initCommands}` : ""} && test ! -e /home/user/armada-runtime && test ! -L /home/user/armada-runtime && bash /opt/armada-build/scan.sh
 USER 1000:1000
+RUN ${snapshotBaselineVerify}
 `;
     await writeFile(join(directory, "Dockerfile"), dockerfile, { mode: 0o600, flag: "wx" });
     const limits = dockerResourceLimits(dockerHostResources(), options.limits?.());

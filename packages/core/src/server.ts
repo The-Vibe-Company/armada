@@ -107,6 +107,7 @@ export { createSkillCatalog } from "./skill-catalog.ts";
 export * from "./skill-defaults.ts";
 export { mergeSkillPins } from "./skill-merge.ts";
 export * from "./skillpack.ts";
+export { SNAPSHOT_BASELINE_BUN, snapshotBaselineInstall, snapshotBaselineVerify } from "./snapshot-baseline.ts";
 export { type PrivateDelegatedSshReceipt, sshDelegatedReceipt } from "./ssh-delegated-access.ts";
 export {
   type SshExecDeps,

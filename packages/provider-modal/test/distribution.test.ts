@@ -42,6 +42,9 @@ import { createRunnerDistribution, MODAL_IMAGE_LOCK, type RunnerDistribution } f
         prepareSnapshot: async () => {},
       });
       await distribution.image(client);
+      expect(commands[0]).toContain("python3-venv");
+      expect(commands[0]).toContain("git-2.52.0.tar.xz");
+      expect(commands.at(-2)).toContain("ARMADA_BASELINE_1_FAILED git");
       const root = await mkdtemp(join(tmpdir(), "armada-image-replay-"));
       try {
         // Skip the three OS/tool/user installation steps; replay all captured artifact steps verbatim
@@ -49,7 +52,7 @@ import { createRunnerDistribution, MODAL_IMAGE_LOCK, type RunnerDistribution } f
         for (const instruction of commands) {
           if (instruction.startsWith("RUN ")) expect(Buffer.byteLength(instruction.slice(4))).toBeLessThan(48 * 1024);
         }
-        const runs = commands.slice(3, -1);
+        const runs = commands.slice(3, -2);
         expect(runs.length).toBeGreaterThan(3);
         for (const run of runs) {
           expect(run.startsWith("RUN ")).toBe(true);

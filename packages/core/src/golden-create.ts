@@ -18,6 +18,8 @@ import {
 import { createSqlGoldenStore, type Sql } from "./golden-store.ts";
 import { type Provider, ProviderError } from "./provider.ts";
 import { isSandboxProvider, PROVIDER_LIMITS } from "./sandbox-provider.ts";
+import { shellQuote } from "./shell-quote.ts";
+import { snapshotBaselineFailure, snapshotBaselineInstall, snapshotBaselineVerify } from "./snapshot-baseline.ts";
 import { sshStdinCheckout } from "./ssh-executor.ts";
 
 export interface GoldenBackendSlot {
@@ -113,6 +115,32 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
       ((provider, input) =>
         sshStdinCheckout(provider, input, { ...(input.onWarning ? { onWarning: input.onWarning } : {}) })),
     verifyHelper: verifyGoldenHelper,
+    async installBaseline(provider, sandboxId) {
+      const script = snapshotBaselineInstall();
+      const result = await provider.exec({
+        sandboxId,
+        timeoutSeconds: 600,
+        command: `if [ "$(id -u)" = 0 ]; then bash -c ${shellQuote(script)}; else sudo -n bash -c ${shellQuote(script)}; fi`,
+      });
+      if (result.detached || result.exitCode !== 0 || result.timedOut) {
+        const message =
+          "Boat snapshot baseline installation failed. The builder needs root or passwordless sudo, apt, and download access.";
+        throw new GoldenError("setup_failed", message, { safeMessage: message });
+      }
+    },
+    async verifyBaseline(provider, sandboxId) {
+      const result = await provider.exec({
+        sandboxId,
+        timeoutSeconds: 30,
+        command: `export PATH=/usr/local/bin:/usr/bin:/bin; ${snapshotBaselineVerify}`,
+      });
+      if (result.detached || result.exitCode !== 0 || result.timedOut || result.truncated) {
+        const message =
+          (result.detached ? undefined : snapshotBaselineFailure(result.stderr)) ??
+          "Snapshot baseline verification did not complete.";
+        throw new GoldenError("setup_failed", message, { safeMessage: message });
+      }
+    },
     scan: (provider, sandboxId, context) => scanGoldenSandbox(provider, sandboxId, context),
     async reserve(provider, actor, existingGolden) {
       buildProvider = provider;

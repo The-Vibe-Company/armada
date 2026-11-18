@@ -484,7 +484,7 @@ test("rebuild retains last-good artifacts/config through scan, snapshot and SQL 
       },
       exec: async ({ command }) => ({
         detached: false,
-        exitCode: failure === "scan" ? 97 : 0,
+        exitCode: failure === "scan" && command.includes("ARMADA_SCAN") ? 97 : 0,
         stdout: command.includes("/helper/0.1.0/armada-helper") ? helperOutput : "",
         stderr: "",
         timedOut: false,
