@@ -40,10 +40,11 @@ jobs:
         if: matrix.shard == 1
         run: bun scripts/ci/unit-shards.ts --check
 
-      - name: Check migration versions against the current base
+      - name: Check migrations and docs allowlist against the current base
         if: matrix.shard == 1
         env:
           BASE_BRANCH: ${{ github.base_ref || 'main' }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
           BEFORE: ${{ github.event.before }}
           EVENT_NAME: ${{ github.event_name }}
@@ -52,6 +53,10 @@ jobs:
             # Fetch now, not the potentially stale base SHA in the PR event.
             git fetch --no-tags --depth=1 origin "refs/heads/$BASE_BRANCH"
             base=$(git rev-parse FETCH_HEAD)
+            # Docs exceptions must be compared with the base of this frozen PR checkout.
+            if ! git cat-file -e "$PR_BASE_SHA^{commit}"; then
+              git fetch --no-tags --depth=1 origin "$PR_BASE_SHA"
+            fi
           elif [ "$EVENT_NAME" = "merge_group" ]; then
             # Compare the entire queue candidate with its exact target-branch base.
             git fetch --no-tags --depth=1 origin "$MERGE_GROUP_BASE_SHA"
@@ -65,6 +70,7 @@ jobs:
             base=$(git rev-parse HEAD^)
           fi
           bun scripts/db/check-migrations.ts "$base"
+          bun scripts/ci/docs-guard.ts "${PR_BASE_SHA:-$base}"
       - name: Test migration guard
         if: matrix.shard == 1
         run: bun test scripts/db/check-migrations.test.ts
