@@ -162,10 +162,12 @@ retries the exact Modal reservation by the same UUID. Requests continue to
 wait for boot and then run the existing initialization and initial-prompt path.
 If the caller disappears after admission, the worker can still finish boot.
 The ordinary sandbox lifecycle retires a sandbox whose initialization was
-interrupted after that handoff. An unresolved fork retains its golden fence
-for reconciliation.
+interrupted after that handoff. An owner can stop a pending boot before
+allocation. If dispatch already started, the worker uses the pinned Modal
+identity to retire the allocation and keeps the golden fence if the outcome
+remains uncertain. Receipt inspection reports the persisted boot phase.
 
 This path depends on the previously added `provider_launch_requests` migration.
-The next stages cover independent cleanup of unresolved or cancelled forks,
+The next stages cover continued cleanup of unresolved forks beyond the dispatch deadline,
 durable initialization and initial-prompt checkpoints, a shorter Modal source
 lease, versioned async clients, and Boat admission after recovery is proven.

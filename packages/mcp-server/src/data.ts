@@ -54,6 +54,7 @@ export interface ServerSandboxStore extends SandboxStore {
   /** Persist an accepted native steer whose run is not yet provable, so native
    * lifecycle reconciliation registers the run once it appears. */
   recordPendingSteer?(id: string, providerSandboxId: string, priorPromptId: string | null): Promise<void>;
+  requestPendingModalStop?(id: string): Promise<boolean>;
   controlState?(
     id: string,
   ): Promise<Pick<
@@ -430,6 +431,18 @@ export function createSqlData(
         const row = result.rows[0];
         if (!row) throw new DataError("The sandbox could not be recorded.");
         return mapSandboxRow(row);
+      },
+      async requestPendingModalStop(id) {
+        const result = await sql.query(
+          `update public.sandboxes s set stop_requested_at=coalesce(s.stop_requested_at,now()),
+             status='stopping', transition_context=jsonb_build_object('actor','api','code','sandbox_stopping')
+           from public.goldens g where s.id=$3 and s.golden_id=g.id and ${SANDBOX_VISIBLE}
+           and s.provider='modal' and s.status in ('starting','stopping')
+           and exists(select 1 from public.provider_launch_requests r
+             where r.sandbox_id=s.id and r.phase in ('queued','booting')) returning s.id`,
+          [...scope, id],
+        );
+        return result.rows.length === 1;
       },
       async assertExtensionAllowed(id) {
         if (!UUID.test(id)) throw new GoldenError("not_found", "Sandbox not found.");

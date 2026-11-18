@@ -8,6 +8,7 @@ import {
   recordLaunchStageSql,
   SANDBOX_STOP_MARGIN_SECONDS,
 } from "@armada/core/server";
+import { insertGoldenOperationFence } from "../../core/src/golden-store.ts";
 import type { Caller } from "./caller.ts";
 import { createSqlData } from "./data.ts";
 
@@ -26,7 +27,7 @@ type BootFailure = {
   retryable: boolean;
   retryAfterSeconds?: number;
 };
-type Outcome = { expiresAt: string | null } | { refusal: BootFailure } | { reason: string };
+type Outcome = { expiresAt: string | null } | { refusal: BootFailure } | { reason: string; cancelled?: true };
 type Claim = {
   sandbox_id: string;
   lease_epoch: string;
@@ -37,6 +38,7 @@ type Claim = {
   provider_sandbox_id: string;
 };
 const DEADLINE_MS = 15 * 60_000;
+const MAX_CONCURRENT_BOOTS = 4;
 const BOOT_ALLOWED = `s.status='starting' and s.stop_requested_at is null
   and (s.credential_id is null or exists(select 1 from public.credentials c
     where c.id=s.credential_id and c.version=s.credential_version and c.status='active'
@@ -50,6 +52,7 @@ export function createModalBootWorker(
 ) {
   const owner = crypto.randomUUID();
   let accepting = true;
+  const inFlight = new Set<Promise<void>>();
   async function admit({ actor, golden, provider, runtime, request, sandbox }: Parameters<Boot>[0]) {
     if (!accepting) throw new LaunchError("invalid_request", "This server is draining. Retry on another instance.");
     const backendId = (await provider.backendIdentity?.())?.id;
@@ -92,18 +95,16 @@ export function createModalBootWorker(
          values($1,$2,$3,$4,'internal-modal-boot',$5::jsonb) on conflict (id) do nothing`,
         [sandbox.id, actor.orgId, actor.userId, crypto.randomUUID(), JSON.stringify({ target, backendId, management })],
       );
+      const fenceId = await insertGoldenOperationFence(tx, golden.id, {
+        snapshotId: golden.providerSnapshotId,
+        sandboxId: golden.providerSandboxId,
+        kind: "launch",
+      });
       const saved = await createSqlData(tx)(caller).sandboxes.insert(sandbox);
-      const fence = (
-        await tx.query<{ id: string }>(
-          `insert into public.golden_operation_fences(golden_id,expected_snapshot_id,expected_sandbox_id,revision_known,operation_kind)
-         values($1,$2,$3,true,'launch') returning id`,
-          [golden.id, golden.providerSnapshotId, golden.providerSandboxId],
-        )
-      ).rows[0]!;
       await tx.query(
         `insert into public.provider_launch_requests(sandbox_id,actor_epoch,request_enc,fence_id,dispatch_deadline,correlation_id)
          values($1,$2,$3,$4,clock_timestamp()+$5::integer*interval '1 millisecond',$1)`,
-        [sandbox.id, member.epoch, sealed, fence.id, DEADLINE_MS],
+        [sandbox.id, member.epoch, sealed, fenceId, DEADLINE_MS],
       );
       // Rolling readers also honor the ordinary activity lease. Leave enough
       // time for the worker to reach its dispatch deadline.
@@ -158,6 +159,7 @@ export function createModalBootWorker(
     const { sandbox_id: id, lease_epoch: epoch } = claim;
     const bootExpiry = "expiresAt" in outcome ? outcome.expiresAt : undefined;
     const succeeded = bootExpiry !== undefined;
+    const cancelled = "reason" in outcome && outcome.cancelled === true;
     const published = await sql.transaction!(async (tx) => {
       await tx.query("select id from public.sandboxes where id=$1 for update", [id]);
       const row = (
@@ -174,23 +176,30 @@ export function createModalBootWorker(
              coalesce($3::timestamptz-$4::integer*interval '1 second','infinity'::timestamptz)) else expires_at end,
            activity_until=case when $2 then now()+interval '2 minutes' else null end,
            activity_lease_id=case when $2 then activity_lease_id else null end,
-           status=case when $2 then status else 'failed'::public.sandbox_status end,
-           status_reason=case when $2 then status_reason else 'Modal allocation did not complete.' end,
+           stopped_at=case when $5 then clock_timestamp() else stopped_at end,
+           stop_requested_at=case when $5 then null else stop_requested_at end,
+           status=case when $5 then 'stopped'::public.sandbox_status when $2 then status else 'failed'::public.sandbox_status end,
+           status_reason=case when $5 then null when $2 then status_reason else 'Modal allocation did not complete.' end,
            reconcile_after=now()
-         where id=$1 and status='starting' and stop_requested_at is null returning id`,
-        [id, succeeded, bootExpiry ?? null, SANDBOX_STOP_MARGIN_SECONDS],
+         where id=$1 and ((status='starting' and stop_requested_at is null)
+           or ($5 and status='stopping' and stop_requested_at is not null)) returning id`,
+        [id, succeeded, bootExpiry ?? null, SANDBOX_STOP_MARGIN_SECONDS, cancelled],
       );
+      // Cancellation won after the dispatch intent. Keep the pinned request
+      // so the worker can delete the now-observed allocation under its original authority.
       if (succeeded && !updated.rows.length) {
-        // An earlier stop may have observed absence before the boot returned.
-        // Keep the fence and let the existing lifecycle observe the allocated ID.
-        keepFence = true;
-        outcome = { reason: "cancelled_during_boot" };
+        await tx.query(
+          `update public.provider_launch_requests set lease_owner=null,lease_expires_at=null,next_attempt_at=now()
+           where sandbox_id=$1`,
+          [id],
+        );
+        return false;
       }
       await tx.query(
         `update public.provider_launch_requests set phase=$2,outcome=$3::jsonb,request_enc=null,
           lease_owner=null,lease_expires_at=null,fence_id=case when $4 then fence_id else null end
          where sandbox_id=$1`,
-        [id, "expiresAt" in outcome ? "succeeded" : "failed", JSON.stringify(outcome), keepFence],
+        [id, succeeded ? "succeeded" : cancelled ? "cancelled" : "failed", JSON.stringify(outcome), keepFence],
       );
       if (!keepFence && row.fence_id)
         await tx.query("delete from public.golden_operation_fences where id=$1", [row.fence_id]);
@@ -202,7 +211,8 @@ export function createModalBootWorker(
     }
   }
 
-  async function runClaim(claim: Claim, signal: AbortSignal) {
+  async function runClaim(claim: Claim) {
+    const signal = AbortSignal.timeout(DEADLINE_MS);
     const { sandbox_id: id, lease_epoch: epoch } = claim;
     const token = [id, owner, epoch];
     const reschedule = () =>
@@ -212,6 +222,7 @@ export function createModalBootWorker(
         token,
       );
     const timer = setInterval(() => {
+      if (signal.aborted) return;
       void sql
         .query(
           `update public.provider_launch_requests set lease_expires_at=now()+interval '45 seconds'
@@ -223,8 +234,15 @@ export function createModalBootWorker(
     timer.unref();
     try {
       const live = (
-        await sql.query<{ role: MemberRole | null; allowed: boolean }>(
-          `select m.role,(
+        await sql.query<{
+          role: MemberRole | null;
+          allowed: boolean;
+          cancelled: boolean;
+          expired: boolean;
+          same_actor: boolean;
+        }>(
+          `select m.role, s.stop_requested_at is not null as cancelled,
+           r.dispatch_deadline<=clock_timestamp() as expired, e.epoch=r.actor_epoch as same_actor,(
            e.epoch=r.actor_epoch and r.dispatch_deadline>clock_timestamp() and ${BOOT_ALLOWED}
          ) is true as allowed
          from public.provider_launch_requests r join public.sandboxes s on s.id=r.sandbox_id
@@ -234,7 +252,12 @@ export function createModalBootWorker(
           [id],
         )
       ).rows[0];
-      if (!live?.role || !live.allowed) {
+      if (live?.cancelled && claim.phase === "queued") {
+        await settle(claim, { reason: "cancelled_before_boot", cancelled: true }, false);
+        return;
+      }
+      const cleanup = live?.cancelled && claim.phase === "booting";
+      if (!live?.role || !live.same_actor || (!cleanup && !live.allowed)) {
         await settle(claim, { reason: "admission_expired_or_revoked" }, claim.phase === "booting");
         return;
       }
@@ -260,6 +283,22 @@ export function createModalBootWorker(
       }
       if (!accepting || signal.aborted) {
         await reschedule();
+        return;
+      }
+      if (cleanup) {
+        try {
+          // The Modal adapter verifies the pinned scope and logical ID, then
+          // resumes any deletion by durable machine record. Missing record is
+          // still ambiguous because an earlier dispatch might not have reserved it yet.
+          if ((await provider.delete({ sandboxId: claim.provider_sandbox_id })).status === "deleted") {
+            await settle(claim, { reason: "cancelled_during_boot", cancelled: true }, false);
+            return;
+          }
+        } catch {
+          // Preserve the request until cleanup can be retried or the deadline expires.
+        }
+        if (live.expired) await settle(claim, { reason: "cancelled_boot_outcome_unknown" }, true);
+        else await reschedule();
         return;
       }
       const dispatch = await sql.transaction!(async (tx) => {
@@ -338,7 +377,7 @@ export function createModalBootWorker(
     admit,
     waitForBoot,
     async reconcileOne(signal: AbortSignal) {
-      if (!accepting || signal.aborted) return false;
+      if (!accepting || signal.aborted || inFlight.size >= MAX_CONCURRENT_BOOTS) return false;
       const claim = (
         await sql.query<Claim>(
           `with due as (
@@ -354,12 +393,18 @@ export function createModalBootWorker(
         )
       ).rows[0];
       if (!claim) return false;
-      await runClaim(claim, signal);
+      const task = runClaim(claim).catch(() => {
+        // A failed DB or provider operation leaves its claim to expire.
+      });
+      inFlight.add(task);
+      void task.then(() => inFlight.delete(task));
       return true;
     },
     stopAdmission() {
       accepting = false;
     },
-    async drain() {},
+    async drain() {
+      await Promise.all(inFlight);
+    },
   };
 }

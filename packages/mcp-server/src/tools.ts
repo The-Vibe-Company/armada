@@ -1474,6 +1474,9 @@ export function createArmadaServer(context: ToolContext, version: string, option
         response: z.unknown(),
         allocations: z.array(z.object({ id: z.string(), state: z.string() })),
         outcome: z.string(),
+        phase: z.string().optional(),
+        reason: z.string().optional(),
+        status: z.enum(SANDBOX_STATUSES).optional(),
       },
     },
     async (args) => {
@@ -2346,6 +2349,12 @@ export function createArmadaServer(context: ToolContext, version: string, option
       // its activity/reconciliation lease or replay provider hooks on archiving compute.
       if (found.stopRequestedAt || ["stopping", "stopped"].includes(found.status))
         return { id: found.id, status: found.status };
+      if (
+        found.provider === "modal" &&
+        found.status === "starting" &&
+        (await data.sandboxes.requestPendingModalStop?.(found.id))
+      )
+        return { id: found.id, status: "stopping" as const };
       const { provider } = await live(args.id, true);
       return sandboxActivity(
         data.sandboxes,

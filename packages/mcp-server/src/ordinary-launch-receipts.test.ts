@@ -16,7 +16,9 @@ afterAll(async () => {
 test("ordinary receipts fence uncertain dispatch, recover labels and replay a lost successful response", async () => {
   await db.exec(`CREATE TABLE ordinary_launch_receipts (
       id uuid PRIMARY KEY, org_id text, owner_id text, request_key text,
-      fingerprint text, response jsonb, failure jsonb, authority jsonb, UNIQUE(org_id,owner_id,request_key));`);
+      fingerprint text, response jsonb, failure jsonb, authority jsonb, UNIQUE(org_id,owner_id,request_key));
+    CREATE TABLE provider_launch_requests (sandbox_id uuid,phase text,fence_id uuid,outcome jsonb);
+    CREATE TABLE sandboxes (id uuid,org_id text,owner_id text,status text);`);
   const receipts = createOrdinaryLaunchReceipts(db as unknown as Sql);
   const actor = { orgId: "org", userId: "owner" };
   const authority: {

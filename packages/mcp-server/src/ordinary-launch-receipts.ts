@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { ProviderTarget, Sql } from "@armada/core";
+import type { ProviderTarget, SandboxStatus, Sql } from "@armada/core";
 import {
   GoldenError,
   isNonMutatingProviderRefusal,
@@ -103,19 +103,47 @@ export function createOrdinaryLaunchReceipts(sql: Sql) {
         id: string;
         response: unknown;
         failure: Failure | null;
+        phase: string | null;
+        reason: string | null;
+        fenced: boolean;
+        status: SandboxStatus | null;
         authority: {
           target: ProviderTarget;
           backendId: string;
           management: { scope: "org" | "user"; ownerId: string };
         } | null;
       }>(
-        `SELECT id, response, failure, authority FROM public.ordinary_launch_receipts WHERE id=$1 AND org_id=$2 AND owner_id=$3`,
+        `SELECT o.id,o.response,o.failure,o.authority,r.phase,r.outcome->>'reason' as reason,r.fence_id is not null as fenced,s.status
+         FROM public.ordinary_launch_receipts o
+         LEFT JOIN public.provider_launch_requests r ON r.sandbox_id=o.id
+         LEFT JOIN public.sandboxes s ON s.id=r.sandbox_id AND s.org_id=o.org_id AND s.owner_id=o.owner_id
+         WHERE o.id=$1 AND o.org_id=$2 AND o.owner_id=$3`,
         [id, actor.orgId, actor.userId],
       );
       if (!rows[0]) throw new GoldenError("not_found", "Launch receipt not found.");
+      const receipt = rows[0];
+      const progress =
+        receipt.status && receipt.phase
+          ? { status: receipt.status, phase: receipt.phase, ...(receipt.reason ? { reason: receipt.reason } : {}) }
+          : {};
       if (rows[0].failure)
-        return { id, response: rows[0].response, failure: rows[0].failure, allocations: [], outcome: "failed" };
-      const blocked = () => ({ id, response: rows[0]!.response, allocations: [], outcome: "authority_blocked" });
+        return {
+          id,
+          response: rows[0].response,
+          failure: rows[0].failure,
+          allocations: [],
+          outcome: "failed",
+          ...progress,
+        };
+      if (!receipt.fenced && (receipt.phase === "failed" || receipt.phase === "cancelled"))
+        return { id, response: receipt.response, allocations: [], outcome: receipt.phase, ...progress };
+      const blocked = () => ({
+        id,
+        response: rows[0]!.response,
+        allocations: [],
+        outcome: "authority_blocked",
+        ...progress,
+      });
       const authority = rows[0].authority;
       if (!authority || authority.target.orgId !== actor.orgId) return blocked();
       let provider: Provider;
@@ -154,6 +182,7 @@ export function createOrdinaryLaunchReceipts(sql: Sql) {
         response: rows[0].response,
         allocations,
         outcome: rows[0].response === null ? "unknown" : "completed",
+        ...progress,
       };
     },
   };

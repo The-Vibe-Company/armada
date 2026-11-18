@@ -221,12 +221,18 @@ export async function assertSqlGoldenMutation(sql: Sql, golden: GoldenRecord, ac
   assertGoldenMutation({ ...actor, role: member.role }, golden);
 }
 
+type ExpectedGoldenRevision = {
+  snapshotId: string | null;
+  sandboxId: string | null;
+  kind?: "launch" | "connect" | "snapshot";
+};
+
 /** Admission and removal serialize on the golden row. Never expires on a wall-clock lease. */
-export async function beginGoldenOperation(
+export async function insertGoldenOperationFence(
   sql: Sql,
   id: string,
-  expected: { snapshotId: string | null; sandboxId: string | null; kind?: "launch" | "connect" | "snapshot" },
-): Promise<GoldenOperation> {
+  expected: ExpectedGoldenRevision,
+): Promise<string> {
   try {
     const result = await sql.query<{ id: string }>(
       "insert into public.golden_operation_fences(golden_id,expected_snapshot_id,expected_sandbox_id,revision_known,operation_kind) values ($1,$2,$3,true,$4) returning id",
@@ -234,19 +240,28 @@ export async function beginGoldenOperation(
     );
     const fence = result.rows[0];
     if (!fence) throw new GoldenError("conflict", "Golden operation could not be admitted.");
-    const release: GoldenOperation = async () => {
-      await sql.query("delete from public.golden_operation_fences where id=$1", [fence.id]);
-    };
-    release.retain = async (receipt) => {
-      await sql.query("update public.golden_operation_fences set receipt=$2::text::jsonb where id=$1", [
-        fence.id,
-        JSON.stringify(receipt),
-      ]);
-    };
-    return release;
+    return fence.id;
   } catch (error) {
     throw new GoldenError("conflict", "Golden operation could not be admitted.", { cause: error });
   }
+}
+
+export async function beginGoldenOperation(
+  sql: Sql,
+  id: string,
+  expected: ExpectedGoldenRevision,
+): Promise<GoldenOperation> {
+  const fenceId = await insertGoldenOperationFence(sql, id, expected);
+  const release: GoldenOperation = async () => {
+    await sql.query("delete from public.golden_operation_fences where id=$1", [fenceId]);
+  };
+  release.retain = async (receipt) => {
+    await sql.query("update public.golden_operation_fences set receipt=$2::text::jsonb where id=$1", [
+      fenceId,
+      JSON.stringify(receipt),
+    ]);
+  };
+  return release;
 }
 
 /** Only a matching canonical readback resolves publication uncertainty; never a lease expiry. */
