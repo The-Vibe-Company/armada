@@ -11,6 +11,7 @@ import {
 } from "@armada/core";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
 import type { CallerResult } from "./caller.ts";
+import { readBody } from "./control-body.ts";
 import type { Route } from "./http.ts";
 import { redactCredentials } from "./log.ts";
 
@@ -19,6 +20,45 @@ interface Config {
   publicKey: string;
   secretKey: string;
 }
+type ContentMode = "metadata" | "full";
+interface SettingsRow {
+  enabled: boolean | null;
+  content_mode: ContentMode | null;
+  config_enc: Uint8Array<ArrayBuffer> | null;
+}
+
+const DEFAULT_HOST = "https://cloud.langfuse.com";
+const REQUEST_TIMEOUT_MS = 5000;
+
+function resolveConfig(input: Record<string, unknown>, stored: Config | null): Config {
+  const host = new URL(String(input.host === undefined ? (stored?.host ?? DEFAULT_HOST) : input.host));
+  if (
+    (input.host !== undefined && typeof input.host !== "string") ||
+    host.protocol !== "https:" ||
+    host.username ||
+    host.password ||
+    host.search ||
+    host.hash ||
+    host.pathname !== "/"
+  )
+    throw Error("invalid Langfuse host");
+
+  // A write-only key must stay bound to its configured origin.
+  if (stored && host.origin !== stored.host && (input.publicKey === undefined || input.secretKey === undefined))
+    throw Error("changing Langfuse host requires both keys");
+
+  const publicKey = input.publicKey === undefined ? stored?.publicKey : input.publicKey;
+  const secretKey = input.secretKey === undefined ? stored?.secretKey : input.secretKey;
+  const validKey = (value: unknown): value is string =>
+    typeof value === "string" && value.trim().length > 0 && value.length <= 4096 && !/[\r\n:]/.test(value);
+  if (!validKey(publicKey) || !validKey(secretKey)) throw Error("invalid Langfuse keys");
+  return { host: host.origin, publicKey, secretKey };
+}
+
+function authorization(config: Config): string {
+  return `Basic ${Buffer.from(`${config.publicKey}:${config.secretKey}`).toString("base64")}`;
+}
+
 const hash = (text: string, length: number) => createHash("sha256").update(text).digest("hex").slice(0, length);
 /** Native histories are not redacted at storage; mask credentials in every exported string, keys included. */
 const scrub = (value: unknown): unknown =>
@@ -330,11 +370,11 @@ export function createLangfuse(
     const response = await send(`${config.host}/api/public/otel/v1/traces`, {
       method: "POST",
       redirect: "error",
-      signal: AbortSignal.any([signal, AbortSignal.timeout(5000)]),
+      signal: AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
       headers: {
         "content-type": "application/json",
         "x-langfuse-ingestion-version": "4",
-        authorization: `Basic ${Buffer.from(`${config.publicKey}:${config.secretKey}`).toString("base64")}`,
+        authorization: authorization(config),
       },
       body,
     });
@@ -397,36 +437,90 @@ export function createLangfuse(
     );
     return true;
   }
+  async function storedConfig(row?: SettingsRow): Promise<Config | null> {
+    return row?.config_enc ? (JSON.parse(await decryptSecret(row.config_enc, key)) as Config) : null;
+  }
+
+  async function testConnection(
+    config: Config,
+    requestSignal: AbortSignal,
+  ): Promise<"ok" | "rejected" | "unreachable"> {
+    try {
+      const response = await send(`${config.host}/api/public/projects`, {
+        method: "GET",
+        redirect: "error",
+        signal: AbortSignal.any([requestSignal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
+        headers: { authorization: authorization(config) },
+      });
+      void response.body?.cancel().catch(() => {});
+      if (response.ok) return "ok";
+      return response.status === 401 || response.status === 403 ? "rejected" : "unreachable";
+    } catch {
+      return "unreachable";
+    }
+  }
+
   function route(authenticate: (request: Request) => Promise<CallerResult>): Route {
     return async (request) => {
-      const match = new URL(request.url).pathname.match(/^\/api\/v1\/orgs\/([0-9a-f-]{36})\/langfuse$/i);
+      const match = new URL(request.url).pathname.match(/^\/api\/v1\/orgs\/([0-9a-f-]{36})\/langfuse(\/test)?$/i);
       if (!match) return null;
+      const orgId = match[1]!.toLowerCase();
+      const testing = Boolean(match[2]);
       const headers = { "cache-control": "no-store" };
       try {
         const auth = await authenticate(request);
         if (!auth.ok) return Response.json({ error: "unauthorized" }, { status: 401, headers });
-        if (!auth.caller.orgs.some((o) => o.orgId === match[1] && o.role === "admin"))
+        const membership = auth.caller.orgs.find((o) => o.orgId === orgId);
+        if (!membership || (membership.role !== "admin" && (testing || request.method !== "GET")))
           return Response.json({ error: "forbidden" }, { status: 403, headers });
-        if (request.method === "GET") {
+
+        if (testing) {
+          if (request.method !== "POST") return new Response(null, { status: 405, headers });
+          const input = await readBody(request, 16384);
           const row = (
-            await sql.query<{
-              enabled: boolean | null;
-              content_mode: string | null;
-              exported: string;
-              failed: string;
-              dropped: string;
-              last_export_at: Date | null;
-            }>(
-              `select c.enabled,c.content_mode,stats.exported::text,stats.failed::text,stats.dropped::text,stats.last_export_at
+            await sql.query<SettingsRow>("select config_enc from public.org_langfuse where org_id=$1", [orgId])
+          ).rows[0];
+          const config = resolveConfig(input, await storedConfig(row));
+          return Response.json({ status: await testConnection(config, request.signal) }, { headers });
+        }
+
+        if (request.method === "GET") {
+          if (membership.role !== "admin") {
+            const row = (
+              await sql.query<Pick<SettingsRow, "enabled" | "content_mode">>(
+                "select enabled,content_mode from public.org_langfuse where org_id=$1",
+                [orgId],
+              )
+            ).rows[0];
+            return Response.json(
+              { enabled: row?.enabled ?? false, contentMode: row?.content_mode ?? "metadata" },
+              { headers },
+            );
+          }
+          const row = (
+            await sql.query<
+              SettingsRow & {
+                exported: string | null;
+                failed: string | null;
+                dropped: string | null;
+                last_export_at: Date | null;
+              }
+            >(
+              `select c.enabled,c.content_mode,c.config_enc,stats.exported::text,stats.failed::text,stats.dropped::text,stats.last_export_at
                from public.orgs o left join public.org_langfuse c on o.id=c.org_id
                left join public.org_langfuse_export_stats stats on o.id=stats.org_id where o.id=$1`,
-              [match[1]],
+              [orgId],
             )
           ).rows[0];
+          const config = await storedConfig(row);
           return Response.json(
             {
               enabled: row?.enabled ?? false,
+              contentMode: row?.content_mode ?? "metadata",
               ...(row?.content_mode ? { content_mode: row.content_mode } : {}),
+              host: config?.host ?? DEFAULT_HOST,
+              publicKey: config?.publicKey ?? null,
+              configured: config !== null,
               counters: {
                 exported: Number(row?.exported ?? 0),
                 failed: Number(row?.failed ?? 0),
@@ -437,42 +531,37 @@ export function createLangfuse(
             { headers },
           );
         }
-        if (request.method === "DELETE") {
-          await sql.query("delete from public.org_langfuse where org_id=$1", [match[1]]);
-          return new Response(null, { status: 204, headers });
-        }
-        if (request.method !== "PUT") return new Response(null, { status: 405, headers });
-        const raw = await request.text();
-        if (raw.length > 16384) return Response.json({ error: "invalid_configuration" }, { status: 400, headers });
-        const v = JSON.parse(raw);
-        if (
-          typeof v.enabled !== "boolean" ||
-          !["metadata", "full"].includes(v.contentMode) ||
-          typeof v.host !== "string" ||
-          ![v.publicKey, v.secretKey].every(
-            (k) => typeof k === "string" && k.length > 0 && k.length <= 4096 && !/[\r\n:]/.test(k),
-          )
-        )
-          throw Error("invalid");
-        const host = new URL(v.host);
-        if (
-          host.protocol !== "https:" ||
-          host.username ||
-          host.password ||
-          host.search ||
-          host.hash ||
-          host.pathname !== "/"
-        )
-          throw Error("invalid");
-        const encrypted = await encryptSecret(
-          JSON.stringify({ host: host.origin, publicKey: v.publicKey, secretKey: v.secretKey }),
-          key,
-        );
-        await sql.query(
-          `insert into public.org_langfuse(org_id,enabled,content_mode,config_enc) values($1,$2,$3,decode($4,'hex')) on conflict(org_id) do update set enabled=excluded.enabled,content_mode=excluded.content_mode,config_enc=excluded.config_enc`,
-          [match[1], v.enabled, v.contentMode, Buffer.from(encrypted).toString("hex")],
-        );
-        return Response.json({ enabled: v.enabled, contentMode: v.contentMode }, { headers });
+
+        if (request.method !== "PUT" && request.method !== "DELETE")
+          return new Response(null, { status: 405, headers });
+        const input = request.method === "PUT" ? await readBody(request, 16384) : {};
+        if (!sql.transaction) throw Error("Langfuse settings require transactions");
+        return await sql.transaction(async (tx) => {
+          // Lock the organization even before a configuration row exists.
+          await tx.query("select id from public.orgs where id=$1 for no key update", [orgId]);
+          if (request.method === "DELETE") {
+            await tx.query("delete from public.org_langfuse where org_id=$1", [orgId]);
+            return new Response(null, { status: 204, headers });
+          }
+          const row = (
+            await tx.query<SettingsRow>(
+              "select enabled,content_mode,config_enc from public.org_langfuse where org_id=$1",
+              [orgId],
+            )
+          ).rows[0];
+          const enabled = input.enabled === undefined ? (row?.enabled ?? false) : input.enabled;
+          const contentMode = input.contentMode === undefined ? (row?.content_mode ?? "metadata") : input.contentMode;
+          if (typeof enabled !== "boolean" || (contentMode !== "metadata" && contentMode !== "full"))
+            throw Error("invalid Langfuse settings");
+          const config = resolveConfig(input, await storedConfig(row));
+          const encrypted = await encryptSecret(JSON.stringify(config), key);
+          await tx.query(
+            `insert into public.org_langfuse(org_id,enabled,content_mode,config_enc) values($1,$2,$3,decode($4,'hex'))
+             on conflict(org_id) do update set enabled=excluded.enabled,content_mode=excluded.content_mode,config_enc=excluded.config_enc`,
+            [orgId, enabled, contentMode, Buffer.from(encrypted).toString("hex")],
+          );
+          return Response.json({ enabled, contentMode }, { headers });
+        });
       } catch {
         return Response.json({ error: "langfuse_configuration_unavailable" }, { status: 400, headers });
       }
