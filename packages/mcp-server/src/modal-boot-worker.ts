@@ -277,6 +277,10 @@ export function createModalBootWorker(
         return;
       }
       const cleanup = live?.cancelled && claim.phase === "booting";
+      if (cleanup && live.expired) {
+        await settle(claim, { reason: "cancelled_boot_outcome_unknown" }, true);
+        return;
+      }
       if (!live?.role || !live.same_actor || (!cleanup && !live.allowed)) {
         await settle(claim, { reason: "admission_expired_or_revoked" }, claim.phase === "booting");
         return;
@@ -303,9 +307,7 @@ export function createModalBootWorker(
           return;
         }
       } catch {
-        if (!signal.aborted && live.expired)
-          await settle(claim, { reason: "provider_authority_unavailable" }, claim.phase === "booting");
-        else await reschedule();
+        await reschedule();
         return;
       }
       if (!accepting || signal.aborted) {
@@ -327,8 +329,7 @@ export function createModalBootWorker(
           // Preserve the request until cleanup can be retried or the deadline expires.
         }
         if (signal.aborted) return;
-        if (live.expired) await settle(claim, { reason: "cancelled_boot_outcome_unknown" }, true);
-        else await reschedule();
+        await reschedule();
         return;
       }
       const dispatch = await sql.transaction!(async (tx) => {
