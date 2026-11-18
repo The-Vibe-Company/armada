@@ -55,7 +55,8 @@ Turns settled before export was enabled are not backfilled.
 
 Pending export identities survive server restarts. A worker leases each job and
 records the outcome and organization counters together. An unfinished lease
-can be reclaimed after expiry. Runtime history is bounded at 2,000 records
+can be reclaimed after expiry. Runtime history is read per turn, from the
+turn's first archived event to its settlement, and is bounded at 2,000 records
 and 4 MiB of ciphertext, and each outbound payload is bounded at 4 MiB.
 Oversized exports and jobs whose settings were disabled before delivery count
 as `dropped`. Transport, decryption and export-processing failures count as

@@ -166,16 +166,19 @@ export function createLangfuse(
         nativeProvider: provider.id,
       };
     }
-    // Bound archive memory before fetching ciphertext.
-    const args = [job.sandbox_id, job.runtime_ack];
+    // Read only this turn's window: from its first archived reference (the sparse
+    // counted_prompt_id marker) to the settlement acknowledgement. Earlier turns
+    // must not consume the bounds. Bound archive memory before fetching ciphertext.
+    const args = [job.sandbox_id, job.runtime_ack, job.prompt_id];
+    const window = `from public.runtime_events where sandbox_id=$1 and sequence<=$2 and sequence>=(
+        select sequence from public.runtime_events where sandbox_id=$1 and counted_prompt_id=$3)`;
     const size = await sql.query<{ bytes: string }>(
-      `select coalesce(sum(octet_length(event_enc)),0)::text as bytes
-         from public.runtime_events where sandbox_id=$1 and sequence<=$2`,
+      `select coalesce(sum(octet_length(event_enc)),0)::text as bytes ${window}`,
       args,
     );
     if (Number(size.rows[0]?.bytes) > MAX_EXPORT_BYTES) return null;
     const archive = await sql.query<{ event_enc: Uint8Array<ArrayBuffer> }>(
-      `select event_enc from public.runtime_events where sandbox_id=$1 and sequence<=$2 order by sequence limit 2001`,
+      `select event_enc ${window} order by sequence limit 2001`,
       args,
     );
     if (archive.rows.length > 2000) return null;

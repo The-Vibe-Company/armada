@@ -293,7 +293,15 @@ test("native Modal export waits for the terminal journal event after a live rece
 
   expect(await exporter.reconcileOne(signal)).toBe(true);
   expect(payloads).toEqual([]);
-  expect(await exporter.reconcileOne(signal)).toBe(false);
+  // Pending keeps the job open behind a short lease; assert the row, not elapsed time.
+  expect(
+    (
+      await db.query<{ open: boolean; leased: boolean }>(
+        "select completed_at is null as open,lease_id is null and lease_until is not null as leased from langfuse_turn_exports where sandbox_id=$1",
+        [id],
+      )
+    ).rows,
+  ).toEqual([{ open: true, leased: true }]);
   history = events;
   await db.query("update langfuse_turn_exports set lease_until=now()-interval '1 second' where sandbox_id=$1", [id]);
   expect(await exporter.reconcileOne(signal)).toBe(true);
@@ -349,12 +357,18 @@ test("worker exports the persisted usage envelope and reconstructed archive thro
     },
     events[2]!,
   ];
+  // An earlier turn larger than the per-export record bound must not consume this
+  // turn's window; its undecryptable placeholder rows prove they are never read.
+  await db.query(
+    `insert into runtime_events(sandbox_id,sequence,epoch,counted_prompt_id,event_enc)
+     select $1,n,1,case when n=1 then 'earlier' end,'\\x00'::bytea from generate_series(1,2001) n`,
+    [id],
+  );
   for (const [index, event] of archive.entries())
-    await db.query("insert into runtime_events(sandbox_id,sequence,epoch,event_enc) values($1,$2,'1',$3)", [
-      id,
-      index + 1,
-      await encryptSecret(JSON.stringify(event), key),
-    ]);
+    await db.query(
+      "insert into runtime_events(sandbox_id,sequence,epoch,counted_prompt_id,event_enc) values($1,$2,'1',$3,$4)",
+      [id, index + 2002, index === 0 ? "turn" : null, await encryptSecret(JSON.stringify(event), key)],
+    );
   await db.query("select public.enqueue_webhook_turn($1,'turn','failed')", [id]);
   const requests: Request[] = [];
   const exporter = createLangfuse(db, key, noNativeProvider, (async (url, init) => {
