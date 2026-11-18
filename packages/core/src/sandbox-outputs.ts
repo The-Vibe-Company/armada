@@ -19,7 +19,9 @@ export interface OutputFile {
 // No caller-controlled command, root, traversal, symlink following or special files. Every entry is
 // inspected before any limit applies: the count and byte bounds count admitted files only, in name
 // order, so excluded entries (subdirectories, links, oversized files) never hide a deliverable.
-export const OUTPUT_COLLECTOR = `python3 - <<'PY'
+// The interpreter runs isolated (-I: no working directory, user site or PYTHON* variables on its
+// import path) from a fixed PATH and working directory, so a stray module never shadows the stdlib.
+export const OUTPUT_COLLECTOR = `cd / && PATH=/usr/local/bin:/usr/bin:/bin exec python3 -I - <<'PY'
 import os,stat,json,base64,sys
 files=[]
 try:

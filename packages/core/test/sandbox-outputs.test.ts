@@ -65,3 +65,24 @@ test("the real collector bounds admitted files in name order, so excluded entrie
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("the real collector ignores modules in the caller's working directory and PYTHONPATH", () => {
+  const root = mkdtempSync(join(tmpdir(), "outputs-"));
+  try {
+    mkdirSync(join(root, "outputs"));
+    writeFileSync(join(root, "outputs", "memo.txt"), "document");
+    const shadow = join(root, "shadow");
+    mkdirSync(shadow);
+    writeFileSync(join(shadow, "json.py"), "raise SystemExit('shadowed stdlib')\n");
+    const run = Bun.spawnSync(["bash", "-c", OUTPUT_COLLECTOR.replace("'/workspace'", `'${root}'`)], {
+      cwd: shadow,
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PYTHONPATH: shadow },
+    });
+    expect(run.stderr.toString()).toBe("");
+    expect(run.exitCode).toBe(0);
+    const read = parseCollectorOutput(run.stdout.toString());
+    expect(read.map((file) => [file.name, Buffer.from(file.bytes).toString()])).toEqual([["memo.txt", "document"]]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

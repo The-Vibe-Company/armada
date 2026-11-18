@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { type FileHandle, open, readdir } from "node:fs/promises";
+import { type FileHandle, open, opendir } from "node:fs/promises";
 import {
   DOCKER_OUTPUT_DIRECTORY,
   OUTPUT_MAX_BYTES,
@@ -7,6 +7,27 @@ import {
   OUTPUT_MAX_FILES,
   validOutputName,
 } from "@armada/core";
+
+/**
+ * Names of a directory, enumerated in bounded batches. Stops at the first entry past
+ * `OUTPUT_MAX_ENTRIES`: a larger directory is unreadable now (the previous snapshot stays), never
+ * a partial read, and never a full enumeration whose memory and time grow with the directory.
+ * `onEntry` lets tests count how many entries were consumed.
+ */
+export async function listEntries(path: string, onEntry?: () => void): Promise<string[]> {
+  const names: string[] = [];
+  const directory = await opendir(path, { bufferSize: 64 });
+  try {
+    for (let entry = await directory.read(); entry; entry = await directory.read()) {
+      onEntry?.();
+      if (names.length === OUTPUT_MAX_ENTRIES) throw Error("output_limit");
+      names.push(entry.name);
+    }
+  } finally {
+    await directory.close();
+  }
+  return names;
+}
 
 /**
  * Fixed, read-only, bounded read of the declared output directory (#2570), the runtime
@@ -29,9 +50,7 @@ export async function readOutputDirectory(
   try {
     // Linux resolves this magic link to the opened directory itself (openat semantics).
     const base = `/proc/self/fd/${handle.fd}`;
-    const entries = await readdir(base);
-    // A larger directory is unreadable now (the previous snapshot stays), never a partial read.
-    if (entries.length > OUTPUT_MAX_ENTRIES) throw Error("output_limit");
+    const entries = await listEntries(base);
     const files: { name: string; base64: string }[] = [];
     let total = 0;
     for (const name of entries.filter(validOutputName).sort()) {

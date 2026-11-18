@@ -3,7 +3,7 @@ import { linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { OUTPUT_MAX_ENTRIES } from "@armada/core";
-import { readOutputDirectory } from "../src/outputs.ts";
+import { listEntries, readOutputDirectory } from "../src/outputs.ts";
 
 const names = (files: { name: string }[]) => files.map((file) => file.name);
 
@@ -34,6 +34,21 @@ test("the runtime output read admits regular files in name order and never lets 
     // A directory beyond the entry bound is unreadable, never a partial read that drops files.
     for (let i = 0; i < OUTPUT_MAX_ENTRIES; i++) writeFileSync(join(outputs, `n${i}`), "");
     await expect(readOutputDirectory(outputs)).rejects.toThrow("output_limit");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the runtime output read stops enumerating at the first entry past the bound", async () => {
+  const root = mkdtempSync(join(tmpdir(), "runtime-outputs-"));
+  try {
+    for (let i = 0; i < OUTPUT_MAX_ENTRIES * 2; i++) writeFileSync(join(root, `e${i}`), "");
+    let consumed = 0;
+    await expect(listEntries(root, () => consumed++)).rejects.toThrow("output_limit");
+    expect(consumed).toBe(OUTPUT_MAX_ENTRIES + 1);
+    rmSync(join(root, "e0"));
+    for (let i = OUTPUT_MAX_ENTRIES + 1; i < OUTPUT_MAX_ENTRIES * 2; i++) rmSync(join(root, `e${i}`));
+    expect(await listEntries(root)).toHaveLength(OUTPUT_MAX_ENTRIES);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
