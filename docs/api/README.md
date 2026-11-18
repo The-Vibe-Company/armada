@@ -39,7 +39,7 @@ and a configured Codex account:
 ```
 
 Omit `prompt` to launch without starting a turn. Save the returned Armada
-sandbox `id` for subsequent calls. Ordinary cloud launches inherit snapshot
+sandbox ID from `sandbox.id` for subsequent calls. Ordinary cloud launches inherit snapshot
 visibility. A private snapshot is visible to its owner.
 
 - Put `idempotencyKey` in the JSON body (16–128 characters). The receipt is

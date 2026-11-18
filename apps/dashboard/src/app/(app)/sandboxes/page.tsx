@@ -31,7 +31,7 @@ import { listSandboxCosts, listSandboxHostNames } from "@/lib/data/sandboxes";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { displayUser, listMemberships, memberDirectory, requireViewer } from "@/lib/data/viewer";
 import { hasDockerHost } from "@/lib/docker-snapshots";
-import { HARNESS_LABELS } from "@/lib/labels";
+import { DOCKER_HOST_LABEL, HARNESS_LABELS } from "@/lib/labels";
 import { type LifecycleView, lifecycleView, readLifecycle } from "@/lib/lifecycle";
 import { preservationView, settledOutcome } from "@/lib/outcome";
 import { CLOUD_PROVIDERS_PATH } from "@/lib/provider-setup";
@@ -201,7 +201,7 @@ async function SandboxesContent({ searchParams }: Props) {
                         ? "Not recorded"
                         : machineSizeLabel(value as (typeof MACHINE_SIZES)[number])
                       : key === "provider"
-                        ? ({ boat: "Boat cloud", modal: "Modal cloud", docker: "Your server" }[
+                        ? ({ boat: "Boat cloud", modal: "Modal cloud", docker: DOCKER_HOST_LABEL }[
                             value as SandboxPlacementProviderId
                           ] ?? capitalize(value))
                         : key === "model"
@@ -451,7 +451,7 @@ function ProviderPlacement({ sandbox, hostName }: { sandbox: SandboxListMetadata
         <ProviderMark provider={sandbox.provider} />
         <span className="min-w-0 truncate">
           {sandbox.provider === "docker"
-            ? `your server${sandbox.canOpen && hostName ? ` ${hostName}` : ""}`
+            ? `${DOCKER_HOST_LABEL}${sandbox.canOpen && hostName ? ` ${hostName}` : ""}`
             : sandbox.provider === "modal"
               ? "Modal cloud"
               : "Boat cloud"}

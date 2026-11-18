@@ -42,7 +42,7 @@ import { sandboxHostLabel } from "@/lib/docker-hosts";
 import { type DockerSandboxControls, dockerImageLabel, dockerSandboxControls } from "@/lib/docker-launch";
 import { mcpUrl } from "@/lib/env";
 import { isActiveStatus } from "@/lib/events";
-import { HARNESS_LABELS } from "@/lib/labels";
+import { DOCKER_HOST_LABEL, HARNESS_LABELS } from "@/lib/labels";
 import { launchTimingFact } from "@/lib/launch-timing";
 import { formatDuration, lifecycleView, readLifecycle } from "@/lib/lifecycle";
 import { describeEvidence } from "@/lib/machine-size";
@@ -416,8 +416,8 @@ function DockerSandbox({
   const facts: Fact[] = [
     ["Sandbox ID", sandbox.id],
     ["Org", org],
-    ["Provider", `your server ${host}`],
-    ["Host", host],
+    ["Provider", `${DOCKER_HOST_LABEL} ${host}`],
+    [DOCKER_HOST_LABEL, host],
     ["Image", image.label, image.detail ?? undefined],
     ...(sandbox.provider_sandbox_id ? [["Container", sandbox.provider_sandbox_id] as Fact] : []),
     ["Harness", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
@@ -612,7 +612,7 @@ function RestrictedSandbox({ sandbox, owner }: { sandbox: SandboxListMetadata; o
   const facts: [string, string][] = [
     [
       "Provider",
-      sandbox.provider === "boat" ? "Boat cloud" : sandbox.provider === "modal" ? "Modal cloud" : "your server",
+      sandbox.provider === "boat" ? "Boat cloud" : sandbox.provider === "modal" ? "Modal cloud" : DOCKER_HOST_LABEL,
     ],
     ["Harness", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
     ["Model", sandbox.model ?? "Provider default"],

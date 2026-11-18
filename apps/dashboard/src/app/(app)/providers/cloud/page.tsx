@@ -32,6 +32,7 @@ import { selectedOrganization } from "@/lib/data/selected-org";
 import type { Membership } from "@/lib/data/viewer";
 import { type DockerHost, HOSTS_PATH, hostState, sandboxCount } from "@/lib/docker-hosts";
 import { type DockerLaunchOption, dockerHarnesses, dockerLaunchBlocker, dockerUnavailable } from "@/lib/docker-launch";
+import { CLOUD_PROVIDERS_LABEL, DOCKER_HOSTS_LABEL } from "@/lib/labels";
 import type { LaunchAccounts } from "@/lib/model-accounts";
 import { CLOUD_PROVIDERS_PATH, isConfigured, SETUP_PROVIDERS } from "@/lib/provider-setup";
 import { relativeAge } from "@/lib/relative-time";
@@ -125,7 +126,7 @@ function SandboxProviders({
           <MachinesSection
             key={selected.org.id}
             initial={initial}
-            label="Cloud providers"
+            label={CLOUD_PROVIDERS_LABEL}
             rows={SETUP_PROVIDERS.map((provider) => {
               const state: ProviderRowState =
                 setup.state === "unavailable"
@@ -231,7 +232,7 @@ async function OwnServers({
       {cloud}
       <MachinesSection
         key={orgId}
-        label="Docker hosts"
+        label={DOCKER_HOSTS_LABEL}
         rows={rows}
         initial={requested}
         empty={

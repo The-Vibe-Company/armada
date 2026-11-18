@@ -2,7 +2,7 @@
   <a href="https://armada.thevibecompany.co">
     <picture>
       <source media="(max-width: 600px)" srcset="docs/images/armada-masthead-mobile.svg">
-      <img src="docs/images/armada-masthead.svg" width="100%" alt="Armada. Run a fleet of coding agents. See every move. Claude Code and Codex in Boat or Modal sandboxes, built from your repositories.">
+      <img src="docs/images/armada-masthead.svg" width="100%" alt="Armada. Run a fleet of coding agents. See every move. Claude Code, Codex and OpenCode on Boat, Modal and Docker.">
     </picture>
   </a>
 </p>
@@ -15,24 +15,26 @@
   <a href="#quickstart">Quickstart</a>
   &nbsp;·&nbsp;
   <a href="#documentation">Docs</a>
+  &nbsp;·&nbsp;
+  <a href="docs/api/README.md"><b>Embed Armada</b></a>
 </p>
 
 **Have your own Linux machine?** [Run agents on your Docker host](docs/own-machine-quickstart.md) without hosting the Armada server (requires server opt-in).
 
-**Armada gives every coding task its own machine.** Save your repositories and setup once as a *snapshot*. Launch Claude Code or Codex into a fresh Boat or Modal sandbox with the model and reasoning effort you choose. Follow every event, redirect the agent mid-turn, stop the machine and pick the same conversation back up later, from the web, the terminal or any MCP client.
+**Armada gives every coding task its own machine.** Save your repositories and setup once as a *snapshot*. Launch Claude Code, Codex or OpenCode into a fresh sandbox with the model and reasoning effort you choose. Follow every event, redirect the agent mid-turn, stop the machine and pick the same conversation back up later, from the web, the terminal or any MCP client.
 
 ```sh
 npm install -g @the-vibe-company/armada
 armada login
 ```
 
-Open source, MIT. Sandboxes run on the Boat or Modal account you connect, and agents on your own model credentials.
+Open source, MIT. Sandboxes run on a connected Boat or Modal account or on a registered Docker host. Agents use your model accounts. OpenCode on Boat requires the Armada runtime.
 
 ## Why Armada
 
 - **Start from a ready workspace.** A snapshot saves your repositories, branches and setup after a secret scan; every launch forks it and pulls the latest commits.
-- **Choose the agent and the brain.** Claude Code or Codex, with the exact model and reasoning effort you name. Armada never swaps in another model.
-- **One task, one sandbox.** Each launch gets its own Boat or Modal machine, only that agent's credentials, and your GitHub identity once you connect it.
+- **Choose the agent and model.** Claude Code, Codex or OpenCode, with the exact model and reasoning effort you name. Armada never swaps in another model.
+- **One task, one sandbox.** Each launch gets its own sandbox, only that agent's credentials, and your GitHub identity once you connect it.
 - **See and steer every move.** Follow events live, send the next prompt, steer or interrupt the running turn, run a command beside it.
 - **Stop and pick up later.** Stopping normally preserves the disk and conversation for the next prompt. If a Modal checkpoint fails, the current disk is not retained and resume is refused; [push work before stopping](docs/modal-stop-recovery.md).
 - **Bring your tools and your team.** Attach the MCP servers you connected, share snapshots with your org or keep them private, and give bots a service token.
@@ -49,7 +51,7 @@ Open source, MIT. Sandboxes run on the Boat or Modal account you connect, and ag
 For your own compute, [register a Docker host and choose fresh launch or a host-local snapshot](docs/own-machine-quickstart.md) instead of the cloud path below.
 
 1. **Snapshot**: build once from your repositories (`armada snapshot create`).
-2. **Launch**: pick Claude Code or Codex, the model, the effort and the provider (`armada launch`).
+2. **Launch**: pick an agent, the model, the effort and the provider (`armada launch`).
 3. **Sandbox**: a fresh, isolated fork where `git` and `gh` act as you.
 4. **Drive**: follow, steer, stop and resume (`armada logs --follow`, `armada send`).
 
@@ -161,12 +163,12 @@ Fable (`claude-fable-5-2`) is not suggested in the shared catalogue: Boat is kno
 
 ## Bring your MCP servers
 
-Register an MCP server once, connect it (the browser opens when it asks for OAuth), then attach it to the sandboxes that need it. Only connected servers can be attached, and tokens never go on the command line. A personal connection attaches to private sandboxes; an admin shares one with the whole organization with `--scope org`.
+Register an MCP server once, connect it (the browser opens when it asks for OAuth), then attach it to the sandboxes that need it. Only connected servers can be attached, and tokens never go on the command line. For an ordinary cloud launch with a personal connection, use a private snapshot (named `private-web` below); an admin shares one with the whole organization with `--scope org`.
 
 ```sh
 armada mcp add Docs https://mcp.example.com/mcp      # personal; --scope org shares it with your org
 armada mcp connect <connection-id>
-armada launch web --agent codex --visibility private --connections <connection-id> "Update the API reference"
+armada launch private-web --agent codex --connections <connection-id> "Update the API reference"
 armada mcp sandbox-connections <sandbox-id>
 ```
 
@@ -196,7 +198,7 @@ A private snapshot or sandbox is visible only to its owner, not even to admins. 
 
 ## Documentation
 
-Start with the [Use / Develop / Operate reader map](docs/README.md) for canonical guides, contracts and operational runbooks. The [v2 specification](https://github.com/The-Vibe-Company/armada/issues/455) records the original design, not a promise that every proposal is shipped.
+See [Embed Armada](docs/api/README.md) for the HTTP API and the [glossary](docs/glossary.md) for shared terminology. Start with the [Use / Develop / Operate reader map](docs/README.md) for canonical guides, contracts and operational runbooks. The [v2 specification](https://github.com/The-Vibe-Company/armada/issues/455) records the original design, not a promise that every proposal is shipped.
 
 ## Armada v1
 
@@ -250,6 +252,7 @@ use `error.code`; integrations migrating old code comparisons can use
 previously collapsed service/outcome reasons into `unavailable`; these now retain
 the versioned reason with `legacyCode: "unavailable"`. Exit 2 means a usage/invalid-request
 failure; exit 1 means access, state, unsupported operation or service failure.
+Exit 3 means bare `armada` requires sign-in and no interactive sign-in took place.
 Check `armada list --json` for visible IDs and state; verify your org selection
 with `armada org current` or pass `--org UUID`.
 
@@ -270,34 +273,6 @@ Use `armada vars -h` or `armada secrets rotate -h` to see the same reference as
 option value such as `--file -h`, or literal arguments after `--`, as a help request.
 Secret values remain stdin/file-only and are never printed by help.
 
-### Fixture dashboard (`bun run dev`)
+## Contributing
 
-Run `bun run dev` and sign in as `alice@example.com` with code `123456`.
-The small organization remains the default; use the organization switcher to
-select **Large** for deterministic, production-sized data (600 sandboxes plus
-snapshots, templates, routines, accounts and machines). This mock-only environment
-never launches real sandboxes; use Large when checking pages and launch pickers
-at desktop and mobile widths, including long names and unavailable resources.
-## Fixture dashboard and browser journeys
-
-`bun run dev` starts the fixture-only dashboard and mock. Sign in as
-`alice@example.com` with code `123456`. Stop it before running `bun run e2e`: the
-runner starts and stops the same fixture app itself. No deployment or provider
-credentials are needed; these deterministic journeys do not configure or invoke
-a model. Desktop (1280×800) and phone (375×812) run serially, without retries.
-The fixture sign-in is saved once per target for the duration of the run; session
-state is encrypted and removed by the runner. Only setup resets the mock because
-reset invalidates saved authentication tokens.
-
-Run one journey with `bun run e2e -- tests/dashboard/sandboxes.e2e.ts:39 --target desktop`.
-Trace pages and Markdown traces are in `.e2e/results/`; the machine-readable
-report is `.e2e/report.json` and app output is `.e2e/logs/dashboard.log`. These
-artifacts are ignored. There are no agent steps or replay recordings in slice 1.
-[Dashboard browser tests](docs/e2e-retirement.md) documents the current runner and shared fixtures.
-
-
-The sandbox journeys run for both Acme and the existing **Large** fixture (600
-sandboxes, including the mock request-target limit). Setup saves separate
-organization sessions using the validated organization-preference cookie; no
-fixture resources are replaced. Release gating is reserved for issue #2313
-slice 4, per the owner decision; no CI job is added in this slice.
+See [Dashboard browser tests](docs/e2e-retirement.md) for the fixture dashboard and browser journeys.

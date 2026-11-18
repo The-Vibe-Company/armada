@@ -59,6 +59,5 @@ never re-dispatched.
   without its reference, and filtering by reference never matches it.
 - The launch answer returns it too.
 
-Armada has no outbound webhooks today (the `notify_subscriptions` table from the
-initial schema has no delivery), so there is no webhook payload to carry the
-reference. When webhook delivery is built it should include `externalRef`.
+Signed [outbound webhooks](outbound-webhooks.md) include `externalRef` in
+each payload, with null when the sandbox has no reference.

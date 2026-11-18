@@ -14,3 +14,7 @@ export const EFFORT_LABEL: Record<string, string> = {
   max: "Max",
   ultra: "Ultra",
 };
+
+export const CLOUD_PROVIDERS_LABEL = "Cloud providers";
+export const DOCKER_HOST_LABEL = "Docker host";
+export const DOCKER_HOSTS_LABEL = "Docker hosts";
