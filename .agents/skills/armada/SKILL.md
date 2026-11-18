@@ -37,6 +37,7 @@ any receipt UUID returned.
 ## 2. Choose before launching
 
 - Inspect `armada snapshot list --json` and `armada template list --json`.
+  To refresh a shared snapshot, update its build configuration with the owner authorization.
   A golden is a provider-specific saved environment; a template is an immutable
   revision specifying a golden, harness and configuration. Use IDs if names clash.
 - Choose Boat or Modal explicitly when ambiguous. A golden built on one provider

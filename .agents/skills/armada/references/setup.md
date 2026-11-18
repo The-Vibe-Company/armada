@@ -33,9 +33,7 @@ inputs, not secret injection. On disconnect preserve the admission key and inspe
 do not resubmit with a new key. Use `armada snapshot build-status JOB_ID` once
 known. A failed secret scan needs source/history cleanup, never bypassing scans.
 `armada snapshot update NAME --replace --config CONFIG_FILE --provider boat` rebuilds an
-existing golden; `armada snapshot connect NAME --provider boat` opens its canonical
-master for maintenance and `armada snapshot snapshot NAME --provider boat` scans
-and freezes it. These affect future work: obtain permission before changing a
+existing golden from its build configuration. Obtain permission before changing a
 shared environment.
 
 ## Templates, readable variables and secrets
