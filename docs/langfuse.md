@@ -61,6 +61,12 @@ too; a read that outlives it is abandoned, and at most one such read per
 turn and four in total stay outstanding before Armada stops starting new ones.
 Turns settled before export was enabled are not backfilled.
 
+A native steer is exported as the run it leaves in progress: the joined turn
+(Claude Code) or the replacement run of a restart (Codex). When Boat answers
+with a steer record instead of a run ID, Armada resolves the run from the
+newest prompt event. If no new run is visible yet when steer returns, that
+replacement is not exported; the interrupted run still is.
+
 Pending export identities survive server restarts. A worker leases each job and
 records the outcome and organization counters together. An unfinished lease
 can be reclaimed after expiry; each claim reserves an attempt, and a job

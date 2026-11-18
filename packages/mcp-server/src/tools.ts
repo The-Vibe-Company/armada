@@ -1966,16 +1966,20 @@ export function createArmadaServer(context: ToolContext, version: string, option
         data.sandboxes,
         found,
         { clearTaskOutcome: true },
-        async () => {
+        async (signal) => {
           await prepareConnections(provider, found, member.role);
 
           const receipt = await dispatchSteer();
           acknowledged = true;
+          // Register the concrete run like send does, so native settlement (and
+          // its Langfuse export) sees the steered turn. Empty stays the marker
+          // when the run cannot be proven; report then resolves it from events.
+          const taskPromptId = await steeredRun(provider, found, receipt.promptId, delivery, signal);
+          if (taskPromptId) await data.sandboxes.recordNativePrompt?.(found.id, found.providerSandboxId, taskPromptId);
           return {
             patch: {
               status: "running",
-              // Boat returns a steer-record ID; resolve the actual run from events.
-              taskPromptId: "",
+              taskPromptId,
               conversationIds: appendConversation(found.conversationIds, receipt.conversationId),
             },
             result: {
@@ -2558,4 +2562,31 @@ function publicationFailure(error: unknown, acknowledged: boolean): never {
       { cause: error },
     );
   throw error;
+}
+
+/** The run a successful steer left in progress, or "" when it cannot be proven.
+ * Boat may answer with a steer-record ID; then the newest prompt event names the
+ * run. A restart must not settle as the interrupted run it replaced.
+ */
+async function steeredRun(
+  provider: Provider,
+  found: { providerSandboxId: string; taskPromptId?: string | null },
+  promptId: string,
+  delivery: "native" | "restart",
+  signal: AbortSignal,
+): Promise<string> {
+  try {
+    const run = await provider.getPrompt({ sandboxId: found.providerSandboxId, promptId, signal });
+    if (run.promptId === promptId) return promptId;
+  } catch {
+    /* Not a pollable run: resolve it from events below. */
+  }
+  try {
+    signal.throwIfAborted();
+    const latest = (await latestPrompt(provider, found.providerSandboxId, true))?.promptId;
+    if (latest && (delivery === "native" || latest !== found.taskPromptId)) return latest;
+  } catch {
+    /* Accepted steer stays reportable through the empty marker. */
+  }
+  return "";
 }

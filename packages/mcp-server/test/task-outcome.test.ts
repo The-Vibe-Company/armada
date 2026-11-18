@@ -1,10 +1,11 @@
 import { expect, test } from "bun:test";
-import { createSqlVaultStore } from "@armada/core/server";
+import { createSqlVaultStore, encryptSecret } from "@armada/core/server";
 import { operation } from "../../cli/src/operations.ts";
 import { memorySessionStore } from "../../cli/src/session.ts";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { providerRegistry } from "../src/http.ts";
+import { createNativeWebhookPrompts } from "../src/native-webhook-prompts.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { call, ENCRYPTION_KEY, type FakeBoat, harness, PUBLIC_URL } from "./support.ts";
 
@@ -167,6 +168,44 @@ test("send and steer clear outcomes before admission and fence replacement recei
     expect((await db.query("select task_outcome from sandboxes where id=$1", [id])).rows[0]).toEqual({
       task_outcome: null,
     });
+  } finally {
+    await server.close();
+  }
+});
+
+test("a restart steer registers its replacement run so settlement exports it", async () => {
+  const server = await harness({}, await sharedDatabase());
+  try {
+    const { client, token, people, boat, db } = server;
+    const mcp = await client(await token(people.member));
+    const id = (await call(mcp, "launch", { golden: "shared", harness: "codex", prompt: "first" })).data.id;
+    await db.query("insert into org_langfuse(org_id,enabled,content_mode,config_enc) values($1,true,'metadata',$2)", [
+      people.org,
+      await encryptSecret("{}", ENCRYPTION_KEY),
+    ]);
+    // Boat answers a restart with a steer record; the replacement run is prompt_2.
+    boat.provider.steer = async (input) => {
+      boat.finish(input.sandboxId, "prompt_1", "interrupted");
+      const receipt = await boat.provider.prompt({ sandboxId: input.sandboxId, harness: "codex", text: input.text });
+      return { ...receipt, promptId: "unpollable-steer-record", mode: "restart" };
+    };
+    expect((await call(mcp, "steer", { id, text: "change course" })).isError).toBe(false);
+    expect((await db.query("select task_prompt_id from sandboxes where id=$1", [id])).rows[0]).toEqual({
+      task_prompt_id: "prompt_2",
+    });
+    boat.finish("bx_1", "prompt_2", "finished");
+    const native = createNativeWebhookPrompts(db, async () => boat.provider);
+    while (await native.reconcileOne(new AbortController().signal));
+    expect(
+      (
+        await db.query("select prompt_id,terminal_status from langfuse_turn_exports where sandbox_id=$1 order by 1", [
+          id,
+        ])
+      ).rows,
+    ).toEqual([
+      { prompt_id: "prompt_1", terminal_status: "interrupted" },
+      { prompt_id: "prompt_2", terminal_status: "finished" },
+    ]);
   } finally {
     await server.close();
   }
