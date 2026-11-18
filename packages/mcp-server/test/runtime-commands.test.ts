@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
 import type { RunnerRequest } from "@armada/agent-runtime";
 import type { Sql } from "@armada/core/server";
+import { controlFailureResponse } from "../src/control-errors.ts";
 import { createOutboundWebhooks } from "../src/outbound-webhooks.ts";
+import { createRuntimeAgent } from "../src/runtime-agent.ts";
 import { createRuntimeCommands, RuntimeCommandRefused } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
@@ -169,6 +171,56 @@ test("replacement epoch refuses old replies and never silently adopts unfinished
   });
   await f.db.query("update sandboxes set stop_requested_at=now() where id=$1", [f.id]);
   expect((await f.request("poll", current.runtimeToken, current.epoch, { epoch: current.epoch })).status).toBe(401);
+});
+
+test("a checkpoint fences new exec work but an admitted exec replay stays unknown, then reconciles its stored reply", async () => {
+  const f = await fixture();
+
+  const active = await f.enrol();
+  const agent = createRuntimeAgent(f.bridge(), {
+    provider: "docker",
+    harness: "codex",
+    ownerId: f.people.owner,
+    sandboxId: f.id,
+    providerSandboxId: "physical",
+    cwd: "/home/user",
+    defaults: { model: "gpt-5.4", reasoningEffort: "high" },
+  });
+  // The public exec error path: runtime agent, then the shared control failure formatter.
+  const exec = async (requestId: string) => {
+    const response = await agent
+      .exec({ sandboxId: "physical", command: "printf x > app.txt", timeoutSeconds: 1 }, requestId)
+      .then((result) => Response.json(result))
+      .catch(controlFailureResponse);
+    return { status: response.status, body: (await response.json()) as Record<string, unknown> };
+  };
+  const unknown = { status: 503, body: { error: { code: "outcome_unknown" } } };
+  // The original call admits the exec, then loses its reply.
+  expect(await exec("exec-admitted")).toMatchObject(unknown);
+  await f.db.query("insert into runtime_checkpoints(sandbox_id,epoch,request_id) values($1,$2,$3)", [
+    f.id,
+    active.epoch,
+    crypto.randomUUID(),
+  ]);
+  // Replaying the admitted ID under the checkpoint is not a definite refusal: it may still run.
+  expect(await exec("exec-admitted")).toMatchObject(unknown);
+  // Once the runtime answers, the replay reconciles with the stored reply.
+  const stored = { detached: false, exitCode: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
+  expect(
+    (
+      await f.request("results", active.runtimeToken, active.epoch, {
+        epoch: active.epoch,
+        requestId: "exec-admitted",
+        status: 200,
+        body: { version: 1, requestId: "exec-admitted", result: stored },
+      })
+    ).status,
+  ).toBe(200);
+  expect(await exec("exec-admitted")).toMatchObject({ status: 200, body: { exitCode: 0, detached: false } });
+  // New work is fenced before any row is written: a definite refusal.
+  const refused = await exec("exec-new");
+  expect(refused).toMatchObject({ status: 409, body: { error: { code: "conflict" } } });
+  expect((await f.db.query("select 1 from runtime_commands where request_id='exec-new'")).rows).toHaveLength(0);
 });
 
 test("empty polls release the transaction while waiting and private routes/grants reject malformed authority", async () => {

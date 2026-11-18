@@ -41,7 +41,9 @@ export const DOCKER_HOST_LAUNCH_REQUEST = z
     repos: z
       .array(z.strictObject({ url: z.string(), branch: z.string().optional(), dir: z.string().optional() }))
       .optional()
-      .describe("GitHub repositories to check out as shallow single-branch clones."),
+      .describe(
+        "GitHub repositories to check out with bounded history: enough to find a merge base with the default branch.",
+      ),
   })
   .describe("Launch on a registered Docker host from the official Armada environment. There is no golden.");
 

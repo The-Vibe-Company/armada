@@ -108,7 +108,7 @@ interface DockerLaunchFields {
 export interface DockerHostLaunchInput extends DockerLaunchFields {
   hostId: string;
   snapshotId?: never;
-  /** Shallow single-branch checkouts. */
+  /** Checkouts with bounded history: enough to find a merge base with the default branch. */
   repos?: { url: string; branch?: string; dir?: string }[];
 }
 /** Launch from a Docker snapshot, which selects its host and workspace; repos are refused. */

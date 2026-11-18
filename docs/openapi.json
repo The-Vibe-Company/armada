@@ -6286,7 +6286,7 @@
                         "description": "Docker host UUID."
                       },
                       "repos": {
-                        "description": "GitHub repositories to check out as shallow single-branch clones.",
+                        "description": "GitHub repositories to check out with bounded history: enough to find a merge base with the default branch.",
                         "type": "array",
                         "items": {
                           "type": "object",
