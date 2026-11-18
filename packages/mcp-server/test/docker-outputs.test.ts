@@ -301,3 +301,21 @@ test("a stale Docker self-finish binding is refused before any output read", asy
     f.cleanup();
   }
 });
+
+test("an output read is never dispatched once a later command was answered, whatever the clock says", async () => {
+  const f = await fixture();
+  try {
+    const read = `outputs_${Date.now() + 25_000}_skewed`;
+    await f.runtime.enqueue(f.people.owner, { version: 1, requestId: read, sandboxId: f.id, op: "readOutputs" });
+    await f.runtime.enqueue(f.people.owner, { version: 1, requestId: "answered", sandboxId: f.id, op: "health" });
+    await f.runtime.complete(f.session.runtimeToken, f.session.epoch, {
+      epoch: f.session.epoch,
+      requestId: "answered",
+      status: 200,
+      body: { requestId: "answered" },
+    });
+    expect((await f.runtime.next(f.session.runtimeToken, f.session.epoch)).command).toBeNull();
+  } finally {
+    f.cleanup();
+  }
+});
