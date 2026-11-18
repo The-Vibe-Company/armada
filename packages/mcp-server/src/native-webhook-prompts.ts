@@ -11,6 +11,25 @@ export function createNativeWebhookPrompts(
   let stopped = false;
   async function observe(signal: AbortSignal): Promise<boolean> {
     signal.throwIfAborted();
+    // A final claim whose worker was cancelled or crashed leaves an expired lease
+    // on an exhausted receipt that no claim will ever select again. Releasing the
+    // lease and counting the drop in one statement makes the accounting exactly-once:
+    // a live settlement needs the lease, and a released lease is never re-finalized.
+    await sql.query(
+      `with exhausted as (
+        update public.native_webhook_prompts p set lease_id=null,lease_until=null
+        from (
+          select sandbox_id,prompt_id from public.native_webhook_prompts
+          where completed_at is null and failures>=5 and lease_id is not null and lease_until<now()
+          for update skip locked limit 100
+        ) x where p.sandbox_id=x.sandbox_id and p.prompt_id=x.prompt_id
+        returning p.org_id
+      ) insert into public.org_langfuse_export_stats as stats(org_id,dropped)
+        select e.org_id,count(*) from exhausted e join public.org_langfuse c on c.org_id=e.org_id and c.enabled
+        group by e.org_id
+        on conflict(org_id) do update set dropped=stats.dropped+excluded.dropped`,
+    );
+    signal.throwIfAborted();
     const lease = crypto.randomUUID();
     const row = (
       await sql.query<{

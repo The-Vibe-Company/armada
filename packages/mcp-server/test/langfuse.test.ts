@@ -443,6 +443,53 @@ test("a native receipt abandoned after its final failed observation counts one d
   expect(await dropped()).toBe("1");
 });
 
+test("a native receipt whose final observations are all cancelled counts one durable drop", async () => {
+  const { db, people } = await database();
+  await db.query(
+    `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status,task_prompt_id)
+     select $1,id,org_id,owner_id,'boat_cancelled','codex','ready','turn'
+     from goldens where owner_id=$2 and visibility='private' limit 1`,
+    [crypto.randomUUID(), people.owner],
+  );
+  await db.query("insert into org_langfuse(org_id,enabled,content_mode,config_enc) values($1,true,'full',$2)", [
+    people.org,
+    await encryptConfig(),
+  ]);
+  let cancel = new AbortController();
+  // The provider read is cancelled by the worker tick each time, like a timeout or shutdown.
+  const provider = {
+    id: "boat",
+    getPrompt: async () => {
+      cancel.abort(Error("tick_cancelled"));
+      throw Error("aborted");
+    },
+  } as const;
+  const native = createNativeWebhookPrompts(db, async () => provider as unknown as Pick<Provider, "id" | "getPrompt">);
+  const dropped = async () =>
+    (
+      await db.query<{ dropped: string }>("select dropped::text from org_langfuse_export_stats where org_id=$1", [
+        people.org,
+      ])
+    ).rows[0]?.dropped ?? "0";
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    await db.query("update native_webhook_prompts set next_attempt_at=now(),lease_until=now()-interval '1 second'");
+    cancel = new AbortController();
+    await expect(native.reconcileOne(cancel.signal)).rejects.toThrow("tick_cancelled");
+    await native.drain();
+    expect(await dropped()).toBe("0");
+  }
+  // The fifth lease expires; a fresh worker finalizes it exactly once.
+  await db.query("update native_webhook_prompts set lease_until=now()-interval '1 second'");
+  const fresh = createNativeWebhookPrompts(db, async () => provider as unknown as Pick<Provider, "id" | "getPrompt">);
+  expect(await fresh.reconcileOne(new AbortController().signal)).toBe(false);
+  expect(await dropped()).toBe("1");
+  expect(await fresh.reconcileOne(new AbortController().signal)).toBe(false);
+  expect(await dropped()).toBe("1");
+  expect((await db.query("select failures,lease_id,completed_at from native_webhook_prompts")).rows).toEqual([
+    { failures: 5, lease_id: null, completed_at: null },
+  ]);
+});
+
 test("an in-flight native history read that outlives its deadline does not hold the export", async () => {
   const { db, counters } = await settledBoatTurn("turn");
   let deadline = new AbortController();

@@ -104,3 +104,30 @@ create table public.native_steer_cursors (
 alter table public.native_steer_cursors enable row level security;
 revoke all on public.native_steer_cursors from public,anon,authenticated;
 grant all on public.native_steer_cursors to service_role;
+
+-- An empty task_prompt_id is the marker for a steered run that is not known
+-- yet. It stays on the sandbox for report resolution, but it names no provider
+-- run, so it is never a native receipt (a receipt for it could only fail and
+-- count a false drop). The queue alias behaviour is unchanged.
+create or replace function public.track_native_webhook_prompt() returns trigger
+language plpgsql security definer set search_path='' as $$
+begin
+  if new.task_prompt_id is not null and (tg_op='INSERT' or new.task_prompt_id is distinct from old.task_prompt_id) then
+    update public.account_turn_queue q set native_prompt_id=new.task_prompt_id
+      where q.sandbox_id=new.id and q.owner_id=new.owner_id and q.org_id=new.org_id
+        and q.state='dispatching' and q.native_prompt_id is null;
+  end if;
+  if new.task_prompt_id is not null and new.task_prompt_id<>'' and new.provider in ('boat','modal')
+    and not new.boat_runtime and new.runtime_transport is distinct from 'dialout' then
+    insert into public.native_webhook_prompts(sandbox_id,prompt_id,provider,provider_sandbox_id,owner_id,org_id)
+    values(new.id,new.task_prompt_id,new.provider,new.provider_sandbox_id,new.owner_id,new.org_id)
+    on conflict do nothing;
+  end if;
+  return new;
+end;
+$$;
+revoke all on function public.track_native_webhook_prompt() from public,anon,authenticated;
+delete from public.native_webhook_prompts where prompt_id='';
+-- The receipt worker finalizes exhausted receipts whose final lease expired.
+create index native_webhook_prompts_expired_final on public.native_webhook_prompts(lease_until)
+  where completed_at is null and failures>=5 and lease_id is not null;

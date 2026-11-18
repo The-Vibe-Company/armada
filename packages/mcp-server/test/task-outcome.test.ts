@@ -318,6 +318,10 @@ test("a restart steer whose replacement appears after the response still reaches
     expect((await db.query("select task_prompt_id from sandboxes where id=$1", [id])).rows[0]).toEqual({
       task_prompt_id: "",
     });
+    // The empty marker resolves reports only; it is never a native receipt.
+    expect(
+      (await db.query("select prompt_id from native_webhook_prompts where sandbox_id=$1 order by 1", [id])).rows,
+    ).toEqual([{ prompt_id: "prompt_1" }]);
     // The replacement run is published only after the steer response, then finishes.
     // Its prompt event shares the original run's timestamp: only provider order separates them.
     await boat.provider.prompt({ sandboxId: "bx_1", harness: "codex", text: "change course" });
@@ -341,6 +345,17 @@ test("a restart steer whose replacement appears after the response still reaches
     expect(
       (await db.query("select after_prompt_id,pending_since from native_steer_cursors where sandbox_id=$1", [id])).rows,
     ).toEqual([{ after_prompt_id: "prompt_2", pending_since: null }]);
+    // Advancing every receipt retry schedule finds no work and counts no drop.
+    for (let attempt = 0; attempt < 6; attempt++) {
+      await db.query("update native_webhook_prompts set next_attempt_at=now() where sandbox_id=$1", [id]);
+      while (await native.reconcileOne(new AbortController().signal));
+    }
+    expect(
+      (await db.query("select prompt_id from native_webhook_prompts where sandbox_id=$1 order by 1", [id])).rows,
+    ).toEqual([{ prompt_id: "prompt_1" }, { prompt_id: "prompt_2" }]);
+    expect(
+      (await db.query("select coalesce(sum(dropped),0)::int as dropped from org_langfuse_export_stats")).rows,
+    ).toEqual([{ dropped: 0 }]);
   } finally {
     await server.close();
   }
