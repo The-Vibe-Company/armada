@@ -50,6 +50,10 @@ async function main([confirmation, scope, ownerId, ...extra]: readonly string[],
     );
     return 1;
   }
+  if (env.CI || env.GITHUB_ACTIONS) {
+    console.error("Boat inventory reports require a coordinator session outside CI.");
+    return 1;
+  }
   const deploymentId = env.ARMADA_BOAT_DEPLOYMENT_ID?.trim();
   const databaseUrl = env.ARMADA_DATABASE_URL?.trim();
   const encryptionKey = env.ARMADA_ENCRYPTION_KEY?.trim();
