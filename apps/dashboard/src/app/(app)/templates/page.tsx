@@ -21,7 +21,7 @@ import { selectedOrganization } from "@/lib/data/selected-org";
 import { listSelectedTemplates, lookupsFrom } from "@/lib/data/templates";
 import { listSelectedVault } from "@/lib/data/variables";
 import { PROVIDER_LABELS } from "@/lib/golden-form";
-import { EFFORT_LABEL, HARNESS_LABELS } from "@/lib/labels";
+import { DOCKER_HOST_LABEL, EFFORT_LABEL, HARNESS_LABELS } from "@/lib/labels";
 import { type Bucket, ITEM_PARAM, sortResources } from "@/lib/resource-list";
 import { createClient } from "@/lib/supabase/server";
 import { launchTarget } from "@/lib/template-launch";
@@ -195,7 +195,7 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
     : undefined;
   const environment = definition
     ? definition.provider === "docker"
-      ? `${lookups.snapshots?.find((snapshot) => snapshot.id === definition.snapshotId)?.name ?? (definition.snapshotId ? "Unavailable snapshot" : "Official Armada image")} · your server ${lookups.hosts?.find((host) => host.id === definition.hostId)?.name ?? "Unavailable server"}`
+      ? `${lookups.snapshots?.find((snapshot) => snapshot.id === definition.snapshotId)?.name ?? (definition.snapshotId ? "Unavailable snapshot" : "Official Armada image")} · ${DOCKER_HOST_LABEL} ${lookups.hosts?.find((host) => host.id === definition.hostId)?.name ?? "unavailable"}`
       : `${golden?.name ?? "Unavailable snapshot"} on ${PROVIDER_LABELS[definition.provider]} cloud`
     : null;
   const meta = definition

@@ -464,7 +464,7 @@ export default async function GoldensPage({ searchParams }: Props) {
       ) : null;
     groups.push({
       key: hostId,
-      label: `On your server ${name} · ${host?.state ?? "unavailable"}`,
+      label: dockerHostGroup(name, host?.state ?? "unavailable"),
       rows: [
         {
           catalog: { group: "docker", attention: !!blocker, footer: name },

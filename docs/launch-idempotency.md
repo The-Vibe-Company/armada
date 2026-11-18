@@ -21,11 +21,13 @@ A key is scoped to the caller and organization.
 
 - Same key, same request: the recorded answer, with the same sandbox id. No
   second fork. This holds only while the request still passes launch
-  preflight, which runs before the receipt is read: the snapshot is still
+  preflight, which runs before the receipt is read: the same snapshot is still
   visible to the caller under the same name and provider, its provider account
-  is still configured, and the server pins the same allocation authority.
+  is still configured, and the server can pin an allocation authority.
   Otherwise the replay returns the preflight error (for example `not_found`
-  after the snapshot was removed). That error is not the original outcome.
+  after the snapshot was removed). The snapshot id is part of the request, so
+  a snapshot recreated under the same name yields `conflict` (409). Neither
+  error is the original outcome.
 - Same key, any different field (including `externalRef` or `prompt`):
   refused with `conflict` (409). Nothing is launched.
 - Same key after a terminal refusal recorded under it (bad configuration, no

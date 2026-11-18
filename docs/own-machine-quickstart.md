@@ -162,7 +162,7 @@ armada launch "Summarize both repositories" --provider docker \
   --golden SNAPSHOT_UUID --org ORG_UUID --agent codex
 ```
 
-In the dashboard: **Launch from → Snapshots → New**, choose **your server <name>** in the build placement selector,
+In the dashboard: **Launch from → Snapshots → New**, choose **Docker host <name>** in the build placement selector,
 choose **Use a snapshot file instead** to upload the same JSON, then launch the ready snapshot. Private is the default;
 only admins can publish organization snapshots.
 

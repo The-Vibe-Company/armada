@@ -54,7 +54,7 @@ second build. The flag remains `--golden` even though the user-facing resource i
 Launch selects the snapshot, not an image or host: server-side
 resolution pins both and checks current authorization again at reservation.
 Ready snapshots launch the baked workspace without another checkout/init.
-In the dashboard, choose **Launch from → Snapshots → New**, choose **your server <name>** in the build placement selector for the
+In the dashboard, choose **Launch from → Snapshots → New**, choose **Docker host <name>** in the build placement selector for the
 registered host and choose **Use a snapshot file instead** to upload the same snapshot JSON. Private is the default; admins
 may publish to the organization. Building and offline artifacts remain visible.
 A ready snapshot opens the normal launch dialog with your model account, skills

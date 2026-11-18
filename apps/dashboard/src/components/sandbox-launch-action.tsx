@@ -81,7 +81,7 @@ export function SandboxLaunchAction({ shortcut = false }: { shortcut?: boolean }
               {options
                 ? options.targets.length > 0
                   ? "Your starting points need attention before launching."
-                  : "No starting points yet. Build a snapshot or connect your server before launching."
+                  : "No starting points yet. Build a snapshot or register a Docker host before launching."
                 : "Starting points could not be loaded. Reload Sandboxes to try again."}
             </DialogDescription>
             {options && options.targets.length > 0 && (
