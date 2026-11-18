@@ -710,16 +710,13 @@ export async function startServer(
       maxRequestBodySize: BUN_REQUEST_BODY_BACKSTOP,
       fetch: (request, instance) =>
         new URL(request.url).pathname === "/api/runtime/channel"
-          ? observeRequest(
-              () =>
-                runtimeSockets.upgrade(request, (data) =>
-                  instance.upgrade(request, {
-                    data,
-                    headers: { [REQUEST_ID_HEADER]: currentRequestId()! },
-                  }),
-                ),
-              options.logError,
-            )
+          ? observeRequest(() => {
+              // Read the ID here: the upgrade callback runs inside a database session callback.
+              const requestId = currentRequestId()!;
+              return runtimeSockets.upgrade(request, (data) =>
+                instance.upgrade(request, { data, headers: { [REQUEST_ID_HEADER]: requestId } }),
+              );
+            }, options.logError)
           : fetch(request),
       error: (error) =>
         observeRequest(() => {
