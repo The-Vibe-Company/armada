@@ -7,6 +7,7 @@ import type { State } from "../src/daemon.ts";
 import {
   instanceName,
   stateDirectory,
+  superviseUpdate,
   type UpgradeServiceIo,
   upgradeService,
   validateInstallation,
@@ -302,3 +303,50 @@ test("namespaced upgrade changes only its own binary and service, preserving leg
     await rm(f.home, { recursive: true, force: true });
   }
 });
+
+test.each(["healthy", "failed start", "failed health"])(
+  "automatic update commits or restores the managed binary after %s",
+  async (outcome) => {
+    const f = await upgradeFixture();
+    try {
+      const journal = join(f.directory, "update.json");
+      await writeFile(`${f.binary}.previous`, f.oldBytes, { mode: 0o700 });
+      await writeFile(join(f.directory, "update-candidate"), f.newBytes, { mode: 0o600 });
+      await writeFile(
+        journal,
+        JSON.stringify({
+          version: "9.0.0",
+          phase: "staged",
+          previousDigest: f.hash(f.oldBytes),
+          candidateDigest: f.hash(f.newBytes),
+        }),
+        { mode: 0o600 },
+      );
+      const starts: string[] = [];
+      await superviseUpdate(f.store, undefined, {
+        home: f.home,
+        async service(args) {
+          if (args.includes("start")) {
+            const binary = await readFile(f.binary, "utf8");
+            starts.push(binary);
+            if (binary === f.oldBytes) return;
+            if (outcome === "failed start") throw new Error("exec failed");
+            const state = { ...f.state, lastPollAt: "2026-11-13T00:01:00.000Z" };
+            await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+          }
+          if (args.includes("is-active") && outcome === "failed health") throw new Error("daemon exited");
+        },
+      });
+      const expected = outcome === "healthy" ? f.newBytes : f.oldBytes;
+      expect(await readFile(f.binary, "utf8")).toBe(expected);
+      expect(starts).toEqual(outcome === "healthy" ? [f.newBytes] : [f.newBytes, f.oldBytes]);
+      expect(await readFile(`${f.binary}.previous`, "utf8")).toBe(f.oldBytes);
+      expect(JSON.parse(await readFile(journal, "utf8")).phase).toBe(outcome === "healthy" ? "updated" : "failed");
+      expect((await validateInstallation(f.state, f.home)).binarySha256).toBe(f.hash(expected));
+      expect((await f.store.load()).hostToken).toBe(f.state.hostToken);
+      expect(await readFile(f.unitFile, "utf8")).toBe(f.unit);
+    } finally {
+      await rm(f.home, { recursive: true, force: true });
+    }
+  },
+);

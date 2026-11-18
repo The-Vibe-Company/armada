@@ -228,6 +228,40 @@ digest in the private marker so validation accepts either the old or new verifie
 bytes; retrying upgrades reconciles it. The existing user service is restarted and
 gets the same bounded reconnect wait.
 
+### Automatic daemon updates on Linux
+
+Install an update-capable daemon once using the normal installer. A managed Linux
+systemd user service then considers newer stable versions offered on its
+authenticated outbound poll. It fetches the standalone install manifest from
+`https://armada-mcp-production.up.railway.app/api/docker-host/install.json`,
+requires a matching version, and verifies the Linux x64 or arm64 daemon against
+the manifest's SHA-256 before staging it. The artifact uses the installer’s
+digest-addressed runtime route. The standalone manifest does not publish a
+signature. Requests to the release origin carry no machine credentials.
+
+Once a candidate is staged, the daemon stops admitting machine jobs and waits
+for every admitted job to finish and save its receipt. A build already running
+finishes on the original binary. An admitted launch job finishes there too.
+A later launch job stays queued until the service reconnects. Running containers
+and volumes survive the daemon restart and the next process reconciles them
+through the usual ledger. The update uses no sudo and opens no listening port.
+
+A separate systemd user unit runs the old verified executable, kept beside the
+managed binary with a `.previous` suffix. It stops the drained service, swaps the
+binary atomically, and starts the service. The candidate reconciles and polls
+before taking work. The supervisor requires an active service and a fresh
+successful poll within 90 seconds. If startup or health fails, it restores the
+previous binary atomically and starts it. The daemon sends the failed target on
+its next authenticated poll for the server log. Its private update record
+prevents another automatic attempt at that version or any older version.
+
+Set `ARMADA_DOCKER_HOST_AUTO_UPDATE=0` in a systemd user override for the specific
+Armada host unit to disable automatic updates. Run `systemctl --user edit
+armada-docker-host.service` (or the matching instance unit), add
+`Environment=ARMADA_DOCKER_HOST_AUTO_UPDATE=0` under `[Service]`, and restart
+during a maintenance window. The manual installer remains available. Foreground
+daemons and macOS launchd installations use manual updates.
+
 A fresh registration token can cancel its own unused ticket and resolve an existing
 registered host's name through `POST /api/docker-host/reuse-registration`. It cannot
 read or alter another owner's or organization's machine. The response contains only
@@ -1333,7 +1367,7 @@ Source audit of tag `v2.46.0` against the incident report:
 
 Part 1 left deletion policy unchanged. Part 2 below builds on the durable
 resume fencing merged in #2534 and bounds default retention by expiry.
-A host upgrade is explicit operator work; there is no automatic daemon update.
+
 
 Stopped workspace usage is an approximate, read-only observation of writable
 container layers plus attached named volumes for this installation's

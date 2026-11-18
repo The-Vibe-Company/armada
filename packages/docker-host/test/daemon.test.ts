@@ -2052,3 +2052,58 @@ test("a job of a sandbox whose operation still runs here waits, even if the serv
   expect(f.state().receipts).toEqual([]);
   expect(f.executed).toEqual([]);
 });
+
+test("a staged update drains the admitted launch job and leaves the next job queued", async () => {
+  const first = fixture();
+  const next = fixture();
+  const offered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const acknowledged: string[] = [];
+  const started: string[] = [];
+  let staged = false;
+  const loop = runJobs(
+    first.store,
+    {
+      ...first.api,
+      async poll(_state, options) {
+        if (options?.running?.includes(first.job.requestId))
+          return { job: next.job, held: true, targetVersion: "9.0.0" };
+        return { job: first.job, held: true };
+      },
+      async result(_state, receipt) {
+        acknowledged.push(receipt.requestId);
+      },
+    },
+    {
+      ...first.executor,
+      async create(request) {
+        started.push(request.sandboxId);
+        if (request.sandboxId === first.job.request.sandboxId) await release.promise;
+      },
+    },
+    {
+      stopping: () => staged,
+      async beforeAdmission(target) {
+        if (!target) return false;
+        staged = true;
+        offered.resolve();
+        return true;
+      },
+      async sleep() {},
+    },
+  );
+  let drained = false;
+  const complete = loop.then(() => {
+    drained = true;
+  });
+  await offered.promise;
+  expect(drained).toBe(false);
+  expect(acknowledged).toEqual([]);
+  release.resolve();
+  await complete;
+  expect(started).toEqual([first.job.request.sandboxId]);
+  expect(acknowledged).toEqual([first.job.requestId]);
+  expect(first.state().receipts.map(({ requestId, outcome }) => [requestId, outcome])).toEqual([
+    [first.job.requestId, "completed"],
+  ]);
+});

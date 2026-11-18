@@ -405,7 +405,14 @@ export function automaticUpdate(state: State, instance?: string) {
       // The new service reconciles and polls, but waits for the supervisor's
       // decision before admitting work. This makes a failing trial reversible.
       if (last?.phase === "starting") return true;
-      if (last?.phase === "staged") return false;
+      if (last?.phase === "staged") {
+        if (process.env.ARMADA_DOCKER_HOST_AUTO_UPDATE === "0") {
+          await saveUpdate(home, instance, { ...last, phase: "failed" });
+          return false;
+        }
+        staged = true;
+        return true;
+      }
       if (
         process.env.ARMADA_DOCKER_HOST_AUTO_UPDATE === "0" ||
         !stableDockerHostVersion(VERSION) ||
@@ -517,6 +524,7 @@ export async function superviseUpdate(
   }
   if (update?.phase !== "staged" && update?.phase !== "starting") return;
   const previousHealth = (await store.load()).lastPollAt;
+  let trialMarker: ManagedInstallation | undefined;
   try {
     if (update.phase !== "staged") throw new Error("Interrupted Docker host update");
     await service("stop");
@@ -530,7 +538,8 @@ export async function superviseUpdate(
       await verifyBackup(home, instance, update.previousDigest);
       update = { ...update, phase: "starting" };
       await saveUpdate(home, instance, update);
-      await writeMarker({ ...marker, pendingBinarySha256: sha256(candidate) });
+      trialMarker = { ...marker, pendingBinarySha256: sha256(candidate) };
+      await writeMarker(trialMarker);
       await atomicReplace(p.binary, candidate, 0o700);
     } finally {
       await unlock();
@@ -547,11 +556,11 @@ export async function superviseUpdate(
       if (Date.now() >= timeout) throw new Error("Docker host update did not reconnect");
       await Bun.sleep(1000);
     }
-    const marker = await validateInstallation(await store.load(), home, instance);
+    if (!trialMarker?.pendingBinarySha256) throw new Error("Missing Docker host trial marker");
     await writeMarker({
-      installationId: marker.installationId,
-      unit: marker.unit,
-      binarySha256: update.candidateDigest!,
+      installationId: trialMarker.installationId,
+      unit: trialMarker.unit,
+      binarySha256: trialMarker.pendingBinarySha256,
     });
     await saveUpdate(home, instance, { ...update, phase: "updated" });
   } catch {

@@ -2,7 +2,10 @@ import { spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { DOCKER_HOST_SNAPSHOT_BASELINE_HEADER, DOCKER_HOST_UPDATE_FAILURE_HEADER } from "../../core/src/docker-host-upgrade.ts";
+import {
+  DOCKER_HOST_SNAPSHOT_BASELINE_HEADER,
+  DOCKER_HOST_UPDATE_FAILURE_HEADER,
+} from "../../core/src/docker-host-upgrade.ts";
 import type { DockerMachineCli } from "../../core/src/docker-machine.ts";
 import { type DockerHostResources, dockerHostResources } from "../../core/src/docker-resources.ts";
 import { SNAPSHOT_BASELINE_VERSION } from "../../core/src/snapshot-baseline.ts";

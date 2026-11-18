@@ -35,7 +35,7 @@ export function dockerHostUpgradeMessage(
     : snapshotBuildSupported === false
       ? "snapshot baseline support required"
       : `server ${serverVersion}`;
-  return `Docker host daemon ${version ?? "unknown"} ${host ? "is outdated" : "needs a version check"} (${requirement}). From a signed-in client, run armada host add and run its generated install command on the same Docker machine for the same server. This preserves registration and restarts the user service. Daemons do not upgrade automatically.`;
+  return `Docker host daemon ${version ?? "unknown"} ${host ? "is outdated" : "needs a version check"} (${requirement}). From a signed-in client, run armada host add and run its generated install command on the same Docker machine for the same server. This preserves registration and restarts the user service.`;
 }
 
 export function stableDockerHostVersion(value: unknown): value is string {
