@@ -161,9 +161,10 @@ to mint for a view-only user, that user can send prompts with
 - Mint with a service token created by an organization admin who does not
   own the sandbox. Minting requires the owner or an organization admin, even
   on an organization-visible sandbox, so an ordinary member's token cannot
-  mint. Sends from the admin's token are refused, with 404 `not_found` or,
-  for a sandbox that cannot take a send, 409 `sandbox_terminal` (see the send
-  checks below).
+  mint. Sends from the admin's token are always refused, usually with 404
+  `not_found`. When an earlier send check fails first, the refusal is 409
+  `credential_binding_required` or 409 `sandbox_terminal` instead (see the
+  send checks below).
 - Keep the bearer on your backend and expose only proxy routes for
   `viewer/status`, `viewer/logs` and `viewer/events`. Do not give the browser
   the viewer token or a route to `viewer/send`.
@@ -195,7 +196,12 @@ counted before parsing. `logs/read` accepts up to 512 KiB. A larger body is
 rejected before any sandbox check or queue admission with HTTP 413 and code
 `invalid`, so nothing is sent. This includes a `sandbox/send` whose `prompt`
 pushes the body over the limit. Shorten the prompt, or put large context in a
-repository or file the agent can read, then send again.
+repository or file the agent can read, then send again. `viewer/send` reports
+an oversized body differently: a viewer body over 128 KiB returns HTTP 503
+`{"error":"viewer_access_denied"}`, which is not an outage, so do not retry it
+unchanged. Armada adds the sandbox `id` and `request_id` when it forwards the
+message, so a message just under the limit can still be refused with 413. Keep
+viewer messages well below 128 KiB.
 
 | Route | Required | Optional | Result |
 | --- | --- | --- | --- |
@@ -235,7 +241,8 @@ this order:
 4. HTTP 404 `not_found` ("No owned sandbox") when the caller does not own the
    sandbox. Read access is not enough: an organization admin who passes the
    first check still gets 404 here. Because this check comes last, the same
-   admin gets 409 `sandbox_terminal` for a sandbox that cannot take a send.
+   admin gets 409 `credential_binding_required` or 409 `sandbox_terminal`
+   instead when check 2 or 3 fails first.
    Send with a service token created by the sandbox owner.
 
 Sends that pass these checks to a sandbox with a pinned model account, which

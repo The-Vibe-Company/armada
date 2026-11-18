@@ -27,9 +27,12 @@ The viewer bearer works only on these routes:
   still applies (busy turns may refuse a new message). Send runs as the issuing
   service token and requires that token to belong to the sandbox owner. Read
   access is not enough: otherwise send returns HTTP 404 `not_found`, even for
-  an organization admin who can read the sandbox. That admin gets HTTP 409
-  `sandbox_terminal` instead when the sandbox cannot take a send (for example
-  after it failed), because the state check runs before the ownership check.
+  an organization admin who can read the sandbox. Because the state checks run
+  before the ownership check, that admin gets HTTP 409 `sandbox_terminal`
+  instead when the sandbox cannot take a send (for example after it failed),
+  or HTTP 409 `credential_binding_required` for a Modal sandbox with no bound
+  model account. The request body is limited to 128 KiB; a larger body returns
+  HTTP 503 `{"error":"viewer_access_denied"}`, so do not retry it unchanged.
 - `GET /api/v1/viewer/events?cursor=<URL-encoded opaque cursor>`: SSE over fetch
   with `Authorization: Bearer <viewer token>`. Native EventSource cannot set this
   header. Each `page` event contains the ordinary logs response. Save its JSON
