@@ -1,5 +1,25 @@
 # Changelog
 
+## [2.57.0](https://github.com/The-Vibe-Company/armada/compare/v2.56.0...v2.57.0) (2026-11-18)
+
+
+### Features
+
+* **api:** launch pinned Modal templates on the canonical route ([#2693](https://github.com/The-Vibe-Company/armada/issues/2693)) ([c9b2573](https://github.com/The-Vibe-Company/armada/commit/c9b2573d0d74d852dbefab5331f2e9acd9b932b1))
+* **api:** unify the canonical sandbox launch contract ([#2679](https://github.com/The-Vibe-Company/armada/issues/2679)) ([7a55ae9](https://github.com/The-Vibe-Company/armada/commit/7a55ae9ae5cd9152b5dc49388bafe55ba44a2dce))
+* **db:** add durable provider launch request storage ([#2678](https://github.com/The-Vibe-Company/armada/issues/2678)) ([2b66a58](https://github.com/The-Vibe-Company/armada/commit/2b66a58be3e70657b7eb49e56182d36265a2972b))
+* **launch:** align Docker launch correlation and CLI selection ([#2682](https://github.com/The-Vibe-Company/armada/issues/2682)) ([6c0fc49](https://github.com/The-Vibe-Company/armada/commit/6c0fc4906ea477507cc46d09c85531c99e12d0a5))
+* **launch:** complete per-activation launch timing ([#2692](https://github.com/The-Vibe-Company/armada/issues/2692)) ([9423216](https://github.com/The-Vibe-Company/armada/commit/9423216c3ff5935ecd3f208f5c420f22697df776))
+* **outputs:** collect verified retained Boat outputs ([#2677](https://github.com/The-Vibe-Company/armada/issues/2677)) ([691385c](https://github.com/The-Vibe-Company/armada/commit/691385c875f511fc529a8ab6f9cd216ada1454e3))
+* **outputs:** recover deliverables after Docker host expiry ([#2685](https://github.com/The-Vibe-Company/armada/issues/2685)) ([e6e6755](https://github.com/The-Vibe-Company/armada/commit/e6e675568c022f2ac46ed5e43d173fcfd451d806))
+
+
+### Bug Fixes
+
+* **errors:** preserve refusals and guide recovery across clients ([#2694](https://github.com/The-Vibe-Company/armada/issues/2694)) ([5fcd09d](https://github.com/The-Vibe-Company/armada/commit/5fcd09d98eb5fe6da95082e5f64a12957a6d90d6))
+* **smoke:** route pinned Modal template launches correctly ([#2691](https://github.com/The-Vibe-Company/armada/issues/2691)) ([9240152](https://github.com/The-Vibe-Company/armada/commit/9240152252de20b2d8310c32d1c276a030a0357c))
+* **test:** replace flaky checkout and checkpoint replays ([#2688](https://github.com/The-Vibe-Company/armada/issues/2688)) ([49541c6](https://github.com/The-Vibe-Company/armada/commit/49541c64b463edbebaece507a26041937b50bdaf))
+
 ## [2.56.0](https://github.com/The-Vibe-Company/armada/compare/v2.55.0...v2.56.0) (2026-11-18)
 
 
