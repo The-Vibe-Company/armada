@@ -9,6 +9,7 @@ import {
   rejectedRecreation,
   sh,
   tempRoot,
+  unrecordedUrlPush,
 } from "./push-ledger-git.ts";
 
 test("push evidence survives a pruned tracking ref and reports pushes that escaped the ledger", () => {
@@ -61,8 +62,8 @@ test("a push while the hooks were displaced is reported before the reader restor
   prune("closed");
   // The first read reports the loss and reinstalls the hooks in the new path.
   // A later read (say the first scan was abandoned) still reports it.
-  expect(read()).toBe(`!unproven\n!untracked\nmerged\t${merged}\n`);
-  expect(read()).toBe(`!untracked\nmerged\t${merged}\n`);
+  expect(read()).toBe(`!unproven\n!untracked\n!uncovered\nmerged\t${merged}\n`);
+  expect(read()).toBe(`!untracked\n!uncovered\nmerged\t${merged}\n`);
   // Fetches and maintenance after the reinstall add no false gap of their own.
   const fresh = launch();
   fresh.push("merged");
@@ -103,7 +104,7 @@ test("the repository's own hooks keep running, with their input and exit status,
   expect(() => sh(work, "git push -q origin HEAD:refs/heads/refused")).toThrow();
   expect(() => sh(work, "git commit -q --allow-empty -m blocked")).toThrow();
   sh(work, "rm .git/fail");
-  expect(read()).toBe(`topic\t${sha}\n`);
+  expect(read()).toBe(`!uncovered\ntopic\t${sha}\n`);
 });
 
 test("recreating a deleted branch at the SHA its tracking ref still holds is recorded", () => {
@@ -125,8 +126,8 @@ test("recreating a deleted branch at the SHA its tracking ref still holds is rec
 test("a push the remote rejects is an unconfirmed attempt, never push evidence", () => {
   const { fresh, stdout, sha } = rejectedRecreation();
   // In flight until proven otherwise, then reported apart from confirmed pushes.
-  expect(fresh).toBe(`!pending\n?\ttopic\t${sha}\n`);
-  expect(stdout).toBe(`?\ttopic\t${sha}\n`);
+  expect(fresh).toBe(`!pending\n!uncovered\n?\ttopic\t${sha}\n`);
+  expect(stdout).toBe(`!uncovered\n?\ttopic\t${sha}\n`);
 });
 
 test("confirmed pushes keep their chronological order across both evidence sources", () => {
@@ -144,7 +145,7 @@ test("a verified push is confirmed by its tracking update even without a reflog 
 
 test("an accepted push whose tracking update failed stays unresolved; a later confirmed push supersedes it", () => {
   const { stdout, first, second } = lostConfirmation();
-  expect(stdout).toBe(`topic\t${first}\n?\ttopic\t${second}\n`);
+  expect(stdout).toBe(`!uncovered\ntopic\t${first}\n?\ttopic\t${second}\n`);
   // A rejected attempt followed by a confirmed push to the same branch.
   const { root, work, push, read } = launch();
   sh(
@@ -155,4 +156,24 @@ test("an accepted push whose tracking update failed stays unresolved; a later co
   expect(() => sh(work, "git push -q origin HEAD:refs/heads/topic")).toThrow();
   const accepted = push("topic", "", "-f origin");
   expect(read()).toBe(`topic\t${accepted}\n~\ttopic\t${rejected}\n`);
+});
+
+test("local work no confirmed push carries withholds coverage, even after a push that skipped every hook", () => {
+  const { stdout, first, second } = unrecordedUrlPush();
+  // Discovery cannot see the escaped push, but its commit is still on a local branch.
+  expect(stdout).toBe(`!uncovered\ntopic\t${first}\n`);
+  expect(stdout).not.toContain(second);
+  // Ordinary work is covered: a branch pushed through origin, and the launch
+  // branch as fetched, even when it moved past the launch.
+  const { root, work, push } = launch();
+  sh(root, "git clone -q remote.git other 2>/dev/null");
+  sh(join(root, "other"), "git commit -q --allow-empty -m base && git push -q origin HEAD:refs/heads/main");
+  sh(work, "git pull -q origin main && git checkout -q -b topic");
+  const topic = push("topic");
+  sh(join(root, "other"), "git commit -q --allow-empty -m later && git push -q origin HEAD:refs/heads/main");
+  sh(work, "git checkout -q main && git pull -q origin main");
+  expect(sh(work, `set -- 0 x main; ${readPushEvidence}`)).toBe(`topic\t${topic}\n`);
+  // An unpushed commit on any local branch is uncovered work.
+  sh(work, "git checkout -q topic && git commit -q --allow-empty -m local && git checkout -q main");
+  expect(sh(work, `set -- 0 x main; ${readPushEvidence}`)).toBe(`!uncovered\ntopic\t${topic}\n`);
 });

@@ -7,7 +7,12 @@ import { nativeQuiescent } from "../src/native-idle.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { createSandboxPullRequests } from "../src/sandbox-pull-requests.ts";
 import { callSharedTool } from "../src/tool-api.ts";
-import { lostConfirmation, recreatedAtFetchedCommit, rejectedRecreation } from "./push-ledger-git.ts";
+import {
+  lostConfirmation,
+  recreatedAtFetchedCommit,
+  rejectedRecreation,
+  unrecordedUrlPush,
+} from "./push-ledger-git.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { bunLikeSql, ENCRYPTION_KEY } from "./support.ts";
 
@@ -428,6 +433,7 @@ test.each([
   "unmerged PR at attempt",
   "lost confirmation",
   "rejected attempt",
+  "unrecorded URL push",
 ] as const)("GitHub observation and idle admission agree for %s work", async (state) => {
   const f = await fixture(state === "running-turn" ? state : "quiet");
   const owner = f.caller.userId;
@@ -440,7 +446,10 @@ test.each([
         ? (({ stdout, first }) => ({ stdout, sha: first }))(recreatedAtFetchedCommit())
         : state === "lost confirmation"
           ? (({ stdout, first }) => ({ stdout, sha: first }))(lostConfirmation())
-          : undefined;
+          : state === "unrecorded URL push"
+            ? // Discovery sees only the merged PR; the open one left by URL with --no-verify.
+              (({ stdout, first }) => ({ stdout, sha: first }))(unrecordedUrlPush())
+            : undefined;
   const sha = git?.sha ?? "a".repeat(40);
   await f.db.query(
     `insert into github_connections(user_id,github_id,login,name,refresh_token_enc,access_token_enc,access_expires_at)

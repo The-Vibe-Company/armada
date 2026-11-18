@@ -161,7 +161,7 @@ export interface SandboxStore {
     /** Validated with `isExternalRef` before any provider allocation. */
     externalRef?: string;
     stopWhenWorkMerged?: boolean;
-    pullRequestSource?: { connectionEpoch: string; repositories: { url: string; dir: string }[] };
+    pullRequestSource?: { connectionEpoch: string; repositories: { url: string; dir: string; branch?: string }[] };
   }): Promise<SandboxRecord>;
   update(id: string, patch: SandboxPatch): Promise<void>;
 }

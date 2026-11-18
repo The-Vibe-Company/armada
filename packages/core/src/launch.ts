@@ -537,7 +537,7 @@ export async function launchSandbox(
           ? {
               pullRequestSource: {
                 connectionEpoch: connected.connectionEpoch,
-                repositories: golden.config.repos.map(({ url, dir }) => ({ url, dir })),
+                repositories: golden.config.repos.map(({ url, dir, branch }) => ({ url, dir, branch })),
               },
             }
           : {}),

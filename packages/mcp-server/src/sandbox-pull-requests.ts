@@ -19,7 +19,7 @@ const repoUrl =
   /^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?$/i;
 const prUrl = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pull\/([1-9][0-9]*)$/i;
 const repos = z
-  .array(z.object({ url: z.string(), dir: z.string().min(1) }))
+  .array(z.object({ url: z.string(), dir: z.string().min(1), branch: z.string().optional() }))
   .min(1)
   .max(16);
 const githubPull = z.object({
@@ -65,6 +65,7 @@ type Target = {
   pull_request_reports: Record<string, Report>;
 };
 
+const launchBranch = /^(?!-)[A-Za-z0-9._/-]{1,255}$/;
 const maxBranches = 32;
 const maxKnownPulls = 64;
 const maxPushesPerBranch = 16;
@@ -84,7 +85,9 @@ const maxPushesPerBranch = 16;
 // missing hook (a tool such as husky can move core.hooksPath) prints
 // `!unproven`, leaves a ledger gap for later reads and is reinstalled when the
 // path is free. Either way pushes may have escaped the ledger, so the worker
-// never proves coverage again.
+// never proves coverage again. The absence of a gap is not proof on its own:
+// `!uncovered` reports a local branch tip or HEAD that no confirmed push and
+// not the launch branch contains, whether unpushed or pushed past the hooks.
 export const readPushEvidence = `hooks="$(git rev-parse --git-path hooks)" || exit 1
 ledger="$(git rev-parse --git-common-dir)/${PUSH_LEDGER_FILE}" || exit 1
 for name in ${PUSH_LEDGER_HOOKS.join(" ")}; do
@@ -99,8 +102,22 @@ if [ -n "$missing" ]; then
 fi
 entries=$(if [ -f "$ledger" ]; then cat "$ledger"; fi) || exit 1
 logs=$(git reflog show --all --date=unix --format='%gD%x09%gs%x09%H') || exit 1
+# Coverage is affirmative: every local branch tip and HEAD must be contained
+# in a confirmed push or in the launch branch ($3, else origin/HEAD) as
+# fetched. A commit that left by an unrecorded push (a URL with --no-verify)
+# is still on a local branch, so it prints \`!uncovered\` and withholds the stop.
+covered=$({ if [ -n "$entries" ]; then printf '%s\\n' "$entries" | awk -F '\\t' -v since="$1" 'NF == 3 && $2 !~ /^!/ && $1 + 0 >= since { print "^" $3 }'; fi
+  for base in \${3:+"refs/remotes/origin/$3"} refs/remotes/origin/HEAD; do
+    if sha=$(git rev-parse -q --verify "$base^{commit}"); then echo "^$sha"; fi
+  done; }) || exit 1
+tips=$(git for-each-ref --format='%(objectname)' refs/heads) || exit 1
+tips="$tips $(git rev-parse -q --verify 'HEAD^{commit}' || :)"
+for tip in $tips; do
+  ahead=$(printf '%s\\n' "$covered" | grep . | git rev-list --ignore-missing -n 1 --stdin "$tip") || exit 1
+  if [ -n "$ahead" ]; then uncovered=1; break; fi
+done
 { if [ -n "$entries" ]; then printf '%s\\n' "$entries" | awk '{ print "L\\t" $0 }'; fi; printf '%s\\n' "$logs"; } |
-awk -v since="$1" -v now="$(date +%s)" -F '\\t' '$1 == "L" {
+awk -v since="$1" -v now="$(date +%s)" -v uncovered="$uncovered" -F '\\t' '$1 == "L" {
     if ($2+0 < since) next
     s++
     if (NF == 3 && $3 == "!gap") gap=1
@@ -121,6 +138,7 @@ awk -v since="$1" -v now="$(date +%s)" -F '\\t' '$1 == "L" {
     for (i=1; i<=m; i++) if (!ledger[rkey[i]]) print "!untracked"
     for (i=1; i<=a; i++) if ((order[i] in attempt) && cseq[abranch[order[i]]] <= aseq[order[i]] && attempt[order[i]] + 600 > now) pending=1
     if (pending) print "!pending"
+    if (uncovered) print "!uncovered"
     for (i=n; i>=1; i--) if (!seen[lkey[i]]++) print lkey[i]
     for (i=1; i<=m; i++) if (!seen[rkey[i]]++) print rkey[i]
     for (i=1; i<=a; i++) if (order[i] in attempt) print (cseq[abranch[order[i]]] > aseq[order[i]] ? "~" : "?") "\\t" order[i]
@@ -197,6 +215,7 @@ export function createSandboxPullRequests(
       // a killed process). Only the commit's absence from GitHub tells them apart.
       const unresolved = new Set<string>();
       let pending = false;
+      let uncovered = false;
       // GitHub's head filter receives the owner as configured, not lowercased.
       const owners = new Map<string, string>();
       for (const repo of configured) {
@@ -220,7 +239,9 @@ export function createSandboxPullRequests(
         if (!row.active) continue;
         const result = await exec(row, {
           sandboxId: row.provider_sandbox_id,
-          command: `set -- '${since}' '${remote}'; ${readPushes}`,
+          // The launch branch counts as integrated work; without a usable name
+          // the reader falls back to origin/HEAD.
+          command: `set -- '${since}' '${remote}' '${repo.branch && launchBranch.test(repo.branch) ? repo.branch : ""}'; ${readPushes}`,
           cwd: `/home/user/${repo.dir}`,
           onlyIfRunning: true,
           timeoutSeconds: 5,
@@ -246,6 +267,12 @@ export function createSandboxPullRequests(
           if (line === "!untracked" || line === "!unproven") continue;
           if (line === "!pending") {
             pending = true;
+            continue;
+          }
+          // Local work no confirmed push carries: unmerged work, or a push
+          // that escaped the ledger. It vetoes this scan's stop only.
+          if (line === "!uncovered") {
+            uncovered = true;
             continue;
           }
           // Neither `?` nor `~` can start a Git branch name.
@@ -464,6 +491,7 @@ export function createSandboxPullRequests(
         row.launch_authorized &&
         complete &&
         !pending &&
+        !uncovered &&
         !scan.untracked &&
         list.length > 0 &&
         list.every((pr) => pr.state === "merged")
