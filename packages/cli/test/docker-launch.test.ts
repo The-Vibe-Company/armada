@@ -145,6 +145,21 @@ test.each([
   expect(result.err).not.toContain("outcome is unknown");
 });
 
+test("Docker routing refusals retain the server diagnosis in JSON", async () => {
+  const result = await capture([...args, "--json"], async () =>
+    Response.json(
+      { error: { code: "provider_routing_unavailable", message: "Private image diagnostics" } },
+      { status: 503 },
+    ),
+  );
+  expect(result.code).toBe(1);
+  expect(result.out).toBe("");
+  expect(JSON.parse(result.err)).toMatchObject({
+    error: { code: "provider_routing_unavailable", message: expect.stringContaining("Ask the Armada administrator") },
+  });
+  expect(result.err).not.toContain("Private image diagnostics");
+});
+
 test("unknown Docker launch outcome retains a stable request UUID for exact retry", async () => {
   for (const mode of ["lost", "wrong-sandbox", "server-failure", "explicit-unknown"]) {
     const result = await capture(args, async () => {
