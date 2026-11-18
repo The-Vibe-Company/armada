@@ -372,10 +372,19 @@ describe("application vault control API", () => {
         expectedVersion: 2,
         value: REPLACEMENT,
       });
-      await f.api(f.owner, "secrets/revoke", { org: f.org, id, expectedVersion: 2 });
-      expect(
-        (await f.api(f.owner, "secrets/commit", { org: f.org, uploadReference: rotate.body.uploadReference })).status,
-      ).toBe(409);
+      const directRotation = await f.api(f.owner, "secrets/rotate", {
+        org: f.org,
+        id,
+        expectedVersion: 2,
+        value: CANARY,
+      });
+      expect(directRotation.status).toBe(200);
+      const staleCommit = await f.api(f.owner, "secrets/commit", {
+        org: f.org,
+        uploadReference: rotate.body.uploadReference,
+      });
+      expect(staleCommit.status).toBe(409);
+      expect((await f.api(f.owner, "secrets/revoke", { org: f.org, id, expectedVersion: 3 })).status).toBe(200);
       const expired = await f.api(f.owner, "secrets/upload", {
         org: f.org,
         operation: "set",
