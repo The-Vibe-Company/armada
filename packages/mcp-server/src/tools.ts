@@ -1966,16 +1966,22 @@ export function createArmadaServer(context: ToolContext, version: string, option
         data.sandboxes,
         found,
         { clearTaskOutcome: true },
-        async () => {
+        async (signal) => {
           await prepareConnections(provider, found, member.role);
 
           const receipt = await dispatchSteer();
           acknowledged = true;
+          // Register the concrete run like send does, so native settlement (and
+          // its Langfuse export) sees the steered turn. Empty stays the marker
+          // when the run cannot be proven yet; report then resolves it from events,
+          // and a durable steer cursor lets lifecycle reconciliation register it.
+          const taskPromptId = await steeredRun(provider, found, receipt.promptId, delivery, signal);
+          if (taskPromptId) await data.sandboxes.recordNativePrompt?.(found.id, found.providerSandboxId, taskPromptId);
+          else await data.sandboxes.recordPendingSteer?.(found.id, found.providerSandboxId, found.taskPromptId || null);
           return {
             patch: {
               status: "running",
-              // Boat returns a steer-record ID; resolve the actual run from events.
-              taskPromptId: "",
+              taskPromptId,
               conversationIds: appendConversation(found.conversationIds, receipt.conversationId),
             },
             result: {
@@ -2558,4 +2564,34 @@ function publicationFailure(error: unknown, acknowledged: boolean): never {
       { cause: error },
     );
   throw error;
+}
+
+/** The run a successful steer left in progress, or "" when it cannot be proven.
+ * Boat may answer with a steer-record ID; then the newest prompt event names the
+ * run, but only relative to a known prior run: a restart must not settle as the
+ * run it interrupted, and an unresolved earlier steer leaves nothing to compare.
+ */
+async function steeredRun(
+  provider: Provider,
+  found: { providerSandboxId: string; taskPromptId?: string | null },
+  promptId: string,
+  delivery: "native" | "restart",
+  signal: AbortSignal,
+): Promise<string> {
+  try {
+    const run = await provider.getPrompt({ sandboxId: found.providerSandboxId, promptId, signal });
+    if (run.promptId === promptId) return promptId;
+  } catch {
+    /* Not a pollable run: resolve it from events below. */
+  }
+  // Without a concrete prior run, a stale newest event is indistinguishable
+  // from the replacement; keep the empty marker so report resolves it later.
+  if (!found.taskPromptId) return "";
+  try {
+    const latest = (await latestPrompt(provider, found.providerSandboxId, true, signal))?.promptId;
+    if (latest && (delivery === "native" || latest !== found.taskPromptId)) return latest;
+  } catch {
+    /* Accepted steer stays reportable through the empty marker. */
+  }
+  return "";
 }

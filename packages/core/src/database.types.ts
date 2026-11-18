@@ -1622,6 +1622,66 @@ export type Database = {
           },
         ];
       };
+      langfuse_turn_exports: {
+        Row: {
+          sandbox_id: string;
+          prompt_id: string;
+          org_id: string;
+          provider_sandbox_id: string;
+          runtime_ack: number | null;
+          terminal_status: string | null;
+          allowed_content_mode: string | null;
+          observed_at: string;
+          lease_id: string | null;
+          lease_until: string | null;
+          attempts: number;
+          completed_at: string | null;
+        };
+        Insert: {
+          sandbox_id: string;
+          prompt_id: string;
+          org_id: string;
+          provider_sandbox_id: string;
+          runtime_ack?: number | null;
+          terminal_status?: string | null;
+          allowed_content_mode?: string | null;
+          observed_at?: string;
+          lease_id?: string | null;
+          lease_until?: string | null;
+          attempts?: number;
+          completed_at?: string | null;
+        };
+        Update: {
+          sandbox_id?: string;
+          prompt_id?: string;
+          org_id?: string;
+          provider_sandbox_id?: string;
+          runtime_ack?: number | null;
+          terminal_status?: string | null;
+          allowed_content_mode?: string | null;
+          observed_at?: string;
+          lease_id?: string | null;
+          lease_until?: string | null;
+          attempts?: number;
+          completed_at?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "langfuse_turn_exports_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "langfuse_turn_exports_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: false;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       launch_template_revisions: {
         Row: {
           id: string;
@@ -2462,6 +2522,44 @@ export type Database = {
             columns: ["account_id"];
             isOneToOne: false;
             referencedRelation: "credentials";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      native_steer_cursors: {
+        Row: {
+          sandbox_id: string;
+          after_prompt_id: string | null;
+          steer_id: string;
+          pending_since: string | null;
+          pending_steers: number;
+          lease_id: string | null;
+          lease_until: string | null;
+        };
+        Insert: {
+          sandbox_id: string;
+          after_prompt_id?: string | null;
+          steer_id: string;
+          pending_since?: string | null;
+          pending_steers?: number;
+          lease_id?: string | null;
+          lease_until?: string | null;
+        };
+        Update: {
+          sandbox_id?: string;
+          after_prompt_id?: string | null;
+          steer_id?: string;
+          pending_since?: string | null;
+          pending_steers?: number;
+          lease_id?: string | null;
+          lease_until?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "native_steer_cursors_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: true;
+            referencedRelation: "sandboxes";
             referencedColumns: ["id"];
           },
         ];
@@ -3361,6 +3459,38 @@ export type Database = {
         Relationships: [
           {
             foreignKeyName: "org_langfuse_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: true;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      org_langfuse_export_stats: {
+        Row: {
+          org_id: string;
+          exported: number;
+          failed: number;
+          dropped: number;
+          last_export_at: string | null;
+        };
+        Insert: {
+          org_id: string;
+          exported?: number;
+          failed?: number;
+          dropped?: number;
+          last_export_at?: string | null;
+        };
+        Update: {
+          org_id?: string;
+          exported?: number;
+          failed?: number;
+          dropped?: number;
+          last_export_at?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "org_langfuse_export_stats_org_id_fkey";
             columns: ["org_id"];
             isOneToOne: true;
             referencedRelation: "orgs";
@@ -4822,6 +4952,7 @@ export type GoldenSkillDefaultsRow = Database["public"]["Tables"]["golden_skill_
 export type GoldenSnapshotPublication = Database["public"]["Tables"]["golden_snapshot_publications"]["Row"];
 export type GoldenSnapshotRetirement = Database["public"]["Tables"]["golden_snapshot_retirements"]["Row"];
 export type Golden = Database["public"]["Tables"]["goldens"]["Row"];
+export type LangfuseTurnExportRow = Database["public"]["Tables"]["langfuse_turn_exports"]["Row"];
 export type LaunchTemplateRevisionRow = Database["public"]["Tables"]["launch_template_revisions"]["Row"];
 export type LaunchTemplateRow = Database["public"]["Tables"]["launch_templates"]["Row"];
 export type McpActorEpoch = Database["public"]["Tables"]["mcp_actor_epochs"]["Row"];
@@ -4843,6 +4974,7 @@ export type ModalServerHarnessRow = Database["public"]["Tables"]["modal_server_h
 export type ModalServerScopeRow = Database["public"]["Tables"]["modal_server_scopes"]["Row"];
 export type ModelAuthOwnershipRow = Database["public"]["Tables"]["model_auth_ownership"]["Row"];
 export type ModelAuthStateRow = Database["public"]["Tables"]["model_auth_state"]["Row"];
+export type NativeSteerCursorRow = Database["public"]["Tables"]["native_steer_cursors"]["Row"];
 export type NativeWebhookPromptRow = Database["public"]["Tables"]["native_webhook_prompts"]["Row"];
 export type NotifySubscription = Database["public"]["Tables"]["notify_subscriptions"]["Row"];
 export type OAuthClient = Database["public"]["Tables"]["oauth_clients"]["Row"];
@@ -4861,6 +4993,7 @@ export type OrchestratorWait = Database["public"]["Tables"]["orchestrator_waits"
 export type OrchestratorIdentityRow = Database["public"]["Tables"]["orchestrators"]["Row"];
 export type OrdinaryLaunchReceiptRow = Database["public"]["Tables"]["ordinary_launch_receipts"]["Row"];
 export type OrgLangfuseRow = Database["public"]["Tables"]["org_langfuse"]["Row"];
+export type OrgLangfuseExportStatsRow = Database["public"]["Tables"]["org_langfuse_export_stats"]["Row"];
 export type OrgSkillDefaultsRow = Database["public"]["Tables"]["org_skill_defaults"]["Row"];
 export type OrganizationInvitationRow = Database["public"]["Tables"]["organization_invitations"]["Row"];
 export type Org = Database["public"]["Tables"]["orgs"]["Row"];
