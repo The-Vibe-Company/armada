@@ -430,17 +430,23 @@ export async function runJobs(
   try {
     while (!loop.stopping()) {
       if (loop.update?.staged()) {
-        await Promise.all(running.values());
+        // Keep the host online while admitted operations finish. A short poll
+        // updates the heartbeat without holding the ledger or accepting jobs.
+        // Pace these polls even when the server has queued work to return.
+        if (running.size) await Promise.race([settled(), loop.sleep(DOCKER_HOST_IDLE_MS)]);
         if (loop.stopping()) break;
-        // Keep admission fenced while checking the offer on a fresh poll.
-        // The returned job stays unacknowledged for ordinary admission.
-        const event = await api.poll(await store.load()).then(
-          ({ targetVersion }) => ({ type: "offer" as const, version: targetVersion }),
-          () => {
-            loop.failed?.("tick");
-            return { type: "poll-failed" as const };
-          },
-        );
+        const draining = running.size > 0;
+        let event: Parameters<NonNullable<typeof loop.update>["confirm"]>[0];
+        try {
+          const { targetVersion } = await api.poll(await store.load(), { skipSnapshots: draining });
+          event = { type: "offer", version: targetVersion };
+        } catch {
+          loop.failed?.("tick");
+          event = { type: "poll-failed" };
+        }
+        // A poll that started during the drain cannot authorize the restart,
+        // even if all operations finished before the response arrived.
+        if (draining || loop.stopping()) continue;
         if ((await loop.update.confirm(event)) && !loop.stopping() && (await loop.update.restart())) break;
         continue;
       }

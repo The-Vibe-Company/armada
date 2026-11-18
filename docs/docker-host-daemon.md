@@ -248,7 +248,10 @@ A later launch job stays queued until the service reconnects. Running containers
 and volumes survive the daemon restart and the next process reconciles them
 through the usual ledger. The update uses no sudo and opens no listening port.
 A daemon resuming a staged update after startup checks that the server still
-offers that version before draining. Once admitted work finishes, the daemon
+offers that version before draining. During the drain, authenticated polling
+continues to refresh the heartbeat and any newly offered jobs stay unacknowledged.
+In-flight jobs save their receipts and submit results on the original binary.
+Once admitted work finishes, the daemon
 checks the offer again while admission is still fenced. A changed or unavailable
 offer cancels the staged attempt and returns the daemon to ordinary polling.
 
@@ -269,8 +272,10 @@ failure or deferred offer preserves the cutoff.
 | --- | --- | --- |
 | Idle, preparing, cancelled, failed or updated | An eligible newer offer starts preparing after backoff. Eligibility also requires a managed service, no uninstall intent, and an absent or inactive supervisor from the preceding attempt. | The running executable stays in place. The preparing journal preserves the highest attempted version and the next retry time. It uses the existing cancelled phase with a preparation flag so older recovery binaries can read it. A manifest fetch that fails before the journal write backs off in memory. |
 | Preparing | Verified download and backup finish → staged. Download, disk failure or reboot before the staged write → preparing or the preceding state. | The candidate is stored privately. Before rotating `.previous`, the journal accepts both the old and intended backup digests. A restart on either side of the backup rename keeps the old daemon serving and can prepare the same release again. |
-| Staged | Check the current offer, fence admission and drain. A fresh matching poll dispatches the supervisor. | Candidate and backup digests are durable. After a reboot the old binary runs and checks the offer again before a supervisor can start. |
-| Staged | Poll transport failure, denied or changed offer, disabled updates, or supervisor launch failure → cancelled. | The staged binary remains uninstalled. The old daemon resumes ordinary polling, subject to server authorization. The same release is eligible again after five minutes, provided it remains above the actual trial cutoff. An ambiguous manager reply leaves the transition with the supervisor if it owns the unit. |
+| Staged | Check the current offer, fence admission and drain admitted jobs. | Candidate and backup digests are durable. After a reboot the old binary runs and checks the offer again before a supervisor can start. |
+| Staged, jobs draining | Continue authenticated polls on the idle interval while long-running builds or launches finish. Ignore newly offered jobs and wait for admitted operations to save receipts and attempt to report results. | In-flight work continues on the old binary. Poll failures during the drain leave admission fenced and the next poll retries the heartbeat. Unacknowledged results can be replayed from durable receipts. |
+| Staged, drain complete | Start a fresh authenticated poll with admission fenced. A matching offer dispatches the supervisor. | A poll started during the drain cannot authorize the restart. |
+| Staged | Offer recheck transport failure, denied or changed offer, disabled updates, or supervisor launch failure → cancelled. | The staged binary remains uninstalled. The old daemon resumes ordinary polling, subject to server authorization. The same release is eligible again after five minutes, provided it remains above the actual trial cutoff. An ambiguous manager reply leaves the transition with the supervisor if it owns the unit. |
 | Staged | The supervisor validates both binaries, persists and reloads the recovery drop-in, then claims the trial → starting. | Starting and the attempted version are durable before stopping the old service. A failure before the claim defers staging and starts the old service. |
 | Starting | Stop the drained service, authorize the candidate digest in the ownership marker, atomically replace the executable and start it. | The ownership marker accepts both verified digests across the executable rename. The candidate can reconcile and poll with admission fenced. A reboot or orphaned supervisor rolls back even if the server is unavailable. |
 | Starting | Failed start, no fresh matching health poll, revoked or withdrawn offer that prevents health, or interrupted trial → failed. | Rollback records both digests before the reverse rename, syncs the binary directory, then settles the ownership marker and journal. Recovery can repeat any unfinished step. The supervisor starts the old binary. A later offer above the attempted version can start another trial. |

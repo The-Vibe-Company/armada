@@ -2120,108 +2120,160 @@ test("a job of a sandbox whose operation still runs here waits, even if the serv
   expect(f.executed).toEqual([]);
 });
 
-test.each(["withdrawn", "poll failed"] as const)(
-  "a staged update handles a %s offer only after the admitted launch receipt is durable",
-  async (outcome) => {
-    const first = fixture();
-    const next = fixture();
-    const offered = Promise.withResolvers<void>();
-    const release = Promise.withResolvers<void>();
-    const acknowledged: string[] = [];
-    const started: string[] = [];
-    let failedSave = false;
-    let staged = false;
-    let withdrawn = false;
-    let confirmed = false;
-    let rechecked = false;
-    let postDrainReceipt: string[] | undefined;
-    const loop = runJobs(
-      {
-        ...first.store,
-        async save(state) {
-          if (!failedSave && state.receipts.some((receipt) => receipt.outcome === "completed")) {
-            failedSave = true;
-            throw new Error("Temporary receipt write failure");
+test.each([
+  { operation: "launch", outcome: "withdrawn" },
+  { operation: "launch", outcome: "poll failed" },
+  { operation: "long snapshot build", outcome: "matching" },
+] as const)("update drain with $operation and a $outcome post-drain offer", async ({ operation, outcome }) => {
+  const first = fixture();
+  const next = fixture();
+  const job: Job =
+    operation === "launch"
+      ? first.job
+      : {
+          ...first.job,
+          operation: "buildSnapshot",
+          build: {
+            id: first.job.request.sandboxId,
+            armadaVersion: "2.29.0",
+            ownerId: crypto.randomUUID(),
+            visibility: "private",
+            token: "snapshot_access",
+            config: {
+              repos: [{ url: "https://github.com/example/project.git", branch: "main", dir: "project" }],
+              init: [],
+            },
+          },
+        };
+  let now = 0;
+  const drainHeartbeats: number[] = [];
+  const offered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const acknowledged: string[] = [];
+  const started: string[] = [];
+  let failedSave = false;
+  let staged = false;
+  let released = false;
+  let restarted = false;
+  let confirmed = false;
+  let rechecked = false;
+  let postDrainReceipt: string[] | undefined;
+  const loop = runJobs(
+    {
+      ...first.store,
+      async save(state) {
+        if (!failedSave && state.receipts.some((receipt) => receipt.outcome === "completed")) {
+          failedSave = true;
+          throw new Error("Temporary receipt write failure");
+        }
+        await first.store.save(state);
+      },
+    },
+    {
+      ...first.api,
+      async poll(_state, options) {
+        if (staged && !released) {
+          drainHeartbeats.push(now);
+          return { job: next.job, targetVersion: "9.0.0" };
+        }
+        if (released) {
+          if (!options?.waitSeconds) {
+            postDrainReceipt = [...acknowledged];
+            if (outcome === "poll failed") throw new Error("Lost poll response");
+            return { job: next.job, ...(outcome === "matching" ? { targetVersion: "9.0.0" } : {}) };
           }
-          await first.store.save(state);
-        },
+          return { job: null };
+        }
+        if (options?.running?.includes(first.job.requestId))
+          return { job: next.job, held: true, targetVersion: "9.0.0" };
+        return { job, held: true };
       },
-      {
-        ...first.api,
-        async poll(_state, options) {
-          if (withdrawn) {
-            if (options === undefined) {
-              postDrainReceipt = [...acknowledged];
-              if (outcome === "poll failed") throw new Error("Lost poll response");
-              return { job: next.job };
-            }
-            return { job: null };
-          }
-          if (options?.running?.includes(first.job.requestId))
-            return { job: next.job, held: true, targetVersion: "9.0.0" };
-          return { job: first.job, held: true };
-        },
-        async result(_state, receipt) {
-          acknowledged.push(receipt.requestId);
-        },
+      async result(_state, receipt) {
+        expect(first.state().receipts.find(({ requestId }) => requestId === receipt.requestId)?.outcome).toBe(
+          "completed",
+        );
+        acknowledged.push(receipt.requestId);
       },
-      {
-        ...first.executor,
-        async create(request) {
-          started.push(request.sandboxId);
-          if (request.sandboxId === first.job.request.sandboxId) await release.promise;
-        },
+    },
+    {
+      ...first.executor,
+      async buildSnapshot() {
+        started.push(job.request.sandboxId);
+        await release.promise;
+        return { imageId: job.request.image, baselineVersion: null };
       },
-      {
-        stopping: () => confirmed,
-        update: {
-          staged: () => staged,
-          async checkRecovery() {
-            return false;
-          },
-          async confirm(target) {
-            expect(target).toEqual(
-              outcome === "poll failed" ? { type: "poll-failed" } : { type: "offer", version: undefined },
-            );
-            confirmed = true;
-            rechecked = true;
-            return false;
-          },
-          async restart() {
-            throw new Error("The withdrawn release must not restart the daemon");
-          },
+      async create(request) {
+        started.push(request.sandboxId);
+        if (request.sandboxId === first.job.request.sandboxId) await release.promise;
+      },
+    },
+    {
+      stopping: () => confirmed,
+      update: {
+        staged: () => staged,
+        async checkRecovery() {
+          return false;
         },
-        retryCompletion: () => true,
-        async beforeAdmission(target) {
-          if (withdrawn) confirmed = true;
-          if (!target) return false;
-          staged = true;
-          offered.resolve();
+        async confirm(target) {
+          expect(target).toEqual(
+            outcome === "poll failed"
+              ? { type: "poll-failed" }
+              : { type: "offer", version: outcome === "matching" ? "9.0.0" : undefined },
+          );
+          confirmed = outcome !== "matching";
+          rechecked = true;
+          return outcome === "matching";
+        },
+        async restart() {
+          restarted = true;
           return true;
         },
-        async sleep() {},
       },
-    );
-    let drained = false;
-    const complete = loop.then(() => {
-      drained = true;
-    });
-    await offered.promise;
-    expect(drained).toBe(false);
-    expect(acknowledged).toEqual([]);
-    withdrawn = true;
-    release.resolve();
-    await complete;
-    expect(rechecked).toBe(true);
-    expect(postDrainReceipt).toEqual([first.job.requestId]);
-    expect(failedSave).toBe(true);
-    expect(started).toEqual([first.job.request.sandboxId]);
-    expect(acknowledged).toEqual([first.job.requestId]);
-    expect(first.state().receipts.map(({ requestId, outcome }) => [requestId, outcome])).toEqual([
-      [first.job.requestId, "completed"],
-    ]);
-  },
-);
+      retryCompletion: () => true,
+      async beforeAdmission(target) {
+        if (released) confirmed = true;
+        if (!target) return false;
+        staged = true;
+        offered.resolve();
+        return true;
+      },
+      now: () => now,
+      async sleep(ms) {
+        if (released) return;
+        if (now >= 100_000) await release.promise;
+        else now += ms;
+      },
+    },
+  );
+  let drained = false;
+  const complete = loop.then(() => {
+    drained = true;
+  });
+  await offered.promise;
+  expect(drained).toBe(false);
+  expect(acknowledged).toEqual([]);
+  if (operation === "long snapshot build") {
+    // Flush the simulated sleeps and polls before releasing the admitted job.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  released = true;
+  release.resolve();
+  await complete;
+  expect(rechecked).toBe(true);
+  expect(restarted).toBe(outcome === "matching");
+  if (operation === "long snapshot build") {
+    expect(drainHeartbeats.at(-1)).toBeGreaterThan(91_000);
+    const gaps = drainHeartbeats.map((at, i) => at - (drainHeartbeats[i - 1] ?? 0));
+    expect(Math.max(...gaps)).toBeLessThan(60_000);
+  }
+  expect(postDrainReceipt).toEqual([first.job.requestId]);
+  expect(failedSave).toBe(true);
+  expect(started).toEqual([first.job.request.sandboxId]);
+  expect(acknowledged).toEqual([first.job.requestId]);
+  expect(first.state().receipts.map(({ requestId, outcome }) => [requestId, outcome])).toEqual([
+    [first.job.requestId, "completed"],
+  ]);
+});
 
 test("completion retry persists an already compacted outcome after a directory sync failure", async () => {
   const f = fixture("delete");
