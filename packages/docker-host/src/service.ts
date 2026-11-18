@@ -604,14 +604,18 @@ export async function superviseUpdate(
     return;
   }
   if (update?.phase !== "staged" && update?.phase !== "starting") return;
-  const previousHealth = (await store.load()).lastPollAt;
+  let previousHealth: string | undefined;
   let trialMarker: ManagedInstallation | undefined;
   try {
     if (update.phase !== "staged") throw new Error("Interrupted Docker host update");
     await service("stop");
     const unlock = await store.lock();
     try {
-      const marker = await validateInstallation(await store.load(), home, instance);
+      const state = await store.load();
+      // The original daemon may finish a held poll while systemd stops it.
+      // Capture that final heartbeat before starting the candidate.
+      previousHealth = state.lastPollAt;
+      const marker = await validateInstallation(state, home, instance);
       if (marker.pendingBinarySha256) throw new Error("An earlier Docker host upgrade is incomplete");
       const candidate = await ownedFile(candidateFile, home);
       if (sha256(candidate) !== update.candidateDigest) throw new Error("Staged Docker host release changed");
