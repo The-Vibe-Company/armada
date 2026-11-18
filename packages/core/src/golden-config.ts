@@ -260,6 +260,40 @@ export const PUSH_LEDGER_MARKER = "# armada-push-ledger v1";
 export const PUSH_LEDGER_FILE = "armada-pushes";
 /** Hooks that must all carry the marker for the ledger to prove coverage. */
 export const PUSH_LEDGER_HOOKS = ["reference-transaction", "pre-push"] as const;
+/**
+ * Armada's hooks directory in the common Git directory. `core.hooksPath` points
+ * to it; its `chained` file names the repository's own hooks directory, whose
+ * hooks still run with their arguments, input and exit status.
+ */
+export const PUSH_LEDGER_HOOKS_DIR = "armada-hooks";
+// Client-side hooks other than the ledger's, forwarded unchanged. Receiving-side
+// hooks (push-to-checkout changes behaviour by merely existing) are left out.
+const forwardedHooks = [
+  "applypatch-msg",
+  "pre-applypatch",
+  "post-applypatch",
+  "pre-commit",
+  "pre-merge-commit",
+  "prepare-commit-msg",
+  "commit-msg",
+  "post-commit",
+  "pre-rebase",
+  "post-checkout",
+  "post-merge",
+  "post-rewrite",
+  "pre-auto-gc",
+  "post-index-change",
+  "sendemail-validate",
+];
+// The repository's own hook of the same name, when it would have run.
+const chainedHook = `chain="$(cat "\${0%/*}/chained" 2>/dev/null)" && [ -n "$chain" ] && chain="$chain/\${0##*/}" && [ -x "$chain" ] || chain=`;
+const forwardHook = `#!/bin/sh
+${chainedHook}
+[ -n "$chain" ] || exit 0
+exec "$chain" "$@"
+`;
+// Runs the repository's own hook with the same input; exits with its status.
+const runChained = `if [ -n "$input" ]; then printf '%s\\n' "$input"; fi | "$chain" "$@"`;
 
 // A reference-transaction hook cannot be skipped with --no-verify and runs after
 // the tracking ref's reflog entry is written, so "update by push" separates a
@@ -268,41 +302,59 @@ export const PUSH_LEDGER_HOOKS = ["reference-transaction", "pre-push"] as const;
 // reflog entry (reflogs disabled) cannot be told apart from a push: it is a gap.
 const referenceTransactionHook = `#!/bin/sh
 ${PUSH_LEDGER_MARKER}
-test "$1" = committed || exit 0
-ledger="$(git rev-parse --git-common-dir)/${PUSH_LEDGER_FILE}" || exit 0
-while read -r old new ref; do
-  case "$ref" in refs/remotes/origin/HEAD) continue ;; refs/remotes/origin/*) ;; *) continue ;; esac
-  case "$new" in ref:*) continue ;; *[!0]*) ;; *) continue ;; esac
-  entry="$(git reflog show --format='%H %gs' -n 1 "$ref" -- 2>/dev/null)"
-  if [ "$entry" = "$new update by push" ]; then
-    printf '%s\\t%s\\t%s\\n' "$(date +%s)" "\${ref#refs/remotes/origin/}" "$new" >>"$ledger"
-  elif [ "\${entry%% *}" != "$new" ]; then
-    printf '%s\\t!gap\\n' "$(date +%s)" >>"$ledger"
-  fi
-done
-exit 0
+input=$(cat)
+if [ "$1" = committed ] && ledger="$(git rev-parse --git-common-dir)/${PUSH_LEDGER_FILE}"; then
+  printf '%s\\n' "$input" | while read -r old new ref; do
+    case "$ref" in refs/remotes/origin/HEAD) continue ;; refs/remotes/origin/*) ;; *) continue ;; esac
+    case "$new" in ref:*) continue ;; *[!0]*) ;; *) continue ;; esac
+    entry="$(git reflog show --format='%H %gs' -n 1 "$ref" -- 2>/dev/null)"
+    if [ "$entry" = "$new update by push" ]; then
+      printf '%s\\t%s\\t%s\\n' "$(date +%s)" "\${ref#refs/remotes/origin/}" "$new" >>"$ledger"
+    elif [ "\${entry%% *}" != "$new" ]; then
+      printf '%s\\t!gap\\n' "$(date +%s)" >>"$ledger"
+    fi
+  done
+fi
+${chainedHook}
+[ -n "$chain" ] || exit 0
+${runChained}
 `;
 
 // The reference-transaction hook only sees pushes that update an origin-tracking
 // ref. A push to a URL or another remote, or through origin without the wide
-// tracking refspec, updates none: record it as a gap before it happens.
+// tracking refspec, updates none: record it as a gap before it happens. Neither
+// does recreating a deleted branch at the SHA its tracking ref still holds, so
+// every branch update is recorded here too once the repository's own hook
+// allowed the push. A push that then fails is recorded anyway: at worst it
+// withholds a stop.
 const prePushHook = `#!/bin/sh
 ${PUSH_LEDGER_MARKER}
+input=$(cat)
+${chainedHook}
+if [ -n "$chain" ]; then ${runChained} || exit; fi
 ledger="$(git rev-parse --git-common-dir)/${PUSH_LEDGER_FILE}" || exit 0
 if [ "$1" != origin ] || ! git config --get-all remote.origin.fetch | grep -qx '+\\{0,1\\}refs/heads/\\*:refs/remotes/origin/\\*'; then
   printf '%s\\t!gap\\n' "$(date +%s)" >>"$ledger"
+  exit 0
 fi
+printf '%s\\n' "$input" | while read -r lref sha remote old; do
+  case "$remote" in refs/heads/*) ;; *) continue ;; esac
+  case "$sha" in *[!0]*) ;; *) continue ;; esac
+  printf '%s\\t%s\\t%s\\n' "$(date +%s)" "\${remote#refs/heads/}" "$sha" >>"$ledger"
+done
 exit 0
 `;
 
-const installHook = (name: string, body: string) =>
-  `hook="$hooks/${name}" && { [ ! -e "$hook" ] || [ "$(sed -n 2p "$hook")" = ${shQuote(PUSH_LEDGER_MARKER)} ]; } && printf '%s' ${shQuote(body)} >"$hook" && chmod +x "$hook"`;
+const writeHook = (name: string, body: string) =>
+  `printf '%s' ${shQuote(body)} >"$own/${name}" && chmod +x "$own/${name}"`;
 
 /**
- * Installs the push ledger hooks in the current repository. It never replaces a
- * different existing hook; the observer then sees no marker and refuses merge stops.
+ * Installs the push ledger hooks in the current repository without touching its
+ * own hooks: Armada's hooks directory forwards to them, and `core.hooksPath` is
+ * switched only once every hook is written. Reinstalling after a tool moved
+ * `core.hooksPath` chains the new directory.
  */
-export const pushLedgerInstall = `{ hooks=$(git rev-parse --git-path hooks) && mkdir -p "$hooks" && ${installHook("reference-transaction", referenceTransactionHook)}; ${installHook("pre-push", prePushHook)}; } >/dev/null 2>&1 || :`;
+export const pushLedgerInstall = `{ own="$(git rev-parse --git-common-dir)" && own="$(cd "$own" && pwd -P)/${PUSH_LEDGER_HOOKS_DIR}" && hooks="$(git rev-parse --git-path hooks)" && case "$hooks" in /*) ;; *) hooks="$(pwd)/$hooks" ;; esac && { [ ! -d "$hooks" ] || hooks="$(cd "$hooks" && pwd -P)"; } && mkdir -p "$own" && { [ "$hooks" = "$own" ] || printf '%s\\n' "$hooks" >"$own/chained"; } && ${[...forwardedHooks.map((name) => writeHook(name, forwardHook)), writeHook("reference-transaction", referenceTransactionHook), writeHook("pre-push", prePushHook)].join(" && ")} && git config --local core.hooksPath "$own"; } >/dev/null 2>&1 || :`;
 
 /** Fast-forward refresh using the caller-authorized helper already installed by launch. Never prompts. */
 export function pullCommand(repo: GoldenRepo, trackPushes = false): ShellCommand {

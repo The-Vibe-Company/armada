@@ -67,7 +67,7 @@ test.each(["reference-transaction", "pre-push"])(
   (hook) => {
     const { work, push, read } = launch();
     const first = push("first");
-    sh(work, `rm .git/hooks/${hook}`);
+    sh(work, `rm "$(git rev-parse --git-path hooks)/${hook}"`);
     expect(read()).toBe(`!unproven\n!untracked\nfirst\t${first}\n`);
     // The hook is back, but the interval it missed stays unproven.
     expect(read()).toBe(`!untracked\nfirst\t${first}\n`);
@@ -109,4 +109,53 @@ test("a push while the hooks were displaced is reported before the reader restor
     "git push -q origin HEAD:refs/heads/main && git fetch -q origin && git pull -q --rebase origin main && git remote set-head origin -a >/dev/null && git gc -q",
   );
   expect(fresh.read().split("\n")).not.toContain("!untracked");
+});
+
+test("the repository's own hooks keep running, with their input and exit status, beside the ledger", () => {
+  const root = mkdtempSync(join(tmpdir(), "armada-push-ledger-"));
+  roots.push(root);
+  sh(root, "git init -q --bare -b main remote.git && git clone -q remote.git work 2>/dev/null");
+  const work = join(root, "work");
+  // A configured hooks directory with executable hooks already present at launch.
+  sh(
+    work,
+    `mkdir .githooks && git config --local core.hooksPath .githooks && for hook in pre-push reference-transaction pre-commit; do
+       printf '#!/bin/sh\\necho "$0 $*" >>"$(git rev-parse --git-common-dir)/ran-$(basename "$0")"; cat >>"$(git rev-parse --git-common-dir)/ran-$(basename "$0")"\\nexit $(cat "$(git rev-parse --git-common-dir)/fail" 2>/dev/null || echo 0)\\n' >.githooks/$hook && chmod +x .githooks/$hook
+     done && git add .githooks && git commit -q -m hooks && git config --local --replace-all remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*' && ${pushLedgerInstall}`,
+  );
+  // The repository's own hooks are untouched: the work tree stays clean.
+  expect(sh(work, "git status --porcelain")).toBe("");
+  const sha = sh(
+    work,
+    "git commit -q --allow-empty -m topic && git push -q origin HEAD:refs/heads/topic && git rev-parse HEAD",
+  ).trim();
+  const ran = (hook: string) => sh(work, `cat .git/ran-${hook}`);
+  expect(ran("pre-commit")).toContain(".githooks/pre-commit");
+  expect(ran("pre-push")).toContain(`refs/heads/topic ${"0".repeat(40)}`);
+  expect(ran("reference-transaction")).toContain(`committed\n${"0".repeat(40)} ${sha} refs/remotes/origin/topic`);
+  // A normal push leaves clean evidence: the shape that reaches merge-stop admission.
+  const read = () => sh(work, `set -- 0; ${readPushEvidence}`);
+  expect(read()).toBe(`topic\t${sha}\n`);
+  // A refusing hook still refuses the push, and the refused push is not recorded.
+  sh(work, "git commit -q --allow-empty -m refused && echo 1 >.git/fail");
+  expect(() => sh(work, "git push -q origin HEAD:refs/heads/refused")).toThrow();
+  expect(() => sh(work, "git commit -q --allow-empty -m blocked")).toThrow();
+  sh(work, "rm .git/fail");
+  expect(read()).toBe(`topic\t${sha}\n`);
+});
+
+test("recreating a deleted branch at the SHA its tracking ref still holds is recorded", () => {
+  const { root, work, read } = launch();
+  sh(root, "git clone -q remote.git other 2>/dev/null");
+  const other = join(root, "other");
+  const sha = sh(
+    other,
+    "git commit -q --allow-empty -m topic && git push -q origin HEAD:refs/heads/topic && git rev-parse HEAD",
+  ).trim();
+  sh(work, "git fetch -q origin && git checkout -q -b topic origin/topic");
+  sh(other, "git push -q origin :topic");
+  // The tracking ref already holds the SHA, so the push writes no reflog entry.
+  expect(sh(work, "git push origin topic:refs/heads/topic 2>&1")).toContain("[new branch]");
+  expect(sh(work, "git reflog show --format=%gs refs/remotes/origin/topic")).not.toContain("update by push");
+  expect(read()).toBe(`topic\t${sha}\n`);
 });
