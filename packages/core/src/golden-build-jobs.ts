@@ -419,7 +419,7 @@ export class GoldenBuildJobs {
   async reconcileOne(): Promise<void> {
     const row = (
       await this.options.sql.query<Job>(
-        "select * from public.golden_build_jobs where state='recovery_required' and (builder_id is not null or (provider=any($1::public.sandbox_provider[]) and phase='builder') or (phase='authorization' and fence is not null and builder_id is null and snapshot is null)) order by updated_at limit 1",
+        "select * from public.golden_build_jobs where state='recovery_required' and (builder_id is not null or snapshot is not null or (provider=any($1::public.sandbox_provider[]) and phase='builder') or (phase='authorization' and fence is not null and builder_id is null and snapshot is null)) order by updated_at limit 1",
         [
           // Encode the fixed provider IDs as a PostgreSQL array, not a driver-native JS array.
           "{" +
@@ -468,8 +468,13 @@ export class GoldenBuildJobs {
       });
       return;
     }
+    // A recovery row's snapshot is the candidate its worker recorded under the fence before
+    // publication (see runOne's candidate). Publication commits only together with complete(),
+    // which requires this fence in state running under the same row lock; a committed row in
+    // recovery_required therefore proves that candidate was never published and never can be.
+    const rolledBack = row.snapshot;
     // Never dispose a source whose snapshot/publication outcome may still depend on it.
-    if (reservationRecovery && (row.phase === "snapshot" || row.phase === "persist")) return;
+    if (reservationRecovery && !rolledBack && (row.phase === "snapshot" || row.phase === "persist")) return;
     try {
       const actor = await this.transaction((sql) => this.actor(sql, row));
       const input = await this.context(row);
@@ -481,6 +486,33 @@ export class GoldenBuildJobs {
         return;
       const provider = await this.resolve(row, actor, input);
       if (reservationRecovery && (!provider.findGoldenBuilder || !provider.disposeGoldenBuilder)) return;
+      // The unpublished artifact must be gone before the builder or the capacity is released.
+      // Recovery resumes wherever the worker stopped: a still-live artifact is retired first (an
+      // already-retired one is not retired again), and a pending collection is retried on a later
+      // tick with the job's original authority.
+      if (rolledBack) {
+        if (!provider.collectRetiredSnapshot) return;
+        // Defence in depth: never retire an artifact some golden still names.
+        if (
+          (
+            await this.options.sql.query("select 1 from public.goldens where provider_snapshot_id=$1 limit 1", [
+              rolledBack,
+            ])
+          ).rows.length
+        )
+          return;
+        const live = await provider.getSnapshot(rolledBack).then(
+          () => true,
+          (error: unknown) => {
+            if ((error as { code?: unknown } | null)?.code === "not_found") return false;
+            throw error;
+          },
+        );
+        if (live) await provider.deleteSnapshot(rolledBack);
+        if ((await provider.collectRetiredSnapshot(rolledBack)) !== "collected") return;
+      }
+      // Proof for the provider that this builder's own snapshot was this collected rolled-back artifact.
+      const collected = rolledBack ? { collected: rolledBack } : {};
       let builderId = row.builder_id;
       let retained = false;
       if (reservationRecovery && provider.findGoldenBuilder) {
@@ -488,6 +520,7 @@ export class GoldenBuildJobs {
           requestKey: row.id,
           ownerId: row.owner_id,
           target: buildTarget(row.provider, row.org_id, input),
+          ...collected,
         });
         if (!found || !found.sandboxId || (builderId !== null && builderId !== found.sandboxId)) return;
         builderId = found.sandboxId;
@@ -502,6 +535,7 @@ export class GoldenBuildJobs {
           current.state !== "recovery_required" ||
           current.fence !== row.fence ||
           current.phase !== row.phase ||
+          current.snapshot !== row.snapshot ||
           current.request_hash !== row.request_hash ||
           current.provider !== row.provider ||
           current.owner_id !== row.owner_id ||
@@ -530,6 +564,7 @@ export class GoldenBuildJobs {
           ownerId: row.owner_id,
           target: buildTarget(row.provider, row.org_id, input),
           sandboxId: builderId,
+          ...collected,
         });
         if (receipt.status !== "deleted") return;
       } else await provider.stop({ sandboxId: builderId });
@@ -593,6 +628,9 @@ export class GoldenBuildJobs {
     if (!job) return false;
     if (job.state !== "running") return true;
     let safeToRelease = true;
+    // The candidate this attempt tried to record before publication, kept even when that record
+    // failed: an unsafe outcome retries it under the fence in the final write.
+    let unpublished: string | null = null;
     let heartbeat: ReturnType<typeof setInterval> | undefined;
     try {
       const actor = await this.transaction((sql) => this.actor(sql, job));
@@ -622,6 +660,16 @@ export class GoldenBuildJobs {
           phase,
           cleaned: (safe) => {
             safeToRelease = safe;
+          },
+          // Under the attempt's fence even after a lease-expiry sweep moved it to recovery: the
+          // sweep keeps the fence, so this record reaches the reconciler that now owns the row.
+          candidate: async (snapshot) => {
+            unpublished = snapshot;
+            const saved = await this.options.sql.query(
+              "update public.golden_build_jobs set snapshot=$3,updated_at=now() where id=$1 and fence=$2 and state in ('running','recovery_required') and (snapshot is null or snapshot=$3) returning id",
+              [job.id, job.fence, snapshot],
+            );
+            if (!saved.rows.length) throw new GoldenError("build_failed", "Build lease is no longer owned.");
           },
           builder: async (id) =>
             this.transaction(async (sql) => {
@@ -653,10 +701,25 @@ export class GoldenBuildJobs {
         const current = (
           await sql.query<Job>("select * from public.golden_build_jobs where id=$1 for update", [job.id])
         ).rows[0];
-        if (current?.state !== "running" || current.fence !== job.fence) return;
+        if (!current || current.fence !== job.fence) return;
+        if (current.state === "recovery_required") {
+          // A lease-expiry sweep kept this fence and moved the attempt to recovery. If its earlier
+          // record failed, hand the never-published candidate to the reconciler now.
+          if (unpublished && current.snapshot === null)
+            await sql.query("update public.golden_build_jobs set snapshot=$2,updated_at=now() where id=$1", [
+              job.id,
+              unpublished,
+            ]);
+          return;
+        }
+        if (current.state !== "running") return;
         if (safeToRelease && job.reservation_id) await sqlGoldenBackendSlots(sql).release(job.reservation_id);
         await sql.query(
-          "update public.golden_build_jobs set state=$2,error_code='build_failed',failure_reason=$3,phase=$4,lease_until=null,updated_at=now() where id=$1",
+          // The candidate stays as durable cleanup work unless its cleanup was confirmed, and is
+          // written here if its earlier record failed: this write proves it unpublished (state
+          // running under the fence), so reconcileOne retires and collects it, then frees the
+          // builder and capacity.
+          "update public.golden_build_jobs set state=$2,error_code='build_failed',failure_reason=$3,phase=$4,snapshot=case when $5::boolean then null else coalesce(snapshot,$6) end,lease_until=null,updated_at=now() where id=$1",
           [
             job.id,
             safeToRelease ? "failed" : "recovery_required",
@@ -672,6 +735,8 @@ export class GoldenBuildJobs {
                   ? "provider_snapshot_rejected"
                   : null,
             error instanceof GoldenError ? (error.safePhase ?? current.phase) : current.phase,
+            safeToRelease,
+            unpublished,
           ],
         );
       });

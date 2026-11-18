@@ -135,6 +135,10 @@ export interface SavedImage {
    * a reference (every reference writer reads a live image under that lease), so the remote image
    * deletion and its retries run without holding the source machine's lifecycle lease. */
   collecting?: boolean;
+  /** Exclusive, expiring dispatch claim on a collecting tombstone: only its holder issues the
+   * remote image deletion. Released on failure; a crashed holder's claim expires (epoch seconds). */
+  collectToken?: string;
+  collectUntil?: number;
 }
 /** Store instances are bound to the authenticated caller AND immutable Modal binding. No unscoped lookup. */
 export interface ModalStore {
@@ -152,6 +156,11 @@ export interface ModalStore {
   purgeImage(name: string, sourceId: string, imageId: string): Promise<void>;
   /** Durably claims a tombstone for physical collection; a live image is never claimed. */
   claimImage(name: string, sourceId: string, imageId: string): Promise<void>;
+  /** Atomically takes the exclusive, expiring dispatch claim on this exact collecting tombstone.
+   * False while another collector holds a live claim. */
+  takeImage(name: string, sourceId: string, imageId: string, token: string): Promise<boolean>;
+  /** Releases a dispatch claim this collector still holds, so the next collection retries at once. */
+  releaseImage(name: string, sourceId: string, imageId: string, token: string): Promise<void>;
   images(sourceId: string): Promise<SavedImage[]>;
   /** Visible machines that still own a retired image record awaiting physical collection. */
   tombstoneSources(): Promise<string[]>;
