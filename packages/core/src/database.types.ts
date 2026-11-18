@@ -2533,6 +2533,8 @@ export type Database = {
           steer_id: string;
           pending_since: string | null;
           pending_steers: number;
+          lease_id: string | null;
+          lease_until: string | null;
         };
         Insert: {
           sandbox_id: string;
@@ -2540,6 +2542,8 @@ export type Database = {
           steer_id: string;
           pending_since?: string | null;
           pending_steers?: number;
+          lease_id?: string | null;
+          lease_until?: string | null;
         };
         Update: {
           sandbox_id?: string;
@@ -2547,6 +2551,8 @@ export type Database = {
           steer_id?: string;
           pending_since?: string | null;
           pending_steers?: number;
+          lease_id?: string | null;
+          lease_until?: string | null;
         };
         Relationships: [
           {

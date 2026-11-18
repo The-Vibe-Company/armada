@@ -90,7 +90,8 @@ $$;
 
 -- An accepted native steer can answer with a steer record while its replacement
 -- run appears only later. Keep the last concrete run before it as a cursor so
--- native lifecycle reconciliation can register every later run as a receipt.
+-- the native receipt worker can register every later run as a receipt, even
+-- after the sandbox stopped. lease_until also spaces out retries of a pass.
 -- pending_steers counts accepted steers whose own replacement is not yet
 -- registered; the cursor stays pending until each has one.
 create table public.native_steer_cursors (
@@ -99,6 +100,8 @@ create table public.native_steer_cursors (
   steer_id uuid not null,
   pending_since timestamptz,
   pending_steers integer not null default 0 check (pending_steers >= 0),
+  lease_id uuid,
+  lease_until timestamptz,
   check (after_prompt_id is distinct from '')
 );
 alter table public.native_steer_cursors enable row level security;

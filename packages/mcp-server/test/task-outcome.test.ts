@@ -6,7 +6,6 @@ import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { providerRegistry } from "../src/http.ts";
 import { createNativeWebhookPrompts } from "../src/native-webhook-prompts.ts";
-import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { call, ENCRYPTION_KEY, type FakeBoat, harness, PUBLIC_URL } from "./support.ts";
 
@@ -238,9 +237,11 @@ test("consecutive restart steers keep the marker and export every replacement tu
     interrupting = "prompt_2";
     expect((await call(mcp, "steer", { id, text: "again" })).isError).toBe(false);
     expect(await taskPromptId()).toBe("");
+    const native = createNativeWebhookPrompts(db, async () => boat.provider);
+    // A receipt-worker drain, with the cursor's retry spacing elapsed.
     const reconcile = async () => {
-      await db.query("update sandboxes set reconcile_after=now() where id=$1", [id]);
-      await createSandboxLifecycle(db, async () => boat.provider).reconcileOne();
+      await db.query("update native_steer_cursors set lease_until=null where sandbox_id=$1", [id]);
+      while (await native.reconcileOne(new AbortController().signal));
     };
     // prompt_2 answers the first steer only; the second steer is still unresolved.
     await reconcile();
@@ -252,8 +253,6 @@ test("consecutive restart steers keep the marker and export every replacement tu
     await boat.provider.prompt({ sandboxId: "bx_1", harness: "codex", text: "again" });
     boat.finish("bx_1", "prompt_3", "finished");
     await reconcile();
-    const native = createNativeWebhookPrompts(db, async () => boat.provider);
-    while (await native.reconcileOne(new AbortController().signal));
     expect(
       (
         await db.query("select prompt_id,terminal_status from langfuse_turn_exports where sandbox_id=$1 order by 1", [
@@ -300,63 +299,70 @@ test("a restart steer restarts an expired cursor from its own prior run", async 
   }
 });
 
-test("a restart steer whose replacement appears after the response still reaches export", async () => {
-  const server = await harness({}, await sharedDatabase());
-  try {
-    const { client, token, people, boat, db } = server;
-    const mcp = await client(await token(people.member));
-    const id = (await call(mcp, "launch", { golden: "shared", harness: "codex", prompt: "first" })).data.id;
-    await db.query("insert into org_langfuse(org_id,enabled,content_mode,config_enc) values($1,true,'metadata',$2)", [
-      people.org,
-      await encryptSecret("{}", ENCRYPTION_KEY),
-    ]);
-    boat.provider.steer = async (input) => {
-      boat.finish(input.sandboxId, "prompt_1", "interrupted");
-      return { conversationId: "conv_1", promptId: "unpollable-steer-record", mode: "restart" };
-    };
-    expect((await call(mcp, "steer", { id, text: "change course" })).isError).toBe(false);
-    expect((await db.query("select task_prompt_id from sandboxes where id=$1", [id])).rows[0]).toEqual({
-      task_prompt_id: "",
-    });
-    // The empty marker resolves reports only; it is never a native receipt.
-    expect(
-      (await db.query("select prompt_id from native_webhook_prompts where sandbox_id=$1 order by 1", [id])).rows,
-    ).toEqual([{ prompt_id: "prompt_1" }]);
-    // The replacement run is published only after the steer response, then finishes.
-    // Its prompt event shares the original run's timestamp: only provider order separates them.
-    await boat.provider.prompt({ sandboxId: "bx_1", harness: "codex", text: "change course" });
-    const events = boat.sandbox("bx_1").events;
-    events.find((e) => e.id === "ev_prompt_2")!.at = events.find((e) => e.id === "ev_prompt_1")!.at;
-    boat.finish("bx_1", "prompt_2", "finished");
-    await db.query("update sandboxes set reconcile_after=now() where id=$1", [id]);
-    await createSandboxLifecycle(db, async () => boat.provider).reconcileOne();
-    const native = createNativeWebhookPrompts(db, async () => boat.provider);
-    while (await native.reconcileOne(new AbortController().signal));
-    expect(
-      (
-        await db.query("select prompt_id,terminal_status from langfuse_turn_exports where sandbox_id=$1 order by 1", [
-          id,
-        ])
-      ).rows,
-    ).toEqual([
-      { prompt_id: "prompt_1", terminal_status: "interrupted" },
-      { prompt_id: "prompt_2", terminal_status: "finished" },
-    ]);
-    expect(
-      (await db.query("select after_prompt_id,pending_since from native_steer_cursors where sandbox_id=$1", [id])).rows,
-    ).toEqual([{ after_prompt_id: "prompt_2", pending_since: null }]);
-    // Advancing every receipt retry schedule finds no work and counts no drop.
-    for (let attempt = 0; attempt < 6; attempt++) {
-      await db.query("update native_webhook_prompts set next_attempt_at=now() where sandbox_id=$1", [id]);
+for (const stopFirst of [false, true])
+  test(`a restart steer whose replacement appears after the response still reaches export${stopFirst ? " after a stop" : ""}`, async () => {
+    const server = await harness({}, await sharedDatabase());
+    try {
+      const { client, token, people, boat, db } = server;
+      const mcp = await client(await token(people.member));
+      const id = (await call(mcp, "launch", { golden: "shared", harness: "codex", prompt: "first" })).data.id;
+      await db.query("insert into org_langfuse(org_id,enabled,content_mode,config_enc) values($1,true,'metadata',$2)", [
+        people.org,
+        await encryptSecret("{}", ENCRYPTION_KEY),
+      ]);
+      boat.provider.steer = async (input) => {
+        boat.finish(input.sandboxId, "prompt_1", "interrupted");
+        return { conversationId: "conv_1", promptId: "unpollable-steer-record", mode: "restart" };
+      };
+      expect((await call(mcp, "steer", { id, text: "change course" })).isError).toBe(false);
+      expect((await db.query("select task_prompt_id from sandboxes where id=$1", [id])).rows[0]).toEqual({
+        task_prompt_id: "",
+      });
+      // The empty marker resolves reports only; it is never a native receipt.
+      expect(
+        (await db.query("select prompt_id from native_webhook_prompts where sandbox_id=$1 order by 1", [id])).rows,
+      ).toEqual([{ prompt_id: "prompt_1" }]);
+      // The replacement run is published only after the steer response, then finishes.
+      // Its prompt event shares the original run's timestamp: only provider order separates them.
+      await boat.provider.prompt({ sandboxId: "bx_1", harness: "codex", text: "change course" });
+      const events = boat.sandbox("bx_1").events;
+      events.find((e) => e.id === "ev_prompt_2")!.at = events.find((e) => e.id === "ev_prompt_1")!.at;
+      boat.finish("bx_1", "prompt_2", "finished");
+      // Lifecycle reconciliation never claims a stopped sandbox; the receipt worker still resolves the steer.
+      if (stopFirst) {
+        expect((await call(mcp, "stop", { id })).isError).toBe(false);
+        expect((await db.query("select status from sandboxes where id=$1", [id])).rows[0]).toEqual({
+          status: "stopped",
+        });
+      }
+      const native = createNativeWebhookPrompts(db, async () => boat.provider);
       while (await native.reconcileOne(new AbortController().signal));
+      expect(
+        (
+          await db.query("select prompt_id,terminal_status from langfuse_turn_exports where sandbox_id=$1 order by 1", [
+            id,
+          ])
+        ).rows,
+      ).toEqual([
+        { prompt_id: "prompt_1", terminal_status: "interrupted" },
+        { prompt_id: "prompt_2", terminal_status: "finished" },
+      ]);
+      expect(
+        (await db.query("select after_prompt_id,pending_since from native_steer_cursors where sandbox_id=$1", [id]))
+          .rows,
+      ).toEqual([{ after_prompt_id: "prompt_2", pending_since: null }]);
+      // Advancing every receipt retry schedule finds no work and counts no drop.
+      for (let attempt = 0; attempt < 6; attempt++) {
+        await db.query("update native_webhook_prompts set next_attempt_at=now() where sandbox_id=$1", [id]);
+        while (await native.reconcileOne(new AbortController().signal));
+      }
+      expect(
+        (await db.query("select prompt_id from native_webhook_prompts where sandbox_id=$1 order by 1", [id])).rows,
+      ).toEqual([{ prompt_id: "prompt_1" }, { prompt_id: "prompt_2" }]);
+      expect(
+        (await db.query("select coalesce(sum(dropped),0)::int as dropped from org_langfuse_export_stats")).rows,
+      ).toEqual([{ dropped: 0 }]);
+    } finally {
+      await server.close();
     }
-    expect(
-      (await db.query("select prompt_id from native_webhook_prompts where sandbox_id=$1 order by 1", [id])).rows,
-    ).toEqual([{ prompt_id: "prompt_1" }, { prompt_id: "prompt_2" }]);
-    expect(
-      (await db.query("select coalesce(sum(dropped),0)::int as dropped from org_langfuse_export_stats")).rows,
-    ).toEqual([{ dropped: 0 }]);
-  } finally {
-    await server.close();
-  }
-});
+  });

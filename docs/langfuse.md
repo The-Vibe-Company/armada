@@ -75,9 +75,11 @@ A native steer is exported as the run it leaves in progress: the joined turn
 with a steer record instead of a run ID, Armada resolves the run from the
 newest prompt event, relative to the run it knew before the steer. If no new
 run is visible yet when steer returns, Armada keeps a durable steer cursor at
-the last known run. Native lifecycle reconciliation (about once a minute, for
+the last known run. The native receipt worker (about every ten seconds, for
 one hour after the steer) registers every later run as a native receipt, so the
-replacement settles and exports like any other turn. Later runs are identified
+replacement settles and exports like any other turn. It reads retained provider
+history under the owner and provider-binding fences, so this also works after the
+sandbox stopped. Later runs are identified
 by the provider's event order, not by timestamps, so a replacement whose prompt
 event shares the previous run's timestamp is still found. A steer that follows an
 unresolved steer keeps the older cursor. If the cursor run falls outside the

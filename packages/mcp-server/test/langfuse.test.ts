@@ -258,9 +258,10 @@ async function settledBoatTurn(prompt: string, mode: "metadata" | "full" = "full
     mode,
   ]);
   const receipt = { id: "boat", getPrompt: async () => ({ promptId: prompt, status: "failed", done: true }) } as const;
-  await createNativeWebhookPrompts(db, async () => receipt as Pick<Provider, "id" | "getPrompt">).reconcileOne(
-    new AbortController().signal,
-  );
+  await createNativeWebhookPrompts(
+    db,
+    async () => receipt as unknown as Pick<Provider, "id" | "getPrompt" | "events">,
+  ).reconcileOne(new AbortController().signal);
   const counters = async () =>
     (
       await db.query<{ exported: string; failed: string }>(
@@ -427,7 +428,10 @@ test("a native receipt abandoned after its final failed observation counts one d
       throw Error("provider_unavailable");
     },
   } as const;
-  const native = createNativeWebhookPrompts(db, async () => provider as unknown as Pick<Provider, "id" | "getPrompt">);
+  const native = createNativeWebhookPrompts(
+    db,
+    async () => provider as unknown as Pick<Provider, "id" | "getPrompt" | "events">,
+  );
   const signal = new AbortController().signal;
   const dropped = async () =>
     (
@@ -467,7 +471,10 @@ test("an exhausted receipt whose turn lifecycle reconciliation already settled c
       throw Error("provider_unavailable");
     },
   } as const;
-  const native = createNativeWebhookPrompts(db, async () => provider as unknown as Pick<Provider, "id" | "getPrompt">);
+  const native = createNativeWebhookPrompts(
+    db,
+    async () => provider as unknown as Pick<Provider, "id" | "getPrompt" | "events">,
+  );
   for (let attempt = 1; attempt <= 5; attempt++) {
     await db.query("update native_webhook_prompts set next_attempt_at=now()");
     expect(await native.reconcileOne(new AbortController().signal)).toBe(true);
@@ -506,7 +513,10 @@ test("a native receipt whose final observations are all cancelled counts one dur
       throw Error("aborted");
     },
   } as const;
-  const native = createNativeWebhookPrompts(db, async () => provider as unknown as Pick<Provider, "id" | "getPrompt">);
+  const native = createNativeWebhookPrompts(
+    db,
+    async () => provider as unknown as Pick<Provider, "id" | "getPrompt" | "events">,
+  );
   const dropped = async () =>
     (
       await db.query<{ dropped: string }>("select dropped::text from org_langfuse_export_stats where org_id=$1", [
@@ -522,7 +532,10 @@ test("a native receipt whose final observations are all cancelled counts one dur
   }
   // The fifth lease expires; a fresh worker finalizes it exactly once.
   await db.query("update native_webhook_prompts set lease_until=now()-interval '1 second'");
-  const fresh = createNativeWebhookPrompts(db, async () => provider as unknown as Pick<Provider, "id" | "getPrompt">);
+  const fresh = createNativeWebhookPrompts(
+    db,
+    async () => provider as unknown as Pick<Provider, "id" | "getPrompt" | "events">,
+  );
   expect(await fresh.reconcileOne(new AbortController().signal)).toBe(false);
   expect(await dropped()).toBe("1");
   expect(await fresh.reconcileOne(new AbortController().signal)).toBe(false);

@@ -406,7 +406,7 @@ export async function latestPrompt(
  * read. When the cursor run is unknown or outside the window, only the newest
  * run is returned, unproven: the same resolution `report` gives a steer marker. */
 export async function promptsAfter(
-  provider: Provider,
+  provider: Pick<Provider, "events">,
   sandboxId: string,
   afterPromptId: string | null,
   signal?: AbortSignal,
