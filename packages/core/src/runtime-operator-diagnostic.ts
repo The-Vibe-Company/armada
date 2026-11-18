@@ -13,6 +13,8 @@ const classes: ReadonlySet<string> = new Set([
 ]);
 const sourceLocation =
   /^(?:runtime|main|codex|claude|opencode|acp|dialout|artifact-cache|harness-cache|enrolled-harness|native-auth|exec-env|state|journal)\.ts:[1-9]\d{0,5}:[1-9]\d{0,4}$/;
+const bundledLocation = /^main\.js:[1-9]\d{0,6}:[1-9]\d{0,5}$/;
+const isSourceLocation = (frame: string) => sourceLocation.test(frame) || bundledLocation.test(frame);
 const runnerReasons: ReadonlySet<string> = new Set([
   "harness_process_lost",
   "harness_timeout",
@@ -38,7 +40,7 @@ export function runtimeOperatorDiagnostic(error: unknown, reason?: string): Runt
   const { errorClass, stack }: FailureDiagnostic = failureDiagnostic(error);
   return {
     errorClass: reason !== undefined ? "HarnessError" : classes.has(errorClass) ? errorClass : "Error",
-    stack: stack.filter((frame) => sourceLocation.test(frame)).slice(0, 4),
+    stack: stack.filter((frame) => isSourceLocation(frame)).slice(0, 4),
     ...(isHarnessReason(reason) ? { reason } : {}),
   };
 }
@@ -53,7 +55,7 @@ export function isRuntimeOperatorDiagnostic(value: unknown): value is RuntimeOpe
     classes.has(errorClass) &&
     Array.isArray(stack) &&
     stack.length <= 4 &&
-    stack.every((frame) => typeof frame === "string" && sourceLocation.test(frame)) &&
+    stack.every((frame) => typeof frame === "string" && isSourceLocation(frame)) &&
     (reason === undefined || isHarnessReason(reason))
   );
 }

@@ -1,8 +1,11 @@
 import { expect, spyOn, test } from "bun:test";
 import type { Sql } from "@armada/core/server";
+import { runtimeOperatorDiagnostic } from "../../core/src/runtime-operator-diagnostic.ts";
 import { observeRequest } from "../src/request-observability.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeProgress } from "../src/runtime-progress.ts";
+import { rowOnlyDatabase } from "./row-only-database.ts";
+import { runtimeFixture } from "./runtime-fixture.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
 // Untrusted progress must be rejected before authority lookup or fixed-stage logging.
@@ -48,79 +51,83 @@ test("malformed progress refuses extra fields, unknown stages and oversized bodi
   }
 });
 
-test("authenticated startup sub-reason is persisted and logged without exception text", async () => {
-  const writes: unknown[][] = [];
-  const scope = { sandboxId: crypto.randomUUID(), epoch: "1" };
-  const authority = {
-    async withSession(
-      _token: string,
-      _epoch: string,
-      apply: (tx: Sql, scope: { sandboxId: string; epoch: string }) => Promise<unknown>,
-    ) {
-      return apply(
-        {
-          async query(_sql: string, values: unknown[]) {
-            writes.push(values);
-            return { rows: [] };
-          },
-        },
-        scope,
-      );
-    },
-  } as unknown as ReturnType<typeof createRuntimeEnrolments>;
-  const log = spyOn(console, "info").mockImplementation(() => {});
+const database = rowOnlyDatabase();
+test("authenticated boot and turn diagnostics retain their initiating request IDs and sanitized stack", async () => {
+  const f = await runtimeFixture(await database(), "boat", "codex", true);
+  const records: Record<string, unknown>[] = [];
+  const log = (line: string) => records.push(JSON.parse(line));
+  const stageLog = spyOn(console, "info").mockImplementation(() => {});
   try {
-    const route = createRuntimeProgress(authority);
-    const records: unknown[] = [];
-    const report = (body: Record<string, unknown>) =>
+    let grant = f.active;
+    const launch = await observeRequest(async () => {
+      const ticket = await f.authority.issue({ ownerId: f.people.owner, sandboxId: f.row.id, configuration: {} });
+      grant = await f.authority.enrol(ticket.enrolmentToken);
+      return new Response(null, { status: 204 });
+    }, log);
+    const commandId = "follow_progress_fixture";
+    const command = {
+      version: 1 as const,
+      sandboxId: f.row.id,
+      requestId: commandId,
+      op: "prompt" as const,
+      input: { sandboxId: f.row.id, harness: "codex" as const, text: "fixture prompt" },
+    };
+    const accept = () =>
+      observeRequest(async () => {
+        await f.bridge.enqueue(f.people.owner, command);
+        return new Response(null, { status: 204 });
+      }, log);
+    const send = await accept();
+    const replay = await accept();
+    expect(replay?.headers.get("x-request-id")).not.toBe(send?.headers.get("x-request-id"));
+    const route = createRuntimeProgress(f.authority);
+    const report = (body: unknown) =>
       observeRequest(
         async () =>
           (await route(
             new Request("https://armada.test/api/runtime/progress", {
               method: "POST",
+              headers: { authorization: `Bearer ${grant.runtimeToken}`, "x-armada-runtime-epoch": grant.epoch },
               body: JSON.stringify(body),
             }),
           )) ?? undefined,
-        (line) => records.push(JSON.parse(line)),
+        log,
       );
-    const response = await report({ stage: "runtime_failed", reason: "artifact_preparation" });
-    const harness = await report({
-      stage: "harness_turn_failed",
-      diagnostic: { errorClass: "HarnessError", stack: ["codex.ts:701:12"], reason: "session_start_failed" },
-    });
+    const error = new Error("private_config_canary");
+    error.stack += "\n    at main (/private_config_canary/runtime/main.js:701:12)";
+    const diagnostic = runtimeOperatorDiagnostic(error, "session_start_failed");
+    const unrelated = await report({ stage: "harness_turn_failed", commandId: "foreign_command", diagnostic });
+    expect(unrelated?.status).toBe(400);
+    const harness = await report({ stage: "harness_turn_failed", commandId, diagnostic });
     expect(harness?.status).toBe(200);
-    expect(records).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          event: "operator_failure",
-          phase: "runtime.boot",
-          message: "artifact_preparation",
-          requestId: response?.headers.get("x-request-id"),
-          sandboxId: scope.sandboxId,
-        }),
-        expect.objectContaining({
-          event: "operator_failure",
-          phase: "runtime.harness_turn_failed",
-          errorClass: "HarnessError",
-          message: "session_start_failed",
-          stack: ["codex.ts:701:12"],
-          requestId: harness?.headers.get("x-request-id"),
-          sandboxId: scope.sandboxId,
-        }),
-      ]),
-    );
-    expect(response?.status).toBe(200);
-    expect(writes).toEqual([
-      [
-        scope.sandboxId,
-        "Runtime artifact preparation failed. Ask the server operator to check published harness artifacts and container filesystem access before launching again.",
-      ],
+    const boot = await report({ stage: "runtime_failed", reason: "artifact_preparation" });
+    expect(boot?.status).toBe(200);
+    expect(records.filter((record) => record.event === "operator_failure")).toMatchObject([
+      {
+        phase: "runtime.harness_turn_failed",
+        errorClass: "HarnessError",
+        message: "session_start_failed",
+        stack: ["main.js:701:12"],
+        requestId: send?.headers.get("x-request-id"),
+        sandboxId: f.row.id,
+      },
+      {
+        phase: "runtime.boot",
+        message: "artifact_preparation",
+        requestId: launch?.headers.get("x-request-id"),
+        sandboxId: f.row.id,
+      },
     ]);
-    expect(JSON.parse(log.mock.calls[0]![0] as string)).toMatchObject({
-      stage: "runtime_failed",
-      reason: "artifact_preparation",
-    });
+    expect(JSON.stringify(records)).not.toContain("private_config_canary");
+    expect((await f.db.query("select status,status_reason from sandboxes where id=$1", [f.row.id])).rows).toEqual([
+      {
+        status: "failed",
+        status_reason:
+          "Runtime artifact preparation failed. Ask the server operator to check published harness artifacts and container filesystem access before launching again.",
+      },
+    ]);
   } finally {
-    log.mockRestore();
+    stageLog.mockRestore();
+    await f.close();
   }
 });

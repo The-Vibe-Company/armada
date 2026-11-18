@@ -81,6 +81,7 @@ export function createDockerLaunchEnvironment(
         };
       },
       "docker",
+      id,
     );
     const result = reply.body.result as { acknowledged?: boolean } | undefined;
     if (reply.status !== 200 || reply.body.requestId !== requestId || result?.acknowledged !== true)

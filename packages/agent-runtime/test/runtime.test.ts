@@ -312,7 +312,7 @@ test("Runner preserves safe harness failures in synchronous start and asynchrono
     };
     const reports: unknown[] = [];
     const runner = new Runner(journal, grant, { claude: driver, codex: driver }, undefined, undefined, undefined, {
-      reportHarnessFailure: (stage, error, reason) => reports.push({ stage, error, reason }),
+      reportHarnessFailure: (stage, error, requestId, reason) => reports.push({ stage, error, requestId, reason }),
     });
     try {
       const reply = await payload(
@@ -326,6 +326,7 @@ test("Runner preserves safe harness failures in synchronous start and asynchrono
         {
           stage: synchronous ? "harness_start_failed" : "harness_turn_failed",
           error: expect.any(HarnessError),
+          requestId: expect.any(String),
           reason: "authentication_failed:session_restore",
         },
       ]);

@@ -62,6 +62,7 @@ export interface RunnerExecutionOptions {
   reportHarnessFailure?: (
     stage: import("../../core/src/runtime-startup-failure.ts").RuntimeHarnessFailureStage,
     error: unknown,
+    requestId: string,
     reason?: string,
   ) => void;
   /** Set by enrolled main after checkpoint/native verification. Null conversation means a verified empty journal. */

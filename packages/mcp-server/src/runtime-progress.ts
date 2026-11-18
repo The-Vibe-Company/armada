@@ -59,7 +59,7 @@ export function createRuntimeProgress(authority: ReturnType<typeof createRuntime
         !body ||
         typeof body !== "object" ||
         Array.isArray(body) ||
-        Object.keys(body).some((key) => !["stage", "reason", "diagnostic"].includes(key))
+        Object.keys(body).some((key) => !["stage", "reason", "diagnostic", "commandId"].includes(key))
       )
         throw Error();
       const stage = (body as { stage: unknown }).stage;
@@ -71,14 +71,31 @@ export function createRuntimeProgress(authority: ReturnType<typeof createRuntime
         ((!harnessFailure && stage !== "runtime_failed") || !isRuntimeOperatorDiagnostic(diagnostic))
       )
         throw Error();
-      if (harnessFailure && diagnostic === undefined) throw Error();
+      const commandId = (body as { commandId?: unknown }).commandId;
+      if (harnessFailure) {
+        if (diagnostic === undefined || typeof commandId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(commandId))
+          throw Error();
+      } else if (commandId !== undefined) throw Error();
+      const correlation = async (tx: import("@armada/core/server").Sql, scope: RuntimeSessionScope) => {
+        const result = harnessFailure
+          ? await tx.query<{ correlation_id: string | null }>(
+              "select correlation_id from public.runtime_commands where sandbox_id=$1 and epoch=$2 and request_id=$3",
+              [scope.sandboxId, scope.epoch, commandId],
+            )
+          : await tx.query<{ correlation_id: string | null }>(
+              "select correlation_id from public.runtime_enrolments where sandbox_id=$1",
+              [scope.sandboxId],
+            );
+        if (harnessFailure && !result.rows.length) throw Error();
+        return result.rows[0]?.correlation_id ?? null;
+      };
       const reason = (body as { reason?: unknown }).reason;
       if (reason !== undefined && (stage !== "runtime_failed" || !isRuntimeStartupFailure(reason))) throw Error();
       const message = isRuntimeStartupFailure(reason)
         ? RUNTIME_STARTUP_FAILURES[reason]
         : "Armada runtime process failed. Ask the server operator to inspect runtime startup before launching again.";
       const token = request.headers.get("authorization")?.match(/^Bearer (\S+)$/)?.[1] ?? "";
-      const scope = await (bootstrap.has(stage)
+      const { scope, correlationId } = await (bootstrap.has(stage)
         ? authority.withBootstrap(token, async (tx, scope) => {
             for (const launch of launchStages[stage] ?? []) await recordLaunchStage(tx, scope.sandboxId, launch);
             if (stage === "bootstrap_failed")
@@ -86,16 +103,17 @@ export function createRuntimeProgress(authority: ReturnType<typeof createRuntime
                 "update public.sandboxes set status='failed',status_reason='Armada runtime bootstrap failed.' where id=$1",
                 [scope.sandboxId],
               );
-            return scope;
+            return { scope, correlationId: stage === "bootstrap_failed" ? await correlation(tx, scope) : null };
           })
         : authority.withSession(token, request.headers.get("x-armada-runtime-epoch") ?? "", async (tx, scope) => {
             for (const launch of launchStages[stage] ?? []) await recordLaunchStage(tx, scope.sandboxId, launch);
+            const correlationId = stage === "runtime_failed" || harnessFailure ? await correlation(tx, scope) : null;
             if (stage === "runtime_failed")
               await tx.query("update public.sandboxes set status='failed',status_reason=$2 where id=$1", [
                 scope.sandboxId,
                 message,
               ]);
-            return scope;
+            return { scope, correlationId };
           }));
       if (stage === "runtime_failed" || stage === "bootstrap_failed" || harnessFailure) {
         const safe = isRuntimeOperatorDiagnostic(diagnostic) ? diagnostic : undefined;
@@ -106,7 +124,7 @@ export function createRuntimeProgress(authority: ReturnType<typeof createRuntime
             message: stage === "runtime_failed" && isRuntimeStartupFailure(reason) ? reason : (safe?.reason ?? stage),
             stack: safe?.stack ?? [],
           },
-          { sandboxId: scope.sandboxId },
+          { sandboxId: scope.sandboxId, correlationId },
         );
       }
       logRuntimeStage(scope, stage, typeof reason === "string" ? reason : undefined);

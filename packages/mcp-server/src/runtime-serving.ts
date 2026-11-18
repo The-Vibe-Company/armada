@@ -118,6 +118,7 @@ export function createRuntimeServing(sql: Sql, key: string) {
               return { request, options: options ?? {} };
             },
             sandbox.provider,
+            sandbox.id,
           );
         },
       },

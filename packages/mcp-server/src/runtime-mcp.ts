@@ -305,6 +305,7 @@ export function createRuntimeMcp(options: {
         };
       },
       s.provider,
+      s.id,
     );
     function acknowledgesRevision(reply: Awaited<ReturnType<typeof options.commands.call>>) {
       return (reply.body.result as { revision?: unknown } | undefined)?.revision === prepared.configuration.revision;

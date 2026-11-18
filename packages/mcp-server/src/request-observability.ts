@@ -65,7 +65,7 @@ export function recordOperatorFailure(
 export function recordOperatorDiagnostic(
   phase: string,
   diagnostic: FailureDiagnostic,
-  options: { sandboxId?: string | undefined; log?: Log } = {},
+  options: { sandboxId?: string | undefined; correlationId?: string | null; log?: Log } = {},
 ): void {
   const request = current.getStore();
   const log = options.log ?? request?.log ?? stderr;
@@ -74,7 +74,7 @@ export function recordOperatorDiagnostic(
       JSON.stringify({
         event: "operator_failure",
         phase: redactForLog(phase),
-        requestId: request?.id,
+        requestId: options.correlationId && serverId.test(options.correlationId) ? options.correlationId : request?.id,
         sandboxId: options.sandboxId && serverId.test(options.sandboxId) ? options.sandboxId : undefined,
         ...diagnostic,
       }),

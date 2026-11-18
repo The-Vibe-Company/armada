@@ -440,7 +440,7 @@ test("configuration preparation commits queue order before waiting; an older ACK
       origin: "https://armada.test",
       commands: {
         ...f.bridge,
-        callPrepared(owner, operation, prepare, provider) {
+        callPrepared(owner, operation, prepare, provider, sandboxId) {
           return f.bridge.callPrepared(
             owner,
             operation,
@@ -454,6 +454,7 @@ test("configuration preparation commits queue order before waiting; an older ACK
               return prepared;
             },
             provider,
+            sandboxId,
           );
         },
       },

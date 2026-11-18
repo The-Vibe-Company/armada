@@ -43,7 +43,7 @@ export function runtimeStartupFailure(error: unknown, phase: RuntimeStartupFailu
 }
 
 /** Closed operator report stages. The authenticated runtime sends no exception text. */
-export type RuntimeHarnessFailureStage = "harness_start_failed" | "harness_turn_failed";
+export type RuntimeHarnessFailureStage = "harness_start_failed" | "harness_turn_failed" | "native_auth_publish_failed";
 export function isRuntimeHarnessFailureStage(value: unknown): value is RuntimeHarnessFailureStage {
-  return value === "harness_start_failed" || value === "harness_turn_failed";
+  return value === "harness_start_failed" || value === "harness_turn_failed" || value === "native_auth_publish_failed";
 }

@@ -152,11 +152,17 @@ export class RuntimeDialout implements IngestClient {
     stage: "enrolled" | "harness_started" | "runtime_failed" | RuntimeHarnessFailureStage,
     reason?: RuntimeStartupFailure,
     diagnostic?: RuntimeOperatorDiagnostic,
+    commandId?: string,
   ) {
     // Best effort and bounded independently of command delivery.
     await this.post(
       "progress",
-      { stage, ...(reason ? { reason } : {}), ...(diagnostic ? { diagnostic } : {}) },
+      {
+        stage,
+        ...(reason ? { reason } : {}),
+        ...(diagnostic ? { diagnostic } : {}),
+        ...(commandId ? { commandId } : {}),
+      },
       undefined,
       3000,
     );

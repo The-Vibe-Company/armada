@@ -1,7 +1,12 @@
 import type { RunnerRequest } from "@armada/agent-runtime";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
 import type { Route } from "./http.ts";
-import { noteAdmission, observeProviderCall, recordOperatorDiagnostic } from "./request-observability.ts";
+import {
+  currentRequestId,
+  noteAdmission,
+  observeProviderCall,
+  recordOperatorDiagnostic,
+} from "./request-observability.ts";
 import { type createRuntimeEnrolments, RuntimeEnrolmentDenied, type RuntimeOwnerScope } from "./runtime-enrolment.ts";
 import { runtimeHttpFailure } from "./runtime-http-failure.ts";
 
@@ -138,8 +143,14 @@ export function createRuntimeCommands(
         ) - 4; // Replace the JSON null with the already serialized command.
       if (Buffer.byteLength(serialized) + overhead > MAX_COMMAND) throw new RuntimeCommandRefused();
       await tx.query(
-        "insert into public.runtime_commands(sandbox_id,request_id,epoch,request_enc) values($1,$2,$3,$4)",
-        [scope.sandboxId, request.requestId, scope.epoch, sealed],
+        "insert into public.runtime_commands(sandbox_id,request_id,epoch,request_enc,correlation_id) values($1,$2,$3,$4,$5)",
+        [
+          scope.sandboxId,
+          request.requestId,
+          scope.epoch,
+          sealed,
+          request.op === "prompt" ? (currentRequestId() ?? null) : null,
+        ],
       );
       noteAdmission();
       return { epoch: scope.epoch, requestId: request.requestId, provider: scope.provider, fresh: true };
@@ -278,7 +289,7 @@ export function createRuntimeCommands(
   };
 
   function call(ownerId: string, request: RunnerRequest, options: CallOptions = {}): Promise<RuntimeCommandReply> {
-    return callPrepared(ownerId, request.op, async () => ({ request, options }));
+    return callPrepared(ownerId, request.op, async () => ({ request, options }), undefined, request.sandboxId);
   }
 
   /** Admit under the caller's authority transaction, then wait after it commits. */
@@ -287,9 +298,10 @@ export function createRuntimeCommands(
     operation: RunnerRequest["op"],
     prepare: () => Promise<{ request: RunnerRequest; options: CallOptions }>,
     knownProvider?: RuntimeOwnerScope["provider"],
+    knownSandboxId?: string,
   ): Promise<RuntimeCommandReply> {
     let provider = knownProvider;
-    let sandboxId: string | undefined;
+    let sandboxId = knownSandboxId;
     let acceptReply: (reply: RuntimeCommandReply) => boolean = () => false;
     return observeProviderCall(
       () => provider,

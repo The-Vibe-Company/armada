@@ -469,8 +469,10 @@ async function main(dialout = false) {
       configureGitHub,
       ...(channel
         ? {
-            reportHarnessFailure: (stage, error, reason) => {
-              void channel.progress(stage, undefined, runtimeOperatorDiagnostic(error, reason)).catch(() => {});
+            reportHarnessFailure: (stage, error, requestId, reason) => {
+              void channel
+                .progress(stage, undefined, runtimeOperatorDiagnostic(error, reason), requestId)
+                .catch(() => {});
             },
           }
         : {}),
