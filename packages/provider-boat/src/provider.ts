@@ -452,7 +452,12 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
     // Match the bounded concurrency of Boat work preservation's chunk reads.
     outputReadConcurrency: 8,
     async openRetainedOutputs({ sandboxId, signal }) {
-      const current = (await call(() => api.get({ sandboxId }, { signal }))).sandbox;
+      const observed = await call(() => api.get({ sandboxId }, { signal })).catch((error: unknown) => {
+        if (error instanceof ProviderError && error.status === 404 && error.code === "not_found") return null;
+        throw error;
+      });
+      if (!observed) return "gone";
+      const current = observed.sandbox;
       if (current?.id !== sandboxId || current.state !== "archived") return null;
       if (current.dataExpiredAt || current.snapshots === false) return "gone";
       if (

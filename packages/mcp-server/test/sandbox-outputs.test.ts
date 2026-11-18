@@ -148,6 +148,39 @@ test("a transient retained read backs off, then publishes a file from the stoppe
   expect(attempts).toBe(2);
 });
 
+test("a stalled retained read leaves capacity to collect live outputs", async () => {
+  const { db, id, sql } = await fixture();
+  await db.query(
+    `insert into sandboxes(golden_id,org_id,owner_id,boat_id,harness,status,stopped_at)
+     select golden_id,org_id,owner_id,'archive_' || n,harness,'stopped',now()
+     from sandboxes cross join generate_series(1,2) n where id=$1`,
+    [id],
+  );
+  await db.query("update sandboxes set outputs_checked_at=now()-interval '1 minute' where id=$1", [id]);
+  const hold = Promise.withResolvers<null>();
+  const entered = Promise.withResolvers<void>();
+  const service = createSandboxOutputs(sql, KEY, async () => ({
+    openRetainedOutputs() {
+      entered.resolve();
+      return hold.promise;
+    },
+    readOutputs: async () => [file("live.txt", "still running")],
+  }));
+  try {
+    expect(await service.reconcileOne(signal())).toBe(true);
+    await entered.promise;
+    expect(await service.reconcileOne(signal())).toBe(true);
+    // With the live row just sampled, only the second retained row remains eligible.
+    expect(await service.reconcileOne(signal())).toBe(false);
+  } finally {
+    hold.resolve(null);
+    await service.drain();
+  }
+  expect((await db.query("select name from sandbox_outputs where sandbox_id=$1", [id])).rows).toEqual([
+    { name: "live.txt" },
+  ]);
+});
+
 test("an unsupported collector is reported once and skipped by both sampling and final capture", async () => {
   const { db, people, id, sql } = await fixture();
   let attempts = 0;

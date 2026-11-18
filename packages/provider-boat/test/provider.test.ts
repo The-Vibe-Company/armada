@@ -1355,3 +1355,10 @@ test("Boat does not publish an older snapshot without verification for the curre
   expect(snapshot).toBeNull();
   expect(boat.requests).toHaveLength(1);
 });
+
+test("Boat reports a missing sandbox as a definitive retained-output result", async () => {
+  const boat = fakeBoat(errorBody(404, "not_found", "Sandbox not found"));
+  expect(await boat.provider.openRetainedOutputs!({ sandboxId: ID, signal: new AbortController().signal })).toBe(
+    "gone",
+  );
+});

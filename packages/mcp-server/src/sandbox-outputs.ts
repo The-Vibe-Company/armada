@@ -367,7 +367,10 @@ export function createSandboxOutputs(
   docker?: (id: string) => OutputReader,
 ) {
   /** In-flight samples with their deadline: provider SDK work may outlive cancellation. */
-  const pending = new Map<Promise<boolean>, { deadline: AbortSignal; provider: SandboxPlacementProviderId }>();
+  const pending = new Map<
+    Promise<boolean>,
+    { deadline: AbortSignal; provider: SandboxPlacementProviderId; retained: boolean }
+  >();
   /** Snapshot transactions in progress (never started once a sample's deadline aborted). */
   const writes = new Set<Promise<unknown>>();
   return {
@@ -393,12 +396,12 @@ export function createSandboxOutputs(
         and provider::text <> all($1::text[]) and (
           (${ELIGIBLE} and status in ('running','ready')
             and (outputs_checked_at is null or outputs_checked_at<now()-interval '30 seconds'))
-          or (${RETAINED_OUTPUT_STOP} and (outputs_checked_at is null or outputs_checked_at<now()-interval '2 minutes'))
+          or ($2::boolean and ${RETAINED_OUTPUT_STOP} and (outputs_checked_at is null or outputs_checked_at<now()-interval '2 minutes'))
         )
         order by outputs_checked_at nulls first for update skip locked limit 1)
         returning id,provider::text,provider_sandbox_id,outputs_checked_at::text as scan,
           case when ${RETAINED_OUTPUT_STOP} then lifecycle_generation::text end as retained_generation`,
-          [saturated],
+          [saturated, !outstanding.some(({ retained }) => retained)],
         )
       ).rows[0];
       if (!row) return false;
@@ -420,7 +423,7 @@ export function createSandboxOutputs(
           ),
         )
         .then(() => true);
-      pending.set(work, { deadline, provider: row.provider });
+      pending.set(work, { deadline, provider: row.provider, retained: row.retained_generation != null });
       void work.then(() => pending.delete(work));
       return true;
     },
