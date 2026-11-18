@@ -1,5 +1,20 @@
 import { existsSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
+import { isDeepStrictEqual } from "node:util";
+
+function checkPinnedMcp(servers: unknown) {
+  if (!process.env.EXPECT_PINNED_MCP) return;
+  const expected = [
+    {
+      name: "local",
+      command: "npx",
+      args: ["--yes", "--", "fixture-mcp@1.2.3", "--local"],
+      env: [{ name: "MCP_PRIVATE_VALUE", value: "fixture_private_value" }],
+    },
+  ];
+  if (!isDeepStrictEqual(servers, expected) || process.env.MCP_PRIVATE_VALUE !== undefined)
+    throw Error("incorrect ACP stdio MCP configuration");
+}
 
 let active: number | undefined;
 const send = (value: object) => process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", ...value })}\n`);
@@ -20,9 +35,11 @@ for await (const line of lines) {
       reply({ protocolVersion: process.env.BAD_ACP ? 2 : 1, agentCapabilities: { loadSession: true } });
       break;
     case "session/new":
+      checkPinnedMcp(m.params.mcpServers);
       reply({ sessionId: "session-1" });
       break;
     case "session/load":
+      checkPinnedMcp(m.params.mcpServers);
       send({
         method: "session/update",
         params: {
