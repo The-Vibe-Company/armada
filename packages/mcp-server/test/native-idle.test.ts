@@ -415,6 +415,8 @@ test.each([
   "merged with scratch push",
   "merged with later push",
   "merged after closed",
+  "merged after closed at moved head",
+  "merged after closed before launch",
   "ledger gap",
   "ledger hook missing",
   "ledger hook restored",
@@ -503,13 +505,17 @@ test.each([
   };
   // A merged PR at an older head: the later push to its branch has no PR yet.
   const laterPull = { ...pull, number: 13, head: { ...pull.head, ref: "scratch", sha: "d".repeat(40) } };
-  // An earlier push to the same branch whose PR closed without merging.
+  // An earlier push to the same branch whose PR closed without merging. In the
+  // moved-head cases another checkout advanced the branch before the close, so
+  // its head is none of this sandbox's pushes.
+  const movedHead = state === "merged after closed at moved head" || state === "merged after closed before launch";
   const closedPull = {
     ...pull,
     number: 11,
     state: "closed",
     merged_at: null,
-    head: { ...pull.head, sha: "e".repeat(40) },
+    closed_at: new Date(f.at + (state === "merged after closed before launch" ? -86_400_000 : 300_000)).toISOString(),
+    head: { ...pull.head, sha: (movedHead ? "8" : "e").repeat(40) },
   };
   // A closed-unmerged PR at an unconfirmed attempt.
   const attemptPull = { ...closedPull, number: 14, head: { ...closedPull.head, ref: "other", sha: "f".repeat(40) } };
@@ -529,7 +535,7 @@ test.each([
       if (head === "example:scratch") return Response.json(state === "merged with later push" ? [laterPull] : []);
       if (head === "example:main") return Response.json([]);
       if (head === "example:other") return Response.json(state === "unmerged PR at attempt" ? [attemptPull] : []);
-      return Response.json(state === "merged after closed" ? [pull, closedPull] : [pull]);
+      return Response.json(state.startsWith("merged after closed") ? [pull, closedPull] : [pull]);
     },
     { preconnect: fetch.preconnect },
   );
@@ -586,7 +592,7 @@ test.each([
       ? git.stdout
       : state === "no push" || state === "corrected report"
         ? ""
-        : `${state === "ledger gap" ? "!untracked\n" : state === "ledger hook missing" ? "!unproven\n" : state === "pending attempt" ? "!pending\n" : ""}topic\t${sha}\n${state === "merged after closed" ? `topic\t${"e".repeat(40)}\n` : ""}${state.startsWith("merged with") ? `scratch\t${"c".repeat(40)}\n` : ""}${state === "unmerged PR at attempt" ? `~\tother\t${"f".repeat(40)}\n` : ""}${state === "rejected attempt" ? `?\tmain\t${"9".repeat(40)}\n` : ""}`,
+        : `${state === "ledger gap" ? "!untracked\n" : state === "ledger hook missing" ? "!unproven\n" : state === "pending attempt" ? "!pending\n" : ""}topic\t${sha}\n${state.startsWith("merged after closed") ? `topic\t${"e".repeat(40)}\n` : ""}${state.startsWith("merged with") ? `scratch\t${"c".repeat(40)}\n` : ""}${state === "unmerged PR at attempt" ? `~\tother\t${"f".repeat(40)}\n` : ""}${state === "rejected attempt" ? `?\tmain\t${"9".repeat(40)}\n` : ""}`,
   );
   if (state === "revoked") await f.db.query("update github_connections set revoked_at=now() where user_id=$1", [owner]);
   if (state === "opted out") await f.db.query("update sandboxes set stop_when_work_merged=false where id=$1", [f.id]);
@@ -595,6 +601,7 @@ test.each([
   const shouldStop =
     state === "merged" ||
     state === "merged with scratch push" ||
+    state === "merged after closed before launch" ||
     state === "corrected report" ||
     state === "rejected attempt";
   expect(f.stops()).toBe(shouldStop ? 1 : 0);

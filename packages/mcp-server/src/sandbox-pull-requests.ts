@@ -26,6 +26,8 @@ const githubPull = z.object({
   number: z.number().int().positive(),
   state: z.enum(["open", "closed"]),
   merged_at: z.string().nullable(),
+  // Absent means unknown: such a closed PR is treated as closed after launch.
+  closed_at: z.string().nullable().optional(),
   head: z.object({
     ref: z.string().min(1),
     sha: z.string().regex(/^[a-f0-9]{40}$/),
@@ -396,6 +398,7 @@ export function createSandboxPullRequests(
         return;
       const found = new Map<string, SandboxPullRequest>();
       const checkedAt = new Date().toISOString();
+      const launchedAt = Date.parse(row.created_at);
       if (numbers.size || branchCount) {
         const request = github.fetch ?? fetch;
         const access = await resolveGitHubAccess(
@@ -493,11 +496,18 @@ export function createSandboxPullRequests(
                   discovered.set(urlFor(identity), identity);
                   record(repository, pull);
                   if (latest.has(pull.head.sha)) matched.add(pull.head.sha);
-                } else if (pull.state === "open" || (attempts.includes(pull.head.sha) && !pull.merged_at)) {
+                } else if (
+                  pull.state === "open" ||
+                  (!pull.merged_at &&
+                    (attempts.includes(pull.head.sha) || !(Date.parse(pull.closed_at ?? "") < launchedAt)))
+                ) {
                   // A moved open head blocks stopping without becoming work of
                   // this sandbox. So does an unmerged PR at an unconfirmed
-                  // attempt, which may be a push whose result was lost; a merged
-                  // PR at a rejected attempt is neither.
+                  // attempt, which may be a push whose result was lost, and a
+                  // PR closed unmerged after launch whose head moved off this
+                  // sandbox's pushes: its earlier head may have been one of
+                  // them. A PR closed before launch froze its head before any
+                  // push from here; a merged PR at a moved head is neither.
                   complete = false;
                 }
               }
