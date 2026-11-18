@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { checkDocsFiles } from "./docs-guard.ts";
+import { checkDocsAllowlist, checkDocsFiles } from "./docs-guard.ts";
 
 test("reports new oversized docs by path and permits text at the limit", () => {
   expect(
@@ -37,5 +37,22 @@ test("grandfathers only the original content at an allowlisted path", () => {
 test("requires removal of stale allowlist entries", () => {
   expect(checkDocsFiles([], new Map([["docs/removed.png", "old_hash"]]))).toEqual([
     "docs/removed.png: remove the unused docs allowlist entry",
+  ]);
+});
+
+test("allows deletions and rejects additions or changed hashes in the allowlist", () => {
+  const baseline = new Map([
+    ["docs/removed.png", "removed_hash"],
+    ["docs/kept.png", "kept_hash"],
+    ["docs/changed.png", "old_hash"],
+  ]);
+  const current = new Map([
+    ["docs/kept.png", "kept_hash"],
+    ["docs/changed.png", "new_hash"],
+    ["docs/added.png", "added_hash"],
+  ]);
+  expect(checkDocsAllowlist(current, baseline)).toEqual([
+    "docs/added.png: docs allowlist entries can only be removed",
+    "docs/changed.png: docs allowlist entries can only be removed",
   ]);
 });

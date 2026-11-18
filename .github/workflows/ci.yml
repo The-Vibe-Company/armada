@@ -40,7 +40,7 @@ jobs:
         if: matrix.shard == 1
         run: bun scripts/ci/unit-shards.ts --check
 
-      - name: Check migration versions against the current base
+      - name: Check migrations and docs allowlist against the current base
         if: matrix.shard == 1
         env:
           BASE_BRANCH: ${{ github.base_ref || 'main' }}
@@ -65,6 +65,7 @@ jobs:
             base=$(git rev-parse HEAD^)
           fi
           bun scripts/db/check-migrations.ts "$base"
+          bun scripts/ci/docs-guard.ts "$base"
       - name: Test migration guard
         if: matrix.shard == 1
         run: bun test scripts/db/check-migrations.test.ts
