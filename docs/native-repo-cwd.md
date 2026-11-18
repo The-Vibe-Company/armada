@@ -37,20 +37,24 @@ without a repo selector retain their existing behavior.
 ## Regression checks
 
 - `bun run verify`: full repository lint, typecheck and tests.
-- The SDK-boundary test executes the real serialized `/commands` installation
-  payload against a temporary native harness, then sends Boat-shaped JSON-RPC
-  messages. It proves the actual child `pwd` uses the selected repo even when
-  requests explicitly supply the wrong cwd. It covers start, resume, turn,
-  argument/field preservation, unrelated messages, malformed input, stderr, EOF
-  and native exit status.
-- Optional offline real-binary test (no inference or credentials):
-  `CODEX_NATIVE_TEST_BINARY=/path/to/unwrapped/codex bun test packages/provider-boat/test/native-cwd.test.ts`.
-  It runs the native app-server with an isolated HOME and allowlisted environment.
-  The unwrapped process starts in repo B but returns the caller-supplied other cwd;
-  the wrapped process returns repo B for the same `thread/start` request.
-
-The optional test passed using the production-installed
-`/usr/local/bin/codex.armada-original`. This does not replace the parent's final
-post-deployment first-native-`pwd` check in a new sandbox.
+- The synthetic cwd sentinel in `native-cwd.test.ts` executes the real
+  serialized `/commands` installation payload, then replaces the native binary
+  with a stdio peer that reports its process cwd and the cwd it received.
+  Boat-shaped JSON-RPC messages explicitly supply the wrong cwd. The test proves
+  the selected repo is both the peer's process cwd and the rewritten
+  `thread/start`, `thread/resume` and `turn/start` cwd, without a real binary.
+  It also covers argument/field preservation, unrelated messages, malformed
+  input, stderr, EOF and native exit status.
+- The former opt-in real-binary cwd test ("real Codex app-server reports the
+  selected thread cwd") was removed from unit CI in #2622. It started pinned Codex
+  twice inside a five-second test and failed the release check intermittently.
+  The real executable now runs only in the publishing contract
+  `packages/mcp-server/test/mcp-codex-bridge.release.ts`, which runs the pinned
+  executable behind the managed wrapper and checks its exclusive writer lock.
+- Automated post-deploy smoke excludes Boat (see
+  [Deployed checks](post-deploy-smoke.md)), so a green smoke run gives no Boat
+  result for the first native `pwd`. Checking it in a real Boat sandbox is a
+  separate on-demand verification: the coordinator-only production Boat parity
+  run described in that document.
 
 Protocol reference: [Codex App Server](https://developers.openai.com/codex/app-server).

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { admitOutputs, OUTPUT_COLLECTOR, OUTPUT_MAX_ENTRIES, parseCollectorOutput } from "../src/sandbox-outputs.ts";
@@ -29,18 +29,23 @@ test("server admission bounds any provider's read by count, size and unique name
     expect(() => admitOutputs(files)).toThrow();
 });
 
-/** Runs the real collector against a fixture root standing in for `/workspace`. */
+/** Runs the real collector against a fixture directory standing in for `/home/user/outputs`. */
+function collectorFor(outputs: string) {
+  return OUTPUT_COLLECTOR.replace('"/home/user/outputs"', JSON.stringify(outputs));
+}
+
 function runCollector(root: string) {
-  const script = OUTPUT_COLLECTOR.replace("'/workspace'", `'${root}'`);
+  const script = collectorFor(join(root, "outputs"));
   return Bun.spawnSync(["bash", "-c", script], { env: { PATH: process.env.PATH ?? "/usr/bin:/bin" } });
 }
 
 test("the real collector bounds admitted files in name order, so excluded entries never hide a deliverable", () => {
-  const root = mkdtempSync(join(tmpdir(), "outputs-"));
+  const root = mkdtempSync(join(realpathSync(tmpdir()), "outputs-"));
   try {
-    expect(parseCollectorOutput(runCollector(root).stdout.toString())).toEqual([]);
+    expect(runCollector(root).exitCode).not.toBe(0);
     const outputs = join(root, "outputs");
     mkdirSync(outputs);
+    expect(parseCollectorOutput(runCollector(root).stdout.toString())).toEqual([]);
     // Excluded entries enumerated around the deliverables: subdirectories, a link, an oversized file.
     for (let i = 0; i < 128; i++) mkdirSync(join(outputs, `dir${String(i).padStart(3, "0")}`));
     symlinkSync("/etc/hostname", join(outputs, "a-link"));
@@ -67,14 +72,14 @@ test("the real collector bounds admitted files in name order, so excluded entrie
 });
 
 test("the real collector ignores modules in the caller's working directory and PYTHONPATH", () => {
-  const root = mkdtempSync(join(tmpdir(), "outputs-"));
+  const root = mkdtempSync(join(realpathSync(tmpdir()), "outputs-"));
   try {
     mkdirSync(join(root, "outputs"));
     writeFileSync(join(root, "outputs", "memo.txt"), "document");
     const shadow = join(root, "shadow");
     mkdirSync(shadow);
     writeFileSync(join(shadow, "json.py"), "raise SystemExit('shadowed stdlib')\n");
-    const run = Bun.spawnSync(["bash", "-c", OUTPUT_COLLECTOR.replace("'/workspace'", `'${root}'`)], {
+    const run = Bun.spawnSync(["bash", "-c", collectorFor(join(root, "outputs"))], {
       cwd: shadow,
       env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PYTHONPATH: shadow },
     });
@@ -82,6 +87,20 @@ test("the real collector ignores modules in the caller's working directory and P
     expect(run.exitCode).toBe(0);
     const read = parseCollectorOutput(run.stdout.toString());
     expect(read.map((file) => [file.name, Buffer.from(file.bytes).toString()])).toEqual([["memo.txt", "document"]]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the real collector refuses a symlink in a parent of the declared directory", () => {
+  const root = mkdtempSync(join(realpathSync(tmpdir()), "outputs-"));
+  try {
+    const home = join(root, "real-home");
+    mkdirSync(join(home, "outputs"), { recursive: true });
+    writeFileSync(join(home, "outputs", "memo.txt"), "document");
+    const linkedHome = join(root, "linked-home");
+    symlinkSync(home, linkedHome);
+    expect(runCollector(linkedHome).exitCode).not.toBe(0);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
