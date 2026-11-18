@@ -581,8 +581,7 @@ export async function startServer(
   const outputs = createSandboxOutputs(
     sql,
     config.encryptionKey,
-    // Only live rows are sampled; stopped workspaces are never read.
-    createMcpSandboxProviderResolver(sql, providers),
+    createMcpSandboxProviderResolver(sql, providers, { terminalObservation: true }),
     ...(config.encryptionKey ? [createDockerOutputReader(sql, config.encryptionKey)] : []),
   );
   const handler = createHandler({

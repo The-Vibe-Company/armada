@@ -35,7 +35,7 @@ export interface Provider {
   /** Fixed bounded read of the declared output directory (`/home/user/outputs`) of live compute
    * through the provider's own channel: never caller commands or the agent runtime, never starts or
    * resumes compute. Null means unavailable: not live (stopped, stopping, starting), or a failed read.
-   * A stopped workspace is never read (#2570 scope): callers keep the last live capture. */
+   * Stopped workspaces use the separate retained reader where supported. */
   readOutputs?(request: {
     sandboxId: string;
     signal?: AbortSignal;
@@ -44,6 +44,16 @@ export interface Provider {
     sandboxId: string;
     signal?: AbortSignal;
   }): Promise<import("./sandbox-output-limits.ts").OutputEntry[] | null>;
+  /** Fixed read of the declared directory of one retained stop. Never starts compute.
+   * Null is retryable. "gone" means the provider definitively has no readable retained workspace. */
+  openRetainedOutputs?(request: { sandboxId: string; signal: AbortSignal }): Promise<
+    | {
+        entries: import("./sandbox-output-limits.ts").OutputEntry[];
+        readChunk(chunk: import("./sandbox-output-limits.ts").OutputChunkRequest): Uint8Array | null;
+      }
+    | "gone"
+    | null
+  >;
   /** Plaintext bytes allowed by this transport in one read. */
   readonly outputReadBytes?: number;
   readonly outputReadConcurrency?: number;

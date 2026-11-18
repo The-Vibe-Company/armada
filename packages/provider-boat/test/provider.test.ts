@@ -1289,3 +1289,106 @@ test("the capability probe treats a Bun that exits 0 without the probe answer as
     reason: "collector_unsupported",
   });
 });
+test.each([true, false])(
+  "Boat accepts only complete retained output directory archives (complete: %s)",
+  async (complete) => {
+    const report = "a document written after sampling";
+    const archive = await new Bun.Archive(
+      complete ? { "late.pdf": report, "nested/private.txt": "skip" } : { "late.pdf": report },
+    ).bytes();
+    const completedAt = "2026-11-18T10:00:00Z";
+    const boat = fakeBoat(
+      {
+        body: {
+          sandbox: sandbox({
+            state: "archived",
+            snapshotAvailable: true,
+            snapshotCompletedAt: completedAt,
+            stoppedAt: "2026-11-18T10:01:00Z",
+            snapshotVerifiedAt: "2026-11-18T10:01:01Z",
+          }),
+        },
+      },
+      { body: { snapshot: { id: "retained", sandboxId: ID, status: "completed", completedAt } } },
+      new Response(archive, {
+        headers: {
+          "x-snapshot-entry-kind": "dir",
+          "x-snapshot-skipped-base-image-files": "0",
+          "x-snapshot-file-count": "2",
+          "x-snapshot-total-size-bytes": String(report.length + 4),
+        },
+      }),
+    );
+    const read = boat.provider.openRetainedOutputs!({ sandboxId: ID, signal: new AbortController().signal });
+    if (complete) {
+      const snapshot = await read;
+      if (!snapshot || snapshot === "gone") throw Error("missing retained outputs");
+      expect(snapshot.entries.map(({ name, size }) => ({ name, size }))).toEqual([
+        { name: "late.pdf", size: report.length },
+      ]);
+      expect(Buffer.from(snapshot.readChunk({ entry: snapshot.entries[0]!, offset: 0 })!).toString()).toBe(report);
+    } else {
+      await expect(read).rejects.toThrow("output_unavailable");
+    }
+    expect(boat.requests.map(({ path }) => path)).toEqual([
+      `/api/v1/sandboxes/${ID}`,
+      `/api/v1/sandboxes/${ID}/snapshots/latest`,
+      "/api/v1/snapshots/retained/files",
+    ]);
+    expect(boat.requests[2]?.query.get("path")).toBe("home/user/outputs");
+  },
+);
+
+test("Boat rejects a retained archive ending in zero-filled file bytes without tar end records", async () => {
+  const payload = new Uint8Array(1024);
+  const archive = await new Bun.Archive({ "zero.bin": payload }).bytes();
+  const completedAt = "2026-11-18T10:00:00Z";
+  const boat = fakeBoat(
+    {
+      body: {
+        sandbox: sandbox({
+          state: "archived",
+          snapshotAvailable: true,
+          snapshotCompletedAt: completedAt,
+          stoppedAt: completedAt,
+        }),
+      },
+    },
+    { body: { snapshot: { id: "retained", sandboxId: ID, status: "completed", completedAt } } },
+    new Response(archive.slice(0, 512 + payload.length), {
+      headers: {
+        "x-snapshot-entry-kind": "dir",
+        "x-snapshot-skipped-base-image-files": "0",
+        "x-snapshot-file-count": "1",
+        "x-snapshot-total-size-bytes": String(payload.length),
+      },
+    }),
+  );
+  await expect(
+    boat.provider.openRetainedOutputs!({ sandboxId: ID, signal: new AbortController().signal }),
+  ).rejects.toThrow("output_unavailable");
+});
+
+test("Boat does not publish an older snapshot without verification for the current stop", async () => {
+  const boat = fakeBoat({
+    body: {
+      sandbox: sandbox({
+        state: "archived",
+        stoppedAt: "2026-11-18T10:01:00Z",
+        snapshotAvailable: true,
+        snapshotCompletedAt: "2026-11-18T10:00:00Z",
+        lastSnapshotStatus: "completed",
+      }),
+    },
+  });
+  const snapshot = await boat.provider.openRetainedOutputs!({ sandboxId: ID, signal: new AbortController().signal });
+  expect(snapshot).toBeNull();
+  expect(boat.requests).toHaveLength(1);
+});
+
+test("Boat reports a missing sandbox as a definitive retained-output result", async () => {
+  const boat = fakeBoat(errorBody(404, "not_found", "Sandbox not found"));
+  expect(await boat.provider.openRetainedOutputs!({ sandboxId: ID, signal: new AbortController().signal })).toBe(
+    "gone",
+  );
+});
