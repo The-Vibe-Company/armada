@@ -503,7 +503,10 @@ test("a connected pinned stdio definition reaches the runtime without a gateway 
   }
 });
 
-test("runtime admission rejects pinned stdio arguments that exceed the runtime configuration limit", async () => {
+test.each([
+  ["argument count", Array(62).fill("input")],
+  ["configuration bytes including the built-in service", Array(16).fill("x".repeat(4080))],
+])("runtime admission rejects pinned stdio beyond the limit for %s", async (_limit, args) => {
   const { f, registry, service } = await fixture();
   try {
     const local = await registry.save(f.people.owner, f.people.org, {
@@ -511,7 +514,7 @@ test("runtime admission rejects pinned stdio arguments that exceed the runtime c
       scope: "personal",
       transport: "stdio",
       command: "npx",
-      args: ["@example/mcp@1.2.3", ...Array(62).fill("input")],
+      args: ["@example/mcp@1.2.3", ...args],
     });
     await expect(service.preflight(f.caller, { org: f.people.org, connections: [local.id] })).rejects.toMatchObject({
       code: "invalid",

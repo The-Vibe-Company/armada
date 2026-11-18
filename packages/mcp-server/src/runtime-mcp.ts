@@ -46,6 +46,14 @@ export function createRuntimeMcp(options: {
 }) {
   const { sql, key } = options,
     authority = createRuntimeEnrolments(sql, key);
+  const httpServer = (path: string, token: string) => ({
+    type: "http" as const,
+    url: new URL(path, options.origin).href,
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const gatewayServer = (id: string, token: string) => httpServer(`/mcp/gateway/${id}`, token);
+  const selfServer = (binding: Parameters<typeof selfFinishToken>[1]) =>
+    httpServer("/api/v1/orchestrator-tools/mcp", selfFinishToken(key, binding));
   const ids = (values: string[]) => {
     if (
       !Array.isArray(values) ||
@@ -63,10 +71,21 @@ export function createRuntimeMcp(options: {
     for (const id of selected) {
       const c = await registry.get(caller.userId, org, id);
       if (c.status !== "connected") return deny();
-      if (c.transport === "stdio") servers[serverName(c.id)] = pinnedServer(c);
+      servers[serverName(c.id)] =
+        c.transport === "stdio" ? pinnedServer(c) : gatewayServer(c.id, `armada_gw_${"a".repeat(43)}`);
       result.push(c);
     }
-    if (Object.keys(servers).length) validateConfiguration({ revision: "preflight", servers });
+    if (result.some((c) => c.transport === "stdio")) {
+      // Budget for the full wire configuration, including the largest database epoch and generation.
+      const placeholderId = "00000000-0000-0000-0000-000000000000";
+      servers.armada_self = selfServer({
+        sandboxId: placeholderId,
+        ownerId: placeholderId,
+        epoch: "9223372036854775807",
+        generation: 2147483647,
+      });
+      validateConfiguration({ revision: "0".repeat(64), servers });
+    }
     return result;
   }
   async function preflight(caller: Caller, input: { org: string; connections: string[]; toolInventory?: boolean }) {
@@ -166,24 +185,14 @@ export function createRuntimeMcp(options: {
       ]);
       const token = `armada_gw_${createHmac("sha256", Buffer.from(key, "base64")).update(payload).digest("base64url")}`;
       gatewayLeases.push({ connectionId: c.id, tokenHash: hash(token), generation });
-      servers[name] = {
-        type: "http",
-        url: new URL(`/mcp/gateway/${c.id}`, options.origin).href,
-        headers: { Authorization: `Bearer ${token}` },
-      };
+      servers[name] = gatewayServer(c.id, token);
     }
-    servers.armada_self = {
-      type: "http",
-      url: new URL("/api/v1/orchestrator-tools/mcp", options.origin).href,
-      headers: {
-        Authorization: `Bearer ${selfFinishToken(key, {
-          sandboxId: s.id,
-          ownerId: s.ownerId,
-          epoch,
-          generation: current.mcp_generation,
-        })}`,
-      },
-    };
+    servers.armada_self = selfServer({
+      sandboxId: s.id,
+      ownerId: s.ownerId,
+      epoch,
+      generation: current.mcp_generation,
+    });
     const grants = definitions.map(({ id, generation }) => [id, generation]);
     const configuration = { revision: hash(JSON.stringify([epoch, current.mcp_generation, grants, servers])), servers };
     validateConfiguration(configuration);
