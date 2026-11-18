@@ -53,6 +53,8 @@ export interface ProcessBaseline {
 }
 
 export interface Machine {
+  /** Incarnation confirmed absent before recovery-image deletion began. */
+  deletePhysicalExitGeneration?: number;
   /** Frozen host-only launch routing; enrolled runtime health belongs to the server. */
   commonRuntime?: true;
   /** One detached bootstrap attempt per physical incarnation; uncertainty cannot spawn twice. */
@@ -129,6 +131,10 @@ export interface SavedImage {
   sourceId: string;
   managementAuthority?: ModalManagementProvenance;
   deleted?: boolean;
+  /** Set under the source lease once a tombstone is proven unreferenced. A tombstone never gains
+   * a reference (every reference writer reads a live image under that lease), so the remote image
+   * deletion and its retries run without holding the source machine's lifecycle lease. */
+  collecting?: boolean;
 }
 /** Store instances are bound to the authenticated caller AND immutable Modal binding. No unscoped lookup. */
 export interface ModalStore {
@@ -142,8 +148,13 @@ export interface ModalStore {
   image(name: string): Promise<SavedImage>;
   saveImage(image: SavedImage): Promise<void>;
   removeImage(name: string): Promise<void>;
-  purgeImage(name: string): Promise<void>;
+  /** Deletes a tombstone only while it still records this source and physical image. */
+  purgeImage(name: string, sourceId: string, imageId: string): Promise<void>;
+  /** Durably claims a tombstone for physical collection; a live image is never claimed. */
+  claimImage(name: string, sourceId: string, imageId: string): Promise<void>;
   images(sourceId: string): Promise<SavedImage[]>;
+  /** Visible machines that still own a retired image record awaiting physical collection. */
+  tombstoneSources(): Promise<string[]>;
   /** Server-only boolean: checks references across target visibility scopes without exposing rows. */
   imageReferenced(imageId: string): Promise<boolean>;
   events(input: EventsRequest): Promise<EventPage>;

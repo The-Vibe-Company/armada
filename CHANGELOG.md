@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.52.1](https://github.com/The-Vibe-Company/armada/compare/v2.52.0...v2.52.1) (2026-11-18)
+
+
+### Bug Fixes
+
+* **ci:** reject rounded migration versions and stabilize routine tests ([#2608](https://github.com/The-Vibe-Company/armada/issues/2608)) ([edec227](https://github.com/The-Vibe-Company/armada/commit/edec227fc067ae4d47baf18c601637dc239290f5))
+* **sandbox:** reuse confirmed Modal stop during deletion ([#2610](https://github.com/The-Vibe-Company/armada/issues/2610)) ([5ebeb91](https://github.com/The-Vibe-Company/armada/commit/5ebeb9101ae2bb8f2886573d65436f15122f8e08))
+
+
+### Performance Improvements
+
+* **smoke:** run the independent post-deploy smoke lanes concurrently ([#2611](https://github.com/The-Vibe-Company/armada/issues/2611)) ([a08022c](https://github.com/The-Vibe-Company/armada/commit/a08022c6970f77aec91345e492af4af59401e76d))
+
 ## [2.52.0](https://github.com/The-Vibe-Company/armada/compare/v2.51.0...v2.52.0) (2026-11-17)
 
 

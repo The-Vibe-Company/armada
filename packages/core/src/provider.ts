@@ -131,6 +131,11 @@ export interface Provider {
   getSnapshot(name: string): Promise<SnapshotInfo>;
   /** Removes a snapshot. Sandboxes already started from it are not affected. */
   deleteSnapshot(name: string): Promise<void>;
+  /** Providers that remove a deleted snapshot's artifact after deletion returns (Modal keeps a
+   * durable tombstone until no machine references the image and its source can be leased).
+   * Collects what it can now and reports whether the named snapshot's artifact is gone. The
+   * snapshot retirement worker retries "pending" so collection never depends on a user request. */
+  collectRetiredSnapshot?(name: string): Promise<"collected" | "pending">;
   /** Starts a sandbox from a snapshot. */
   fork(request: ForkRequest): Promise<SandboxInfo>;
 
@@ -568,6 +573,8 @@ export function isNonMutatingProviderRefusal(error: unknown): boolean {
       "provider_routing_unavailable",
     ].includes(error.code) ||
       isProviderStartRateLimit(error) ||
-      (error.provider === "modal" && error.code === "conflict" && error.providerCode === "fork_source_busy"))
+      (error.provider === "modal" &&
+        error.code === "conflict" &&
+        (error.providerCode === "fork_source_busy" || error.providerCode === "snapshot_source_busy")))
   );
 }
