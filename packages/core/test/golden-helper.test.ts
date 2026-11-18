@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { builtinModules } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import manifest from "../helper/manifest.json";
 import { GOLDEN_HELPER_SETUP, verifyGoldenHelper } from "../src/golden-helper.ts";
 import type { Provider } from "../src/provider.ts";
@@ -64,11 +65,16 @@ test.skipIf(process.platform !== "linux" || process.arch !== "x64")(
   },
 );
 
-test("browser core entry excludes native payloads while sharing release digests", async () => {
+test("browser core entries exclude native payloads while sharing release digests", async () => {
   const digests = (await import("../helper/digests.json")).default;
   for (const platform of ["x86_64", "aarch64"] as const) expect(digests[platform]).toBe(manifest[platform].digest);
   const build = await Bun.build({
-    entrypoints: [join(import.meta.dir, "../src/index.ts")],
+    entrypoints: [
+      join(import.meta.dir, "../src/index.ts"),
+      ...["@armada/core/accounts", "@armada/core/docker", "@armada/core/launch", "@armada/core/runtime"].map((entry) =>
+        fileURLToPath(import.meta.resolve(entry)),
+      ),
+    ],
     target: "browser",
     plugins: [
       {
@@ -85,6 +91,8 @@ test("browser core entry excludes native payloads while sharing release digests"
     ],
   });
   expect(build.success).toBe(true);
-  const bundle = await build.outputs[0]!.text();
-  for (const platform of ["x86_64", "aarch64"] as const) expect(bundle).not.toContain(manifest[platform].base64);
+  for (const output of build.outputs) {
+    const bundle = await output.text();
+    for (const platform of ["x86_64", "aarch64"] as const) expect(bundle).not.toContain(manifest[platform].base64);
+  }
 });
