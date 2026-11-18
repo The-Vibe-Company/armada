@@ -190,6 +190,51 @@ test("final capture publishes deliverables while the first periodic capability p
   }
 });
 
+test("a stop before the first sample reads even when a capability probe would fail transiently", async () => {
+  const { people, id, sql } = await fixture();
+  let probes = 0;
+  let reads = 0;
+  const provider = {
+    async probeOutputs(): Promise<boolean> {
+      probes++;
+      throw new OutputCollectionError("output_timeout");
+    },
+    async readOutputs() {
+      reads++;
+      return [file("memo.txt", "last deliverable")];
+    },
+  };
+  const service = createSandboxOutputs(sql, KEY, async () => provider);
+  await captureFinalOutputs(sql, provider, id, { key: KEY, signal: signal() });
+  expect(probes).toBe(0);
+  expect(reads).toBe(1);
+  const url = `https://armada.example/api/v1/sandboxes/${id}/outputs/memo.txt`;
+  expect(await (await routeFor(service, people.owner, people.org)(new Request(url)))?.text()).toBe(
+    "last deliverable",
+  );
+});
+
+test("a final read that finds the collector unsupported records it without retrying", async () => {
+  const { db, id, sql } = await fixture();
+  let reads = 0;
+  const provider = {
+    async probeOutputs(): Promise<boolean> {
+      throw Error("final capture must not probe");
+    },
+    async readOutputs(): Promise<OutputFile[]> {
+      reads++;
+      throw new OutputCollectionError("collector_unsupported");
+    },
+  };
+  await captureFinalOutputs(sql, provider, id, { key: KEY, signal: signal() });
+  // Known unavailable: a later stop skips the read entirely, adding no delay.
+  await captureFinalOutputs(sql, provider, id, { key: KEY, signal: signal() });
+  expect(reads).toBe(1);
+  expect((await db.query(`select outputs_failure_reasons from sandboxes where id=$1`, [id])).rows[0]).toEqual({
+    outputs_failure_reasons: ["collector_unsupported"],
+  });
+});
+
 test("stop captures files written after the last sample, for native and enrolled-runtime sandboxes", async () => {
   const { db, people, id, sql } = await fixture({ boatId: "final_native" });
   const enrolled = crypto.randomUUID();

@@ -120,15 +120,12 @@ async function collect(
     )
   ).rows[0];
   if (!admitted) return;
-  if (provider.probeOutputs && !admitted.outputs_collector_supported) {
-    const supported = await probeOutputCapability(sql, provider, id, providerId, signal);
-    if (!supported) {
-      // A parallel probe should not cost the last chance to collect a deliverable.
-      // Final capture can use its regular bounded read without starting another probe.
-      if (!options.final) return;
-      const eligible = await sql.query(`select 1 from public.sandboxes where id=$1 and ${ELIGIBLE}`, [id]);
-      if (!eligible.rows.length) return;
-    }
+  // Final capture never probes first. Its bounded read is the last chance to collect a deliverable,
+  // and the read's own exit status classifies an unsupported collector, so a transient or parallel
+  // probe never costs that read. A recorded `collector_unsupported` was already excluded above:
+  // a collector known to be unavailable adds no delay to stop.
+  if (provider.probeOutputs && !admitted.outputs_collector_supported && !options.final) {
+    if (!(await probeOutputCapability(sql, provider, id, providerId, signal))) return;
   }
   signal?.throwIfAborted();
   const read = provider.readOutputs
