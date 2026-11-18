@@ -15,7 +15,7 @@ afterAll(async () => {
   await server?.close();
 });
 
-test("The advice API collects bounded samples, pin project identity and abstain without complete workload evidence", async () => {
+test("The advice API collects bounded samples, pins project identity and abstains without complete workload evidence", async () => {
   const server = fixture;
   if (!server) throw new Error("Missing resource advice harness fixture");
   const token = await server.token(server.people.owner);

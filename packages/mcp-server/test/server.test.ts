@@ -1388,7 +1388,7 @@ describe("tools", () => {
     const oldKey = process.env.ARMADA_ENCRYPTION_KEY;
     process.env.ARMADA_ENCRYPTION_KEY = ENCRYPTION_KEY;
     try {
-      const { token, client, people, boat, db, handler } = await start();
+      const { token, client, people, boat, db, auth, clock } = await start();
       const bearer = await token(people.member);
       const mcp = await client(bearer);
       const launched = await call(mcp, "launch", { golden: "shared", harness: "claude" });
@@ -1451,15 +1451,24 @@ describe("tools", () => {
       expect((await db.query("select id from sandbox_work_recovery where sandbox_id=$1", [id])).rows).toHaveLength(
         result === "preserved" ? 1 : 0,
       );
-      const recovery = await handler(
+      const recovery = await handleControlRequest(
         new Request(`${PUBLIC_URL}/api/v1/sandbox/recovery`, {
           method: "POST",
           headers: { authorization: `Bearer ${bearer}` },
           body: JSON.stringify({ id }),
         }),
+        {
+          authStore: auth,
+          supabase: { supabaseUrl: "https://unused.test", anonKey: "fixture" },
+          store: createSqlVaultStore(db),
+          encryptionKey: ENCRYPTION_KEY,
+          data: createSqlData(db),
+          providers: { resolve: async () => boat.provider },
+          now: () => clock.now,
+        },
       );
-      expect(recovery.status).toBe(200);
-      expect(await recovery.json()).toEqual({ archive: result === "preserved" ? archive : null });
+      expect(recovery?.status).toBe(200);
+      expect(await recovery?.json()).toEqual({ archive: result === "preserved" ? archive : null });
     } finally {
       if (oldKey === undefined) delete process.env.ARMADA_ENCRYPTION_KEY;
       else process.env.ARMADA_ENCRYPTION_KEY = oldKey;
