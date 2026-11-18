@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { chmod, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -18,7 +18,7 @@ import {
   type Store,
   tick,
 } from "../src/daemon.ts";
-import { fileStore, httpApi } from "../src/native.ts";
+import { fileStore, httpApi, readDockerOutputArchive } from "../src/native.ts";
 
 function fail(): never {
   throw new Error("missing receipt");
@@ -397,6 +397,26 @@ test("expired outputs retry with backoff independently of the physical stop repo
   sweep.sweep();
   await sweep.drain();
   expect(attempts).toBe(2);
+});
+
+test("the retained Docker reader treats a missing output directory as absence and other exits as failures", async () => {
+  let exit = 4;
+  const spawn = spyOn(Bun, "spawn").mockImplementation((() => ({
+    stdout: new ReadableStream({
+      start(controller) {
+        controller.close();
+      },
+    }),
+    exited: Promise.resolve(exit),
+    exitCode: exit,
+  })) as typeof Bun.spawn);
+  try {
+    expect(await readDockerOutputArchive([])).toBeNull();
+    exit = 1;
+    await expect(readDockerOutputArchive([])).rejects.toThrow("Docker output archive unavailable");
+  } finally {
+    spawn.mockRestore();
+  }
 });
 
 test("bounded TTL sweeps retire confirmed generations while reporting fairly across restarted ticks", async () => {

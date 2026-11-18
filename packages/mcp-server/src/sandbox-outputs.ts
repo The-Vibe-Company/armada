@@ -46,9 +46,7 @@ type OutputReader = Pick<
 /** SDKs may ignore cancellation once a request reached the provider. Callers wait at most until
  * their signal aborts; the outstanding read stays tracked, bounded and fenced from persisting. */
 const OUTSTANDING_MAX = 4;
-// Boat expires archived filesystem data 14 days after stop (Sandbox.dataExpiredAt).
 const BOAT_RETAINED_CANDIDATE = `${BOAT_RETAINED_OUTPUT_STOP}
-  and stopped_at > now()-interval '14 days'
   and not exists (select 1 from public.sandbox_transitions t where t.sandbox_id=sandboxes.id
     and t.generation=sandboxes.lifecycle_generation and t.code='launch_interrupted')`;
 

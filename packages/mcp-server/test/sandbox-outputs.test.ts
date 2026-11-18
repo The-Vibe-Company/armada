@@ -83,6 +83,7 @@ test("collected outputs survive stop, deduplicate webhook events and enforce int
   let probes = 0;
   const service = createSandboxOutputs(sql, KEY, async () => ({
     readOutputs: provider.readOutputs!,
+    openRetainedOutputs: async () => "gone",
     async probeOutputs() {
       probes++;
       return true;
@@ -100,8 +101,8 @@ test("collected outputs survive stop, deduplicate webhook events and enforce int
     `update sandboxes set status='stopped',stopped_at=now()-interval '15 days',outputs_checked_at=null where id=$1`,
     [id],
   );
-  // An expired retained disk is ineligible; the last live snapshot stays downloadable.
-  expect(await sample(service)).toBe(false);
+  // Boat confirmed the old archive is absent; its live capture stays downloadable.
+  expect(await sample(service)).toBe(true);
   expect(state.reads).toBe(2);
   const url = `https://armada.example/api/v1/sandboxes/${id}/outputs`;
   const route = routeFor(service, people.owner, people.org);
@@ -126,16 +127,15 @@ test("collected outputs survive stop, deduplicate webhook events and enforce int
 });
 
 test.each([
-  ["expired", "status='stopped',stopped_at=now()-interval '15 days'"],
   [
     "interrupted launch",
     "status='failed',stopped_at=now(),transition_context=jsonb_build_object('actor','reconciler','code','launch_interrupted')",
   ],
   ["deleted", "status='deleted',deleted_at=now(),stopped_at=now()"],
   ["starting", "status='starting'"],
-])("the worker skips %s sandboxes without contacting the provider", async (_label, transition) => {
+])("the worker skips %s sandboxes without contacting the provider", async (label, transition) => {
   const { db, id, sql } = await fixture();
-  if (_label === "interrupted launch") await db.query("update sandboxes set status='starting' where id=$1", [id]);
+  if (label === "interrupted launch") await db.query("update sandboxes set status='starting' where id=$1", [id]);
   await db.query(`update sandboxes set ${transition} where id=$1`, [id]);
   let resolutions = 0;
   const service = createSandboxOutputs(sql, KEY, async () => {
@@ -211,7 +211,7 @@ test("a missing live output directory is reported once and later files remain co
 
 test("a transient retained read backs off, then publishes a file from the stopped workspace once", async () => {
   const { db, people, id, sql } = await fixture();
-  await db.query(`update sandboxes set status='stopped',stopped_at=now() where id=$1`, [id]);
+  await db.query(`update sandboxes set status='stopped',stopped_at=now()-interval '15 days' where id=$1`, [id]);
   const bytes = Buffer.from("written after the final live sample");
   let attempts = 0;
   const service = createSandboxOutputs(sql, KEY, async () => ({
