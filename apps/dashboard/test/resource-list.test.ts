@@ -91,7 +91,7 @@ describe("an environment's row", () => {
     ).toMatchObject({
       bucket: "action",
       label: "Modal not connected",
-      detail: "An org admin connects Modal in Machines → Overview to build and launch it.",
+      detail: "An org admin connects Modal in Machines → Cloud providers to build and launch it.",
       action: "connect",
     });
   });

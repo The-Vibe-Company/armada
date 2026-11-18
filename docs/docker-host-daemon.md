@@ -1134,7 +1134,7 @@ cleanup. Docker's non-forced removal provides the final concurrent-use guard.
 
 ### Retention controls and visibility
 
-`armada host show HOST` (also `--json`) and Machines → server panel show the
+`armada host show HOST` (also `--json`) and the Machines → Docker hosts panel show the
 last reported retention delay and next local cleanup deadline, with the host's
 last check-in. No reported deadline means none has been reported, not proof
 that the disk is empty. Offline hosts continue enforcing their saved policy.
@@ -1160,7 +1160,7 @@ the policy delta, preserving their original stopped age.
 ### Disk visibility and launch floor
 
 Hosts report unprivileged available bytes on the Docker data filesystem at each
-check-in. `armada host show` and Machines → server panel show that observation
+check-in. `armada host show` and the Machines → Docker hosts panel show that observation
 and the default **10 GB** floor (10,000,000,000 bytes). An unavailable observation
 is shown as unknown, never as zero or invented free space. Reports are as fresh
 as the host's last check-in, not a reservation or a guarantee of launch success.

@@ -38,7 +38,7 @@ test("a golden's launch state names the first thing that holds it, in the tone o
     "provider-missing",
     "neutral",
     "Modal not connected",
-    "An org admin connects Modal in Machines → Overview to launch.",
+    "An org admin connects Modal in Machines → Cloud providers to launch.",
     true,
   ]);
 });

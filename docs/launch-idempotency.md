@@ -48,8 +48,12 @@ sandbox carries no external reference and `sandbox/list` with `externalRef`
 never finds it. Instead:
 
 - `requestId`, a fresh UUID you generate and store before launching, is the
-  sandbox ID and the replay key. The same `requestId` and body return the
-  original result. A changed body returns `conflict` (409).
+  sandbox ID and the replay key. The same `requestId` and body return the same
+  sandbox ID and the recorded launch receipt (`promptId`, `conversationId`)
+  with the sandbox's current metadata, so a sandbox stopped or deleted since
+  the launch is reported as `stopped` or `deleted`. The comparison uses the
+  normalized request: spelling out a default such as `ttlSeconds` is not a
+  change. A changed body returns `conflict` (409).
 - `org` is the organization UUID. `hostId` names the Docker host, unless
   `snapshotId` names a Docker snapshot, which selects its own host.
 

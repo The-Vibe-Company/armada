@@ -11,6 +11,7 @@ import {
   type SandboxProviderId,
 } from "@armada/core";
 import type { GoldenCapabilities } from "./control.ts";
+import { CLOUD_PROVIDERS_LABEL } from "./labels.ts";
 import type { Tone } from "./status-tone.ts";
 
 /** One repository row of the golden form, as typed. */
@@ -328,7 +329,7 @@ export function goldenLaunchReadiness({
       kind: "provider-missing",
       tone: "neutral",
       label: `${label} not connected`,
-      detail: `An org admin connects ${label} in Machines → Overview to launch.`,
+      detail: `An org admin connects ${label} in Machines → ${CLOUD_PROVIDERS_LABEL} to launch.`,
       connect: true,
     };
   return { kind: "ready" };
