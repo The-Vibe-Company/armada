@@ -83,11 +83,9 @@ test("Large: launch on the online Docker host", { session: "large" }, async ({ a
   await screen.getByRole("button", /^From:/).tap();
   // Search by the displayed group term: the group label and its search keywords share one wording.
   await screen.getByPlaceholder("Search from").fill("Docker host");
-  await expect(
-    browser.locator("[cmdk-group-heading]").filter({ hasText: /Large platform · Docker host/ }),
-  ).toBeVisible();
+  await expect(screen.getByRole("group", /^Large platform .* · Docker host · online$/)).toBeVisible();
   await screen.getByRole("option", /^Empty machine · Large platform/).tap();
-  await expect(screen.getByRole("button", /^From: Empty machine · Large platform/)).toBeVisible();
+  await expect(screen.getByRole("button", /^Starts from: Empty machine · Large platform/)).toBeVisible();
   await screen.getByLabel("Task").fill("Inspect the Docker fixture");
   await screen.getByRole("button", /^Account:/).tap();
   await screen
