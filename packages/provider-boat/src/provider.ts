@@ -463,20 +463,19 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       });
       if (!observed) return "gone";
       const current = observed.sandbox;
-      if (current?.id !== sandboxId || current.state !== "archived") return null;
-      if (current.dataExpiredAt || current.snapshots === false) return "gone";
-      if (
-        !current.snapshotAvailable ||
-        current.stop ||
-        (current.lastSnapshotStatus && current.lastSnapshotStatus !== "completed")
-      )
-        return null;
+      if (current?.id !== sandboxId) throw unexpectedAnswer("retained sandbox");
+      if (current.state === "cancelled" || current.dataExpiredAt || current.snapshots === false) return "gone";
+      if (current.state !== "archived") return "pending";
+      if (current.stop || current.lastSnapshotStatus === "queued" || current.lastSnapshotStatus === "in_progress")
+        return "pending";
+      if (!current.snapshotAvailable || (current.lastSnapshotStatus && current.lastSnapshotStatus !== "completed"))
+        return "gone";
       // A forced or provider-initiated stop can leave an older completed snapshot.
       // Require a verification at the stop boundary, allowing no-change saves to
       // verify an older snapshot without creating a new one.
       const stoppedAt = current.stoppedAt?.getTime();
       const verifiedAt = (current.snapshotVerifiedAt ?? current.snapshotCompletedAt)?.getTime();
-      if (stoppedAt === undefined || verifiedAt === undefined || !(verifiedAt >= stoppedAt)) return null;
+      if (stoppedAt === undefined || verifiedAt === undefined || !(verifiedAt >= stoppedAt)) return "gone";
       const { snapshot } = await call(() => api.getLatestSandboxSnapshot({ sandboxId }, { signal }));
       // The latest endpoint can race the stop observation. Bind it to the completed
       // snapshot reported by the archived sandbox, including no-change archives.
@@ -493,7 +492,14 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       ).catch((error: unknown) => {
         if (
           error instanceof ProviderError &&
-          ["legacy_snapshot", "snapshot_data_expired"].includes(error.providerCode ?? "")
+          ((error.status === 404 && error.code === "not_found") ||
+            [
+              "legacy_snapshot",
+              "snapshot_not_indexed",
+              "snapshot_data_expired",
+              "base_image_file",
+              "is_symlink",
+            ].includes(error.providerCode ?? ""))
         )
           return null;
         throw error;

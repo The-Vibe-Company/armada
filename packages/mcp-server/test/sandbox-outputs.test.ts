@@ -96,9 +96,12 @@ test("collected outputs survive stop, deduplicate webhook events and enforce int
     (await db.query(`select 1 from outbound_webhook_deliveries where payload->>'type'='sandbox.output.available'`))
       .rows,
   ).toHaveLength(1);
-  await db.query(`update sandboxes set status='stopped',stopped_at=now(),outputs_checked_at=null where id=$1`, [id]);
-  // A retained reader is unavailable: the last live snapshot stays downloadable.
-  expect(await sample(service)).toBe(true);
+  await db.query(
+    `update sandboxes set status='stopped',stopped_at=now()-interval '15 days',outputs_checked_at=null where id=$1`,
+    [id],
+  );
+  // An expired retained disk is ineligible; the last live snapshot stays downloadable.
+  expect(await sample(service)).toBe(false);
   expect(state.reads).toBe(2);
   const url = `https://armada.example/api/v1/sandboxes/${id}/outputs`;
   const route = routeFor(service, people.owner, people.org);
@@ -120,6 +123,90 @@ test("collected outputs survive stop, deduplicate webhook events and enforce int
   // Only a well-formed UUID reaches the uuid-typed query; anything else is not this route.
   const malformed = `https://armada.example/api/v1/sandboxes/${"-".repeat(36)}/outputs`;
   expect(await routeFor(service, people.owner, people.org)(new Request(malformed))).toBeNull();
+});
+
+test.each([
+  ["expired", "status='stopped',stopped_at=now()-interval '15 days'"],
+  [
+    "interrupted launch",
+    "status='failed',stopped_at=now(),transition_context=jsonb_build_object('actor','reconciler','code','launch_interrupted')",
+  ],
+  ["deleted", "status='deleted',deleted_at=now(),stopped_at=now()"],
+  ["starting", "status='starting'"],
+])("the worker skips %s sandboxes without contacting the provider", async (_label, transition) => {
+  const { db, id, sql } = await fixture();
+  if (_label === "interrupted launch") await db.query("update sandboxes set status='starting' where id=$1", [id]);
+  await db.query(`update sandboxes set ${transition} where id=$1`, [id]);
+  let resolutions = 0;
+  const service = createSandboxOutputs(sql, KEY, async () => {
+    resolutions++;
+    return {};
+  });
+  expect(await sample(service)).toBe(false);
+  expect(resolutions).toBe(0);
+});
+
+test("definitive retained absence is recorded once without a failure", async () => {
+  const { db, id, sql } = await fixture();
+  await db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [id]);
+  const logs: unknown[] = [];
+  const info = console.info;
+  console.info = (line: string) => logs.push(JSON.parse(line));
+  try {
+    const service = createSandboxOutputs(sql, KEY, async () => ({ openRetainedOutputs: async () => "gone" }));
+    expect(await sample(service)).toBe(true);
+    await db.query("update sandboxes set outputs_checked_at=null where id=$1", [id]);
+    expect(await sample(service)).toBe(false);
+    expect(logs).toEqual([
+      {
+        event: "sandbox_output_collection_empty",
+        sandboxId: id,
+        reason: "retained_outputs_absent",
+        provider: "boat",
+        status: "stopped",
+        attemptCount: 1,
+      },
+    ]);
+  } finally {
+    console.info = info;
+  }
+});
+
+test("a missing live output directory is reported once and later files remain collectible", async () => {
+  const { db, id, sql } = await fixture();
+  let files: OutputFile[] | undefined;
+  const provider = {
+    readOutputs: async () => {
+      if (!files) throw new OutputCollectionError("output_directory_missing");
+      return files;
+    },
+  };
+  const service = createSandboxOutputs(sql, KEY, async () => provider);
+  const logs: unknown[] = [];
+  const info = console.info;
+  console.info = (line: string) => logs.push(JSON.parse(line));
+  try {
+    expect(await sample(service)).toBe(true);
+    await captureFinalOutputs(sql, provider, id, { key: KEY });
+    expect(logs).toEqual([
+      {
+        event: "sandbox_output_collection_empty",
+        sandboxId: id,
+        reason: "output_directory_missing",
+        provider: "boat",
+        status: "ready",
+        attemptCount: 1,
+      },
+    ]);
+  } finally {
+    console.info = info;
+  }
+  files = [file("later.txt", "ready")];
+  await db.query("update sandboxes set outputs_checked_at=null where id=$1", [id]);
+  expect(await sample(service)).toBe(true);
+  expect((await db.query("select name from sandbox_outputs where sandbox_id=$1", [id])).rows).toEqual([
+    { name: "later.txt" },
+  ]);
 });
 
 test("a transient retained read backs off, then publishes a file from the stopped workspace once", async () => {
@@ -221,7 +308,14 @@ test("an unsupported collector is reported once and skipped by both sampling and
   expect(attempts).toBe(1);
   expect(reads).toBe(1);
   expect(lines).toEqual([
-    { event: "sandbox_output_final_capture_failed", sandboxId: id, reason: "collector_unsupported" },
+    {
+      event: "sandbox_output_final_capture_failed",
+      sandboxId: id,
+      reason: "collector_unsupported",
+      provider: "boat",
+      status: "ready",
+      attemptCount: 2,
+    },
   ]);
   const route = routeFor(service, people.owner, people.org);
   const url = `https://armada.example/api/v1/sandboxes/${id}/outputs`;

@@ -1328,7 +1328,7 @@ test.each([true, false])(
     const read = boat.provider.openRetainedOutputs!({ sandboxId: ID, signal: new AbortController().signal });
     if (complete) {
       const snapshot = await read;
-      if (!snapshot || snapshot === "gone") throw Error("missing retained outputs");
+      if (!snapshot || typeof snapshot === "string") throw Error("missing retained outputs");
       expect(snapshot.entries.map(({ name, size }) => ({ name, size }))).toEqual([
         { name: "late.pdf", size: report.length },
       ]);
@@ -1388,7 +1388,7 @@ test("Boat does not publish an older snapshot without verification for the curre
     },
   });
   const snapshot = await boat.provider.openRetainedOutputs!({ sandboxId: ID, signal: new AbortController().signal });
-  expect(snapshot).toBeNull();
+  expect(snapshot).toBe("gone");
   expect(boat.requests).toHaveLength(1);
 });
 

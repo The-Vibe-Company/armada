@@ -45,13 +45,15 @@ export interface Provider {
     signal?: AbortSignal;
   }): Promise<import("./sandbox-output-limits.ts").OutputEntry[] | null>;
   /** Fixed read of the declared directory of one retained stop. Never starts compute.
-   * Null is retryable. "gone" means the provider definitively has no readable retained workspace. */
+   * Null indicates a retryable failure. "pending" defers while the stop or snapshot is in progress.
+   * "gone" means no readable retained outputs for this stop. */
   openRetainedOutputs?(request: { sandboxId: string; signal: AbortSignal }): Promise<
     | {
         entries: import("./sandbox-output-limits.ts").OutputEntry[];
         readChunk(chunk: import("./sandbox-output-limits.ts").OutputChunkRequest): Uint8Array | null;
       }
     | "gone"
+    | "pending"
     | null
   >;
   /** Plaintext bytes allowed by this transport in one read. */

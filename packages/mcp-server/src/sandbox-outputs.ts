@@ -46,6 +46,17 @@ type OutputReader = Pick<
 /** SDKs may ignore cancellation once a request reached the provider. Callers wait at most until
  * their signal aborts; the outstanding read stays tracked, bounded and fenced from persisting. */
 const OUTSTANDING_MAX = 4;
+// Boat expires archived filesystem data 14 days after stop (Sandbox.dataExpiredAt).
+const BOAT_RETAINED_CANDIDATE = `${BOAT_RETAINED_OUTPUT_STOP}
+  and stopped_at > now()-interval '14 days'
+  and not exists (select 1 from public.sandbox_transitions t where t.sandbox_id=sandboxes.id
+    and t.generation=sandboxes.lifecycle_generation and t.code='launch_interrupted')`;
+
+type OutputAttempt = {
+  provider: SandboxPlacementProviderId;
+  status: string;
+  attemptCount: number;
+};
 /** Deadline of one background periodic sample (the shared worker loop never waits for it). */
 const SAMPLE_DEADLINE_MS = 25_000;
 
@@ -66,14 +77,21 @@ export async function recordOutputFailure(
   event: string,
   reason: OutputFailureReason,
 ): Promise<void> {
-  const claim = await sql.query(
+  const claim = await sql.query<OutputAttempt>(
     `update public.sandboxes
      set outputs_failure_reasons=array_append(outputs_failure_reasons,$2)
      where id=$1 and status<>'deleted' and not application_secret_tainted
-     and not ($2 = any(outputs_failure_reasons)) returning id`,
+     and not ($2 = any(outputs_failure_reasons))
+     returning provider, status, outputs_attempt_count as "attemptCount"`,
     [id, reason],
   );
-  if (claim.rows.length) console.warn(JSON.stringify({ event, sandboxId: id, reason }));
+  const attempt = claim.rows[0];
+  if (!attempt) return;
+  if (reason === "output_directory_missing") {
+    console.info(JSON.stringify({ event: "sandbox_output_collection_empty", sandboxId: id, reason, ...attempt }));
+  } else {
+    console.warn(JSON.stringify({ event, sandboxId: id, reason, ...attempt }));
+  }
 }
 
 function failureReason(error: unknown, signal?: AbortSignal): OutputFailureReason {
@@ -278,8 +296,8 @@ export async function captureFinalOutputs(
     // Live compute only: an admitted stop keeps 'failed' rows failed while compute may still run.
     const row = (
       await sql.query<{ provider: SandboxPlacementProviderId; provider_sandbox_id: string; scan: string }>(
-        `update public.sandboxes set outputs_checked_at=clock_timestamp()
-        where id=$1 and (status in ('ready','running','stopping') or (status='failed' and stop_requested_at is not null and stopped_at is null))
+        `update public.sandboxes set outputs_checked_at=clock_timestamp(), outputs_attempt_count=outputs_attempt_count+1
+        where id=$1 and stopped_at is null and (status in ('ready','running','stopping') or (status='failed' and stop_requested_at is not null))
         and provider_sandbox_id is not null and ${ELIGIBLE}
         returning provider,provider_sandbox_id,outputs_checked_at::text as scan`,
         [id],
@@ -294,7 +312,10 @@ export async function captureFinalOutputs(
     try {
       await collect(sql, provider, id, row.provider_sandbox_id, row.scan, key, { signal, final: true });
     } catch (error) {
-      if (error instanceof OutputCollectionError && error.reason === "collector_unsupported") {
+      if (
+        error instanceof OutputCollectionError &&
+        (error.reason === "collector_unsupported" || error.reason === "output_directory_missing")
+      ) {
         await recordOutputFailure(sql, id, "sandbox_output_final_capture_failed", error.reason);
         return;
       }
@@ -320,7 +341,7 @@ export async function captureFinalOutputs(
 async function collectRetained(
   sql: Sql,
   provider: OutputReader,
-  row: { id: string; provider_sandbox_id: string; scan: string },
+  row: OutputAttempt & { id: string; provider_sandbox_id: string; scan: string },
   generation: string,
   key: string,
   signal: AbortSignal,
@@ -333,11 +354,26 @@ async function collectRetained(
   signal.throwIfAborted();
   const snapshot = await provider.openRetainedOutputs?.({ sandboxId: row.provider_sandbox_id, signal });
   signal.throwIfAborted();
+  if (snapshot === "pending") return;
   if (snapshot === "gone") {
-    const write = sql.query(`update public.sandboxes set outputs_retained_generation=$3::bigint where ${fence}`, args);
+    const write = sql.query(
+      `update public.sandboxes set outputs_retained_generation=$3::bigint where ${fence} returning id`,
+      args,
+    );
     writes.add(write);
     try {
-      await write;
+      if ((await write).rows.length) {
+        console.info(
+          JSON.stringify({
+            event: "sandbox_output_collection_empty",
+            sandboxId: row.id,
+            reason: "retained_outputs_absent",
+            provider: row.provider,
+            status: row.status,
+            attemptCount: row.attemptCount,
+          }),
+        );
+      }
     } finally {
       writes.delete(write);
     }
@@ -384,22 +420,23 @@ export function createSandboxOutputs(
         (kind) => outstanding.filter(({ provider }) => provider === kind).length >= OUTSTANDING_MAX,
       );
       const row = (
-        await sql.query<{
-          id: string;
-          provider: SandboxPlacementProviderId;
-          provider_sandbox_id: string;
-          scan: string;
-          retained_generation: string | null;
-        }>(
-          `update public.sandboxes set outputs_checked_at=clock_timestamp()
+        await sql.query<
+          OutputAttempt & {
+            id: string;
+            provider_sandbox_id: string;
+            scan: string;
+            retained_generation: string | null;
+          }
+        >(
+          `update public.sandboxes set outputs_checked_at=clock_timestamp(), outputs_attempt_count=outputs_attempt_count+1
         where id=(select id from public.sandboxes where not application_secret_tainted and provider_sandbox_id is not null
         and provider::text <> all($1::text[]) and (
-          (${ELIGIBLE} and status in ('running','ready')
+          (${ELIGIBLE} and status in ('running','ready') and stopped_at is null
             and (outputs_checked_at is null or outputs_checked_at<now()-interval '30 seconds'))
-          or ($2::boolean and ${BOAT_RETAINED_OUTPUT_STOP} and (outputs_checked_at is null or outputs_checked_at<now()-interval '2 minutes'))
+          or ($2::boolean and ${BOAT_RETAINED_CANDIDATE} and (outputs_checked_at is null or outputs_checked_at<now()-interval '2 minutes'))
         )
         order by outputs_checked_at nulls first for update skip locked limit 1)
-        returning id,provider::text,provider_sandbox_id,outputs_checked_at::text as scan,
+        returning id,provider::text,status,outputs_attempt_count as "attemptCount",provider_sandbox_id,outputs_checked_at::text as scan,
           case when ${BOAT_RETAINED_OUTPUT_STOP} then lifecycle_generation::text end as retained_generation`,
           [saturated, !outstanding.some(({ retained }) => retained)],
         )
