@@ -1,10 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import {
-  type ProviderResourceObservation,
-  type ResourceAdviceResponse,
-  type ResourceProject,
-  SIZED_LAUNCH_TOOL_V1,
-} from "@armada/core";
+import type { ProviderResourceObservation, ResourceAdviceResponse, ResourceProject } from "@armada/core";
 import { createSqlVaultStore } from "@armada/core/server";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
@@ -25,8 +20,7 @@ test("API/MCP collect genuine-path bounded samples, pin project identity and abs
   if (!server) throw new Error("Missing resource advice harness fixture");
   const token = await server.token(server.people.owner);
   const client = await server.client(token);
-  const launched = await call(client, SIZED_LAUNCH_TOOL_V1, {
-    size_policy_version: 1,
+  const launched = await call(client, "launch", {
     golden: "shared",
     org: server.people.org,
     harness: "claude",

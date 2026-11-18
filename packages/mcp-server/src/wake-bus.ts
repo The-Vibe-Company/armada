@@ -32,7 +32,21 @@ export function createWakeBus() {
       unsubscribe();
     }
   }
-  return { subscribe, notify, wait };
+  // Subscribe before the database read so a commit during the read is retained.
+  function watch(key: string) {
+    let wake = new AbortController();
+    const close = subscribe(key, () => wake.abort());
+    return {
+      close,
+      async wait(signal: AbortSignal, ms: number, delay: typeof waitForTimeout) {
+        if (!wake.signal.aborted) await delay(ms, AbortSignal.any([signal, wake.signal]));
+        const notified = wake.signal.aborted;
+        if (notified) wake = new AbortController();
+        return notified;
+      },
+    };
+  }
+  return { subscribe, notify, wait, watch };
 }
 
 export async function waitForTimeout(ms: number, signal: AbortSignal) {

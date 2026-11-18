@@ -615,7 +615,6 @@ export async function startServer(
     data,
     templates,
     skillDefaults: createSkillDefaultsService(sql),
-    ...(control.applicationVault ? { applicationVault: control.applicationVault } : {}),
     connections: mcp.connections,
     vault: store,
     encryptionKey: config.encryptionKey,

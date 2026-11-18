@@ -155,6 +155,8 @@ export function observeProvider<T extends object>(
     get(instance, property) {
       const value = Reflect.get(instance, property, instance);
       if (typeof value !== "function" || typeof property !== "string") return value;
+      // Inventory is consumed directly as an async iterable by the reaper.
+      if (property === "listInventory") return value.bind(instance);
       return (...args: unknown[]) =>
         observeProviderCall(provider, property, () => Reflect.apply(value, instance, args), undefined, options);
     },

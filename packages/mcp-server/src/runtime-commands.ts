@@ -81,7 +81,7 @@ export function createRuntimeCommands(
     const serialized = JSON.stringify(request);
     if (Buffer.byteLength(serialized) > MAX_COMMAND) throw new RuntimeCommandRefused();
     const sealed = await encryptSecret(serialized, key);
-    const wakeKey = `socket:${request.sandboxId}`;
+    const wakeKeys = [`socket:${request.sandboxId}`, `poll:${request.sandboxId}`];
     let deferred = false;
     const admitted = await authority.withOwner(request.sandboxId, ownerId, async (tx, scope) => {
       // Application-secret taint forbids file egress: never admit or replay an output read (row
@@ -144,11 +144,11 @@ export function createRuntimeCommands(
           request.op === "prompt" ? (currentRequestId() ?? null) : null,
         ],
       );
-      deferred = deferTransactionWake(tx, wakeKey);
+      for (const wakeKey of wakeKeys) deferred = deferTransactionWake(tx, wakeKey);
       noteAdmission();
       return { epoch: scope.epoch, requestId: request.requestId, provider: scope.provider, fresh: true };
     });
-    if (admitted.fresh && !deferred) runtimeWakes.notify(wakeKey);
+    if (admitted.fresh && !deferred) for (const wakeKey of wakeKeys) runtimeWakes.notify(wakeKey);
     return admitted;
   }
   /** Keep admission fenced through synchronous socket enqueue; never await network I/O here. */
@@ -156,8 +156,10 @@ export function createRuntimeCommands(
     token: string,
     epoch: string,
     use: (value: { epoch: string; command: RunnerRequest | null }) => Promise<T>,
+    onScope?: (sandboxId: string) => void,
   ) {
     return authority.withSession(token, epoch, async (tx, scope) => {
+      onScope?.(scope.sandboxId);
       const row = (
         await tx.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
           `select request_enc from public.runtime_commands c where sandbox_id=$1 and epoch=$2 and result_enc is null
@@ -379,9 +381,22 @@ export function createRuntimeCommands(
         throw new RuntimeCommandConflict();
       const deadline = time.now() + 20000;
       while (!request.signal.aborted) {
-        const response = await next(token, epoch);
-        if (response.command || time.now() >= deadline) return Response.json(response, { headers });
-        await time.wait(Math.min(1000, Math.max(0, deadline - time.now())), request.signal);
+        let wake: ReturnType<typeof runtimeWakes.watch> | undefined;
+        try {
+          const response = await withNext(
+            token,
+            epoch,
+            async (value) => value,
+            (sandboxId) => {
+              wake = runtimeWakes.watch(`poll:${sandboxId}`);
+            },
+          );
+          const remaining = deadline - time.now();
+          if (response.command || remaining <= 0) return Response.json(response, { headers });
+          await wake?.wait(request.signal, Math.min(1000, remaining), time.wait.bind(time));
+        } finally {
+          wake?.close();
+        }
       }
       return new Response(null, { status: 499, headers });
     } catch (error) {
