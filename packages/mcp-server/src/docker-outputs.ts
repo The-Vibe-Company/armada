@@ -28,16 +28,17 @@ export function createDockerOutputReader(sql: Sql, key: string, clock?: Clock) {
       // The deadline is part of the request id: once it passes, the read is never dispatched and
       // never counts as pending (`expiredOutputRead`), even if this process never returns here.
       const deadline = now() + READ_TIMEOUT_MS;
-      // Reads are fresh data, not history. A row is only removed once the runtime can no longer
-      // acknowledge it: its epoch ended, or the runtime answered a later command (it acknowledges
-      // in order, so an earlier read was either answered or never delivered). Removing a row the
-      // runtime may still acknowledge would make that acknowledgement fail forever.
+      // Reads are fresh data, not history. A row is only removed once nobody can still use it: its
+      // epoch ended, or its reader gave up (deadline passed) and the runtime answered a later
+      // command (it acknowledges in order, and dispatch never sends a read after a later answer, so
+      // the read was either acknowledged or never delivered). Removing a row the runtime may still
+      // acknowledge would make that acknowledgement fail forever.
       const queue = (
         await sql.query<{ busy: boolean }>(
           `with current as (select epoch from public.runtime_enrolments where sandbox_id=$1),
           removed as (delete from public.runtime_commands c where c.sandbox_id=$1 and starts_with(c.request_id,'outputs_')
             and (c.epoch is distinct from (select epoch from current)
-              or ((c.result_enc is not null or ${expiredOutputRead("c.request_id", "$2")})
+              or (${expiredOutputRead("c.request_id", "$2")}
                 and exists(select 1 from public.runtime_commands later where later.sandbox_id=c.sandbox_id
                   and later.epoch=c.epoch and later.sequence>c.sequence and later.result_enc is not null)))),
           pending as (select starts_with(c.request_id,'outputs_') as read from public.runtime_commands c

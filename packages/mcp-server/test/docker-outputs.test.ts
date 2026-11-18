@@ -228,35 +228,46 @@ test("a Docker read still refuses to pile up behind two unanswered reads", async
   }
 });
 
-test("a timed-out Docker read stops holding the runtime queue and is removed once a later command answers", async () => {
+test("a timed-out Docker read stops holding the runtime queue and is removed only once it cannot be acknowledged", async () => {
   const f = await fixture();
   try {
-    // Nobody answers: the fake clock only advances, so the read times out deterministically.
+    // The runtime takes the first read but never answers in time: the fake clock only advances.
     let t = Date.now();
+    const runtime = createRuntimeCommands(createRuntimeEnrolments(f.sql, ENCRYPTION_KEY), ENCRYPTION_KEY, {
+      now: () => t,
+      async wait() {},
+    });
+    let delivered: string | undefined;
     const clock = {
       now: () => t,
       async wait(ms: number) {
+        delivered ??= (await runtime.next(f.session.runtimeToken, f.session.epoch)).command?.requestId;
         t += ms;
       },
     };
     const reader = createDockerOutputReader(f.sql, ENCRYPTION_KEY, clock);
-    expect(await reader(f.id).readOutputs!({ sandboxId: f.id })).toBeNull();
+    const reply = (requestId: string) =>
+      runtime.complete(f.session.runtimeToken, f.session.epoch, {
+        epoch: f.session.epoch,
+        requestId,
+        status: 200,
+        body: { requestId },
+      });
     const reads = async () =>
       (await f.db.query(`select 1 from runtime_commands where sandbox_id=$1 and request_id like 'outputs_%'`, [f.id]))
         .rows.length;
-    expect(await reads()).toBe(1);
-    // A later command is dispatched first: the expired read is never delivered.
-    const runtime = createRuntimeCommands(createRuntimeEnrolments(f.sql, ENCRYPTION_KEY), ENCRYPTION_KEY, clock);
+    expect(await reader(f.id).readOutputs!({ sandboxId: f.id })).toBeNull();
+    expect(delivered).toStartWith("outputs_");
+    // A new read neither waits behind nor deletes the delivered, expired read: its late
+    // acknowledgement still succeeds instead of failing (and being retried) forever.
+    expect(await reader(f.id).readOutputs!({ sandboxId: f.id })).toBeNull();
+    expect(await reads()).toBe(2);
+    await reply(delivered!);
+    // A later command is dispatched ahead of the second expired read, which is never delivered.
     await runtime.enqueue(f.people.owner, { version: 1, requestId: "later_health", sandboxId: f.id, op: "health" });
-    const { command } = await runtime.next(f.session.runtimeToken, f.session.epoch);
-    expect(command?.requestId).toBe("later_health");
-    await runtime.complete(f.session.runtimeToken, f.session.epoch, {
-      epoch: f.session.epoch,
-      requestId: "later_health",
-      status: 200,
-      body: { requestId: "later_health" },
-    });
-    // Answering a later command proves the runtime can no longer acknowledge the expired read.
+    expect((await runtime.next(f.session.runtimeToken, f.session.epoch)).command?.requestId).toBe("later_health");
+    await reply("later_health");
+    // Answering a later command proves neither expired read can still be acknowledged.
     expect(await reader(f.id).readOutputs!({ sandboxId: f.id })).toBeNull();
     expect(await reads()).toBe(1);
     expect(f.ops).toEqual([]);
