@@ -10,7 +10,8 @@ import {
   resolveModelChoice,
   type Sql,
 } from "@armada/core/server";
-import { type ControlOptions, handleControlRequest } from "../src/control.ts";
+import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
+import { type ControlOptions, dispatchControlCommand, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { createModalRuntimeEnvironment } from "../src/modal-runtime-environment.ts";
@@ -21,6 +22,7 @@ import {
   readRuntimeTemplateEnvironment,
   runtimeConfigurationWithVariables,
 } from "../src/runtime-readable-variables.ts";
+import { createRuntimeResume } from "../src/runtime-resume.ts";
 import { publishedResponse } from "./published-response.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY, fakeBoat } from "./support.ts";
@@ -418,6 +420,21 @@ test("Modal delivers a raw binding only through the encrypted runtime command an
   expect((await f.db.query("select activity_lease_id from sandboxes where id=$1", [id])).rows).toEqual([
     { activity_lease_id: null },
   ]);
+  await f.db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [id]);
+  const queue = createAccountTurnQueue(f.sql, ENCRYPTION_KEY);
+  const commands = createRuntimeCommands(f.authority, ENCRYPTION_KEY);
+  const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, commands);
+  const runtimeSend = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, commands, undefined, resume);
+  queue.setDispatch((caller, input) =>
+    dispatchControlCommand("sandbox/send", caller, { ...input }, { ...f.options, runtimeSend }),
+  );
+  const requestId = crypto.randomUUID();
+  expect(await queue.accept(f.caller, { id, request_id: requestId, prompt: "do work" })).toMatchObject({
+    status: "queued",
+  });
+  expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
+  await queue.drain();
+  expect(await queue.status(f.caller, id, requestId)).toMatchObject({ failed: true });
 });
 
 test("Modal uses the vault conflict refusal for a pinned secret that is no longer available to its launcher", async () => {
@@ -437,6 +454,26 @@ test("Modal uses the vault conflict refusal for a pinned secret that is no longe
   expect(response.status).toBe(409);
   expect(await response.text()).toContain("secret_unavailable");
   expect(f.physical.forks).toHaveLength(0);
+});
+
+test("Modal refuses a short secret before admitting a runtime configuration command", async () => {
+  const f = await fixture("codex", "modal", false, "explicit", true);
+  const secret = (
+    await f.db.query<{ id: string }>(
+      "insert into application_secrets(org_id,owner_id,scope,name,value_enc) values($1,$2,'personal','APP_TOKEN',$3) returning id",
+      [f.people.org, f.people.owner, await encryptSecret("fixture", ENCRYPTION_KEY)],
+    )
+  ).rows[0]!;
+  const template = await f.create({
+    ...f.definition,
+    secrets: [{ key: "APP_TOKEN", secretId: secret.id, version: 1 }],
+  });
+  const response = await f.api(f.request(template.id));
+  expect(await response.json()).toMatchObject({ state: "reconciling" });
+  expect(f.deliveries).toHaveLength(0);
+  expect((await f.db.query("select 1 from runtime_commands where request_id like 'modal_variables_%'")).rows).toEqual(
+    [],
+  );
 });
 
 test.each(["modal", "boat"] as const)(
