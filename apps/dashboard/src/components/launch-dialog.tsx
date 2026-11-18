@@ -126,6 +126,7 @@ export function DiscoveredLaunchStart({
 }) {
   const common = {
     initialOptions: options,
+    initialTargetId: target.id,
     orgId: options.orgId,
     accounts: options.accounts,
     dockerLimits,
@@ -160,6 +161,7 @@ export function DiscoveredLaunchStart({
 export function LaunchStart(
   props: (LaunchProps | HostLaunchStart) & {
     initialOptions?: Awaited<ReturnType<typeof readLaunchDialogOptions>>;
+    initialTargetId?: string;
     initialTask?: string | undefined;
   },
 ) {
@@ -168,7 +170,7 @@ export function LaunchStart(
   const host = "hostId" in props;
   const fallback: LaunchStartTarget = host
     ? {
-        id: `host:${props.hostId}`,
+        id: props.initialTargetId ?? `host:${props.hostId}`,
         label: `Empty machine · ${props.hostName}`,
         group: dockerHostGroup(props.hostName),
         hostName: props.hostName,
@@ -181,7 +183,9 @@ export function LaunchStart(
         ...(props.launchBlockedReason ? { reason: props.launchBlockedReason } : {}),
       }
     : {
-        id: props.snapshotId ? `snapshot:${props.snapshotId}` : `${props.provider}:${props.golden}`,
+        id:
+          props.initialTargetId ??
+          (props.snapshotId ? `snapshot:${props.snapshotId}` : `${props.provider}:${props.golden}`),
         label: `${props.golden} · ${props.provider === "boat" ? "Boat cloud" : props.provider === "modal" ? "Modal cloud" : DOCKER_HOST_LABEL}`,
         group: props.provider === "docker" ? DOCKER_HOST_LABEL : `${PROVIDER_LABELS[props.provider]} cloud`,
         golden: props.golden,
@@ -193,7 +197,8 @@ export function LaunchStart(
         ...(props.harnesses ? { harnesses: [...props.harnesses] } : {}),
         ...(props.sizing ? { sizing: props.sizing } : {}),
       };
-  const [selected, setSelected] = useState(fallback.id);
+  const fallbackId = fallback.id;
+  const [selected, setSelected] = useState(fallbackId);
   const selectedTarget = useRef(fallback);
   const startRoot = useRef<HTMLDivElement>(null);
   const focusStart = useRef(false);
@@ -214,18 +219,16 @@ export function LaunchStart(
           return;
         }
         const initial = next.targets.find((item) =>
-          host
-            ? item.hostId === props.hostId
-            : props.snapshotId
-              ? item.snapshotId === props.snapshotId
-              : item.provider === props.provider && item.golden === props.golden,
+          props.initialTargetId
+            ? item.id === props.initialTargetId
+            : host
+              ? item.hostId === props.hostId
+              : props.snapshotId
+                ? item.snapshotId === props.snapshotId
+                : item.provider === props.provider && item.golden === props.golden,
         );
         // Discovery enriches the initial source without remounting a form the person may already be editing.
-        const initialId = host
-          ? `host:${props.hostId}`
-          : props.snapshotId
-            ? `snapshot:${props.snapshotId}`
-            : `${props.provider}:${props.golden}`;
+        const initialId = fallbackId;
         setOptions({
           ...next,
           targets: next.targets.map((item) => (item.id === initial?.id ? { ...item, id: initialId } : item)),
@@ -238,7 +241,7 @@ export function LaunchStart(
     return () => {
       active = false;
     };
-  }, [props, host]);
+  }, [props, host, fallbackId]);
   const freshSelection = options?.targets.find((item) => item.id === selected);
   const missing = {
     ...selectedTarget.current,
