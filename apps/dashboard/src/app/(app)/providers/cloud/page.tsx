@@ -280,7 +280,7 @@ async function OwnServers({
         {showSetup && (
           <p className="text-sm text-muted-foreground">
             {isAdmin
-              ? "These machines have not connected yet. If you no longer have the install command, unlink the entry and add the server again to get a new one. Unlinking an entry does not uninstall anything on your machine."
+              ? "These machines have not connected yet. If you no longer have the install command, unlink the entry and add the Docker host again to get a new one. Unlinking an entry does not uninstall anything on your machine."
               : "These machines have not connected yet. Ask an organization admin to finish setup or remove unused entries."}
           </p>
         )}

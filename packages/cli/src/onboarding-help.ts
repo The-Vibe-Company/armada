@@ -988,7 +988,7 @@ A UUID can identify a revoked host; name lookup excludes revoked hosts.
 Example: armada host show workstation --org ORG_UUID --json
 `,
   "host retention": `Usage: armada host retention <UUID|name> --retention <duration> [--org UUID] [--json]
-Only the member who added the server can change retention.
+Only the member who added the Docker host can change retention.
 Use 0 for next-sweep removal, or seconds/minutes/hours/days (24h, 30m, 7d), maximum 365d.
 Applies at next check-in, including existing stopped sandbox deadlines.
 --json returns {hostId, retentionSeconds}.
