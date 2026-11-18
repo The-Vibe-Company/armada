@@ -12,7 +12,7 @@ export function authenticStagingEvidence(
     !/^[a-f0-9]{40}$/.test(sha) ||
     head?.full_name !== repository ||
     run.path !== ".github/workflows/staging-gated-production.yml" ||
-    run.event !== "push" ||
+    (run.event !== "workflow_run" && run.event !== "push") ||
     run.head_branch !== "main" ||
     run.head_sha !== sha ||
     run.status !== "completed" ||
@@ -40,23 +40,16 @@ export function authenticStagingEvidence(
   });
 }
 
-/** Completion may coalesce only a real deployment admitted after its Release ended. */
+/** A wakeup can reuse a successful deployment only while that exact source is live. */
 export function authenticWakeupEvidence(
   run: Record<string, unknown>,
   jobs: Record<string, unknown>[],
   repository: string,
   sha: string,
-  releaseFinished: string,
   health: unknown,
   version: string,
 ): boolean {
-  if (!authenticStagingEvidence(run, jobs, repository, sha) || !matchesDeploymentHealth(health, version, sha))
-    return false;
-  const finished = Date.parse(releaseFinished);
-  const steps = jobs.find((job) => job.name === "staging")?.steps as Record<string, unknown>[];
-  const deployment = steps.find((step) => step.name === "Migrate then deploy pinned server and dashboard");
-  const admitted = Date.parse(String(deployment?.started_at ?? ""));
-  return Number.isFinite(finished) && Number.isFinite(admitted) && admitted >= finished;
+  return authenticStagingEvidence(run, jobs, repository, sha) && matchesDeploymentHealth(health, version, sha);
 }
 
 if (import.meta.main) {
@@ -75,20 +68,13 @@ if (import.meta.main) {
       return (await response.json()) as T;
     };
     const runs = await api<{ workflow_runs: (Record<string, unknown> & { id: number; run_attempt: number })[] }>(
-      `actions/workflows/staging-gated-production.yml/runs?event=push&head_sha=${encodeURIComponent(sha)}&status=success&per_page=20`,
+      `actions/workflows/staging-gated-production.yml/runs?branch=main&head_sha=${encodeURIComponent(sha)}&status=success&per_page=20`,
     );
-    const wakeup = process.env.GITHUB_EVENT_NAME === "workflow_run";
-    let releaseFinished = "";
-    let health: unknown;
-    if (wakeup) {
-      const event = await Bun.file(process.env.GITHUB_EVENT_PATH as string).json();
-      releaseFinished = event.workflow_run?.updated_at ?? "";
-      const response = await fetch(`${process.env.ARMADA_SERVER_URL?.replace(/\/$/, "")}/healthz`, {
-        signal: AbortSignal.timeout(15_000),
-      });
-      if (!response.ok) throw new Error("Staging source identity unavailable");
-      health = await response.json();
-    }
+    const response = await fetch(`${process.env.ARMADA_SERVER_URL?.replace(/\/$/, "")}/healthz`, {
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) throw new Error("Staging source identity unavailable");
+    const health: unknown = await response.json();
     for (const run of runs.workflow_runs ?? []) {
       // Fetch only jobs for the current attempt, never mix successful old steps
       // with a later failed/skipped attempt.
@@ -96,26 +82,14 @@ if (import.meta.main) {
         `actions/runs/${run.id}/attempts/${run.run_attempt}/jobs?per_page=100`,
       );
       if (result.total_count > 100) continue;
-      if (
-        wakeup
-          ? authenticWakeupEvidence(
-              run,
-              result.jobs,
-              repository,
-              sha,
-              releaseFinished,
-              health,
-              process.env.RELEASE_VERSION ?? "",
-            )
-          : authenticStagingEvidence(run, result.jobs, repository, sha)
-      ) {
+      if (authenticWakeupEvidence(run, result.jobs, repository, sha, health, process.env.RELEASE_VERSION ?? "")) {
         console.log(`Reusing authenticated staging run ${run.id} for ${sha}`);
         reused = true;
         break;
       }
     }
   } catch {
-    console.log("No reusable staging evidence; deploying and smoking the exact release SHA.");
+    console.log("No reusable staging evidence; continuing ordinary staging.");
   }
   const { appendFileSync } = await import("node:fs");
   appendFileSync(process.env.GITHUB_OUTPUT as string, `reused=${reused}\n`);

@@ -129,7 +129,7 @@ Boat remains outside the release gate.
 staging Git auto-deploy before the next Actions server upload; never use missing
 or invalid credentials as permission to return to Git deployment.
 
-Main pushes run **Pinned staging smoke**: migrate staging → deploy pinned server
+Main pushes start **Release**, whose completion wakes **Pinned staging smoke**: migrate staging → deploy pinned server
 → wait for that Railway deployment and public version health → build dashboard
 in Actions → upload prebuilt output → sandbox smoke. There is one staging writer,
 not an independent migration job plus provider-triggered deployments. No PR,
@@ -282,14 +282,15 @@ proceeds, regardless of stale queued Release rows in the Actions API. Already
 admitted deployments finish safely. Preparation and dry runs briefly serialize on
 the lock too, but do not create a separate reservation or read production configuration.
 
-A `workflow_run` completion wakeup (success, failure or cancellation) resolves current main,
-not the release SHA, and uses the ordinary staging path. Push/completion wakeups
-coalesce in the same latest-main group; the final Release completion leaves a
-newest-main wakeup waiting on the lock, rather than a successful no-deploy deferral.
-A completion coalesces with an authenticated successful push deployment only when
-its deployment step began after that Release finished and live health still proves
-the same version and commit. It reports a neutral coalescing summary; unavailable
-or ambiguous evidence falls back to deployment. Pinned release calls always require
+A `workflow_run` completion wakeup (success, failure or cancellation) is the
+sole automatic ordinary staging trigger. GitHub supplies the default-branch
+SHA for the completion event. The deploy step checks that SHA against main
+before mutation, so a newer push can supersede queued work. Repeated wakeups
+share the latest-main group. A wakeup coalesces when a trusted ordinary run
+successfully deployed and smoked the same SHA and staging health still identifies
+it as live. This includes existing push runs during the transition. It reports a
+neutral coalescing summary. Unavailable or ambiguous evidence falls back to
+deployment. Pinned release calls always require
 fresh exact-schema acceptance and never use this optimization.
 Manual workflow_dispatch uses the same lock and proceeds too. Waiting admission
 is visibly queued in Actions, never a green deployment with every mutation skipped.

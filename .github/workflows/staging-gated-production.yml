@@ -1,8 +1,7 @@
 name: Pinned staging smoke
 
 on:
-  push:
-    branches: [main]
+  # Main pushes already start Release. Its completion is the sole automatic wakeup.
   workflow_dispatch:
   workflow_run:
     workflows: [Release]
@@ -80,7 +79,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ inputs.source_sha || (github.event_name == 'workflow_run' && 'main') || github.sha }}
+          ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
       - uses: ./.github/actions/setup-bun
       - name: Authenticate ordinary staging source after acquiring admission
@@ -110,7 +109,7 @@ jobs:
       - name: Report coalesced completion wakeup
         if: steps.evidence.outputs.reused == 'true'
         run: |
-          echo "::notice::Completion wakeup coalesced with successful newest-main deployment after Release completed."
+          echo "::notice::Completion wakeup coalesced with successful deployment and smoke of the live staging SHA."
           echo "### Neutral: completion wakeup coalesced; no new deployment" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         if: (steps.evidence.outputs.reused != 'true' && inputs.official_image == true)
