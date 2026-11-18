@@ -11,9 +11,11 @@ import {
 } from "@armada/core/server";
 import { admitAccountCapacity } from "./account-capacity.ts";
 import type { Caller } from "./caller.ts";
+import { DOCKER_SEND_REFUSAL, DOCKER_SEND_REQUEST } from "./docker-send-request-schema.ts";
 import { queuedPromptAliases } from "./queued-prompt-ids.ts";
 import type { RuntimeFollowupInput } from "./runtime-followup.ts";
 import { sandboxControlRefusal } from "./sandbox-control-refusal.ts";
+import { ToolError } from "./tools.ts";
 
 const RUNTIME_REQUEST_EVIDENCE = `(s.activity_lease_id=q.request_id
   or exists(select 1 from public.runtime_commands c where c.sandbox_id=s.id and c.request_id in ('follow_'||q.request_id::text,'docker_prompt_'||q.request_id::text,'resume_'||q.request_id::text))
@@ -77,7 +79,6 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
     return "Prompt accepted; waiting for sandbox dispatch, not an account slot.";
   }
   async function accept(caller: Caller, input: RuntimeFollowupInput) {
-    if (!input.prompt.trim()) throw new VaultError("invalid", "The prompt is empty.");
     const requestId = input.request_id?.toLowerCase() ?? randomUUID();
     const normalized = {
       id: input.id,
@@ -129,6 +130,11 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         new Date(),
       );
       if (refusal) throw new VaultError("conflict", refusal);
+      // Docker admission rules apply before the request key is used or anything is persisted:
+      // a keyless Docker send must be refused, not queued under a fresh UUID.
+      if (target.provider === "docker" && !DOCKER_SEND_REQUEST.safeParse(input).success)
+        throw new ToolError("invalid_request", DOCKER_SEND_REFUSAL);
+      if (!input.prompt.trim()) throw new VaultError("invalid", "The prompt is empty.");
       if (!target.credential_id) return null;
       if (target.boat_runtime || target.runtime_transport === "dialout" || target.provider === "docker") {
         if (

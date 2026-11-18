@@ -32,9 +32,10 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { z } from "zod";
 import { dockerLaunchBody, launchedDockerSandbox } from "../../../apps/dashboard/src/lib/docker-launch.ts";
 import { Armada, ArmadaError, type DockerSendInput, type SendInput } from "../../sdk/src/index.ts";
+import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import { apiFailureCode } from "../src/api-failure.ts";
 import type { Caller } from "../src/caller.ts";
-import { type ControlOptions, handleControlRequest } from "../src/control.ts";
+import { type ControlOptions, dispatchControlCommand, handleControlRequest } from "../src/control.ts";
 import { readLogs } from "../src/control-logs.ts";
 import { createSqlData } from "../src/data.ts";
 import { createDockerBootstrapService } from "../src/docker-bootstrap-service.ts";
@@ -892,6 +893,71 @@ test("SDK sends to a Docker sandbox meet the published Docker variant exactly wh
   void [unkeyed, override];
 });
 
+test("Docker sends through the production-wired account queue refuse unkeyed and override input before queuing, and admitted rows still dispatch", async () => {
+  const f = await fixture();
+  await f.service().launch(f.caller, f.body);
+  // Wired as serve.ts does: REST sends reach the account queue first, and the queue
+  // dispatches through the same route without itself, with Docker in dispatch mode.
+  const accountTurns = createAccountTurnQueue(sql, key);
+  const dockerControls = (dispatchQueued: boolean) =>
+    createDockerSandboxControls(sql, key, {
+      clock: f.clock,
+      send: createDockerNormalSend(sql, key, { enabled: true, clock: f.clock, dispatchQueued }),
+    });
+  const { options, bearer } = restControl(f, { dockerControls: dockerControls(false), accountTurns });
+  const { accountTurns: _queue, ...unqueued } = options;
+  accountTurns.setDispatch((caller, input) =>
+    dispatchControlCommand("sandbox/send", caller, { ...input }, { ...unqueued, dockerControls: dockerControls(true) }),
+  );
+  const sdk = new Armada({
+    token: bearer,
+    url: "https://armada.example",
+    fetch: async (url, init) => {
+      const response = await handleControlRequest(new Request(String(url), init), options);
+      if (!response) throw Error("Missing normal control route");
+      return response;
+    },
+  });
+  const ref = { org: f.actor.orgId, id: f.body.requestId };
+  const rows = async () =>
+    (
+      await database().query<{ request_id: string }>(
+        "select request_id::text from public.account_turn_queue where sandbox_id=$1",
+        [ref.id],
+      )
+    ).rows.map((row) => row.request_id);
+  const refused: SendInput[] = [
+    { ...ref, prompt: "No request key" },
+    { ...ref, prompt: "No request key" },
+    { ...ref, prompt: "Per-turn model", request_id: randomUUID(), model: "normal-http-model" },
+    { ...ref, prompt: "Uppercase key", request_id: randomUUID().toUpperCase() },
+    { ...ref, prompt: "   ", request_id: randomUUID() },
+  ];
+  for (const input of refused)
+    expect(await sdk.send(input).catch((caught: unknown) => caught)).toMatchObject({
+      code: "invalid_request",
+      status: 400,
+      outcomeUnknown: false,
+    });
+  expect(await rows()).toEqual([]);
+  const keyed: DockerSendInput = { ...ref, prompt: "Queued keyed follow-up", request_id: randomUUID() };
+  const receipt = await sdk.send(keyed);
+  expect(receipt).toMatchObject({ requestId: keyed.request_id, status: "queued" });
+  // An identical retry returns the same durable receipt instead of queuing again.
+  expect(await sdk.send(keyed)).toMatchObject({ requestId: keyed.request_id, promptId: receipt.promptId });
+  expect(await rows()).toEqual([keyed.request_id]);
+  const dispatched = f.native.length;
+  // The launch turn has finished, so the sandbox is free for the queued turn.
+  await database().query(
+    "insert into public.runtime_idle_turns(sandbox_id,prompt_id,settled) select id,task_prompt_id,true from public.sandboxes where id=$1",
+    [ref.id],
+  );
+  expect(await accountTurns.reconcileOne(new AbortController().signal)).toBe(true);
+  await accountTurns.drain();
+  expect(f.native.slice(dispatched)).toEqual([
+    expect.objectContaining({ op: "prompt", input: expect.objectContaining({ text: keyed.prompt }) }),
+  ]);
+});
 test("the normal HTTP route accepts the dashboard body and returns a launched sandbox readable through normal controls", async () => {
   const f = await fixture();
   const body = dockerLaunchBody({

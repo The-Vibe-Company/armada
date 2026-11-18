@@ -27,3 +27,7 @@ export const DOCKER_SEND_REQUEST = z
   .describe(
     "Docker admission rules: request_id is required, and model and reasoning_effort are refused because they remain pinned to launch.",
   );
+
+/** Public guidance for a send that Docker admission refuses, wherever it is admitted. */
+export const DOCKER_SEND_REFUSAL =
+  "Docker send requires a lowercase UUID request_id and a non-blank prompt of at most 256 KiB; model and reasoning_effort are refused because they stay pinned to launch.";

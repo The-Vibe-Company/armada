@@ -4,7 +4,7 @@ import type { Caller } from "./caller.ts";
 import { createDockerLaunchEnvironment } from "./docker-launch-environment.ts";
 import { createDockerQueuedPrompts } from "./docker-queued-prompts.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
-import { DOCKER_SEND_REQUEST } from "./docker-send-request-schema.ts";
+import { DOCKER_SEND_REFUSAL, DOCKER_SEND_REQUEST } from "./docker-send-request-schema.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
 import { ToolError } from "./tools.ts";
@@ -51,11 +51,7 @@ export function createDockerNormalSend(
       const parsed = DOCKER_SEND_REQUEST.safeParse(args);
       // Armada's own request validation, not a provider diagnostic: its message is the public
       // guidance (a ProviderError invalid_request would be replaced by generic launch help).
-      if (!parsed.success)
-        throw new ToolError(
-          "invalid_request",
-          "Docker send requires a lowercase UUID request_id and a non-blank prompt of at most 256 KiB; model and reasoning_effort are refused because they stay pinned to launch.",
-        );
+      if (!parsed.success) throw new ToolError("invalid_request", DOCKER_SEND_REFUSAL);
       const input = parsed.data;
       if (!options.dispatchQueued) {
         const queued = await createDockerQueuedPrompts(sql, key).accept(caller, row.id, row.org_id, {
