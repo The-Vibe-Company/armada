@@ -48,8 +48,9 @@ export class ToolApiError extends Error {
     readonly code: string,
     message: string,
     readonly details?: ToolErrorDetails,
+    options?: ErrorOptions,
   ) {
-    super(message);
+    super(message, options);
   }
   get status(): number {
     if (Object.hasOwn(API_FAILURE_STATUS, this.code)) return API_FAILURE_STATUS[this.code as ApiFailureCode];

@@ -23,12 +23,12 @@ test("balanced shards include new files exactly once without depending on discov
   );
 });
 
-test("the planner assigns less test time to a shard with a higher static reserve", () => {
-  const files = Array.from({ length: 24 }, (_, i) => `file-${i}`);
-  const plan = planShards(files, {}, { 1: 1, 4: 5 });
-  // Every file costs one second, so file count is the test load.
-  expect(plan[3]!.length).toBeLessThan(plan[0]!.length);
-  expect(plan[0]!.length).toBeLessThan(plan[1]!.length);
+test("the planner budgets serial checks against two parallel test workers", () => {
+  const files = Array.from({ length: 26 }, (_, i) => `file-${i}`);
+  const reserve: Record<number, number> = { 4: 2 };
+  const plan = planShards(files, {}, reserve);
+  const wallTimes = plan.map((shard, index) => Math.ceil(shard.length / 2) + (reserve[index + 1] ?? 0));
+  expect(Math.max(...wallTimes)).toBe(3);
 });
 
 test("coverage guard refuses missing, duplicate, foreign and empty shard assignments", () => {

@@ -18,10 +18,11 @@ test("weekly fix share includes GitHub squash and merge commits inside the selec
 
 test("latency SQL aggregates the first event within the command's sandbox, epoch and time window", () => {
   const sql = deliveryQueries.runtimeCommandToFirstEvent;
-  expect(sql).toMatch(/min\(created_at\)/i);
-  expect(sql).toMatch(/event\.sandbox_id\s*=\s*command\.sandbox_id and event\.epoch\s*=\s*command\.epoch/i);
-  expect(sql).toMatch(/event\.created_at >= command\.created_at/);
-  expect(sql).toMatch(/event\.created_at < command\.next_at/);
+  expect(sql).toMatch(/min\(created_at\) filter \(where not is_command\)/i);
+  expect(sql).toMatch(
+    /partition by sandbox_id, epoch order by created_at desc\s+range between unbounded preceding and current row/i,
+  );
+  expect(sql).toMatch(/where is_command and event_at is not null\s+and \(next_at is null or event_at < next_at\)/i);
   expect(sql).toMatch(/percentile_cont\(0\.50\).*"p50Ms"/);
   expect(sql).toMatch(/percentile_cont\(0\.95\).*"p95Ms"/);
 });

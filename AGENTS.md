@@ -7,6 +7,7 @@ Armada v1 (the fleet orchestrator) is archived at the tag `armada-v1-final`. Its
 ## Layout
 
 - `packages/core` (`@armada/core`): shared contracts/version, provider and harness catalogs, launch/golden/work-preservation policy, credentials, vault, templates and routines. `src/index.ts` (`.`) is browser-safe: no reachable Node builtins or server I/O; `src/server.ts` (`./server`) additionally exports filesystem, process, signing, SQL and service implementations. `boat-snapshot-name.ts` is server-only. `crypto.ts` is the single AES-256-GCM (`iv || ciphertext || tag`) implementation under `ARMADA_ENCRYPTION_KEY`.
+- API operation metadata and shared request schemas belong in the browser-safe `@armada/core/contract` subpath. Keep authorization and provider admission in the server.
 - Provider identity: `core/src/sandbox-provider.ts` defines golden providers Boat/Modal, host capabilities and immutable Modal workspace/environment/App binding. Build goldens separately per provider; never invent Boat aliases for Modal or plain-image Docker rows. Docker preview has separate host-bound APIs and additive launch discovery, not a golden source or enabled normal sandbox-control handler.
 - `supabase/migrations`: append-only schema/RLS history; `core/src/database.types.ts` is generated (`bun run db:types`). Supabase's broad defaults are revoked by `20261108190000_revoke_default_grants.sql`; new user-JWT access needs explicit grants. No JWT can select token hashes or `*_enc`. JWT writes must name returned columns (`select=`), never request bare `*`. `scripts/db/supabase-prereq.sql` reproduces Supabase defaults for tests.
 - `packages/auth`: Supabase login, OAuth server, service tokens and bearer verification. Tokens persist as lowercase SHA256; service-role bearer verification is uncached. `packages/cli` is the API-only `armada` client: `src/run.ts` takes injected I/O, `armada-api.ts` calls `/api/v1/`, and `session.ts` stores only the Armada login (or use `ARMADA_TOKEN`). No provider/database credentials or adapters belong in its runtime graph.
@@ -102,6 +103,8 @@ Rules for a test:
 Adding a CI job or a required check is the owner's decision, never an agent's. Where something is tested: logic in a unit test; a provider, a golden, a full lifecycle in the post-deploy smoke; a screen by opening it on staging.
 
 ## Rules
+
+- **Landmines rules are mandatory.** Give the reason for any inline disable in the PR, and only shrink baselines.
 
 - **Separate client and server.** `armada` is an API-only client; `armada-server` contains the server and provider/database adapters. Both compile with Bun. Never import Supabase, provider implementations or server startup into the CLI runtime dependency graph.
 - **One version.** Every `packages/*/package.json` carries the same version; `@armada/core` exports it and `armada --version` prints it.

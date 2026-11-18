@@ -19,11 +19,11 @@ rescue-ref pushing and external object storage are deliberately out of scope.
 ## Retrieval and restore
 
 `armada status <sandbox-id>` and `armada list` show a preservation receipt.
-Use `armada recovery <sandbox-id>` (or MCP `work_recovery`) to retrieve the latest
-archive as base64 JSON. MCP also accepts `recovery_id` from an earlier receipt;
-subsequent stops never overwrite older archives. These are sensitive responses:
+Use `armada recovery <sandbox-id>` to retrieve the latest archive as base64 JSON.
+To retrieve an older archive, pass its `recovery_id` to `POST /api/v1/sandbox/recovery`.
+Subsequent stops never overwrite older archives. These are sensitive responses:
 redirect to a private file, not a shared transcript. Archives are retained until
-the sandbox is deleted (`armada rm <id> --yes`, API DELETE `/api/v1/sandboxes/:id`, or MCP `delete`); ordinary stop does not delete them. Deletion requires the owner or a current org admin and a stopped/failed sandbox. Provider deletion errors or queued/pending deletion leave the row and archives intact. Retry deletion after the short activity lease (up to two minutes); do not resume a sandbox with deletion pending. Replays after completed deletion are safe.
+the sandbox is deleted (`armada rm <id> --yes`, or API DELETE `/api/v1/sandboxes/:id`); ordinary stop does not delete them. Deletion requires the owner or a current org admin and a stopped/failed sandbox. Provider deletion errors or queued/pending deletion leave the row and archives intact. Retry deletion after the short activity lease (up to two minutes); do not resume a sandbox with deletion pending. Replays after completed deletion are safe.
 
 Decode the `archive` field to a tar file. Extract only into an empty private
 directory (treat paths and symlinks as untrusted). `manifest.json` maps `repo-N`

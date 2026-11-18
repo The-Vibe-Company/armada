@@ -1438,7 +1438,7 @@ describe("control API", () => {
     });
   });
 
-  test("golden/list uses MCP visibility rules and service-token org scope", async () => {
+  test("golden/list enforces private visibility and service-token org scope", async () => {
     await withServer(async ({ db, options }) => {
       const orgA = (await options.store.createOrg("A", STAN)).id;
       const orgB = (await options.store.createOrg("B", STAN)).id;

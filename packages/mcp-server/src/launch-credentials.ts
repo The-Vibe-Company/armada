@@ -300,7 +300,17 @@ export async function exposedSecrets(
     for (const row of await reader.credentials(scope, owner)) {
       if (!SECRET_KINDS.includes(row.kind)) continue;
       const value = await decryptSecret(new Uint8Array(row.valueEnc), encryptionKey);
-      if ((row.kind === "openai" || row.kind === "anthropic" || row.kind === "opencode") && value.startsWith("{")) {
+      if (row.kind === "morph" && value.trimStart().startsWith("{")) {
+        try {
+          const { apiKey } = JSON.parse(parseCredentialValue(row.kind, value));
+          values.push(value, apiKey);
+        } catch {
+          values.push(value, ...jsonLeaves(value));
+        }
+      } else if (
+        (row.kind === "openai" || row.kind === "anthropic" || row.kind === "opencode") &&
+        value.startsWith("{")
+      ) {
         const connection = JSON.parse(parseCredentialValue(row.kind, value));
         // Keep full-secret and endpoint/key redaction, not unrelated non-secret numeric prices.
         values.push(
