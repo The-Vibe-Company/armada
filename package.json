@@ -10,7 +10,7 @@
   ],
   "scripts": {
     "armada": "bun packages/cli/src/main.ts",
-    "lint": "biome check . && bun scripts/ci/docs-guard.ts",
+    "lint": "biome check . && bun scripts/ci/docs-guard.ts && bun scripts/ci/table-owners.ts",
     "format": "biome check --write .",
     "typecheck": "tsc --noEmit && tsc --noEmit -p apps/dashboard",
     "test": "bun test",
