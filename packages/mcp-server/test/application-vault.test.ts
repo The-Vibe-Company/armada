@@ -345,7 +345,8 @@ describe("application vault control API", () => {
       expect((await decryptSecret(uploadRow?.value_enc as Uint8Array<ArrayBuffer>, KEY)) === CANARY).toBe(true);
       const args = { org: f.org, uploadReference: ref };
       expect((await f.api(f.owner, "secrets/commit", { ...args, value: CANARY })).status).toBe(400);
-      expect((await f.api(f.owner, "secrets/commit", { ...args, org: f.other })).status).toBe(403);
+      await f.db.query("insert into members(org_id,user_id,role) values($1,$2,'member')", [f.other, f.owner]);
+      expect((await f.api(f.owner, "secrets/commit", { ...args, org: f.other })).status).toBe(404);
       expect((await f.api(f.peer, "secrets/commit", args)).status).toBe(404);
       const committed = await f.api(f.owner, "secrets/commit", args);
       expect(committed.status).toBe(200);
