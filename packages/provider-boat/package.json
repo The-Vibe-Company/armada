@@ -8,10 +8,6 @@
   },
   "dependencies": {
     "@armada/core": "workspace:*",
-    "@boatdev/sdk": "^1.13.0",
-    "tar-stream": "3.1.7"
-  },
-  "devDependencies": {
-    "@types/tar-stream": "^3.1.5"
+    "@boatdev/sdk": "^1.13.0"
   }
 }

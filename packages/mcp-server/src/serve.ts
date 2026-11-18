@@ -593,6 +593,7 @@ export async function startServer(
     createMcpSandboxProviderResolver(sql, providers, { terminalObservation: true }),
     ...(config.encryptionKey ? [createDockerOutputReader(sql, config.encryptionKey)] : []),
   );
+  let configureDockerArchiveTimeout: ((request: Request) => void) | undefined;
   const handler = createHandler({
     ...(dockerControls ? { dockerControls } : {}),
     runtimeSend,
@@ -675,6 +676,7 @@ export async function startServer(
                 }),
               {
                 placement: dockerLaunchEnabled,
+                configureArchiveTimeout: (request) => configureDockerArchiveTimeout?.(request),
                 publicUrl: config.publicUrl,
                 snapshots: createDockerSnapshots(sql, config.encryptionKey, {
                   enabled: dockerLaunchEnabled,
@@ -746,6 +748,8 @@ export async function startServer(
   // Only authenticated normal Docker launches opt out; their service deadline
   // remains bounded, and other providers/routes keep their existing timeouts.
   control.configureDockerLaunchRequest = (request) => server.timeout(ingressRequest(request), 0);
+  // Archive validation and encrypted chunk publication have their own bounded deadline.
+  configureDockerArchiveTimeout = (request) => server.timeout(ingressRequest(request), 45);
   const { accountTurns: _queue, ...unqueuedControl } = control;
   accountTurns.setDispatch((caller, input) =>
     dispatchControlCommand(

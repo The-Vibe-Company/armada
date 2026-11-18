@@ -8,7 +8,7 @@ import Foundation
 protocol SandboxLauncher: Sendable {
     /// `launch/options`, `golden/list` and `creds/list` for the selected organization.
     func launchCatalog(orgID: String) async throws(ServiceFailure) -> ArmadaKit.SandboxLaunchCatalog
-    /// `sandbox/launch-sized-v1`, sent exactly once. On success, the new sandbox as the list shows it.
+    /// `sandbox/launch`, sent exactly once. On success, the new sandbox as the list shows it.
     func launch(_ request: ArmadaKit.SandboxLaunchRequest) async throws(ArmadaKit.SandboxLaunchFailure) -> SandboxSummary
 }
 

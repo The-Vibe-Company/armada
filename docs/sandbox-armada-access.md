@@ -5,7 +5,7 @@ method separately using existing pinned Skillpack launch skills.
 
 ## API / CLI
 
-`POST /api/v1/sandbox/launch-access-v1` accepts normal launch fields plus
+`POST /api/v1/sandbox/launch` accepts normal launch fields plus
 `armadaAccessVersion: 1`, `armadaAccess: true` (or
 `{ "maxActiveChildren": 3 }`) and an explicit named `credentialId`. Limits are
 1–100, default 3. Existing launch routes also accept `armadaAccess`; omitted or

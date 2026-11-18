@@ -9,7 +9,7 @@ import {
   OUTPUT_COLLECTOR,
 } from "@armada/core/server";
 import type { Image, ModalClient, Sandbox } from "modal";
-import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
+import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import { type Driver, Journal, Runner } from "../../agent-runtime/src/index.ts";
 import { createMemoryAuthStore } from "../../auth/src/index.ts";
 import { sandboxFailure } from "../../cli/src/sandbox-errors.ts";
@@ -33,7 +33,7 @@ import {
   settleDetachedModalCollections,
 } from "../src/index.ts";
 
-let db: Awaited<ReturnType<typeof openDatabase>>;
+let db: Awaited<ReturnType<typeof openMigratedDatabase>>;
 const scope: Scope = {
   orgId: "00000000-0000-0000-0000-000000000001",
   userId: "00000000-0000-0000-0000-000000000002",
@@ -41,8 +41,7 @@ const scope: Scope = {
   binding: { workspace: "label-only", environment: "main", appId: "ap_pinned" },
 };
 beforeAll(async () => {
-  db = await openDatabase();
-  await applyMigrations(db);
+  db = await openMigratedDatabase();
   await db.query("insert into auth.users(id) values($1)", [scope.userId]);
   await db.query("insert into auth.users(id) values($1)", ["00000000-0000-0000-0000-000000000004"]);
   await db.query("insert into orgs(id,name) values($1,'modal')", [scope.orgId]);

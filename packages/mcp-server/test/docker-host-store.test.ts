@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { DOCKER_IMAGE_UNAVAILABLE_MESSAGE, DOCKER_LAUNCH_FAILURE_MESSAGES, type Sql } from "@armada/core";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
 import { admitDockerDisk, DockerHostDraining } from "../src/docker-capacity.ts";
+import { createDockerHostRoutes } from "../src/docker-host-routes.ts";
 import { createDockerHostStore, DockerHostDenied } from "../src/docker-host-store.ts";
 import { SNAPSHOT_COLUMNS } from "../src/docker-snapshot-data.ts";
 import { createSandboxAccessServices } from "../src/sandbox-access-services.ts";
@@ -668,6 +669,72 @@ test("host-confirmed frozen expiry fences runtime once, survives owner removal a
     await store.expired(a.hostToken, a.installationId, { requestId: a.startup.requestId });
     expect(await lifecycle(a.sandboxId)).toEqual(deleted);
   }
+});
+
+async function stoppedOutputArchive() {
+  const bytes = Buffer.from(
+    await new Bun.Archive({ "outputs/": "", "outputs/late.txt": "after the live sample" }).bytes(),
+  );
+  // Bun.Archive emits a regular entry for the root key. Make it a ustar directory.
+  bytes[156] = 53;
+  bytes.fill(32, 148, 156);
+  const checksum = bytes.subarray(0, 512).reduce((sum, byte) => sum + byte, 0);
+  bytes.write(checksum.toString(8).padStart(6, "0") + "\0 ", 148, "ascii");
+  return bytes;
+}
+
+test("a complete stopped Docker archive replaces the live sample, while a truncated copy leaves it intact", async () => {
+  const a = await boundStartup("create");
+  await database().query(
+    `insert into sandbox_outputs(sandbox_id,name,digest,size,content_enc) values($1,'previous.txt',$2,3,$3)`,
+    [a.sandboxId, createHash("sha256").update("old").digest("hex"), await encryptSecret("b2xk", key)],
+  );
+  await store.expired(a.hostToken, a.installationId, { requestId: a.startup.requestId });
+  const route = createDockerHostRoutes(store, async () => {
+    throw Error("Host upload used user auth");
+  });
+  const upload = (body?: Uint8Array<ArrayBuffer>) =>
+    route(
+      new Request("https://armada.example/api/docker-host/retained-outputs", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${a.hostToken}`,
+          "x-armada-installation-id": a.installationId,
+          "x-armada-request-id": a.startup.requestId,
+          ...(body ? { "content-type": "application/x-tar" } : {}),
+        },
+        ...(body ? { body } : {}),
+      }),
+    );
+  const names = async () =>
+    (
+      await database().query<{ name: string }>("select name from sandbox_outputs where sandbox_id=$1", [a.sandboxId])
+    ).rows.map(({ name }) => name);
+  const archive = await stoppedOutputArchive();
+  expect((await upload())?.status).toBe(202);
+  expect((await upload(archive.subarray(0, 1536)))?.status).toBe(503);
+  expect(await names()).toEqual(["previous.txt"]);
+  expect((await upload(archive))?.status).toBe(204);
+  expect(await names()).toEqual(["late.txt"]);
+  const chunk = (
+    await database().query<{ content_enc: Uint8Array<ArrayBuffer> }>(
+      `select c.content_enc from sandbox_output_chunks c join sandbox_outputs o on c.transfer_id=o.transfer_id
+       where o.sandbox_id=$1 and o.name='late.txt'`,
+      [a.sandboxId],
+    )
+  ).rows[0];
+  if (!chunk) throw Error("missing encrypted output");
+  expect(Buffer.from(await decryptSecret(chunk.content_enc, key), "base64").toString()).toBe("after the live sample");
+  expect((await upload())?.status).toBe(204);
+});
+
+test("stopped Docker output admission refuses application-secret taint before reading", async () => {
+  const a = await boundStartup("create");
+  await database().query("update sandboxes set application_secret_tainted=true where id=$1", [a.sandboxId]);
+  await store.expired(a.hostToken, a.installationId, { requestId: a.startup.requestId });
+  expect(
+    await store.retainedOutputs(a.hostToken, a.installationId, a.startup.requestId, null, new AbortController().signal),
+  ).toBe(204);
 });
 
 test("expiry accepts only this installation's bound frozen startup machine, never arbitrary mailbox claims", async () => {

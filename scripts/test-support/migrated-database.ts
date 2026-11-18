@@ -1,9 +1,11 @@
 import { PGlite } from "@electric-sql/pglite";
 import { applyMigrations, openDatabase } from "../db/apply.ts";
 
+export const MIGRATED_DATABASE_TEMPLATE_ENV = "ARMADA_TEST_MIGRATED_DATABASE_TEMPLATE";
+
 let template: Promise<Blob> | undefined;
 
-async function migratedTemplate(): Promise<Blob> {
+export async function migratedTemplate(): Promise<Blob> {
   const db = await openDatabase();
   try {
     await applyMigrations(db);
@@ -16,7 +18,8 @@ async function migratedTemplate(): Promise<Blob> {
 
 /** Share only immutable schema bytes within this worker, never a live connection or test data. */
 export async function openMigratedDatabase(): Promise<PGlite> {
-  template ??= migratedTemplate();
+  const sharedPath = process.env[MIGRATED_DATABASE_TEMPLATE_ENV];
+  template ??= sharedPath ? Promise.resolve(Bun.file(sharedPath)) : migratedTemplate();
   const db = new PGlite({ loadDataDir: await template });
   try {
     await db.waitReady;

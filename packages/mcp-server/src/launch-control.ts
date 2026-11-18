@@ -1,4 +1,4 @@
-import type { Harness } from "@armada/core";
+import type { Harness, VaultStore } from "@armada/core";
 import {
   goldenCompatibilityIds,
   isExternalRef,
@@ -18,13 +18,14 @@ import {
   type Provider,
   resolveBoatKey,
   resolveModelChoice,
+  resolveOrg,
   resolveRepositoryDir,
   VaultError,
 } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import type { ControlOptions } from "./control.ts";
 import { scopedOrg } from "./control-caller.ts";
-import { isLaunchConnectionList, optional, required, requiredNumber } from "./control-input.ts";
+import { isLaunchConnectionList, optional, required, requiredNumber, UUID } from "./control-input.ts";
 import type { ScopedData } from "./data.ts";
 import { providerForGolden } from "./golden-control.ts";
 import { launchCredentials } from "./launch-credentials.ts";
@@ -93,7 +94,7 @@ export async function launchRoute(
   const harness = required(body, "harness");
   if (!isHarness(harness)) throw new VaultError("invalid", "The agent is claude or codex.");
   const data = options.data(caller);
-  const actor = await launchActor(data, caller, name, optional(body, "org"));
+  const actor = await launchActor(data, caller, name, optional(body, "org"), options.store);
   const golden = await goldenForLaunch(
     data.goldens,
     actor,
@@ -225,10 +226,13 @@ export async function launchActor(
   caller: Caller,
   name: string,
   org: string | undefined,
+  store: VaultStore,
 ): Promise<GoldenActor> {
   const selected = org === undefined ? undefined : scopedOrg(caller, org);
   if (selected !== undefined) {
-    const member = caller.orgs.find((item) => item.orgId === selected);
+    const ref = selected.trim().toLowerCase();
+    const id = UUID.test(ref) ? ref : (await resolveOrg(store, caller.userId, selected)).id;
+    const member = caller.orgs.find((item) => item.orgId === id);
     if (!member) throw new VaultError("forbidden", "This token is scoped to another org.");
     return { userId: caller.userId, orgId: member.orgId, role: member.role };
   }

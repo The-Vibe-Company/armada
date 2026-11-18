@@ -1206,11 +1206,12 @@ describe("control API", () => {
         );
       const request = {
         golden: "web",
+        org: "keyed",
         harness: "claude",
         idempotencyKey: "tender-0001-launch",
         externalRef: "tender:1",
       };
-      publishedRequest("sandbox/launch").parse({ org, ...request });
+      publishedRequest("sandbox/launch").parse(request);
       const malformed = await call("sandbox/launch", { ...request, ttl_seconds: 60 });
       expect(malformed?.status).toBe(400);
       expect(boat.forks).toHaveLength(0);

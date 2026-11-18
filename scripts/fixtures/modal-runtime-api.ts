@@ -398,19 +398,8 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
       credentialRequests: defects.includes("github-no-acquisition") ? 0 : 1,
     });
   }
-  if (
-    path.endsWith("/sandbox/launch-modal-runtime-v1") ||
-    path.endsWith("/sandbox/launch") ||
-    path.endsWith("/templates/launch")
-  ) {
-    if (
-      path !==
-      (ordinary
-        ? variables
-          ? "/api/v1/templates/launch"
-          : "/api/v1/sandbox/launch"
-        : "/api/v1/sandbox/launch-modal-runtime-v1")
-    )
+  if (path.endsWith("/sandbox/launch") || path.endsWith("/templates/launch")) {
+    if (path !== (variables ? "/api/v1/templates/launch" : "/api/v1/sandbox/launch"))
       throw Error("wrong default launch route");
     if (ordinary && ["runtimeVersion", "runtimeTransport", "boatRuntime"].some((key) => Object.hasOwn(body, key)))
       throw Error("ordinary launch must not opt itself in");

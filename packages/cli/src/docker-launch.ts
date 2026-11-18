@@ -4,19 +4,17 @@ import {
   type DockerLaunchRequest,
   type DockerLaunchResult,
   GoldenError,
-  HARNESSES,
-  type Harness,
   MAX_MCP_CONNECTIONS,
   parseApplicationSecretBindings,
   parseReadableVariableBindings,
   resolveModelChoice,
   validateSkillPins,
 } from "@armada/core";
-import { invalidAgentMessage } from "./agent-validation.ts";
+import { requireLaunchAgent } from "./agent-validation.ts";
 import { type Args, flag, single, values } from "./args.ts";
 import { ArmadaApiError, createArmadaApiClient } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
-import { resolveHost } from "./host-commands.ts";
+import { resolveHost, resolveHostOrganization } from "./host-commands.ts";
 import { parseTtl } from "./operations.ts";
 
 const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
@@ -45,15 +43,14 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
   ]);
   if ([...args.options.keys()].some((key) => !allowed.has(key)) || args.positionals.length > 1)
     throw new GoldenError("invalid_config", "Docker launch takes at most one prompt and no snapshot or size.");
-  const harness = (single(args, "--agent") ?? "codex") as Harness;
-  if (!HARNESSES.includes(harness)) throw new GoldenError("invalid_config", invalidAgentMessage());
+  const harness = requireLaunchAgent(single(args, "--agent"));
   const requiredId = (flag: string) => {
     const value = single(args, flag);
     if (!value || !uuid.test(value))
       throw new GoldenError("invalid_config", `${flag} requires a UUID for Docker launch.`);
     return value.toLowerCase();
   };
-  const org = requiredId("--org");
+  const org = single(args, "--org");
   const credentialId = single(args, "--credential-id") === undefined ? undefined : requiredId("--credential-id");
   const snapshotId = single(args, "--golden");
   if (snapshotId !== undefined && !uuid.test(snapshotId))
@@ -119,7 +116,11 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
   if (selected && (selected.length > MAX_MCP_CONNECTIONS || selected.some((id) => !uuid.test(id))))
     throw new GoldenError("invalid_config", `Connections require 1–${MAX_MCP_CONNECTIONS} comma-separated UUIDs.`);
   const client = await createArmadaApiClient(auth, { preserveServerErrors: true });
-  const hostId = selector ? await resolveHost(client, org, selector) : undefined;
+  const hostId = selector
+    ? uuid.test(selector)
+      ? selector.toLowerCase()
+      : await resolveHost(client, await resolveHostOrganization(client, org), selector)
+    : undefined;
   const body: DockerLaunchRequest = {
     ...(secretBindings.length ? { secrets: secretBindings } : {}),
     ...(variableBindings.length ? { variables: variableBindings } : {}),
@@ -133,7 +134,7 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
           ).repos,
         }
       : {}),
-    org,
+    ...(org === undefined ? {} : { org }),
     provider: "docker",
     ...(hostId ? { hostId } : {}),
     ...(snapshotId ? { snapshotId } : {}),

@@ -829,7 +829,7 @@ async function runPostDeploySmoke(
           golden?: { id: string };
           promptId?: string;
         }>(
-          scopedPair && !dirty ? "launch-access-v1" : "launch",
+          "launch",
           {
             ...(scopedPair && !dirty ? { armadaAccessVersion: 1, armadaAccess: { maxActiveChildren: 1 } } : {}),
             golden: item.golden,
@@ -1097,7 +1097,7 @@ async function runPostDeploySmoke(
           // A modest extension fits Modal's existing launch headroom; no wall-clock wait.
           const extension = await sandbox<{ id: string; expiresAt: string; ttlSeconds: number }>("extend", {
             id: sandboxId,
-            ttl_seconds: 1860,
+            ttlSeconds: 1860,
           });
           if (
             extension.id !== sandboxId ||
