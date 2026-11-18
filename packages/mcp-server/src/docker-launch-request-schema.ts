@@ -10,7 +10,16 @@ import { z } from "zod";
 import { DOCKER_PROMPT } from "./docker-send-request-schema.ts";
 
 // Explicit case classes: JSON Schema patterns drop regex flags, so an `/i` flag would not be published.
-export const launchUuid = z.string().regex(/^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$/);
+const launchUuid = z.string().regex(/^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$/);
+export const sharedRestLaunchFields = {
+  harness: z.enum(HARNESSES),
+  credentialId: launchUuid.optional(),
+  skills: z.array(z.string().regex(SKILL_PIN_PATTERN)).max(20).optional(),
+  skipSkillDefaults: z.boolean().optional(),
+  connections: z.array(launchUuid).max(MAX_MCP_CONNECTIONS).optional(),
+  stopWhenWorkMerged: z.boolean().optional(),
+};
+
 const binding = (idField: "variableId" | "secretId") =>
   z.strictObject({ key: z.string(), [idField]: launchUuid, version: z.number().int().min(1) });
 
@@ -36,23 +45,22 @@ const dockerLaunchFields = {
   externalRef: launchCorrelationFields.externalRef,
   org: z.string().min(1).optional().describe("Organization name or UUID. Omit when scoped to one organization."),
   provider: z.literal("docker"),
-  harness: z.enum(HARNESSES),
-  credentialId: launchUuid
-    .optional()
-    .describe("Omit to use the caller's compatible personal default, frozen at admission."),
+  harness: sharedRestLaunchFields.harness,
+  credentialId: sharedRestLaunchFields.credentialId.describe(
+    "Omit to use the caller's compatible personal default, frozen at admission.",
+  ),
   credentialVersion: z.number().int().min(1).optional(),
   prompt: DOCKER_PROMPT.optional().describe("First prompt: not blank. The whole request body is limited to 128 KiB."),
   model: z.string().optional(),
   reasoningEffort: z.string().optional(),
   ttlSeconds: z.number().int().min(1).max(PROVIDER_LIMITS.docker.maxTtlSeconds).optional(),
   visibility: z.literal("private").optional(),
-  skills: z.array(z.string().regex(SKILL_PIN_PATTERN)).max(20).optional(),
-  skipSkillDefaults: z.boolean().optional(),
-  stopWhenWorkMerged: z
-    .boolean()
-    .optional()
-    .describe("Default true: stop the sandbox once every pull request it opened is merged and the agent is idle."),
-  connections: z.array(launchUuid).max(MAX_MCP_CONNECTIONS).optional().describe("MCP connection UUIDs."),
+  skills: sharedRestLaunchFields.skills,
+  skipSkillDefaults: sharedRestLaunchFields.skipSkillDefaults,
+  stopWhenWorkMerged: sharedRestLaunchFields.stopWhenWorkMerged.describe(
+    "Default true: stop the sandbox once every pull request it opened is merged and the agent is idle.",
+  ),
+  connections: sharedRestLaunchFields.connections.describe("MCP connection UUIDs."),
   variables: z.array(binding("variableId")).max(64).optional(),
   secrets: z.array(binding("secretId")).max(64).optional(),
 };
