@@ -52,6 +52,12 @@ const errorClasses = new Set([
   "ResourceExhaustedError",
   "SandboxTimeoutError",
 ]);
+// PostgreSQL schema drift (a missing or failed migration) names only identifiers from our own SQL,
+// never a bound parameter. Keep exactly that shape so operators can see which relation is missing.
+const identifier = String.raw`"[A-Za-z_][\w$]{0,62}(?:\.[A-Za-z_][\w$]{0,62}){0,2}"`;
+const schemaDrift = new RegExp(
+  `^(?:relation|column|type|schema) ${identifier}(?: of relation ${identifier})? does not exist$`,
+);
 const systemCodes = new Set(["ENOSPC", "EACCES", "EPERM", "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "ENOENT"]);
 
 export function failureDiagnostic(error: unknown): FailureDiagnostic {
@@ -80,12 +86,14 @@ function projectError(error: Error): FailureDiagnostic {
         : "Error";
   const code = "code" in error && typeof error.code === "string" ? error.code : "";
   // Pattern redaction cannot identify arbitrary values (for example a password
-  // echoed by an SDK). Only exact, server-owned messages and system codes survive.
+  // echoed by an SDK). Only exact server-owned messages, identifier-only schema drift and system codes survive.
   const message = internalMessages.has(error.message)
     ? error.message
-    : systemCodes.has(code)
-      ? code
-      : "Exception message withheld";
+    : schemaDrift.test(error.message)
+      ? redactKnownTokens(error.message)
+      : systemCodes.has(code)
+        ? code
+        : "Exception message withheld";
   const stackText = error.stack;
   const header = error.message ? `${error.name}: ${error.message}` : error.name;
   const stack = (
