@@ -110,6 +110,16 @@ test("undelivered checkpoint intent and a lost response reconcile after stop wit
     );
     expect(response?.status).toBe(200);
     expect(await response?.json()).toEqual(recovered);
+    await expect(
+      createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, unavailable)({ ...f.caller, userId: f.people.admin }, input),
+    ).rejects.toMatchObject({ code: "not_found" });
+    for (const role of ["anon", "authenticated"]) {
+      const { rows } = await f.db.query<{ ok: boolean }>(
+        "select has_table_privilege($1,'runtime_checkpoints','select,insert,update,delete') as ok",
+        [role],
+      );
+      expect(rows[0]?.ok).toBe(false);
+    }
     expect((await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))?.preservationNote).toContain(
       "host stop is confirmed",
     );

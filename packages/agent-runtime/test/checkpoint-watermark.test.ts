@@ -51,12 +51,10 @@ test("checkpoint interrupts an active turn and publishes its terminal event befo
     token: "offline_checkpoint",
     expiresAt: Date.now() + 60000,
   };
-  const done = Promise.withResolvers<"interrupted">();
-  const started = Promise.withResolvers<void>();
+  const done = Promise.withResolvers<"finished" | "interrupted">();
   const driver: Driver = {
     start(context) {
       context.session("native-thread");
-      started.resolve();
       return {
         done: done.promise,
         async steer() {},
@@ -93,10 +91,14 @@ test("checkpoint interrupts an active turn and publishes its terminal event befo
     const input = { sandboxId: grant.sandboxId, harness: "codex", text: "active turn" };
     const prompt = await call({ requestId: "prompt", op: "prompt", input });
     expect(prompt.status).toBe(200);
-    const { result } = await prompt.json();
-    await started.promise;
+    const { result } = (await prompt.json()) as { result: { promptId: string; conversationId: string } };
 
-    const checkpoint = await call({ requestId: "checkpoint", op: "checkpoint" });
+    const pending = call({ requestId: "checkpoint", op: "checkpoint" });
+    // Let the in-memory request dispatch, then finish normally if it did not interrupt.
+    // This makes a missing interrupt fail the terminal-event assertion without a timeout.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    done.resolve("finished");
+    const checkpoint = await pending;
     expect(checkpoint.status).toBe(200);
     const watermark = journal.highWatermark();
     expect(await checkpoint.json()).toMatchObject({
