@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { admitOutputs, OUTPUT_COLLECTOR, OUTPUT_MAX_ENTRIES, parseCollectorOutput } from "../src/sandbox-outputs.ts";
@@ -40,7 +40,7 @@ function runCollector(root: string) {
 }
 
 test("the real collector bounds admitted files in name order, so excluded entries never hide a deliverable", () => {
-  const root = mkdtempSync(join(tmpdir(), "outputs-"));
+  const root = mkdtempSync(join(realpathSync(tmpdir()), "outputs-"));
   try {
     expect(parseCollectorOutput(runCollector(root).stdout.toString())).toEqual([]);
     const outputs = join(root, "outputs");
@@ -71,7 +71,7 @@ test("the real collector bounds admitted files in name order, so excluded entrie
 });
 
 test("the real collector ignores modules in the caller's working directory and PYTHONPATH", () => {
-  const root = mkdtempSync(join(tmpdir(), "outputs-"));
+  const root = mkdtempSync(join(realpathSync(tmpdir()), "outputs-"));
   try {
     mkdirSync(join(root, "outputs"));
     writeFileSync(join(root, "outputs", "memo.txt"), "document");
@@ -92,7 +92,7 @@ test("the real collector ignores modules in the caller's working directory and P
 });
 
 test("the real collector refuses a symlink in a parent of the declared directory", () => {
-  const root = mkdtempSync(join(tmpdir(), "outputs-"));
+  const root = mkdtempSync(join(realpathSync(tmpdir()), "outputs-"));
   try {
     const home = join(root, "real-home");
     mkdirSync(join(home, "outputs"), { recursive: true });
