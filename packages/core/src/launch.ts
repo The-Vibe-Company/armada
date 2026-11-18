@@ -431,7 +431,7 @@ async function resolveGoldenLaunch(
       harness === "opencode" && choice.model.startsWith(`${OPENCODE_CONNECTION_PROVIDER}/`)
         ? choice.model.slice(OPENCODE_CONNECTION_PROVIDER.length + 1)
         : choice.model;
-    if (!models.includes(selected))
+    if (!models.includes(choice.model) && !models.includes(selected))
       throw new LaunchError("invalid_request", "Choose a Morph plan model configured on this account.");
   }
   const endpointRuntime = launchPlacement.endpointRuntime?.(options);

@@ -489,6 +489,12 @@ describe("named model accounts", () => {
         expectedVersion: account.version!,
         value: "morph_rotated_placeholder",
       });
+      await setCredential(store, KEY, people.stan, {
+        scope: "user",
+        org: undefined,
+        kind: "morph",
+        value: "morph_updated_placeholder",
+      });
       const models = await listConnectionModels(store, KEY, { userId: people.stan, orgId: org.id });
       expect(models).toEqual([
         { id: account.id!, scope: "user", models: [{ model: "morph-custom", input: null, output: null }] },
@@ -499,7 +505,7 @@ describe("named model accounts", () => {
         harness: "opencode",
         credentialId: rotated.id!,
       });
-      expect(resolved.env.OPENCODE_API_KEY).toBe("morph_rotated_placeholder");
+      expect(resolved.env.OPENCODE_API_KEY).toBe("morph_updated_placeholder");
       expect(JSON.parse(resolved.env.ARMADA_OPENCODE_ENDPOINT!)).toMatchObject({ models: ["morph-custom"] });
       expect(account.maxAgents).toBe(2);
       expect(account.modelLimits).toEqual({ "morph-custom": 1 });
@@ -527,6 +533,22 @@ describe("named model accounts", () => {
           maxAgents: 1,
         }),
       ).rejects.toThrow("Account cannot serve model armada/opus");
+      await mutateCredentialAccount(store, KEY, people.stan, {
+        action: "set",
+        scope: "user",
+        kind: "morph",
+        id: account.id!,
+        expectedVersion: saved.version!,
+        value: JSON.stringify({ apiKey: "morph_updated_placeholder", models: ["morph-new"] }),
+      });
+      const cleared = await mutateCredentialAccount(store, KEY, people.stan, {
+        action: "limits",
+        scope: "user",
+        id: account.id!,
+        model: "armada/morph-custom",
+        maxAgents: null,
+      });
+      expect(cleared.modelLimits).toEqual({ "morph-custom": 2 });
     });
   });
 

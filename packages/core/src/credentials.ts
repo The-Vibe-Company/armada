@@ -522,7 +522,11 @@ export interface ConnectionModelInfo {
  */
 export function connectionModels(kind: CredentialKind, plaintext: string): ConnectionModelInfo[] {
   if (kind === "morph") {
-    return parseMorphAccount(plaintext).models.map((model) => ({ model, input: null, output: null }));
+    try {
+      return parseMorphAccount(plaintext).models.map((model) => ({ model, input: null, output: null }));
+    } catch {
+      return [];
+    }
   }
   if ((kind !== "opencode" && kind !== "openai") || !plaintext.trimStart().startsWith("{")) return [];
   let parsed: { endpoint?: { models?: string[] }; models?: string[]; prices?: ModelPriceOverrides };

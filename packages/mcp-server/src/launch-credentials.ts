@@ -295,8 +295,12 @@ export async function exposedSecrets(
       if (!SECRET_KINDS.includes(row.kind)) continue;
       const value = await decryptSecret(new Uint8Array(row.valueEnc), encryptionKey);
       if (row.kind === "morph" && value.trimStart().startsWith("{")) {
-        const { apiKey } = JSON.parse(parseCredentialValue(row.kind, value));
-        values.push(value, apiKey);
+        try {
+          const { apiKey } = JSON.parse(parseCredentialValue(row.kind, value));
+          values.push(value, apiKey);
+        } catch {
+          values.push(value, ...jsonLeaves(value));
+        }
       } else if (
         (row.kind === "openai" || row.kind === "anthropic" || row.kind === "opencode") &&
         value.startsWith("{")
