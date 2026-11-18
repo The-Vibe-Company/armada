@@ -38,6 +38,10 @@ REST API. MCP `template_launch` launches an existing template.
   `armada snapshot capabilities --provider boat --json` (or substitute modal).
 - Choose the harness and a model/effort it supports. Launch selections persist
   for later turns. Do not assume provider sizes have equal price or performance.
+- If a runtime launch returns `credential_binding_required`, add the model account
+  in Models → Add account or run `armada creds set KIND --name NAME --file PATH`.
+  Use `armada creds list` to find the account ID, then retry the launch with
+  `--credential-id ACCOUNT`.
 - Bound TTL, size and concurrency to the task. Start small unless evidence calls
   for more. `armada advice SANDBOX --json` provides bounded historical resource
   evidence; unknown evidence is not a recommendation to upscale.
