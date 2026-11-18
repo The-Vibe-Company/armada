@@ -1,7 +1,8 @@
 import type { RunnerRequest } from "@armada/agent-runtime";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
 import type { Route } from "./http.ts";
-import { type createRuntimeEnrolments, RuntimeEnrolmentDenied } from "./runtime-enrolment.ts";
+import { noteAdmission, observeProviderCall } from "./request-observability.ts";
+import { type createRuntimeEnrolments, RuntimeEnrolmentDenied, type RuntimeOwnerScope } from "./runtime-enrolment.ts";
 import { runtimeHttpFailure } from "./runtime-http-failure.ts";
 
 const MAX_COMMAND = 1048576;
@@ -129,8 +130,10 @@ export function createRuntimeCommands(
           "insert into public.runtime_commands(sandbox_id,request_id,epoch,request_enc) values($1,$2,$3,$4)",
           [scope.sandboxId, request.requestId, scope.epoch, sealed],
         );
+        noteAdmission();
       }
-      return { epoch: scope.epoch, requestId: request.requestId };
+      // `fresh`: this call inserted the command (see `call`'s `admitted`).
+      return { epoch: scope.epoch, requestId: request.requestId, provider: scope.provider, fresh: !previous };
     });
   }
   /** Keep admission fenced through synchronous socket enqueue; never await network I/O here. */
@@ -246,33 +249,68 @@ export function createRuntimeCommands(
   /** Await one durable identity; timeout/abort never cancel or replay admitted work.
    * The caller retains requestId and can reconcile with result (or call again
    * with the exact same request). No transaction is held across the wait.
+   *
+   * This is the shared request-correlated observation point for awaited runtime commands: one
+   * `runtime.<op>` record per call, attributed to the provider of the locked sandbox, `ok` only
+   * for a validated reply (`accept` adds a caller check), and none for a retry answered by a stored
+   * reply. Callers keep their public fallbacks.
+   * Docker launch, send, resume and preview runtime routes admit some commands in their own
+   * transaction (enqueue + result); those are recorded by the enclosing Docker provider record.
+   * A caller that enqueued in its own fenced transaction passes that enqueue's `fresh` as
+   * `admitted`: the runner may answer before the first result read, so only the original insert
+   * tells a fresh admission from a replay.
    */
   async function call(
     ownerId: string,
     request: RunnerRequest,
-    options: { signal?: AbortSignal; timeoutMs?: number; expectedEpoch?: string } = {},
+    options: {
+      signal?: AbortSignal;
+      timeoutMs?: number;
+      expectedEpoch?: string;
+      accept?: (reply: RuntimeCommandReply) => boolean;
+      admitted?: boolean;
+    } = {},
   ): Promise<RuntimeCommandReply> {
-    const timeout = options.timeoutMs ?? 120_000;
-    if (
-      !Number.isSafeInteger(timeout) ||
-      timeout < 1 ||
-      timeout > (request.op === "workspaceExec" ? 610_000 : request.op === "exec" ? 630_000 : 120_000)
-    )
-      throw new RuntimeCommandRefused();
-    const signal = options.signal ?? new AbortController().signal;
-    signal.throwIfAborted();
-    const deadline = time.now() + timeout;
-    const admitted = await enqueue(ownerId, request, options.expectedEpoch);
-    while (true) {
-      signal.throwIfAborted();
-      const response = await result(ownerId, request.sandboxId, request.requestId, admitted.epoch);
-      signal.throwIfAborted();
-      if (response.state === "finished") return response.reply;
-      if (response.state !== "pending") throw new RuntimeCommandConflict();
-      const remaining = deadline - time.now();
-      if (remaining <= 0) throw new RuntimeCommandPending();
-      await time.wait(Math.min(250, remaining), signal);
-    }
+    let provider: RuntimeOwnerScope["provider"];
+    return observeProviderCall(
+      () => provider,
+      `runtime.${request.op}`,
+      async () => {
+        const timeout = options.timeoutMs ?? 120_000;
+        if (
+          !Number.isSafeInteger(timeout) ||
+          timeout < 1 ||
+          timeout > (request.op === "workspaceExec" ? 610_000 : request.op === "exec" ? 630_000 : 120_000)
+        )
+          throw new RuntimeCommandRefused();
+        const signal = options.signal ?? new AbortController().signal;
+        signal.throwIfAborted();
+        const deadline = time.now() + timeout;
+        const admitted = await enqueue(ownerId, request, options.expectedEpoch);
+        provider = admitted.provider;
+        if (options.admitted) noteAdmission();
+        while (true) {
+          signal.throwIfAborted();
+          const response = await result(ownerId, request.sandboxId, request.requestId, admitted.epoch);
+          signal.throwIfAborted();
+          if (response.state === "finished") return response.reply;
+          if (response.state !== "pending") throw new RuntimeCommandConflict();
+          // Waiting on a live reply is runtime work even for a retried ID; a stored reply is not.
+          noteAdmission();
+          const remaining = deadline - time.now();
+          if (remaining <= 0) throw new RuntimeCommandPending();
+          await time.wait(Math.min(250, remaining), signal);
+        }
+      },
+      (reply) =>
+        reply.status === 200 &&
+        reply.body.version === 1 &&
+        reply.body.requestId === request.requestId &&
+        reply.body.error === undefined &&
+        (options.accept?.(reply) ?? true),
+      // A retried request ID whose reply is already stored is answered from the database.
+      { replayable: true },
+    );
   }
   const route: Route = async (request) => {
     const path = new URL(request.url).pathname;

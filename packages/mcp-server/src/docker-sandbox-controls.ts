@@ -33,6 +33,7 @@ import { captureDockerStopOutputs, createDockerOutputReader } from "./docker-out
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
 import { readEventPages } from "./event-pagination.ts";
 import { isPrivateModelEvent } from "./model-usage.ts";
+import { observeProviderCall } from "./request-observability.ts";
 import { createRuntimeAgent } from "./runtime-agent.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
@@ -77,6 +78,8 @@ function failure(code: "not_found" | "invalid_request" | "conflict" | "unavailab
 const denied = () => failure("not_found", "Sandbox not found.");
 const invalid = () => failure("invalid_request", "Invalid Docker sandbox request.");
 const terminal = (row: Row) => ["stopped", "deleted", "failed"].includes(row.status);
+/** Controls that reach the Docker host (jobs, launch-time runtime admission) beyond the runtime command boundary. */
+const DOCKER_HOST_CONTROLS = new Set(["send", "resume", "stop", "delete"]);
 function reason(row: Row) {
   if (row.status === "deleted" && dockerWorkspaceReclaimedMessage(row.status_reason)) return row.status_reason;
   if (row.status_reason === "expired") return "expired";
@@ -844,37 +847,45 @@ export function createDockerSandboxControls(
           throw invalid();
         const row = await visible(caller, args.id);
         if (row.provider !== "docker") return { handled: false };
-        if (name === "github_refresh") {
-          if (!options.github) throw failure("unavailable", "Docker GitHub refresh is unavailable.");
-          return { handled: true, result: await options.github.prepare(caller, row.id) };
-        }
-        if (["steer", "interrupt", "exec"].includes(name))
-          return { handled: true, result: await control(caller, row, name, args) };
-        if (name === "send") {
-          if (!options.send) throw failure("unavailable", "Docker send is unavailable.");
-          return {
-            handled: true,
-            result: await options.send.send(caller, args, row, async () => {
-              await resume(caller, row, args.request_id as string | undefined);
-              return visible(caller, row.id);
-            }),
-          };
-        }
-        if (name === "resume")
-          return { handled: true, result: await resume(caller, row, args.request_id as string | undefined) };
-        const result =
-          name === "status"
-            ? await status(caller, row, args.prompt_id as string | undefined)
-            : name === "logs"
-              ? await logs(caller, row, args)
-              : await cleanup(
-                  caller,
-                  row,
-                  name as "stop" | "delete",
-                  args.request_id as string | undefined,
-                  args.only_if_idle === true,
-                );
-        return { handled: true, result };
+        const dispatch = async () => {
+          if (name === "github_refresh") {
+            if (!options.github) throw failure("unavailable", "Docker GitHub refresh is unavailable.");
+            return { handled: true as const, result: await options.github.prepare(caller, row.id) };
+          }
+          if (["steer", "interrupt", "exec"].includes(name))
+            return { handled: true as const, result: await control(caller, row, name, args) };
+          if (name === "send") {
+            if (!options.send) throw failure("unavailable", "Docker send is unavailable.");
+            return {
+              handled: true as const,
+              result: await options.send.send(caller, args, row, async () => {
+                await resume(caller, row, args.request_id as string | undefined);
+                return visible(caller, row.id);
+              }),
+            };
+          }
+          if (name === "resume")
+            return { handled: true as const, result: await resume(caller, row, args.request_id as string | undefined) };
+          const result =
+            name === "status"
+              ? await status(caller, row, args.prompt_id as string | undefined)
+              : name === "logs"
+                ? await logs(caller, row, args)
+                : await cleanup(
+                    caller,
+                    row,
+                    name as "stop" | "delete",
+                    args.request_id as string | undefined,
+                    args.only_if_idle === true,
+                  );
+          return { handled: true as const, result };
+        };
+        // Runtime commands record themselves at the shared command boundary (runtime.<op>) and
+        // status/logs only read Armada's database: only host-side controls get a Docker record, and
+        // only when they admit new work (a retried request_id is answered from the database).
+        return DOCKER_HOST_CONTROLS.has(name)
+          ? await observeProviderCall("docker", name, dispatch, undefined, { replayable: true })
+          : await dispatch();
       } catch (error) {
         // ToolError is Armada request validation (Docker send admission) with public guidance.
         if (error instanceof ProviderError || error instanceof ToolError) throw error;

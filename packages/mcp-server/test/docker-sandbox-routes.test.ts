@@ -8,6 +8,7 @@ import { createDockerRuntimeLifecycle } from "../src/docker-runtime-lifecycle.ts
 import { createDockerSandboxRoutes } from "../src/docker-sandbox-routes.ts";
 import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
+import { observeRequest } from "../src/request-observability.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
@@ -239,16 +240,32 @@ test("public Docker preview dispatches two same-conversation prompts through run
     expect(ack?.status).toBe(200);
     expect(await ack?.json()).toEqual({ acknowledgedSequence: events.length });
   }
+  // Queuing host work is a provider call; database-only reads leave just the HTTP record.
+  const records: Record<string, unknown>[] = [];
+  const observed = (work: () => Promise<Response>) =>
+    observeRequest(work, (line) => records.push(JSON.parse(line))) as Promise<Response>;
   const stopId = randomUUID();
-  expect((await f.post("stop", { sandboxId, requestId: stopId }, false)).status).toBe(202);
+  const stopped = await observed(() => f.post("stop", { sandboxId, requestId: stopId }, false));
+  expect(stopped.status).toBe(202);
+  expect(records.filter((record) => record.event === "provider_call")).toEqual([
+    expect.objectContaining({
+      requestId: stopped.headers.get("x-request-id"),
+      provider: "docker",
+      operation: "stop",
+      outcome: "ok",
+    }),
+  ]);
   await f.hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });
   const deleteId = randomUUID();
   expect((await f.post("delete", { sandboxId, requestId: deleteId }, false)).status).toBe(202);
   await f.hosts.complete(f.hostToken, f.installationId, { requestId: deleteId, outcome: "completed" });
-  const state = await f.post("get", { sandboxId }, false);
+  records.length = 0;
+  const state = await observed(() => f.post("get", { sandboxId }, false));
   expect(((await state.json()) as { status: string }).status).toBe("deleted");
-  const journal = await f.post("journal", { sandboxId }, false);
+  expect((await observed(() => f.post("job", { sandboxId, requestId: deleteId }, false))).status).toBe(200);
+  const journal = await observed(() => f.post("journal", { sandboxId }, false));
   expect(journal.status).toBe(200);
+  expect(records.map((record) => record.event)).toEqual(["http_request", "http_request", "http_request"]);
   const archive = (await journal.json()) as { events: { event: unknown }[]; usage: unknown };
   expect(archive.events.map((entry) => entry.event)).toEqual(events);
   expect(archive.usage).toMatchObject({
@@ -283,4 +300,46 @@ test("full host refusal is an actionable HTTP conflict rather than a generic ser
     error: "host_full",
     message: expect.stringContaining("1/1 sandboxes running; stop one or raise the limit"),
   });
+});
+
+test("a retried preview launch or cleanup records host work only for the request that queued it", async () => {
+  const db = database();
+  const f = await fixture();
+  const observed = async (work: () => Promise<Response>) => {
+    const records: Record<string, unknown>[] = [];
+    const response = (await observeRequest(work, (line) => records.push(JSON.parse(line)))) as Response;
+    return { response, calls: records.filter((record) => record.event === "provider_call") };
+  };
+  const jobs = async () =>
+    Number(
+      (
+        await db.query<{ count: string }>("select count(*)::text as count from docker_host_jobs where host_id=$1", [
+          f.hostId,
+        ])
+      ).rows[0]?.count,
+    );
+  const first = await observed(() => f.post("launch", f.launch));
+  expect(first.response.status).toBe(201);
+  expect(first.calls).toEqual([
+    expect.objectContaining({
+      requestId: first.response.headers.get("x-request-id"),
+      provider: "docker",
+      operation: "reserve",
+      outcome: "ok",
+    }),
+  ]);
+  expect(await jobs()).toBe(1);
+  const replay = await observed(() => f.post("launch", f.launch));
+  expect(replay.response.status).toBe(201);
+  expect(replay.calls).toEqual([]);
+  expect(await jobs()).toBe(1);
+  const stop = { sandboxId: f.launch.requestId, requestId: randomUUID() };
+  const stopped = await observed(() => f.post("stop", stop));
+  expect(stopped.response.status).toBe(202);
+  expect(stopped.calls).toEqual([expect.objectContaining({ operation: "stop", outcome: "ok" })]);
+  expect(await jobs()).toBe(2);
+  const restopped = await observed(() => f.post("stop", stop));
+  expect(restopped.response.status).toBe(202);
+  expect(restopped.calls).toEqual([]);
+  expect(await jobs()).toBe(2);
 });

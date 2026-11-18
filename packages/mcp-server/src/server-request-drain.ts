@@ -1,3 +1,5 @@
+import { observeRequest } from "./request-observability.ts";
+
 /** Refusal sent before dispatch while the server drains; `openapi.ts` publishes this exact shape. */
 export const DRAIN_REFUSAL = { body: { error: "temporarily_unavailable" }, retryAfterSeconds: 5 } as const;
 
@@ -8,15 +10,22 @@ interface ServerRequestDrain {
 }
 
 /** Track admitted handlers and POST streams without waiting on idle GET notification streams. */
-export function createServerRequestDrain(handler: (request: Request) => Promise<Response>): ServerRequestDrain {
+export function createServerRequestDrain(
+  handler: (request: Request) => Promise<Response>,
+  log?: (line: string) => void,
+): ServerRequestDrain {
   let draining = false;
   const requests = new Set<Promise<unknown>>();
   const fetch = (request: Request) => {
     if (draining)
-      return Response.json(DRAIN_REFUSAL.body, {
-        status: 503,
-        headers: { "retry-after": String(DRAIN_REFUSAL.retryAfterSeconds) },
-      });
+      return observeRequest(
+        () =>
+          Response.json(DRAIN_REFUSAL.body, {
+            status: 503,
+            headers: { "retry-after": String(DRAIN_REFUSAL.retryAfterSeconds) },
+          }),
+        log,
+      );
     const pending = handler(request).then((response) => {
       // Gateway POST tools use SSE responses: the handler can return before the
       // admitted tool finishes. GET notification streams instead end at MCP close.
