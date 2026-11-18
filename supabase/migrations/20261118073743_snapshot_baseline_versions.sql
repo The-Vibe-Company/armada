@@ -17,3 +17,5 @@ create trigger clear_golden_snapshot_baseline
 
 alter table public.docker_snapshots add column baseline_version integer
   check (baseline_version is null or (baseline_version > 0 and status = 'ready'));
+alter table public.docker_snapshots add column baseline_failure_tool text
+  check (baseline_failure_tool is null or (status = 'failed' and length(baseline_failure_tool) between 1 and 32));

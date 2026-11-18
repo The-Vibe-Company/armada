@@ -22,6 +22,7 @@ import { shellQuote } from "./shell-quote.ts";
 import {
   SNAPSHOT_BASELINE_VERSION,
   snapshotBaselineFailure,
+  snapshotBaselineFailureMessage,
   snapshotBaselineInstall,
   snapshotBaselineVerify,
 } from "./snapshot-baseline.ts";
@@ -134,15 +135,17 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
       }
     },
     async verifyBaseline(provider, sandboxId) {
+      const command = `export PATH=/usr/local/bin:/usr/bin:/bin; ${snapshotBaselineVerify}`;
       const result = await provider.exec({
         sandboxId,
         timeoutSeconds: 30,
-        command: `export PATH=/usr/local/bin:/usr/bin:/bin; ${snapshotBaselineVerify}`,
+        command: provider.id === "modal" ? `/usr/sbin/runuser -u user -- /bin/sh -c ${shellQuote(command)}` : command,
       });
       if (result.detached || result.exitCode !== 0 || result.timedOut || result.truncated) {
-        const message =
-          (result.detached ? undefined : snapshotBaselineFailure(result.stderr)) ??
-          "Snapshot baseline verification did not complete.";
+        const tool = result.detached ? undefined : snapshotBaselineFailure(result.stderr);
+        const message = tool
+          ? snapshotBaselineFailureMessage(tool)
+          : "Snapshot baseline verification did not complete.";
         throw new GoldenError("setup_failed", message, { safeMessage: message });
       }
     },

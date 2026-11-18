@@ -12,7 +12,9 @@ import { goldenCheckoutScript } from "./golden-create-service.ts";
 import { goldenScanScript } from "./golden-scan.ts";
 import {
   SNAPSHOT_BASELINE_VERSION,
+  type SnapshotBaselineTool,
   snapshotBaselineFailure,
+  snapshotBaselineFailureMessage,
   snapshotBaselineInstall,
   snapshotBaselineVerify,
 } from "./snapshot-baseline.ts";
@@ -22,7 +24,11 @@ export interface DockerSnapshotBuildReceipt {
   baselineVersion: number | null;
 }
 
-export class DockerSnapshotBaselineError extends Error {}
+export class DockerSnapshotBaselineError extends Error {
+  constructor(readonly tool: SnapshotBaselineTool) {
+    super(snapshotBaselineFailureMessage(tool));
+  }
+}
 
 const baselineLabel = "dev.armada.environment.baseline-version";
 

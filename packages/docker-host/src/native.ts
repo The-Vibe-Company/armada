@@ -400,6 +400,7 @@ export function httpApi(
         ...(receipt.operation === "buildSnapshot" && receipt.imageId ? { imageId: receipt.imageId } : {}),
       };
       const baselineVersion = receipt.operation === "buildSnapshot" ? receipt.baselineVersion : undefined;
+      const baselineTool = receipt.operation === "buildSnapshot" ? receipt.baselineTool : undefined;
       if (expired || (!receipt.reason && baselineVersion === undefined))
         return void (await post(state.server, "results", state.hostToken, body));
       try {
@@ -407,6 +408,7 @@ export function httpApi(
           ...body,
           ...(receipt.reason ? { reason: receipt.reason } : {}),
           ...(baselineVersion === undefined ? {} : { baselineVersion }),
+          ...(baselineTool === undefined ? {} : { baselineTool }),
         });
       } catch (error) {
         // An older server may refuse optional receipt metadata (400): the plain outcome is still the machine

@@ -64,7 +64,7 @@ const checks = {
   // The golden recipe can select a different project Bun on PATH.
   bun: `bun --version && [ "$(/opt/armada/runtime-bun/bun --version)" = '${SNAPSHOT_BASELINE_BUN}' ]`,
   git: `[ "$(/usr/bin/git --version)" = 'git version ${GIT}' ] && [ "$(git --version)" = 'git version ${GIT}' ]`,
-  gh: "gh --version",
+  gh: "/usr/bin/gh --version && gh --version",
   "build-essential": "cc --version && c++ --version && make --version && test -r /usr/include/stdio.h",
   curl: "curl --version",
   unzip: "unzip -v",
@@ -80,10 +80,21 @@ export const snapshotBaselineVerify = Object.entries(checks)
   .map(([tool, check]) => `{ ${check}; } >/dev/null 2>&1 || { echo '${failurePrefix} ${tool}' >&2; exit 1; }`)
   .join("; ");
 
-export function snapshotBaselineFailure(output: string): string | undefined {
-  const lines = new Set(output.split("\n").map((line) => line.replace(/^#\d+ \d+(?:\.\d+)? /, "").trim()));
-  for (const tool of Object.keys(checks)) {
-    if (lines.has(`${failurePrefix} ${tool}`))
-      return `Snapshot baseline ${SNAPSHOT_BASELINE_VERSION} requires a working ${tool} at the declared version.`;
+export type SnapshotBaselineTool = keyof typeof checks;
+
+export function isSnapshotBaselineTool(value: unknown): value is SnapshotBaselineTool {
+  return typeof value === "string" && Object.hasOwn(checks, value);
+}
+
+export function snapshotBaselineFailure(output: string): SnapshotBaselineTool | undefined {
+  for (const line of output.split("\n")) {
+    const message = line.replace(/^#\d+ \d+(?:\.\d+)? /, "").trim();
+    if (!message.startsWith(`${failurePrefix} `)) continue;
+    const tool = message.slice(failurePrefix.length + 1);
+    if (isSnapshotBaselineTool(tool)) return tool;
   }
+}
+
+export function snapshotBaselineFailureMessage(tool: SnapshotBaselineTool): string {
+  return `Snapshot baseline ${SNAPSHOT_BASELINE_VERSION} requires a working ${tool} at the declared version.`;
 }

@@ -8,7 +8,13 @@ import {
   type DockerJobFailureReason,
   type Sql,
 } from "@armada/core";
-import { decryptSecret, encryptSecret, VaultError } from "@armada/core/server";
+import {
+  decryptSecret,
+  encryptSecret,
+  isSnapshotBaselineTool,
+  type SnapshotBaselineTool,
+  VaultError,
+} from "@armada/core/server";
 import {
   type BootstrapDescriptor,
   canonicalDockerHostJob,
@@ -1348,6 +1354,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         reason?: DockerJobFailureReason;
         imageId?: string;
         baselineVersion?: number;
+        baselineTool?: SnapshotBaselineTool;
       },
     ) {
       return transaction(async (tx) => {
@@ -1357,6 +1364,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           ...(result.reason !== undefined ? ["reason"] : []),
           ...(result.imageId !== undefined ? ["imageId"] : []),
           ...(result.baselineVersion !== undefined ? ["baselineVersion"] : []),
+          ...(result.baselineTool !== undefined ? ["baselineTool"] : []),
         ]);
         if (
           result.reason !== undefined &&
@@ -1411,6 +1419,11 @@ export function createDockerHostStore(sql: Sql, key: string) {
           deny();
         if (result.reason === "snapshot_build_failed" && !job.snapshot_id) deny();
         if (
+          result.baselineTool !== undefined &&
+          (result.reason !== "snapshot_build_failed" || !isSnapshotBaselineTool(result.baselineTool))
+        )
+          deny();
+        if (
           result.baselineVersion !== undefined &&
           (!job.snapshot_id ||
             result.outcome !== "completed" ||
@@ -1441,7 +1454,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
               }
             }
             await tx.query(
-              "update public.docker_snapshots set status=$2,image_id=$3,failure_reason=$4,baseline_version=$5 where id=$1 and status='building'",
+              "update public.docker_snapshots set status=$2,image_id=$3,failure_reason=$4,baseline_version=$5,baseline_failure_tool=$6 where id=$1 and status='building'",
               [
                 job.snapshot_id,
                 eligible ? "ready" : "failed",
@@ -1456,6 +1469,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
                         ? DOCKER_SNAPSHOT_FAILURE_MESSAGES.disk
                         : DOCKER_SNAPSHOT_FAILURE_MESSAGES.build,
                 eligible ? (result.baselineVersion ?? null) : null,
+                result.baselineTool ?? null,
               ],
             );
           }

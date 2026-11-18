@@ -1,6 +1,12 @@
 import { createHash } from "node:crypto";
 import { DOCKER_SNAPSHOT_FAILURE_MESSAGES, type DockerSnapshotRecord, parseGoldenConfig } from "@armada/core";
-import { SNAPSHOT_BASELINE_VERSION, type Sql, VaultError } from "@armada/core/server";
+import {
+  isSnapshotBaselineTool,
+  SNAPSHOT_BASELINE_VERSION,
+  type Sql,
+  snapshotBaselineFailureMessage,
+  VaultError,
+} from "@armada/core/server";
 import type { DockerHostJob } from "../../core/src/docker-host-job.ts";
 import { DockerHostDraining } from "./docker-capacity.ts";
 import { hostDrainingSql } from "./docker-host-drain.ts";
@@ -21,6 +27,7 @@ export type SnapshotRow = {
   base_image: string;
   built_on_version: string | null;
   baseline_version: number | null;
+  baseline_failure_tool: string | null;
   build_expires_at: Date | string;
   status: DockerSnapshotRecord["status"];
   image_id: string | null;
@@ -60,7 +67,9 @@ export function snapshotRecord(row: SnapshotRow): DockerSnapshotRecord {
       row.status === "building" && new Date(row.build_expires_at).getTime() <= Date.now()
         ? DOCKER_SNAPSHOT_FAILURE_MESSAGES.expired
         : row.status === "failed"
-          ? (row.failure_reason ?? DOCKER_SNAPSHOT_FAILURE_MESSAGES.build)
+          ? isSnapshotBaselineTool(row.baseline_failure_tool)
+            ? snapshotBaselineFailureMessage(row.baseline_failure_tool)
+            : (row.failure_reason ?? DOCKER_SNAPSHOT_FAILURE_MESSAGES.build)
           : null,
     createdAt: new Date(row.created_at).toISOString(),
     hostName: row.host_name,

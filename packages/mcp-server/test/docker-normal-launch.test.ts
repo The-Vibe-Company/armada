@@ -3138,9 +3138,9 @@ test("failed snapshot machine facts persist a safe reason in get and list respon
     requestId: id,
     outcome: "failed",
     reason: "snapshot_build_failed",
+    baselineTool: "jq",
   });
-  const failureReason =
-    "Snapshot image build failed. Check registry access, repository access, init commands and the secret scan; build output is suppressed to protect secrets.";
+  const failureReason = "Snapshot baseline 1 requires a working jq at the declared version.";
   expect(await f.snapshots.command(f.caller, "get", { org: f.actor.orgId, id })).toMatchObject({
     snapshot: { id, status: "failed", image: null, failureReason },
   });
