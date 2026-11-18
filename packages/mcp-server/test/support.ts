@@ -463,7 +463,6 @@ export async function harness(
   });
   const handler = createHandler({
     publicUrl: PUBLIC_URL,
-    goldenBuilds: builds,
     oauth,
     authStore: options.authStore ? options.authStore(db) : auth,
     supabase: { supabaseUrl: "https://project.supabase.co", anonKey: "anon", fetch: supabaseFetch },
