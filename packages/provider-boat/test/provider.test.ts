@@ -1,7 +1,13 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { ProviderError } from "@armada/core";
-import { GoldenCreateService, type GoldenRecord, preserveWork, scanGoldenSandbox } from "@armada/core/server";
+import {
+  GoldenCreateService,
+  type GoldenRecord,
+  OUTPUT_COLLECTOR,
+  preserveWork,
+  scanGoldenSandbox,
+} from "@armada/core/server";
 import { BOAT_CAPABILITIES, createBoatProvider } from "../src/provider.ts";
 import { errorBody, fakeBoat, KEY, sandbox } from "./support.ts";
 
@@ -1250,4 +1256,20 @@ test("terminal capture refusal identifies its stop caller without forwarding con
   } finally {
     log.mockRestore();
   }
+});
+
+test("declared outputs are read from live compute by the fixed collector and never resume a stopped sandbox", async () => {
+  const stdout = JSON.stringify([{ name: "final.pdf", base64: Buffer.from("final").toString("base64") }]);
+  const live = fakeBoat(
+    { body: { ok: true, sandbox: sandbox({ state: "ready" }) } },
+    { body: { ok: true, type: "command.finished", success: true, exitCode: 0, stdout, stderr: "", timedOut: false } },
+  );
+  const read = await live.provider.readOutputs?.({ sandboxId: ID });
+  expect(read?.map((file) => [file.name, Buffer.from(file.bytes).toString()])).toEqual([["final.pdf", "final"]]);
+  expect((live.requests.at(-1)?.body as { command?: string } | undefined)?.command).toBe(OUTPUT_COLLECTOR);
+  // A stopped sandbox is refused, never resumed: its retained disk is outside this read.
+  const stopped = fakeBoat({ body: { ok: true, sandbox: sandbox({ state: "archived" }) } });
+  expect(await stopped.provider.readOutputs?.({ sandboxId: ID })).toBeNull();
+  expect(stopped.requests.map((r) => r.method)).toEqual(["GET"]);
+  expect(stopped.remaining()).toBe(0);
 });
