@@ -2,16 +2,15 @@ import { AuthError } from "@armada/auth";
 import { GoldenError, HARNESSES } from "@armada/core";
 import { invalidAgentMessage } from "./agent-validation.ts";
 import { acceptedOptions, flag, parseArgs, single, uuid } from "./args.ts";
-import { ArmadaApiError, createArmadaApiClient } from "./armada-api.ts";
+import { ArmadaApiError, type ArmadaCommandClient, createArmadaApiClient } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
-import { control } from "./control.ts";
 import { mcpCommand } from "./mcp-commands.ts";
 import { resourceAdviceText } from "./resource-advice.ts";
 import { sandboxListText } from "./sandbox-list.ts";
 
 /** API-only command boundary: server-side schemas and policy remain authoritative. */
 export async function operation(
-  command: string,
+  command: Exclude<keyof ArmadaCommandClient["sandboxes"], "launch" | "logs"> | "rm" | "mcp",
   argv: readonly string[],
   auth: AuthIo,
   read: (path?: string) => Promise<string>,
@@ -103,7 +102,6 @@ export async function operation(
     body.request_id = requestId?.toLowerCase() ?? crypto.randomUUID();
   }
   if (command === "list") Object.assign(body, sandboxListFilters(args));
-  const route = `sandbox/${command}`;
   const [id, ...rest] = args.positionals;
   if (command !== "list") {
     if (!id) throw new GoldenError("invalid_config", `armada ${command} needs a sandbox id.`);
@@ -152,20 +150,16 @@ export async function operation(
         : undefined;
   if (command === "send" && !flag(args, "--json"))
     auth.err("Sending message… Waking the sandbox if paused; waiting for acceptance.\n");
-  const request =
-    command === "status" || command === "list"
-      ? (await createArmadaApiClient(auth)).sandboxes[command](body)
-      : control(
-          auth,
-          route,
-          body,
-          // Match the control proxy ceiling: send may restore paused compute before admitting the turn.
-          command === "stop" || command === "bind-credential" || command === "send"
-            ? AbortSignal.timeout(660_000)
-            : seconds === undefined
-              ? undefined
-              : AbortSignal.timeout((seconds + 15) * 1_000),
-        );
+  // Match the control proxy ceiling: send may restore paused compute before admitting the turn.
+  const signal =
+    command === "stop" || command === "bind-credential" || command === "send"
+      ? AbortSignal.timeout(660_000)
+      : seconds === undefined
+        ? undefined
+        : AbortSignal.timeout((seconds + 15) * 1_000);
+  const request = createArmadaApiClient(auth).then((client) =>
+    client.sandboxes[command](body, signal ? { signal } : undefined),
+  );
   const result = await request.catch((error: unknown) => {
     // Stop previously collapsed these versioned reasons into an AuthError.
     if (
