@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { State } from "../src/daemon.ts";
+import { type Job, type State, tick } from "../src/daemon.ts";
 import {
   automaticUpdate,
   instanceName,
@@ -402,16 +402,174 @@ async function interruptedTrial(f: Awaited<ReturnType<typeof upgradeFixture>>) {
   return writeUpdateFixture(f, "starting");
 }
 
-test("a staged release withdrawn from the poll does not stop job admission", async () => {
+test.each([
+  "artifact unavailable",
+  "backup rename interrupted",
+  "offer withdrawn",
+  "poll failed",
+  "supervisor unavailable",
+  "reboot before swap",
+  "reboot after swap",
+  "reboot before commit",
+  "reboot after commit",
+  "commit directory sync interrupted",
+] as const)("update recovers job admission and future eligibility after %s", async (failure) => {
   const f = await upgradeFixture();
   try {
-    const journal = await writeUpdateFixture(f, "staged");
+    let now = Date.now();
+    let offer = "9.0.0";
+    let releaseUnavailable = failure === "artifact unavailable";
+    let supervisorRestarting = failure === "commit directory sync interrupted";
+    const io = {
+      now: () => now,
+      async service(args: string[]) {
+        if (args.includes("MainPID")) return String(process.pid);
+        if (args[0] === "systemd-run") throw new Error("systemd could not start helper");
+        if (args.includes("list-units") && supervisorRestarting)
+          return "armada-docker-host-update.service loaded activating auto-restart Update";
+        return ""; // No transient supervisor survived.
+      },
+      request: (async (url: string) => {
+        if (url.endsWith("/install.json")) {
+          const digest = f.hash(f.newBytes);
+          return Response.json({ version: offer, x64: digest, arm64: digest });
+        }
+        return releaseUnavailable ? new Response(null, { status: 503 }) : new Response(f.newBytes);
+      }) as typeof fetch,
+    };
+    const updater = automaticUpdate(f.state, { home: f.home }, io);
+    const interruptedCommit = failure === "commit directory sync interrupted";
+    const trial = failure.startsWith("reboot") || interruptedCommit;
+    const committed = failure === "reboot after commit" || interruptedCommit;
+    if (trial) {
+      // Build each crash prefix with the files that made it to disk.
+      const journal = await writeUpdateFixture(f, "starting");
+      if (failure !== "reboot before swap") {
+        await writeFile(f.binary, f.newBytes);
+        const marker =
+          failure === "reboot after swap"
+            ? { ...f.marker, pendingBinarySha256: f.hash(f.newBytes) }
+            : { ...f.marker, binarySha256: f.hash(f.newBytes) };
+        await writeFile(f.markerFile, JSON.stringify(marker));
+      }
+      if (committed) {
+        const record = JSON.parse(await readFile(journal, "utf8"));
+        await writeFile(journal, JSON.stringify({ ...record, phase: "updated" }));
+      }
+      if (interruptedCommit) {
+        const service = async () => {
+          throw new Error("A committed trial must keep the service running");
+        };
+        await chmod(f.directory, 0o300);
+        try {
+          await expect(superviseUpdate(f.store, undefined, { home: f.home, service })).rejects.toThrow();
+          await expect(updater.beforeAdmission(undefined)).rejects.toThrow();
+        } finally {
+          await chmod(f.directory, 0o700);
+        }
+        await superviseUpdate(f.store, undefined, { home: f.home, service });
+      } else {
+        await recoverUpdate(f.store, undefined, { home: f.home, service: io.service });
+      }
+      expect(await readFile(f.binary, "utf8")).toBe(committed ? f.newBytes : f.oldBytes);
+    } else if (failure === "artifact unavailable") {
+      expect(await updater.beforeAdmission(offer)).toBe(false);
+      releaseUnavailable = false;
+    } else if (failure === "backup rename interrupted") {
+      await writeFile(
+        join(f.directory, "update.json"),
+        JSON.stringify({
+          version: offer,
+          phase: "cancelled",
+          preparing: true,
+          retryAfter: now + 300_000,
+          pendingPreviousDigest: f.hash(f.oldBytes),
+        }),
+        { mode: 0o600 },
+      );
+    } else {
+      expect(await updater.beforeAdmission(offer)).toBe(true);
+      if (failure === "supervisor unavailable") {
+        expect(await updater.confirm({ type: "offer", version: offer })).toBe(true);
+        expect(await updater.restart()).toBe(false);
+      } else {
+        const event =
+          failure === "poll failed"
+            ? ({ type: "poll-failed" } as const)
+            : ({ type: "offer", version: undefined } as const);
+        expect(await updater.confirm(event)).toBe(false);
+      }
+    }
 
-    const updater = automaticUpdate(f.state, { home: f.home });
-    expect(await updater.beforeAdmission(undefined)).toBe(false);
-    expect(updater.staged).toBe(false);
-    expect(await updater.failure()).toBeUndefined();
-    expect(JSON.parse(await readFile(journal, "utf8")).phase).toBe("cancelled");
+    // Drive ordinary job admission through the same gate used after a restart.
+    const restarted = automaticUpdate(f.state, { home: f.home }, io);
+    const job: Job = {
+      requestId: crypto.randomUUID(),
+      operation: "create",
+      request: {
+        sandboxId: crypto.randomUUID(),
+        generation: crypto.randomUUID(),
+        image: `debian@sha256:${"a".repeat(64)}`,
+        ttlSeconds: 60,
+      },
+    };
+    const store = {
+      load: f.store.load,
+      async save(state: State) {
+        await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+      },
+    };
+    const unexpected = async () => {
+      throw new Error("Unexpected machine operation");
+    };
+    let accepted = false;
+    await tick(
+      store,
+      {
+        register: unexpected,
+        async poll() {
+          return { job };
+        },
+        async result(_state, receipt) {
+          expect(receipt.outcome).toBe("completed");
+        },
+      },
+      {
+        startRuntime: unexpected,
+        stopIfExpired: unexpected,
+        stop: unexpected,
+        delete: unexpected,
+        async create(request) {
+          accepted = request.sandboxId === job.request.sandboxId;
+        },
+      },
+      false,
+      () => now,
+      { beforeAdmission: restarted.beforeAdmission },
+    );
+    expect(accepted).toBe(true);
+    await validateInstallation(f.state, f.home);
+    const expected = committed ? f.newBytes : f.oldBytes;
+    expect(await readFile(f.binary, "utf8")).toBe(expected);
+
+    expect(await restarted.beforeAdmission(offer)).toBe(false);
+    now += 300_000;
+    if (trial) {
+      // An actual attempt stays fenced even when a newer stage overwrites its journal.
+      expect(await restarted.beforeAdmission(offer)).toBe(false);
+      offer = "9.0.1";
+      if (interruptedCommit) {
+        expect(await restarted.beforeAdmission(offer)).toBe(false);
+        supervisorRestarting = false;
+      }
+      expect(await restarted.beforeAdmission(offer)).toBe(true);
+      expect(await restarted.confirm({ type: "poll-failed" })).toBe(false);
+      now += 300_000;
+      offer = "9.0.0";
+      expect(await restarted.beforeAdmission(offer)).toBe(false);
+      offer = "9.0.1";
+    }
+    expect(await restarted.beforeAdmission(offer)).toBe(true);
   } finally {
     await rm(f.home, { recursive: true, force: true });
   }

@@ -348,7 +348,7 @@ export async function runJobs(
     retryCompletion?(): boolean;
     update?: {
       staged(): boolean;
-      confirm(target: unknown): Promise<boolean>;
+      confirm(event: { type: "offer"; version: unknown } | { type: "poll-failed" }): Promise<boolean>;
       checkRecovery(): Promise<boolean>;
       restart(): Promise<boolean>;
     };
@@ -383,13 +383,14 @@ export async function runJobs(
         if (loop.stopping()) break;
         // Keep admission fenced while checking the offer on a fresh poll.
         // The returned job stays unacknowledged for ordinary admission.
-        let target: unknown;
-        try {
-          target = (await api.poll(await store.load())).targetVersion;
-        } catch {
-          loop.failed?.("tick");
-        }
-        if ((await loop.update.confirm(target)) && !loop.stopping() && (await loop.update.restart())) break;
+        const event = await api.poll(await store.load()).then(
+          ({ targetVersion }) => ({ type: "offer" as const, version: targetVersion }),
+          () => {
+            loop.failed?.("tick");
+            return { type: "poll-failed" as const };
+          },
+        );
+        if ((await loop.update.confirm(event)) && !loop.stopping() && (await loop.update.restart())) break;
         continue;
       }
       // An orphaned trial can roll back even when authentication is denied.

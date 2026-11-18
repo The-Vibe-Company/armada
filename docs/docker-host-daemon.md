@@ -261,9 +261,21 @@ Cleanup-only polls from a draining or revoked host carry no update offer. If
 startup or health fails, the supervisor restores the previous binary atomically
 and starts it. An Armada-owned systemd drop-in runs
 the same recovery from the previous binary before daemon startup if the machine
-reboots during the trial. The daemon sends the failed target on
-its next authenticated poll for the server log. Its private update record
-prevents another automatic attempt at that version or any older version.
+reboots during the trial. The daemon sends the failed target on its next authenticated poll for the server
+log. A trial sets a durable version cutoff at that release. A later download
+failure or deferred offer preserves the cutoff.
+
+| State | Event and allowed transition | Durable state and recovery |
+| --- | --- | --- |
+| Idle, preparing, cancelled, failed or updated | An eligible newer offer starts preparing after backoff. Eligibility also requires a managed service, no uninstall intent, and an absent or inactive supervisor from the preceding attempt. | The running executable stays in place. The preparing journal preserves the highest attempted version and the next retry time. It uses the existing cancelled phase with a preparation flag so older recovery binaries can read it. A manifest fetch that fails before the journal write backs off in memory. |
+| Preparing | Verified download and backup finish → staged. Download, disk failure or reboot before the staged write → preparing or the preceding state. | The candidate is stored privately. Before rotating `.previous`, the journal accepts both the old and intended backup digests. A restart on either side of the backup rename keeps the old daemon serving and can prepare the same release again. |
+| Staged | Check the current offer, fence admission and drain. A fresh matching poll dispatches the supervisor. | Candidate and backup digests are durable. After a reboot the old binary runs and checks the offer again before a supervisor can start. |
+| Staged | Poll transport failure, denied or changed offer, disabled updates, or supervisor launch failure → cancelled. | The staged binary remains uninstalled. The old daemon resumes ordinary polling, subject to server authorization. The same release is eligible again after five minutes, provided it remains above the actual trial cutoff. An ambiguous manager reply leaves the transition with the supervisor if it owns the unit. |
+| Staged | The supervisor validates both binaries, persists and reloads the recovery drop-in, then claims the trial → starting. | Starting and the attempted version are durable before stopping the old service. A failure before the claim defers staging and starts the old service. |
+| Starting | Stop the drained service, authorize the candidate digest in the ownership marker, atomically replace the executable and start it. | The ownership marker accepts both verified digests across the executable rename. The candidate can reconcile and poll with admission fenced. A reboot or orphaned supervisor rolls back even if the server is unavailable. |
+| Starting | Failed start, no fresh matching health poll, revoked or withdrawn offer that prevents health, or interrupted trial → failed. | Rollback records both digests before the reverse rename, syncs the binary directory, then settles the ownership marker and journal. Recovery can repeat any unfinished step. The supervisor starts the old binary. A later offer above the attempted version can start another trial. |
+| Starting | Fresh matching authenticated poll and active service → updated. | The candidate digest becomes the stable ownership marker before the journal is committed. Interruption between those writes still rolls back. Once the updated journal is visible, the candidate syncs the journal directory before admitting work. A supervisor interrupted after that rename finishes the sync without stopping the healthy service. |
+| Idle, preparing, staged, cancelled, failed or updated | Uninstall records intent before asking the server to drain. A staged candidate is cancelled. | The persistent intent blocks automatic staging and launches across reboot and unregister retries. An active supervisor or starting trial must settle first. Bound cleanup jobs remain available while the server allows them. |
 
 Set `ARMADA_DOCKER_HOST_AUTO_UPDATE=0` in a systemd user override for the specific
 Armada host unit to disable automatic updates. Run `systemctl --user edit

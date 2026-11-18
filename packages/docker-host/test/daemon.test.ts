@@ -2053,102 +2053,108 @@ test("a job of a sandbox whose operation still runs here waits, even if the serv
   expect(f.executed).toEqual([]);
 });
 
-test("a staged update rechecks the offer after the admitted launch receipt is durable", async () => {
-  const first = fixture();
-  const next = fixture();
-  const offered = Promise.withResolvers<void>();
-  const release = Promise.withResolvers<void>();
-  const acknowledged: string[] = [];
-  const started: string[] = [];
-  let failedSave = false;
-  let staged = false;
-  let withdrawn = false;
-  let confirmed = false;
-  let rechecked = false;
-  let postDrainReceipt: string[] | undefined;
-  const loop = runJobs(
-    {
-      ...first.store,
-      async save(state) {
-        if (!failedSave && state.receipts.some((receipt) => receipt.outcome === "completed")) {
-          failedSave = true;
-          throw new Error("Temporary receipt write failure");
-        }
-        await first.store.save(state);
-      },
-    },
-    {
-      ...first.api,
-      async poll(_state, options) {
-        if (withdrawn) {
-          if (options === undefined) {
-            postDrainReceipt = [...acknowledged];
-            return { job: next.job };
+test.each(["withdrawn", "poll failed"] as const)(
+  "a staged update handles a %s offer only after the admitted launch receipt is durable",
+  async (outcome) => {
+    const first = fixture();
+    const next = fixture();
+    const offered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const acknowledged: string[] = [];
+    const started: string[] = [];
+    let failedSave = false;
+    let staged = false;
+    let withdrawn = false;
+    let confirmed = false;
+    let rechecked = false;
+    let postDrainReceipt: string[] | undefined;
+    const loop = runJobs(
+      {
+        ...first.store,
+        async save(state) {
+          if (!failedSave && state.receipts.some((receipt) => receipt.outcome === "completed")) {
+            failedSave = true;
+            throw new Error("Temporary receipt write failure");
           }
-          return { job: null };
-        }
-        if (options?.running?.includes(first.job.requestId))
-          return { job: next.job, held: true, targetVersion: "9.0.0" };
-        return { job: first.job, held: true };
-      },
-      async result(_state, receipt) {
-        acknowledged.push(receipt.requestId);
-      },
-    },
-    {
-      ...first.executor,
-      async create(request) {
-        started.push(request.sandboxId);
-        if (request.sandboxId === first.job.request.sandboxId) await release.promise;
-      },
-    },
-    {
-      stopping: () => confirmed,
-      update: {
-        staged: () => staged,
-        async checkRecovery() {
-          return false;
-        },
-        async confirm(target) {
-          expect(target).toBeUndefined();
-          confirmed = true;
-          rechecked = true;
-          return false;
-        },
-        async restart() {
-          throw new Error("The withdrawn release must not restart the daemon");
+          await first.store.save(state);
         },
       },
-      retryCompletion: () => true,
-      async beforeAdmission(target) {
-        if (withdrawn) confirmed = true;
-        if (!target) return false;
-        staged = true;
-        offered.resolve();
-        return true;
+      {
+        ...first.api,
+        async poll(_state, options) {
+          if (withdrawn) {
+            if (options === undefined) {
+              postDrainReceipt = [...acknowledged];
+              if (outcome === "poll failed") throw new Error("Lost poll response");
+              return { job: next.job };
+            }
+            return { job: null };
+          }
+          if (options?.running?.includes(first.job.requestId))
+            return { job: next.job, held: true, targetVersion: "9.0.0" };
+          return { job: first.job, held: true };
+        },
+        async result(_state, receipt) {
+          acknowledged.push(receipt.requestId);
+        },
       },
-      async sleep() {},
-    },
-  );
-  let drained = false;
-  const complete = loop.then(() => {
-    drained = true;
-  });
-  await offered.promise;
-  expect(drained).toBe(false);
-  expect(acknowledged).toEqual([]);
-  withdrawn = true;
-  release.resolve();
-  await complete;
-  expect(rechecked).toBe(true);
-  expect(postDrainReceipt).toEqual([first.job.requestId]);
-  expect(failedSave).toBe(true);
-  expect(started).toEqual([first.job.request.sandboxId]);
-  expect(acknowledged).toEqual([first.job.requestId]);
-  expect(first.state().receipts.map(({ requestId, outcome }) => [requestId, outcome])).toEqual([
-    [first.job.requestId, "completed"],
-  ]);
-});
+      {
+        ...first.executor,
+        async create(request) {
+          started.push(request.sandboxId);
+          if (request.sandboxId === first.job.request.sandboxId) await release.promise;
+        },
+      },
+      {
+        stopping: () => confirmed,
+        update: {
+          staged: () => staged,
+          async checkRecovery() {
+            return false;
+          },
+          async confirm(target) {
+            expect(target).toEqual(
+              outcome === "poll failed" ? { type: "poll-failed" } : { type: "offer", version: undefined },
+            );
+            confirmed = true;
+            rechecked = true;
+            return false;
+          },
+          async restart() {
+            throw new Error("The withdrawn release must not restart the daemon");
+          },
+        },
+        retryCompletion: () => true,
+        async beforeAdmission(target) {
+          if (withdrawn) confirmed = true;
+          if (!target) return false;
+          staged = true;
+          offered.resolve();
+          return true;
+        },
+        async sleep() {},
+      },
+    );
+    let drained = false;
+    const complete = loop.then(() => {
+      drained = true;
+    });
+    await offered.promise;
+    expect(drained).toBe(false);
+    expect(acknowledged).toEqual([]);
+    withdrawn = true;
+    release.resolve();
+    await complete;
+    expect(rechecked).toBe(true);
+    expect(postDrainReceipt).toEqual([first.job.requestId]);
+    expect(failedSave).toBe(true);
+    expect(started).toEqual([first.job.request.sandboxId]);
+    expect(acknowledged).toEqual([first.job.requestId]);
+    expect(first.state().receipts.map(({ requestId, outcome }) => [requestId, outcome])).toEqual([
+      [first.job.requestId, "completed"],
+    ]);
+  },
+);
 
 test("completion retry persists an already compacted outcome after a directory sync failure", async () => {
   const f = fixture("delete");
