@@ -338,7 +338,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
   }
   async function create(
     row: Machine,
-    save: (row: Machine) => Promise<void>,
+    save: (row: Machine, undoUndispatchedCreate?: true) => Promise<void>,
     env: Readonly<Record<string, string>>,
     beforeDispatch?: ProviderDispatchGuard,
   ): Promise<SandboxInfo> {
@@ -376,7 +376,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         // delete a reservation once the still-owned lease publishes that fact.
         row.phase = "reserved";
         delete row.grantExpiresAt;
-        await save(row);
+        await save(row, true);
         throw error;
       }
       sb = await measure("modal_sandbox_create", () =>

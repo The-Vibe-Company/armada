@@ -152,7 +152,7 @@ export interface ModalStore {
   /** Atomic, expiring lease; concurrent controllers fail closed. */
   lease<T>(
     id: string,
-    work: (row: Machine, save: (row: Machine) => Promise<void>) => Promise<T>,
+    work: (row: Machine, save: (row: Machine, undoUndispatchedCreate?: true) => Promise<void>) => Promise<T>,
     launch?: { signal?: AbortSignal | undefined },
   ): Promise<T>;
   image(name: string, tx?: Sql): Promise<SavedImage>;
