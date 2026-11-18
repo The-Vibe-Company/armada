@@ -6,8 +6,7 @@ import { MIGRATED_DATABASE_TEMPLATE_ENV, migratedTemplate } from "../test-suppor
 import durations from "./test-durations.json";
 
 export const SHARD_COUNT = 6;
-// Measured lint/typecheck/guard work runs once in shard 1, including the SDK declaration check.
-const STATIC_CHECK_SECONDS = 26;
+const STATIC_RESERVE_SECONDS: Record<number, number> = durations.static;
 type WorkerObservation = { files: string[]; seconds: number };
 const workerKey = (files: readonly string[]) => [...files].sort().join(",");
 const root = fileURLToPath(new URL("../../", import.meta.url));
@@ -41,12 +40,17 @@ export function validatePlan(files: string[], shards: string[][]): void {
 export function planShards(
   files: string[],
   weights: Record<string, number>,
+  staticReserve: Record<number, number>,
   sources: Record<string, string> = {},
   observations: WorkerObservation[] = [],
 ): string[][] {
   const shards: string[][] = Array.from({ length: SHARD_COUNT }, () => []);
-  const loads = Array<number>(SHARD_COUNT).fill(0);
-  loads[0] = STATIC_CHECK_SECONDS;
+  const loads = shards.map((_, index) => {
+    const shard = index + 1;
+    const seconds = staticReserve[shard] ?? 0;
+    if (!Number.isFinite(seconds) || seconds < 0) throw new Error(`Invalid static reserve for shard ${shard}`);
+    return seconds;
+  });
   const measured = new Map(observations.map((worker) => [workerKey(worker.files), worker.seconds]));
   const weight = (batch: string[]) => {
     const observed = measured.get(workerKey(batch));
@@ -121,7 +125,7 @@ export function workerBatches(
 if (import.meta.main) {
   const allFiles = testFiles();
   const sources = Object.fromEntries(allFiles.map((path) => [path, readFileSync(join(root, path), "utf8")]));
-  const shards = planShards(allFiles, durations.files, sources, durations.workers);
+  const shards = planShards(allFiles, durations.files, STATIC_RESERVE_SECONDS, sources, durations.workers);
   console.log(
     `Validated ${shards.flat().length} test files, assigned exactly once: ${shards.map((s) => s.length).join(" / ")}`,
   );
