@@ -1,8 +1,8 @@
 import { dockerHostMeetsVersion, VERSION } from "@armada/core";
 import { SNAPSHOT_BASELINE_VERSION } from "@armada/core/server";
 
-// The first possible release containing baseline verification after the 2.54.0 tag (#2641).
-const baselineRelease = "2.54.1";
+// The first published release containing baseline verification (#2641 shipped in v2.55.0).
+const baselineRelease = "2.55.0";
 export const dockerHostVersions = {
   targetVersion: VERSION,
   // Unstamped source deployments advertise the version they actually ship.

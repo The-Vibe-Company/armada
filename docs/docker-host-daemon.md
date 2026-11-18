@@ -760,9 +760,10 @@ On the owner's Linux host after a versioned release:
    `baselineVersion: 1` and `baselineOutdated: false` in snapshot get.
    An existing snapshot created by an older daemon can still be used.
 
-Baseline verification landed after the 2.54.0 tag. To distinguish a
-current source build that still carries that version, the daemon's
-authenticated poll also advertises the baseline it can verify. The
+Baseline verification first shipped in 2.55.0, the minimum version. So
+that a source build still stamped with an older version is judged by what
+it can do, the daemon's authenticated poll also advertises the baseline
+it can verify. The
 host list reports `snapshotBuildSupported`. Successful new snapshot
 builds must return a verification receipt matching the baseline
 required when the build was queued. If the daemon changes after

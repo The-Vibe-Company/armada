@@ -2578,7 +2578,7 @@ test("a lost Docker template response retains one reconciling claim and never re
 async function snapshotFixture(enabled = true, options: Parameters<typeof fixture>[0] = {}) {
   const db = database();
   const f = await fixture(options);
-  await hosts.poll(f.hostToken, f.installationId, "2.54.1");
+  await hosts.poll(f.hostToken, f.installationId, "2.55.0");
   for (const [userId, githubId, access] of [
     [f.actor.userId, 123, "offline-snapshot-access"],
     [f.admin.userId, 124, "offline-admin-access"],
@@ -3430,7 +3430,7 @@ test.each(["private", "org"] as const)(
       visibility,
       config: f.config,
     });
-    const job = await hosts.poll(f.hostToken, f.installationId, "2.54.1");
+    const job = await hosts.poll(f.hostToken, f.installationId, "2.55.0");
     if (job?.operation !== "buildSnapshot") throw Error("Missing source build");
     await hosts.complete(f.hostToken, f.installationId, {
       requestId: id,
