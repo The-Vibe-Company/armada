@@ -10,6 +10,7 @@ import {
   type Sql,
   VaultError,
 } from "@armada/core";
+import { isLaunchTtlSeconds } from "@armada/core/server";
 import { admitAccountCapacity } from "./account-capacity.ts";
 import {
   admitDockerCapacity,
@@ -116,7 +117,7 @@ function normalize(input: Reservation) {
   if (!HARNESSES.includes(harness)) deny();
   if (input.stopWhenWorkMerged !== undefined && typeof input.stopWhenWorkMerged !== "boolean") deny();
   const ttlSeconds = input.ttlSeconds === undefined ? DEFAULT_LAUNCH_TTL_SECONDS : input.ttlSeconds;
-  if (!Number.isInteger(ttlSeconds) || ttlSeconds < 1 || ttlSeconds > 86400) deny();
+  if (!isLaunchTtlSeconds("docker", ttlSeconds)) deny();
   return { ...input, ...resolveModelChoice(harness, input), harness, ttlSeconds };
 }
 function record(row: Row) {

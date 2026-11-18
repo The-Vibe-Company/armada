@@ -1,5 +1,22 @@
 # Changelog
 
+## [2.55.0](https://github.com/The-Vibe-Company/armada/compare/v2.54.0...v2.55.0) (2026-11-18)
+
+
+### Features
+
+* **api:** add TypeScript SDK and generated OpenAPI description ([#2592](https://github.com/The-Vibe-Company/armada/issues/2592)) ([93b5025](https://github.com/The-Vibe-Company/armada/commit/93b5025a75dfbaf573fe649e173b1799daaa1e9c))
+* **dashboard:** add organization Langfuse settings ([#2648](https://github.com/The-Vibe-Company/armada/issues/2648)) ([f93b732](https://github.com/The-Vibe-Company/armada/commit/f93b732d6bb0c0da4ef91a66e31f93e933b45fdc))
+* **sandbox:** track pull requests and stop merged idle work ([#2618](https://github.com/The-Vibe-Company/armada/issues/2618)) ([8e94667](https://github.com/The-Vibe-Company/armada/commit/8e946673d58c8f6ac3bd12c23f9698461dfc1eeb))
+* **server:** add Langfuse settings API for [#2614](https://github.com/The-Vibe-Company/armada/issues/2614) ([#2645](https://github.com/The-Vibe-Company/armada/issues/2645)) ([7551bdc](https://github.com/The-Vibe-Company/armada/commit/7551bdcaef96065ee10a5c0a199af77ce03a6e69))
+* **snapshots:** verify and record the developer baseline ([#2641](https://github.com/The-Vibe-Company/armada/issues/2641)) ([5ab3844](https://github.com/The-Vibe-Company/armada/commit/5ab384467ddc9f32bb98a63c830bdcdf0fce06d0))
+
+
+### Bug Fixes
+
+* **release:** restore smoke receipts during publishing reruns ([#2646](https://github.com/The-Vibe-Company/armada/issues/2646)) ([cd83ad9](https://github.com/The-Vibe-Company/armada/commit/cd83ad90f770342c6ec9a2b105903c9a39aa3f72))
+* **snapshots:** restore Modal golden builder provisioning ([#2644](https://github.com/The-Vibe-Company/armada/issues/2644)) ([67fb87d](https://github.com/The-Vibe-Company/armada/commit/67fb87d983743fe4ad5eb1e10e7648a2c7567441))
+
 ## [2.54.0](https://github.com/The-Vibe-Company/armada/compare/v2.53.0...v2.54.0) (2026-11-18)
 
 

@@ -53,6 +53,7 @@ export { assertSqlGoldenMutation } from "./golden-store.ts";
 export * from "./index.ts";
 export { prepareLaunchWorkspace } from "./launch.ts";
 export { assertLaunchSecretBindings, resolveLaunchSecrets } from "./launch-secrets.ts";
+export { isLaunchTtlSeconds, validateLaunchSkillPins } from "./launch-validation.ts";
 export { resolveLaunchVariables } from "./launch-variables.ts";
 export {
   installPrivateSkill,

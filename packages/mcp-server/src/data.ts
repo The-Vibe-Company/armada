@@ -731,7 +731,11 @@ export function createSqlData(
         if (patch.usageRuntimeUnknown) sets.push("usage_runtime_seconds = null", "usage_running_since = null");
         if (patch.clearTaskOutcome) sets.push("task_outcome = null", "task_prompt_id = null");
         if (patch.taskPromptId !== undefined) set("task_prompt_id", patch.taskPromptId, "::text");
-        if (patch.status !== undefined) set("status", patch.status, "::public.sandbox_status");
+        if (patch.status !== undefined) {
+          set("status", patch.status, "::public.sandbox_status");
+          sets.push(`transition_context = case when s.provider in ('boat','modal')
+            then jsonb_build_object('actor','api','code','sandbox_' || ($${params.length}::public.sandbox_status)::text) end`);
+        }
         if (patch.conversationIds !== undefined) set("conversation_ids", patch.conversationIds, "::text[]");
         if (patch.stoppedAt !== undefined) set("stopped_at", patch.stoppedAt, "::timestamptz");
         if (patch.deletedAt !== undefined) set("deleted_at", patch.deletedAt, "::timestamptz");

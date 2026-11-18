@@ -2,6 +2,9 @@
 export const SKILL_PIN_PATTERN =
   /^(?:[a-z0-9][a-z0-9-]*\/)?[a-z0-9][a-z0-9-]*@[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$/;
 
+export const INVALID_SKILL_PINS_MESSAGE =
+  "Skills require distinct org/slug@exact-version or slug@exact-version pins (maximum 20).";
+
 export function validateSkillPins(skills: unknown, publicOnly = false): asserts skills is string[] {
   if (
     !Array.isArray(skills) ||
@@ -16,5 +19,5 @@ export function validateSkillPins(skills: unknown, publicOnly = false): asserts 
     ) ||
     new Set(skills.map((skill) => skill.split("@")[0].split("/").at(-1))).size !== skills.length
   )
-    throw new Error("Skills require distinct org/slug@exact-version or slug@exact-version pins (maximum 20).");
+    throw new Error(INVALID_SKILL_PINS_MESSAGE);
 }
