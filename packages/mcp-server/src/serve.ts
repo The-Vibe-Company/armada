@@ -809,6 +809,7 @@ export async function startServer(
     [
       langfuse,
       nativePrompts.steerRecovery,
+      modal.inventoryReaper(options.log),
       ...(options.providerReaperSources ?? []).map((source) => createProviderReaper(source, options.log)),
     ],
   );

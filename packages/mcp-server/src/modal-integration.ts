@@ -16,6 +16,7 @@ import {
   createComposedModalProvider,
   createGenerationGrants,
   createModalIngestHandler,
+  createModalInventory,
   MODAL_IMAGE_LOCK,
   type ModalManagementAuthority,
   type ResolvedModalManagementCredentials,
@@ -29,6 +30,7 @@ import type { GitHubLaunchOptions } from "./launch-credentials.ts";
 import { observeNativeFirstToken } from "./launch-stage-record.ts";
 import { projectModalEventUsage } from "./modal-event-usage.ts";
 import { modalLaunchEnvironment } from "./modal-launch-environment.ts";
+import { createModalReaper } from "./modal-reaper.ts";
 import { createModelAuthOwnership } from "./model-auth.ts";
 import { diagnosticSandboxId } from "./provider-sandbox-target.ts";
 import { observeProvider, observeProviderCall } from "./request-observability.ts";
@@ -137,7 +139,7 @@ export async function createModalIntegration(options: {
     };
   }
   async function resolveManagementCredentials(
-    authority: ModalManagementAuthority,
+    authority: Pick<ModalManagementAuthority, "credentialScope" | "credentialOwnerId">,
   ): Promise<ResolvedModalManagementCredentials> {
     const row = (await options.vault.credentials(authority.credentialScope, authority.credentialOwnerId)).find(
       (candidate) => candidate.kind === "modal",
@@ -282,6 +284,23 @@ export async function createModalIntegration(options: {
     }
   }
   return {
+    inventoryReaper: (log?: (line: string) => void) =>
+      createModalReaper(
+        options.sql,
+        options.publicUrl,
+        async (registration, binding, deploymentId) => {
+          const { tokenId, tokenSecret } = await resolveManagementCredentials({
+            credentialScope: registration.authority_scope,
+            credentialOwnerId: registration.authority_owner_id,
+          });
+          const client = new ModalClient({ tokenId, tokenSecret, timeoutMs: 10_000, maxRetries: 0 });
+          return {
+            ...createModalInventory(client, registration.app_name, binding, deploymentId),
+            close: () => client.close(),
+          };
+        },
+        log,
+      ),
     modalProviderFor,
     storedProviderFor: async (target: ProviderTarget, caller: { userId: string }) => {
       if (target.provider !== "modal" || !target.modal) throw new VaultError("invalid", "Expected Modal binding.");
