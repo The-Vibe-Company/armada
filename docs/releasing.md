@@ -77,6 +77,9 @@ Keep published historical versions available; do not unpublish them or delete us
 
 ## Dry runs and recovery
 
+If production Armada cannot launch a repair worker, use the
+[break-glass launch runbook](break-glass-launch.md).
+
 `Actions → Release → Run workflow` defaults to a dry run from the selected ref. It builds,
 packs and smoke-tests every platform, then runs `npm publish --dry-run`.
 
