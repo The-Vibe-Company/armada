@@ -58,6 +58,7 @@ import {
   type CreateSandboxRequest,
   type PromptRequestProviderEnum,
   type Sandbox,
+  type SandboxListResponse,
   SandboxStateEnum,
   type SavedSnapshot,
   type StopOperationResponse,
@@ -685,10 +686,10 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       if (!deploymentId || !deploymentLabel) return;
       const seenCursors = new Set<string>();
       let cursor: string | undefined;
-      do {
+      while (true) {
         signal?.throwIfAborted();
         const timeout = AbortSignal.timeout(10_000);
-        const response = await call(() =>
+        const response = await call<SandboxListResponse>(() =>
           api.sandboxes(
             { label: [`${DEPLOYMENT_LABEL}=${deploymentLabel}`], sort: "desc", ...(cursor ? { cursor } : {}) },
             { signal: signal ? AbortSignal.any([signal, timeout]) : timeout },
@@ -712,7 +713,7 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
         if (!next || seenCursors.has(next)) throw unexpectedAnswer("sandbox inventory cursor");
         seenCursors.add(next);
         cursor = next;
-      } while (cursor);
+      }
     },
 
     async configureReadableVariables({ sandboxId, harness, variables }) {
