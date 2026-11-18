@@ -16,7 +16,7 @@ const updateSet =
   /(?:\bupdate\s+(?:public\.)?([a-z_][a-z_0-9]*)(?:\s+(?:as\s+)?[a-z_][a-z_0-9]*)?|\binsert\s+into\s+(?:public\.)?([a-z_][a-z_0-9]*)\b[^;`]*?\bon\s+conflict\b[^;`]*?\bdo\s+update)\s+set\s+([\s\S]*?)(?=\bwhere\b|\breturning\b|[;`]|$)/gi;
 const statusAssignment = /(?:^|,)\s*status\s*=/i;
 const leaseAssignment =
-  /(?:^|,)\s*(?:[a-z_]*lease_until|lease_expires_at|worker_expires_at|claim_until)\s*=\s*(?!null\b)\S/i;
+  /(?:^|,)\s*(?:[a-z_]*lease_until|lease_expires_at|worker_expires_at|claim_until|dispatch_until)\s*=\s*(?!null\b)\S/i;
 
 export function countArchitecture(files: ReadonlyMap<string, string>) {
   let nativeReferences = 0;

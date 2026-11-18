@@ -22,6 +22,7 @@ test("counts architecture signals across a fixture tree with production and migr
     ["supabase/migrations/001.sql", "update sandboxes set note='done', status='ready', lease_until=now();\n"],
     ["supabase/migrations/002.sql", "update task_jobs set worker_expires_at=$1 where id=$2;\n"],
     ["supabase/migrations/004.sql", "insert into jobs (id) values ($1) on conflict (id) do update set lease_until=$2;"],
+    ["supabase/migrations/005.sql", "update dispatch_jobs set dispatch_until=now() where id=$1;"],
     ["supabase/migrations/003.sql", "update archived_jobs set lease_until=null where id=$1;\n"],
   ]);
 
@@ -31,8 +32,8 @@ test("counts architecture signals across a fixture tree with production and migr
     nonTestSourceLines: 8,
     providerIdBranchesOutsideAdapters: 2,
     sandboxStatusWriterFiles: 2,
-    bespokeLeaseClaimImplementations: 3,
-    leaseClaimTables: ["jobs", "sandboxes", "task_jobs"],
+    bespokeLeaseClaimImplementations: 4,
+    leaseClaimTables: ["dispatch_jobs", "jobs", "sandboxes", "task_jobs"],
     netSourceLines: 8,
   });
 });
