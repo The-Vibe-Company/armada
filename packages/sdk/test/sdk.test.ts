@@ -72,7 +72,11 @@ test("a logged or serialized client never exposes its service token, yet still a
       return Response.json({ id: "sandbox_placeholder" });
     }) as import("../src/index.ts").Fetch,
   });
-  for (const shown of [JSON.stringify(client), inspect(client, { depth: 10, showHidden: true }), String(Object.values(client))])
+  for (const shown of [
+    JSON.stringify(client),
+    inspect(client, { depth: 10, showHidden: true }),
+    String(Object.values(client)),
+  ])
     expect(shown).not.toContain("service_secret_placeholder");
   await client.status({ id: "sandbox_placeholder" });
   expect(authorization).toBe("Bearer service_secret_placeholder");
