@@ -396,6 +396,7 @@ export function automaticUpdate(state: State, instance?: string) {
   const home = homedir();
   const p = paths(home, instance);
   let staged = false;
+  let nextManifestCheck = 0;
   return {
     get staged() {
       return staged;
@@ -418,7 +419,8 @@ export function automaticUpdate(state: State, instance?: string) {
         !stableDockerHostVersion(VERSION) ||
         !stableDockerHostVersion(target) ||
         !newer(target, VERSION) ||
-        (last && !newer(target, last.version))
+        (last && !newer(target, last.version)) ||
+        Date.now() < nextManifestCheck
       )
         return false;
       try {
@@ -433,10 +435,11 @@ export function automaticUpdate(state: State, instance?: string) {
           phase: "failed",
           ...(last?.previousDigest ? { previousDigest: last.previousDigest } : {}),
         };
-        // Fence the attempt before the first network request. A different, newer
-        // release or a manual upgrade can recover from a failed download.
-        await saveUpdate(home, instance, attempt);
-        const bytes = await downloadOfficialHost(target, process.arch);
+        // Staging can advertise a version before its artifact arrives. Throttle
+        // manifest checks, and fence the attempt only once the official
+        // manifest confirms that the requested version exists.
+        nextManifestCheck = Date.now() + 5 * 60_000;
+        const bytes = await downloadOfficialHost(target, process.arch, () => saveUpdate(home, instance, attempt));
         await atomicReplace(
           join(stateDirectory(home, instance), "update-candidate"),
           bytes,

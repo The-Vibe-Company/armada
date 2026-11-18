@@ -17,9 +17,18 @@ test.each(["verified", "wrong version", "wrong checksum"])(
         ? Response.json({ version: mode === "wrong version" ? "8.0.0" : "9.0.0", x64: sha256 })
         : new Response(mode === "wrong checksum" ? "modified executable" : bytes);
     }) as typeof fetch;
-    const download = downloadOfficialHost("9.0.0", "x64", request);
+    let attempts = 0;
+    const download = downloadOfficialHost(
+      "9.0.0",
+      "x64",
+      async () => {
+        attempts++;
+      },
+      request,
+    );
     if (mode === "verified") expect((await download).toString()).toBe(bytes);
     else await expect(download).rejects.toThrow(mode === "wrong checksum" ? "checksum" : "target");
+    expect(attempts).toBe(mode === "wrong version" ? 0 : 1);
     const origin = "https://armada-mcp-production.up.railway.app";
     expect(requested).toEqual([
       `${origin}/api/docker-host/install.json`,

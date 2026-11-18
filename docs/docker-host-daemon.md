@@ -236,7 +236,9 @@ authenticated outbound poll. It fetches the standalone install manifest from
 `https://armada-mcp-production.up.railway.app/api/docker-host/install.json`,
 requires a matching version, and verifies the Linux x64 or arm64 daemon against
 the manifest's SHA-256 before staging it. The artifact uses the installer’s
-digest-addressed runtime route. The standalone manifest does not publish a
+digest-addressed runtime route. If the official manifest is still on a different
+version, the host keeps working and checks again after a five-minute pause.
+The standalone manifest does not publish a
 signature. Requests to the release origin carry no machine credentials.
 
 Once a candidate is staged, the daemon stops admitting machine jobs and waits
@@ -747,34 +749,9 @@ server functionality requires a newer daemon. Old daemons can still poll
 and run existing workloads. New snapshot builds require a daemon that
 verifies and reports the developer baseline.
 
-The self-update follow-up will use these states: idle, draining, staged,
-health check, and applied or rolled back. The daemon will stop claiming
-work, wait for active builds and launches to finish and report their
-results, then restart and reconcile. Running containers and their volumes
-stay in Docker. A daemon restart only replaces the daemon process.
-
-A Linux systemd user service will supervise the update independently of
-the candidate daemon so a binary that fails before its first poll can
-still be rolled back. The previous executable will be kept next to the
-managed binary, with the candidate version and outcome recorded in the
-instance's private state. The updater will verify a fresh authenticated
-poll from the candidate before discarding the previous binary, restore
-it atomically on failure, and persist the failed target so a restart
-cannot retry it in a loop. Each named instance owns its own files and
-lock. The design uses the existing unprivileged account and Docker
-access. Managed installation currently supports Linux systemd user
-services. macOS launchd is outside this rollout.
-
-The intended update channel is the same HTTPS release manifest and
-SHA-256-addressed Linux artifact used by the installer. The poll supplies
-version numbers. The updater will use fixed installer endpoints, require
-an exact manifest version and verify the artifact before execution.
-The updater can execute release code as the Docker service account.
-Detached signing and staged rollout are follow-ups.
-
-This change delivers version reporting and the snapshot compatibility
-check. Continue using the managed installer to update manually.
-Automatic updates, rollback, and per-host policy will ship separately.
+The managed updater follows the [automatic daemon update procedure](#automatic-daemon-updates-on-linux).
+Per-host policy, pinning, the dashboard update result, and an admin-triggered
+update are separate work. Detached signing and staged rollout are follow-ups.
 
 On the owner's Linux host after a versioned release:
 

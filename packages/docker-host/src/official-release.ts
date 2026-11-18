@@ -8,6 +8,7 @@ const origin = "https://armada-mcp-production.up.railway.app";
 export async function downloadOfficialHost(
   version: string,
   arch: string,
+  begin: () => Promise<void>,
   request: typeof fetch = fetch,
 ): Promise<Buffer> {
   if (!stableDockerHostVersion(version) || (arch !== "x64" && arch !== "arm64"))
@@ -32,6 +33,7 @@ export async function downloadOfficialHost(
   const digest: unknown = pins?.[arch];
   if (pins?.version !== version || typeof digest !== "string" || !/^[a-f0-9]{64}$/.test(digest))
     throw new Error("Docker host release manifest does not match the target");
+  await begin();
   const binary = await download(`/api/runtime/artifacts/${digest}`, 256 * 1024 * 1024);
   if (createHash("sha256").update(binary).digest("hex") !== digest)
     throw new Error("Docker host release checksum mismatch");
