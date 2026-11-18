@@ -32,13 +32,25 @@ beforeAll(async () => {
       ('20000000-0000-0000-0000-000000000001','modal','modal_logical','failed',
        '30000000-0000-0000-0000-000000000001','40000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000001'),
       ('20000000-0000-0000-0000-000000000002','modal','modal_foreign','running',
-       '30000000-0000-0000-0000-000000000001','40000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000002');
+       '30000000-0000-0000-0000-000000000001','40000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000002'),
+      ('20000000-0000-0000-0000-000000000003','modal','modal_owner_conflict','failed',
+       '30000000-0000-0000-0000-000000000001','40000000-0000-0000-0000-000000000002','10000000-0000-0000-0000-000000000001');
     insert into modal_server_scopes values
-      ('scope','{"binding":{"workspace":"work","environment":"env","appId":"ap-bound"}}');
+      ('scope','{"binding":{"workspace":"work","environment":"env","appId":"ap-bound"}}'),
+      ('second_scope','{"binding":{"workspace":"work","environment":"env","appId":"ap-bound"}}'),
+      ('other_scope','{"binding":{"workspace":"work","environment":"env","appId":"ap-other"}}');
     insert into modal_machines values
       ('scope','modal_logical','{"physicalId":"sb-physical","generation":3}',
        '30000000-0000-0000-0000-000000000001','40000000-0000-0000-0000-000000000001'),
       ('scope','modal_pending','{"physicalId":"sb-pending","generation":1}',
+       '30000000-0000-0000-0000-000000000001','40000000-0000-0000-0000-000000000001'),
+      ('other_scope','modal_wrong_app','{"physicalId":"sb-wrong-app","generation":3}',
+       '30000000-0000-0000-0000-000000000001','40000000-0000-0000-0000-000000000001'),
+      ('scope','modal_owner_conflict','{"physicalId":"sb-owner-conflict","generation":3}',
+       '30000000-0000-0000-0000-000000000001','40000000-0000-0000-0000-000000000001'),
+      ('scope','modal_duplicate','{"physicalId":"sb-duplicate","generation":3}',
+       '30000000-0000-0000-0000-000000000001','40000000-0000-0000-0000-000000000001'),
+      ('second_scope','modal_duplicate','{"physicalId":"sb-duplicate-other","generation":1}',
        '30000000-0000-0000-0000-000000000001','40000000-0000-0000-0000-000000000001');
   `);
 });
@@ -52,6 +64,13 @@ test.each([
   ["different physical ID", { machineId: "sb-replacement" }, { kind: "owned", status: "failed" }],
   ["reverse mapping conflicts with the tag", { sandboxId: "modal_other" }, { kind: "unresolved" }],
   ["canonical-only cross-App tag", { sandboxId: "modal_foreign", machineId: "sb-foreign" }, { kind: "unresolved" }],
+  ["provider-only cross-App tag", { sandboxId: "modal_wrong_app", machineId: "sb-wrong-app" }, { kind: "unresolved" }],
+  [
+    "conflicting canonical and provider owners",
+    { sandboxId: "modal_owner_conflict", machineId: "sb-owner-conflict" },
+    { kind: "unresolved" },
+  ],
+  ["ambiguous provider records", { sandboxId: "modal_duplicate", machineId: "sb-duplicate" }, { kind: "unresolved" }],
 ] as const)("Modal reaper ownership for %s", async (_name, inventory, expected) => {
   expect(await lookup({ ...machine, ...inventory }, signal)).toEqual(expected);
 });
