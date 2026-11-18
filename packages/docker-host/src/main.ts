@@ -11,10 +11,17 @@ import {
 import { VERSION } from "../../core/src/version.ts";
 import { sharedArtifactDirectory, sharedArtifactWarmer } from "./artifact-cache.ts";
 import { createAvailabilitySampler } from "./availability.ts";
-import { createPhysicalExpirySweep, register, runJobs, serverOrigin, validToken } from "./daemon.ts";
+import {
+  createExpiryOutputSweep,
+  createPhysicalExpirySweep,
+  register,
+  runJobs,
+  serverOrigin,
+  validToken,
+} from "./daemon.ts";
 import { dockerDiskFreeBytes, stoppedSandboxBytes, withDiskFloor } from "./disk.ts";
 import { cleanupOfficialImages } from "./image-retention.ts";
-import { dockerCli, fileStore, httpApi } from "./native.ts";
+import { dockerCli, fileStore, httpApi, readDockerOutputArchive } from "./native.ts";
 import { dockerRuntimeStarter } from "./runtime-install.ts";
 import {
   installService,
@@ -199,6 +206,7 @@ async function main(args: string[]) {
       installationId: state.installationId,
       hostId: state.hostId,
       cli: dockerCli,
+      readArchive: readDockerOutputArchive,
       now: Date.now,
       limits: () => limits,
       ...(sharedArtifacts ? { sharedArtifacts } : {}),
@@ -245,8 +253,10 @@ async function main(args: string[]) {
     process.once("SIGTERM", stop);
     // No batch-wide admission fence: only the same generation must not overlap.
     const expiry = createPhysicalExpirySweep(store, runtime);
+    const outputs = createExpiryOutputSweep(store, api.retainedOutputs, executor.readExpiredOutputs);
     const scans = new Set<Promise<void>>();
     const sweep = () => {
+      outputs.sweep();
       const scan = expiry
         .sweep()
         .catch(() => {
@@ -282,7 +292,7 @@ async function main(args: string[]) {
     } finally {
       clearInterval(expiryTimer);
       await Promise.all(scans);
-      await expiry.drain();
+      await Promise.all([expiry.drain(), outputs.drain()]);
     }
   } finally {
     await release();

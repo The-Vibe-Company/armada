@@ -14,8 +14,15 @@ export type ChunkedOutputReader = Required<Pick<Provider, "listOutputEntries" | 
 const CAN_WRITE_LIVE = `status in ('ready','running','stopping')
           or (status='failed' and stop_requested_at is not null and stopped_at is null)`;
 
-export const RETAINED_OUTPUT_STOP = `provider='boat' and status in ('stopped','failed') and stopped_at is not null
+export const BOAT_RETAINED_OUTPUT_STOP = `provider='boat' and status in ('stopped','failed') and stopped_at is not null
           and stop_requested_at is null and outputs_retained_generation is distinct from lifecycle_generation`;
+
+export const DOCKER_RETAINED_OUTPUT_STOP = `provider='docker' and status in ('stopped','failed') and stopped_at is not null
+          and stop_requested_at is not null and outputs_retained_generation is distinct from lifecycle_generation
+          and exists(select 1 from public.docker_hosts h join public.members m on m.org_id=h.org_id and m.user_id=h.owner_id
+            where h.id=sandboxes.docker_host_id and h.revoked_at is null)`;
+
+const RETAINED_OUTPUT_STOP = `((${BOAT_RETAINED_OUTPUT_STOP}) or (${DOCKER_RETAINED_OUTPUT_STOP}))`;
 
 type Transfer = { id: string; received: number; digest: string | null };
 type Skipped = "too_large" | "sandbox_limit" | "org_limit";

@@ -29,6 +29,7 @@ export type Receipt = {
   expired?: true;
   cleaned?: true;
   expiryReported?: true;
+  expiryOutputsPending?: true;
 } & (
   | { operation: "create" | "stop" | "delete" }
   | { operation: "bootstrap" | "resume"; inputHash: string }
@@ -113,6 +114,7 @@ export interface Api {
     }
   >;
   result(state: State, receipt: Receipt, expired?: true): Promise<void>;
+  retainedOutputs?(state: State, requestId: string, read: () => Promise<Uint8Array<ArrayBuffer> | null>): Promise<void>;
   claim?(state: State, requestId: string, accepted: boolean): Promise<void>;
   cleaned?(state: State, requestId: string, reason?: "retention_elapsed" | "disk_pressure"): Promise<void>;
 }
@@ -136,6 +138,50 @@ export interface Executor {
   stoppedAt?(request: DockerMachineRequest): Promise<number | null>;
   isStopped?(request: DockerMachineRequest): Promise<boolean>;
 }
+/** One independent archive read/upload per host. Expiry reporting and cleanup remain independent. */
+export function createExpiryOutputSweep(
+  store: Store,
+  upload: NonNullable<Api["retainedOutputs"]>,
+  read: (request: DockerMachineRequest) => Promise<Uint8Array<ArrayBuffer> | null>,
+  now = Date.now,
+) {
+  let pending: Promise<void> | undefined;
+  let after: string | undefined;
+  let nextAttempt = 0;
+  async function capture() {
+    if (now() < nextAttempt) return;
+    const state = await store.load();
+    const cursor = state.receipts.findIndex((receipt) => receipt.requestId === after);
+    const receipt = [...state.receipts.slice(cursor + 1), ...state.receipts.slice(0, cursor + 1)].find(
+      (item) => item.expiryReported && !item.cleaned && item.expiryOutputsPending,
+    );
+    if (!receipt) return;
+    after = receipt.requestId;
+    nextAttempt = now() + 120_000;
+    await upload(state, receipt.requestId, () => read(receipt.request));
+    await exclusive(store, async () => {
+      const current = await store.load();
+      const target = current.receipts.find((item) => item.requestId === receipt.requestId);
+      if (!target || target.cleaned) return;
+      delete target.expiryOutputsPending;
+      await store.save(current);
+    });
+    nextAttempt = 0;
+  }
+  return {
+    sweep() {
+      pending ??= capture()
+        .catch(() => {})
+        .finally(() => {
+          pending = undefined;
+        });
+    },
+    async drain() {
+      await pending;
+    },
+  };
+}
+
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export function validId(value: unknown): value is string {
   return typeof value === "string" && uuid.test(value);
@@ -789,6 +835,7 @@ async function admitLocked(
       await store.save(state);
       await api.result(state, report, true);
       report.expiryReported = true;
+      if (api.retainedOutputs) report.expiryOutputsPending = true;
       await store.save(state);
     } catch {
       // Offline/unknown ACK: retry this same durable fact on a later fair turn.
@@ -1043,7 +1090,7 @@ export function compactReceipts(state: State): void {
       receipt.operation === "stop" ||
       receipt.operation === "delete" ||
       receipt.operation === "buildSnapshot" ||
-      (receipt.expired && receipt.expiryReported);
+      (receipt.expired && receipt.expiryReported && !receipt.expiryOutputsPending);
     if (!closed) return true;
     if (
       receipt.operation !== "delete" &&
