@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.54.0](https://github.com/The-Vibe-Company/armada/compare/v2.53.0...v2.54.0) (2026-11-18)
+
+
+### Features
+
+* **observability:** correlate HTTP requests and provider calls ([#2627](https://github.com/The-Vibe-Company/armada/issues/2627)) ([05aadf6](https://github.com/The-Vibe-Company/armada/commit/05aadf64e7e4200178ce042f3b4fc3990867a04c))
+
+
+### Bug Fixes
+
+* **docker:** retain a merge base in repository checkouts ([#2640](https://github.com/The-Vibe-Company/armada/issues/2640)) ([352b3cb](https://github.com/The-Vibe-Company/armada/commit/352b3cb3ac59e878d6b00009a0178e2c39b3dc59))
+* **langfuse:** export terminal turns across sandbox paths ([#2621](https://github.com/The-Vibe-Company/armada/issues/2621)) ([c981204](https://github.com/The-Vibe-Company/armada/commit/c9812046e2bc1c5f53a9b91d8bb8d0b5586c7e59))
+* **outputs:** collect Boat and Modal sandbox files without Python ([#2635](https://github.com/The-Vibe-Company/armada/issues/2635)) ([c4fdfa5](https://github.com/The-Vibe-Company/armada/commit/c4fdfa5c1abf2071822b202df0ffb81755b5230b))
+
 ## [2.53.0](https://github.com/The-Vibe-Company/armada/compare/v2.52.1...v2.53.0) (2026-11-18)
 
 
