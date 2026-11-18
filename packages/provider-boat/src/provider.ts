@@ -43,6 +43,9 @@ import {
   isNonMutatingProviderRefusal,
   OUTPUT_COLLECTOR,
   OUTPUT_COLLECTOR_PROBE,
+  outputEntryCollector,
+  readCollectorEntries,
+  readCollectorChunk,
   OutputCollectionError,
   readCollectorProbeResult,
   readCollectorResult,
@@ -444,6 +447,13 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       );
     },
 
+    listOutputEntries(request) {
+      return collectOutputs(request, outputEntryCollector(null), readCollectorEntries);
+    },
+    readOutputChunk(request) {
+      return collectOutputs(request, outputEntryCollector(request.chunk),
+        (status, stdout) => readCollectorChunk(status, stdout, request.chunk));
+    },
     readOutputs(request) {
       return collectOutputs(request, OUTPUT_COLLECTOR, readCollectorResult);
     },

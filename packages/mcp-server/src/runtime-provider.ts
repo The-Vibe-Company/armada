@@ -90,6 +90,22 @@ export function createRuntimeProvider(
           },
         }
       : {}),
+    ...(host.readOutputChunk
+      ? {
+          async readOutputChunk(request: Parameters<NonNullable<Provider["readOutputChunk"]>>[0]) {
+            target(request.sandboxId);
+            return host.readOutputChunk!(request);
+          },
+        }
+      : {}),
+    ...(host.listOutputEntries
+      ? {
+          async listOutputEntries(request: Parameters<NonNullable<Provider["listOutputEntries"]>>[0]) {
+            target(request.sandboxId);
+            return host.listOutputEntries!(request);
+          },
+        }
+      : {}),
     // No quiescence/checkpoint/work-preservation/resume guarantee in this lane.
     quiesce: unsupported,
     prompt: unsupported,

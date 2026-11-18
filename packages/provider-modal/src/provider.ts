@@ -21,6 +21,9 @@ import {
 import {
   OUTPUT_COLLECTOR,
   OUTPUT_COLLECTOR_PROBE,
+  outputEntryCollector,
+  readCollectorEntries,
+  readCollectorChunk,
   readCollectorProbeResult,
   readCollectorResult,
   runtimeBootstrapScript,
@@ -1164,6 +1167,13 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         if (observed) throw new ModalOperationError(error, await resourceReceipt(observed));
         throw error;
       }
+    },
+    listOutputEntries(request) {
+      return collectOutputs(request, outputEntryCollector(null), readCollectorEntries);
+    },
+    readOutputChunk(request) {
+      return collectOutputs(request, outputEntryCollector(request.chunk),
+        (status, stdout) => readCollectorChunk(status, stdout, request.chunk));
     },
     readOutputs(request) {
       return collectOutputs(request, OUTPUT_COLLECTOR, readCollectorResult);
