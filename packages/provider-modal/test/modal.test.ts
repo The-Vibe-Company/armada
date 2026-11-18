@@ -980,11 +980,15 @@ test("durable Modal dispatch checks authority at reservation, create, and deleti
   expect(await f.provider.delete(noReservation, async () => {})).toEqual({ status: "deleted" });
   expect(await f.store.findByRequestKey(launchId)).toBeNull();
   expect(f.creates).toBe(1);
-  await expect(
-    f.provider.fork(request, async (transaction) => {
-      if (!transaction && (await f.store.get(key)).phase === "creating") throw Error("Dispatch expired");
-    }),
-  ).rejects.toThrow();
+  const dispatch = new AbortController();
+  const abortAtCreate = Object.assign(
+    async (transaction?: Sql) => {
+      if (!transaction && (await f.store.get(key)).phase === "creating") dispatch.abort();
+      dispatch.signal.throwIfAborted();
+    },
+    { signal: dispatch.signal },
+  );
+  await expect(f.provider.fork(request, abortAtCreate)).rejects.toThrow();
   expect(f.creates).toBe(1);
   expect(await f.store.get(key)).toMatchObject({ phase: "reserved" });
   const child = await f.provider.fork({ from: name });

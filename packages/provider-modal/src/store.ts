@@ -153,12 +153,18 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
         : undefined;
       heartbeat?.unref();
       try {
-        return await work(await get(id), async (row) => {
+        return await work(await get(id), async (row, undoUndispatchedCreate) => {
           await authorize(sql);
-          signal?.throwIfAborted();
+          // The pre-SDK guard can prove that this particular create never
+          // dispatched. Preserve that proof under the old lease without renewing it.
+          if (!undoUndispatchedCreate) signal?.throwIfAborted();
           const result = await sql.query(
-            `update public.modal_machines set record=$4::jsonb,lease_until=clock_timestamp()+$5::integer*interval '1 second' where scope=$1 and id=$2 and lease_id=$3 and lease_until>clock_timestamp() returning id`,
-            [key, id, token, JSON.stringify(row), duration],
+            `update public.modal_machines set record=$4::jsonb,
+               lease_until=case when $6 then lease_until else clock_timestamp()+$5::integer*interval '1 second' end
+             where scope=$1 and id=$2 and lease_id=$3 and lease_until>clock_timestamp()
+               and (not $6 or (record->>'phase'='creating' and $4::jsonb->>'phase'='reserved'))
+             returning id`,
+            [key, id, token, JSON.stringify(row), duration, undoUndispatchedCreate === true],
           );
           if (!result.rows.length) throw refusal("conflict", "Lifecycle lease expired; result is fenced.");
         });
