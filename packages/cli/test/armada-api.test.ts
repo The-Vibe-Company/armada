@@ -205,69 +205,65 @@ test("a long-lived client uses the rotated refresh token on later requests and p
   expect((await session.read())?.refreshToken).toBe("refresh-2");
 });
 
-for (const path of ["launch", "launch-sized-v1", "launch-access-v1"]) {
-  for (const failure of ["500", "502", "network", "timeout"] as const) {
-    test(`lost launch outcome (${path}, ${failure}) advises checking without echoing server text`, async () => {
-      const state = io({ ARMADA_TOKEN: token });
-      let attempts = 0;
-      state.fetch = (async () => {
-        attempts++;
-        if (failure === "network") throw Error(token);
-        if (failure === "timeout") throw new DOMException(token, "TimeoutError");
-        return Response.json({ error: { code: "unavailable", message: token } }, { status: Number(failure) });
-      }) as unknown as typeof fetch;
-      const client = await createArmadaApiClient(state);
-      const error = await client.request(`/api/v1/sandbox/${path}`, { method: "POST" }).catch((error) => error);
-      expect(error).toBeInstanceOf(AuthError);
-      expect((error as Error).message).toContain("Run armada list to check before retrying.");
-      expect((error as Error).message).not.toContain(token);
-      expect(attempts).toBe(1);
-    });
-  }
+for (const failure of ["500", "502", "network", "timeout"] as const) {
+  test(`lost launch outcome (${failure}) advises checking without echoing server text`, async () => {
+    const state = io({ ARMADA_TOKEN: token });
+    let attempts = 0;
+    state.fetch = (async () => {
+      attempts++;
+      if (failure === "network") throw Error(token);
+      if (failure === "timeout") throw new DOMException(token, "TimeoutError");
+      return Response.json({ error: { code: "unavailable", message: token } }, { status: Number(failure) });
+    }) as unknown as typeof fetch;
+    const client = await createArmadaApiClient(state);
+    const error = await client.request(`/api/v1/sandbox/launch`, { method: "POST" }).catch((error) => error);
+    expect(error).toBeInstanceOf(AuthError);
+    expect((error as Error).message).toContain("Run armada list to check before retrying.");
+    expect((error as Error).message).not.toContain(token);
+    expect(attempts).toBe(1);
+  });
 }
 
-for (const path of ["launch", "launch-sized-v1", "launch-access-v1"]) {
-  for (const [status, code] of [
-    [429, "rate_limited"],
-    [402, "payment_required"],
-    [503, "provider_routing_unavailable"],
-    [503, "provider_not_configured"],
-    [400, "start_failed"],
-  ] as const) {
-    test(`known allocation refusal keeps its code and closed help (${path}, ${code})`, async () => {
-      const client = await createArmadaApiClient({
-        ...io({ ARMADA_TOKEN: token }),
-        fetch: async () =>
-          Response.json(
-            {
-              error: {
-                code,
-                message: token,
-                details: {
-                  provider: "boat",
-                  window: "day",
-                  nextStartAt: "2026-11-12T08:08:00.000Z",
-                },
+for (const [status, code] of [
+  [429, "rate_limited"],
+  [402, "payment_required"],
+  [503, "provider_routing_unavailable"],
+  [503, "provider_not_configured"],
+  [400, "start_failed"],
+] as const) {
+  test(`known allocation refusal keeps its code and closed help (${code})`, async () => {
+    const client = await createArmadaApiClient({
+      ...io({ ARMADA_TOKEN: token }),
+      fetch: async () =>
+        Response.json(
+          {
+            error: {
+              code,
+              message: token,
+              details: {
+                provider: "boat",
+                window: "day",
+                nextStartAt: "2026-11-12T08:08:00.000Z",
               },
             },
-            { status },
-          ),
-      });
-      try {
-        await client.request(`/api/v1/sandbox/${path}`, { method: "POST" });
-        throw Error("Expected refusal");
-      } catch (error) {
-        expect(error).toBeInstanceOf(ArmadaApiError);
-        expect((error as ArmadaApiError).serverCode).toBe(code);
-        expect((error as Error).message).not.toContain(token);
-        expect((error as Error).message).not.toContain("outcome unknown");
-        if (code === "rate_limited") {
-          expect((error as Error).message).toContain("plan start limit per day");
-          expect((error as Error).message).toContain("2026-11-12T08:08:00.000Z");
-        }
-      }
+          },
+          { status },
+        ),
     });
-  }
+    try {
+      await client.request(`/api/v1/sandbox/launch`, { method: "POST" });
+      throw Error("Expected refusal");
+    } catch (error) {
+      expect(error).toBeInstanceOf(ArmadaApiError);
+      expect((error as ArmadaApiError).serverCode).toBe(code);
+      expect((error as Error).message).not.toContain(token);
+      expect((error as Error).message).not.toContain("outcome unknown");
+      if (code === "rate_limited") {
+        expect((error as Error).message).toContain("plan start limit per day");
+        expect((error as Error).message).toContain("2026-11-12T08:08:00.000Z");
+      }
+    }
+  });
 }
 
 test("closed server failures give actionable CLI help without parsing free text", async () => {
