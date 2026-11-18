@@ -124,11 +124,12 @@ each payload, with null when the sandbox has no reference.
 
 ## Launch route compatibility
 
-For explicit runtime launches, send the selectors to `POST /api/v1/sandbox/launch`.
+For explicit runtime launches from a golden, send the selectors to `POST /api/v1/sandbox/launch`.
 Use `runtimeVersion: 1` and `boatRuntime: true` for Boat. Use `runtimeVersion: 1`,
 `provider: "modal"` and `runtimeTransport: "dialout"` for Modal. The existing
 runtime admission checks and server opt-ins apply on both the canonical and
-compatibility routes.
+compatibility routes. Pinned Modal runtime templates still use
+`sandbox/launch-modal-runtime-v1`.
 
 | Compatibility route | Known callers to migrate |
 | --- | --- |

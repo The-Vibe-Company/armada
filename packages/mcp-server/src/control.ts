@@ -902,6 +902,8 @@ export async function dispatchControlCommand(
       if (body.prompt === undefined && !options.runtimeSend)
         throw new VaultError("unavailable", "Modal runtime idle first send is unavailable.");
       if (body.id !== undefined) {
+        if (route === "sandbox/launch")
+          throw new VaultError("invalid", "Use sandbox/launch-modal-runtime-v1 for pinned Modal runtime templates.");
         const standard = [
           "org",
           "id",
