@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { type OutputFile, type Provider, parseOutputFiles, type Sql } from "@armada/core/server";
 import { createRuntimeCommands, expiredOutputRead } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
-import { captureFinalOutputs } from "./sandbox-outputs.ts";
+import { captureFinalOutputs, recordOutputFailure } from "./sandbox-outputs.ts";
 
 type Clock = Parameters<typeof createRuntimeCommands>[2];
 type OutputReader = Pick<Provider, "readOutputs">;
@@ -115,8 +115,10 @@ export async function captureDockerStopOutputs(
     ).rows[0];
     if (!target) return;
     const reader = (options.reader ?? createDockerOutputReader(sql, key))(id, options.epoch);
-    await captureFinalOutputs(sql, reader, id, { key, signal: AbortSignal.timeout(options.timeoutMs ?? 12_000) });
+    await captureFinalOutputs(sql, reader, id, { key, signal: AbortSignal.timeout(options.timeoutMs ?? 12_000) }).catch(
+      () => {},
+    );
   } catch {
-    console.warn(JSON.stringify({ event: "sandbox_output_final_capture_failed", sandboxId: id }));
+    void recordOutputFailure(sql, id, "sandbox_output_final_capture_failed", "collector_failed").catch(() => {});
   }
 }

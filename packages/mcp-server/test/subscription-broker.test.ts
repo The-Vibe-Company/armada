@@ -116,7 +116,7 @@ test("three subscription launches prompt despite trapped history and share one r
       });
       expect(launched.promptId).toBe(`prompt_${index + 1}`);
     }
-    expect(boat.prompts.map(({ sandboxId, text }) => ({ sandboxId, text }))).toEqual([
+    expect(boat.prompts.map(({ sandboxId, text }) => ({ sandboxId, text: text.split("\n\n", 1)[0] }))).toEqual([
       { sandboxId: "bx_1", text: "Reply to subscription launch 1" },
       { sandboxId: "bx_2", text: "Reply to subscription launch 2" },
       { sandboxId: "bx_3", text: "Reply to subscription launch 3" },

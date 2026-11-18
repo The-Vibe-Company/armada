@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { OutputFile, Provider, Sql } from "@armada/core/server";
+import { OutputCollectionError, type OutputFile, type Provider, type Sql } from "@armada/core/server";
 import { captureFinalOutputs, createSandboxOutputs, drainFinalOutputs } from "../src/sandbox-outputs.ts";
 import { startServerWorkers } from "../src/server-workers.ts";
 import { preserveBeforeStop } from "../src/work-preservation.ts";
@@ -80,10 +80,18 @@ test("collected outputs survive stop, deduplicate webhook events and enforce int
   );
   const { state, provider } = disks();
   state.live = [file("memo.pdf", "document")];
-  const service = createSandboxOutputs(sql, KEY, async () => provider);
+  let probes = 0;
+  const service = createSandboxOutputs(sql, KEY, async () => ({
+    readOutputs: provider.readOutputs!,
+    async probeOutputs() {
+      probes++;
+      return true;
+    },
+  }));
   expect(await sample(service)).toBe(true);
   await db.query(`update sandboxes set outputs_checked_at=null where id=$1`, [id]);
   expect(await sample(service)).toBe(true);
+  expect(probes).toBe(1);
   expect(
     (await db.query(`select 1 from outbound_webhook_deliveries where payload->>'type'='sandbox.output.available'`))
       .rows,
@@ -112,6 +120,126 @@ test("collected outputs survive stop, deduplicate webhook events and enforce int
   // Only a well-formed UUID reaches the uuid-typed query; anything else is not this route.
   const malformed = `https://armada.example/api/v1/sandboxes/${"-".repeat(36)}/outputs`;
   expect(await routeFor(service, people.owner, people.org)(new Request(malformed))).toBeNull();
+});
+
+test("an unsupported collector is reported once and skipped by both sampling and final capture", async () => {
+  const { db, people, id, sql } = await fixture();
+  let attempts = 0;
+  let reads = 0;
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const provider = {
+    async probeOutputs() {
+      attempts++;
+      entered.resolve();
+      await release.promise;
+      throw new OutputCollectionError("collector_unsupported");
+    },
+    async readOutputs() {
+      reads++;
+      throw new OutputCollectionError("collector_unsupported");
+    },
+  };
+  const service = createSandboxOutputs(sql, KEY, async () => provider);
+  const lines: unknown[] = [];
+  const warn = console.warn;
+  console.warn = (line) => lines.push(JSON.parse(line));
+  try {
+    expect(await service.reconcileOne(signal())).toBe(true);
+    await entered.promise;
+    // The first sample owns the probe, even when stop claims a separate scan.
+    await captureFinalOutputs(sql, provider, id, { key: KEY });
+    release.resolve();
+    await service.drain();
+    await db.query(`update sandboxes set outputs_checked_at=null where id=$1`, [id]);
+    expect(await sample(service)).toBe(false);
+    await captureFinalOutputs(sql, provider, id, { key: KEY });
+  } finally {
+    release.resolve();
+    await service.drain();
+    console.warn = warn;
+  }
+  expect(attempts).toBe(1);
+  expect(reads).toBe(1);
+  expect(lines).toEqual([
+    { event: "sandbox_output_final_capture_failed", sandboxId: id, reason: "collector_unsupported" },
+  ]);
+  const route = routeFor(service, people.owner, people.org);
+  const url = `https://armada.example/api/v1/sandboxes/${id}/outputs`;
+  expect(await (await route(new Request(url)))?.json()).toMatchObject({
+    unavailable: "collector_unsupported",
+    files: [],
+  });
+});
+
+test("final capture publishes deliverables while the first periodic capability probe is in flight", async () => {
+  const { people, id, sql } = await fixture();
+  const probeEntered = Promise.withResolvers<void>();
+  const probeReleased = Promise.withResolvers<boolean>();
+  const provider = {
+    async probeOutputs() {
+      probeEntered.resolve();
+      return probeReleased.promise;
+    },
+    async readOutputs() {
+      return [file("final.txt", "deliverable")];
+    },
+  };
+  const service = createSandboxOutputs(sql, KEY, async () => provider);
+  try {
+    expect(await service.reconcileOne(signal())).toBe(true);
+    await probeEntered.promise;
+    await captureFinalOutputs(sql, provider, id, { key: KEY });
+    const route = routeFor(service, people.owner, people.org);
+    const url = `https://armada.example/api/v1/sandboxes/${id}/outputs/final.txt`;
+    expect(await (await route(new Request(url)))?.text()).toBe("deliverable");
+  } finally {
+    probeReleased.resolve(true);
+    await service.drain();
+  }
+});
+
+test("a stop before the first sample reads even when a capability probe would fail transiently", async () => {
+  const { people, id, sql } = await fixture();
+  let probes = 0;
+  let reads = 0;
+  const provider = {
+    async probeOutputs(): Promise<boolean> {
+      probes++;
+      throw new OutputCollectionError("output_timeout");
+    },
+    async readOutputs() {
+      reads++;
+      return [file("memo.txt", "last deliverable")];
+    },
+  };
+  const service = createSandboxOutputs(sql, KEY, async () => provider);
+  await captureFinalOutputs(sql, provider, id, { key: KEY, signal: signal() });
+  expect(probes).toBe(0);
+  expect(reads).toBe(1);
+  const url = `https://armada.example/api/v1/sandboxes/${id}/outputs/memo.txt`;
+  expect(await (await routeFor(service, people.owner, people.org)(new Request(url)))?.text()).toBe("last deliverable");
+});
+
+test("a final read that finds the collector unsupported records it without retrying", async () => {
+  const { db, id, sql } = await fixture();
+  let reads = 0;
+  const provider = {
+    async probeOutputs(): Promise<boolean> {
+      throw Error("final capture must not probe");
+    },
+    async readOutputs(): Promise<OutputFile[]> {
+      reads++;
+      throw new OutputCollectionError("collector_unsupported");
+    },
+  };
+  await captureFinalOutputs(sql, provider, id, { key: KEY, signal: signal() });
+  // Known unavailable: a later stop skips the read entirely, adding no delay.
+  await captureFinalOutputs(sql, provider, id, { key: KEY, signal: signal() });
+  expect(reads).toBe(1);
+  expect((await db.query(`select outputs_failure_reasons from sandboxes where id=$1`, [id])).rows[0]).toEqual({
+    outputs_failure_reasons: ["collector_unsupported"],
+  });
 });
 
 test("stop captures files written after the last sample, for native and enrolled-runtime sandboxes", async () => {
@@ -451,7 +579,7 @@ test("an in-flight sample still publishes when the newer final capture fails", a
   const final = disks();
   final.state.stopped = true;
   await expect(captureFinalOutputs(sql, final.provider, id, { key: KEY, signal: signal() })).rejects.toThrow(
-    "output_collection_unavailable",
+    "output_unavailable",
   );
   periodic.state.live = [file("memo.txt", "draft")];
   release();

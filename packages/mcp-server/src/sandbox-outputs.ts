@@ -5,6 +5,8 @@ import {
   encryptionKey,
   encryptSecret,
   OUTPUT_DIRECTORY,
+  OutputCollectionError,
+  type OutputFailureReason,
   type Provider,
   type Sql,
 } from "@armada/core/server";
@@ -15,10 +17,11 @@ import type { Route } from "./http.ts";
 // their own fixed channel (Provider.readOutputs), never caller commands or the agent runtime.
 // Docker sandboxes have no provider exec; their reader is the runtime's fixed read-only operation.
 // Application-secret taint is irreversible and forbids every file egress (same policy as exec and work recovery).
-const ELIGIBLE = `provider in ('boat','modal','docker') and not application_secret_tainted`;
+const ELIGIBLE = `provider in ('boat','modal','docker') and not application_secret_tainted
+  and not ('collector_unsupported' = any(outputs_failure_reasons))`;
 
 /** The only provider surface output collection uses. */
-type OutputReader = Pick<Provider, "readOutputs">;
+type OutputReader = Pick<Provider, "readOutputs" | "probeOutputs">;
 
 /** SDKs may ignore cancellation once a request reached the provider. Callers wait at most until
  * their signal aborts; the outstanding read stays tracked, bounded and fenced from persisting. */
@@ -36,6 +39,65 @@ function untilAborted<T>(work: Promise<T>, signal: AbortSignal | undefined): Pro
   });
 }
 
+/** Claim each closed reason atomically so replicas and both capture paths share the same limit. */
+export async function recordOutputFailure(
+  sql: Sql,
+  id: string,
+  event: string,
+  reason: OutputFailureReason,
+): Promise<void> {
+  const claim = await sql.query(
+    `update public.sandboxes
+     set outputs_failure_reasons=array_append(outputs_failure_reasons,$2)
+     where id=$1 and status<>'deleted' and not application_secret_tainted
+     and not ($2 = any(outputs_failure_reasons)) returning id`,
+    [id, reason],
+  );
+  if (claim.rows.length) console.warn(JSON.stringify({ event, sandboxId: id, reason }));
+}
+
+function failureReason(error: unknown, signal?: AbortSignal): OutputFailureReason {
+  if (error instanceof OutputCollectionError) return error.reason;
+  if (signal?.aborted) return "output_timeout";
+  return "collector_failed";
+}
+
+/** Claim the first capability probe across the sample and final paths. A crashed claim
+ * can be retried after the sampling interval, which is longer than either probe's deadline. */
+async function probeOutputCapability(
+  sql: Sql,
+  provider: OutputReader,
+  id: string,
+  providerId: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  const claim = (
+    await sql.query<{ probe: string }>(
+      `update public.sandboxes set outputs_probe_at=clock_timestamp()
+       where id=$1 and ${ELIGIBLE} and not outputs_collector_supported
+       and (outputs_probe_at is null or outputs_probe_at<now()-interval '30 seconds')
+       returning outputs_probe_at::text as probe`,
+      [id],
+    )
+  ).rows[0];
+  if (!claim) return false;
+  signal?.throwIfAborted();
+  const ready = await provider.probeOutputs!({ sandboxId: providerId, ...(signal ? { signal } : {}) }).catch(
+    (error: unknown) => {
+      signal?.throwIfAborted();
+      throw error;
+    },
+  );
+  if (!ready) throw new OutputCollectionError("output_unavailable");
+  signal?.throwIfAborted();
+  const verified = await sql.query(
+    `update public.sandboxes set outputs_collector_supported=true
+     where id=$1 and outputs_probe_at=$2::timestamptz and ${ELIGIBLE} returning id`,
+    [id, claim.probe],
+  );
+  return verified.rows.length > 0;
+}
+
 async function collect(
   sql: Sql,
   provider: OutputReader,
@@ -43,24 +105,34 @@ async function collect(
   providerId: string,
   scan: string,
   key: string,
-  signal?: AbortSignal,
-  writes?: Set<Promise<unknown>>,
+  options: { signal?: AbortSignal | undefined; writes?: Set<Promise<unknown>>; final?: boolean },
 ) {
+  const { signal, writes } = options;
   // A cancelled read never writes again (the worker's drain relies on it); readers stop at their next check.
   signal?.throwIfAborted();
   // Taint can commit after the scan claim (e.g. while the provider resolves): admit the read only
   // against current taint, immediately before dispatch (the same check-then-act fence exec uses).
   // Docker additionally refuses dispatch and redacts replies under the runtime session lock.
-  const admitted = await sql.query(`select 1 from public.sandboxes where id=$1 and not application_secret_tainted`, [
-    id,
-  ]);
-  if (!admitted.rows.length) throw Error("output_collection_tainted");
+  const admitted = (
+    await sql.query<{ outputs_collector_supported: boolean }>(
+      `select outputs_collector_supported from public.sandboxes where id=$1 and ${ELIGIBLE}`,
+      [id],
+    )
+  ).rows[0];
+  if (!admitted) return;
+  // Final capture never probes first. Its bounded read is the last chance to collect a deliverable,
+  // and the read's own exit status classifies an unsupported collector, so a transient or parallel
+  // probe never costs that read. A recorded `collector_unsupported` was already excluded above:
+  // a collector known to be unavailable adds no delay to stop.
+  if (provider.probeOutputs && !admitted.outputs_collector_supported && !options.final) {
+    if (!(await probeOutputCapability(sql, provider, id, providerId, signal))) return;
+  }
   signal?.throwIfAborted();
   const read = provider.readOutputs
     ? await provider.readOutputs({ sandboxId: providerId, ...(signal ? { signal } : {}) })
     : null;
   // Not live or a failed read: keep the previous snapshot; running sandboxes retry after the fence.
-  if (!read) throw Error("output_collection_unavailable");
+  if (!read) throw new OutputCollectionError("output_unavailable");
   // The caller's deadline has passed: a late read must never replace what callers saw since.
   signal?.throwIfAborted();
   const files = admitOutputs(read).map((file) => ({
@@ -139,7 +211,10 @@ export async function captureFinalOutputs(
   if (!key) return;
   // Earlier captures outlived their deadline and still hang in the provider SDK: skip rather than
   // pile up; the snapshot stays. Concurrent stops that are still within their deadline never count.
-  if (finalLate.size >= OUTSTANDING_MAX) throw Error("output_collection_busy");
+  if (finalLate.size >= OUTSTANDING_MAX) {
+    void recordOutputFailure(sql, id, "sandbox_output_final_capture_failed", "output_busy").catch(() => {});
+    throw new OutputCollectionError("output_busy");
+  }
   const { signal } = options;
   // The whole capture is bounded, from the scan claim on: a claim that waits on a row lock or a
   // pool connection must not hold stop dispatch either, and a claim that returns after the
@@ -159,7 +234,15 @@ export async function captureFinalOutputs(
     ).rows[0];
     if (!row) return;
     signal?.throwIfAborted();
-    await collect(sql, provider, id, row.provider_sandbox_id, row.scan, key, signal);
+    try {
+      await collect(sql, provider, id, row.provider_sandbox_id, row.scan, key, { signal, final: true });
+    } catch (error) {
+      if (error instanceof OutputCollectionError && error.reason === "collector_unsupported") {
+        await recordOutputFailure(sql, id, "sandbox_output_final_capture_failed", error.reason);
+        return;
+      }
+      throw error;
+    }
   })();
   work.catch(() => {});
   // Stop dispatch waits at most until the caller's deadline, even if the provider SDK does not.
@@ -170,6 +253,9 @@ export async function captureFinalOutputs(
       finalLate.add(work);
       void work.catch(() => {}).finally(() => finalLate.delete(work));
     }
+    void recordOutputFailure(sql, id, "sandbox_output_final_capture_failed", failureReason(error, signal)).catch(
+      () => {},
+    );
     throw error;
   }
 }
@@ -202,15 +288,17 @@ export function createSandboxOutputs(
       // The sample runs in the background under its own deadline (and the worker's shutdown), so
       // stop reconciliation, webhooks and other lanes never wait for a provider read. At most
       // OUTSTANDING_MAX samples are in flight; drain() settles them; a late one never persists.
-      // A per-sandbox failure (no python3, provider refusal, compute stopping) is that sandbox's
-      // problem: keep the previous snapshot and retry after the 30 s fence.
       const deadline = AbortSignal.any([signal, AbortSignal.timeout(SAMPLE_DEADLINE_MS)]);
       const reader = row.provider === "docker" ? Promise.resolve(docker?.(row.id) ?? {}) : providerFor(row.id);
       const work = reader
-        .then((provider) => collect(sql, provider, row.id, row.provider_sandbox_id, row.scan, key, deadline, writes))
-        .catch(() => {
-          console.warn(JSON.stringify({ event: "sandbox_output_collection_failed", sandboxId: row.id }));
-        })
+        .then((provider) =>
+          collect(sql, provider, row.id, row.provider_sandbox_id, row.scan, key, { signal: deadline, writes }),
+        )
+        .catch((error: unknown) =>
+          recordOutputFailure(sql, row.id, "sandbox_output_collection_failed", failureReason(error, deadline)).catch(
+            () => {},
+          ),
+        )
         .then(() => true);
       pending.set(work, deadline);
       void work.then(() => pending.delete(work));
@@ -240,8 +328,8 @@ export function createSandboxOutputs(
         // is read (and decrypted), so access revoked meanwhile never receives metadata or bytes.
         const authorize = async () =>
           (
-            await sql.query<{ id: string }>(
-              `select s.id from public.sandboxes s join public.members m on m.org_id=s.org_id
+            await sql.query<{ id: string; outputs_failure_reasons: string[] }>(
+              `select s.id,s.outputs_failure_reasons from public.sandboxes s join public.members m on m.org_id=s.org_id
           where s.id=$1 and s.status<>'deleted' and not s.application_secret_tainted and m.user_id=$2 and s.org_id=any($3::uuid[])
           and (s.owner_id=$2 or m.role='admin') and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)`,
               [match[1], caller.userId, caller.orgs.map((o) => o.orgId)],
@@ -261,9 +349,16 @@ export function createSandboxOutputs(
             `select name,size,digest as sha256,updated_at as "updatedAt" from public.sandbox_outputs where sandbox_id=$1 order by name limit 32`,
             [row.id],
           );
-          if (!(await authorize())) return notFound();
+          const current = await authorize();
+          if (!current) return notFound();
           return Response.json(
-            { directory: OUTPUT_DIRECTORY, files: files.rows },
+            {
+              directory: OUTPUT_DIRECTORY,
+              files: files.rows,
+              ...(current.outputs_failure_reasons.includes("collector_unsupported")
+                ? { unavailable: "collector_unsupported" }
+                : {}),
+            },
             { headers: { "cache-control": "private, no-store" } },
           );
         }
