@@ -12,6 +12,7 @@ import {
   recordLaunchStageSql,
   resolveOrg,
   type SandboxListMetadata,
+  type SandboxPatch,
   type SandboxRecord,
   type SandboxRow,
   type SandboxStatus,
@@ -192,6 +193,17 @@ export class DataError extends Error {
   ) {
     super(message);
   }
+}
+
+/** The stable cause of an API status write: the patch's own cause code, an explicit
+ * stop or delete request, or otherwise the target status. Never a free-text reason. */
+function apiTransitionCode(patch: SandboxPatch): string {
+  const reason = statusReasonOf(patch);
+  if (reason === "expired" || reason === "idle_paused" || reason === "agent_finished" || reason === "work_merged")
+    return reason;
+  if (patch.deleteRequested) return "delete_requested";
+  if (patch.stopRequested) return "stop_requested";
+  return `sandbox_${patch.status}`;
 }
 
 export function createSqlData(
@@ -733,8 +745,9 @@ export function createSqlData(
         if (patch.taskPromptId !== undefined) set("task_prompt_id", patch.taskPromptId, "::text");
         if (patch.status !== undefined) {
           set("status", patch.status, "::public.sandbox_status");
+          params.push(apiTransitionCode(patch));
           sets.push(`transition_context = case when s.provider in ('boat','modal')
-            then jsonb_build_object('actor','api','code','sandbox_' || ($${params.length}::public.sandbox_status)::text) end`);
+            then jsonb_build_object('actor','api','code',$${params.length}::text) end`);
         }
         if (patch.conversationIds !== undefined) set("conversation_ids", patch.conversationIds, "::text[]");
         if (patch.stoppedAt !== undefined) set("stopped_at", patch.stoppedAt, "::timestamptz");
