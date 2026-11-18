@@ -87,7 +87,7 @@ const managedShell = (program: string) => `${READERS}${managedBun(program)}exit 
 // Linux glibc and /proc/self/fd are part of the managed VM/container baseline. Read each
 // directory entry incrementally and anchor each path component to an open directory descriptor,
 // so even a concurrent rename cannot redirect an open through a symlink.
-const collectorSetup = `
+const collectorSetup = String.raw`
 const fs = require("node:fs");
 let ptr, read, toArrayBuffer;
 const { O_RDONLY, O_DIRECTORY, O_NOFOLLOW, O_NONBLOCK } = fs.constants;
@@ -109,6 +109,21 @@ try {
 } catch {
   process.exit(86);
 }
+
+function openCollectorRoot() {
+  try {
+    const root = fs.openSync("/", parentFlags);
+    const stream = libc.opendir(ptr(Buffer.from(descriptor(root) + "\0")));
+    if (stream) {
+      libc.closedir(stream);
+      return root;
+    }
+    fs.closeSync(root);
+  } catch {
+    // Descriptor access is unavailable. The shell can try the next reader.
+  }
+  process.exit(86);
+}
 `;
 
 /** The only probe answer that proves the collector program ran. An incompatible Bun can exit 0
@@ -119,21 +134,8 @@ export const OUTPUT_COLLECTOR_PROBE_MARKER = "armada-output-collector-ready";
  * any repository Bun pin. */
 export const OUTPUT_COLLECTOR_BUN_VERSION = SNAPSHOT_BASELINE_BUN;
 
-const probeProgram =
-  collectorSetup +
-  String.raw`
-try {
-  const root = fs.openSync("/", parentFlags);
-  try {
-    const stream = libc.opendir(ptr(Buffer.from(descriptor(root) + "\0")));
-    if (!stream) process.exit(86);
-    libc.closedir(stream);
-  } finally {
-    fs.closeSync(root);
-  }
-} catch {
-  process.exit(86);
-}
+const probeProgram = `${collectorSetup}
+fs.closeSync(openCollectorRoot());
 console.log(${JSON.stringify(OUTPUT_COLLECTOR_PROBE_MARKER)});
 `;
 
@@ -224,7 +226,7 @@ function outputCollector(chunk?: OutputChunkRequest | null): string {
 const files = [];
 const part = ${JSON.stringify(chunk === undefined ? false : chunk)};
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-let directory = fs.openSync("/", parentFlags);
+let directory = openCollectorRoot();
 try {
   for (const part of ${JSON.stringify(OUTPUT_DIRECTORY)}.slice(1).split("/")) {
     const next = fs.openSync(descriptor(directory) + "/" + part, parentFlags);
