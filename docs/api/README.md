@@ -92,9 +92,11 @@ reference, and `sandbox/list` with `externalRef` never returns it.
 - `requestId` is required and must be a fresh UUID. It becomes the sandbox ID
   and is the replay key, so store it before you launch. A replay with the same
   `requestId` and body returns the same sandbox ID and the recorded launch
-  receipt (`promptId` and `conversationId`), with the sandbox's current
-  metadata. A sandbox stopped or deleted since the launch comes back as
-  `stopped` or `deleted`, not in its original state. Armada compares the
+  receipt (`promptId` and `conversationId` when the launch sent a prompt),
+  with the sandbox's current metadata. Its status is the current one (for
+  example `stopping`, `stopped`, `failed` or `deleted`), not the status the
+  first response carried. While the first launch is still in progress, a
+  replay resumes or waits for it rather than starting another. Armada compares the
   normalized request, so supplying a default explicitly (for example the
   default `ttlSeconds`) is not a change. A changed body returns 409 `conflict`.
 - `hostId` (a Docker host UUID) is required, unless you launch from a Docker

@@ -49,9 +49,11 @@ never finds it. Instead:
 
 - `requestId`, a fresh UUID you generate and store before launching, is the
   sandbox ID and the replay key. The same `requestId` and body return the same
-  sandbox ID and the recorded launch receipt (`promptId`, `conversationId`)
-  with the sandbox's current metadata, so a sandbox stopped or deleted since
-  the launch is reported as `stopped` or `deleted`. The comparison uses the
+  sandbox ID and the recorded launch receipt (`promptId` and `conversationId`
+  when the launch sent a prompt) with the sandbox's current metadata. The
+  status is the current one, for example `stopped` or `deleted` after a stop
+  or delete, not the status of the first response. While the first launch is
+  still in progress, a replay resumes or waits for it. The comparison uses the
   normalized request: spelling out a default such as `ttlSeconds` is not a
   change. A changed body returns `conflict` (409).
 - `org` is the organization UUID. `hostId` names the Docker host, unless

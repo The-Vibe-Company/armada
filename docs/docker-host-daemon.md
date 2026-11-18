@@ -1139,9 +1139,9 @@ last reported retention delay and next local cleanup deadline, with the host's
 last check-in. No reported deadline means none has been reported, not proof
 that the disk is empty. Offline hosts continue enforcing their saved policy.
 
-The member who added the server can run
+The member who added the Docker host can run
 `armada host retention HOST --retention 24h` (units: `s`, `m`, `h`, `d`; `0`
-means next-sweep cleanup), or save retention in seconds in the server panel.
+means next-sweep cleanup), or save retention in seconds in the Machines → Docker hosts panel.
 The maximum is 365 days. Other members, including other admins, cannot change
 this machine policy. A saved request is applied and persisted at the daemon's
 next check-in; the panel distinguishes requested from reported settings.
