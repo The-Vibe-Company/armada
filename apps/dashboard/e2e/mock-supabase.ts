@@ -2907,7 +2907,7 @@ function langfuseControl(request: Request, match: RegExpMatchArray, body: Row): 
   if ((testing && request.method !== "POST") || (!testing && request.method !== "PUT")) {
     return new Response(null, { status: 405 });
   }
-  const candidate = { host, ...status, ...saved, ...body };
+  const candidate: Row = { host, ...status, ...saved, ...body };
   if (!candidate.publicKey || !candidate.secretKey) return json({ error: "langfuse_configuration_unavailable" }, 400);
   if (testing) {
     return json({

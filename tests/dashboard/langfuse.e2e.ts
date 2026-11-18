@@ -9,7 +9,9 @@ test("an organization admin connects, tests and disables Langfuse", { session: "
   await screen.getByRole("button", "Connect and start exporting", { exact: true }).tap();
   await expect(screen.getByRole("switch", "Export traces")).toBeVisible();
   await screen.getByRole("button", "Test the connection", { exact: true }).tap();
-  await expect(screen.getByRole("status")).toContainText("Langfuse accepted these keys.");
+  await expect(screen.getByRole("region", "Langfuse").getByRole("status")).toContainText(
+    "Langfuse accepted these keys.",
+  );
   await screen.getByRole("switch", "Export traces").tap();
   await expect(screen.getByText("Export is off", { exact: true })).toBeVisible();
   await screen.getByRole("button", "Edit", { exact: true }).tap();

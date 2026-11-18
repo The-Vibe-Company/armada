@@ -39,11 +39,11 @@ export function LangfuseSettingsCard({ org, settings, now }: { org: string; sett
   const last = admin?.lastExportAt ? relativeAge(admin.lastExportAt, now) : null;
 
   return (
-    <div className="overflow-hidden rounded-[10px] border bg-card">
-      <div className="flex flex-col gap-4 p-4 md:flex-row md:items-start md:justify-between">
+    <div className="@container overflow-hidden rounded-[10px] border bg-card">
+      <div className="flex flex-col gap-4 p-4 @min-[640px]:flex-row @min-[640px]:items-center @min-[640px]:justify-between">
         <div className="flex min-w-0 gap-3">
-          <div className="grid size-10 shrink-0 place-items-center rounded-lg border bg-muted text-muted-foreground">
-            <ActivityIcon aria-hidden className="size-5" />
+          <div className="grid size-8 shrink-0 place-items-center rounded-lg border bg-background text-muted-foreground shadow-xs">
+            <ActivityIcon aria-hidden className="size-4" />
           </div>
           <div className="min-w-0 space-y-1">
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -63,7 +63,7 @@ export function LangfuseSettingsCard({ org, settings, now }: { org: string; sett
                 )}
               </p>
             )}
-            <p className="text-sm wrap-anywhere text-muted-foreground">
+            <p className="max-w-[40rem] text-[13px] leading-5 wrap-anywhere text-pretty text-muted-foreground">
               {!admin ? (
                 <>
                   {settings.enabled
@@ -75,7 +75,7 @@ export function LangfuseSettingsCard({ org, settings, now }: { org: string; sett
                 "Connect a Langfuse project to see the timing, model, tokens and cost of every agent turn."
               ) : settings.enabled ? (
                 <>
-                  Traces go to <span className="font-mono">{admin.host}</span> with{" "}
+                  Traces go to <span className="font-mono text-foreground">{admin.host}</span> with{" "}
                   {full ? `${FULL}, readable by everyone in your Langfuse project` : METADATA}.
                 </>
               ) : (
@@ -108,7 +108,7 @@ function LangfuseControls({ org, settings }: { org: string; settings: LangfuseAd
     });
   }
   return (
-    <div className="space-y-2 md:shrink-0" aria-busy={pending}>
+    <div className="space-y-2 pl-11 @min-[640px]:shrink-0 @min-[640px]:pl-0" aria-busy={pending}>
       <div className="flex flex-wrap items-center gap-3">
         {settings.configured && (
           <label htmlFor={switchId} className="inline-flex items-center gap-2 text-sm">
