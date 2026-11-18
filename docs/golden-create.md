@@ -51,9 +51,9 @@ switch to a fresh key to bypass an uncertain outcome or retained capacity. For
 See [Durable snapshot build jobs](golden-build-jobs.md) for exact client semantics, failure
 reasons and worker/recovery details; old synchronous create/update contracts are not supported.
 
-## API and MCP create/update
+## REST create and update
 
-Both surfaces admit durable jobs, not inline snapshots. Control API requests use
+The control API admits durable build jobs. Requests use
 `Authorization: Bearer <Armada bearer>` and `Content-Type: application/json`.
 
 `POST /api/v1/golden/create` example (replace placeholders, retaining the saved key):
@@ -75,13 +75,12 @@ Both surfaces admit durable jobs, not inline snapshots. Control API requests use
 | API create | Required `name`, `idempotencyKey`, and `repos` unless `config` is supplied. Optional `org`, `provider`, `private` (default false), `setup`. `config` is the snapshot config object, not a file path. |
 | API update (`POST /api/v1/golden/update`) | Required `name`, `config`, `idempotencyKey`; optional `org`, `provider`, `setup`. Owner/visibility come from the existing snapshot. |
 
-MCP `repos` contains 1–16 `owner/repo` entries. Private repositories require a
+`repos` contains 1–16 `owner/repo` entries. Private repositories require a
 caller-visible GitHub App installation. Public repositories can pass authorization without
 one, but checkout is not guaranteed in that case (see the signing caveat below). `setup`
-is script text, not the CLI's local file path. MCP `org` is an org ID (needed when membership
-is ambiguous); API `org` accepts an ID or name. Use IDs for portable examples.
+is script text. `org` accepts an ID or name when membership is ambiguous. Use IDs for portable examples.
 
-API create/update return HTTP **202** with a status receipt; MCP returns the same job shape.
+Create and update return HTTP **202** with a status receipt.
 A typical admission receipt is:
 
 ```json
