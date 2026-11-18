@@ -411,6 +411,7 @@ test.each([
   "merged after closed",
   "ledger gap",
   "ledger hook missing",
+  "ledger hook restored",
   "open",
   "closed",
   "no push",
@@ -476,28 +477,35 @@ test.each([
     },
     { preconnect: fetch.preconnect },
   );
-  const observer = createSandboxPullRequests(
-    f.sql,
-    {
-      store: createSqlVaultStore(f.sql),
-      encryptionKey: ENCRYPTION_KEY,
-      app: { clientId: "fixture_app", clientSecret: "fixture_client" },
-      fetch: fetchGitHub,
-    },
-    async () => ({
-      detached: false,
-      exitCode: 0,
-      stdout:
-        state === "no push" || state === "corrected report"
-          ? ""
-          : `${state === "ledger gap" ? "!untracked\n" : state === "ledger hook missing" ? "!unproven\n" : ""}topic\t${sha}\n${state === "merged after closed" ? `topic\t${"e".repeat(40)}\n` : ""}${state.startsWith("merged with") ? `scratch\t${"c".repeat(40)}\n` : ""}`,
-      stderr: "",
-      timedOut: false,
-      truncated: false,
-    }),
+  const observe = async (stdout: string) => {
+    const observer = createSandboxPullRequests(
+      f.sql,
+      {
+        store: createSqlVaultStore(f.sql),
+        encryptionKey: ENCRYPTION_KEY,
+        app: { clientId: "fixture_app", clientSecret: "fixture_client" },
+        fetch: fetchGitHub,
+      },
+      async () => ({ detached: false, exitCode: 0, stdout, stderr: "", timedOut: false, truncated: false }),
+    );
+    await observer.reconcileOne(new AbortController().signal);
+    await observer.drain();
+  };
+  if (state === "ledger hook restored") {
+    // The reader reported the missing hook and reinstalled it, then the scan
+    // was abandoned. The next read is clean, but a push made while the hook
+    // was missing may have been pruned: coverage stays unprovable.
+    await observe(`!unproven\ntopic\tnot-a-sha\n`);
+    expect(
+      (await f.db.query("select pull_request_scan->'untracked' as u from sandboxes where id=$1", [f.id])).rows[0],
+    ).toEqual({ u: true });
+    await f.db.query("update sandboxes set pull_request_check_after=now() where id=$1", [f.id]);
+  }
+  await observe(
+    state === "no push" || state === "corrected report"
+      ? ""
+      : `${state === "ledger gap" ? "!untracked\n" : state === "ledger hook missing" ? "!unproven\n" : ""}topic\t${sha}\n${state === "merged after closed" ? `topic\t${"e".repeat(40)}\n` : ""}${state.startsWith("merged with") ? `scratch\t${"c".repeat(40)}\n` : ""}`,
   );
-  await observer.reconcileOne(new AbortController().signal);
-  await observer.drain();
   if (state === "revoked") await f.db.query("update github_connections set revoked_at=now() where user_id=$1", [owner]);
   if (state === "opted out") await f.db.query("update sandboxes set stop_when_work_merged=false where id=$1", [f.id]);
   await f.tick();

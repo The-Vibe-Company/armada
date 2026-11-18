@@ -253,32 +253,56 @@ export const REPOSITORY_FETCH_FAILED_MARKER = "ARMADA_REPOSITORY_FETCH_FAILED";
 
 /** First line of the hook that records pushes; the observer requires it before trusting the ledger. */
 export const PUSH_LEDGER_MARKER = "# armada-push-ledger v1";
-/** Per-repository ledger in the common Git directory, one `<unix time>\t<branch>\t<sha>` line per push. */
+/**
+ * Per-repository ledger in the common Git directory, one `<unix time>\t<branch>\t<sha>`
+ * line per push. A `<unix time>\t!gap` line records a push the ledger could not attribute.
+ */
 export const PUSH_LEDGER_FILE = "armada-pushes";
+/** Hooks that must all carry the marker for the ledger to prove coverage. */
+export const PUSH_LEDGER_HOOKS = ["reference-transaction", "pre-push"] as const;
 
 // A reference-transaction hook cannot be skipped with --no-verify and runs after
 // the tracking ref's reflog entry is written, so "update by push" separates a
 // push from a fetch. The ledger survives pruning or deleting the tracking ref,
-// which also deletes that ref's reflog.
-const pushLedgerHook = `#!/bin/sh
+// which also deletes that ref's reflog. An origin-tracking update without its
+// reflog entry (reflogs disabled) cannot be told apart from a push: it is a gap.
+const referenceTransactionHook = `#!/bin/sh
 ${PUSH_LEDGER_MARKER}
 test "$1" = committed || exit 0
 ledger="$(git rev-parse --git-common-dir)/${PUSH_LEDGER_FILE}" || exit 0
 while read -r old new ref; do
   case "$ref" in refs/remotes/origin/*) ;; *) continue ;; esac
   case "$new" in *[!0]*) ;; *) continue ;; esac
-  if [ "$(git reflog show --format='%H %gs' -n 1 "$ref" -- 2>/dev/null)" = "$new update by push" ]; then
+  entry="$(git reflog show --format='%H %gs' -n 1 "$ref" -- 2>/dev/null)"
+  if [ "$entry" = "$new update by push" ]; then
     printf '%s\\t%s\\t%s\\n' "$(date +%s)" "\${ref#refs/remotes/origin/}" "$new" >>"$ledger"
+  elif [ "\${entry%% *}" != "$new" ]; then
+    printf '%s\\t!gap\\n' "$(date +%s)" >>"$ledger"
   fi
 done
 exit 0
 `;
 
+// The reference-transaction hook only sees pushes that update an origin-tracking
+// ref. A push to a URL or another remote, or through origin without the wide
+// tracking refspec, updates none: record it as a gap before it happens.
+const prePushHook = `#!/bin/sh
+${PUSH_LEDGER_MARKER}
+ledger="$(git rev-parse --git-common-dir)/${PUSH_LEDGER_FILE}" || exit 0
+if [ "$1" != origin ] || ! git config --get-all remote.origin.fetch | grep -qx '+\\{0,1\\}refs/heads/\\*:refs/remotes/origin/\\*'; then
+  printf '%s\\t!gap\\n' "$(date +%s)" >>"$ledger"
+fi
+exit 0
+`;
+
+const installHook = (name: string, body: string) =>
+  `hook="$hooks/${name}" && { [ ! -e "$hook" ] || [ "$(sed -n 2p "$hook")" = ${shQuote(PUSH_LEDGER_MARKER)} ]; } && printf '%s' ${shQuote(body)} >"$hook" && chmod +x "$hook"`;
+
 /**
- * Installs the push ledger hook in the current repository. It never replaces a
+ * Installs the push ledger hooks in the current repository. It never replaces a
  * different existing hook; the observer then sees no marker and refuses merge stops.
  */
-export const pushLedgerInstall = `{ hooks=$(git rev-parse --git-path hooks) && mkdir -p "$hooks" && hook="$hooks/reference-transaction" && { [ ! -e "$hook" ] || [ "$(sed -n 2p "$hook")" = ${shQuote(PUSH_LEDGER_MARKER)} ]; } && printf '%s' ${shQuote(pushLedgerHook)} >"$hook" && chmod +x "$hook"; } >/dev/null 2>&1 || :`;
+export const pushLedgerInstall = `{ hooks=$(git rev-parse --git-path hooks) && mkdir -p "$hooks" && ${installHook("reference-transaction", referenceTransactionHook)}; ${installHook("pre-push", prePushHook)}; } >/dev/null 2>&1 || :`;
 
 /** Fast-forward refresh using the caller-authorized helper already installed by launch. Never prompts. */
 export function pullCommand(repo: GoldenRepo, trackPushes = false): ShellCommand {

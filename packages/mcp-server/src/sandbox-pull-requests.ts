@@ -1,4 +1,10 @@
-import { PUSH_LEDGER_FILE, PUSH_LEDGER_MARKER, pushLedgerInstall, type SandboxPullRequest } from "@armada/core";
+import {
+  PUSH_LEDGER_FILE,
+  PUSH_LEDGER_HOOKS,
+  PUSH_LEDGER_MARKER,
+  pushLedgerInstall,
+  type SandboxPullRequest,
+} from "@armada/core";
 import {
   type ExecRequest,
   type ExecResult,
@@ -34,7 +40,8 @@ type Scan = {
   // Per repository and branch, every pushed SHA, newest first.
   pushes: Record<string, [string, string[]][]>;
   discovered: Identity[];
-  // Sticky: once a push may have escaped the ledger, coverage is unprovable.
+  // Sticky: once a push may have escaped the ledger (a ledger gap, a reflog
+  // push it lacks, or a missing hook), coverage is unprovable.
   untracked?: true;
 };
 type Target = {
@@ -65,19 +72,25 @@ const maxPushesPerBranch = 16;
 // A local branch name or matching SHA alone also describes a checkout made by
 // another sandbox. Only pushes qualify for discovery: the launch-installed
 // ledger (which survives a pruned or deleted tracking ref) and reflog records
-// written by a push. Output lists each branch's pushes newest first. A reflog
-// push the ledger lacks prints `!untracked`: pushes escaped the ledger, so
-// coverage is never provable again. A missing hook (a tool such as husky can
-// move core.hooksPath) prints `!unproven` and is reinstalled when the path is
-// free: that scan cannot prove coverage, and the next one cross-checks the gap.
-export const readPushEvidence = `hook="$(git rev-parse --git-path hooks)/reference-transaction" || exit 1
+// written by a push. Output lists each branch's pushes newest first. A ledger
+// gap (a push to a URL or another remote, or an origin update without a
+// reflog entry) or a reflog push the ledger lacks prints `!untracked`. A
+// missing hook (a tool such as husky can move core.hooksPath) prints
+// `!unproven` and is reinstalled when the path is free. Either way pushes may
+// have escaped the ledger, so the worker never proves coverage again.
+export const readPushEvidence = `hooks="$(git rev-parse --git-path hooks)" || exit 1
 ledger="$(git rev-parse --git-common-dir)/${PUSH_LEDGER_FILE}" || exit 1
-if [ ! -x "$hook" ] || [ "$(sed -n 2p "$hook")" != '${PUSH_LEDGER_MARKER}' ]; then echo '!unproven'; ${pushLedgerInstall}; fi
+for name in ${PUSH_LEDGER_HOOKS.join(" ")}; do
+  if [ ! -x "$hooks/$name" ] || [ "$(sed -n 2p "$hooks/$name")" != '${PUSH_LEDGER_MARKER}' ]; then missing=1; fi
+done
+if [ -n "$missing" ]; then echo '!unproven'; ${pushLedgerInstall}; fi
 entries=$(if [ -f "$ledger" ]; then cat "$ledger"; fi) || exit 1
 logs=$(git reflog show --all --date=unix --format='%gD%x09%gs%x09%H') || exit 1
 { printf '%s\\n' "$logs"; if [ -n "$entries" ]; then printf '%s\\n' "$entries" | awk '{ print "L\\t" $0 }'; fi; } |
 awk -v since="$1" -F '\\t' '$1 == "L" {
-    if ($2+0 >= since && $3 != "" && $4 != "") { n++; lref[n]=$3; lsha[n]=$4; ledger[$3 "\\t" $4]=1 }
+    if ($2+0 < since) next
+    if ($3 == "!gap" && $4 == "") gap=1
+    else if ($3 != "" && $4 != "") { n++; lref[n]=$3; lsha[n]=$4; ledger[$3 "\\t" $4]=1 }
     next
   }
   $1 ~ /^refs\\/remotes\\/origin\\// && $2 == "update by push" {
@@ -89,6 +102,7 @@ awk -v since="$1" -F '\\t' '$1 == "L" {
     m++; rref[m]=$1; rsha[m]=$3
   }
   END {
+    if (gap) print "!untracked"
     for (i=1; i<=m; i++) {
       if (!ledger[rref[i] "\\t" rsha[i]]) print "!untracked"
       if (!seen[rref[i] "\\t" rsha[i]]++) print rref[i] "\\t" rsha[i]
@@ -156,7 +170,6 @@ export function createSandboxPullRequests(
     ).rows[0];
     if (!row) return;
     try {
-      let unproven = false;
       const configured = repos.parse(row.repositories);
       const scan = row.pull_request_scan ?? { pushes: {}, discovered: [] };
       const branches = new Map<string, Map<string, string[]>>();
@@ -191,16 +204,22 @@ export function createSandboxPullRequests(
         });
         if (result.detached || result.exitCode !== 0 || result.truncated || result.timedOut) return;
         const lines = result.stdout.trimEnd() ? result.stdout.trimEnd().split("\n") : [];
+        // Reinstalling a missing hook restores future evidence, but a push
+        // made meanwhile and then pruned leaves no trace. The loss is sticky and
+        // persisted before anything else can abandon this scan, because the
+        // next read no longer reports it.
+        if (lines.some((line) => line === "!untracked" || line === "!unproven")) {
+          scan.untracked = true;
+          await sql.query(
+            `update public.sandboxes set pull_request_merge_proof=null,
+              pull_request_scan=jsonb_set(coalesce(pull_request_scan,'{"pushes":{},"discovered":[]}'::jsonb),'{untracked}','true'::jsonb)
+             where id=$1`,
+            [row.id],
+          );
+        }
         const pushed = new Map<string, string[]>();
         for (const line of lines) {
-          if (line === "!untracked") {
-            scan.untracked = true;
-            continue;
-          }
-          if (line === "!unproven") {
-            unproven = true;
-            continue;
-          }
+          if (line === "!untracked" || line === "!unproven") continue;
           const [ref, sha] = line.split("\t");
           if (!ref || ref.length > 255 || /\s/.test(ref) || [...ref].some((char) => char.charCodeAt(0) < 32)) return;
           if (!sha || !/^[a-f0-9]{40}$/.test(sha)) return;
@@ -370,7 +389,6 @@ export function createSandboxPullRequests(
         row.launch_authorized &&
         complete &&
         !scan.untracked &&
-        !unproven &&
         list.length > 0 &&
         list.every((pr) => pr.state === "merged")
           ? {
