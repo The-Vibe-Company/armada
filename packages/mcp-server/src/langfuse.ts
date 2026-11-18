@@ -347,7 +347,12 @@ export function createLangfuse(
         )
         select j.*,extract(epoch from j.observed_at)::double precision*1000 as observed_ms,
           j.observed_at>clock_timestamp()-interval '60 seconds' as waiting_for_history,
-          c.config_enc,c.content_mode,exists(select 1 from public.template_launch_requests r
+          c.config_enc,
+          -- Use the more restrictive of the mode allowed at settlement and the current one.
+          case when c.org_id is null then null
+            when j.allowed_content_mode='full' and c.content_mode='full' then 'full' else 'metadata' end
+            as content_mode,
+          exists(select 1 from public.template_launch_requests r
             where r.sandbox_id=j.sandbox_id
               and coalesce(r.manifest->'definition'->'secrets','[]'::jsonb) not in ('[]'::jsonb,'null'::jsonb)
           ) as application_secrets,

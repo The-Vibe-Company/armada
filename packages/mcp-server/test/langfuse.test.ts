@@ -243,7 +243,7 @@ test("native settlement exports once and a new server reads only its organizatio
   });
 });
 
-async function settledBoatTurn(prompt: string) {
+async function settledBoatTurn(prompt: string, mode: "metadata" | "full" = "full") {
   const { db, people } = await database();
   const id = crypto.randomUUID();
   await db.query(
@@ -252,9 +252,10 @@ async function settledBoatTurn(prompt: string) {
      from goldens where owner_id=$2 and visibility='private' limit 1`,
     [id, people.owner, prompt],
   );
-  await db.query("insert into org_langfuse(org_id,enabled,content_mode,config_enc) values($1,true,'full',$2)", [
+  await db.query("insert into org_langfuse(org_id,enabled,content_mode,config_enc) values($1,true,$3,$2)", [
     people.org,
     await encryptConfig(),
+    mode,
   ]);
   const receipt = { id: "boat", getPrompt: async () => ({ promptId: prompt, status: "failed", done: true }) } as const;
   await createNativeWebhookPrompts(db, async () => receipt as Pick<Provider, "id" | "getPrompt">).reconcileOne(
@@ -267,7 +268,7 @@ async function settledBoatTurn(prompt: string) {
         [people.org],
       )
     ).rows;
-  return { db, counters };
+  return { db, counters, org: people.org };
 }
 
 test("full-mode native Boat content is credential-redacted before it is sent", async () => {
@@ -370,6 +371,38 @@ for (const [source, bind] of Object.entries(bindApplicationSecret))
     expect(payload).toContain('"exec"');
     expect(payload).not.toContain(canary);
     expect(payload).not.toContain("print APP");
+    expect(await counters()).toEqual([{ exported: "1", failed: "0" }]);
+  });
+
+for (const [settled, delivered, content] of [
+  ["metadata", "full", false],
+  ["full", "metadata", false],
+  ["full", "full", true],
+] as const)
+  test(`a turn settled under ${settled} and delivered under ${delivered} ${content ? "exports" : "withholds"} content`, async () => {
+    const { db, counters, org } = await settledBoatTurn("turn", settled);
+    await db.query("update org_langfuse set content_mode=$2 where org_id=$1", [org, delivered]);
+    const canary = ["settled", "transcript", "canary"].join("-");
+    const raw = [
+      { id: "p", timestamp: 1000, taskId: "turn", type: "prompt", data: { prompt: canary, status: "running" } },
+      { id: "r", timestamp: 1100, taskId: "turn", type: "response", data: { content: canary } },
+      { id: "f", timestamp: 1200, taskId: "turn", type: "prompt", data: { status: "failed", error: "stopped" } },
+    ];
+    const provider = {
+      id: "boat",
+      events: async () => ({ events: raw.map((e) => normalizeEvent(e as never)), cursor: "native", hasMore: false }),
+    } satisfies Pick<Provider, "id" | "events">;
+    let payload = "";
+    const exporter = createLangfuse(db, key, async () => ({ provider, providerSandboxId: "boat_export" }), (async (
+      _url,
+      init,
+    ) => {
+      payload = String(init?.body);
+      return new Response(null, { status: 200 });
+    }) as typeof fetch);
+    expect(await exporter.reconcileOne(new AbortController().signal)).toBe(true);
+    expect(payload).toContain("Armada turn");
+    expect(payload.includes(canary)).toBe(content);
     expect(await counters()).toEqual([{ exported: "1", failed: "0" }]);
   });
 

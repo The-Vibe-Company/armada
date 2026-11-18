@@ -27,6 +27,9 @@ known, turn status and a generic failure category, plus tool names/status and
 IDs. Full mode additionally exports prompt/message text, tool inputs/results
 and failure text, which can contain customer data and secrets. Choose full
 only with the appropriate customer authorization and Langfuse retention policy.
+Each turn records the mode in force when it settled. Delivery uses the more
+restrictive of that mode and the current one, so switching to full never
+exports content for a turn that settled under metadata.
 Raw unknown harness payloads are never exported. Every exported string,
 including nested tool fields, their object keys and failure text, passes through the server's
 credential redactor (GitHub, Armada gateway and Skillpack tokens, bearer

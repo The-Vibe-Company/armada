@@ -1630,6 +1630,7 @@ export type Database = {
           provider_sandbox_id: string;
           runtime_ack: number | null;
           terminal_status: string | null;
+          allowed_content_mode: string | null;
           observed_at: string;
           lease_id: string | null;
           lease_until: string | null;
@@ -1643,6 +1644,7 @@ export type Database = {
           provider_sandbox_id: string;
           runtime_ack?: number | null;
           terminal_status?: string | null;
+          allowed_content_mode?: string | null;
           observed_at?: string;
           lease_id?: string | null;
           lease_until?: string | null;
@@ -1656,6 +1658,7 @@ export type Database = {
           provider_sandbox_id?: string;
           runtime_ack?: number | null;
           terminal_status?: string | null;
+          allowed_content_mode?: string | null;
           observed_at?: string;
           lease_id?: string | null;
           lease_until?: string | null;

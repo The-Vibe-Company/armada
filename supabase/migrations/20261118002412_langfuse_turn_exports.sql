@@ -6,6 +6,10 @@ create table public.langfuse_turn_exports (
   provider_sandbox_id text not null,
   runtime_ack bigint,
   terminal_status text check (terminal_status in ('finished','failed','interrupted')),
+  -- Content mode allowed when the turn settled. Delivery uses the more
+  -- restrictive of this and the current setting, so a later switch to full
+  -- never discloses a turn that settled under metadata.
+  allowed_content_mode text check (allowed_content_mode in ('metadata','full')),
   observed_at timestamptz not null default clock_timestamp(),
   lease_id uuid,
   lease_until timestamptz,
@@ -55,12 +59,13 @@ begin
   -- Record native identities even while disabled: lifecycle can observe the
   -- same receipt again after an operator enables full-content export.
   insert into public.langfuse_turn_exports(
-    sandbox_id,prompt_id,org_id,provider_sandbox_id,runtime_ack,terminal_status,completed_at
+    sandbox_id,prompt_id,org_id,provider_sandbox_id,runtime_ack,terminal_status,allowed_content_mode,completed_at
   )
   select saved.id,prompt,saved.org_id,saved.provider_sandbox_id,
     case when saved.boat_runtime or saved.provider='docker' or saved.runtime_transport='dialout' then
       coalesce((select max(sequence) from public.runtime_events where sandbox_id=saved.id),0) end,
-    status,case when not coalesce(c.enabled,false) then clock_timestamp() end
+    status,case when c.enabled then c.content_mode end,
+    case when not coalesce(c.enabled,false) then clock_timestamp() end
   from (values (saved.org_id)) as owner(org_id)
   left join public.org_langfuse c on c.org_id=owner.org_id
   where saved.provider_sandbox_id is not null
