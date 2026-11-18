@@ -354,6 +354,40 @@ test("webhook verification accepts the server signer and binds exact body, times
   expect(await verifyWebhookSignature(input)).toBe(false);
 });
 
+test("remote origins must use HTTPS so the service token never crosses the network in cleartext", async () => {
+  const calls: string[] = [];
+  const fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    calls.push(`${String(url)} ${new Headers(init?.headers).get("authorization")}`);
+    return Response.json({ id: "sandbox_placeholder" });
+  }) as typeof globalThis.fetch;
+  for (const url of ["http://armada.example", "http://10.0.0.5:8080", "http://localhost.example.com", "http://[::2]"])
+    expect(() => new Armada({ token: "service_canary", url, fetch })).toThrow(
+      "Use an HTTPS Armada origin; plain HTTP is only accepted for loopback hosts.",
+    );
+  expect(calls).toEqual([]);
+  const allowed = [
+    "https://armada.example",
+    "http://localhost:3000",
+    "http://LOCALHOST",
+    "http://app.localhost",
+    "http://127.0.0.1:4000",
+    "http://127.1",
+    "http://[::1]:8080",
+  ];
+  for (const url of allowed)
+    await new Armada({ token: "service_canary", url, fetch }).status({ id: "sandbox_placeholder" });
+  expect(calls.map((call) => new URL(call.split(" ")[0]!).origin)).toEqual([
+    "https://armada.example",
+    "http://localhost:3000",
+    "http://localhost",
+    "http://app.localhost",
+    "http://127.0.0.1:4000",
+    "http://127.0.0.1",
+    "http://[::1]:8080",
+  ]);
+  expect(calls.every((call) => call.endsWith(" Bearer service_canary"))).toBe(true);
+});
+
 test("the default transport calls fetch without the client as its receiver", async () => {
   const original = globalThis.fetch;
   const receivers: unknown[] = [];

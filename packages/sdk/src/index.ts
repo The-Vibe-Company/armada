@@ -311,6 +311,17 @@ const commonCodes = {
   Partial<Record<ApiFailureCode, boolean>>;
 const retryStatuses = new Set([429, 502, 503, 504]);
 
+/** Loopback hosts never leave this machine: localhost names, 127.0.0.0/8 and ::1. */
+function loopbackHost(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return (
+    host === "localhost" ||
+    host.endsWith(".localhost") ||
+    host === "[::1]" ||
+    /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)
+  );
+}
+
 /** Service-token client. No provider credentials, filesystem access, or server imports. */
 export class Armada {
   private readonly origin: string;
@@ -330,6 +341,9 @@ export class Armada {
       url.hash
     )
       throw new TypeError("Use an HTTP(S) Armada origin.");
+    // The bearer token rides on the first request, so cleartext HTTP is only safe on this machine.
+    if (url.protocol === "http:" && !loopbackHost(url.hostname))
+      throw new TypeError("Use an HTTPS Armada origin; plain HTTP is only accepted for loopback hosts.");
     if (!options.token || /[\r\n]/.test(options.token)) throw new TypeError("A service token is required.");
     this.#token = options.token;
     this.timeoutMs = options.timeoutMs;
