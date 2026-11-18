@@ -48,6 +48,7 @@ import { launchTimingFact } from "@/lib/launch-timing";
 import { formatDuration, lifecycleView, readLifecycle } from "@/lib/lifecycle";
 import { describeEvidence } from "@/lib/machine-size";
 import { parseTaskOutcome, preservationView, settledOutcome } from "@/lib/outcome";
+import { parsePullRequests } from "@/lib/pull-requests";
 import { sandboxRepositoryDir } from "@/lib/repository-context";
 import { machineSizeLabel } from "@/lib/sandbox-access";
 import { costOfRow } from "@/lib/sandbox-cost";
@@ -341,10 +342,30 @@ export default async function SandboxPage({ params }: Props) {
             <summary className="cursor-pointer text-muted-foreground">Technical details</summary>
             <div className="pt-4">
               <Facts facts={facts} />
-              {settledOutcome(sandbox.status, parseTaskOutcome(sandbox.task_outcome)) && (
+              {settledOutcome(
+                sandbox.status,
+                parseTaskOutcome(sandbox.task_outcome),
+                parsePullRequests(sandbox.pull_requests),
+              ) && (
                 <div className="mt-2 space-y-1">
-                  <OutcomeBadge outcome={settledOutcome(sandbox.status, parseTaskOutcome(sandbox.task_outcome))!} />
-                  <OutcomeDetail outcome={settledOutcome(sandbox.status, parseTaskOutcome(sandbox.task_outcome))!} />
+                  <OutcomeBadge
+                    outcome={
+                      settledOutcome(
+                        sandbox.status,
+                        parseTaskOutcome(sandbox.task_outcome),
+                        parsePullRequests(sandbox.pull_requests),
+                      )!
+                    }
+                  />
+                  <OutcomeDetail
+                    outcome={
+                      settledOutcome(
+                        sandbox.status,
+                        parseTaskOutcome(sandbox.task_outcome),
+                        parsePullRequests(sandbox.pull_requests),
+                      )!
+                    }
+                  />
                 </div>
               )}
               {preservationView(sandbox.preservation_note, sandbox.status, sandbox.id, true) && (
@@ -561,10 +582,30 @@ function DockerSandbox({
             <summary className="cursor-pointer text-muted-foreground">Technical details</summary>
             <div className="pt-4">
               <Facts facts={facts} />
-              {settledOutcome(sandbox.status, parseTaskOutcome(sandbox.task_outcome)) && (
+              {settledOutcome(
+                sandbox.status,
+                parseTaskOutcome(sandbox.task_outcome),
+                parsePullRequests(sandbox.pull_requests),
+              ) && (
                 <div className="mt-2 space-y-1">
-                  <OutcomeBadge outcome={settledOutcome(sandbox.status, parseTaskOutcome(sandbox.task_outcome))!} />
-                  <OutcomeDetail outcome={settledOutcome(sandbox.status, parseTaskOutcome(sandbox.task_outcome))!} />
+                  <OutcomeBadge
+                    outcome={
+                      settledOutcome(
+                        sandbox.status,
+                        parseTaskOutcome(sandbox.task_outcome),
+                        parsePullRequests(sandbox.pull_requests),
+                      )!
+                    }
+                  />
+                  <OutcomeDetail
+                    outcome={
+                      settledOutcome(
+                        sandbox.status,
+                        parseTaskOutcome(sandbox.task_outcome),
+                        parsePullRequests(sandbox.pull_requests),
+                      )!
+                    }
+                  />
                 </div>
               )}
               {preservationView(sandbox.preservation_note, sandbox.status, sandbox.id, true) && (

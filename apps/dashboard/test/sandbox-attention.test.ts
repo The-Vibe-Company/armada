@@ -207,6 +207,27 @@ describe("sandbox attention projection", () => {
     expect(first.attention).toBe("unconcluded");
     expect(sandboxAttention(sandbox, { ...turn("finished"), promptId: "p2" }, NOW).ackKey).not.toBe(first.ackKey);
   });
+  test("a reported ready pull request stops asking to merge once GitHub confirms it merged", () => {
+    const reported = {
+      ...sandbox,
+      status: "stopped" as const,
+      task_outcome: { state: "ready", prNumber: 42, prUrl: "https://github.com/acme/web/pull/42" },
+    };
+    const pr = (state: "open" | "merged") => ({
+      repository: "acme/web",
+      number: 42,
+      url: "https://github.com/acme/web/pull/42",
+      headBranch: "topic",
+      state,
+      checkedAt: "2026-11-18T08:00:00.000Z",
+    });
+    const before = sandboxAttention({ ...reported, pull_requests: [pr("open")] }, turn("finished"), NOW);
+    expect(before.attention).toBe("ready");
+    expect(before.state).toMatchObject({ kind: "ready", label: "Ready to merge", outcome: { merged: false } });
+    const after = sandboxAttention({ ...reported, pull_requests: [pr("merged")] }, turn("finished"), NOW);
+    expect(after.attention).toBeNull();
+    expect(after.state).toMatchObject({ kind: "ready", label: "Merged", outcome: { merged: true } });
+  });
   test("resend keeps a recorded conversation and drops an unrecorded native reference", () => {
     for (const [conversationId, expected] of [
       ["c1", "c1"],

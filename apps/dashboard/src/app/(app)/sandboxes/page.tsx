@@ -416,9 +416,9 @@ function LifecycleHint({ view }: { view: LifecycleView }) {
  * from other members), and a stopped sandbox's work-preservation receipt. The recovery command is on its page.
  */
 function OutcomeHint({ sandbox }: { sandbox: SandboxListMetadata }) {
-  const outcome = settledOutcome(sandbox.status, sandbox.taskOutcome);
-  const preservation = preservationView(sandbox.preservationNote, sandbox.status, sandbox.id, sandbox.canOpen);
   const pullRequests = sandbox.canOpen ? sandbox.pullRequests : null;
+  const outcome = settledOutcome(sandbox.status, sandbox.taskOutcome, pullRequests);
+  const preservation = preservationView(sandbox.preservationNote, sandbox.status, sandbox.id, sandbox.canOpen);
   if (!outcome && !preservation && !pullRequests?.length) return null;
   return (
     <div className="mt-1 max-w-56 space-y-1 whitespace-normal" data-list-outcome={outcome?.kind}>

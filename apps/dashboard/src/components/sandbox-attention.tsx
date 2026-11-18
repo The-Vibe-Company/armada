@@ -105,7 +105,7 @@ export async function SandboxAttention({ sandbox, viewer }: { sandbox: SandboxDe
           <PushSandboxWork sandboxId={sandbox.id} restarts={sandbox.harness !== "claude"} />
         </div>
       );
-  } else if (view.state.outcome?.kind === "ready" && view.state.outcome.pr?.href) {
+  } else if (view.state.outcome?.kind === "ready" && !view.state.outcome.merged && view.state.outcome.pr?.href) {
     title = "Ready to merge.";
     action = (
       <Button asChild size="sm">
