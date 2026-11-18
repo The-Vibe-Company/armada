@@ -28,7 +28,6 @@ and a configured Codex account:
 
 ```json
 {
-  "org": "acme",
   "golden": "review",
   "provider": "modal",
   "harness": "codex",
@@ -39,8 +38,8 @@ and a configured Codex account:
 ```
 
 Omit `prompt` to launch without starting a turn. Save the returned Armada
-sandbox ID from `sandbox.id` for subsequent calls. Ordinary cloud launches inherit snapshot
-visibility. A private snapshot is visible to its owner.
+sandbox ID from `sandbox.id` for subsequent calls. Ordinary cloud launches
+inherit snapshot visibility. A private snapshot is visible to its owner.
 
 - Put `idempotencyKey` in the JSON body (16–128 characters). The receipt is
   scoped to the caller and organization. Replay the same key and body to get
@@ -51,7 +50,7 @@ visibility. A private snapshot is visible to its owner.
   It is returned by launch, authorized status and list reads, and webhooks.
 - After a dropped response or HTTP 503 `outcome_unknown`, keep the original
   key and body. You can also look up recorded sandboxes using
-  `POST /api/v1/sandbox/list` with `{"org":"acme","externalRef":"application-1042"}`.
+  `POST /api/v1/sandbox/list` with `{"externalRef":"application-1042"}`.
   An empty list can occur while the allocation outcome is still unknown.
 
 See [idempotency and recovery](../launch-idempotency.md) for receipt lookup,
@@ -84,19 +83,23 @@ details.
 
 These routes are POSTs under `/api/v1/`. The table shows JSON body fields.
 `id` is the Armada sandbox UUID. Supply an `org` selector when needed for
-organization routing.
+organization routing. For service or Armada OAuth bearers, omit `org` or use
+the UUID bound to the token.
 
 | Route | Required | Optional | Result |
 | --- | --- | --- | --- |
 | `sandbox/list` | None, send `{}` | `org`, `externalRef`, `harness`, `golden` (snapshot UUID), `owner` (UUID or `me`), `status` (nonempty array), `page`, `limit` | `sandboxes`, `total`, `page`, `limit`, `hasMore`, `nextPage`. Page starts at 1 and is capped at 1,000,000. Default limit 25, maximum 200. Deleted rows are excluded by default. |
 | `sandbox/status` | `id` | `prompt_id`, `recorded` (boolean) | Sandbox status and turn details. Omit `prompt_id` for the latest turn. With `recorded: true` use stored state. |
 | `sandbox/wait` | `id` | `prompt_id`, `timeout_seconds` (integer 0–600, default 60) | Status with `timedOut`. Call again to keep waiting. |
-| `sandbox/send` | `id`, `prompt` | `request_id` (UUID, required for runtime follow-up), `conversation_id`, `model`, `reasoning_effort` | Includes `promptId`, `conversationId` and the send status, which can be `queued`. |
+| `sandbox/send` | `id`, `prompt` | `request_id` (UUID, required by direct runtime follow-up), `conversation_id`, `model`, `reasoning_effort` | Includes `promptId`, `conversationId` and the send status, which can be `queued`. |
 | `sandbox/stop` | `id` | `request_id` (UUID), `only_if_idle` (boolean) | `id`, `status` and an optional `preservationNote`. |
 
-Reuse the send request UUID with identical input after uncertain runtime
-delivery. Native sends accept that field for compatibility and do not
-deduplicate on it. Check status before resending an uncertain native prompt.
+Supply a stable request UUID for sends, as `request_id` on backend requests
+and `requestId` on viewer requests. The account turn queue deduplicates by
+request ID for sends it admits, including native sends with a pinned model
+account. Direct runtime sends use the request ID for replay with identical
+input. Direct native dispatch has no request-ID deduplication. Inspect
+status before retrying an uncertain send.
 
 The sandbox states are `starting`, `ready`, `running`, `stopping`, `stopped`,
 `failed` and `deleted`. A turn has its own state. Send can return `queued`

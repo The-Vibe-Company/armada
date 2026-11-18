@@ -479,7 +479,7 @@ function DockerSandbox({
       <SandboxAttention sandbox={sandbox} viewer={viewer} />
 
       <p className="text-sm text-muted-foreground">
-        {life.remaining} · The time limit cannot be extended on your own server.
+        {life.remaining} · Docker host sandboxes have a fixed time limit.
       </p>
       <div
         data-fit="body"
@@ -553,7 +553,7 @@ function DockerSandbox({
                 ["Who can open it", "Owner and organization admins"],
               ]}
             />
-            <p className="text-muted-foreground">Sandboxes on your own server do not get tools yet.</p>
+            <p className="text-muted-foreground">MCP tools are unavailable on Docker host sandboxes.</p>
           </section>
           <details className="text-sm">
             <summary className="cursor-pointer text-muted-foreground">Technical details</summary>

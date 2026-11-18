@@ -259,7 +259,7 @@ async function OwnServers({
       <div className="space-y-3">
         {!hosts.list.placement && (
           <p className="text-sm text-muted-foreground">
-            Launching on your own servers is not enabled here yet. You can still view their connections.
+            Docker host launches are disabled here. You can still view connected Docker hosts.
           </p>
         )}
 
