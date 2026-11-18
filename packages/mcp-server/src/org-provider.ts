@@ -8,9 +8,11 @@ import {
   VaultError,
   type VaultStore,
 } from "@armada/core/server";
-import { createBoatProvider } from "@armada/provider-boat";
 import { ModalClient } from "modal";
 import type { Caller } from "./caller.ts";
+import { createObservedBoatProvider } from "./observed-boat.ts";
+
+import { observeProviderCall } from "./request-observability.ts";
 
 export type ProviderValidator = (provider: "boat" | "modal", value: string) => Promise<void>;
 
@@ -19,7 +21,7 @@ export const validateOrgProvider: ProviderValidator = async (provider, value) =>
   let modal: ModalClient | undefined;
   try {
     if (provider === "boat") {
-      await createBoatProvider({ apiKey: value }).backendIdentity!();
+      await createObservedBoatProvider({ apiKey: value }).backendIdentity!();
     } else {
       const pair = parseModalTokenPair(value);
       modal = new ModalClient({
@@ -29,7 +31,10 @@ export const validateOrgProvider: ProviderValidator = async (provider, value) =>
         maxThrottleWaitSecs: 0,
         logger: { debug() {}, info() {}, warn() {}, error() {} },
       });
-      await modal.cpClient.clientHello({}, { timeoutMs: 10_000, retries: 0 });
+      const client = modal;
+      await observeProviderCall("modal", "clientHello", () =>
+        client.cpClient.clientHello({}, { timeoutMs: 10_000, retries: 0 }),
+      );
     }
   } catch (error) {
     const rejected =

@@ -12,6 +12,16 @@ type OutputReader = Pick<Provider, "readOutputs">;
  * `readOutputs` operation (never caller commands), under the owner's live runtime fence. */
 const READ_TIMEOUT_MS = 25_000;
 
+/** The runtime's readOutputs result as output files, or null when Armada rejects it. */
+function parsed(result: unknown): OutputFile[] | null {
+  if (!result) return null;
+  try {
+    return parseOutputFiles((result as { files?: unknown }).files);
+  } catch {
+    return null;
+  }
+}
+
 export function createDockerOutputReader(sql: Sql, key: string, clock?: Clock) {
   const commands = createRuntimeCommands(createRuntimeEnrolments(sql, key), key, clock);
   const now = clock ? () => clock.now() : () => Date.now();
@@ -57,6 +67,8 @@ export function createDockerOutputReader(sql: Sql, key: string, clock?: Clock) {
       // admission the runtime fence refuses the sample's reply, which would otherwise be lost).
       if (queue?.busy) return null;
       const requestId = `outputs_${deadline}_${randomUUID().replaceAll("-", "")}`;
+      // Parsed once: under a request the boundary's check parses this same reply.
+      let files: OutputFile[] | null | undefined;
       try {
         const reply = await commands.call(
           row.owner_id,
@@ -65,11 +77,15 @@ export function createDockerOutputReader(sql: Sql, key: string, clock?: Clock) {
             timeoutMs: READ_TIMEOUT_MS,
             ...(request.signal ? { signal: request.signal } : {}),
             ...(expectedEpoch !== undefined ? { expectedEpoch } : {}),
+            // Same parse as the snapshot below, so a reply whose files Armada rejects is not `ok`.
+            accept: (candidate) => {
+              files = parsed(candidate.body.result);
+              return files !== null;
+            },
           },
         );
-        const result = reply.body.result as { files?: unknown } | undefined;
-        if (reply.status !== 200 || reply.body.requestId !== requestId || !result) return null;
-        return parseOutputFiles(result.files);
+        if (reply.status !== 200 || reply.body.requestId !== requestId) return null;
+        return files === undefined ? parsed(reply.body.result) : files;
       } catch {
         // Not live (stop requested, no enrolment, other epoch), refused or timed out: keep the
         // previous snapshot. A read left unanswered expires at its deadline.
