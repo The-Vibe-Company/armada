@@ -327,10 +327,7 @@ export function createSandboxLifecycle(
           info = await operation(signal, () => provider.get(row.provider_sandbox_id));
         }
         signal?.throwIfAborted();
-        physicalExit =
-          info.physicalExitConfirmed === true ||
-          info.stopNote === "checkpoint_failed_disk_not_retained" ||
-          (retainedResume && info.state === "deleted");
+        physicalExit = info.physicalExitConfirmed === true || info.stopNote === "checkpoint_failed_disk_not_retained";
         stoppedAt = info.stoppedAt;
         terminal = physicalExit || ["stopped", "deleted"].includes(info.state);
         if (!terminal && (expired || row.status === "stopping" || row.stop_requested_at !== null))
