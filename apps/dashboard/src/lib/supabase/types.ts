@@ -14,6 +14,7 @@ export type Database = Omit<Generated, "public"> & {
       };
       add_org_member: { Args: { target_org: string; member_email: string; member_role: MemberRole }; Returns: string };
       set_golden_visibility: { Args: { target_golden: string; new_visibility: Visibility }; Returns: undefined };
+      sandbox_launch_percentiles: Generated["public"]["Functions"]["sandbox_launch_percentiles"];
       sandbox_list_metadata: Generated["public"]["Functions"]["sandbox_list_metadata"];
       save_github_connection: {
         Args: {

@@ -1867,6 +1867,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
         machine.state === "stopped",
       ),
     );
+    const generation = found.lifecycleGeneration;
     let acknowledged = false;
     return sandboxActivity(
       data.sandboxes,
@@ -1878,7 +1879,8 @@ export function createArmadaServer(context: ToolContext, version: string, option
         stopRequested: false,
         ...(machine.state === "stopped" ? { status: "starting" as const, stoppedAt: null } : {}),
       },
-      async (signal) => {
+      async (signal, activityToken) => {
+        let activationOpened = machine.state === "stopped";
         const receipt = await measure("send_submit", () =>
           provider
             .prompt({
@@ -1888,6 +1890,32 @@ export function createArmadaServer(context: ToolContext, version: string, option
               signal,
               ...(conversation ? { conversationId: conversation } : {}),
               ...(choice ?? {}),
+              ...(generation !== undefined
+                ? {
+                    onResumeStage: async (stage) => {
+                      try {
+                        if (stage === "accepted") {
+                          // The provider can discover a stop after the initial state read.
+                          // Open that activation while this send still owns the same lease.
+                          if (!activationOpened) {
+                            await data.sandboxes.update(found.id, {
+                              status: "starting",
+                              stoppedAt: null,
+                              renewActivity: true,
+                              activityToken,
+                              expectedGeneration: generation + 1,
+                            });
+                            activationOpened = true;
+                          }
+                        } else if (activationOpened) {
+                          await data.sandboxes.recordLaunchStage?.(found.id, stage, 0, generation + 1);
+                        }
+                      } catch {
+                        // Timing is optional and must not affect native prompt admission.
+                      }
+                    },
+                  }
+                : {}),
             })
             .catch(unknownMutationOutcome),
         );

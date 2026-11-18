@@ -295,9 +295,24 @@ test.each([false, true])(
           },
         },
       });
-      await expect(
-        createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, prepare)(f.caller, input(f.row.id)),
-      ).rejects.toThrow();
+      const request = input(f.row.id);
+      await expect(createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, prepare)(f.caller, request)).rejects.toThrow();
+      const { rows } = await f.db.query(
+        `select l.stage, l.at=r.created_at as at_admission
+           from public.sandbox_launch_stages l
+           join public.runtime_resumes r on r.sandbox_id=l.sandbox_id and r.request_id=$2
+          where l.sandbox_id=$1 and l.activation=2 order by l.at,l.stage`,
+        [f.row.id, request.request_id],
+      );
+      expect(rows).toEqual([
+        { stage: "accepted", at_admission: true },
+        ...(taint
+          ? []
+          : [
+              { stage: "provider_claimed", at_admission: false },
+              { stage: "machine_started", at_admission: false },
+            ]),
+      ]);
       expect(requests.some((path) => path.endsWith("/resume"))).toBe(!taint);
       expect(f.starts).toHaveLength(1);
     } finally {

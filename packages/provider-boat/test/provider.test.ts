@@ -737,17 +737,23 @@ test("native bootstrap follows actual resume readiness and precedes prompt; I/O 
       text: "work",
       model: "gpt-6.1-sol",
       reasoningEffort: "medium",
+      onResumeStage: async (stage) => {
+        events.push(stage);
+      },
     });
     if (fail) await expect(turn).rejects.toThrow("bootstrap I/O failed");
     else await turn;
     expect(events).toEqual([
       "archived",
+      "accepted",
       "fence",
       "resume",
+      "provider_claimed",
       "provisioning",
       "ready",
+      "machine_started",
       "configure",
-      ...(fail ? [] : ["bridge", "ready", "bridge", "prompt"]),
+      ...(fail ? [] : ["bridge", "ready", "bridge", "harness_ready", "prompt"]),
     ]);
     await expect(provider.snapshot({ sandboxId: ID, name: "safe" })).rejects.toThrow("snapshot scrub I/O failed");
   }

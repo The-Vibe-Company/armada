@@ -37,7 +37,7 @@ import {
 import { hostDrainingSql } from "./docker-host-drain.ts";
 import { dockerHostSupportsSnapshotBaseline } from "./docker-host-version.ts";
 import { authorizeSnapshotBuild, resolveDockerSnapshot } from "./docker-snapshot-data.ts";
-import { recordLaunchStage, recordLaunchStageForActivation } from "./launch-stage-record.ts";
+import { recordLaunchStageForActivation } from "./launch-stage-record.ts";
 import { collectOutputTransfers, DOCKER_RETAINED_OUTPUT_STOP } from "./output-transfers.ts";
 import { noteAdmission } from "./request-observability.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
@@ -652,7 +652,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
         id(requestId);
         const host = await reconcileHost(tx, hostToken, installationId);
         const result = await tx.query(
-          `update public.docker_resume_claims set accepted=$4 where request_id=$3 and host_id=$1 and installation_id=$2
+          `update public.docker_resume_claims set accepted=$4,
+             claimed_at=case when $4 and accepted is null then clock_timestamp() else claimed_at end
+           where request_id=$3 and host_id=$1 and installation_id=$2
            and (accepted is null or accepted=$4) returning request_id`,
           [host.id, installationId, requestId, accepted],
         );
@@ -1290,11 +1292,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
             );
             await state(tx, logical, row.bound_operation ?? deny());
             await machine(tx, logical, row.bound_operation ?? deny());
-            // #2560: the authenticated host took this activation's machine work. A create job belongs to the launch
-            // (activation 1); a resume job is admitted only for the current lifecycle.
+            // Create pickup belongs to activation 1. Resume timing comes from its durable host claim.
             if (row.bound_operation === "create")
               await recordLaunchStageForActivation(tx, logical.id, 1, "provider_claimed");
-            if (row.bound_operation === "resume") await recordLaunchStage(tx, logical.id, "provider_claimed");
           } catch (error) {
             if (!(error instanceof DockerHostDenied)) throw error;
             if (verified) await startupFailed(tx, verified, row.bound_operation);

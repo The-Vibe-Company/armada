@@ -2,6 +2,7 @@ import {
   type CredentialReader,
   type LaunchOptions,
   type Provider,
+  type ResumeStageObserver,
   SANDBOX_STOP_MARGIN_SECONDS,
   type SandboxInfo,
   type Sql,
@@ -31,7 +32,14 @@ export function runtimeResumePlacement<H extends Provider>(
     admissionError: string;
     binding?: readonly [provider: string, runtimeTransport: string];
     maxTtlSeconds: number;
-    restore(host: H, sandbox: Sandbox, ttl: number, signal: AbortSignal, checkpoint: Checkpoint): Promise<unknown>;
+    restore(
+      host: H,
+      sandbox: Sandbox,
+      ttl: number,
+      signal: AbortSignal,
+      checkpoint: Checkpoint,
+      observe: ResumeStageObserver,
+    ): Promise<unknown>;
     stop(host: H, sandbox: Sandbox): Promise<void>;
   },
 ): RuntimeResumePrepare {
@@ -74,9 +82,11 @@ export function runtimeResumePlacement<H extends Provider>(
               Math.max(1, Math.ceil((Date.parse(sandbox.expiresAt ?? "") - Date.now()) / 1000)) +
                 SANDBOX_STOP_MARGIN_SECONDS,
             );
-            await placement.restore(host, sandbox, ttlSeconds, admission, restoreCheckpoint);
-            // #2560: the provider restored the machine; the runtime ticket is issued only after this.
-            await recordLaunchStageQuietly(options.sql, sandbox.id, "machine_started");
+            const observe: ResumeStageObserver = (stage) =>
+              recordLaunchStageQuietly(options.sql, sandbox.id, stage, sandbox.lifecycleGeneration);
+            await placement.restore(host, sandbox, ttlSeconds, admission, restoreCheckpoint, observe);
+            // The provider restored the machine; the runtime ticket is issued only after this.
+            await observe("machine_started");
           },
         }),
       stop: () => placement.stop(host, sandbox),

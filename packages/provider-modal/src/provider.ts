@@ -7,6 +7,7 @@ import type {
   Harness,
   Provider,
   ProviderDispatchGuard,
+  ResumeStageObserver,
   SandboxInfo,
   SnapshotInfo,
   Sql,
@@ -114,6 +115,7 @@ export interface ModalProvider extends Provider {
   resumeRuntime(
     input: { sandboxId: string; checkpoint: { epoch: string; watermark: number }; ttlSeconds: number },
     signal?: AbortSignal,
+    onResumeStage?: ResumeStageObserver,
   ): Promise<SandboxInfo>;
   configureGitHub: NonNullable<Provider["configureGitHub"]>;
   findGoldenBuilder: NonNullable<Provider["findGoldenBuilder"]>;
@@ -349,6 +351,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     save: (row: Machine, undoUndispatchedCreate?: true) => Promise<void>,
     env: Readonly<Record<string, string>>,
     beforeDispatch?: ProviderDispatchGuard,
+    onResumeStage?: ResumeStageObserver,
   ): Promise<SandboxInfo> {
     const app = await bound();
     let sb: Sandbox;
@@ -416,6 +419,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     } else {
       sb = await physical(row);
     }
+    if (row.phase === "creating") await onResumeStage?.("provider_claimed");
     row.physicalId = sb.sandboxId;
     if (row.runtimePolicy === "explicit-vm-v1")
       row.runtimeEvidence = { version: 1, runtime: "vm", physicalId: sb.sandboxId, generation: row.generation };
@@ -455,6 +459,8 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       });
     }
     if (!row.commonRuntime) {
+      // The in-guest baseline is available before starting or probing the native runner.
+      await onResumeStage?.("machine_started");
       await beforeDispatch?.();
       await bootStage("start", () => distribution.start(sb, row, env, beforeDispatch));
       let managedRunnerPid: unknown;
@@ -621,12 +627,17 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     }
   }
   /** Caller holds the lifecycle lease through activation and the admitted operation. */
-  async function readyLeased(row: Machine, save: (row: Machine) => Promise<void>): Promise<Machine> {
+  async function readyLeased(
+    row: Machine,
+    save: (row: Machine) => Promise<void>,
+    onResumeStage?: ResumeStageObserver,
+  ): Promise<Machine> {
     assertMachineSource(row);
     if (row.golden && row.quiesced) throw refusal("sandbox_not_ready", "Sealed golden admission cannot be reopened.");
     if (row.phase === "stopped") {
       if (row.commonRuntime) throw refusal("invalid_request", "Enrolled Modal resume is not enabled.");
       if (!row.recoveryImageId) throw refusal("conflict", "Stopped sandbox has no durable recovery image.");
+      await onResumeStage?.("accepted");
       await options.beforeResume?.(provider, row.info.id);
       row.generation++;
       row.quiesced = false;
@@ -647,7 +658,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       }
     }
     if (row.generation > 1 && ["reserved", "creating", "booting"].includes(row.phase))
-      await create(row, save, await distribution.restoreEnv(row));
+      await create(row, save, await distribution.restoreEnv(row), undefined, onResumeStage);
     if (row.phase !== "active") throw refusal("sandbox_not_ready", "Sandbox lifecycle is not active.");
     if ((await (await physical(row)).poll()) !== null)
       throw refusal(
@@ -665,9 +676,13 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       throw refusal("conflict", "Activation requires a lifecycle lease.");
     });
   }
-  async function healthyAdmission(row: Machine, save: (row: Machine) => Promise<void>): Promise<Machine> {
+  async function healthyAdmission(
+    row: Machine,
+    save: (row: Machine) => Promise<void>,
+    onResumeStage?: ResumeStageObserver,
+  ): Promise<Machine> {
     if (row.commonRuntime) throw refusal("invalid_request", "Enrolled runtime commands require the common transport.");
-    const active = await readyLeased(row, save);
+    const active = await readyLeased(row, save, onResumeStage);
     const health = await measure("modal_health", () =>
       runner.call<{ generation: string; ready: boolean }>(active, "health", {}),
     );
@@ -1165,7 +1180,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         throw error;
       }
     },
-    async resumeRuntime(input, signal) {
+    async resumeRuntime(input, signal, onResumeStage) {
       const { epoch, watermark } = input.checkpoint;
       if (
         !/^[1-9][0-9]{0,18}$/.test(epoch) ||
@@ -1219,7 +1234,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           )
             throw refusal("conflict", "Common resume belongs to another activation.");
           signal?.throwIfAborted();
-          if (["reserved", "creating", "booting"].includes(row.phase)) return create(row, save, {});
+          if (["reserved", "creating", "booting"].includes(row.phase)) return create(row, save, {}, undefined, onResumeStage);
           if (row.phase !== "active" || (await (await physical(row)).poll()) !== null)
             throw refusal("conflict", "Resume activation outcome is unavailable; do not allocate again.");
           return sandboxInfo(row);
@@ -1609,13 +1624,20 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           row.processBaseline?.namespace.mount ?? null,
         ]);
       let expected: string | undefined;
+      let restored = false;
+      const observeResume: ResumeStageObserver | undefined =
+        r.onResumeStage &&
+        (async (stage) => {
+          if (stage === "machine_started") restored = true;
+          await r.onResumeStage?.(stage);
+        });
       if (options.beforePrompt) {
         expected = await measure("modal_prepare", () =>
           admit(r.sandboxId, async (row, save) => {
             if (row.golden) throw refusal("invalid_request", "Golden builders cannot run model turns.");
             // Preparation needs an active physical incarnation, not a native health
             // probe that is repeated after the hook. Final admission below owns health.
-            return incarnation(await readyLeased(row, save));
+            return incarnation(await readyLeased(row, save, observeResume));
           }),
         );
         // configureMcp takes its own lease. Invoking this under admission would deadlock.
@@ -1629,11 +1651,12 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
               "conflict",
               "Prompt preparation belongs to a different physical incarnation; turn not submitted.",
             );
-          const active = await healthyAdmission(row, save);
+          const active = await healthyAdmission(row, save, observeResume);
           if (expected !== undefined && (active.phase !== "active" || incarnation(active) !== expected))
             throw refusal("conflict", "Runner incarnation changed during admission; turn not submitted.");
           const choice = resolveModelChoice(r.harness, r, active.modelDefaults?.[r.harness]);
           const cwd = active.harnessCwds?.[r.harness];
+          if (restored) await r.onResumeStage?.("harness_ready");
           return measure("modal_rpc", () =>
             runner.call(active, "prompt", {
               input: {

@@ -190,7 +190,12 @@ function page<T>(items: T[], pageInfo: { nextCursor: string | null; hasMore: boo
 
 /** Compute-only activation port; intentionally not required by legacy managed adapters. */
 interface BoatRuntimeHost {
-  resumeRuntime(sandboxId: string, ttlSeconds: number, signal?: AbortSignal): Promise<void>;
+  resumeRuntime(
+    sandboxId: string,
+    ttlSeconds: number,
+    signal?: AbortSignal,
+    onResumeStage?: PromptRequest["onResumeStage"],
+  ): Promise<void>;
 }
 
 /** The boat.dev placement, over `@boatdev/sdk`. Every failure is a `ProviderError`. */
@@ -586,7 +591,7 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       }
       if (!["ready", "running"].includes(info.state)) throw invalidRequest("Sandbox activation failed.");
     },
-    async resumeRuntime(sandboxId: string, ttlSeconds: number, caller?: AbortSignal): Promise<void> {
+    async resumeRuntime(sandboxId, ttlSeconds, caller, onResumeStage) {
       const timeout = AbortSignal.timeout(150_000);
       const signal = caller ? AbortSignal.any([caller, timeout]) : timeout;
       // Only the trusted managed adapter calls this port after its own owner,
@@ -599,6 +604,7 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
           { signal },
         ),
       );
+      await onResumeStage?.("provider_claimed");
       let info = await provider.get(sandboxId, { signal });
       for (let attempt = 0; info.state === "starting" && attempt < 120; attempt++) {
         signal.throwIfAborted();
@@ -690,11 +696,13 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       if (options.beforePrompt || options.beforeResume) {
         let info = await provider.get(request.sandboxId, { signal });
         if (info.state === "stopped") {
+          await request.onResumeStage?.("accepted");
           const shouldResume = await options.beforeResume?.(provider, request.sandboxId);
           if (shouldResume !== false) {
             try {
               lifecycleTrace(request.sandboxId, "resume", "api_dispatch", "prompt");
               await call(() => api.resume({ sandboxId: request.sandboxId }, { signal }));
+              await request.onResumeStage?.("provider_claimed");
             } catch (error) {
               const observed = await provider.get(request.sandboxId, { signal }).catch(() => null);
               if (observed?.state === "stopped") await options.resumeRefused?.(provider, request.sandboxId);
@@ -713,6 +721,7 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
         }
         if (info.state !== "ready" && info.state !== "running")
           throw invalidRequest("Sandbox is not ready for native MCP configuration.");
+        if (resumed) await request.onResumeStage?.("machine_started");
         signal.throwIfAborted();
         await options.beforePrompt?.(provider, request.sandboxId);
       }
@@ -738,6 +747,7 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
         usageBridgeReady && request.harness === "codex"
           ? await admitNativeUsage(provider, request.sandboxId, request.text)
           : null;
+      if (resumed) await request.onResumeStage?.("harness_ready");
       const response = await call(() =>
         api.prompt(
           {

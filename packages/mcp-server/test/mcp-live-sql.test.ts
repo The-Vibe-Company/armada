@@ -278,7 +278,7 @@ test("SQL gateway delivers MCP objects and provider configuration is reused acro
       stop: async () => {
         physicalState = "stopped";
       },
-      prompt: async () => {
+      prompt: async ({ onResumeStage }: import("@armada/core").PromptRequest) => {
         // Provider fixture models actual resume BEFORE the real backend callback/native turn.
         physicalState = "ready";
         boot = "33333333-3333-4333-8333-333333333333";
@@ -290,6 +290,14 @@ test("SQL gateway delivers MCP objects and provider configuration is reused acro
           )
         ).rows[0];
         expect(row).toMatchObject({ status: "ready", stopped_at: null });
+        const readiness = () =>
+          db.query(
+            "select at from sandbox_launch_stages where sandbox_id=$1 and activation=2 and stage='harness_ready'",
+            [sandbox],
+          );
+        expect((await readiness()).rows).toEqual([]);
+        await onResumeStage?.("harness_ready");
+        expect((await readiness()).rows).toHaveLength(1);
         nativeTurns++;
         return { conversationId: "resume-conversation", promptId: "resume-prompt", status: "queued" };
       },

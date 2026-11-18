@@ -1019,6 +1019,8 @@ async function rest(request: Request, url: URL): Promise<Response> {
 
 function rpc(name: string, args: Row, userId: string): Response {
   switch (name) {
+    case "sandbox_launch_percentiles":
+      return json([]); // The fixture has no launch stage history.
     case "create_org": {
       const orgName = String(args.org_name ?? "").trim();
       if (!orgName)
