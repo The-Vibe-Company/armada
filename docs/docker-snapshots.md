@@ -45,7 +45,7 @@ armada snapshot create office --provider docker \
 armada snapshot list --provider docker --org "$ARMADA_ORG"
 armada snapshot get SNAPSHOT_UUID --provider docker --org "$ARMADA_ORG"
 armada launch "Work on this project" --provider docker --golden SNAPSHOT_UUID \
-  --org "$ARMADA_ORG" --credential-id "$ARMADA_CREDENTIAL_ID"
+  --org "$ARMADA_ORG" --agent codex --credential-id "$ARMADA_CREDENTIAL_ID"
 ```
 
 Creation returns a stable request/snapshot UUID while building. Reuse the printed
