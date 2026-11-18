@@ -16,6 +16,7 @@ test("installer publishes both build digests without credentials and refuses mis
     const manifest = await route(new Request("https://armada.example/api/docker-host/install.json"));
     expect(await manifest?.json()).toEqual({ version: VERSION, x64: "a".repeat(64), arm64: "b".repeat(64) });
     expect(manifest?.headers.get("cache-control")).toBe("no-store");
+    expect(manifest?.headers.get("x-armada-docker-host-lifecycle")).toBe("1");
     const response = await route(request);
     expect(response?.status).toBe(200);
     const script = await response?.text();
@@ -58,15 +59,28 @@ test("one-line installer verifies bytes, delivers the one-use token privately an
     ])
       await symlink(`/usr/bin/${command}`, join(tools, command));
     const artifact = join(home, "artifact");
-    const host =
-      '#!/bin/sh\ncase "$1" in reuse-registration) cat > "$HOME/reuse-input"; echo "This machine is already registered under its existing name: owner-machine" ;; upgrade) exit 0 ;; install) printf \'%s\\n\' "$*" > "$HOME/registration-args"; cat > "$HOME/registration" ;; status) printf \'{"registered":true,"connected":true,"server":"https://armada.example","hostId":"22222222-2222-4222-8222-222222222222"}\\n\' ;; *) exit 1 ;; esac\n';
+    const host = `#!/bin/sh
+case "$1" in
+  reuse-registration) cat > "$HOME/reuse-input"; echo "This machine is already registered under its existing name: owner-machine" ;;
+  upgrade) case "$*" in *--restart*) touch "$HOME/restarted" ;; esac ;;
+  install)
+    printf '%s\\n' "$*" > "$HOME/registration-args"
+    name=armada-docker-host
+    if [ "$#" -eq 5 ]; then name="$name@$5"; fi
+    install -m 700 "$0" "$HOME/.local/bin/$name"
+    cat > "$HOME/registration"
+    ;;
+  status) printf '{"registered":true,"connected":true,"server":"https://armada.example","hostId":"22222222-2222-4222-8222-222222222222"}\\n' ;;
+  *) exit 1 ;;
+esac
+`;
     await writeFile(artifact, host);
     const digest = createHash("sha256").update(host).digest("hex");
     await Bun.write(join(home, "docker-host.json"), JSON.stringify({ x64: digest, arm64: digest }));
     for (const [name, body] of Object.entries({
       uname: 'case "$1" in -s) echo Linux ;; -m) echo x86_64 ;; esac',
       docker: "exit 0",
-      systemctl: 'case "$*" in *restart*) touch "$HOME/restarted" ;; esac',
+      systemctl: 'case "$*" in *restart*) exit 1 ;; esac',
       loginctl: 'case "$1" in show-user) echo yes ;; esac',
       curl: 'for arg do target=$arg; done; case "$target" in *reuse-registration) cat > "$HOME/reuse-header"; echo \'{"hostId":"22222222-2222-4222-8222-222222222222","name":"owner-machine"}\' ;; *) cp "$FIXTURE_ARTIFACT" "$target" ;; esac',
     }))

@@ -2207,6 +2207,7 @@ test.each([
   let staged = false;
   let released = false;
   let restarted = false;
+  let originalStillPolling = false;
   let confirmed = false;
   let rechecked = false;
   let postDrainReceipt: string[] | undefined;
@@ -2227,6 +2228,11 @@ test.each([
     {
       ...first.api,
       async poll(_state, options) {
+        if (restarted) {
+          expect(options?.heartbeatOnly).toBe(true);
+          originalStillPolling = true;
+          return { job: null, updateVersion: "9.0.0" };
+        }
         if (isPreparing) {
           expect(options?.heartbeatOnly).toBe(true);
           preparationHeartbeats.push(now);
@@ -2275,7 +2281,7 @@ test.each([
       },
     },
     {
-      stopping: () => confirmed,
+      stopping: () => confirmed || originalStillPolling,
       update: {
         pollMode: async () => (staged ? "staged" : "normal"),
         async prepare(target) {
@@ -2342,6 +2348,7 @@ test.each([
   await complete;
   expect(rechecked).toBe(true);
   expect(restarted).toBe(matching);
+  expect(originalStillPolling).toBe(matching);
   if (slowPreparation) expect(preparationHeartbeats.at(-1)).toBeGreaterThan(91_000);
   if (operation === "long snapshot build") {
     const heartbeats = [...preparationHeartbeats, ...drainHeartbeats];

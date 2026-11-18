@@ -25,17 +25,14 @@ import { dockerCli, fileStore, httpApi, readDockerOutputArchive } from "./native
 import { dockerRuntimeStarter } from "./runtime-install.ts";
 import {
   automaticUpdate,
-  installService,
+  finishUninstall,
+  installManagedHost,
   inventory,
   managedUpdateInstance,
   prepareUninstall,
   recoverUpdate,
-  removeInstallation,
-  servicePreflight,
   stateDirectory,
-  stopService,
   superviseUpdate,
-  uninstallPreflight,
   upgradeService,
 } from "./service.ts";
 
@@ -80,11 +77,14 @@ async function main(args: string[]) {
     await serviceAction(await fileStore(stateDirectory(undefined, instance)), instance);
     return;
   }
+  const restartIndex = command === "upgrade" ? flags.indexOf("--restart") : -1;
+  const restart = restartIndex >= 0;
+  if (restart) flags.splice(restartIndex, 1);
   const options = new Map<string, string>();
   for (let i = 0; i < flags.length; i += 2) {
     const key = flags[i];
     const value = flags[i + 1];
-    if (!key || !value || !["--server", "--state-dir", "--instance"].includes(key) || options.has(key))
+    if (!key || !value || !["--server", "--state-dir", "--instance", "--expect-host"].includes(key) || options.has(key))
       throw new Error("Invalid arguments");
     options.set(key, value);
   }
@@ -95,6 +95,7 @@ async function main(args: string[]) {
     throw new Error("Invalid arguments");
   const managed = ["install", "upgrade", "reuse-registration", "status", "uninstall"].includes(command);
   if (
+    (options.has("--expect-host") && command !== "uninstall") ||
     (managed && options.has("--state-dir")) ||
     (!managed && options.has("--instance")) ||
     (!managed && !options.has("--state-dir")) ||
@@ -115,7 +116,7 @@ async function main(args: string[]) {
   const store = await fileStore(directory);
   if (command === "status") {
     if (!(await store.exists())) {
-      console.log(JSON.stringify({ registered: false, connected: false, version: VERSION }));
+      console.log(JSON.stringify({ registered: false, connected: false, version: VERSION, lifecycle: true }));
       return;
     }
     const state = await store.load();
@@ -124,6 +125,7 @@ async function main(args: string[]) {
     console.log(
       JSON.stringify({
         registered: true,
+        lifecycle: true,
         connected: elapsed >= 0 && elapsed < 60_000,
         hostId: state.hostId,
         server: state.server,
@@ -135,7 +137,7 @@ async function main(args: string[]) {
     return;
   }
   if (command === "upgrade") {
-    await upgradeService(store, options.get("--server") ?? "", undefined, instance);
+    await upgradeService(store, options.get("--server") ?? "", undefined, instance, restart);
     console.log("Upgraded Armada Docker host binary; registration, workloads and user service preserved.");
     return;
   }
@@ -153,9 +155,21 @@ async function main(args: string[]) {
     console.log("The unused registration ticket was canceled; its token was not exchanged for a machine credential.");
     return;
   }
-  if (command === "install") await servicePreflight(instance);
+  if (command === "install") {
+    await installManagedHost(
+      store,
+      async () => {
+        const token = (await Bun.stdin.text()).trim();
+        await register(store, httpApi(), options.get("--server") ?? "", token);
+      },
+      instance,
+    );
+    return;
+  }
   if (command === "uninstall") {
     const state = await store.load();
+    if (options.has("--expect-host") && state.hostId !== options.get("--expect-host"))
+      throw new Error("Docker host registration changed. Inspect it before retrying.");
     const api = httpApi();
     let drain = await prepareUninstall(state, api.supportsCleanupPoll, instance);
     const deadline = Date.now() + 10 * 60_000;
@@ -170,26 +184,11 @@ async function main(args: string[]) {
       await Bun.sleep(Math.min(20_000, Math.max(1, deadline - Date.now())));
       if (drain === "pending") drain = await prepareUninstall(state, api.supportsCleanupPoll, instance);
     }
-    await uninstallPreflight(await store.load(), instance);
-    await stopService(instance);
-    const unlock = await store.lock();
-    try {
-      await uninstallPreflight(await store.load(), instance);
-    } finally {
-      await unlock();
-    }
-    await removeInstallation(instance);
+    await finishUninstall(store, state, instance);
     console.log("Uninstalled Armada Docker host. Shared images, other workloads and linger settings preserved.");
     return;
   }
   const unlock = await store.lock();
-  let released = false;
-  const release = async () => {
-    if (!released) {
-      await unlock();
-      released = true;
-    }
-  };
   try {
     const sampleDisk = () => dockerDiskFreeBytes(dockerCli);
     let stoppedSampleAt = 0;
@@ -209,15 +208,10 @@ async function main(args: string[]) {
       },
       update,
     );
-    if (command === "register" || command === "install") {
+    if (command === "register") {
       if (await store.exists()) throw new Error("Host already registered");
       const token = (await Bun.stdin.text()).trim();
       await register(store, api, options.get("--server") ?? "", token);
-      if (command === "install") {
-        // Registration is durable before systemd starts the separate lock owner.
-        await release();
-        await installService(await store.load(), instance);
-      }
       return;
     }
     const state = await store.load();
@@ -323,7 +317,7 @@ async function main(args: string[]) {
       await Promise.all([expiry.drain(), outputs.drain()]);
     }
   } finally {
-    await release();
+    await unlock();
   }
 }
 if (import.meta.main)

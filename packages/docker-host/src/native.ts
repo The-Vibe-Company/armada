@@ -187,7 +187,7 @@ export function httpApi(
     body: unknown,
     timeoutMs = 8_000,
     snapshotBaseline = endpoint === "poll" ? SNAPSHOT_BASELINE_VERSION : undefined,
-  ): Promise<unknown> {
+  ) {
     const failure = endpoint === "poll" ? await update?.failure() : undefined;
     const response = await request(`${serverOrigin(server)}/api/docker-host/${endpoint}`, {
       method: "POST",
@@ -207,7 +207,7 @@ export function httpApi(
     }
     if (endpoint === "results") {
       await response.body?.cancel();
-      return undefined;
+      return { result: undefined };
     }
     // Bound protocol output as well as Docker inspect output; neither is ever logged.
     if (!response.body) throw new Error("Invalid host response");
@@ -225,23 +225,26 @@ export function httpApi(
     } finally {
       await reader.cancel();
     }
-    const result = JSON.parse(Buffer.concat(parts).toString("utf8"));
-    if (failure && response.headers.get(DOCKER_HOST_UPDATE_FAILURE_HEADER) === failure)
-      await update?.acknowledge(failure).catch(() => {});
-    return result;
+    return {
+      result: JSON.parse(Buffer.concat(parts).toString("utf8")) as unknown,
+      acknowledged:
+        failure && response.headers.get(DOCKER_HOST_UPDATE_FAILURE_HEADER) === failure ? failure : undefined,
+    };
   }
-  function post(...args: Parameters<typeof send>) {
+  async function post(...args: Parameters<typeof send>) {
     const [, endpoint, , body] = args;
-    if (
+    const response =
       endpoint === "poll" &&
       body &&
       typeof body === "object" &&
       !("heartbeatOnly" in body) &&
       !("cleanupOnly" in body) &&
       update?.pollWhileInstalled
-    )
-      return update.pollWhileInstalled(() => send(...args));
-    return send(...args);
+        ? await update.pollWhileInstalled(() => send(...args))
+        : await send(...args);
+    // Acknowledging mutates the journal and takes its own lifecycle claim.
+    if (response.acknowledged) await update?.acknowledge(response.acknowledged).catch(() => {});
+    return response.result;
   }
   return {
     async reuseRegistration(state, token) {

@@ -511,18 +511,18 @@ export async function runJobs(
           await Promise.race(pending);
           continue;
         }
-        if ((await loop.update.confirm(event)) && !loop.stopping() && (await loop.update.restart())) break;
+        if ((await loop.update.confirm(event)) && !loop.stopping()) await loop.update.restart();
+        // The original process stays available until the claimed supervisor
+        // stops it. Failed preflight can cancel staging and reopen admission.
+        if (!loop.stopping()) await loop.sleep(DOCKER_HOST_IDLE_MS);
         continue;
       }
       // An orphaned trial can roll back even when authentication is denied.
-      if (
-        mode === "trial" &&
-        loop.update &&
-        (await loop.update.checkRecovery()) &&
-        !loop.stopping() &&
-        (await loop.update.restart())
-      )
-        break;
+      if (mode === "trial" && loop.update && (await loop.update.checkRecovery()) && !loop.stopping()) {
+        await loop.update.restart();
+        if (!loop.stopping()) await loop.sleep(DOCKER_HOST_IDLE_MS);
+        continue;
+      }
       await loop.beforeTick?.();
       if (running.size >= DOCKER_HOST_CONCURRENT_JOBS) {
         await settled();

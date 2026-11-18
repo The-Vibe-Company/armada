@@ -11,13 +11,14 @@ const bytes = new TextEncoder().encode("verified host artifact");
 const digest = createHash("sha256").update(bytes).digest("hex");
 const unregistered = { registered: false, connected: false, version: "2.27.0" };
 const registered = { registered: true, connected: true, hostId, version: "2.27.0" };
-function machine() {
+function machine(lifecycle = true) {
   const files = new Map<string, { directory: boolean; file: boolean; symlink: boolean }>();
   for (const path of ["/", "/home", home]) files.set(path, { directory: true, file: false, symlink: false });
   const calls: { program: string; args: string[]; stdin?: string }[] = [];
   const requests: string[] = [];
   let current = unregistered as typeof unregistered & { hostId?: string };
   let inputReads = 0;
+  let claimed = false;
   let now = 0;
   let out = "";
   let err = "";
@@ -35,7 +36,13 @@ function machine() {
         expect(JSON.parse(String(init?.body))).toEqual({ hostId });
         return Response.json({ hostId, name: "owner-machine" });
       }
-      if (url.endsWith("install.json")) return Response.json({ version: "2.27.0", x64: digest, arm64: digest });
+      if (url.endsWith("install.json"))
+        return Response.json(
+          { version: "2.27.0", x64: digest, arm64: digest },
+          {
+            headers: lifecycle ? { "x-armada-docker-host-lifecycle": "1" } : {},
+          },
+        );
       return new Response(bytes);
     },
     readStdin: async () => {
@@ -51,6 +58,20 @@ function machine() {
       expect(data).toEqual(bytes);
       files.set(path, { directory: false, file: true, symlink: false });
     },
+    async claim(_directory, work) {
+      if (claimed) throw new Error("nested lifecycle claim");
+      claimed = true;
+      try {
+        return await work();
+      } finally {
+        claimed = false;
+      }
+    },
+    copyExecutable: async (from, to) => {
+      const source = files.get(from);
+      if (!claimed || !source || files.has(to)) throw new Error("unsafe executable pin");
+      files.set(to, { ...source });
+    },
     rename: async (from, to) => {
       const file = files.get(from);
       if (!file) throw new Error("missing temporary artifact");
@@ -62,7 +83,26 @@ function machine() {
     },
     execute: async (program, args, stdin) => {
       calls.push({ program, args, ...(stdin === undefined ? {} : { stdin }) });
-      if (args[0] === "install") current = registered;
+      if (args[0] === "uninstall") {
+        if ("lifecycle" in current && current.lifecycle === true) {
+          if (claimed || program === binary || args.at(-1) !== current.hostId) return { code: 1, stdout: "" };
+        } else if (!claimed) return { code: 1, stdout: "" };
+      }
+      if (args[0] === "install") {
+        const i = args.indexOf("--instance");
+        const destination = i < 0 ? binary : `${binary}@${args[i + 1]}`;
+        const verified = files.get(program);
+        if (!verified) throw new Error("missing temporary artifact");
+        if (!lifecycle && (program !== destination || !claimed)) return { code: 1, stdout: "" };
+        files.set(destination, { ...verified });
+        current = registered;
+      }
+      if (!lifecycle && args[0] === "upgrade" && (args.includes("--restart") || !claimed))
+        return { code: 1, stdout: "" };
+      if (!lifecycle && program === "systemctl" && args.includes("restart")) {
+        if (!claimed) return { code: 1, stdout: "" };
+        current = registered;
+      }
       return { code: 0, stdout: JSON.stringify({ ...current, privateCredential: "never-output" }) };
     },
     now: () => now,
@@ -136,7 +176,7 @@ test("local host leaf help is focused and avoids all native or account I/O", asy
   }
 });
 
-test("host install is login-free, verifies and atomically installs before execution, with token only on stdin", async () => {
+test("host install is login-free, passes verified temporary bytes to the native installer, with token only on stdin", async () => {
   const m = machine();
   const result = await m.capture();
   expect(result.code).toBe(0);
@@ -146,7 +186,7 @@ test("host install is login-free, verifies and atomically installs before execut
   ]);
   expect(m.files.get(binary)?.file).toBe(true);
   expect(m.calls[0]).toEqual({
-    program: binary,
+    program: expect.stringMatching(/armada-docker-host\..*\.tmp$/),
     args: ["install", "--server", "https://armada.example"],
     stdin: `${token}\n`,
   });
@@ -155,6 +195,18 @@ test("host install is login-free, verifies and atomically installs before execut
   expect(result.out + result.err).not.toContain(token);
   expect(result.out).not.toContain("privateCredential");
 });
+
+test.each(["fresh install", "offline upgrade"])(
+  "a preceding server's installer artifact supports a legacy %s",
+  async (action) => {
+    const m = machine(false);
+    if (action === "offline upgrade") m.existing({ ...registered, connected: false });
+    const result = await m.capture();
+    expect(result.code).toBe(0);
+    expect(result.out).toContain("Docker host connected.");
+    expect(result.inputReads).toBe(1);
+  },
+);
 
 test("digest mismatch cannot replace or execute an unregistered existing binary", async () => {
   const m = machine();
@@ -192,7 +244,7 @@ test.each([true, false])(
       const execute = m.native.execute;
       m.native.execute = async (program, args, stdin) => {
         const result = await execute(program, args, stdin);
-        if (args.includes("restart")) m.existing(registered);
+        if (args.includes("--restart")) m.existing(registered);
         return result;
       };
     }
@@ -211,8 +263,8 @@ test.each([true, false])(
     if (online) expect(m.files.get(binary)).toBe(before);
     else
       expect(m.calls).toContainEqual({
-        program: "systemctl",
-        args: ["--user", "restart", "armada-docker-host.service"],
+        program: expect.stringMatching(/armada-docker-host\..*\.tmp$/),
+        args: ["upgrade", "--server", "https://armada.example", "--restart"],
       });
     expect(m.calls.some((call) => call.args[0] === "install")).toBe(false);
   },
@@ -292,6 +344,15 @@ test.each([
   },
 );
 
+test.each([false, true])("uninstall uses one lifecycle owner with a lifecycle-aware binary=%s", async (lifecycle) => {
+  const m = machine();
+  m.existing(lifecycle ? Object.assign({}, registered, { lifecycle: true }) : registered);
+  const result = await m.capture(["host", "uninstall"]);
+  expect(result.code).toBe(0);
+  expect(result.out).toContain("Uninstalled Armada Docker host.");
+  expect(m.calls.at(-1)?.args).toEqual(lifecycle ? ["uninstall", "--expect-host", hostId] : ["uninstall"]);
+});
+
 test("another server installs independently; ambiguous uninstall lists without removing either instance", async () => {
   const m = machine();
   m.existing(registered);
@@ -300,7 +361,7 @@ test("another server installs independently; ambiguous uninstall lists without r
   m.native.listInstances = async () => [];
   expect((await m.capture(["host", "install", "--server", other])).code).toBe(0);
   const install = m.calls.find((c) => c.args[0] === "install");
-  expect(install?.program).toBe(`${binary}@${suffix}`);
+  expect(install?.program).toStartWith(`${binary}@${suffix}.`);
   expect(install?.args).toEqual(["install", "--server", other, "--instance", suffix]);
   expect(m.calls.some((c) => c.args[0] === "upgrade")).toBe(false);
   m.native.listInstances = async () => [`armada-docker-host@${suffix}`];

@@ -289,7 +289,9 @@ failure or deferred offer preserves the cutoff.
 | Staged, jobs draining | Continue authenticated polls on the idle interval while long-running builds or launches finish. Ignore newly offered jobs and wait for admitted operations to save receipts and attempt to report results. Expiry and retention reconciliation continues independently of the short heartbeats. | In-flight work continues on the old binary. Poll failures during the drain leave admission fenced and the next poll retries the heartbeat. Unacknowledged results can be replayed from durable receipts. |
 | Staged, drain complete | Start a fresh authenticated poll with admission fenced. A matching offer dispatches the supervisor. | A poll started during the drain cannot authorize the restart. |
 | Staged | Offer recheck transport failure, denied or changed offer, disabled updates, or supervisor launch failure → cancelled. | The staged binary remains uninstalled. The old daemon resumes ordinary polling, subject to server authorization. The same release is eligible again after five minutes, provided it remains above the actual trial cutoff. An ambiguous manager reply leaves the transition with the supervisor if it owns the unit. |
-| Staged | The supervisor validates both binaries, persists and reloads the recovery drop-in, then claims the trial → starting. | Starting, a unique trial ID, and the attempted version are durable before stopping the old service. A failure before the claim defers staging and starts the old service. |
+| Staged or starting | A verified manual upgrade claims the lifecycle after reading its download and rechecks the journal. | A refused upgrade sends no stop, start, or restart. If staging wins during preflight, the running daemon keeps draining. If the manual action wins, the daemon cannot stage or launch a supervisor during its service changes. |
+| Staged | The supervisor validates both binaries, persists and reloads the recovery drop-in, then claims the trial → starting. | Starting, a unique trial ID, and the attempted version are durable before stopping the old service. The original daemon keeps polling without admission until the supervisor stops it. |
+| Staged | Supervisor preflight cannot verify the backup, candidate, or recovery setup → cancelled. | The supervisor defers the attempt under the lifecycle claim without sending stop or restart. The original daemon resumes normal polling. |
 | Starting | Stop the drained service, authorize the candidate digest in the ownership marker, atomically replace the executable and start it. | The ownership marker accepts both verified digests across the executable rename. The candidate can reconcile and poll with admission fenced. A reboot or orphaned supervisor rolls back even if the server is unavailable. |
 | Starting | Failed start, no fresh matching health poll, revoked or withdrawn offer that prevents health, or interrupted trial → failed. | Rollback records both digests before the reverse rename, syncs the binary directory, then settles the ownership marker and journal. Recovery can repeat any unfinished step. The supervisor starts the old binary. A later offer above the attempted version can start another trial. |
 | Starting | Candidate exits immediately, exits after writing its first poll, or systemd restarts it → failed. | The supervisor rejects a stopped service or a changed invocation or nonzero restart count, even if an earlier process left a successful poll. |
@@ -298,6 +300,23 @@ failure or deferred offer preserves the cutoff.
 | No uninstall intent and no active trial | Uninstall records pending intent before probing. If the outcome is inconclusive, continue unregister and retry protocol negotiation as needed. | The daemon fences updates and uses no-dispatch polling after reboot until a protocol is known. An empty host can still be revoked. A host with work to drain keeps its state and retries negotiation. |
 | Pending uninstall intent | An older server rejects the no-dispatch capability probe → record legacy uninstall intent and use the existing unregister flow. | The intent cancels staging and blocks automatic updates across reboot and retries. The daemon keeps ordinary polls so the legacy server can finish its queued work and dispatch drain jobs. |
 | Cleanup-only uninstall intent | An older server rejects the capability probe after server rollback → retain the cleanup-only intent. | Preserve the local fence and installation. Restore a server that understands cleanup-only polls and retry uninstall. |
+
+The managed state directory provides one crash-released lifecycle claim per
+installation. Both installers delegate binary publication and service changes to
+the native command when the server advertises a lifecycle-aware artifact. When
+an older server supplies a legacy artifact, the CLI takes the same claim around
+the legacy install or offline restart. An updater journal or uninstall intent
+requires a compatible artifact. The current CLI also holds the claim while
+delegating uninstall to a legacy installed daemon. For a lifecycle-aware daemon,
+the CLI selects its executable under the claim and the native uninstall owns
+the intent and teardown claims. A manual upgrade holds the claim through service start,
+including a requested restart of an offline registration. The supervisor owns
+the same claim through the trial and any rollback. Reboot recovery acquires it
+before restoring the old binary and lets the start hook proceed for a live
+supervisor. Uninstall persists intent under the claim while the daemon is still
+available to drain, then reacquires it to disable the unit and remove the
+installation. Ordinary dispatch and daemon-side journal writers do not wait on
+the claim while a service-manager command could be waiting for daemon exit.
 
 Set `ARMADA_DOCKER_HOST_AUTO_UPDATE=0` in a systemd user override for the specific
 Armada host unit to disable automatic updates. Run `systemctl --user edit

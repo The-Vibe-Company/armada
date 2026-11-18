@@ -495,11 +495,13 @@ async function interruptedTrial(f: Awaited<ReturnType<typeof upgradeFixture>>) {
 }
 
 test.each([
+  "automatic staging during manual preflight",
   "artifact unavailable",
   "backup rename interrupted",
   "offer withdrawn",
   "poll failed",
   "supervisor unavailable",
+  "backup unavailable during supervisor preflight",
   "reboot before swap",
   "reboot after swap",
   "reboot before commit",
@@ -564,6 +566,38 @@ test.each([
         await recoverUpdate(f.store, undefined, { home: f.home, service: io.service });
       }
       expect(await readFile(f.binary, "utf8")).toBe(committed ? f.newBytes : f.oldBytes);
+    } else if (failure === "automatic staging during manual preflight") {
+      // Reading the downloaded path marks the preflight boundary after
+      // the old implementation's journal check. Finish real staging there.
+      const module = new URL("../src/service.ts", import.meta.url).pathname;
+      const manualIo = {
+        ...f.io,
+        get executable() {
+          const stage = Bun.spawnSync([
+            process.execPath,
+            "-e",
+            `import {automaticUpdate} from ${JSON.stringify(module)};
+            const state = await Bun.file(${JSON.stringify(join(f.directory, "state.json"))}).json();
+            const update = automaticUpdate(state, {home: ${JSON.stringify(f.home)}}, {
+              now: Date.now,
+              service: async (args) => args.includes("MainPID") ? String(process.pid) : "",
+              request: async (url) => url.endsWith("/install.json")
+                ? Response.json(${JSON.stringify({ version: offer, x64: f.hash(f.newBytes), arm64: f.hash(f.newBytes) })})
+                : new Response(${JSON.stringify(f.newBytes)}),
+            });
+            if (!await update.prepare(${JSON.stringify(offer)})) process.exit(1);`,
+          ]);
+          expect(stage.exitCode).toBe(0);
+          return f.executable;
+        },
+      };
+      await expect(upgradeService(f.store, f.state.server, manualIo)).rejects.toThrow(
+        "Automatic Docker host update in progress",
+      );
+      expect(f.events).toEqual([]);
+      expect(await readFile(f.binary, "utf8")).toBe(f.oldBytes);
+      expect(await updater.pollMode()).toBe("staged");
+      expect(await updater.confirm({ type: "poll-failed" })).toBe(false);
     } else if (failure === "artifact unavailable") {
       expect(await updater.prepare(offer)).toBe(false);
       releaseUnavailable = false;
@@ -581,7 +615,14 @@ test.each([
       );
     } else {
       expect(await updater.prepare(offer)).toBe(true);
-      if (failure === "supervisor unavailable") {
+      if (failure === "backup unavailable during supervisor preflight") {
+        await rm(`${f.binary}.previous`);
+        await superviseUpdate(f.store, undefined, f.io);
+        expect(f.events).toEqual([]);
+        expect(await readFile(f.binary, "utf8")).toBe(f.oldBytes);
+        expect(await updater.pollMode()).toBe("normal");
+        await writeFile(`${f.binary}.previous`, f.oldBytes, { mode: 0o700 });
+      } else if (failure === "supervisor unavailable") {
         expect(await updater.confirm({ type: "offer", version: offer })).toBe(true);
         expect(await updater.restart()).toBe(false);
       } else {
@@ -643,7 +684,10 @@ test.each([
     expect(await readFile(f.binary, "utf8")).toBe(expected);
 
     expect(await restarted.prepare(offer)).toBe(false);
-    now += 300_000;
+    now =
+      failure === "backup unavailable during supervisor preflight"
+        ? JSON.parse(await readFile(join(f.directory, "update.json"), "utf8")).retryAfter
+        : now + 300_000;
     if (trial) {
       // An actual attempt stays fenced even when a newer stage overwrites its journal.
       expect(await restarted.prepare(offer)).toBe(false);
