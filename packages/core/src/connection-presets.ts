@@ -1,7 +1,7 @@
 /**
  * The providers the dashboard offers when someone adds a model connection (#1483). Choosing one fixes which
  * credential kind is saved, so which agent can use it is shown, never asked. Known models and their public prices
- * come from the reviewed models.dev snapshot in `pricing/connection-catalog.json`; nothing is fetched at runtime.
+ * come from the generated connection projection of the vendored model catalog; nothing is fetched at runtime.
  * Browser-safe: no Node builtins.
  */
 import { validateAzureOpenAIAddress } from "./azure-endpoint.ts";

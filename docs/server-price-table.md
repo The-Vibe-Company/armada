@@ -8,10 +8,18 @@ this module alone does **not** meet the session-cost acceptance criteria.
 
 ## Maintenance and provenance
 
-Run `bun scripts/refresh-model-prices.ts` from the repository root, review the diff,
-and run `bun test packages/core/test/server-pricing.test.ts` before committing.
-The vendored subset includes exact Anthropic/OpenAI provider-model IDs, decimal
-USD/million rates, fetch time, and the SHA-256 of the source `api.json` bytes.
+Run `bun scripts/refresh-model-prices.ts` from the repository root to fetch one
+models.dev snapshot. Edit `packages/core/src/pricing/model-overlay.json` for
+harness model IDs, efforts, defaults, Morph endpoints and aliases, or reviewed
+vendor limit hints. Use `bun scripts/refresh-model-prices.ts --offline` to
+regenerate after overlay edits using the vendored snapshot.
+
+Review `model-catalog.json` and the generated projections alongside it, then run
+`bun test scripts/refresh-model-prices.test.ts packages/core/test/server-pricing.test.ts`.
+For an intentional change to model values, update the corresponding parity
+snapshot after reviewing the generated diff. Both pricing projections carry
+the same fetch time and SHA-256 of the source `api.json` bytes. Server pricing
+uses exact Anthropic/OpenAI IDs and decimal USD/million rates.
 No requests occur at launch or read time. There are no guessed aliases. Missing
 rates stay null. Catalogue complexity is retained in the legacy `unsupported`
 flag for provenance, not as a blanket veto on default token rates. The owner’s
