@@ -250,3 +250,70 @@ test.skipIf(process.platform !== "linux")(
     }
   },
 );
+
+/** The shipped `protected_path` check, taken from the collector itself rather than re-implemented. */
+function protectedPath(path: string) {
+  const definition = /^protected_path\(\) \{\n[\s\S]*?\n\}$/m.exec(OUTPUT_COLLECTOR)?.[0];
+  expect(definition).toBeDefined();
+  return Bun.spawnSync(["/bin/sh", "-c", `${definition}\nprotected_path "$1"`, "sh", path]).exitCode === 0;
+}
+
+test.skipIf(process.platform !== "linux")(
+  "the managed reader accepts only a root-owned, non-writable chain without symlinks",
+  () => {
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "outputs-"));
+    try {
+      // Root-owned on every Linux image: the shape of /opt/armada/runtime-bun/bun.
+      expect(protectedPath(realpathSync("/usr/bin/env"))).toBe(true);
+      const owned = join(root, "bun");
+      writeFileSync(owned, "", { mode: 0o555 });
+      expect(protectedPath(owned)).toBe(false);
+      const link = join(root, "link");
+      symlinkSync(realpathSync("/usr/bin/env"), link);
+      expect(protectedPath(link)).toBe(false);
+      expect(protectedPath(join(root, "missing"))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+const managedBun = [process.execPath, "/opt/armada/runtime-bun/bun"]
+  .map((path) => {
+    try {
+      return realpathSync(path);
+    } catch {
+      return undefined;
+    }
+  })
+  .find((path) => path !== undefined && process.platform === "linux" && protectedPath(path));
+
+test.skipIf(!managedBun)("a privileged exec collects through a protected managed Bun", () => {
+  const root = mkdtempSync(join(realpathSync(tmpdir()), "outputs-"));
+  try {
+    const outputs = join(root, "outputs");
+    mkdirSync(outputs);
+    writeFileSync(join(outputs, "memo.txt"), "document");
+    const managed = (script: string) =>
+      Bun.spawnSync(
+        [
+          "/bin/sh",
+          "-c",
+          guest(script.replaceAll("/opt/armada/runtime-bun/bun", "/armada-test-managed-bun"), {
+            uid: 0,
+            outputs,
+          }).replaceAll("/armada-test-managed-bun", shellQuote(managedBun!)),
+        ],
+        { env: { PATH: "/usr/bin:/bin" } },
+      );
+    const probe = managed(OUTPUT_COLLECTOR_MANAGED_PROBE);
+    expect(readCollectorProbeResult(probe.exitCode, probe.stdout.toString())).toBe(true);
+    const run = managed(OUTPUT_COLLECTOR);
+    expect(run.exitCode).toBe(0);
+    expect(
+      parseCollectorOutput(run.stdout.toString()).map((file) => [file.name, Buffer.from(file.bytes).toString()]),
+    ).toEqual([["memo.txt", "document"]]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
