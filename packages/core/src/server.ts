@@ -56,6 +56,8 @@ export { prepareLaunchWorkspace } from "./launch.ts";
 export {
   admitLaunchPlan,
   applyLaunchAccountDefaults,
+  type LaunchPlacement,
+  prepareLaunchPlan,
   resolveLaunchConnections,
   resolveLaunchSkills,
 } from "./launch-plan.ts";

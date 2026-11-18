@@ -1,4 +1,4 @@
-import { MODEL_ACCOUNT_WRITE_TIMEOUT_MS, VaultError } from "@armada/core";
+import { MODEL_ACCOUNT_WRITE_TIMEOUT_MS } from "@armada/core";
 import { createArmadaApiClient } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
 
@@ -13,19 +13,10 @@ export async function control<T>(
   signal?: AbortSignal,
 ): Promise<T> {
   const client = await createArmadaApiClient(auth);
-  try {
-    return await client.request<T>(`/api/v1/${route}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-      ...(signal
-        ? { signal }
-        : route === "creds/accounts/set" || route === "creds/set"
-          ? { signal: AbortSignal.timeout(MODEL_ACCOUNT_WRITE_TIMEOUT_MS) }
-          : {}),
-    });
-  } catch (error) {
-    if (error instanceof VaultError) throw error;
-    throw error;
-  }
+  const deadline =
+    signal ??
+    (route === "creds/accounts/set" || route === "creds/set"
+      ? AbortSignal.timeout(MODEL_ACCOUNT_WRITE_TIMEOUT_MS)
+      : undefined);
+  return client.control<T>(route, body, deadline);
 }

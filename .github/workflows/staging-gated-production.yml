@@ -1,8 +1,7 @@
 name: Pinned staging smoke
 
 on:
-  push:
-    branches: [main]
+  # Main pushes already start Release. Its completion is the sole automatic wakeup.
   workflow_dispatch:
   workflow_run:
     workflows: [Release]
@@ -110,7 +109,7 @@ jobs:
       - name: Report coalesced completion wakeup
         if: steps.evidence.outputs.reused == 'true'
         run: |
-          echo "::notice::Completion wakeup coalesced with successful newest-main deployment after Release completed."
+          echo "::notice::Completion wakeup coalesced with successful deployment and smoke of the live staging SHA."
           echo "### Neutral: completion wakeup coalesced; no new deployment" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         if: (steps.evidence.outputs.reused != 'true' && inputs.official_image == true)
@@ -148,7 +147,9 @@ jobs:
       - name: Install pinned deployment clients
         if: (steps.evidence.outputs.reused != 'true')
         run: npm install --global @railway/cli@5.71.0 vercel@65.14.0
-      - name: Migrate then deploy pinned server and dashboard
+      # Stamp the checked-out SHA in ordinary wakeup evidence. GitHub run metadata
+      # can describe an older main tip than the source resolved under the lock.
+      - name: Migrate then deploy pinned server and dashboard${{ github.event_name == 'workflow_run' && inputs.source_sha == '' && format(' ({0})', env.RELEASE_SHA) || '' }}
         if: (steps.evidence.outputs.reused != 'true')
         id: deployment
         run: bash .release-tools/scripts/release/deploy-production.sh

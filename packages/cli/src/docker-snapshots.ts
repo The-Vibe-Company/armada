@@ -23,12 +23,8 @@ export async function dockerSnapshotCommand(
   if (!org || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(org))
     throw new GoldenError("invalid_config", "Docker snapshots require --org UUID.");
   const client = await createArmadaApiClient(auth);
-  const post = (path: string, body: object) =>
-    client.request<Record<string, unknown>>(`/api/v1/docker/snapshots/${path}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ org, ...body }),
-    });
+  const post = (operation: Parameters<typeof client.dockerSnapshot>[0], body: object) =>
+    client.dockerSnapshot<Record<string, unknown>>(operation, { org, ...body });
   if (operation === "list") {
     if (args.positionals.length) throw new GoldenError("invalid_config", "golden list takes no name.");
     const data = await post("list", {});

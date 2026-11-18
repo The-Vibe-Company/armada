@@ -62,10 +62,7 @@ export async function operation(
     const org = single(args, "--org");
     if (org) uuid(org, "--org");
     const client = await createArmadaApiClient(auth);
-    const result = await client.request<{ id: string; status: "deleted" }>(
-      `/api/v1/sandboxes/${id}${org ? `?org=${encodeURIComponent(org)}` : ""}`,
-      { method: "DELETE" },
-    );
+    const result = await client.deleteSandbox<{ id: string; status: "deleted" }>(id, org);
     auth.out(flag(args, "--json") ? `${JSON.stringify(result)}\n` : `Deleted sandbox ${result.id}.\n`);
     return 0;
   }
