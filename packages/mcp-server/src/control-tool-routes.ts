@@ -10,7 +10,6 @@ export const CONTROL_TOOL_ROUTES: Readonly<Record<string, string>> = {
   "sandbox/report": "report",
   "sandbox/stop": "stop",
   "sandbox/extend": "extend",
-  "sandbox/delete": "delete",
   "sandbox/wait": "wait",
   "sandbox/exec": "exec",
   "sandbox/steer": "steer",

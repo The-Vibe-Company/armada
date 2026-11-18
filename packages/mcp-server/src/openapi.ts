@@ -53,6 +53,7 @@ const REST_TOOL_ROUTES: Readonly<Record<string, string>> = {
 const REST_RESPONSES: Readonly<Record<string, z.ZodType>> = {
   "launch/options": LAUNCH_OPTIONS_RESPONSE,
   "golden/list": GOLDEN_LIST_RESPONSE,
+  "sandbox/delete": SANDBOX_REST_CONTRACTS["sandbox/delete"].output,
   "sandbox/advice": SANDBOX_REST_CONTRACTS["sandbox/advice"].output,
   "sandbox/recovery": SANDBOX_REST_CONTRACTS["sandbox/recovery"].output,
   "golden/adopt": GOLDEN_ADOPTION_RESPONSE,
@@ -65,6 +66,10 @@ const REST_RESPONSES: Readonly<Record<string, z.ZodType>> = {
 const REST_ONLY: Readonly<
   Record<string, { description: string; input: { properties?: Record<string, unknown>; [key: string]: unknown } }>
 > = {
+  "sandbox/delete": {
+    description: SANDBOX_REST_CONTRACTS["sandbox/delete"].description,
+    input: requestJsonSchema(SANDBOX_REST_CONTRACTS["sandbox/delete"].input.extend({ org: z.string().optional() })),
+  },
   "sandbox/advice": {
     description: SANDBOX_REST_CONTRACTS["sandbox/advice"].description,
     input: requestJsonSchema(SANDBOX_REST_CONTRACTS["sandbox/advice"].input.extend({ org: z.string().optional() })),
