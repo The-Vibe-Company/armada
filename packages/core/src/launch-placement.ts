@@ -92,6 +92,7 @@ async function admitGoldenLaunch(
   return provider
     .fork({
       from: snapshot,
+      ...(golden.provider === "modal" ? { idempotencyKey: id } : {}),
       ...(machineSize.effective ? { size: machineSize.effective } : {}),
       noEnv: true,
       env: forkEnv(),

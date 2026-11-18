@@ -2092,6 +2092,30 @@ test("host_full fork refusal remains definite and does not publish or clean up a
   expect(world.deleted).toEqual([]);
 });
 
+test("Modal golden forks receive the allocated Armada sandbox UUID as their provider key", async () => {
+  const world = setup({
+    boundCredentials: true,
+    golden: {
+      ...golden("org"),
+      provider: "modal",
+      providerSandboxId: "modal-builder",
+      providerSnapshotId: "modal-image",
+      modal: { workspace: "ws", environment: "main", appId: "app" },
+    },
+  });
+  const id = "44444444-4444-4444-8444-444444444444";
+  const key = spyOn(world.provider, "fork");
+  const result = await launchSandbox(
+    { ...world.provider, id: "modal" },
+    world.stores,
+    owner,
+    { golden: "web", harness: "codex" },
+    { newId: () => id },
+  );
+  expect(result.sandbox.id).toBe(id);
+  expect(key).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: id }));
+});
+
 test("Modal launch attributes readiness intervals in order and excludes the prompt", async () => {
   const world = setup({
     boundCredentials: true,

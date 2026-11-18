@@ -512,23 +512,30 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       ...(imageId ? { imageId } : {}),
       ...(sourceImage ? { sourceImage } : {}),
     });
-    let observed = row;
-    try {
+    const needsBoot = (row: Machine) => {
       if (
         row.golden !== golden ||
+        (!golden && row.generation !== 1) ||
         Boolean(row.commonRuntime) !== Boolean(!golden && options.commonRuntime) ||
         row.size !== size ||
         row.imageId !== imageId ||
         row.sourceImage?.scopeKey !== sourceImage?.scopeKey ||
         row.sourceImage?.name !== sourceImage?.name
       )
-        throw refusal("conflict", "Idempotency key belongs to another launch.");
+        throw refusal("conflict", "Idempotency key belongs to another launch or generation.");
       assertMachineSource(row);
-      if (row.phase === "active" || row.phase === "stopped") return sandboxInfo(row);
+      if (row.phase === "active" || row.phase === "stopped") return false;
       if (!["reserved", "creating", "booting"].includes(row.phase))
         throw refusal("conflict", "Launch is in a terminal or checkpoint phase.");
-      return await store.lease(row.info.id, (current, save) => {
+      return true;
+    };
+    let observed = row;
+    try {
+      if (!needsBoot(row)) return sandboxInfo(row);
+      return await store.lease(row.info.id, async (current, save) => {
         observed = current;
+        // A lifecycle operation may have changed the phase or generation before we acquired the lease.
+        if (!needsBoot(current)) return sandboxInfo(current);
         return create(current, save, "env" in request ? (request.env ?? {}) : {});
       });
     } catch (error) {
@@ -2150,7 +2157,6 @@ async function* listModalInventory(
   }
 }
 
-/** Settles with `work`, or rejects with the signal's reason as soon as the caller aborts. */
 function abortable<T>(work: Promise<T>, signal: AbortSignal | undefined) {
   if (!signal) return work;
   signal.throwIfAborted();

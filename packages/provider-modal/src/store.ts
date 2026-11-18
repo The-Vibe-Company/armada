@@ -70,8 +70,8 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
         [key, scope.orgId, scope.userId, scope.visibility, machine.info.id, requestKey, JSON.stringify(machine)],
       );
       const result = await sql.query<{ record: Machine }>(
-        `select record from public.modal_machines where scope=$1 and request_key=$2`,
-        [key, requestKey],
+        `select record from public.modal_machines where scope=$1 and request_key=$2 and owner_id=$3`,
+        [key, requestKey, scope.userId],
       );
       const row = result.rows[0];
       if (!row) throw refusal("conflict", "Launch reservation failed.");
