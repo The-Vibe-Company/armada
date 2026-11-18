@@ -1110,6 +1110,7 @@ test.each([
       if (watching) {
         jest.advanceTimersByTime(10_000);
         await renewed.promise;
+        assertAlive();
       }
       return start(...args);
     };
