@@ -938,6 +938,8 @@ test("runtime self completion needs no child access and retries failed stop/dele
     sql,
     encryptionKey: key,
     scopedMcpUrl: "https://armada.example/api/v1/orchestrator-tools/mcp",
+    // This stand-in runtime never answers; output capture has its own tests (docker-outputs).
+    outputs: { reader: () => ({}) },
     providers: {
       resolve: async () => {
         throw Error("No provider I/O on self report");

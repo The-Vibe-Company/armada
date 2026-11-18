@@ -8,6 +8,7 @@ import {
   type Sql,
   workPreservationError,
 } from "@armada/core/server";
+import { captureFinalOutputs } from "./sandbox-outputs.ts";
 
 function closedFailure(stage: string, reason: string, diagnostic?: ReturnType<typeof workPreservationError>): string {
   return `${stage}_${reason}${diagnostic ? `_${diagnostic.errorClass === reason ? "" : `${diagnostic.errorClass}_`}${diagnostic.providerStatus === null ? "no_status" : `http_${diagnostic.providerStatus}`}` : ""}`;
@@ -66,8 +67,49 @@ export function recordStopDispatch(sandboxId: string, providerSandboxId: string,
   }
 }
 
-/** Never return command output or SDK errors: archives may contain credentials. */
+/** Never return command output or SDK errors: archives may contain credentials.
+ * Every stop admission runs this before provider stop, so it also takes the final
+ * declared-output snapshot while compute is still active (after quiesce). */
 export async function preserveBeforeStop(
+  sql: Sql,
+  provider: Provider,
+  id: string,
+  providerId: string,
+  source: StopSource = "unspecified",
+): Promise<"pending" | void> {
+  const started = Date.now();
+  let outcome: "pending" | void;
+  try {
+    outcome = await preserveGitWork(sql, provider, id, providerId, source);
+  } catch (error) {
+    await finalOutputs(sql, provider, id, started);
+    throw error;
+  }
+  // A pending stop retries later; its final capture runs on that pass.
+  if (outcome !== "pending") await finalOutputs(sql, provider, id, started);
+  return outcome;
+}
+
+/** Git preservation and final output capture share one pre-stop budget so callers'
+ * per-item deadlines (30 s lifecycle worker) still reach provider stop dispatch. */
+const PRE_STOP_BUDGET_MS = 22_000;
+const FINAL_OUTPUT_MAX_MS = 12_000;
+
+async function finalOutputs(sql: Sql, provider: Provider, id: string, started: number): Promise<void> {
+  const remaining = Math.min(FINAL_OUTPUT_MAX_MS, PRE_STOP_BUDGET_MS - (Date.now() - started));
+  if (remaining < 1_000) {
+    console.warn(JSON.stringify({ event: "sandbox_output_final_capture_skipped", sandboxId: id }));
+    return;
+  }
+  try {
+    await captureFinalOutputs(sql, provider, id, { signal: AbortSignal.timeout(remaining) });
+  } catch {
+    // The previous snapshot stays readable; never block a stop on optional deliverables.
+    console.warn(JSON.stringify({ event: "sandbox_output_final_capture_failed", sandboxId: id }));
+  }
+}
+
+async function preserveGitWork(
   sql: Sql,
   provider: Provider,
   id: string,
