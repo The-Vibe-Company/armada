@@ -1791,6 +1791,32 @@ function expiryApi(now: () => number, starting: (id: string) => boolean = () => 
   };
 }
 
+test("an ambiguous expiry launch reports bounded HTTP correlation without replaying the launch", async () => {
+  const requestId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  for (const header of [requestId, "secret-header"]) {
+    const fake = lifecycleFixture("none", (call) => {
+      if (call.path !== "sandbox/launch" || call.body.ttlSeconds !== 180) return undefined;
+      fake.advance(112_848);
+      return Response.json(
+        { error: { code: "outcome_unknown", message: "secret-body" } },
+        { status: 503, headers: { "x-request-id": header, "server-timing": "secret-timing" } },
+      );
+    });
+    expect(await fake.run([selected], ["--expiry"])).toBe(false);
+    expect(fake.calls.filter((call) => call.path === "sandbox/launch" && call.body.ttlSeconds === 180)).toHaveLength(1);
+    expect(fake.lines.filter((line) => line !== boatNotice).map((line) => JSON.parse(line))).toContainEqual({
+      case: 0,
+      lane: "expiry",
+      step: "expiry_launch",
+      pass: false,
+      code: "outcome_unknown",
+      elapsedMs: 112_848,
+      launchResponse: { httpStatus: 503, timeoutMs: 120_000, ...(header === requestId ? { requestId } : {}) },
+    });
+    expect(fake.lines.join("")).not.toMatch(/secret-(header|body|timing)/);
+  }
+});
+
 test("independent sandbox lanes run concurrently: the expiry wait overlaps every case's lifecycle, receipts stay attributable", async () => {
   const fake = lifecycleFixture("none", (call) => expiry(call));
   const expiry = expiryApi(fake.io.now);
