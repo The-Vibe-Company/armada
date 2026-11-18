@@ -4593,6 +4593,9 @@ export type Database = {
           external_ref: string | null;
           outputs_checked_at: string | null;
           outputs_published_scan: string | null;
+          outputs_failure_reasons: string[];
+          outputs_probe_at: string | null;
+          outputs_collector_supported: boolean;
           pull_request_source: Json | null;
           pull_request_scan: Json | null;
           pull_requests: Json;
@@ -4664,6 +4667,9 @@ export type Database = {
           external_ref?: string | null;
           outputs_checked_at?: string | null;
           outputs_published_scan?: string | null;
+          outputs_failure_reasons?: string[];
+          outputs_probe_at?: string | null;
+          outputs_collector_supported?: boolean;
           pull_request_source?: Json | null;
           pull_request_scan?: Json | null;
           pull_requests?: Json;
@@ -4735,6 +4741,9 @@ export type Database = {
           external_ref?: string | null;
           outputs_checked_at?: string | null;
           outputs_published_scan?: string | null;
+          outputs_failure_reasons?: string[];
+          outputs_probe_at?: string | null;
+          outputs_collector_supported?: boolean;
           pull_request_source?: Json | null;
           pull_request_scan?: Json | null;
           pull_requests?: Json;

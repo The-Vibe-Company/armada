@@ -5,6 +5,8 @@ import {
   GoldenCreateService,
   type GoldenRecord,
   OUTPUT_COLLECTOR,
+  OUTPUT_COLLECTOR_PROBE,
+  OUTPUT_COLLECTOR_PROBE_MARKER,
   preserveWork,
   scanGoldenSandbox,
 } from "@armada/core/server";
@@ -1272,4 +1274,18 @@ test("declared outputs are read from live compute by the fixed collector and nev
   expect(await stopped.provider.readOutputs?.({ sandboxId: ID })).toBeNull();
   expect(stopped.requests.map((r) => r.method)).toEqual(["GET"]);
   expect(stopped.remaining()).toBe(0);
+});
+
+test("the capability probe treats a Bun that exits 0 without the probe answer as unsupported", async () => {
+  const reply = (stdout: string) =>
+    fakeBoat(
+      { body: { ok: true, sandbox: sandbox({ state: "ready" }) } },
+      { body: { ok: true, type: "command.finished", success: true, exitCode: 0, stdout, stderr: "", timedOut: false } },
+    );
+  const ready = reply(`${OUTPUT_COLLECTOR_PROBE_MARKER}\n`);
+  expect(await ready.provider.probeOutputs?.({ sandboxId: ID })).toBe(true);
+  expect((ready.requests.at(-1)?.body as { command?: string } | undefined)?.command).toBe(OUTPUT_COLLECTOR_PROBE);
+  await expect(reply("Bun CLI help\n").provider.probeOutputs?.({ sandboxId: ID })).rejects.toMatchObject({
+    reason: "collector_unsupported",
+  });
 });

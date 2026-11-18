@@ -463,7 +463,7 @@ function command(
           continue; // Never forward private SSH stderr, even build-looking records.
         }
         const match =
-          /^ARMADA_BUILD_FAILURE (checkout|bun|chromium|harness|skillpack|init|ownership|credential_cleanup|inline_scan) ([0-9]{1,3})(?: ([0-9]{1,2}))?$/.exec(
+          /^ARMADA_BUILD_FAILURE (checkout|bun|chromium|harness|skillpack|init|ownership|output_collector|credential_cleanup|inline_scan) ([0-9]{1,3})(?: ([0-9]{1,2}))?$/.exec(
             line,
           );
         if (match) {
@@ -551,9 +551,11 @@ function command(
                     : `Clone failed (exit ${exitCode ?? code ?? "unknown"}). Check the requested branches and GitHub access, then rebuild.`
                   : phase === "init" && commandIndex && Number(commandIndex) > 0
                     ? `Init command ${commandIndex} exited ${exitCode ?? code ?? "unknown"}. Correct the command, then rebuild.`
-                    : phase === "inline_scan"
-                      ? "Secret scan found token-shaped material; remove credentials from the repositories and builder before rebuilding."
-                      : `Build failed during ${phase} (${reason}). Check connectivity, permissions and package availability.`,
+                    : phase === "output_collector"
+                      ? "The sandbox output collector could not start. Verify the managed Bun executable, Linux glibc and /proc/self/fd before rebuilding."
+                      : phase === "inline_scan"
+                        ? "Secret scan found token-shaped material; remove credentials from the repositories and builder before rebuilding."
+                        : `Build failed during ${phase} (${reason}). Check connectivity, permissions and package availability.`,
               ...(phase === "skillpack" && exitCode === "98"
                 ? { safeReason: "skillpack_integrity_failed" as const }
                 : {}),

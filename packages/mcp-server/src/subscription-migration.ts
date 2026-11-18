@@ -151,9 +151,9 @@ export function createSubscriptionMigration(
       // rotations when possible; Modal stop publishes its private checkpoint.
       await recheck(source);
       // This stop bypasses preserveBeforeStop; stopped workspaces are never read for outputs.
-      await captureFinalOutputs(sql, target.provider, source.id, { signal: AbortSignal.timeout(10_000) }).catch(() => {
-        console.warn(JSON.stringify({ event: "sandbox_output_final_capture_failed", sandboxId: source.id }));
-      });
+      await captureFinalOutputs(sql, target.provider, source.id, { signal: AbortSignal.timeout(10_000) }).catch(
+        () => {},
+      );
       try {
         await target.provider.stop({ sandboxId: target.providerSandboxId });
       } catch (error) {

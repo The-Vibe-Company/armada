@@ -74,6 +74,14 @@ export function createRuntimeProvider(
       : {}),
     // Declared outputs are a fixed host read (Boat command API, Modal container),
     // never a runner operation, so enrolled runtimes publish outputs like native sandboxes.
+    ...(host.probeOutputs
+      ? {
+          async probeOutputs(request: Parameters<NonNullable<Provider["probeOutputs"]>>[0]) {
+            target(request.sandboxId);
+            return host.probeOutputs!(request);
+          },
+        }
+      : {}),
     ...(host.readOutputs
       ? {
           async readOutputs(request: Parameters<NonNullable<Provider["readOutputs"]>>[0]) {

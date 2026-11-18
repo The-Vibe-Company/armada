@@ -35,7 +35,7 @@ import {
   getLaunchTiming,
   getSandbox,
   getSandboxMetadata,
-  type SandboxDetailRow,
+  type SandboxDetail,
 } from "@/lib/data/sandboxes";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { displayUser, listMemberships, memberDirectory, requireViewer, type Viewer } from "@/lib/data/viewer";
@@ -395,7 +395,7 @@ function DockerSandbox({
   host,
   launchFact,
 }: {
-  sandbox: SandboxDetailRow;
+  sandbox: SandboxDetail;
   viewer: Viewer;
   controls: DockerSandboxControls;
   org: string;

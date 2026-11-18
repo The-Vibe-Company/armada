@@ -2,6 +2,7 @@ import {
   type CredentialKind,
   LAUNCH_STAGES,
   type LaunchTiming,
+  type Sandbox,
   type SandboxCost,
   type SandboxListMetadata,
   summarizeLaunch,
@@ -41,8 +42,25 @@ function logSkipped(skipped: readonly SkippedSandboxRow[]) {
     console.error(`Sandbox list row left out: ${row.reason} does not match the contract (id ${row.id ?? "unknown"}).`);
 }
 
+export type SandboxDetail = Omit<
+  Sandbox,
+  | "docker_retention_deadline"
+  | "external_ref"
+  | "outputs_checked_at"
+  | "outputs_published_scan"
+  | "outputs_failure_reasons"
+  | "outputs_probe_at"
+  | "outputs_collector_supported"
+  | "pull_request_source"
+  | "pull_request_scan"
+  | "pull_request_reports"
+  | "pull_request_check_after"
+  | "pull_request_merge_proof"
+  | "stop_when_work_merged"
+>;
+
 /** The interior row. Row level security returns it only to its owner or a current organization admin. */
-export async function getSandbox(supabase: Supabase, id: string) {
+export async function getSandbox(supabase: Supabase, id: string): Promise<SandboxDetail | null> {
   const selected = await selectedOrganization();
   if (!selected) return null;
   const { data, error } = await supabase
@@ -54,8 +72,6 @@ export async function getSandbox(supabase: Supabase, id: string) {
   if (error) throw new Error(error.message);
   return data;
 }
-
-export type SandboxDetailRow = NonNullable<Awaited<ReturnType<typeof getSandbox>>>;
 
 /**
  * The kind of each readable account among `ids`, by id. Row level security returns an org account to its members and a
