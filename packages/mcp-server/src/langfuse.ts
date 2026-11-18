@@ -133,6 +133,7 @@ interface ExportJob {
   runtime_ack: string | null;
   terminal_status: PromptEvent["status"];
   observed_ms: number;
+  waiting_for_history: boolean;
   config_enc: Uint8Array<ArrayBuffer> | null;
   content_mode: string | null;
   usage_turns: TurnTokenUsage[] | null;
@@ -147,7 +148,7 @@ export function createLangfuse(
   async function history(
     job: ExportJob,
     signal: AbortSignal,
-  ): Promise<{ events: AgentEvent[]; mutablePromptTime?: boolean } | null> {
+  ): Promise<{ events: AgentEvent[]; nativeProvider?: string } | null> {
     if (job.runtime_ack === null) {
       const { provider, providerSandboxId } = await nativeProviderFor(job.sandbox_id);
       if (providerSandboxId !== job.provider_sandbox_id) return null;
@@ -156,7 +157,7 @@ export function createLangfuse(
       signal.throwIfAborted();
       return {
         events: read.events.filter((e) => e.promptId === job.prompt_id),
-        mutablePromptTime: provider.id === "boat",
+        nativeProvider: provider.id,
       };
     }
     // Bound archive memory before fetching ciphertext.
@@ -180,12 +181,17 @@ export function createLangfuse(
     return { events };
   }
 
-  async function exportTurn(job: ExportJob, signal: AbortSignal): Promise<"exported" | "failed" | "dropped"> {
+  async function exportTurn(
+    job: ExportJob,
+    signal: AbortSignal,
+  ): Promise<"exported" | "failed" | "dropped" | "pending"> {
     if (!job.config_enc) return "dropped";
     const evidence = await history(job, signal);
     if (!evidence) return "dropped";
-    const { events, mutablePromptTime } = evidence;
+    const { events, nativeProvider } = evidence;
     const terminal = events.findLast((e): e is PromptEvent => e.kind === "prompt" && isFinalPromptStatus(e.status));
+    // The native Modal runner can answer getPrompt before its journal flush commits.
+    if (nativeProvider === "modal" && !terminal && job.waiting_for_history) return "pending";
     const turnEvents = events.filter((e) => e.kind !== "prompt" || !isFinalPromptStatus(e.status));
     const outcome = job.runtime_ack === null ? observedPromptOutcome(job.terminal_status, job.prompt_id, events) : null;
     turnEvents.push({
@@ -194,7 +200,7 @@ export function createLangfuse(
       promptId: job.prompt_id,
       text: "",
       ...terminal,
-      at: mutablePromptTime ? job.observed_ms : terminal?.at || job.observed_ms,
+      at: nativeProvider === "boat" ? job.observed_ms : terminal?.at || job.observed_ms,
       status: outcome && outcome.state !== "running" ? outcome.state : job.terminal_status,
       ...(outcome?.state === "failed" && job.terminal_status === "finished" ? { reason: outcome.reason } : {}),
     });
@@ -242,6 +248,7 @@ export function createLangfuse(
           from candidate c where j.sandbox_id=c.sandbox_id and j.prompt_id=c.prompt_id returning j.*
         )
         select j.*,extract(epoch from j.observed_at)::double precision*1000 as observed_ms,
+          j.observed_at>clock_timestamp()-interval '60 seconds' as waiting_for_history,
           c.config_enc,c.content_mode,s.usage_turns->'turns' as usage_turns
         from claimed j join public.sandboxes s on s.id=j.sandbox_id
         left join public.org_langfuse c on c.org_id=j.org_id and c.enabled and s.org_id=j.org_id`,
@@ -251,6 +258,13 @@ export function createLangfuse(
     if (!job) return false;
     const outcome = await exportTurn(job, signal).catch(() => "failed");
     signal.throwIfAborted(); // On shutdown or tick timeout, let the durable lease expire.
+    if (outcome === "pending") {
+      await sql.query(
+        "update public.langfuse_turn_exports set lease_id=null,lease_until=now()+interval '2 seconds' where sandbox_id=$1 and prompt_id=$2 and lease_id=$3::uuid",
+        [job.sandbox_id, job.prompt_id, lease],
+      );
+      return true;
+    }
     await sql.query(
       `with settled as (
         update public.langfuse_turn_exports set completed_at=clock_timestamp(),lease_id=null,lease_until=null

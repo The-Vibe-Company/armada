@@ -182,7 +182,12 @@ test("native settlement exports once and a new server reads only its organizatio
     }));
     const response = await route(new Request(`https://armada.test/api/v1/orgs/${orgId}/langfuse`));
     if (!response) throw Error("missing Langfuse response");
-    return (await response.json()) as { lastExportAt: string | null };
+    return (await response.json()) as {
+      enabled: boolean;
+      content_mode?: string;
+      counters: { exported: number; failed: number; dropped: number };
+      lastExportAt: string | null;
+    };
   };
   const beforeFailure = await read(people.org);
   expect(beforeFailure).toEqual({
@@ -203,7 +208,7 @@ test("native settlement exports once and a new server reads only its organizatio
     enabled: false,
     content_mode: "full",
     counters: { exported: 1, failed: 1, dropped: 1 },
-    lastExportAt: beforeFailure?.lastExportAt,
+    lastExportAt: beforeFailure.lastExportAt,
   });
   await db.query("select public.enqueue_webhook_turn($1,'settled_while_disabled','finished')", [id]);
   await db.query("update org_langfuse set enabled=true where org_id=$1", [people.org]);
@@ -214,6 +219,52 @@ test("native settlement exports once and a new server reads only its organizatio
     counters: { exported: 0, failed: 0, dropped: 0 },
     lastExportAt: null,
   });
+});
+
+test("native Modal export waits for the terminal journal event after a live receipt", async () => {
+  const { db, people } = await database();
+  const id = crypto.randomUUID();
+  await db.query(
+    `with source as (
+       insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,
+          modal_workspace,modal_environment,modal_app_id,config)
+       values($2,$3,'modal-export','private','modal','modal-master','modal-image','workspace','main','app',
+          '{"repos":[{"url":"https://github.com/example/web.git","branch":"main","dir":"web"}],"init":[]}')
+       returning id
+     )
+     insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status,task_prompt_id)
+     select $1,id,$2,$3,'modal','modal_export','codex','ready','turn' from source`,
+    [id, people.org, people.owner],
+  );
+  await db.query("insert into org_langfuse(org_id,enabled,content_mode,config_enc) values($1,true,'full',$2)", [
+    people.org,
+    await encryptConfig(),
+  ]);
+  let history = events.slice(0, 1);
+  const provider = {
+    id: "modal",
+    getPrompt: async () => ({ promptId: "turn", status: "failed", done: true }),
+    events: async () => ({ events: history, cursor: "native", hasMore: false }),
+  } satisfies Pick<Provider, "id" | "getPrompt" | "events">;
+  const signal = new AbortController().signal;
+  await createNativeWebhookPrompts(db, async () => provider).reconcileOne(signal);
+  const payloads: string[] = [];
+  const exporter = createLangfuse(db, key, async () => ({ provider, providerSandboxId: "modal_export" }), (async (
+    _url,
+    init,
+  ) => {
+    payloads.push(String(init?.body));
+    return new Response(null, { status: 200 });
+  }) as typeof fetch);
+
+  expect(await exporter.reconcileOne(signal)).toBe(true);
+  expect(payloads).toEqual([]);
+  expect(await exporter.reconcileOne(signal)).toBe(false);
+  history = events;
+  await db.query("update langfuse_turn_exports set lease_until=now()-interval '1 second' where sandbox_id=$1", [id]);
+  expect(await exporter.reconcileOne(signal)).toBe(true);
+  expect(payloads).toHaveLength(1);
+  expect(payloads[0]).toContain("customer_reply");
 });
 
 test("worker exports the persisted usage envelope and reconstructed archive through OTLP", async () => {
