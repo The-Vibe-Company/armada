@@ -23,16 +23,22 @@ interface GoldenLaunchPlacement
   allocationTtlSeconds(ttlSeconds: number, extensionHeadroom: number, privateParent: boolean): number;
 }
 
-function allocationTtlFor(provider: SandboxProviderId): GoldenLaunchPlacement["allocationTtlSeconds"] {
-  return (ttlSeconds, extensionHeadroom, privateParent) =>
-    privateParent
-      ? ttlSeconds
-      : Math.min(
-          PROVIDER_LIMITS[provider].maxTtlSeconds,
-          ttlSeconds +
-            SANDBOX_STOP_MARGIN_SECONDS +
-            (HOST_CAPABILITIES[provider].reserveExtensionHeadroom ? extensionHeadroom : 0),
-        );
+// Plain function values keep this table free of top-level calls, so the bundler can drop it (and the
+// server-only admission below) from consumers of the browser-safe entry point, such as the GitHub broker.
+function allocationTtlFor(
+  provider: SandboxProviderId,
+  ttlSeconds: number,
+  extensionHeadroom: number,
+  privateParent: boolean,
+): number {
+  return privateParent
+    ? ttlSeconds
+    : Math.min(
+        PROVIDER_LIMITS[provider].maxTtlSeconds,
+        ttlSeconds +
+          SANDBOX_STOP_MARGIN_SECONDS +
+          (HOST_CAPABILITIES[provider].reserveExtensionHeadroom ? extensionHeadroom : 0),
+      );
 }
 
 export const goldenLaunchPlacements: Readonly<Record<SandboxProviderId, GoldenLaunchPlacement>> = {
@@ -41,12 +47,14 @@ export const goldenLaunchPlacements: Readonly<Record<SandboxProviderId, GoldenLa
     runtimeDefault: (options, harness) =>
       options.boatRuntimeDefault ?? (harness === "opencode" ? options.boatEndpointRuntime : undefined),
     endpointRuntime: (options) => options.boatEndpointRuntime,
-    allocationTtlSeconds: allocationTtlFor("boat"),
+    allocationTtlSeconds: (ttlSeconds, extensionHeadroom, privateParent) =>
+      allocationTtlFor("boat", ttlSeconds, extensionHeadroom, privateParent),
   },
   modal: {
     admit: admitGoldenLaunch,
     runtimeDefault: (options) => options.modalRuntimeDefault,
-    allocationTtlSeconds: allocationTtlFor("modal"),
+    allocationTtlSeconds: (ttlSeconds, extensionHeadroom, privateParent) =>
+      allocationTtlFor("modal", ttlSeconds, extensionHeadroom, privateParent),
   },
 };
 
