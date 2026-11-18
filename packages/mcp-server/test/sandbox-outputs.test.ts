@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import type { OutputFile, Provider, Sql } from "@armada/core/server";
 import { captureFinalOutputs, createSandboxOutputs, drainFinalOutputs } from "../src/sandbox-outputs.ts";
+import { startServerWorkers } from "../src/server-workers.ts";
 import { preserveBeforeStop } from "../src/work-preservation.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 
@@ -448,4 +449,62 @@ test("an in-flight sample still publishes when the newer final capture fails", a
   const response = await routeFor(service, people.owner, people.org)(new Request(url));
   expect(response?.status).toBe(200);
   expect(await response?.text()).toBe("draft");
+});
+
+test("access revoked while a snapshot is read never receives its metadata or bytes", async () => {
+  const { db, people, id, sql } = await fixture({ boatId: "revoked_fixture" });
+  const { state, provider } = disks();
+  state.live = [file("memo.pdf", "document")];
+  expect(await sample(createSandboxOutputs(sql, KEY, async () => provider))).toBe(true);
+  // Membership ends between the entry check and the response (after the snapshot query).
+  let revoke = false;
+  const revoking: Sql = {
+    query: async (q, p) => {
+      const result = await db.query(q, p);
+      if (revoke && q.includes("from public.sandbox_outputs"))
+        await db.query(`delete from members where org_id=$1 and user_id=$2`, [people.org, people.owner]);
+      return result as never;
+    },
+  };
+  const route = routeFor(
+    createSandboxOutputs(revoking, KEY, async () => provider),
+    people.owner,
+    people.org,
+  );
+  const url = `https://armada.example/api/v1/sandboxes/${id}/outputs`;
+  expect((await route(new Request(`${url}/memo.pdf`)))?.status).toBe(200);
+  revoke = true;
+  expect((await route(new Request(`${url}/memo.pdf`)))?.status).toBe(404);
+  await db.query(`insert into members(org_id,user_id,role) values($1,$2,'member')`, [people.org, people.owner]);
+  expect((await route(new Request(url)))?.status).toBe(404);
+});
+
+test("worker shutdown finishes while a cancelled sample's provider read is still unresolved", async () => {
+  const { db, id, sql } = await fixture({ boatId: "stalled_fixture" });
+  const { state, provider } = disks();
+  state.live = [file("memo.txt", "late")];
+  let release = () => {};
+  state.hold = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const reading = new Promise<void>((resolve) => {
+    state.entered = resolve;
+  });
+  const idle = { reconcileOne: async () => false, drain: async () => {} };
+  const workers = startServerWorkers(
+    { runOne: async () => false, reconcileOne: async () => 0 } as never,
+    idle,
+    () => {},
+    undefined,
+    undefined,
+    [createSandboxOutputs(sql, KEY, async () => provider)],
+  );
+  await reading;
+  workers.stop();
+  // Resolves although the provider promise is still pending: the cancelled read is fenced.
+  await workers.done;
+  release();
+  await Promise.resolve();
+  expect((await db.query(`select 1 from sandbox_outputs where sandbox_id=$1`, [id])).rows).toHaveLength(0);
+  expect(state.reads).toBe(1);
 });

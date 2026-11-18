@@ -44,7 +44,10 @@ async function collect(
   scan: string,
   key: string,
   signal?: AbortSignal,
+  writes?: Set<Promise<unknown>>,
 ) {
+  // A cancelled read never touches the database again (the worker's drain relies on it).
+  signal?.throwIfAborted();
   // Taint can commit after the scan claim (e.g. while the provider resolves): admit the read only
   // against current taint, immediately before dispatch (the same check-then-act fence exec uses).
   // Docker additionally refuses dispatch and redacts replies under the runtime session lock.
@@ -75,10 +78,11 @@ async function collect(
     })),
   );
   if (!sql.transaction) throw Error("output_transaction_unavailable");
+  signal?.throwIfAborted();
   // Writes under the row lock and the publication fence (only a newer scan supersedes), and only while the caller's deadline holds: checked
   // after the lock (time spent waiting for SQL counts) and again after the write, before commit, so an
   // expired collection rolls back its files and webhook events.
-  await sql.transaction(async (tx) => {
+  const write = sql.transaction(async (tx) => {
     signal?.throwIfAborted();
     const authority = await tx.query(
       `select id from public.sandboxes where id=$1 and status<>'deleted' and not application_secret_tainted
@@ -101,6 +105,16 @@ async function collect(
     await tx.query(`update public.sandboxes set outputs_published_scan=$2::timestamptz where id=$1`, [id, scan]);
     signal?.throwIfAborted();
   });
+  // A write already in progress is bounded by SQL and settles before the pool closes.
+  if (writes) {
+    const settled = write.then(
+      () => {},
+      () => {},
+    );
+    writes.add(settled);
+    void settled.then(() => writes.delete(settled));
+  }
+  await write;
 }
 
 /** Final captures that outlived their stop deadline and still hang in the provider SDK. */
@@ -166,7 +180,10 @@ export function createSandboxOutputs(
   providerFor: (id: string) => Promise<OutputReader>,
   docker?: (id: string) => OutputReader,
 ) {
-  const pending = new Set<Promise<boolean>>();
+  /** In-flight samples with their deadline: provider SDK work may outlive cancellation. */
+  const pending = new Map<Promise<boolean>, AbortSignal>();
+  /** Snapshot transactions in progress (never started once a sample's deadline aborted). */
+  const writes = new Set<Promise<unknown>>();
   return {
     async reconcileOne(signal: AbortSignal): Promise<boolean> {
       if (!key || signal.aborted || pending.size >= OUTSTANDING_MAX) return false;
@@ -190,17 +207,22 @@ export function createSandboxOutputs(
       const deadline = AbortSignal.any([signal, AbortSignal.timeout(SAMPLE_DEADLINE_MS)]);
       const reader = row.provider === "docker" ? Promise.resolve(docker?.(row.id) ?? {}) : providerFor(row.id);
       const work = reader
-        .then((provider) => collect(sql, provider, row.id, row.provider_sandbox_id, row.scan, key, deadline))
+        .then((provider) => collect(sql, provider, row.id, row.provider_sandbox_id, row.scan, key, deadline, writes))
         .catch(() => {
           console.warn(JSON.stringify({ event: "sandbox_output_collection_failed", sandboxId: row.id }));
         })
         .then(() => true);
-      pending.add(work);
+      pending.set(work, deadline);
       void work.then(() => pending.delete(work));
       return true;
     },
+    /** Shutdown aborts every sample's deadline first. A cancelled sample never starts another query
+     * or write (`collect` checks its deadline before each), so drain waits for samples that settle
+     * and for snapshot writes already in progress, never for a provider call that ignores
+     * cancellation (it can only fail once the pool closes; its result is discarded). */
     async drain() {
-      await Promise.allSettled(pending);
+      await Promise.allSettled([...pending].map(([work, deadline]) => untilAborted(work, deadline)));
+      await Promise.allSettled([...writes]);
     },
     route(authenticate: (request: Request) => Promise<CallerResult>): Route {
       return async (request) => {
@@ -214,14 +236,19 @@ export function createSandboxOutputs(
         const auth = await authenticate(request);
         if (!auth.ok) return Response.json({ error: "unauthorized" }, { status: 401 });
         const caller = auth.caller;
-        const row = (
-          await sql.query<{ id: string; provider: string }>(
-            `select s.id,s.provider::text from public.sandboxes s join public.members m on m.org_id=s.org_id
+        // Owner or org admin, current membership: checked on entry and again after the snapshot
+        // is read (and decrypted), so access revoked meanwhile never receives metadata or bytes.
+        const authorize = async () =>
+          (
+            await sql.query<{ id: string; provider: string }>(
+              `select s.id,s.provider::text from public.sandboxes s join public.members m on m.org_id=s.org_id
           where s.id=$1 and s.status<>'deleted' and not s.application_secret_tainted and m.user_id=$2 and s.org_id=any($3::uuid[])
           and (s.owner_id=$2 or m.role='admin') and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)`,
-            [match[1], caller.userId, caller.orgs.map((o) => o.orgId)],
-          )
-        ).rows[0];
+              [match[1], caller.userId, caller.orgs.map((o) => o.orgId)],
+            )
+          ).rows[0];
+        const notFound = () => Response.json({ error: "not_found" }, { status: 404 });
+        const row = await authorize();
         if (!row) return Response.json({ error: "not_found" }, { status: 404 });
         let name: string | null;
         try {
@@ -234,6 +261,7 @@ export function createSandboxOutputs(
             `select name,size,digest as sha256,updated_at as "updatedAt" from public.sandbox_outputs where sandbox_id=$1 order by name limit 32`,
             [row.id],
           );
+          if (!(await authorize())) return notFound();
           return Response.json(
             { directory: outputDirectory(row.provider), files: files.rows },
             { headers: { "cache-control": "private, no-store" } },
@@ -248,6 +276,7 @@ export function createSandboxOutputs(
         if (!file) return Response.json({ error: "not_found" }, { status: 404 });
         if (!key) return Response.json({ error: "unavailable" }, { status: 503 });
         const bytes = Buffer.from(await decryptSecret(file.content_enc, key), "base64");
+        if (!(await authorize())) return notFound();
         const type = new Blob([], { type: Bun.file(file.name).type }).type || "application/octet-stream";
         return new Response(bytes, {
           headers: {
