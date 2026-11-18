@@ -1,123 +1,81 @@
-# Repository instructions
+# Armada: rules for coding agents
 
-Armada v2 launches coding agents (Claude Code, Codex and OpenCode) through provider-scoped sandboxes: a remote MCP server for calling agents, the dashboard and the API-only `armada` CLI. It is a launcher, not a workflow engine. The specification is issue #455; read it before changing behaviour.
+Rules only. Procedures live in the documents listed under "Where truth lives".
 
-Armada v1 (the fleet orchestrator) is archived at the tag `armada-v1-final`. Its code is not on `main`; bring a piece over by hand when v2 needs it (`git show armada-v1-final:<path>`), never by restoring whole folders.
+## Product
+- Armada launches coding agents (Claude Code, Codex, OpenCode) in sandboxes on Boat, Modal or a user's Docker host, and exposes them through the API, SDK, CLI, MCP and dashboard.
+- It is a launcher, not a workflow engine. Waits, captains and orchestration live in API clients, not in Armada.
+- `armada-server` is one TypeScript/Bun server on PostgreSQL (Supabase). The `armada` CLI and the SDK are API-only clients.
+- Two agent paths exist until the native retirement finishes: the provider-run path (Boat agent API, Modal runner) and the Armada runtime (`packages/agent-runtime`). The target is the runtime only.
+- `docs/architecture.md` is the target for new code. Do not migrate existing code toward it outside a program ticket.
 
 ## Layout
+| Path | Holds |
+|---|---|
+| `packages/core` | shared contracts, catalogs, policies, credentials, `packages/core/src/crypto.ts`. `packages/core/src/index.ts` is browser-safe; server-only exports live in `packages/core/src/server.ts`. |
+| `packages/mcp-server` | `armada-server`: HTTP, control routes, MCP tools, workers, provider adapters. Read `packages/mcp-server/AGENTS.md` before editing it. |
+| `packages/agent-runtime` | the runtime that runs inside a sandbox, and its harness drivers |
+| `packages/provider-boat`, `packages/provider-modal` | provider SDK adapters |
+| `packages/docker-host` | the outbound-only Docker host daemon |
+| `packages/auth`, `packages/mcp-gateway` | login, OAuth, tokens; scoped MCP transport |
+| `packages/cli`, `packages/sdk` | API-only clients |
+| `apps/dashboard` | Next.js client acting as the user JWT, never the service key; pure logic in `apps/dashboard/src/lib`; resource create flows follow `docs/dashboard-design.md` |
+| `apps/ios` | Swift client |
+| `supabase/migrations` | append-only schema and row-level security |
 
-- `packages/core` (`@armada/core`): shared contracts/version, provider and harness catalogs, launch/golden/work-preservation policy, credentials, vault, templates and routines. `src/index.ts` (`.`) is browser-safe: no reachable Node builtins or server I/O; `src/server.ts` (`./server`) additionally exports filesystem, process, signing, SQL and service implementations. `boat-snapshot-name.ts` is server-only. `crypto.ts` is the single AES-256-GCM (`iv || ciphertext || tag`) implementation under `ARMADA_ENCRYPTION_KEY`.
-- Provider identity: `core/src/sandbox-provider.ts` defines golden providers Boat/Modal, host capabilities and immutable Modal workspace/environment/App binding. Build goldens separately per provider; never invent Boat aliases for Modal or plain-image Docker rows. Docker preview has separate host-bound APIs and additive launch discovery, not a golden source or enabled normal sandbox-control handler.
-- `supabase/migrations`: append-only schema/RLS history; `core/src/database.types.ts` is generated (`bun run db:types`). Supabase's broad defaults are revoked by `20261108190000_revoke_default_grants.sql`; new user-JWT access needs explicit grants. No JWT can select token hashes or `*_enc`. JWT writes must name returned columns (`select=`), never request bare `*`. `scripts/db/supabase-prereq.sql` reproduces Supabase defaults for tests.
-- `packages/auth`: Supabase login, OAuth server, service tokens and bearer verification. Tokens persist as lowercase SHA256; service-role bearer verification is uncached. `packages/cli` is the API-only `armada` client: `src/run.ts` takes injected I/O, `armada-api.ts` calls `/api/v1/`, and `session.ts` stores only the Armada login (or use `ARMADA_TOKEN`). No provider/database credentials or adapters belong in its runtime graph.
-- `packages/mcp-server`: `armada-server`, assembled in `src/serve.ts`. `http.ts` mounts health/OAuth/control/MCP; `tools.ts` and `control.ts` share server policies. SQL in `data.ts` bypasses RLS and must enforce visibility itself. Golden creation shares core's disposable-builder service: caller GitHub authorization, pinned SSH-stdin checkout, secret scan, snapshot/persist and unconditional builder cleanup. GitHub App setup is in `docs/github-app.md`; the normal server image needs `openssh-client`.
-- `packages/provider-boat`: SDK adapter (`createBoatProvider`), error/event normalization and native compatibility path. Golden creation always uses `noEnv:true`, never account environment. `packages/provider-modal`: runtime distribution, immutable provider bindings and existing authenticated tunnel. Native Boat and Modal paths remain; experimental Boat runtime selection is immutable/default off. Remote MCP uses standard launch selection/defaults and automatic first/later/resumed-turn preparation. Read `docs/boat-runtime-first-prompt.md` before changing its lifecycle.
-- `packages/agent-runtime`: journal, command handler and native Codex app-server/Claude Agent SDK drivers; OpenCode uses the shared ACP v1 runtime on Modal, Docker hosts and Boat; native Boat launch remains unsupported. `docs/runtime-startup.md` covers compiled artifacts, verified caches, private enrolment/epochs and dial-out transport; `docs/runtime/opencode-modal.md` covers OpenCode. `packages/docker-host` is the separate outbound machine-only daemon; install, ownership, TTL, reconciliation and preview APIs are in `docs/docker-host-daemon.md`. Host ACKs are not runtime readiness.
-- `packages/mcp-gateway`: scoped MCP transport; upstream grants stay server-side. Runtime and native integrations retain their own authorized lifecycle. Templates resolve current reference versions at launch into frozen manifests, not publication. Boat readable variables are non-secret world-readable configuration, not isolation from guest file readers. Application-secret delivery is a separate security boundary; consult `docs/templates-cli.md` for frozen manifests and raw-delivery limits, and `docs/post-deploy-smoke.md` for staging checks.
-- `apps/dashboard`: Next.js App Router/Tailwind/shadcn, acting as user JWT over Supabase, never service key. Pure logic is `src/lib` (`bun test`); The fixture dashboard (`bun run dev`) and the browser journeys (`tests/dashboard`, `bun run e2e`) use `e2e/mock-supabase.ts`. Writes RLS cannot express use dashboard SQL functions. Resource create/add flows use `CreateDialog` as `ResourceBrowser.actions`, one short centered form, not side panels or duplicate lists. `apps/ios` contains the Swift client and generated shared wire/harness contracts.
-- `scripts/build.ts` compiles CLI/server binaries; `scripts/npm.ts` stages `@the-vibe-company/armada`, platform optional packages and the dependency-free bundled SDK `@the-vibe-company/armada-sdk`; `scripts/npm-smoke.sh` checks installs. Release Please/npm OIDC workflows and operator-controlled staging promotion are documented in `docs/releasing.md`; `docs/merge-queue.md` and `docs/database-migrations.md` own those respective procedures. `docs/post-deploy-smoke.md` owns deployed checks; a procedure is not evidence it passed. `docs/dave-onboarding.md` is the user onboarding guide.
+## Non-negotiables
+1. **No compatibility layers.** When you replace a route, tool, command, field or table, delete the old one and update every in-repo caller (CLI, SDK, dashboard, iOS, MCP, `.agents/skills/armada`, docs, smoke scripts). No aliases, `-vN` routes, deprecation windows, feature flags or decoders for old shapes. Three things keep an overlap: database objects, the runtime protocol and the Docker host daemon protocol. A breaking change may span modules; move callers first, delete last, within one ticket.
+2. **Lifecycle.** Only the sandbox module writes `sandboxes.status`; one lease and one deadline per sandbox; every provider call carries `(sandboxId, generation)`; no new cleanup loop or retry timer. These bind new and changed code; details in `packages/mcp-server/AGENTS.md`.
+3. **Separate client and server.** Never import Supabase, provider implementations or server startup into the CLI or SDK graph.
+4. **Secrets.** Never print a secret or write one to a file, fixture, log or argument. Goldens hold no secrets. Credential values arrive on stdin or from a file. In the database a secret is `*_enc` ciphertext (`encryptSecret`/`decryptSecret` with `ARMADA_ENCRYPTION_KEY`) or a lowercase SHA-256 hash, and no user JWT can read either. The only argv exception is the single-use, five-minute Docker host install token.
+5. **Database access.** Row-level security is the access rule. Members see organization resources, owners alone see private resources, and only admins change organization goldens, membership or organization keys. New user-JWT access needs explicit grants; JWT writes name their returned columns (`select=`), never bare `*`. Server SQL bypasses RLS and must enforce visibility itself. Schema changes are new migrations; never edit an applied one (`docs/database-migrations.md`).
+6. **Fix the cause.** Name the root cause with evidence (the wrong statement, state or contract) before changing code. Fix every sibling with the same defect in the same PR, or list them. Do not copy a workaround or make one check pass. Urgency does not waive this. If only production can prove the cause, add the diagnostic that will name it.
+7. **Build only what the ticket asks.** If a rule blocks the ticket, stop and report.
+8. **Never state as verified what you did not run.**
+9. **Boat is never part of CI or staging acceptance.** Boat checks are on demand, by the coordinator only.
+10. **One version** across package manifests under `packages`. **English** in code, output, docs and comments.
 
-Owner-facing orchestrators have been removed, with no compatibility route or feature flag; ordinary scoped child access remains. Deferred schema retirement and its one-production-day authorization gate are in `docs/orchestrator-retirement.md`.
+## Pull requests
+- **One module, at most 600 changed lines.** Generated files, pure deletions and `git mv` do not count. If the work is bigger, stop and tell the coordinator so the ticket is split.
+- **Lifecycle work needs a design note first**: sandbox state, leases, deadlines, retries, provider create/stop/resume/delete, cleanup, output capture, exports. The note goes in the issue before code (contents: `packages/mcp-server/AGENTS.md`).
+- **Breaking surface change.** Update `.agents/skills/armada` and docs in the same PR, and add a `Coordinator commands affected:` line to the body (or `none`).
+- **One branch, one agent.** Never push to a branch another session owns.
+- **At most one migration per PR**, with a unique 14-digit version newer than main’s. Recheck the order before merge.
+- **Titles** follow Commitizen: `feat(cli): launch an agent from a template`.
+
+## Review
+- The coordinator decides merge. After three rounds it may defer non-security, non-data-loss findings to an issue whose body contains the failing test.
+
+## Tests
+- One test per behaviour, at the cheapest boundary that proves it. No network, no wall-clock wait, no sleep (inject clocks).
+- No child process when a function call proves the same thing. Real Git, gh and provider behaviour belongs in the staging smoke.
+- A test over one second is rewritten or deleted. Never raise a timeout to make a test pass.
+- A flaky test is deleted the day it is seen, not retried or quarantined. A cheaper deterministic test replaces it if the behaviour matters.
+- Fixtures never contain literals that match real token patterns. Use short placeholders; build scanner-positive bytes at runtime.
+- A bug fix includes a regression test that fails without the fix.
+
+## CI
+- One required check, `Lint, typecheck and test`, under two minutes. CI proves the code is sound; staging proves it works.
+- CI never builds binaries, goldens or images, never calls a network or provider, never runs a browser, and never retries.
+- Adding a CI job, a required check or a gate step is the owner's decision, never an agent's.
+- Post-deploy smoke exercises deployed lifecycles using existing goldens. Releases follow `docs/releasing.md`.
 
 ## Commands
+- `bun install`, then `bun scripts/prepare-runtime.ts` before server tests.
+- `bun run verify`: lint, typecheck, unit tests. `bun run verify:changed --base origin/main`: the same for changed workspaces (fetch first).
+- `bun run format`: Biome formatting and safe fixes.
+- `bun run db:types`: regenerate `packages/core/src/database.types.ts`. Never hand-edit or hand-merge it.
+- `bun run dev`: fixture dashboard on ports 3100/54399, sign in as `alice@example.com` / `123456`. UI work only, not lifecycle evidence.
+- `bun run armada <args>`: the CLI from source. `bun run build`: binaries in the generated dist directory.
 
-- `bun install`
-- `bun scripts/prepare-runtime.ts`: prepare the portable runtime before local server tests. Publishing release validation builds and validates the native runtime with `bun packages/agent-runtime/build.ts` and `bun scripts/validate-runtime-native.ts` instead.
-- `bun run verify`: lint (Biome), typecheck (`tsc`, strict) and tests (`bun test`). CI exposes one required aggregate, "Lint, typecheck and test", over lint/typecheck (including migration guards; native/namespace contracts run in publishing release validation) and unit shards.
-- `bun run verify:changed [--base origin/main] [--dry-run]`: lint/typecheck plus unit tests in changed workspaces and their transitive consumers; includes staged, unstaged and untracked files. Root/config changes conservatively select every workspace. Root script tests remain included for executable changes. Use `--dry-run` to inspect selection without running checks; this is a local shortcut, not the CI verdict or a two-minute guarantee. Fetch the base ref first.
-- `bun run format`: apply Biome formatting and safe fixes.
-- `bun run build` (this machine), `bun run build --target <os-arch>`, `bun run build:all`: the binary in `dist/`.
-- `bun run armada <args>`: the CLI from source.
-- `bun run dev`: fixture-only local dashboard plus the existing Supabase/Armada mock (ports 3100/54399). Sign in as `alice@example.com`, code `123456`; no real sandbox launches or production credentials. Ctrl-C stops both processes. This is UI development, not lifecycle/staging evidence. Ports must be free.
-- `bun run dashboard`, `bun run dashboard:build`, `bun run e2e`: the dashboard (dev, production build, browser tests). `bun run verify` typechecks it and runs its unit tests, not the e2e.
-- `bun run db:types`: regenerate `packages/core/src/database.types.ts` after a migration change.
-- `scripts/aeom/install.sh`: install All Eyes On Me at its pinned commit to redesign or review the public landing (`.aeom/`, `docs/aeom.md`).
-
-## CI: what we test and what we do not
-
-One verdict, under two minutes. A pull request has a single required check, `Lint, typecheck and test`. If it takes more than two minutes, that is a defect to fix before anything else merges.
-Owner decision 2026-11-13: Boat remains a first-class product provider, but
-staging acceptance (post-deploy, pinned and release gate) never tests Boat.
-Ignore Boat cases even if configured; print
-`boat: not part of the release gate`. Retain Modal probes and
-the owner's Docker-host parity probes; Boat omission is not a Boat pass.
-Boat production verification is coordinator-only/on-demand, never CI or workers:
-parity requires `--only boat --production-boat`, and touches only its own sandbox.
-No blocking PR or merge-queue check may exceed two minutes. The only slow gated
-path is a publishing release: release → exact-commit staging deployment/smoke →
-production. Staging smoke otherwise runs only after deploying a main commit,
-never from PR, gh-readonly-queue/* or release-please branch deployment events
-and never as a pull-request check. Do not subscribe smoke to deployment_status.
-
-**CI proves the code is sound on its own. Staging proves it works.**
-
-What CI runs on every pull request and in the merge queue:
-- lint and format (Biome), strict typecheck (`tsc`), the migration-version guard;
-- the unit tests (`bun test`), in as few shards as the two-minute limit allows.
-
-What runs only when its files change: the iOS checks (`apps/ios`), the migration dry-run (`supabase/migrations`).
-
-What runs after a merge, not before: the staging dashboard build in GitHub Actions
-(`vercel pull`, `vercel build`, then `vercel deploy --prebuilt`), the deploy to staging and the post-deploy smoke, which runs only the owner-enabled Modal/Docker staging probes, builds goldens and exercises the whole lifecycle. Production deploys only from a publishing release after its exact-SHA staging
-smoke succeeds; there is no opt-in bypass. The #1547 owner cutover in
-`docs/releasing.md` records which provider settings still need owner changes. The deployment policy
-acceptance ledger in that document separates repository implementation from
-outstanding coordinator-only provider evidence; do not report cutover complete
-from merged code or CI alone.
-Vercel Git deployments are disabled for both dashboard projects via
-`apps/dashboard/vercel.json`; no PR previews. Keep the Actions staging path
-working and follow the owner cutover prerequisites in `docs/releasing.md`.
-The release dashboard build also runs in Actions and uploads only prebuilt
-output; provider-side Git autodeploy still requires the owner cutover.
-Production SQL applies only from the validated release deployment path; the
-standalone migration workflow retains manual previews/history/owner repair,
-never per-commit production applies.
-Ordinary staging deployments (including migrations) defer automatically while Release
-work is queued or active. Release completion or failure wakes newest main once;
-merges continue without a manual pause. Started deployments are never cancelled.
-Pinned release staging rejects migrations outside its exact source inventory; never
-use forward-schema staging acceptance to authorize production. Ordinary queued
-staging-main sources are superseded before mutation when newer main exists.
-Publishing releases first validate required staging/production configuration,
-including before Release Please announces/tags or image/npm/host publication;
-ordinary preparation/dry runs do not access production secrets.
-Binaries are built by the release workflow when a version is published.
-
-What CI does not do, and must not be added back:
-- no binary builds per pull request;
-- no golden, image or provider build, no real PostgreSQL service, no browser test;
-- nothing that calls the network or a provider;
-- no "informational" job: a check either gates the merge or does not exist;
-- no timing or budget check: the coordinator measures the verdict time.
-
-Rules for a test:
-- Fixtures must never contain literals matching real token patterns; use short underscore-separated placeholders, and construct scanner-positive token-shaped bytes only at runtime.
-- one test per behaviour, at the cheapest boundary that proves it; no network, no wall-clock wait, no child process when a function call proves the same thing;
-- a test that takes more than one second is rewritten or deleted;
-- a test that fails intermittently is deleted the day it is seen, not retried, not quarantined; if the behaviour matters, a cheaper deterministic test replaces it;
-- CI has no retries.
-- Do not restore `packages/agent-runtime/test/github-user-tools.test.ts` or an equivalent real Git/gh installation replay in unit CI. It timed out at five seconds, was deleted in #1557, restored by #1497, then deleted again in #1671. Real Git/gh installation and privilege-boundary verification belong in staging smoke; keep deterministic renewal/redaction checks at their owning unit boundary. This is a review instruction, not a test-duration lint rule.
-
-Adding a CI job or a required check is the owner's decision, never an agent's. Where something is tested: logic in a unit test; a provider, a golden, a full lifecycle in the post-deploy smoke; a screen by opening it on staging.
-
-## Rules
-
-- **Separate client and server.** `armada` is an API-only client; `armada-server` contains the server and provider/database adapters. Both compile with Bun. Never import Supabase, provider implementations or server startup into the CLI runtime dependency graph.
-- **One version.** Every `packages/*/package.json` carries the same version; `@armada/core` exports it and `armada --version` prints it.
-- **Secrets never in the repository.** Keys come from the environment or Armada's encrypted store; never print one, never write one into a file, a fixture or a log. Goldens hold no secrets. In the database a secret is ciphertext (`bytea`, `*_enc`) or a token hash, and a user JWT cannot read the ciphertext columns. One encryption scheme: `encryptSecret` and `decryptSecret` in `@armada/core` with `ARMADA_ENCRYPTION_KEY`. Credential values arrive on stdin or from a file, never as arguments. **Owner-approved exception (#1453):** a single-use, five-minute Docker host registration token may appear in the one-click installer command (`sh -s -- --token ...`). The exchanged long-lived host credential must still never appear in argv, logs or public responses.
-- **Schema changes are new migrations.** Follow the [migration author checklist](docs/database-migrations.md#migration-author-checklist): use a unique 14-digit version strictly newer than current main and recheck before merge; fresh SQL tests do not verify remote history. Never rename or edit a migration that has been applied. Row level security is the access rule: members see org resources, a private resource is visible only to its owner, and only an admin changes an org golden, the members or an org key.
-- **Table owners.** Put new TypeScript table writes in the module listed in `scripts/ci/tables.ts`. Remove existing exceptions as writers move or are deleted.
-- **Fix the cause, not the symptom.** A bug fix names its root cause with evidence (the statement, state or contract that is wrong) before changing code. It then looks for every other place with the same defect and fixes those in the same change, or lists them in the pull request. Do not copy an existing workaround, and do not answer a failing check with the smallest change that makes that one check pass: three spot fixes of one cause cost more than one fix at the source. Being urgent does not waive this. When the cause cannot be established without production evidence, say so and add the diagnostic that will name it, rather than guessing a fix.
-- **Tests earn their place.** One test per behaviour at the cheapest boundary, no network, no wall-clock waits.
-- **English** in code, CLI output, docs and comments.
-- Pull request titles follow Commitizen, for example `feat(cli): launch an agent from a golden`.
-
-### Release-contract changes
-
-A PR changing release-test routing, required contract selection, or a required
-release fixture must include passing output from the exact affected workflow
-step command in its PR body, with the tested SHA and prerequisite setup. Reviewers
-must reject missing, skipped, stale or failing evidence. PR unit CI does not
-execute publishing-only contracts; making a suite mandatory is not evidence it
-has ever passed. Use disposable local PostgreSQL and native artifacts, never
-production, for this evidence. No additional PR check is authorized.
+## Where truth lives
+| Topic | Authority |
+|---|---|
+| Target architecture, module owners | `docs/architecture.md` |
+| Sandbox states and transitions | `docs/state-model.md` |
+| Public API and SDK | `docs/api/README.md`, `docs/sdk.md` |
+| Runtime startup and enrolment | `docs/runtime-startup.md` |
+| Docker host daemon | `docs/docker-host-daemon.md` |
+| Migrations | `docs/database-migrations.md` |
+| CI, merge queue, releases, smoke | `docs/ci-budget.md`, `docs/merge-queue.md`, `docs/releasing.md`, `docs/post-deploy-smoke.md` |
+| Lint exceptions | `docs/lint-policy.md` |
