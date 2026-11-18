@@ -410,7 +410,16 @@ export function automaticUpdate(state: State, instance?: string) {
       const last = await readUpdate(home, instance);
       // The new service reconciles and polls, but waits for the supervisor's
       // decision before admitting work. This makes a failing trial reversible.
-      if (last?.phase === "starting") return true;
+      if (last?.phase === "starting") {
+        // A supervisor stopped while the trial is alive still needs to be
+        // replaced. The replacement sees "starting" and can only roll back.
+        try {
+          await command(["systemctl", "--user", "is-active", updateUnit(instance)]);
+        } catch {
+          staged = true;
+        }
+        return true;
+      }
       if (last?.phase === "staged") {
         if (process.env.ARMADA_DOCKER_HOST_AUTO_UPDATE === "0") {
           await saveUpdate(home, instance, { ...last, phase: "failed" });
