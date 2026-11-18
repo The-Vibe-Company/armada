@@ -36,6 +36,7 @@ import { HARNESS_CAPABILITIES } from "./harnesses.ts";
 import { type HelperNegotiation, negotiateHelper } from "./helper.ts";
 import { LaunchError, type LaunchInitializationStage } from "./launch-error.ts";
 import type { LaunchStage } from "./launch-stages.ts";
+import { isLaunchTtlSeconds, validateLaunchSkillPins } from "./launch-validation.ts";
 import { type MachineSize, resolveMachineSize } from "./machine-size.ts";
 import { type ModelChoice, resolveModelChoice } from "./models.ts";
 import { OPENCODE_CONNECTION_PROVIDER, OPENCODE_ENDPOINT_ENV, parseOpenCodeEndpoint } from "./opencode-endpoint.ts";
@@ -49,7 +50,7 @@ import { OUTPUT_DIRECTORY } from "./sandbox-output-limits.ts";
 import * as placement from "./sandbox-provider.ts";
 import { assertProviderOf, HOST_CAPABILITIES, PROVIDER_LIMITS, type SandboxProviderId } from "./sandbox-provider.ts";
 import { mergeSkillPins } from "./skill-merge.ts";
-import { installSkill, skillExclusionCommand, validateSkillPins } from "./skillpack.ts";
+import { installSkill, skillExclusionCommand } from "./skillpack.ts";
 
 /** Four hours: long enough for an autonomous run, short enough that a forgotten sandbox stops by itself. */
 export const DEFAULT_LAUNCH_TTL_SECONDS = 14_400;
@@ -268,14 +269,7 @@ export async function launchSandbox(
 ): Promise<LaunchResult> {
   // #2560: the request is accepted here; the sandbox row (and so the stage table) exists only after the fork.
   const acceptedAt = performance.now();
-  try {
-    validateSkillPins(request.skills ?? []);
-  } catch {
-    throw new LaunchError(
-      "invalid_request",
-      "Skills require distinct org/slug@exact-version or slug@exact-version pins (maximum 20).",
-    );
-  }
+  validateLaunchSkillPins(request.skills ?? []);
   if (request.skipSkillDefaults !== undefined && typeof request.skipSkillDefaults !== "boolean")
     throw new LaunchError("invalid_request", "skipSkillDefaults must be a boolean.");
   if (request.stopWhenWorkMerged !== undefined && typeof request.stopWhenWorkMerged !== "boolean")
@@ -1220,7 +1214,7 @@ function checkModel(provider: Provider, harness: Harness, request: LaunchRequest
 /** Refused when the golden's provider cannot keep a machine that long: never clamped. */
 function checkTtl(provider: SandboxProviderId, ttlSeconds: number): number {
   const limits = PROVIDER_LIMITS[provider];
-  if (!Number.isInteger(ttlSeconds) || ttlSeconds < 1 || ttlSeconds > limits.maxTtlSeconds) {
+  if (!isLaunchTtlSeconds(provider, ttlSeconds)) {
     throw new LaunchError(
       "invalid_request",
       `The TTL must be a whole number of seconds from 1 to ${limits.maxTtlSeconds} (${limits.maxTtlLabel} on ${provider}).`,

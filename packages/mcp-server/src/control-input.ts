@@ -1,6 +1,15 @@
+import { MAX_MCP_CONNECTIONS } from "@armada/core";
 import { VaultError } from "@armada/core/server";
 
 export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function isLaunchConnectionList(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.length <= MAX_MCP_CONNECTIONS &&
+    value.every((id) => typeof id === "string" && UUID.test(id))
+  );
+}
 
 export function optional(body: Record<string, unknown>, key: string): string | undefined {
   const value = body[key];
