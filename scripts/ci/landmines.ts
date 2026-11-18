@@ -95,7 +95,7 @@ function lint() {
       "--format",
       "json",
     ],
-    { cwd: root, encoding: "utf8", maxBuffer: 16 * 1024 * 1024, stderr: "inherit" },
+    { cwd: root, encoding: "utf8", maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "inherit"] },
   );
   if (result.error) throw result.error;
   if ((result.status !== 0 && result.status !== 1) || !result.stdout.trim()) {
