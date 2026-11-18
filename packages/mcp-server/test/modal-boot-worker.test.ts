@@ -11,7 +11,7 @@ const database = rowOnlyDatabase();
 test.each([
   "restart after an uncertain fork",
   "stop before dispatch",
-  "fence a stopped boot when authority is unavailable",
+  "fence an expired stop without contacting Modal",
 ] as const)("Modal boot from committed storage can %s", async (scenario) => {
   const { db, people } = await database();
   const sql: Sql = {
@@ -124,7 +124,7 @@ test.each([
   await first.drain();
   expect(await persisted()).toMatchObject({ phase: "booting", fenced: true, lease_epoch: "1" });
   first.stopAdmission();
-  if (scenario === "fence a stopped boot when authority is unavailable") {
+  if (scenario === "fence an expired stop without contacting Modal") {
     const caller = {
       userId: people.owner,
       orgs: [{ orgId: people.org, role: "member" as const }],
@@ -135,11 +135,14 @@ test.each([
       "update provider_launch_requests set next_attempt_at=now(),dispatch_deadline=now()-interval '1 second' where sandbox_id=$1",
       [id],
     );
+    let attemptedResolution = false;
     const unavailable = createModalBootWorker(sql, ENCRYPTION_KEY, async () => {
+      attemptedResolution = true;
       throw Error("Original authority unavailable.");
     });
     expect(await unavailable.reconcileOne(signal)).toBe(true);
     await unavailable.drain();
+    expect(attemptedResolution).toBe(false);
     expect(attempts).toBe(1);
     expect(await persisted()).toMatchObject({ phase: "failed", status: "stopping", fenced: true, sealed: true });
     return;
