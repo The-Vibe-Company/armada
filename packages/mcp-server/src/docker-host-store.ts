@@ -655,6 +655,14 @@ export function createDockerHostStore(sql: Sql, key: string) {
         if (!result.rows.length) deny();
       });
     },
+    async canOfferUpdate(hostToken: string, installationId: string) {
+      const result = await sql.query(
+        `select 1 from public.docker_hosts h join public.members m on m.org_id=h.org_id and m.user_id=h.owner_id
+         where h.hash=$1 and h.installation_id=$2 and h.revoked_at is null and h.draining_at is null`,
+        [hash(hostToken), installationId],
+      );
+      return result.rows.length > 0;
+    },
     /** Every generation with a queued resume/bootstrap, so the daemon fences all of them, not only the head job. */
     pendingStartsForHost(hostToken: string, installationId: string) {
       return transaction(async (tx) => {

@@ -15,8 +15,8 @@ import {
   type DockerSnapshotBuildReceipt,
   DockerSnapshotMissingRefError,
 } from "../../core/src/docker-snapshot-build.ts";
-
 import type { SnapshotBaselineTool } from "../../core/src/snapshot-baseline.ts";
+import { VERSION } from "../../core/src/version.ts";
 
 export type Job = DockerHostJob;
 export type Receipt = {
@@ -80,6 +80,7 @@ export type State = {
   retentionDeleteAfter?: string;
   retentionReportAfter?: string;
   lastPollAt?: string;
+  lastUpdatePollAt?: string;
   /** Receipt identities for unique active generations, in fair sweep order. */
   activeTtl?: string[];
   /** Fair bounded retries across retained confirmations and process restarts. */
@@ -345,6 +346,12 @@ export async function runJobs(
     beforeTick?(): Promise<void>;
     beforeAdmission?: TickOptions["beforeAdmission"];
     retryCompletion?(): boolean;
+    update?: {
+      staged(): boolean;
+      confirm(target: unknown): Promise<boolean>;
+      checkRecovery(): Promise<boolean>;
+      restart(): Promise<boolean>;
+    };
     failed?(what: "tick" | "job"): void;
     now?: () => number;
   },
@@ -371,6 +378,23 @@ export async function runJobs(
   }
   try {
     while (!loop.stopping()) {
+      if (loop.update?.staged()) {
+        await Promise.all(running.values());
+        if (loop.stopping()) break;
+        // Keep admission fenced while checking the offer on a fresh poll.
+        // The returned job stays unacknowledged for ordinary admission.
+        let target: unknown;
+        try {
+          target = (await api.poll(await store.load())).targetVersion;
+        } catch {
+          loop.failed?.("tick");
+        }
+        if ((await loop.update.confirm(target)) && !loop.stopping() && (await loop.update.restart())) break;
+        continue;
+      }
+      // An orphaned trial can roll back even when authentication is denied.
+      if (loop.update && (await loop.update.checkRecovery()) && !loop.stopping() && (await loop.update.restart()))
+        break;
       await loop.beforeTick?.();
       if (running.size >= DOCKER_HOST_CONCURRENT_JOBS) {
         await settled();
@@ -622,6 +646,8 @@ async function admitLocked(
       await store.save(state);
     }
     state.lastPollAt = new Date().toISOString();
+    if (polled.targetVersion === VERSION) state.lastUpdatePollAt = state.lastPollAt;
+    else delete state.lastUpdatePollAt;
   }
   // Pressure cleanup shares the same durable authorization as retention. Discovery
   // stays restricted to known completed operations; physical ownership is checked

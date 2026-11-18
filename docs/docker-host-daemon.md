@@ -248,15 +248,18 @@ A later launch job stays queued until the service reconnects. Running containers
 and volumes survive the daemon restart and the next process reconciles them
 through the usual ledger. The update uses no sudo and opens no listening port.
 A daemon resuming a staged update after startup checks that the server still
-offers that version before draining. A withdrawn version stays fenced and job
-admission continues.
+offers that version before draining. Once admitted work finishes, the daemon
+checks the offer again while admission is still fenced. A changed or unavailable
+offer cancels the staged attempt and returns the daemon to ordinary polling.
 
 A separate systemd user unit runs the old verified executable, kept beside the
 managed binary with a `.previous` suffix. It stops the drained service, swaps the
 binary atomically, and starts the service. The candidate reconciles and polls
 before taking work. The supervisor requires an active service and a fresh
-successful poll within 90 seconds. If startup or health fails, it restores the
-previous binary atomically and starts it. An Armada-owned systemd drop-in runs
+successful poll within 90 seconds that still offers the candidate version.
+Cleanup-only polls from a draining or revoked host carry no update offer. If
+startup or health fails, the supervisor restores the previous binary atomically
+and starts it. An Armada-owned systemd drop-in runs
 the same recovery from the previous binary before daemon startup if the machine
 reboots during the trial. The daemon sends the failed target on
 its next authenticated poll for the server log. Its private update record
@@ -822,6 +825,9 @@ refuse removal, preserving state for reconciliation. Shared images, other worklo
 and account-wide linger are preserved. Failure is not deletion.
 A drain has no deadline: the host stays draining until the uninstall completes, so
 an interrupted uninstall cannot re-admit work while its cleanup may still be queued.
+Before requesting server-side drain, uninstall records a local intent that
+survives reboot and cancels a staged update. If the update supervisor is active
+or a trial remains unsettled, retry uninstall after the service recovers.
 Retrying the uninstall continues the same drain. An abandoned drain has no cancel
 path; it is an open question for the owner, not a new command.
 

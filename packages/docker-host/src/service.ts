@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readdir, readFile, rename, rm, rmdir, unlink, writeFile } from "node:fs/promises";
@@ -173,9 +174,15 @@ export async function validateInstallation(
     throw new Error("Installation files changed; inspect them before uninstalling or upgrading.");
   for (const entry of await readdir(directory)) {
     if (
-      !["state.json", "daemon.lock", "managed.json", "update.json", "update-candidate", ...CACHE_DIRECTORIES].includes(
-        entry,
-      ) &&
+      ![
+        "state.json",
+        "daemon.lock",
+        "managed.json",
+        "update.json",
+        "update-candidate",
+        "uninstall-pending",
+        ...CACHE_DIRECTORIES,
+      ].includes(entry) &&
       !disposableStateFile.test(entry)
     )
       throw new Error("Unknown files in installation directory; preserve and inspect before uninstalling.");
@@ -290,24 +297,29 @@ export async function stopService(instance?: string) {
   await command(["systemctl", "--user", "disable", "--now", serviceName(instance)]);
 }
 export async function removeInstallation(instance?: string) {
-  const p = paths(homedir(), instance);
-  const directory = stateDirectory(homedir(), instance);
-  // Preserve registration/ownership proof until the final binary unlink succeeds.
-  const update = await readUpdate(homedir(), instance);
-  const recovery = update?.previousDigest ? await existingRecovery(homedir(), instance) : undefined;
+  const home = homedir();
+  const p = paths(home, instance);
+  const directory = stateDirectory(home, instance);
+  const update = await readUpdate(home, instance);
+  const recovery = update?.previousDigest ? await existingRecovery(home, instance) : undefined;
   const backupDigest =
     update && (update.previousDigest || update.pendingPreviousDigest)
-      ? await recordedBackupDigest(homedir(), instance, update)
+      ? await recordedBackupDigest(home, instance, update)
       : undefined;
-  const extra = ["update.json", "update-candidate"].map((name) => join(directory, name));
-  if (backupDigest) extra.push(`${p.binary}.previous`);
-  const saved = await Promise.all(
-    [p.unit, join(directory, "state.json"), join(directory, "managed.json"), ...(recovery ? [recovery.path] : [])].map(
-      async (path) => ({
-        path,
-        bytes: await readFile(path),
-      }),
-    ),
+  const updateFile = join(directory, "update.json");
+  const intentFile = uninstallIntent(home, instance);
+  const backup = `${p.binary}.previous`;
+  // Restore the update journal, its executable and the uninstall fence
+  // together with registration if the final binary unlink fails.
+  const saved: { path: string; bytes: Uint8Array; mode: number }[] = await Promise.all(
+    [
+      p.unit,
+      join(directory, "state.json"),
+      join(directory, "managed.json"),
+      ...(recovery ? [recovery.path] : []),
+      ...(update ? [updateFile] : []),
+      ...((await uninstallPending(home, instance)) ? [intentFile] : []),
+    ].map(async (path) => ({ path, bytes: await readFile(path), mode: 0o600 })),
   );
   try {
     await unlink(p.unit);
@@ -323,8 +335,12 @@ export async function removeInstallation(instance?: string) {
         await unlink(file);
       }
     }
-    if (backupDigest) await verifyBackup(homedir(), instance, backupDigest);
-    for (const file of extra) await rm(file, { force: true });
+    if (backupDigest) {
+      const bytes = await verifyBackup(home, instance, backupDigest);
+      saved.push({ path: backup, bytes, mode: 0o700 });
+      await unlink(backup);
+    }
+    for (const file of [updateFile, intentFile, join(directory, "update-candidate")]) await rm(file, { force: true });
     await unlink(join(directory, "state.json"));
     await unlink(join(directory, "managed.json"));
     await rmdir(directory);
@@ -334,7 +350,7 @@ export async function removeInstallation(instance?: string) {
     await mkdir(directory, { recursive: true, mode: 0o700 });
     for (const file of saved) {
       try {
-        await writeFile(file.path, file.bytes, { flag: "wx", mode: 0o600 });
+        await writeFile(file.path, file.bytes, { flag: "wx", mode: file.mode });
       } catch (restoreError) {
         if ((restoreError as NodeJS.ErrnoException).code !== "EEXIST") throw restoreError;
       }
@@ -377,6 +393,66 @@ async function readUpdate(home: string, instance?: string): Promise<Update | und
 function saveUpdate(home: string, instance: string | undefined, update: Update) {
   const directory = stateDirectory(home, instance);
   return atomicReplace(join(directory, "update.json"), Buffer.from(JSON.stringify(update)), 0o600, dirname(directory));
+}
+
+// Use the managed directory inode so the crash-released lock needs no
+// persistent lockfile and cannot conflict with the running daemon's store lock.
+async function withUpdateLock<T>(home: string, instance: string | undefined, work: () => Promise<T>) {
+  const directory = await open(
+    stateDirectory(home, instance),
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+  );
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn("flock", ["--exclusive", "0"], { stdio: [directory.fd, "ignore", "ignore"] });
+      child.once("error", reject);
+      child.once("exit", (code) => {
+        if (code === 0) resolve();
+        else reject(new Error("Could not lock the managed Docker host update."));
+      });
+    });
+    return await work();
+  } finally {
+    await directory.close();
+  }
+}
+
+function uninstallIntent(home: string, instance?: string) {
+  return join(stateDirectory(home, instance), "uninstall-pending");
+}
+
+async function uninstallPending(home: string, instance?: string) {
+  try {
+    await ownedFile(uninstallIntent(home, instance), home);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return false;
+  }
+}
+
+/** Fence automatic updates before asking the server to drain and revoke. */
+export async function prepareUninstall(
+  state: State,
+  instance?: string,
+  io: Pick<UpgradeServiceIo, "home" | "service"> = { home: homedir(), service: command },
+) {
+  const { home } = io;
+  await withUpdateLock(home, instance, async () => {
+    const last = await readUpdate(home, instance);
+    if (last?.phase === "starting" || (last && !(await supervisorAbsent(io.service, instance))))
+      throw new Error("Automatic Docker host update in progress. Retry after the service has recovered.");
+    await validateInstallation(state, home, instance);
+    // Keep this fence across reboot and unregister retries. A staged download
+    // can be discarded without contacting the server or touching the binary.
+    await atomicReplace(
+      uninstallIntent(home, instance),
+      Buffer.alloc(0),
+      0o600,
+      dirname(stateDirectory(home, instance)),
+    );
+    if (last?.phase === "staged") await saveUpdate(home, instance, { ...last, phase: "cancelled" });
+  });
 }
 
 async function refuseActiveUpdate(home: string, instance?: string) {
@@ -447,29 +523,41 @@ export function automaticUpdate(state: State, { home, instance }: ManagedUpdateI
   const p = paths(home, instance);
   let staged = false;
   let nextManifestCheck = 0;
+  async function confirm(target: unknown) {
+    return withUpdateLock(home, instance, async () => {
+      const current = await readUpdate(home, instance);
+      if (current?.phase !== "staged") {
+        staged = false;
+        return false;
+      }
+      if (
+        target === current.version &&
+        process.env.ARMADA_DOCKER_HOST_AUTO_UPDATE !== "0" &&
+        !(await uninstallPending(home, instance))
+      )
+        return true;
+      await saveUpdate(home, instance, { ...current, phase: "cancelled" });
+      staged = false;
+      return false;
+    });
+  }
   return {
+    confirm,
     get staged() {
       return staged;
     },
+    async checkRecovery() {
+      if ((await readUpdate(home, instance))?.phase !== "starting") return false;
+      const absent = await supervisorAbsent(command, instance);
+      return absent && (await readUpdate(home, instance))?.phase === "starting";
+    },
     async beforeAdmission(target: unknown) {
       const last = await readUpdate(home, instance);
-      // The new service reconciles and polls, but waits for the supervisor's
-      // decision before admitting work. This makes a failing trial reversible.
-      if (last?.phase === "starting") {
-        // A supervisor stopped while the trial is alive still needs to be
-        // replaced. The replacement sees "starting" and can only roll back.
-        const absent = await supervisorAbsent(command, instance);
-        const phase = (await readUpdate(home, instance))?.phase;
-        staged = absent && phase === "starting";
-        return phase === "starting" || phase === "staged";
-      }
+      // A trial polls for health but cannot admit jobs.
+      if (last?.phase === "starting") return true;
       if (last?.phase === "staged") {
-        if (target !== last.version || process.env.ARMADA_DOCKER_HOST_AUTO_UPDATE === "0") {
-          await saveUpdate(home, instance, { ...last, phase: "cancelled" });
-          return false;
-        }
-        staged = true;
-        return true;
+        staged = await confirm(target);
+        return staged;
       }
       if (
         process.env.ARMADA_DOCKER_HOST_AUTO_UPDATE === "0" ||
@@ -481,77 +569,86 @@ export function automaticUpdate(state: State, { home, instance }: ManagedUpdateI
       )
         return false;
       try {
-        if (
-          (await command(["systemctl", "--user", "show", "-p", "MainPID", "--value", serviceName(instance)])) !==
-          String(process.pid)
-        )
-          return false;
-        await validateInstallation(state, home, instance);
-        const attempt: Update = {
-          version: target,
-          phase: "failed",
-          ...(last?.previousDigest ? { previousDigest: last.previousDigest } : {}),
-          ...(last?.pendingPreviousDigest ? { pendingPreviousDigest: last.pendingPreviousDigest } : {}),
-        };
-        // Staging can advertise a version before its artifact arrives. Throttle
-        // manifest checks, and fence the attempt only once the official
-        // manifest confirms that the requested version exists.
-        nextManifestCheck = Date.now() + 5 * 60_000;
-        const bytes = await downloadOfficialHost(target, process.arch, () => saveUpdate(home, instance, attempt));
-        await atomicReplace(
-          join(stateDirectory(home, instance), "update-candidate"),
-          bytes,
-          0o600,
-          dirname(stateDirectory(home, instance)),
-        );
-        const previous = await ownedFile(p.binary, home, true);
-        const previousDigest = sha256(previous);
-        const backup = `${p.binary}.previous`;
-        const existing = await recordedBackupDigest(home, instance, attempt);
-        await saveUpdate(home, instance, {
-          version: target,
-          phase: "failed",
-          ...(existing ? { previousDigest: existing } : {}),
-          pendingPreviousDigest: previousDigest,
+        return await withUpdateLock(home, instance, async () => {
+          if (await uninstallPending(home, instance)) return false;
+          if (
+            (await command(["systemctl", "--user", "show", "-p", "MainPID", "--value", serviceName(instance)])) !==
+            String(process.pid)
+          )
+            return false;
+          await validateInstallation(state, home, instance);
+          const attempt: Update = {
+            version: target,
+            phase: "failed",
+            ...(last?.previousDigest ? { previousDigest: last.previousDigest } : {}),
+            ...(last?.pendingPreviousDigest ? { pendingPreviousDigest: last.pendingPreviousDigest } : {}),
+          };
+          // Staging can advertise a version before its artifact arrives. Throttle
+          // manifest checks, and fence the attempt only once the official
+          // manifest confirms that the requested version exists.
+          nextManifestCheck = Date.now() + 5 * 60_000;
+          const bytes = await downloadOfficialHost(target, process.arch, () => saveUpdate(home, instance, attempt));
+          await atomicReplace(
+            join(stateDirectory(home, instance), "update-candidate"),
+            bytes,
+            0o600,
+            dirname(stateDirectory(home, instance)),
+          );
+          const previous = await ownedFile(p.binary, home, true);
+          const previousDigest = sha256(previous);
+          const backup = `${p.binary}.previous`;
+          const existing = await recordedBackupDigest(home, instance, attempt);
+          await saveUpdate(home, instance, {
+            version: target,
+            phase: "failed",
+            ...(existing ? { previousDigest: existing } : {}),
+            pendingPreviousDigest: previousDigest,
+          });
+          await atomicReplace(backup, previous, 0o700);
+          await saveUpdate(home, instance, {
+            version: target,
+            phase: "staged",
+            previousDigest,
+            candidateDigest: sha256(bytes),
+          });
+          staged = true;
+          return true;
         });
-        await atomicReplace(backup, previous, 0o700);
-        await saveUpdate(home, instance, {
-          version: target,
-          phase: "staged",
-          previousDigest,
-          candidateDigest: sha256(bytes),
-        });
-        staged = true;
-        return true;
       } catch {
         console.error("Automatic Docker host update could not be staged.");
         return false;
       }
     },
     async restart() {
-      try {
-        // Type=exec confirms that systemd exec'd the old daemon's helper before
-        // the original exits. The separate unit survives the service stop.
-        const args = [
-          "systemd-run",
-          "--user",
-          "--collect",
-          "--unit",
-          updateUnit(instance),
-          "--property=Type=exec",
-          "--property=Restart=on-failure",
-          "--property=RestartSec=10s",
-          "--",
-          `${p.binary}.previous`,
-          "supervise-update",
-        ];
-        if (instance) args.push("--instance", instance);
-        await command(args);
-      } catch {
-        const update = await readUpdate(home, instance);
-        if (update?.phase === "staged") await saveUpdate(home, instance, { ...update, phase: "failed" });
-        throw new Error("Docker host update supervisor could not start.");
-      }
+      return withUpdateLock(home, instance, async () => {
+        const current = await readUpdate(home, instance);
+        if ((current?.phase !== "starting" && current?.phase !== "staged") || (await uninstallPending(home, instance)))
+          return false;
+        try {
+          // Type=exec confirms that systemd exec'd the old daemon's helper before
+          // the original exits. The separate unit survives the service stop.
+          const args = [
+            "systemd-run",
+            "--user",
+            "--collect",
+            "--unit",
+            updateUnit(instance),
+            "--property=Type=exec",
+            "--property=Restart=on-failure",
+            "--property=RestartSec=10s",
+            "--",
+            `${p.binary}.previous`,
+            "supervise-update",
+          ];
+          if (instance) args.push("--instance", instance);
+          await command(args);
+          return true;
+        } catch {
+          const update = await readUpdate(home, instance);
+          if (update?.phase === "staged") await saveUpdate(home, instance, { ...update, phase: "failed" });
+          throw new Error("Docker host update supervisor could not start.");
+        }
+      });
     },
     async failure() {
       const update = await readUpdate(home, instance);
@@ -624,6 +721,10 @@ async function restorePrevious(store: ManagedStore, home: string, instance: stri
           pendingBinarySha256: update.previousDigest,
         });
         await atomicReplace(binary, previous, 0o700);
+      } else {
+        // A prior rollback may have renamed the binary and failed to sync its
+        // directory. Both digests are still needed until that rename is durable.
+        await syncDirectory(dirname(binary));
       }
       await saveManagedMarker(home, instance, {
         installationId: marker.installationId,
@@ -676,7 +777,7 @@ export async function superviseUpdate(
       const state = await store.load();
       // The original daemon may finish a held poll while systemd stops it.
       // Capture that final heartbeat before starting the candidate.
-      previousHealth = state.lastPollAt;
+      previousHealth = state.lastUpdatePollAt;
       const marker = await validateInstallation(state, home, instance);
       if (marker.pendingBinarySha256) throw new Error("An earlier Docker host upgrade is incomplete");
       const candidate = await ownedFile(candidateFile, home);
@@ -696,8 +797,8 @@ export async function superviseUpdate(
     await service("start");
     const timeout = Date.now() + 90_000;
     for (;;) {
-      // Only a fresh successful poll from the trial may confirm health.
-      const polled = (await store.load()).lastPollAt;
+      // Only a fresh poll that still offers the candidate may confirm health.
+      const polled = (await store.load()).lastUpdatePollAt;
       if (polled !== undefined && polled !== previousHealth) {
         await service("is-active");
         break;

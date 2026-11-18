@@ -2053,7 +2053,7 @@ test("a job of a sandbox whose operation still runs here waits, even if the serv
   expect(f.executed).toEqual([]);
 });
 
-test("a staged update drains the admitted launch job and leaves the next job queued", async () => {
+test("a staged update rechecks the offer after the admitted launch receipt is durable", async () => {
   const first = fixture();
   const next = fixture();
   const offered = Promise.withResolvers<void>();
@@ -2062,6 +2062,10 @@ test("a staged update drains the admitted launch job and leaves the next job que
   const started: string[] = [];
   let failedSave = false;
   let staged = false;
+  let withdrawn = false;
+  let confirmed = false;
+  let rechecked = false;
+  let postDrainReceipt: string[] | undefined;
   const loop = runJobs(
     {
       ...first.store,
@@ -2076,6 +2080,13 @@ test("a staged update drains the admitted launch job and leaves the next job que
     {
       ...first.api,
       async poll(_state, options) {
+        if (withdrawn) {
+          if (options === undefined) {
+            postDrainReceipt = [...acknowledged];
+            return { job: next.job };
+          }
+          return { job: null };
+        }
         if (options?.running?.includes(first.job.requestId))
           return { job: next.job, held: true, targetVersion: "9.0.0" };
         return { job: first.job, held: true };
@@ -2092,9 +2103,25 @@ test("a staged update drains the admitted launch job and leaves the next job que
       },
     },
     {
-      stopping: () => staged,
+      stopping: () => confirmed,
+      update: {
+        staged: () => staged,
+        async checkRecovery() {
+          return false;
+        },
+        async confirm(target) {
+          expect(target).toBeUndefined();
+          confirmed = true;
+          rechecked = true;
+          return false;
+        },
+        async restart() {
+          throw new Error("The withdrawn release must not restart the daemon");
+        },
+      },
       retryCompletion: () => true,
       async beforeAdmission(target) {
+        if (withdrawn) confirmed = true;
         if (!target) return false;
         staged = true;
         offered.resolve();
@@ -2110,8 +2137,11 @@ test("a staged update drains the admitted launch job and leaves the next job que
   await offered.promise;
   expect(drained).toBe(false);
   expect(acknowledged).toEqual([]);
+  withdrawn = true;
   release.resolve();
   await complete;
+  expect(rechecked).toBe(true);
+  expect(postDrainReceipt).toEqual([first.job.requestId]);
   expect(failedSave).toBe(true);
   expect(started).toEqual([first.job.request.sandboxId]);
   expect(acknowledged).toEqual([first.job.requestId]);

@@ -7,6 +7,7 @@ import type { State } from "../src/daemon.ts";
 import {
   automaticUpdate,
   instanceName,
+  prepareUninstall,
   recoverUpdate,
   stateDirectory,
   superviseUpdate,
@@ -80,12 +81,24 @@ test("managed service persists registration and refuses cleanup of unknown files
       }),
       { mode: 0o600 },
     );
-    await writeFile(join(bin, "systemctl"), "#!/bin/sh\nexit 1\n", { mode: 0o700 });
+    const intent = join(directory, "uninstall-pending");
+    const journal = join(directory, "update.json");
+    const contents = await readFile(journal, "utf8");
+    await writeFile(intent, "", { mode: 0o600 });
+    // Insert a non-owned file at daemon-reload so the final rmdir fails
+    // after the owned update files have already been removed.
+    const unrelated = join(directory, "late-unrelated");
+    await writeFile(join(bin, "systemctl"), `#!/bin/sh\ntouch '${unrelated}'\n`, { mode: 0o700 });
     const failedRemoval = run("await removeInstallation()");
     expect(failedRemoval.exitCode).not.toBe(0);
+    expect(await readFile(journal, "utf8")).toBe(contents);
+    expect(await readFile(backup, "utf8")).toBe("verified host bytes");
+    expect((await lstat(backup)).mode & 0o777).toBe(0o700);
+    expect(await Bun.file(intent).exists()).toBe(true);
     expect(await readFile(join(directory, "state.json"), "utf8")).toBe(JSON.stringify(state));
     expect(await readFile(join(home, ".config/systemd/user/armada-docker-host.service"), "utf8")).toBe(unit);
     await writeFile(join(bin, "systemctl"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    await rm(unrelated);
     expect(run("await removeInstallation()").exitCode).toBe(0);
     expect(await Bun.file(join(bin, "armada-docker-host")).exists()).toBe(false);
     expect(await Bun.file(backup).exists()).toBe(false);
@@ -347,7 +360,7 @@ test.each(["healthy", "failed start", "failed health"])(
             starts.push(binary);
             if (binary === f.oldBytes) return;
             if (outcome === "failed start") throw new Error("exec failed");
-            const state = { ...f.state, lastPollAt: "2026-11-13T00:01:00.000Z" };
+            const state = { ...f.state, lastUpdatePollAt: "2026-11-13T00:01:00.000Z" };
             await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
           }
           if (args.includes("is-active") && outcome === "failed health") throw new Error("daemon exited");
@@ -404,6 +417,31 @@ test("a staged release withdrawn from the poll does not stop job admission", asy
   }
 });
 
+test("uninstall cancels a staged release even without a successful poll", async () => {
+  const f = await upgradeFixture();
+  try {
+    const journal = await writeUpdateFixture(f, "staged");
+    const updater = automaticUpdate(f.state, { home: f.home });
+    expect(await updater.beforeAdmission("9.0.0")).toBe(true);
+
+    const io = {
+      home: f.home,
+      async service() {
+        return "";
+      },
+    };
+    await prepareUninstall(f.state, undefined, io);
+    // A daemon that was already draining must not schedule the cancelled candidate.
+    expect(await updater.restart()).toBe(false);
+    expect(JSON.parse(await readFile(journal, "utf8")).phase).toBe("cancelled");
+    // Retry after revocation and reboot, with the original durable state.
+    await prepareUninstall(f.state, undefined, io);
+    expect(await readFile(f.binary, "utf8")).toBe(f.oldBytes);
+  } finally {
+    await rm(f.home, { recursive: true, force: true });
+  }
+});
+
 test("restarted supervisor restores the previous binary after an interruption before the rollback rename", async () => {
   const f = await upgradeFixture();
   const bin = join(f.home, ".local/bin");
@@ -430,6 +468,36 @@ test("restarted supervisor restores the previous binary after an interruption be
     expect(starts).toEqual([f.oldBytes]);
     expect(JSON.parse(await readFile(journal, "utf8")).phase).toBe("failed");
     expect(await validateInstallation(f.state, f.home)).toEqual(f.marker);
+  } finally {
+    await chmod(bin, 0o700);
+    await rm(f.home, { recursive: true, force: true });
+  }
+});
+
+test("rollback keeps both digests until the restored executable directory is synced", async () => {
+  const f = await upgradeFixture();
+  const bin = join(f.home, ".local/bin");
+  try {
+    const journal = await interruptedTrial(f);
+    // Simulate an interruption after the rename, with both digests still valid.
+    const marker = { ...f.marker, binarySha256: f.hash(f.newBytes), pendingBinarySha256: f.hash(f.oldBytes) };
+    await writeFile(f.markerFile, JSON.stringify(marker));
+    await writeFile(f.binary, f.oldBytes);
+    await chmod(bin, 0o300);
+    const io = {
+      home: f.home,
+      async service() {
+        return "";
+      },
+    };
+    await expect(recoverUpdate(f.store, undefined, io)).rejects.toThrow();
+    expect(await validateInstallation(f.state, f.home)).toEqual(marker);
+    expect(JSON.parse(await readFile(journal, "utf8")).phase).toBe("starting");
+
+    await chmod(bin, 0o700);
+    await recoverUpdate(f.store, undefined, io);
+    expect(await validateInstallation(f.state, f.home)).toEqual(f.marker);
+    expect(JSON.parse(await readFile(journal, "utf8")).phase).toBe("failed");
   } finally {
     await chmod(bin, 0o700);
     await rm(f.home, { recursive: true, force: true });

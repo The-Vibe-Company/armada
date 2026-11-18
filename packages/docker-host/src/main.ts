@@ -21,6 +21,7 @@ import {
   installService,
   inventory,
   managedUpdateInstance,
+  prepareUninstall,
   recoverUpdate,
   removeInstallation,
   servicePreflight,
@@ -29,7 +30,6 @@ import {
   superviseUpdate,
   uninstallPreflight,
   upgradeService,
-  validateInstallation,
 } from "./service.ts";
 
 const usage = `Usage:
@@ -149,7 +149,7 @@ async function main(args: string[]) {
   if (command === "install") await servicePreflight(instance);
   if (command === "uninstall") {
     const state = await store.load();
-    await validateInstallation(state, undefined, instance);
+    await prepareUninstall(state, instance);
     const deadline = Date.now() + 10 * 60_000;
     const api = httpApi();
     // Keep the service alive to execute ordinary bound stop/delete jobs. The
@@ -280,11 +280,17 @@ async function main(args: string[]) {
     try {
       let nextImageCleanup = 0;
       await runJobs(store, api, runtime, {
-        stopping: () => stopping || update?.staged === true,
+        stopping: () => stopping,
         ...(update
           ? {
               beforeAdmission: update.beforeAdmission,
               retryCompletion: () => !stopping,
+              update: {
+                staged: () => update.staged,
+                confirm: update.confirm,
+                checkRecovery: update.checkRecovery,
+                restart: update.restart,
+              },
             }
           : {}),
         sleep: Bun.sleep,
@@ -310,7 +316,6 @@ async function main(args: string[]) {
       await Promise.all(scans);
       await expiry.drain();
     }
-    if (!stopping && update?.staged) await update.restart();
   } finally {
     await release();
   }

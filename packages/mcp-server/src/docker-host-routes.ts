@@ -361,7 +361,10 @@ export function createDockerHostRoutes(
           {
             ...(retentionSeconds === undefined ? {} : { retentionSeconds }),
             ...(wait === undefined ? {} : { held: true }),
-            ...dockerHostVersions,
+            minimumVersion: dockerHostVersions.minimumVersion,
+            ...((await store.canOfferUpdate(token, installationId))
+              ? { targetVersion: dockerHostVersions.targetVersion }
+              : {}),
             resumeClaims,
             job,
             // Every generation with a queued resume/bootstrap, so the daemon

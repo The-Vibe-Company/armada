@@ -509,6 +509,7 @@ test("a held host poll answers as soon as work appears and never beyond its hold
     },
     resumeClaimsForHost: async () => [],
     pendingStartsForHost: async () => [],
+    canOfferUpdate: async () => true,
     async poll(...args: unknown[]) {
       polls++;
       running.push(args[8] as readonly string[]);
@@ -650,4 +651,13 @@ test("a host poll skips work the daemon reports running and hands out another sa
     job: { operation: "stop", request: { sandboxId: first.id } },
   });
   expect(time).toBe(2000);
+
+  // Revoked hosts retain authorization to reconcile bound cleanup, while the
+  // same successful cleanup poll no longer authorizes an executable swap.
+  await store.revoke(actor, host.hostId);
+  const cleanup = await poll([]);
+  expect(cleanup.status).toBe(200);
+  const body = await cleanup.json();
+  expect(body).toMatchObject({ job: { operation: "stop", request: { sandboxId: first.id } } });
+  expect(body).not.toHaveProperty("targetVersion");
 });
