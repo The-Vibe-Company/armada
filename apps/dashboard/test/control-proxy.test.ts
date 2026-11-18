@@ -655,6 +655,10 @@ test("proxy-generated failures match the published failure schema and decode to 
   }
 });
 
+/** A concrete request path for an OpenAPI or proxy route template. */
+const fillParameters = (template: string) =>
+  template.replace("{id}", "11111111-1111-4111-8111-111111111111").replace("{name}", "memo%20v2.pdf");
+
 test("every operation in the published OpenAPI description crosses the public proxy with a bearer", async () => {
   const published = (await import("../../../docs/openapi.json")).default as {
     paths: Record<string, Record<string, unknown>>;
@@ -667,7 +671,8 @@ test("every operation in the published OpenAPI description crosses the public pr
     );
     expect(operations.length).toBeGreaterThan(0);
     const blocked: string[] = [];
-    for (const { path, verb } of operations) {
+    for (const { path: template, verb } of operations) {
+      const path = fillParameters(template);
       const forwarded: string[] = [];
       const response = await forwardControl(
         new Request(`https://dashboard.test${path}`, {
@@ -691,18 +696,54 @@ test("every operation in the published OpenAPI description crosses the public pr
 });
 
 test("every route the public proxy forwards is published or has a recorded reason to stay outside the description", async () => {
-  const published = (await import("../../../docs/openapi.json")).default as { paths: Record<string, unknown> };
-  const { PRIVATE_POST_PATHS } = await import("../src/app/api/v1/[...path]/control-proxy.ts");
+  const published = (await import("../../../docs/openapi.json")).default as {
+    paths: Record<string, Record<string, unknown>>;
+  };
+  const { PARAMETERIZED_CONTROL_ROUTES, PRIVATE_POST_PATHS } = await import(
+    "../src/app/api/v1/[...path]/control-proxy.ts"
+  );
   const { UNPUBLISHED_REST_ROUTES, unpublishedReason } = await import(
     "../../../packages/mcp-server/src/public-rest-routes.ts"
   );
-  const publishedRoutes = Object.keys(published.paths).map((path) => path.replace(/^\/api\/v1\//, ""));
-  const forwarded = [
-    ...PRIVATE_POST_PATHS,
-    ...Object.keys(PUBLIC_CONTROL_ROUTES),
-    "sandboxes/11111111-1111-4111-8111-111111111111",
+  const publishedOperations = Object.entries(published.paths).flatMap(([path, verbs]) =>
+    Object.keys(verbs).map((verb) => `${verb.toUpperCase()} ${path.replace(/^\/api\/v1\//, "")}`),
+  );
+  const publishedRoutes = publishedOperations.map((operation) => operation.split(" ")[1]!);
+  const operations = [
+    ...[...PRIVATE_POST_PATHS].map((path) => ({ method: "POST", path })),
+    ...Object.entries(PUBLIC_CONTROL_ROUTES).flatMap(([path, methods]) => methods.map((method) => ({ method, path }))),
+    ...PARAMETERIZED_CONTROL_ROUTES,
   ];
-  expect(forwarded.filter((route) => !publishedRoutes.includes(route) && !unpublishedReason(route))).toEqual([]);
+  // Each parameterized shape really is forwarded, so this list cannot drift from the proxy's matchers.
+  const env = process.env.ARMADA_MCP_URL;
+  process.env.ARMADA_MCP_URL = "https://armada.test/mcp";
+  try {
+    for (const { method, path } of PARAMETERIZED_CONTROL_ROUTES) {
+      const url = `https://dashboard.test/api/v1/${fillParameters(path)}`;
+      const upstream: string[] = [];
+      const response = await forwardControl(
+        new Request(url, { method, headers: { authorization: "Bearer masked" } }),
+        new URL(url).pathname
+          .replace(/^\/api\/v1\//, "")
+          .split("/")
+          .map(decodeURIComponent),
+        async (target) => {
+          upstream.push(new URL(target).pathname);
+          return Response.json({});
+        },
+      );
+      expect([method, path, response.status, upstream]).toEqual([method, path, 200, [new URL(url).pathname]]);
+    }
+  } finally {
+    if (env === undefined) delete process.env.ARMADA_MCP_URL;
+    else process.env.ARMADA_MCP_URL = env;
+  }
+  const forwarded = operations.map(({ path }) => path);
+  expect(
+    operations
+      .filter(({ method, path }) => !publishedOperations.includes(`${method} ${path}`) && !unpublishedReason(path))
+      .map(({ method, path }) => `${method} ${path}`),
+  ).toEqual([]);
   expect(publishedRoutes.filter((route) => unpublishedReason(route) !== undefined)).toEqual([]);
   // A reason for a route the proxy no longer forwards would hide nothing; drop it instead.
   expect(

@@ -2,6 +2,10 @@ import {
   API_FAILURE_STATUS,
   CONTROL_BODY_MAX_BYTES,
   controlBodyMaxBytes,
+  DOCKER_OUTPUT_DIRECTORY,
+  OUTPUT_DIRECTORY,
+  OUTPUT_MAX_BYTES,
+  OUTPUT_MAX_FILES,
   VERSION,
   vaultControlRoute,
 } from "@armada/core";
@@ -20,7 +24,7 @@ import {
   responseJsonSchema,
   TEMPLATE_LAUNCH_RESPONSE,
 } from "./launch-response-schemas.ts";
-import { PUBLISHED_REST_ROUTES } from "./public-rest-routes.ts";
+import { PUBLISHED_REST_GET_ROUTES, PUBLISHED_REST_ROUTES } from "./public-rest-routes.ts";
 import { DRAIN_REFUSAL } from "./server-request-drain.ts";
 import { createArmadaServer, type ToolContext } from "./tools.ts";
 
@@ -102,6 +106,114 @@ function restNames<T>(value: T, rename: Readonly<Record<string, string>>): T {
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, restNames(item, rename)])) as T;
   return value;
 }
+
+/** Failures of the outputs routes: the server's bare code, or the dashboard endpoint's typed failure. */
+const OUTPUT_FAILURE = {
+  "application/json": {
+    schema: { anyOf: [{ $ref: "#/components/schemas/Failure" }, { $ref: "#/components/schemas/OutputFailure" }] },
+  },
+};
+const SANDBOX_ID_PARAMETER = {
+  name: "id",
+  in: "path",
+  required: true,
+  description: "The sandbox id, a lowercase UUID.",
+  schema: { type: "string", pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
+};
+const OUTPUT_ACCESS =
+  " Only the sandbox owner or an org admin can read it, the sandbox must not be deleted or application-secret tainted, and stopped compute is never read: the last snapshot taken while compute was live is served. See docs/sandbox-outputs.md.";
+const OUTPUT_COMMON_RESPONSES = {
+  "401": { description: "Missing or invalid bearer.", content: OUTPUT_FAILURE },
+  "404": {
+    description:
+      "No such sandbox or file, or the caller is neither its owner nor an org admin, or the sandbox is deleted or application-secret tainted.",
+    content: OUTPUT_FAILURE,
+  },
+  default: { description: "Public API failure", content: OUTPUT_FAILURE },
+};
+/** Declared output snapshots (`sandbox-outputs.ts`): GET, path parameters, no request body. */
+const OUTPUT_OPERATIONS: Record<(typeof PUBLISHED_REST_GET_ROUTES)[number], object> = {
+  "sandboxes/{id}/outputs": {
+    get: {
+      operationId: "sandbox_outputs_list",
+      description: `The files of the sandbox's last output snapshot, from its declared outputs directory (${OUTPUT_DIRECTORY} on Boat and Modal, ${DOCKER_OUTPUT_DIRECTORY} on Docker), in name order.${OUTPUT_ACCESS} A sandbox.output.available webhook names a new or changed file.`,
+      security: [{ serviceToken: [] }],
+      parameters: [SANDBOX_ID_PARAMETER],
+      responses: {
+        "200": {
+          description: "Success",
+          headers: { "Cache-Control": { schema: { type: "string", const: "private, no-store" } } },
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["directory", "files"],
+                additionalProperties: false,
+                properties: {
+                  directory: { type: "string", description: "The declared outputs directory in the sandbox." },
+                  files: {
+                    type: "array",
+                    maxItems: OUTPUT_MAX_FILES,
+                    items: {
+                      type: "object",
+                      required: ["name", "size", "sha256", "updatedAt"],
+                      additionalProperties: false,
+                      properties: {
+                        name: { type: "string", minLength: 1, maxLength: 255 },
+                        size: { type: "integer", minimum: 0, maximum: OUTPUT_MAX_BYTES },
+                        sha256: { type: "string", description: "Hex SHA-256 digest of the file bytes." },
+                        updatedAt: { type: "string", format: "date-time" },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        ...OUTPUT_COMMON_RESPONSES,
+      },
+    },
+  },
+  "sandboxes/{id}/outputs/{name}": {
+    get: {
+      operationId: "sandbox_outputs_download",
+      description: `Download one file of the sandbox's last output snapshot as an attachment.${OUTPUT_ACCESS}`,
+      security: [{ serviceToken: [] }],
+      parameters: [
+        SANDBOX_ID_PARAMETER,
+        {
+          name: "name",
+          in: "path",
+          required: true,
+          description: "The file name from the outputs list, percent-encoded as one path segment.",
+          schema: { type: "string", minLength: 1 },
+        },
+      ],
+      responses: {
+        "200": {
+          description: "The file bytes. Content-Type is inferred from the file name, else application/octet-stream.",
+          headers: {
+            "Content-Disposition": {
+              description: "attachment, with the UTF-8 file name (filename*).",
+              schema: { type: "string" },
+            },
+            "Content-Length": { schema: { type: "integer", minimum: 0 } },
+            "X-Content-Type-Options": { schema: { type: "string", const: "nosniff" } },
+            "Cache-Control": { schema: { type: "string", const: "private, no-store" } },
+          },
+          content: { "*/*": { schema: { type: "string", contentMediaType: "application/octet-stream" } } },
+        },
+        "400": { description: "The name is not valid percent-encoding.", content: OUTPUT_FAILURE },
+        "503": {
+          description: "Stored outputs cannot be decrypted on this server, or the API is temporarily unavailable.",
+          content: OUTPUT_FAILURE,
+        },
+        ...OUTPUT_COMMON_RESPONSES,
+      },
+    },
+  },
+};
 
 /**
  * Describe shared REST operations using the very schemas registered by the server.
@@ -236,18 +348,29 @@ export async function generateOpenApi() {
         },
       };
     }
+    for (const route of PUBLISHED_REST_GET_ROUTES) paths[`/api/v1/${route}`] = OUTPUT_OPERATIONS[route];
     return {
       openapi: "3.1.0",
       info: {
         title: "Armada shared control API",
         version: VERSION,
         description:
-          "Generated integration REST contracts. Includes SDK operations, launch discovery (launch/options, golden/list) and shared-tool routes. sandbox/launch accepts a golden launch or a Docker launch. Administrative and provider-specific extensions are outside this description. Files use sandbox/exec; this description does not assert provider availability.",
+          "Generated integration REST contracts. Includes SDK operations, launch discovery (launch/options, golden/list) and shared-tool routes. sandbox/launch accepts a golden launch or a Docker launch. Administrative and provider-specific extensions are outside this description. Files use sandbox/exec while compute runs; declared output snapshots are listed and downloaded with GET sandboxes/{id}/outputs, also after stop. This description does not assert provider availability.",
       },
       paths,
       components: {
         securitySchemes: { serviceToken: { type: "http", scheme: "bearer" } },
         schemas: {
+          OutputFailure: {
+            type: "object",
+            required: ["error"],
+            properties: {
+              error: {
+                type: "string",
+                description: "Bare failure code answered by the outputs routes, for example not_found or invalid_name.",
+              },
+            },
+          },
           DrainRefusal: {
             type: "object",
             required: ["error"],

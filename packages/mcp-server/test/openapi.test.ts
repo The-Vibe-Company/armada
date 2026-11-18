@@ -47,11 +47,12 @@ test("published OpenAPI matches current server contracts and preserves REST fiel
 });
 
 test("every published operation states the body limit both public boundaries enforce", () => {
-  type Operation = { post: { requestBody: { "x-max-body-bytes": number }; responses: Record<string, unknown> } };
+  type Operation = { post?: { requestBody: { "x-max-body-bytes": number }; responses: Record<string, unknown> } };
   const limits = Object.fromEntries(
-    Object.entries(published.paths as unknown as Record<string, Operation>).map(([path, operation]) => {
-      expect(operation.post.responses["413"]).toBeDefined();
-      return [path, operation.post.requestBody["x-max-body-bytes"]];
+    Object.entries(published.paths as unknown as Record<string, Operation>).flatMap(([path, { post }]) => {
+      if (!post) return [];
+      expect(post.responses["413"]).toBeDefined();
+      return [[path, post.requestBody["x-max-body-bytes"]]];
     }),
   );
   expect(limits["/api/v1/sandbox/send"]).toBe(CONTROL_BODY_MAX_BYTES);
@@ -82,7 +83,7 @@ test("published 503 schema accepts the real drain refusal and a structured unava
   };
   const refusal = z.fromJSONSchema(
     inline(
-      (published.paths as Record<string, Operation>)["/api/v1/sandbox/stop"]!.post.responses["503"]!.content[
+      (published.paths as unknown as Record<string, Operation>)["/api/v1/sandbox/stop"]!.post.responses["503"]!.content[
         "application/json"
       ].schema,
     ) as Parameters<typeof z.fromJSONSchema>[0],

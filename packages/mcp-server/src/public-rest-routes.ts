@@ -1,9 +1,12 @@
 /**
  * The integration REST contract inventory. `docs/openapi.json` publishes exactly
- * `PUBLISHED_REST_ROUTES`. Every other route that the public dashboard endpoint
+ * `PUBLISHED_REST_ROUTES` and `PUBLISHED_REST_GET_ROUTES`. Every other route that the public dashboard endpoint
  * (`/api/v1/*`) forwards must have a reason in `UNPUBLISHED_REST_ROUTES`. The
  * dashboard proxy test checks both directions, so a new forwarded route cannot
  * silently fall outside the description. This module imports nothing.
+ *
+ * `PUBLISHED_REST_ROUTES` are POST operations of the control dispatcher;
+ * `PUBLISHED_REST_GET_ROUTES` are GET operations whose path carries parameters.
  */
 export const PUBLISHED_REST_ROUTES = [
   // Discovery: what a launch can ask for, and which goldens it can name.
@@ -32,6 +35,9 @@ export const PUBLISHED_REST_ROUTES = [
   "templates/launch",
   "logs/read",
 ] as const;
+
+/** Published GET operations with path parameters (`{name}` is one percent-encoded segment). */
+export const PUBLISHED_REST_GET_ROUTES = ["sandboxes/{id}/outputs", "sandboxes/{id}/outputs/{name}"] as const;
 
 /**
  * Forwarded routes outside the integration description, by exact route or by a
@@ -80,7 +86,7 @@ export const UNPUBLISHED_REST_ROUTES: Readonly<Record<string, string>> = {
   "sandbox/launch-access-v1": "Versioned first-party launch extension.",
   "sandbox/bind-credential": "Dashboard credential repair.",
   "sandbox/test-model-connection": "Dashboard credential check.",
-  "sandboxes/": "Dashboard sandbox deletion (DELETE /api/v1/sandboxes/<id>).",
+  "sandboxes/{id}": "Dashboard sandbox deletion (DELETE).",
 };
 
 /** Why a forwarded route is outside the description, or undefined when it has no reason. */

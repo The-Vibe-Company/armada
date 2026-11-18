@@ -4,6 +4,17 @@ import { NextResponse } from "next/server";
 const CONTROL_PREFIX = "/api/v1/";
 const MAX_BODY_BYTES = CONTROL_BODY_MAX_BYTES;
 
+/**
+ * Routes with path parameters that the public endpoint forwards with a bearer, beyond the
+ * static route tables. The matchers in `forwardControl` admit exactly these shapes; the
+ * proxy test fills each in and checks it is forwarded and published or given a reason.
+ */
+export const PARAMETERIZED_CONTROL_ROUTES = [
+  { method: "DELETE", path: "sandboxes/{id}" },
+  { method: "GET", path: "sandboxes/{id}/outputs" },
+  { method: "GET", path: "sandboxes/{id}/outputs/{name}" },
+] as const;
+
 /** POST routes the public endpoint forwards with a bearer. */
 export const PRIVATE_POST_PATHS: ReadonlySet<string> = new Set([
   "golden/adopt",
