@@ -32,7 +32,7 @@ import { createDockerLaunchEnvironment } from "./docker-launch-environment.ts";
 import type { createDockerNormalSend } from "./docker-normal-send.ts";
 import { captureDockerStopOutputs, createDockerOutputReader } from "./docker-outputs.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
-import { readEventPages, validateLogPagination } from "./event-pagination.ts";
+import { readEventPages } from "./event-pagination.ts";
 import { isPrivateModelEvent } from "./model-usage.ts";
 import { observeProviderCall } from "./request-observability.ts";
 import { createRuntimeAgent } from "./runtime-agent.ts";
@@ -507,11 +507,11 @@ export function createDockerSandboxControls(
       (args.limit !== undefined &&
         (typeof args.limit !== "number" || !Number.isInteger(args.limit) || args.limit < 1 || args.limit > 500)) ||
       (args.coalesce !== undefined && typeof args.coalesce !== "boolean") ||
+      (args.direction === "backward" && args.all) ||
       (args.since_cursor !== undefined && typeof args.since_cursor !== "string") ||
       (args.conversation_id !== undefined && (typeof args.conversation_id !== "string" || !args.conversation_id))
     )
       throw invalid();
-    validateLogPagination(args);
     const snapshot: { row: Row; queued?: QueuedPrompt[]; final?: QueuedPrompt[] } = { row };
     const {
       events: rawEvents,
