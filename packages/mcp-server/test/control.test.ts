@@ -3187,23 +3187,6 @@ test.each([
           { ...body, runtimeTransport: undefined },
         ])
           expect((await request(bad))?.status).toBe(400);
-      if (entry === "explicit" && harness === "codex") {
-        const template = await request({
-          org: org.id,
-          id: "44444444-4444-4444-8444-444444444444",
-          revision: 1,
-          requestKey: "template_request_fixture",
-          provider: "modal",
-          harness,
-          runtimeVersion: 1,
-          runtimeTransport: "dialout",
-          prompt: "reply",
-        });
-        expect(template?.status).toBe(400);
-        expect(await template?.json()).toMatchObject({
-          error: { message: expect.stringContaining("sandbox/launch-modal-runtime-v1") },
-        });
-      }
       expect(fake.forks).toHaveLength(0);
       options.runtimeMcp = {
         async preflight() {

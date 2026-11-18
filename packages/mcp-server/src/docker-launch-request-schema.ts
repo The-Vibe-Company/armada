@@ -10,7 +10,7 @@ import { z } from "zod";
 import { DOCKER_PROMPT } from "./docker-send-request-schema.ts";
 
 // Explicit case classes: JSON Schema patterns drop regex flags, so an `/i` flag would not be published.
-const launchUuid = z.string().regex(/^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$/);
+export const launchUuid = z.string().regex(/^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$/);
 export const sharedRestLaunchFields = {
   harness: z.enum(HARNESSES),
   credentialId: launchUuid.optional(),
