@@ -666,9 +666,7 @@ export function createSqlData(
         // A still-pending cursor is older than any later concrete run, so keep it:
         // reconciliation registers everything after it and duplicates are no-ops.
         // Each accepted steer adds one unresolved replacement; the cursor stays
-        // pending until every one of them has its own registered run. A cursor
-        // older than reconciliation's one-hour window is expired, not pending:
-        // the new steer restarts it from its own prior run.
+        // pending until every one of them has its own registered run, even after downtime.
         await sql.query(
           `insert into public.native_steer_cursors(sandbox_id,after_prompt_id,steer_id,pending_since,pending_steers)
           select s.id,$5,gen_random_uuid(),clock_timestamp(),1 from public.sandboxes s
@@ -677,12 +675,12 @@ export function createSqlData(
               and s.provider in ('boat','modal') and not s.boat_runtime
               and s.runtime_transport is distinct from 'dialout'
           on conflict(sandbox_id) do update set
-            after_prompt_id=case when native_steer_cursors.pending_since>clock_timestamp()-interval '1 hour'
+            after_prompt_id=case when native_steer_cursors.pending_since is not null
               then coalesce(native_steer_cursors.after_prompt_id,excluded.after_prompt_id)
               else coalesce(excluded.after_prompt_id,native_steer_cursors.after_prompt_id) end,
-            pending_steers=case when native_steer_cursors.pending_since>clock_timestamp()-interval '1 hour'
+            pending_steers=case when native_steer_cursors.pending_since is not null
               then native_steer_cursors.pending_steers+1 else 1 end,
-            steer_id=excluded.steer_id,pending_since=excluded.pending_since`,
+            steer_id=excluded.steer_id,pending_since=coalesce(native_steer_cursors.pending_since,excluded.pending_since)`,
           [...scope, id, providerSandboxId, priorPromptId || null],
         );
       },
