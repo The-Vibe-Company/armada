@@ -11,7 +11,10 @@ const retained = new WeakMap<Error, FailureDiagnostic>();
 // directories, and the stack's message line can contain input or configuration.
 const sourceFrame =
   /^\s*at (?:[^\n]*? \()?[^\s?#()]*(?:packages\/(?:core|mcp-server|provider-boat|provider-modal|agent-runtime|docker-host)\/src\/|node_modules\/)((?:[\w@.-]+\/)*[\w.-]+\.[cm]?[jt]s:\d+:\d+)\)?$/;
-const bundledFrame = /^\s*at (?:[^\n]*? \()?[^\s?#()]*\/(main\.js:[1-9]\d{0,6}:[1-9]\d{0,5})\)?$/;
+const bundledFrame = /^\s*at (?:[^\n]*? \()?[^\s?#()]*\/(main\.js:[1-9]\d{0,6}:[1-9]\d{0,6})\)?$/;
+// Bun standalone names the bundled entry after the executable under its virtual filesystem.
+const compiledFrame =
+  /^\s*at (?:[^\n]*? \()?\/\$bunfs\/root\/((?:armada-runtime|armada-server)(?:\.exe)?:[1-9]\d{0,6}:[1-9]\d{0,6})\)?$/;
 const internalMessages = new Set([
   "connection terminated unexpectedly",
   "runtime_startup_deadline",
@@ -95,7 +98,7 @@ function projectError(error: Error): FailureDiagnostic {
   )
     .slice(0, 16)
     .flatMap((line) => {
-      const frame = sourceFrame.exec(line)?.[1] ?? bundledFrame.exec(line)?.[1];
+      const frame = sourceFrame.exec(line)?.[1] ?? bundledFrame.exec(line)?.[1] ?? compiledFrame.exec(line)?.[1];
       return frame ? [redactKnownTokens(frame)] : [];
     })
     .slice(0, 8);

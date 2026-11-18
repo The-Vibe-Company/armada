@@ -94,7 +94,8 @@ test("authenticated boot and turn diagnostics retain their initiating request ID
         log,
       );
     const error = new Error("private_config_canary");
-    error.stack += "\n    at main (/private_config_canary/runtime/main.js:701:12)";
+    error.stack +=
+      "\n    at main (/private_config_canary/runtime/main.js:701:12)\n    at /$bunfs/root/armada-runtime:801:19";
     const diagnostic = runtimeOperatorDiagnostic(error, "session_start_failed");
     const unrelated = await report({ stage: "harness_turn_failed", commandId: "foreign_command", diagnostic });
     expect(unrelated?.status).toBe(400);
@@ -107,7 +108,7 @@ test("authenticated boot and turn diagnostics retain their initiating request ID
         phase: "runtime.harness_turn_failed",
         errorClass: "HarnessError",
         message: "session_start_failed",
-        stack: ["main.js:701:12"],
+        stack: ["main.js:701:12", "armada-runtime:801:19"],
         requestId: send?.headers.get("x-request-id"),
         sandboxId: f.row.id,
       },

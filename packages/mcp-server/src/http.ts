@@ -85,7 +85,7 @@ export interface HandlerOptions {
   goldenBuilds?: GoldenBuildJobs;
   goldenAdoption?: import("@armada/core/server").GoldenAdoption;
   /** A provider for one boat.dev key. The key is used in this process only. */
-  providerFor(apiKey: string, caller?: { userId: string; orgId: string }): Provider;
+  providerFor(apiKey: string, caller?: { userId: string; orgId: string }, sandboxId?: string): Provider;
   /**
    * The Modal provider for a Modal golden or sandbox, given the caller's resolved Modal token pair and the
    * golden's pinned binding. Absent until the Modal adapter (#513): a Modal record then gets a typed
@@ -284,7 +284,14 @@ export function providerRegistry(
       });
       const provider = runtime
         ? await runtime(key, target, caller)
-        : native(options.providerFor(key, { userId: caller.userId, orgId: target.orgId }), target);
+        : native(
+            options.providerFor(
+              key,
+              { userId: caller.userId, orgId: target.orgId },
+              "harness" in target ? target.id : undefined,
+            ),
+            target,
+          );
       const authority = Object.freeze({ scope, ownerId: scope === "org" ? target.orgId : caller.userId });
       // Keep source authority immutable even if a provider factory caches a shared client.
       return new Proxy(provider, {
