@@ -1,6 +1,14 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { encryptSecret, type Provider, ProviderError } from "@armada/core";
 import { createSqlVaultStore } from "@armada/core/server";
+import {
+  createModalProvider,
+  createSqlModalStore,
+  type Machine,
+  type RunnerDistribution,
+  type Scope,
+} from "@armada/provider-modal";
+import type { ModalClient } from "modal";
 import type { AuthIo } from "../../cli/src/auth-commands.ts";
 import { run } from "../../cli/src/run.ts";
 import { memorySessionStore } from "../../cli/src/session.ts";
@@ -113,11 +121,39 @@ test("sandbox deletion authorizes live owners/admins, fences activity, and prese
     boat.provider.delete = async () => {
       throw new ProviderError({ provider: "boat", code: "unavailable", message: "offline", retryable: true });
     };
+    const info = spyOn(console, "info");
     const providerFailure = await request(failed);
     expect(providerFailure.status).toBe(502);
     expect(await providerFailure.json()).toMatchObject({ error: { code: "provider_unavailable" } });
     expect((await state(failed)).status).toBe("failed");
     expect((await state(failed)).deleted_at).toBeNull();
+    const retry = await request(failed);
+    expect(retry.status).toBe(409);
+    expect(await retry.json()).toMatchObject({ error: { code: "sandbox_not_ready" } });
+    // The refusal names the live lease from its own statement, and that lease names its writer.
+    const events = info.mock.calls.flatMap(([line]) => {
+      try {
+        return [JSON.parse(String(line))];
+      } catch {
+        return [];
+      }
+    });
+    info.mockRestore();
+    const deleteAdmission = events.find((e) => e.event === "sandbox_activity_admitted" && e.sandboxId === failed);
+    expect(deleteAdmission).toMatchObject({ kind: "delete", activityLeaseId: expect.any(String) });
+    expect(events.find((e) => e.event === "sandbox_delete_admission_refused" && e.sandboxId === failed)).toEqual({
+      event: "sandbox_delete_admission_refused",
+      sandboxId: failed,
+      observed: {
+        status: "failed",
+        activityLeaseId: deleteAdmission.activityLeaseId,
+        activityLeaseHeld: true,
+        reconcileLeaseHeld: false,
+        stopRequested: false,
+        generationChanged: false,
+        managed: false,
+      },
+    });
     await db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [failed]);
     boat.provider.delete = async () => ({ status: "pending" });
     expect((await request(failed)).status).toBe(409);
@@ -344,6 +380,247 @@ test("admin extension and deletion resolve private-source resources through thei
       expect((await db.query("select id from sandbox_work_recovery where sandbox_id=$1", [id])).rows).toEqual([]);
     }
     expect(accounts).toEqual(["owner", "owner", "owner", "owner"]);
+  } finally {
+    await server.close();
+  }
+});
+
+// #2594: the HTTP stop writer leaves a Modal sandbox deletable by the very next request.
+// Delete reuses the stop's exit proof instead of terminating again. A transient image
+// timeout is retried inside the request; a persistent one, or a missing App, fails without
+// publishing deletion and releases the server fence so the caller's retry is admitted at once.
+test("a Modal sandbox stopped over HTTP is deleted by the next request, and failed deletes retry at once", async () => {
+  const server = await harness({}, await sharedDatabase());
+  try {
+    const { people: p, db } = server;
+    const ownerToken = await server.token(p.owner);
+    const binding = { workspace: "ws", environment: "main", appId: "ap-delete" };
+    const scope: Scope = { orgId: p.org, userId: p.owner, visibility: "private", binding };
+    await db.query(
+      `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
+      values($1,$2,'delete-modal','private','modal','master','image',$3,$4,$5,'{"repos":[],"init":[]}')`,
+      [p.org, p.owner, binding.workspace, binding.environment, binding.appId],
+    );
+    const sdk: string[] = [];
+    let imageTimeouts = 0,
+      missingApps = 0,
+      appLookups = 0,
+      missingAppAt = 0;
+    const cleanupDelays: number[] = [];
+    const detachedRuns: Promise<void>[] = [];
+    let heldImage: { imageId: string; entered: () => void; released: Promise<void> } | undefined;
+    const timeout = (message: string) => Object.assign(Error(message), { name: "TimeoutError" });
+    const exited = new Set<string>();
+    const client = {
+      apps: {
+        fromName: async () => {
+          if (missingApps-- > 0 || ++appLookups === missingAppAt)
+            throw Object.assign(Error("app missing"), { name: "NotFoundError" });
+          return { appId: binding.appId };
+        },
+      },
+      sandboxes: {
+        fromId: async (physicalId: string) => ({
+          snapshotFilesystem: async () => {
+            sdk.push(`snapshot:${physicalId}`);
+            return { imageId: `recovery-${physicalId}` };
+          },
+          terminate: async () => {
+            if (exited.has(physicalId)) throw Error("A confirmed stop must not be terminated again.");
+            sdk.push(`terminate:${physicalId}`);
+            exited.add(physicalId);
+          },
+          poll: async () => (exited.has(physicalId) ? 0 : null),
+        }),
+      },
+      images: {
+        delete: async (imageId: string) => {
+          if (imageId === heldImage?.imageId) {
+            heldImage.entered();
+            await heldImage.released;
+          }
+          if (imageTimeouts-- > 0) throw timeout("image service timed out");
+          sdk.push(`delete:${imageId}`);
+        },
+      },
+    } as unknown as ModalClient;
+    const vault = createSqlVaultStore(db);
+    const modalProvider = () =>
+      createModalProvider({
+        scope,
+        appName: "bound",
+        client,
+        store: createSqlModalStore(db, scope),
+        distribution: { capabilities: {}, prepareSnapshot: async () => {} } as unknown as RunnerDistribution,
+        runner: {
+          call: async <T>(_row: Machine, op: string) =>
+            (op === "checkpoint" ? { generation: "1", watermark: 0, acknowledgedSequence: 0 } : {}) as T,
+        },
+        cleanupSleep: async (milliseconds) => {
+          cleanupDelays.push(milliseconds);
+        },
+        // Detached as in production; the test keeps each run only to settle it before teardown.
+        detachCollection: (work) => {
+          detachedRuns.push(work());
+        },
+      });
+    const options: ControlOptions = {
+      authStore: server.auth,
+      store: vault,
+      encryptionKey: ENCRYPTION_KEY,
+      supabase: { supabaseUrl: "https://project.supabase.co", anonKey: "anon" },
+      data: createSqlData(db),
+      providers: providerRegistry({
+        vault,
+        encryptionKey: ENCRYPTION_KEY,
+        providerFor: () => {
+          throw Error("Unexpected Boat fallback");
+        },
+        modalTokensFor: async () => ({ tokenId: "modal_id", tokenSecret: "modal_secret", scope: "user" }),
+        modalProviderFor: async () => modalProvider(),
+      }),
+      now: () => server.clock.now,
+    };
+    const launch = async (name: string, lostCreate = false) => {
+      const machine: Machine = {
+        info: { id: `modal-${name}`, name, state: "running", providerState: "active", labels: {} },
+        generation: 1,
+        phase: "active",
+        physicalId: `physical-${name}`,
+        physicalName: `owned-${name}`,
+        golden: false,
+        ttlSeconds: 3600,
+        managementAuthority: { credentialScope: "user", credentialOwnerId: p.owner },
+        recoveryImageId: `prior-${name}`,
+      };
+      if (lostCreate) {
+        // The create response was lost: the outcome is unknown and no physical ID is recorded.
+        machine.phase = "creating";
+        machine.info.state = "starting";
+        delete machine.physicalId;
+        delete machine.recoveryImageId;
+      }
+      await createSqlModalStore(db, scope).reserve(`request-${name}`, machine);
+      const id = crypto.randomUUID();
+      await db.query(
+        `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status)
+        select $1,id,$2,$3,'modal',$4,'claude',$5 from goldens where name='delete-modal'`,
+        [id, p.org, p.owner, machine.info.id, lostCreate ? "failed" : "running"],
+      );
+      return { id, machine: machine.info.id };
+    };
+    const control = async (path: string, method: string, body?: object) => {
+      const response = await handleControlRequest(
+        new Request(`${PUBLIC_URL}/api/v1/${path}`, {
+          method,
+          headers: { authorization: `Bearer ${ownerToken}`, "content-type": "application/json" },
+          ...(body ? { body: JSON.stringify(body) } : {}),
+        }),
+        options,
+      );
+      if (!response) throw Error(`Missing route ${path}.`);
+      return response;
+    };
+    const row = async (id: string) =>
+      (
+        await db.query<{ status: string; leased: boolean }>(
+          "select status::text,coalesce(activity_until>=now(),false) as leased from sandboxes where id=$1",
+          [id],
+        )
+      ).rows[0];
+    const phase = async (machine: string) => (await createSqlModalStore(db, scope).get(machine)).phase;
+
+    const first = await launch("first");
+    const stopped = await control("sandbox/stop", "POST", { id: first.id });
+    expect(stopped.status).toBe(200);
+    expect(await stopped.json()).toMatchObject({ id: first.id, status: "stopped" });
+    expect(await row(first.id)).toEqual({ status: "stopped", leased: false });
+    const deleted = await control(`sandboxes/${first.id}`, "DELETE");
+    expect(deleted.status).toBe(200);
+    expect(await deleted.json()).toEqual({ id: first.id, status: "deleted" });
+    expect(await row(first.id)).toEqual({ status: "deleted", leased: false });
+    expect(await phase(first.machine)).toBe("deleted");
+    expect(sdk.filter((x) => x.startsWith("terminate:"))).toEqual(["terminate:physical-first"]);
+    expect(sdk.filter((x) => x.startsWith("delete:")).toSorted()).toEqual([
+      "delete:prior-first",
+      "delete:recovery-physical-first",
+    ]);
+
+    const second = await launch("second");
+    expect((await control("sandbox/stop", "POST", { id: second.id })).status).toBe(200);
+    // A missing App is not proof the sandbox is gone: nothing is published or written.
+    missingApps = 1;
+    expect((await control(`sandboxes/${second.id}`, "DELETE")).status).toBeGreaterThanOrEqual(500);
+    expect(await row(second.id)).toEqual({ status: "stopped", leased: false });
+    expect(await phase(second.machine)).toBe("stopped");
+    imageTimeouts = 3;
+    const failed = await control(`sandboxes/${second.id}`, "DELETE");
+    expect(failed.status).toBeGreaterThanOrEqual(500);
+    expect(cleanupDelays).toEqual([1_000, 5_000]);
+    // The adapter's deleting phase fences resume; the server lease no longer refuses the retry.
+    expect(await row(second.id)).toEqual({ status: "stopped", leased: false });
+    expect(await phase(second.machine)).toBe("deleting");
+    const retried = await control(`sandboxes/${second.id}`, "DELETE");
+    expect(retried.status).toBe(200);
+    expect(await row(second.id)).toEqual({ status: "deleted", leased: false });
+    expect(await phase(second.machine)).toBe("deleted");
+    expect(sdk.filter((x) => x === "terminate:physical-second")).toHaveLength(1);
+
+    // One transient image timeout no longer costs the caller a second DELETE.
+    const third = await launch("third");
+    expect((await control("sandbox/stop", "POST", { id: third.id })).status).toBe(200);
+    imageTimeouts = 1;
+    expect((await control(`sandboxes/${third.id}`, "DELETE")).status).toBe(200);
+    expect(await row(third.id)).toEqual({ status: "deleted", leased: false });
+    expect(cleanupDelays).toEqual([1_000, 5_000, 1_000]);
+    expect(sdk.filter((x) => x.endsWith("-third")).toSorted()).toEqual([
+      "delete:prior-third",
+      "delete:recovery-physical-third",
+      "snapshot:physical-third",
+      "terminate:physical-third",
+    ]);
+
+    // Name reconciliation of a lost create looks the App up again. A missing App there says
+    // nothing about the machine: both records stay recoverable and nothing is published.
+    const lost = await launch("lost", true);
+    missingAppAt = appLookups + 2;
+    expect((await control(`sandboxes/${lost.id}`, "DELETE")).status).toBeGreaterThanOrEqual(500);
+    expect(appLookups).toBe(missingAppAt);
+    expect(await row(lost.id)).toEqual({ status: "failed", leased: false });
+    expect(await phase(lost.machine)).toBe("creating");
+    expect(sdk.filter((x) => x.endsWith("-lost"))).toEqual([]);
+
+    // Another source's retired image is collected detached. While its image call is held open,
+    // the target's DELETE still answers 200 and releases its activity lease (the proof that a
+    // repeated DELETE is never refused with 409 sandbox_not_ready).
+    await Promise.all(detachedRuns.splice(0));
+    const modalStore = createSqlModalStore(db, scope);
+    const retired = await launch("retired-source");
+    await modalStore.saveImage({
+      info: { name: "retired-elsewhere", status: "ready", createdAt: new Date() },
+      sourceId: retired.machine,
+      imageId: "retired-elsewhere",
+      managementAuthority: { credentialScope: "user", credentialOwnerId: p.owner },
+    });
+    await modalStore.removeImage("retired-elsewhere");
+    expect(await modalStore.tombstoneSources()).toContain(retired.machine);
+    const target = await launch("target");
+    expect((await control("sandbox/stop", "POST", { id: target.id })).status).toBe(200);
+    const entered = Promise.withResolvers<void>();
+    const released = Promise.withResolvers<void>();
+    heldImage = { imageId: "retired-elsewhere", entered: entered.resolve, released: released.promise };
+    const receipt = await control(`sandboxes/${target.id}`, "DELETE");
+    expect(receipt.status).toBe(200);
+    expect(await receipt.json()).toEqual({ id: target.id, status: "deleted" });
+    await entered.promise;
+    expect(await row(target.id)).toEqual({ status: "deleted", leased: false });
+    expect(await phase(target.machine)).toBe("deleted");
+    expect((await control(`sandboxes/${target.id}`, "DELETE")).status).toBe(200);
+    expect(sdk).not.toContain("delete:retired-elsewhere");
+    released.resolve();
+    await Promise.all(detachedRuns.splice(0));
+    expect(sdk).toContain("delete:retired-elsewhere");
+    expect(await modalStore.tombstoneSources()).not.toContain(retired.machine);
   } finally {
     await server.close();
   }

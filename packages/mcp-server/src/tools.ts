@@ -27,6 +27,7 @@ import {
   type GoldenRecord,
   goldenForLaunch,
   HARNESSES,
+  isNonMutatingProviderRefusal,
   type LaunchCredentialResolver,
   LaunchError,
   type LaunchOptions,
@@ -2205,29 +2206,44 @@ export function createArmadaServer(context: ToolContext, version: string, option
       if (found.providerSandboxId && !deletionProvider)
         throw new ToolError("unavailable", "Sandbox deletion provider is not configured.");
       const provider = found.providerSandboxId && deletionProvider ? await deletionProvider(found) : null;
-      return sandboxActivity(data.sandboxes, found, { deleteRequested: true }, async (signal) => {
-        signal.throwIfAborted();
-        if (provider) {
-          try {
-            const receipt = await provider.delete({ sandboxId: found.providerSandboxId });
-            if (!["deleted", "completed"].includes(receipt.status))
-              throw new ToolError(
-                "conflict",
-                "Provider deletion is pending. Retry deletion to confirm completion; do not resume this sandbox.",
-              );
-          } catch (error) {
-            if (!(error instanceof ProviderError && error.code === "not_found")) throw error;
+      // A failed delete must not refuse the caller's immediate retry for the two-minute lease.
+      // A definite refusal deleted nothing. Modal fences any failure itself: the adapter records
+      // the generation's exit proof and a deleting phase that every resume path refuses before
+      // any remote mutation, and its store lease serializes concurrent deletes. Other unknown
+      // outcomes and pending receipts retain the bounded activity lease.
+      const failurePatch = (error: unknown) => {
+        if (found.provider === "modal" || isNonMutatingProviderRefusal(error)) return {};
+        throw error;
+      };
+      return sandboxActivity(
+        data.sandboxes,
+        found,
+        { deleteRequested: true },
+        async (signal) => {
+          signal.throwIfAborted();
+          if (provider) {
+            try {
+              const receipt = await provider.delete({ sandboxId: found.providerSandboxId });
+              if (!["deleted", "completed"].includes(receipt.status))
+                throw new ToolError(
+                  "conflict",
+                  "Provider deletion is pending. Retry deletion to confirm completion; do not resume this sandbox.",
+                );
+            } catch (error) {
+              if (!(error instanceof ProviderError && error.code === "not_found")) throw error;
+            }
           }
-        }
-        return {
-          result: { id: found.id, status: "deleted" as const },
-          patch: {
-            status: "deleted",
-            deletedAt: context.now().toISOString(),
-            ...(found.stoppedAt === null ? { usageRuntimeUnknown: true } : {}),
-          },
-        };
-      });
+          return {
+            result: { id: found.id, status: "deleted" as const },
+            patch: {
+              status: "deleted",
+              deletedAt: context.now().toISOString(),
+              ...(found.stoppedAt === null ? { usageRuntimeUnknown: true } : {}),
+            },
+          };
+        },
+        { failurePatch },
+      );
     },
   );
 
