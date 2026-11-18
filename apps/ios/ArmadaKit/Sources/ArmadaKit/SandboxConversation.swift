@@ -126,8 +126,8 @@ public struct SandboxStopReceipt: Decodable, Sendable, Equatable {
     }
 }
 
-/// How a failed sandbox mutation must be presented. Native providers do not deduplicate the
-/// `sandbox/send` request_id, so an outcome that is not a definite refusal is unconfirmed and is never retried automatically:
+/// How a failed sandbox mutation must be presented. Docker and runtime sandboxes deduplicate the
+/// `sandbox/send` request_id but native providers do not, so an outcome that is not a definite refusal is unconfirmed and is never retried automatically:
 /// resending could run the prompt twice. The conversation shows the prompt if it was delivered.
 public enum SandboxMutationFailure: Sendable, Equatable {
     case signedOut
