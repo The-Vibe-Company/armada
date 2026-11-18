@@ -2081,7 +2081,7 @@ test("Modal launch attributes readiness intervals in order and excludes the prom
               },
               async prompt() {
                 time += 1000;
-                return { promptId: "p", conversationId: "c" };
+                return { promptId: "p", conversationId: "c", status: "queued" };
               },
             };
           },
