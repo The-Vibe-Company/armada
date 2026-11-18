@@ -74,8 +74,6 @@ Both surfaces admit durable jobs, not inline snapshots. Control API requests use
 | --- | --- |
 | API create | Required `name`, `idempotencyKey`, and `repos` unless `config` is supplied. Optional `org`, `provider`, `private` (default false), `setup`. `config` is the snapshot config object, not a file path. |
 | API update (`POST /api/v1/golden/update`) | Required `name`, `config`, `idempotencyKey`; optional `org`, `provider`, `setup`. Owner/visibility come from the existing snapshot. |
-| MCP `golden_create` | Required `name`, `repos`, `idempotencyKey`; optional `org`, `provider`, `private`, `setup`. No `config` field. |
-| MCP `golden_update` | Required `name`, `repos`, `idempotencyKey`; optional `org`, `provider`, `setup`. No `config` or `private` field. |
 
 MCP `repos` contains 1–16 `owner/repo` entries. Private repositories require a
 caller-visible GitHub App installation. Public repositories can pass authorization without
@@ -98,8 +96,7 @@ A typical admission receipt is:
 ```
 
 Poll `POST /api/v1/golden/build/status` with `{"jobId":"<job-uuid>"}`, or recover by
-`{"org":"<org-id>","idempotencyKey":"<saved-key>"}`. MCP callers use
-`golden_build_status` with those same fields. Reads authenticate and check current membership;
+`{"org":"<org-id>","idempotencyKey":"<saved-key>"}`. Reads authenticate and check current membership;
 private jobs remain owner-only, even against admins. States are `queued`, `running`,
 `succeeded`, `failed`, `recovery_required`. Only success supplies the terminal public result
 (`name`, `visibility`, `snapshot`, optional `warnings`). Polling errors never justify resubmission.
@@ -113,8 +110,7 @@ and return its result; they do not accept a build idempotency key or return a jo
 `{golden, sandboxId, webUrl}` (`webUrl` is currently null). It opens/restores the canonical
 master through Armada; it is not a direct-provider CLI connection or a credential bypass.
 `POST /api/v1/golden/snapshot` takes the same fields, restores the master if necessary,
-runs the fail-closed scan, then saves and returns `{name, snapshot}`. MCP `golden_snapshot`
-accepts those same fields and returns that snapshot result; there is no `golden_connect` tool.
+runs the fail-closed scan, then saves and returns `{name, snapshot}`.
 Both maintenance routes enforce current mutation rights and the stored backend binding.
 A timeout is not proof that a snapshot was never saved: inspect the snapshot's current state
 before deciding what to do, rather than treating it as a durable build job to poll or replay.

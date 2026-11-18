@@ -4,7 +4,6 @@ import {
   type ClientConfig,
   type CredentialReader,
   createProviderRegistry,
-  type GoldenBuildJobs,
   type LaunchOptions,
   type LaunchStores,
   type ModalBinding,
@@ -81,8 +80,6 @@ export interface HandlerOptions {
   encryptionKey: string | undefined;
   /** Each caller's GitHub connection, refreshed at launch so git and gh in the sandbox act as them. */
   github?: GitHubLaunchOptions;
-  /** Secure, server-orchestrated multi-repo golden creation (`golden_create`). Absent: the tool refuses. */
-  goldenBuilds?: GoldenBuildJobs;
   /** A provider for one boat.dev key. The key is used in this process only. */
   providerFor(apiKey: string, caller?: { userId: string; orgId: string }, sandboxId?: string): Provider;
   /**
@@ -105,7 +102,6 @@ export interface HandlerOptions {
     target: ProviderTarget,
     caller: { userId: string },
   ) => Promise<ModalTokenPair & { scope: "user" | "org" }>;
-  goldenTarget?: (target: Omit<ProviderTarget, "modal">, caller: { userId: string }) => Promise<ProviderTarget>;
   /** Mounted after the OAuth routes and before `/mcp`, for example #461's control API. */
   routes?: readonly Route[];
   now?: () => Date;
@@ -207,9 +203,6 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
         launchCredentials: launchCredentials(options.vault, options.encryptionKey, options.github, options.modelAuth),
         exposedSecrets: (orgId) =>
           exposedSecrets(options.vault, options.encryptionKey, { userId: caller.userId, orgId }),
-        ...(options.goldenTarget
-          ? { goldenTarget: (target: Omit<ProviderTarget, "modal">) => options.goldenTarget!(target, caller) }
-          : {}),
         storedProviders: options.storedProviderFor
           ? { modal: (target) => options.storedProviderFor!(target, caller) }
           : {},
@@ -220,7 +213,6 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
         logError: log,
         ...(options.ordinaryLaunchReceipts ? { ordinaryLaunchReceipts: options.ordinaryLaunchReceipts } : {}),
         ...(options.launch ? { launch: options.launch } : {}),
-        ...(options.goldenBuilds ? { goldenBuilds: options.goldenBuilds } : {}),
       },
       VERSION,
     );

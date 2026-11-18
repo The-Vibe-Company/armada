@@ -1,6 +1,6 @@
-import type { GoldenErrorCode } from "@armada/core";
+import { type GoldenErrorCode, SANDBOX_PROVIDERS } from "@armada/core";
 import { z } from "zod";
-import { GOLDEN_OUTPUT, LOGS_OUTPUT } from "./tools.ts";
+import { LOGS_OUTPUT } from "./tools.ts";
 
 /**
  * Public HTTP 200 envelope of the canonical sandbox launch route.
@@ -98,6 +98,43 @@ export const TEMPLATE_LAUNCH_RESPONSE = z
   .describe("A receipt has requestId; a pre-admission refusal has none.");
 
 /** `golden/list`: the MCP golden record plus the build warnings the REST handler adds. */
+const GOLDEN_OUTPUT = z.object({
+  id: z.string(),
+  name: z.string(),
+  orgId: z.string(),
+  visibility: z.enum(["org", "private"]),
+  ownerId: z.string(),
+  provider: z.enum(SANDBOX_PROVIDERS).describe("The sandbox provider it runs on, fixed for its life."),
+  providerSnapshotId: z.string().nullable(),
+  baselineVersion: z
+    .number()
+    .int()
+    .positive()
+    .nullable()
+    .describe("The developer baseline version the golden's snapshot was verified against; null when not recorded."),
+  baselineOutdated: z
+    .boolean()
+    .describe("True when the golden has a snapshot built against an older developer baseline than this server's."),
+  providerSandboxId: z.string().nullable(),
+  modal: z
+    .object({ workspace: z.string(), environment: z.string(), appId: z.string() })
+    .nullable()
+    .describe("The Modal workspace, environment and App id a Modal golden is pinned to."),
+  boatSnapshotId: z
+    .string()
+    .nullable()
+    .describe("The same as providerSnapshotId on a Boat golden or sandbox; null on any other provider."),
+  boatSandboxId: z
+    .string()
+    .nullable()
+    .describe("The same as providerSandboxId on a Boat golden or sandbox; null on any other provider."),
+  repos: z.number().int(),
+  config: z.object({
+    repos: z.array(z.object({ url: z.string(), branch: z.string(), dir: z.string() })),
+    init: z.array(z.string()),
+  }),
+});
+
 export const GOLDEN_LIST_RESPONSE = z.object({
   goldens: z.array(
     GOLDEN_OUTPUT.extend({
