@@ -3,7 +3,7 @@
 import { CircleCheckIcon, CircleXIcon, LockIcon } from "lucide-react";
 import { type FormEvent, useId, useState, useTransition } from "react";
 import { updateLangfuse } from "@/app/actions/langfuse";
-import { CreateDialog } from "@/components/create-dialog";
+import { CreateDialog, CreateDialogBody, CreateDialogFooter } from "@/components/create-dialog";
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -93,6 +93,7 @@ export function LangfuseDialog({
       triggerVariant="outline"
       showPlus={!edit}
       className="sm:max-w-lg"
+      fixedActions
     >
       {open && (
         <LangfuseForm
@@ -184,7 +185,7 @@ function LangfuseForm({
 
   return (
     <form
-      className="space-y-4"
+      className="gap-3"
       onSubmit={submit}
       onChange={() => {
         setTest(undefined);
@@ -192,103 +193,105 @@ function LangfuseForm({
       }}
       aria-busy={pending}
     >
-      <fieldset disabled={pending} className="space-y-4">
-        <div className="space-y-1.5">
-          <Label htmlFor={`${id}-host`}>Host</Label>
-          <Input
-            id={`${id}-host`}
-            name="host"
-            type="url"
-            required
-            defaultValue={baseline.host}
-            aria-invalid={test?.status === "unreachable"}
-            aria-describedby={`${id}-host-hint`}
-            spellCheck={false}
-          />
-          <p id={`${id}-host-hint`} className="text-xs text-muted-foreground">
-            EU: https://cloud.langfuse.com · US: https://us.cloud.langfuse.com · or your self-hosted address.
-          </p>
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor={`${id}-public`}>Public key</Label>
-          <Input
-            id={`${id}-public`}
-            name="publicKey"
-            required
-            defaultValue={baseline.publicKey ?? ""}
-            placeholder="pk-lf-…"
-            spellCheck={false}
-            autoComplete="off"
-            className="font-mono"
-            aria-invalid={test?.status === "rejected"}
-          />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor={replace ? `${id}-secret` : undefined}>Secret key</Label>
-          {replace ? (
-            <>
-              <Input
-                id={`${id}-secret`}
-                name="secretKey"
-                type="password"
-                required
-                autoFocus={edit}
-                placeholder="sk-lf-…"
-                autoComplete="new-password"
-                className="font-mono"
-                aria-invalid={test?.status === "rejected"}
-                aria-describedby={`${id}-secret-hint`}
-              />
-              <p id={`${id}-secret-hint`} className="text-xs text-muted-foreground">
-                Stored encrypted. Once saved, nobody can read it back.
-              </p>
-            </>
-          ) : (
-            <div
-              className="flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm aria-invalid:border-destructive"
+      <CreateDialogBody className="-mx-1 px-1">
+        <fieldset disabled={pending} className="space-y-4">
+          <div className="space-y-1.5">
+            <Label htmlFor={`${id}-host`}>Host</Label>
+            <Input
+              id={`${id}-host`}
+              name="host"
+              type="url"
+              required
+              defaultValue={baseline.host}
+              aria-invalid={test?.status === "unreachable"}
+              aria-describedby={`${id}-host-hint`}
+              spellCheck={false}
+            />
+            <p id={`${id}-host-hint`} className="text-xs text-muted-foreground">
+              EU: https://cloud.langfuse.com · US: https://us.cloud.langfuse.com · or your self-hosted address.
+            </p>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor={`${id}-public`}>Public key</Label>
+            <Input
+              id={`${id}-public`}
+              name="publicKey"
+              required
+              defaultValue={baseline.publicKey ?? ""}
+              placeholder="pk-lf-…"
+              spellCheck={false}
+              autoComplete="off"
+              className="font-mono"
               aria-invalid={test?.status === "rejected"}
-            >
-              <LockIcon aria-hidden className="size-4 text-muted-foreground" />
-              <span>
-                Stored <span className="text-muted-foreground">· value hidden</span>
-              </span>
-              <Button type="button" variant="outline" size="sm" className="ml-auto" onClick={() => setReplace(true)}>
-                Replace
-              </Button>
-            </div>
-          )}
-          {edit && (
-            <p className="text-xs text-muted-foreground">Keys come in pairs: if you change one, replace the other.</p>
-          )}
-        </div>
-        <fieldset className="space-y-2">
-          <legend id={`${id}-mode`} className="text-sm font-medium">
-            What to export
-          </legend>
-          <RadioGroup
-            name="contentMode"
-            defaultValue={baseline.contentMode}
-            aria-labelledby={`${id}-mode`}
-            onValueChange={() => {
-              setTest(undefined);
-              setError("");
-            }}
-          >
-            {MODES.map(({ mode, title, description }) => (
-              <Label
-                key={mode}
-                className="flex cursor-pointer items-start gap-2 rounded-md border p-3 has-[[data-state=checked]]:border-ring has-[[data-state=checked]]:bg-muted/40"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor={replace ? `${id}-secret` : undefined}>Secret key</Label>
+            {replace ? (
+              <>
+                <Input
+                  id={`${id}-secret`}
+                  name="secretKey"
+                  type="password"
+                  required
+                  autoFocus={edit}
+                  placeholder="sk-lf-…"
+                  autoComplete="new-password"
+                  className="font-mono"
+                  aria-invalid={test?.status === "rejected"}
+                  aria-describedby={`${id}-secret-hint`}
+                />
+                <p id={`${id}-secret-hint`} className="text-xs text-muted-foreground">
+                  Stored encrypted. Once saved, nobody can read it back.
+                </p>
+              </>
+            ) : (
+              <div
+                className="flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm aria-invalid:border-destructive"
+                aria-invalid={test?.status === "rejected"}
               >
-                <RadioGroupItem value={mode} className="mt-0.5" />
-                <span className="grid gap-1">
-                  <span>{title}</span>
-                  <span className="text-xs leading-relaxed font-normal text-muted-foreground">{description}</span>
+                <LockIcon aria-hidden className="size-4 text-muted-foreground" />
+                <span>
+                  Stored <span className="text-muted-foreground">· value hidden</span>
                 </span>
-              </Label>
-            ))}
-          </RadioGroup>
+                <Button type="button" variant="outline" size="sm" className="ml-auto" onClick={() => setReplace(true)}>
+                  Replace
+                </Button>
+              </div>
+            )}
+            {edit && (
+              <p className="text-xs text-muted-foreground">Keys come in pairs: if you change one, replace the other.</p>
+            )}
+          </div>
+          <fieldset className="space-y-2">
+            <legend id={`${id}-mode`} className="text-sm font-medium">
+              What to export
+            </legend>
+            <RadioGroup
+              name="contentMode"
+              defaultValue={baseline.contentMode}
+              aria-labelledby={`${id}-mode`}
+              onValueChange={() => {
+                setTest(undefined);
+                setError("");
+              }}
+            >
+              {MODES.map(({ mode, title, description }) => (
+                <Label
+                  key={mode}
+                  className="flex cursor-pointer items-start gap-2 rounded-md border p-3 has-[[data-state=checked]]:border-ring has-[[data-state=checked]]:bg-muted/40"
+                >
+                  <RadioGroupItem value={mode} className="mt-0.5" />
+                  <span className="grid gap-1">
+                    <span>{title}</span>
+                    <span className="text-xs leading-relaxed font-normal text-muted-foreground">{description}</span>
+                  </span>
+                </Label>
+              ))}
+            </RadioGroup>
+          </fieldset>
         </fieldset>
-      </fieldset>
+      </CreateDialogBody>
       {test ? (
         <LangfuseTestResult result={test.status} host={test.host} />
       ) : (
@@ -299,9 +302,9 @@ function LangfuseForm({
           {error}
         </p>
       )}
-      <div
+      <CreateDialogFooter
         className={cn(
-          "flex flex-col-reverse gap-2 border-t pt-4 sm:flex-row sm:items-center",
+          "flex flex-col-reverse gap-2 sm:flex-row sm:items-center",
           edit ? "sm:justify-between" : "sm:justify-end",
         )}
       >
@@ -346,7 +349,7 @@ function LangfuseForm({
             {pending && operation === "test" ? "Testing…" : "Test the connection"}
           </Button>
         </div>
-      </div>
+      </CreateDialogFooter>
     </form>
   );
 }
