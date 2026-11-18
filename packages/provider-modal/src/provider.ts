@@ -499,7 +499,8 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     const launchId = "from" in request ? request.modalLaunchId : undefined;
     if (
       launchId !== undefined &&
-      (key !== launchId ||
+      (!beforeDispatch ||
+        key !== launchId ||
         request.labels?.sandbox !== launchId ||
         !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(launchId))
     )
@@ -580,7 +581,9 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         throw refusal("conflict", "Launch is in a terminal or checkpoint phase.");
       return true;
     };
-    if (!needsBoot(row)) return sandboxInfo(row);
+    // Row-first replay must reclaim a crashed child lease even if the
+    // previous holder already committed the active machine.
+    if (!needsBoot(row) && launchId === undefined) return sandboxInfo(row);
     let observed = row;
     try {
       return await store.lease(

@@ -162,14 +162,14 @@ export function createModalBootWorker(
     );
   }
 
-  async function settle(claim: Claim, outcome: Outcome, keepFence: boolean) {
+  async function settle(claim: Claim, outcome: Outcome, needsCleanup: boolean) {
     const { sandbox_id: id, lease_epoch: epoch } = claim;
     const bootExpiry = "expiresAt" in outcome ? outcome.expiresAt : undefined;
     const succeeded = bootExpiry !== undefined;
     const cancelled = "reason" in outcome && outcome.cancelled === true;
-    const cleanupConfirmed = claim.phase === "cleanup_pending" && !keepFence;
+    const cleanupConfirmed = claim.phase === "cleanup_pending" && !needsCleanup;
     let recoveryInput: Uint8Array<ArrayBuffer> | null = null;
-    if (keepFence) {
+    if (needsCleanup) {
       const pinned = JSON.parse(await decryptSecret(claim.request_enc, encryptionKey)) as PinnedFork;
       delete pinned.request.env;
       recoveryInput = await encryptSecret(JSON.stringify(pinned), encryptionKey);
@@ -177,15 +177,16 @@ export function createModalBootWorker(
     const published = await sql.transaction!(async (tx) => {
       await tx.query("select id from public.sandboxes where id=$1 for update", [id]);
       const row = (
-        await tx.query<{ fence_id: string | null }>(
-          `select fence_id from public.provider_launch_requests where sandbox_id=$1 and lease_owner=$2
+        await tx.query<{ fence_id: string | null; actor_epoch: string; dispatch_deadline: Date }>(
+          `select fence_id,actor_epoch::text,dispatch_deadline
+         from public.provider_launch_requests where sandbox_id=$1 and lease_owner=$2
          and lease_epoch=$3 and lease_expires_at>clock_timestamp() for update`,
           [id, owner, epoch],
         )
       ).rows[0];
       if (!row) return false;
       const updated = await tx.query(
-        `update public.sandboxes set
+        `update public.sandboxes s set
            expires_at=case when $2 then least(clock_timestamp()+effective_ttl_seconds*interval '1 second',
              coalesce($3::timestamptz-$4::integer*interval '1 second','infinity'::timestamptz)) else expires_at end,
            activity_until=case when $2 then now()+interval '2 minutes' else null end,
@@ -195,7 +196,11 @@ export function createModalBootWorker(
            status=case when $5 then 'stopped'::public.sandbox_status when $2 then status else 'failed'::public.sandbox_status end,
            status_reason=case when $5 then null when $2 then status_reason else $7 end,
            reconcile_after=now()
-         where id=$1 and ((status='starting' and stop_requested_at is null)
+         where id=$1 and ((status='starting' and stop_requested_at is null and
+           (not $2 or ($8::timestamptz>clock_timestamp() and ${BOOT_ALLOWED} and exists(
+             select 1 from public.members m join public.mcp_actor_epochs e using(org_id,user_id)
+             where m.org_id=s.org_id and m.user_id=s.owner_id and e.epoch=$9
+           ))))
            or ($5 and status='stopping' and stop_requested_at is not null)
            or ($6 and status='failed' and stopped_at is null)) returning id`,
         [
@@ -205,11 +210,13 @@ export function createModalBootWorker(
           SANDBOX_STOP_MARGIN_SECONDS,
           cancelled,
           cleanupConfirmed,
-          keepFence ? INTERRUPTED_LAUNCH_REASON : "Modal allocation did not complete.",
+          needsCleanup ? INTERRUPTED_LAUNCH_REASON : "Modal allocation did not complete.",
+          row.dispatch_deadline,
+          row.actor_epoch,
         ],
       );
-      // Cancellation won after the dispatch intent. Keep the pinned request
-      // so the worker can delete the now-observed allocation under its original authority.
+      // The launch lost authority after the dispatch intent. Keep the pinned
+      // request so the next claim can clean up under the original authority.
       if (succeeded && !updated.rows.length) {
         await tx.query(
           `update public.provider_launch_requests set lease_owner=null,lease_expires_at=null,next_attempt_at=now()
@@ -218,19 +225,36 @@ export function createModalBootWorker(
         );
         return false;
       }
+      // A committed child pins the exact image through Modal's image GC even
+      // when its physical create outcome is uncertain. Cleanup keeps its own
+      // request and lease, so an unresolved create need not block the golden.
+      const hasImagePin =
+        needsCleanup &&
+        row.fence_id &&
+        (
+          await tx.query(
+            `select 1 from public.modal_machines m join public.golden_operation_fences f on f.id=$5
+           where m.id=$1 and m.request_key=$2 and m.org_id=$3 and m.owner_id=$4
+             and m.record->'sourceImage'->>'name'=f.expected_snapshot_id
+             and m.record->'sourceImage'->>'imageId' is not null
+           limit 1`,
+            [claim.provider_sandbox_id, id, claim.org_id, claim.owner_id, row.fence_id],
+          )
+        ).rows.length > 0;
+      const retainFence = needsCleanup && !hasImagePin;
       await tx.query(
         `update public.provider_launch_requests set phase=$2,outcome=$3::jsonb,request_enc=$5,
           lease_owner=null,lease_expires_at=null,fence_id=case when $4 then fence_id else null end
          where sandbox_id=$1`,
         [
           id,
-          keepFence ? "cleanup_pending" : succeeded ? "succeeded" : cancelled ? "cancelled" : "failed",
+          needsCleanup ? "cleanup_pending" : succeeded ? "succeeded" : cancelled ? "cancelled" : "failed",
           JSON.stringify(outcome),
-          keepFence,
+          retainFence,
           recoveryInput,
         ],
       );
-      if (!keepFence && row.fence_id)
+      if (!retainFence && row.fence_id)
         await tx.query("delete from public.golden_operation_fences where id=$1", [row.fence_id]);
       return "expiresAt" in outcome;
     });
@@ -341,7 +365,7 @@ export function createModalBootWorker(
                and r.lease_expires_at>clock_timestamp()
                and ${
                  recovery
-                   ? "r.phase='cleanup_pending' and r.fence_id is not null"
+                   ? "r.phase='cleanup_pending'"
                    : `r.phase='booting' and e.epoch=r.actor_epoch and ${cleanup ? "s.status='stopping' and s.stop_requested_at is not null" : BOOT_ALLOWED}`
                } ${transaction ? "for update of r" : ""}`,
             token,
@@ -367,10 +391,10 @@ export function createModalBootWorker(
           return;
         }
         try {
-          // Only recovery can prove reservation absence. Before that phase,
-          // the ordinary cancellation path still needs a durable machine record.
+          // The current claim fences older reservation transactions, including
+          // when cancellation finds that boot never reached the adapter.
           const removed = await provider.delete(
-            { sandboxId: claim.provider_sandbox_id, ...(recovery ? { modalLaunchId: id } : {}) },
+            { sandboxId: claim.provider_sandbox_id, modalLaunchId: id },
             guardDispatch,
           );
           if (signal.aborted) return;
@@ -454,12 +478,11 @@ export function createModalBootWorker(
         await settle(claim, { reason: "provider_identity_mismatch" }, true);
         return;
       }
+      const ready = machine.state === "ready" || machine.state === "running";
       await settle(
         claim,
-        machine.state === "ready" || machine.state === "running"
-          ? { expiresAt: machine.expiresAt?.toISOString() ?? null }
-          : { reason: "provider_boot_not_ready" },
-        false,
+        ready ? { expiresAt: machine.expiresAt?.toISOString() ?? null } : { reason: "provider_boot_not_ready" },
+        !ready,
       );
     } finally {
       stopHeartbeat();

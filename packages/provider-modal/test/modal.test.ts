@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { type AgentEvent, modalLaunchSandboxId, ProviderError, type Sql } from "@armada/core";
+import { type AgentEvent, type GoldenRecord, modalLaunchSandboxId, ProviderError, type Sql } from "@armada/core";
 import {
   createSqlVaultStore,
   encryptSecret,
@@ -14,6 +14,8 @@ import { type Driver, Journal, Runner } from "../../agent-runtime/src/index.ts";
 import { createMemoryAuthStore } from "../../auth/src/index.ts";
 import { sandboxFailure } from "../../cli/src/sandbox-errors.ts";
 import { type ControlOptions, handleControlRequest } from "../../mcp-server/src/control.ts";
+import { createSqlData } from "../../mcp-server/src/data.ts";
+import { createModalBootWorker } from "../../mcp-server/src/modal-boot-worker.ts";
 import { createSandboxLifecycle } from "../../mcp-server/src/sandbox-lifecycle.ts";
 import {
   appendModalEvents,
@@ -61,6 +63,7 @@ function fixture(
   beforeResume?: ModalProviderOptions["beforeResume"],
   commonRuntime?: true,
   admissionSleep: NonNullable<ModalProviderOptions["admissionSleep"]> = Bun.sleep,
+  measure?: ModalProviderOptions["measure"],
 ) {
   const store = createSqlModalStore(sql, accessScope);
   const log: string[] = [];
@@ -230,6 +233,7 @@ function fixture(
   const detached: (() => Promise<void>)[] = [];
   const provider = createModalProvider({
     admissionSleep,
+    ...(measure ? { measure } : {}),
     cleanupSleep: async (milliseconds) => {
       cleanupDelays.push(milliseconds);
     },
@@ -920,46 +924,339 @@ test("overlapping forks from a snapshot can boot concurrently", async () => {
   }
 });
 
-test("durable Modal fork recovers an accepted create while its source lease survives", async () => {
-  const launchId = crypto.randomUUID();
-  const child = modalLaunchSandboxId(launchId);
-  let crashing = true;
+// Order for a fresh native boot. In each case the old process loses both
+// the acknowledgment and the ability to run any SQL, including finally.
+test.each([
+  ["admission committed", "resume"],
+  ["worker claim committed", "resume"],
+  ["worker authority resolved", "resume"],
+  ["boot intent committed", "expire"],
+  ["boot intent committed", "stop"],
+  ["fork App resolved", "resume"],
+  ["image reservation committed", "expire"],
+  ["child lease committed", "resume"],
+  ["child App resolved", "resume"],
+  ["modal_image", "resume"],
+  ["create intent committed", "unknown"],
+  ["modal_sandbox_create", "resume"],
+  ["modal_sandbox_create", "expire"],
+  ["physical name resolved", "resume"],
+  ["physical ownership read", "resume"],
+  ["physical binding committed", "resume"],
+  ["modal_boot_runtime", "resume"],
+  ["baseline captured", "resume"],
+  ["baseline committed", "resume"],
+  ["fresh preparation returned", "resume"],
+  ["fresh preparation committed", "resume"],
+  ["modal_boot_start", "resume"],
+  ["modal_boot_health", "resume"],
+  ["baseline sealed", "resume"],
+  ["sealed baseline committed", "resume"],
+  ["active committed", "resume"],
+  ["child lease released", "resume"],
+  ["worker settlement committed", "resume"],
+  ["provider_claimed", "resume"],
+  ["machine_started", "resume"],
+  ["retry released", "resume"],
+  ["cleanup claim committed", "cleanup"],
+  ["physical name resolved", "cleanup"],
+  ["physical ownership read", "cleanup"],
+  ["delete identity committed", "cleanup"],
+  ["deleting committed", "cleanup"],
+  ["termination returned", "cleanup"],
+  ["exit observed", "cleanup"],
+  ["exit committed", "cleanup"],
+  ["deletion committed", "cleanup"],
+  ["worker cleanup committed", "cleanup"],
+] as const)("durable Modal boot survives process loss after %s (%s)", async (boundary, recovery) => {
+  const id = crypto.randomUUID();
+  const child = modalLaunchSandboxId(id);
+  const goldenId = crypto.randomUUID();
+  let watching = false;
+  let crashed = false;
+  let appLookups = 0;
+  const interruptedLookup =
+    recovery === "resume" && (boundary === "physical name resolved" || boundary === "physical ownership read");
+  const after = (step: string) => {
+    if (watching && !crashed && step === boundary) {
+      crashed = true;
+      throw new Error("Synthetic worker process loss");
+    }
+  };
+  function writeStep(statement: string, args?: unknown[]) {
+    if (statement.includes("insert into public.provider_launch_requests")) return "admission committed";
+    if (statement.includes("lease_epoch=r.lease_epoch+1"))
+      return recovery === "cleanup" ? "cleanup claim committed" : "worker claim committed";
+    if (statement.includes("set phase='booting'")) return "boot intent committed";
+    if (statement.includes("insert into public.modal_machines")) return "image reservation committed";
+    if (statement.includes("set lease_id=$3") && args?.[1] === child) return "child lease committed";
+    if (statement.includes("set lease_id=null") && args?.[1] === child) return "child lease released";
+    if (statement.includes("set phase=$2,outcome="))
+      return recovery === "cleanup" ? "worker cleanup committed" : "worker settlement committed";
+    if (statement.includes("next_attempt_at=now()+interval")) return "retry released";
+    if (statement.includes("insert into public.sandbox_launch_stages")) return String(args?.[1]);
+    if (statement.includes("set record=$4::jsonb") && args?.[1] === child) {
+      const row = JSON.parse(String(args[3])) as Machine;
+      if (row.phase === "creating") return row.physicalId ? "delete identity committed" : "create intent committed";
+      if (row.phase === "deleting") return row.deletePhysicalExitGeneration ? "exit committed" : "deleting committed";
+      if (row.phase === "deleted") return "deletion committed";
+      if (row.phase === "active") return "active committed";
+      if (row.phase === "booting") {
+        if (row.processBaseline?.admissionState === "sealed") return "sealed baseline committed";
+        if (row.freshStatePreparedGeneration) return "fresh preparation committed";
+        if (row.processBaseline) return "baseline committed";
+        return "physical binding committed";
+      }
+    }
+  }
+  const assertAlive = () => {
+    if (crashed) throw new Error("The dead worker has no SQL connection");
+  };
   const sql: Sql = {
-    transaction: (work) => db.transaction(work),
-    query: (statement, args) => {
-      // Simulate process loss after Modal accepts create, before finally clears the child lease.
-      if (crashing && statement.includes("set lease_id=null") && args?.[1] === child)
-        return Promise.resolve({ rows: [] });
-      return db.query(statement, args);
+    async query<T>(statement: string, args?: unknown[]) {
+      assertAlive();
+      const result = await db.query<T>(statement, args);
+      const step = writeStep(statement, args);
+      if (step) after(step);
+      return result;
+    },
+    async transaction(work) {
+      assertAlive();
+      const writes: string[] = [];
+      const result = await db.transaction((tx) =>
+        work({
+          async query<T>(statement: string, args?: unknown[]) {
+            const rows = await tx.query<T>(statement, args);
+            const step = writeStep(statement, args);
+            if (step) writes.push(step);
+            return rows;
+          },
+        }),
+      );
+      for (const step of writes) after(step);
+      return result;
     },
   };
-  const f = fixture(scope, sql);
+  const f = fixture(scope, sql, undefined, undefined, undefined, undefined, async (phase, work) => {
+    const result = await work();
+    if (watching && phase === "modal_app_lookup") {
+      after(["worker authority resolved", "fork App resolved", "child App resolved"][appLookups++] ?? phase);
+    } else {
+      after(phase);
+    }
+    return result;
+  });
   const builder = await f.provider.createGolden({});
   const name = crypto.randomUUID();
   await f.provider.snapshot({ sandboxId: builder.id, name });
-  const request = { from: name, modalLaunchId: launchId, idempotencyKey: launchId, labels: { sandbox: launchId } };
-  f.failCreate(true);
-  await expect(f.provider.fork(request)).rejects.toThrow();
-  expect(await f.store.findByRequestKey(launchId)).toMatchObject({ phase: "creating" });
-  const lease = (
-    await db.query<{ seconds: number }>(
-      `select extract(epoch from (lease_until-clock_timestamp()))::float8 as seconds
-     from modal_machines where id=$1`,
-      [child],
+  const createdBeforeBoot = f.creates;
+  const fromName = f.client.sandboxes.fromName.bind(f.client.sandboxes);
+  f.client.sandboxes.fromName = async (...args) => {
+    const machine = await fromName(...args);
+    after("physical name resolved");
+    return {
+      ...machine,
+      async getTags() {
+        const tags = await machine.getTags();
+        after("physical ownership read");
+        return tags;
+      },
+    };
+  };
+  const fromId = f.client.sandboxes.fromId.bind(f.client.sandboxes);
+  f.client.sandboxes.fromId = async (...args) => {
+    const machine = await fromId(...args);
+    return {
+      ...machine,
+      async terminate(...options) {
+        await machine.terminate(...options);
+        after("termination returned");
+      },
+      async poll() {
+        const exit = await machine.poll();
+        after("exit observed");
+        return exit;
+      },
+    };
+  };
+  f.distribution.prepareRuntime = async () => {};
+  f.distribution.prepareFreshMachine = async () => after("fresh preparation returned");
+  f.distribution.captureProcessBaseline = async (_sb, row) => {
+    after("baseline captured");
+    return {
+      version: 1,
+      admissionState: "pending",
+      physicalId: row.physicalId!,
+      generation: row.generation,
+      namespace: { pid: "fixture_pid", mount: "fixture_mount" },
+      processes: [],
+    };
+  };
+  f.distribution.sealProcessBaseline = async (_sb, row) => {
+    after("baseline sealed");
+    return { ...row.processBaseline!, admissionState: "sealed" };
+  };
+  f.onRpc(async (row, op) =>
+    op === "health" ? { generation: String(row.generation), ready: true, pid: 42 } : undefined,
+  );
+  const golden: GoldenRecord = {
+    id: goldenId,
+    name,
+    orgId: scope.orgId,
+    ownerId: scope.userId,
+    visibility: scope.visibility,
+    provider: "modal",
+    providerSnapshotId: name,
+    providerSandboxId: builder.id,
+    modal: scope.binding,
+    config: { repos: [], init: [] },
+    createdAt: new Date().toISOString(),
+  };
+  await db.query(
+    `insert into goldens(id,org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,
+      modal_workspace,modal_environment,modal_app_id,config)
+      values($1,$2,$3,$4,'private','modal',$5,$4,$6,$7,$8,$9::jsonb)`,
+    [
+      goldenId,
+      scope.orgId,
+      scope.userId,
+      name,
+      builder.id,
+      scope.binding.workspace,
+      scope.binding.environment,
+      scope.binding.appId,
+      golden.config,
+    ],
+  );
+  const worker = () => createModalBootWorker(sql, btoa("a".repeat(32)), async () => f.provider);
+  const first = worker();
+  const input: Parameters<typeof first.admit>[0] = {
+    golden,
+    provider: f.provider,
+    actor: { orgId: scope.orgId, userId: scope.userId, role: "admin" },
+    runtime: false,
+    request: { from: name, labels: { sandbox: id } },
+    sandbox: {
+      id,
+      provider: "modal",
+      providerSandboxId: child,
+      goldenId,
+      orgId: scope.orgId,
+      ownerId: scope.userId,
+      harness: "codex",
+      status: "starting",
+      model: "gpt-5.4",
+      reasoningEffort: "medium",
+      activityLeaseId: crypto.randomUUID(),
+    },
+  };
+  const signal = new AbortController().signal;
+  if (boundary === "admission committed") {
+    watching = true;
+    await expect(first.admit(input)).rejects.toThrow("Synthetic worker process loss");
+  } else {
+    await first.admit(input);
+    await db.query(
+      "insert into sandbox_launch_stages(sandbox_id,activation,stage,at) values($1,1,'accepted',now()) on conflict do nothing",
+      [id],
+    );
+    if (boundary === "retry released") f.failBoot(true);
+    if (recovery === "cleanup" || interruptedLookup) {
+      // A create accepted by Modal with no returned identity exercises every
+      // delete-only checkpoint, including lookup and ownership verification.
+      f.failCreate(true);
+      expect(await first.reconcileOne(signal)).toBe(true);
+      await first.drain();
+      f.failCreate(false);
+      if (recovery === "cleanup") {
+        await db.query(
+          "update provider_launch_requests set dispatch_deadline=now(),next_attempt_at=now() where sandbox_id=$1",
+          [id],
+        );
+        expect(await first.reconcileOne(signal)).toBe(true);
+        await first.drain();
+      } else {
+        await db.query("update provider_launch_requests set next_attempt_at=now() where sandbox_id=$1", [id]);
+      }
+    }
+    watching = true;
+    await first.reconcileOne(signal).catch(() => {});
+    await first.drain();
+  }
+  expect(crashed).toBe(true);
+  watching = false;
+  crashed = false;
+  f.failBoot(false);
+  if (recovery === "stop") {
+    expect(
+      await createSqlData(db)({
+        userId: scope.userId,
+        orgs: [{ orgId: scope.orgId, role: "admin" }],
+        via: "service",
+      }).sandboxes.requestPendingModalStop!(id),
+    ).toBe(true);
+  }
+  const expired = recovery === "expire" || recovery === "unknown";
+  await db.query(
+    `update provider_launch_requests set lease_expires_at=case when lease_owner is not null then now() end,
+     next_attempt_at=now(),dispatch_deadline=case when $2 then now() else dispatch_deadline end where sandbox_id=$1`,
+    [id, expired],
+  );
+  await db.query("update modal_machines set lease_until=now() where id=$1 and lease_id is not null", [child]);
+  if (boundary === "modal_sandbox_create" && recovery === "resume") {
+    await db.query("update modal_machines set lease_id=$2,lease_until=now()+interval '15 minutes' where id=$1", [
+      builder.id,
+      crypto.randomUUID(),
+    ]);
+  }
+
+  const successor = worker();
+  for (let claim = 0; claim < 2; claim++) {
+    if (!(await successor.reconcileOne(signal))) break;
+    await successor.drain();
+  }
+  const persisted = (
+    await db.query(
+      `select r.phase,s.status,r.fence_id,r.lease_owner,r.request_enc,m.record->>'phase' as child_phase,
+        m.lease_id as child_lease from provider_launch_requests r join sandboxes s on s.id=r.sandbox_id
+        left join modal_machines m on m.id=s.provider_sandbox_id where r.sandbox_id=$1`,
+      [id],
     )
   ).rows[0];
-  expect(lease?.seconds).toBeGreaterThan(0);
-  expect(lease?.seconds).toBeLessThanOrEqual(45);
-
-  await db.query("update modal_machines set lease_id=$2,lease_until=now()+interval '15 minutes' where id=$1", [
-    builder.id,
-    crypto.randomUUID(),
-  ]);
-  await db.query("update modal_machines set lease_until=now()-interval '1 second' where id=$1", [child]);
-  crashing = false;
-  f.failCreate(false);
-  expect(await f.provider.fork(request)).toMatchObject({ id: child, state: "ready" });
-  expect(f.creates).toBe(2); // Builder and original child only.
+  expect(persisted).toMatchObject({
+    phase:
+      recovery === "resume"
+        ? "succeeded"
+        : recovery === "stop"
+          ? "cancelled"
+          : recovery === "unknown"
+            ? "cleanup_pending"
+            : "failed",
+    status: recovery === "resume" ? "starting" : recovery === "stop" ? "stopped" : "failed",
+    fence_id: null,
+    lease_owner: null,
+    child_lease: null,
+  });
+  if (recovery === "unknown") {
+    // Modal does not guarantee that 404 rules out a delayed create. Keep
+    // delete-only recovery and the image pin even though the golden can retire.
+    expect(persisted).toMatchObject({ child_phase: "creating", request_enc: expect.anything() });
+    // Other rows in this shared database exercise independent launches.
+    await db.query("update provider_launch_requests set next_attempt_at='infinity' where sandbox_id=$1", [id]);
+  } else {
+    expect(persisted).toMatchObject({
+      child_phase: recovery === "resume" ? "active" : boundary === "boot intent committed" ? null : "deleted",
+      request_enc: null,
+    });
+  }
+  const created = recovery === "resume" || recovery === "cleanup" || boundary === "modal_sandbox_create" ? 1 : 0;
+  expect(f.creates - createdBeforeBoot).toBe(created);
+  await db.transaction(async (tx) => {
+    await tx.query("select set_config('request.jwt.claim.sub',$1,true)", [scope.userId]);
+    expect((await tx.query("select remove_golden($1) as removed_at", [goldenId])).rows[0]).toMatchObject({
+      removed_at: expect.any(Date),
+    });
+  });
 });
 
 test("durable Modal dispatch checks authority at reservation, create, and deletion", async () => {
@@ -2576,12 +2873,12 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     const key = crypto.randomUUID();
     const request = { from: name, idempotencyKey: key, modalLaunchId: key, labels: { sandbox: key } };
     f.failBoot(true);
-    await expect(f.provider.fork(request)).rejects.toMatchObject({ code: "unknown" });
+    await expect(f.provider.fork(request, async () => {})).rejects.toMatchObject({ code: "unknown" });
     expect((await f.store.get(`modal_${key}`)).phase).toBe("booting");
     const creates = f.creates;
     const before = f.log.filter((x) => x.startsWith("fresh-")).length;
     f.failBoot(false);
-    const fork = await f.provider.fork(request);
+    const fork = await f.provider.fork(request, async () => {});
     expect(fork.id).toBe(`modal_${key}`);
     expect(f.creates).toBe(creates);
     expect(f.log.filter((x) => x.startsWith("fresh-"))).toHaveLength(before);
