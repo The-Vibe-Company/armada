@@ -78,24 +78,22 @@ export function outcomeView(
 const PR_URL = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pull\/([1-9][0-9]*)\/?$/;
 
 /**
- * The confirmed pull request a "ready" outcome names, matched on repository and number: from its GitHub link, or
- * from its number alone when no link names the repository and exactly one confirmed pull request has that number.
- * Null when it names none, the link and number disagree, or the match is ambiguous.
+ * The confirmed pull request a "ready" outcome names, matched on the repository and number of its GitHub link. A
+ * number without a link does not say which repository it belongs to, so it matches nothing: the outcome keeps asking
+ * to merge rather than borrowing the state of another repository's pull request. Null as well when the link and the
+ * number disagree.
  */
 export function reportedPullRequest(
   outcome: TaskOutcome | null | undefined,
   pullRequests: readonly SandboxPullRequest[] | null | undefined,
 ): SandboxPullRequest | null {
-  if (outcome?.state !== "ready" || !pullRequests?.length) return null;
-  const link = outcome.prUrl ? PR_URL.exec(outcome.prUrl) : null;
-  if (outcome.prUrl && !link) return null;
-  const number = link ? Number(link[2]) : outcome.prNumber;
-  if (!number || (outcome.prNumber !== undefined && outcome.prNumber !== number)) return null;
-  const repository = link?.[1]?.toLowerCase();
-  const matches = pullRequests.filter(
-    (pr) => pr.number === number && (repository === undefined || pr.repository.toLowerCase() === repository),
-  );
-  return matches.length === 1 ? (matches[0] ?? null) : null;
+  if (outcome?.state !== "ready" || !outcome.prUrl || !pullRequests?.length) return null;
+  const link = PR_URL.exec(outcome.prUrl);
+  if (!link?.[1]) return null;
+  const number = Number(link[2]);
+  if (outcome.prNumber !== undefined && outcome.prNumber !== number) return null;
+  const repository = link[1].toLowerCase();
+  return pullRequests.find((pr) => pr.number === number && pr.repository.toLowerCase() === repository) ?? null;
 }
 
 /**
