@@ -5871,7 +5871,7 @@
                         }
                       },
                       "repos": {
-                        "description": "GitHub repositories to check out, as in a golden config.",
+                        "description": "GitHub repositories to check out as shallow single-branch clones.",
                         "type": "array",
                         "items": {
                           "type": "object",
@@ -5884,13 +5884,6 @@
                             },
                             "dir": {
                               "type": "string"
-                            },
-                            "history": {
-                              "type": "string",
-                              "enum": [
-                                "full",
-                                "shallow"
-                              ]
                             }
                           },
                           "required": [

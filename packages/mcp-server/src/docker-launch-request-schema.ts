@@ -38,11 +38,10 @@ export const DOCKER_LAUNCH_REQUEST = z
           url: z.string(),
           branch: z.string().optional(),
           dir: z.string().optional(),
-          history: z.enum(["full", "shallow"]).optional(),
         }),
       )
       .optional()
-      .describe("GitHub repositories to check out, as in a golden config."),
+      .describe("GitHub repositories to check out as shallow single-branch clones."),
     variables: z.array(binding("variableId")).max(64).optional(),
     secrets: z.array(binding("secretId")).max(64).optional(),
   })

@@ -1,10 +1,16 @@
 import { expect, test } from "bun:test";
-import type { DockerLaunchRequest } from "@armada/core";
+import type { DockerLaunchRequest, DockerSandboxStatus } from "@armada/core";
 import { DOCKER_LAUNCH_REQUEST } from "../../mcp-server/src/docker-launch-request-schema.ts";
 import { REST_LAUNCH_RESPONSE } from "../../mcp-server/src/launch-response-schemas.ts";
 import { webhookSignature } from "../../mcp-server/src/outbound-webhooks.ts";
 import { createServerRequestDrain } from "../../mcp-server/src/server-request-drain.ts";
-import { Armada, ArmadaError, type DockerLaunchInput, verifyWebhookSignature } from "../src/index.ts";
+import {
+  Armada,
+  ArmadaError,
+  type DockerLaunchInput,
+  type SandboxStatus,
+  verifyWebhookSignature,
+} from "../src/index.ts";
 
 /** The SDK Docker launch input has exactly the fields of the server's Docker launch request. */
 const dockerInputMatchesCore: [
@@ -14,6 +20,9 @@ const dockerInputMatchesCore: [
   ? true
   : never = true;
 void dockerInputMatchesCore;
+/** The server's status prompt (including a queued Docker prompt) is assignable to the SDK's. */
+const dockerPrompt: SandboxStatus["prompt"] = null as DockerSandboxStatus["prompt"];
+void dockerPrompt;
 
 test("service-token methods use the REST routes and preserve wire field names", async () => {
   const requests: { path: string; body: unknown }[] = [];
@@ -62,9 +71,12 @@ test("launch sends a Docker request and returns the Docker receipt without a gol
     harness: "codex",
     requestId: "00000000-0000-4000-8000-000000000003",
     prompt: "Work",
-    repos: [{ url: "https://github.com/acme/app", history: "shallow" }],
+    repos: [{ url: "https://github.com/acme/app", branch: "main" }],
   } satisfies DockerLaunchInput;
   expect(DOCKER_LAUNCH_REQUEST.safeParse(input).success).toBe(true);
+  // Docker checkouts are always shallow, so the published contract does not offer golden-config history.
+  const history = { ...input, repos: [{ url: "https://github.com/acme/app", history: "full" }] };
+  expect(DOCKER_LAUNCH_REQUEST.safeParse(history).success).toBe(false);
   const receipt = {
     sandbox: {
       id: "sandbox_placeholder",
@@ -95,6 +107,27 @@ test("launch sends a Docker request and returns the Docker receipt without a gol
   expect(launched.sandbox.hostId).toBe(input.hostId);
   expect(launched.promptId).toBeUndefined();
   expect(sent).toEqual(input);
+});
+
+test("status exposes the selected prompt by its promptId", async () => {
+  const prompt = { promptId: "prompt_placeholder", conversationId: null, state: "queued", reason: null };
+  const client = new Armada({
+    token: "service_placeholder",
+    fetch: async () =>
+      Response.json({
+        id: "sandbox_placeholder",
+        status: "running",
+        settled: false,
+        statusReason: null,
+        prompt,
+        conversationIds: [],
+        expiresAt: null,
+      }),
+  });
+  const status = await client.status({ id: "sandbox_placeholder", prompt_id: "prompt_placeholder" });
+  const promptId: string | undefined = status.prompt?.promptId;
+  expect(promptId).toBe("prompt_placeholder");
+  expect(status.prompt).toEqual(prompt);
 });
 
 test("retry policy replays only eligible reads and retains typed safe failures", async () => {

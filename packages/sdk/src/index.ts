@@ -105,7 +105,8 @@ export interface DockerLaunchInput {
   skipSkillDefaults?: boolean;
   /** MCP connection UUIDs. */
   connections?: string[];
-  repos?: { url: string; branch?: string; dir?: string; history?: "full" | "shallow" }[];
+  /** Shallow single-branch checkouts. */
+  repos?: { url: string; branch?: string; dir?: string }[];
   variables?: { key: string; variableId: string; version: number }[];
   secrets?: { key: string; secretId: string; version: number }[];
 }
@@ -177,7 +178,14 @@ export interface SandboxStatus {
   status: string;
   settled: boolean;
   statusReason: string | null;
-  prompt: { id?: string; state?: string; [key: string]: unknown } | null;
+  /** The selected prompt; `state` is "queued" while a Docker runtime has not admitted it yet. */
+  prompt: {
+    promptId: string;
+    conversationId: string | null;
+    state: string;
+    reason: string | null;
+    [key: string]: unknown;
+  } | null;
   conversationIds: string[];
   expiresAt: string | null;
   [key: string]: unknown;
