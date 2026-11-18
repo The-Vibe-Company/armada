@@ -22,7 +22,10 @@ export async function SandboxAttention({
   sandbox,
   viewer,
 }: {
-  sandbox: Omit<Sandbox, "docker_retention_deadline" | "external_ref">;
+  sandbox: Omit<
+    Sandbox,
+    "docker_retention_deadline" | "external_ref" | "outputs_checked_at" | "outputs_published_scan"
+  >;
   viewer: Viewer;
 }) {
   const gateway = viewerGateway(viewer);

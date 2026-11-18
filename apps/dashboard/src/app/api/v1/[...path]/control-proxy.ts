@@ -200,14 +200,15 @@ export async function forwardControl(
   if (request.method !== "GET" && request.method !== "POST" && request.method !== "DELETE")
     return fail(404, "Not found.");
   const method: ControlVerb = request.method;
-  const relative = path.join("/");
+  const sandboxOutputs = method === "GET" ? sandboxOutputsPath(request.url) : null;
+  const relative = sandboxOutputs ?? path.join("/");
   const sandboxDeletion =
     method === "DELETE" && path.length === 2 && path[0] === "sandboxes" && SANDBOX_ID.test(path[1] ?? "");
   const publicMethods: readonly string[] = Object.hasOwn(PUBLIC_CONTROL_ROUTES, relative)
     ? PUBLIC_CONTROL_ROUTES[relative as keyof typeof PUBLIC_CONTROL_ROUTES]
     : [];
   const isPublic = publicMethods.includes(method);
-  if (!sandboxDeletion && !isPublic && !(method === "POST" && PRIVATE_POST_PATHS.has(relative)))
+  if (!sandboxOutputs && !sandboxDeletion && !isPublic && !(method === "POST" && PRIVATE_POST_PATHS.has(relative)))
     return fail(404, "Not found.");
   const authorization = request.headers.get("authorization");
   if (!isPublic && !authorization) return fail(401, "Unauthorized.");
@@ -271,8 +272,29 @@ export async function forwardControl(
         Number.isFinite(Date.parse(retryAfter))))
   )
     headers.set("retry-after", retryAfter);
-  headers.set("cache-control", "no-store");
+  if (sandboxOutputs) {
+    // A download must stay an attachment the browser never sniffs; the length is exact only for an unencoded body.
+    for (const name of ["content-disposition", "x-content-type-options"]) {
+      const value = response.headers.get(name);
+      if (value) headers.set(name, value);
+    }
+    const length = response.headers.get("content-length");
+    if (length && !response.headers.has("content-encoding")) headers.set("content-length", length);
+  }
+  headers.set("cache-control", sandboxOutputs ? "private, no-store" : "no-store");
   return new Response(response.body, { status: response.status, headers });
+}
+
+const SANDBOX_OUTPUTS =
+  /^\/api\/v1\/(sandboxes\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/outputs(?:\/[^/]+)?)$/;
+
+/**
+ * The authenticated sandbox outputs list and download, read from the raw request path rather than the
+ * decoded catch-all segments, so an encoded filename is forwarded as the single segment the caller sent.
+ * URL parsing has already resolved dot segments, so none can retarget the request.
+ */
+function sandboxOutputsPath(url: string): string | null {
+  return SANDBOX_OUTPUTS.exec(new URL(url).pathname)?.[1] ?? null;
 }
 
 export function controlOrigin(value: string | undefined): string | null {

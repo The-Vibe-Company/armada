@@ -47,4 +47,8 @@ test("runtime sandbox adapter exposes bound reads/compute cleanup, never host ag
   expect(runtime.configureMcp).toBeUndefined();
   expect(runtime.collectTurnUsage).toBeUndefined();
   expect(calls).toHaveLength(5);
+  // Declared outputs are a fixed host read, bound to this sandbox, so enrolled runtimes publish them.
+  await runtime.readOutputs?.({ sandboxId: "physical" });
+  expect(calls.at(-1)).toBe("readOutputs");
+  await expect(runtime.readOutputs?.({ sandboxId: "other" })).rejects.toMatchObject({ code: "not_found" });
 });

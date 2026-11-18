@@ -72,6 +72,16 @@ export function createRuntimeProvider(
           },
         }
       : {}),
+    // Declared outputs are a fixed host read (Boat command API, Modal container),
+    // never a runner operation, so enrolled runtimes publish outputs like native sandboxes.
+    ...(host.readOutputs
+      ? {
+          async readOutputs(request: Parameters<NonNullable<Provider["readOutputs"]>>[0]) {
+            target(request.sandboxId);
+            return host.readOutputs!(request);
+          },
+        }
+      : {}),
     // No quiescence/checkpoint/work-preservation/resume guarantee in this lane.
     quiesce: unsupported,
     prompt: unsupported,

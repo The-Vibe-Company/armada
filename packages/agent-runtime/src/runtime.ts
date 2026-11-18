@@ -14,6 +14,7 @@ import { recordMcpRevision } from "./mcp-revisions.ts";
 import { withNativeAuthPublication } from "./native-auth-publication.ts";
 import { NativeEpoch } from "./native-epoch.ts";
 import { observeRuntime } from "./observation.ts";
+import { readOutputDirectory } from "./outputs.ts";
 import { groupState, type ProcessIdentity, processIdentity } from "./processes.ts";
 import {
   AUTH_HEADER,
@@ -312,6 +313,17 @@ export class Runner {
         const result = await sampleVmResources();
         return Response.json({ version: 1, requestId: r.requestId, result });
       }
+      if (r.op === "readOutputs") {
+        if (
+          this.credentialFreeBuilder ||
+          Object.keys(r).some((key) => !["version", "requestId", "sandboxId", "op"].includes(key))
+        )
+          throw Error("invalid_request");
+        // Fixed read-only output read (#2570): fresh data, never cached or journaled. It runs during
+        // a checkpoint too, because Armada takes the final capture after quiesce and before stop.
+        const files = await readOutputDirectory();
+        return Response.json({ version: 1, requestId: r.requestId, result: { files } });
+      }
       return await executeWithReceipt(this.journal, r, () => this.dispatch(r, request.signal));
     } catch (error) {
       return Response.json(
@@ -343,6 +355,7 @@ export class Runner {
           | "configureReadableVariables"
           | "testModelConnection"
           | "resourceObservation"
+          | "readOutputs"
           | "installOrchestratorEpoch"
           | "scrubOrchestratorEpoch";
       }

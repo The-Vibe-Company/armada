@@ -460,6 +460,8 @@ test("cleanup waits outside transactions for physical ACK; timeout retries reuse
     waits = 0;
   const pending = createDockerSandboxControls(sql, key, {
     timeoutMs: 500,
+    // Counts cleanup waits only; output capture has its own tests (docker-outputs).
+    outputs: { reader: () => ({}) },
     clock: {
       now: () => now,
       wait: async (ms) => {

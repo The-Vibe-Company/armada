@@ -518,13 +518,24 @@ test("normal launch drives create, bootstrap, health and one first prompt, seals
   const cleanup = createDockerSandboxControls(sql, key, { clock: f.clock });
   await cleanup.invoke(f.caller, "stop", { id: f.body.requestId });
   await cleanup.invoke(f.caller, "delete", { id: f.body.requestId });
+  // The user stop adds exactly one bounded final output read (#2570) after the four launch commands.
+  const commands = async () =>
+    (
+      await db.query<{ request_id: string }>(
+        `select request_id from public.runtime_commands where sandbox_id=$1 order by sequence`,
+        [f.body.requestId],
+      )
+    ).rows.map((row) => row.request_id);
+  const afterStop = await commands();
+  expect(afterStop.map((id) => id.startsWith("outputs_"))).toEqual([false, false, false, false, true]);
   await db.query(`update public.credentials set status='revoked' where id=$1`, [f.body.credentialId]);
   const replay = await f.service(sql, false).launch(f.caller, f.body);
   expect(replay.sandbox.status).toBe("deleted");
   expect(replay.promptId).toBe(f.receipt.promptId);
   expect(replay.runtime).toEqual(result.runtime);
   expect(f.resolutions()).toBe(1);
-  expect((await counts(f))?.commands).toBe(4);
+  // The replay issues no runtime command.
+  expect(await commands()).toEqual(afterStop);
 });
 
 test("unknown timeout and response loss survive restart and concurrent exact retries without rotating phase IDs", async () => {
