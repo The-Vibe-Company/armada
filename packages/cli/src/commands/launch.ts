@@ -146,6 +146,7 @@ const run: Command["run"] = async (argv, { io, deps, auth }) => {
 export default {
   name: "launch",
   summary: "Launch an agent sandbox",
+  completionBefore: "org",
   usage: {
     "docker-launch": `  armada launch [prompt] --provider docker [--host UUID|NAME | --golden snapshot-UUID] --agent claude|codex|opencode [--credential-id UUID] [--org NAME|UUID] [--repo owner/repo[@branch] ...] [--variable KEY:UUID:VERSION ...] [--secret KEY:UUID:VERSION ...] [--request-id UUID] [--json]
                                            Docker launch through the normal Armada API using the official Armada environment.`,

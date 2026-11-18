@@ -1098,8 +1098,13 @@ const GENERATED_HELP: Record<string, string> = {
 /** Flags from the command help registry also drive shell discovery. */
 export const helpOptionWords = [
   ...new Set(
-    [...Object.values(HELP), ...Object.values(GENERATED_HELP), ...commands.map(({ help }) => help)].flatMap((text) =>
-      [...text.matchAll(/--[a-z][a-z-]*/g)].map((match) => match[0]),
-    ),
+    [
+      ...Object.entries(HELP).flatMap(([key, help]) => [
+        ...commands.filter((command) => command.completionBefore === key).map((command) => command.help),
+        help,
+      ]),
+      ...Object.values(GENERATED_HELP),
+      ...commands.filter((command) => command.completionBefore === undefined).map((command) => command.help),
+    ].flatMap((help) => [...help.matchAll(/--[a-z][a-z-]*/g)].map((match) => match[0])),
   ),
 ];
