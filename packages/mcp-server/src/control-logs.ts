@@ -2,7 +2,7 @@ import { type Provider, VaultError } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import type { ControlOptions } from "./control.ts";
 import { optional } from "./control-input.ts";
-import { readEventPages } from "./event-pagination.ts";
+import { readEventPages, validateLogPagination } from "./event-pagination.ts";
 import { publicLogEvents } from "./model-usage.ts";
 import { measureRequestPhase } from "./request-timing.ts";
 import { latestPromptEvent } from "./turns.ts";
@@ -23,6 +23,7 @@ export async function readLogs(
   runtimeFailure?: { status: "failed"; reason: string };
   olderCursor?: string;
 }> {
+  validateLogPagination(body);
   async function project(events: { promptId?: string }[]) {
     const ids = await options.accountTurns?.publicPromptIds(
       caller,
@@ -60,7 +61,6 @@ export async function readLogs(
     throw new VaultError("invalid", "Invalid coalesce option.");
   const backward = body.direction === "backward";
   const all = body.all === true;
-  if (backward && all) throw new VaultError("invalid", "Backward reads cannot drain all pages.");
   const follow = body.follow === true;
   const { events, cursor, hasMore, source, runtimeFailure, olderCursor } = await readEventPages(
     (cursor) =>

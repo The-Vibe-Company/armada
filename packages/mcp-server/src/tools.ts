@@ -64,7 +64,7 @@ import type { Caller } from "./caller.ts";
 import { INTERNAL_FAILURE_MESSAGE } from "./control-response.ts";
 import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
 import { DataError, type SandboxView, type ScopedData } from "./data.ts";
-import { MAX_LOG_PAGES, readEventPages } from "./event-pagination.ts";
+import { MAX_LOG_PAGES, readEventPages, validateLogPagination } from "./event-pagination.ts";
 import { publicLogEvents } from "./model-usage.ts";
 import type { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import type { GoldenProviderMetadata } from "./provider-metadata.ts";
@@ -551,6 +551,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
             const queued = await context.accountTurns?.status(caller, input.id as string, input.prompt_id as string);
             if (queued && "nativePromptId" in queued) input.prompt_id = queued.nativePromptId;
           }
+          if (name === "logs") validateLogPagination(args as Record<string, unknown>);
           const routed = ["send", "status", "wait"].includes(name)
             ? undefined
             : await context.dockerControls?.invoke(caller, name, args);
@@ -2506,8 +2507,6 @@ async function readLogs(
     coalesce?: boolean;
   },
 ) {
-  if (args.direction === "backward" && args.all)
-    throw new VaultError("invalid", "Backward reads cannot drain all pages.");
   const { events, cursor, hasMore, olderCursor, source, runtimeFailure } = await readEventPages(
     (cursor) =>
       provider.events({

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { Provider } from "@armada/core";
+import { type Provider, ProviderError } from "@armada/core";
 import { callSharedTool } from "../src/tool-api.ts";
 import type { ToolContext } from "../src/tools.ts";
 
@@ -50,10 +50,17 @@ test.each([false, true])("logs retain runtime diagnostics across pages (all=%s)"
   expect(cursors).toEqual(all ? [undefined, "next"] : [undefined]);
 });
 
-test("MCP logs rejects a backward drain as invalid input", async () => {
-  const fixture = context(async () => {
-    throw new Error("Invalid pagination must not read provider history.");
-  });
+test("MCP logs rejects a backward drain even when the provider is unavailable", async () => {
+  const fixture = context(async () => ({ events: [], hasMore: false }));
+  fixture.provider = async () => {
+    throw new ProviderError({
+      provider: "boat",
+      code: "unavailable",
+      status: 503,
+      retryable: true,
+      message: "Provider unavailable.",
+    });
+  };
   await expect(
     callSharedTool(fixture, "logs", { id: "sandbox", direction: "backward", all: true }),
   ).rejects.toMatchObject({ code: "invalid", message: "Backward reads cannot drain all pages.", status: 400 });
