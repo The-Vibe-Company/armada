@@ -37,7 +37,8 @@ and a configured Codex account:
 }
 ```
 
-Omit `prompt` to launch without starting a turn. Save the returned Armada
+Omit `prompt` to launch without starting a turn. The first
+`sandbox/send` then opens the conversation, so omit `conversation_id` on it. Save the returned Armada
 sandbox ID from `sandbox.id` for subsequent calls. Ordinary cloud launches
 inherit snapshot visibility. A private snapshot is visible to its owner.
 
@@ -120,11 +121,14 @@ Send rules depend on the sandbox:
 | Sandbox | `request_id` | `conversation_id` | `model`, `reasoning_effort` |
 | --- | --- | --- | --- |
 | Native Boat or Modal | Optional | Optional | Optional, for this turn only |
-| Runtime Boat or Modal, including OpenCode | Required without a pinned model account. Otherwise Armada generates one when omitted. | An existing conversation | Refused. Boat accepts values equal to the launch values. |
-| Docker | Armada generates one when omitted, because every Docker sandbox has a pinned model account | An existing conversation | Refused |
+| Runtime Boat or Modal, including OpenCode | Required without a pinned model account. Otherwise Armada generates one when omitted. | Optional. Omit it to continue the latest conversation. On an idle sandbox with no turn yet, omitting it opens the first conversation. A supplied ID must name an existing conversation of this sandbox. | Refused. Boat accepts values equal to the launch values. |
+| Docker | Armada generates one when omitted, because every Docker sandbox has a pinned model account | Optional UUID. Omit it to continue the latest conversation, or the launch conversation when none is recorded yet. | Refused |
 
-A refused override returns HTTP 400 `invalid`, as does a runtime send that
-requires a UUID `request_id` and does not include one. Runtime and Docker
+On runtime sandboxes, a refused override returns HTTP 400 `invalid`, as do a
+`conversation_id` that names no existing conversation and a send that requires
+a UUID `request_id` and does not include one. On Docker sandboxes, a refused
+override or a `conversation_id` that is not a UUID returns HTTP 400
+`invalid_request`. Runtime and Docker
 sends keep the model and reasoning effort selected at launch. When Armada
 generates the request ID, it returns it as `requestId`. If that answer is lost,
 the send cannot be replayed, so send your own.
