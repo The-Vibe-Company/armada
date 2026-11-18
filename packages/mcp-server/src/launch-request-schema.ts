@@ -10,9 +10,7 @@ import {
 import { launch } from "@armada/core/contract";
 import { z } from "zod";
 
-export const dockerLaunchVariants = launch.input.body.options.filter(
-  (variant) => variant.shape.provider.value === "docker",
-);
+const dockerLaunchVariants = launch.input.body.options.filter((variant) => variant.shape.provider.value === "docker");
 
 // Explicit case classes: JSON Schema patterns drop regex flags, so an `/i` flag would not be published.
 const launchUuid = z.string().regex(/^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$/);
