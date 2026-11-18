@@ -58,6 +58,8 @@ type Target = {
   runtime: boolean;
   active: boolean;
   launch_authorized: boolean;
+  // The current turn had settled before this scan read any push evidence.
+  settled: boolean;
   created_at: string;
   lifecycle_generation: string;
   task_prompt_id: string | null;
@@ -214,7 +216,11 @@ export function createSandboxPullRequests(
         returning s.id,s.owner_id,s.provider::text,s.provider_sandbox_id,s.harness::text,
           s.status in ('ready','running') as active,
           (s.boat_runtime or s.runtime_transport is not distinct from 'dialout' or s.provider='docker') as runtime,
-          s.created_at::text,s.lifecycle_generation::text,s.task_prompt_id,due.connection_epoch::text,
+          s.created_at::text,s.lifecycle_generation::text,s.task_prompt_id,
+          (s.task_prompt_id is not null
+            and exists(select 1 from public.runtime_idle_turns t where t.sandbox_id=s.id and t.prompt_id=s.task_prompt_id and t.settled)
+            and not exists(select 1 from public.runtime_idle_turns t where t.sandbox_id=s.id and not t.settled)) as settled,
+          due.connection_epoch::text,
           due.github_id::text,due.membership_epoch::text,due.repositories,due.launch_authorized,s.repository_dir,s.pull_request_scan,s.pull_request_reports`,
       )
     ).rows[0];
@@ -531,6 +537,9 @@ export function createSandboxPullRequests(
       const list = [...found.values()];
       const proof =
         row.active &&
+        // A read taken during a turn can precede that turn's last push. The
+        // prompt and generation fences do not change when the turn settles.
+        row.settled &&
         row.launch_authorized &&
         complete &&
         !pending &&

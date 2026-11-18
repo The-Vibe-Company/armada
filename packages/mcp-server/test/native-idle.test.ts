@@ -427,6 +427,7 @@ test.each([
   "revoked",
   "opted out",
   "running-turn",
+  "scan during turn",
   "corrected report",
   "out-of-grant report",
   "rejected recreation",
@@ -567,6 +568,10 @@ test.each([
     await observer.reconcileOne(new AbortController().signal);
     await observer.drain();
   };
+  // The lifecycle worker settles the finished turn before a scan may prove a
+  // stop; its timer is not due yet, so this tick stops nothing.
+  if (state !== "scan during turn") await f.tick();
+  expect(f.stops()).toBe(0);
   if (state === "ledger hook restored") {
     // The reader reported the missing hook and reinstalled it, then the scan
     // was abandoned. The next read is clean, but a push made while the hook
@@ -597,6 +602,9 @@ test.each([
   if (state === "revoked") await f.db.query("update github_connections set revoked_at=now() where user_id=$1", [owner]);
   if (state === "opted out") await f.db.query("update sandboxes set stop_when_work_merged=false where id=$1", [f.id]);
   await f.tick();
+  // The read above preceded the turn's settlement (the tick that just settled
+  // it), so the turn could still have pushed after it: no stop on a later tick.
+  if (state === "scan during turn") await f.tick();
   const sandbox = await f.data.sandboxes.get(f.id);
   const shouldStop =
     state === "merged" ||
