@@ -117,8 +117,6 @@ export const PRIVATE_POST_PATHS: ReadonlySet<string> = new Set([
   "docker/hosts/revoke",
   "launch/options",
   "sandbox/launch",
-  "sandbox/launch-sized-v1",
-  "sandbox/launch-access-v1",
   "sandbox/bind-credential",
   "sandbox/list",
   "sandbox/detail",

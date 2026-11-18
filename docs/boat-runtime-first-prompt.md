@@ -25,8 +25,7 @@ Launch through `POST /api/v1/sandbox/launch` with
 `runtimeVersion:1`, `boatRuntime:true`, `provider:"boat"`, `harness:"codex"`,
 authorized org/golden/account; the initial prompt is optional. Skip skill defaults; remote
 HTTP/SSE MCP uses the standard `connections` selection or registry
-`defaultForLaunch` defaults as described below. There is no CLI launch flag. On older servers, use
-`sandbox/launch-runtime-v1`. See the [launch route compatibility window](launch-idempotency.md#launch-route-compatibility).
+`defaultForLaunch` defaults as described below. See [explicit runtime launch](launch-idempotency.md#explicit-runtime-launch).
 
 The immutable `sandboxes.boat_runtime` decision is recorded at insert. Persisted
 owner, model/account version, cwd and provider identity govern later routing;

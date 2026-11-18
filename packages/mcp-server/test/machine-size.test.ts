@@ -90,7 +90,7 @@ test("size policies use live org admin/private owner authority, persist without 
   }
 });
 
-test("versioned launch enforces sizing before allocation and shares override/default resolution without breaking legacy launch", async () => {
+test("canonical HTTP launch validates sizes and applies overrides or golden defaults", async () => {
   const server = await harness();
   try {
     const { db, people } = server;
@@ -103,27 +103,21 @@ test("versioned launch enforces sizing before allocation and shares override/def
       providerFor: server.boat.providerFor,
     };
     const token = await server.token(people.member);
-    const launch = async (body: Record<string, unknown>, route = "sandbox/launch-sized-v1") =>
+    const launch = async (body: Record<string, unknown>) =>
       handleControlRequest(
-        new Request(`${PUBLIC_URL}/api/v1/${route}`, {
+        new Request(`${PUBLIC_URL}/api/v1/sandbox/launch`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
           body: JSON.stringify({ golden: "shared", harness: "claude", ...body }),
         }),
         control,
       );
-    for (const body of [
-      { size: "small" },
-      { sizePolicyVersion: 2, size: "small" },
-      { sizePolicyVersion: 1, size: "invalid" },
-    ]) {
-      expect((await launch(body))?.status).toBe(400);
-      expect(server.boat.forks).toHaveLength(0);
-    }
+    expect((await launch({ size: "invalid" }))?.status).toBe(400);
+    expect(server.boat.forks).toHaveLength(0);
     await db.query(`update goldens set size_policy=$1::jsonb where name='shared'`, [
       JSON.stringify({ version: 1, golden: "large", repositories: {} }),
     ]);
-    const sized = await launch({ sizePolicyVersion: 1, size: "small" });
+    const sized = await launch({ size: "small" });
     expect(sized?.status).toBe(200);
     expect(await sized?.json()).toMatchObject({
       sandbox: {
@@ -134,7 +128,7 @@ test("versioned launch enforces sizing before allocation and shares override/def
         },
       },
     });
-    const defaults = await launch({ sizePolicyVersion: 1 });
+    const defaults = await launch({});
     expect(defaults?.status).toBe(200);
     expect(await defaults?.json()).toMatchObject({
       sandbox: {
@@ -157,9 +151,6 @@ test("versioned launch enforces sizing before allocation and shares override/def
     });
     expect(mcp.isError).not.toBe(true);
     expect(server.boat.forks.at(-1)?.size).toBe("medium");
-    const legacy = await launch({}, "sandbox/launch");
-    expect(legacy?.status).toBe(200);
-    expect(server.boat.forks).toHaveLength(4);
   } finally {
     await server.close();
   }
