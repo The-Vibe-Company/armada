@@ -5,7 +5,10 @@ import config from "../../.oxlintrc.json";
 import baseline from "./landmines-baseline.json";
 
 type Counts = Record<string, Record<string, number>>;
-type LintConfig = { overrides?: { files: string[]; rules?: Record<string, unknown> }[] };
+type LintConfig = {
+  rules?: Record<string, unknown>;
+  overrides?: { files: string[]; rules?: Record<string, unknown> }[];
+};
 
 type Diagnostic = {
   code?: string;
@@ -18,7 +21,11 @@ const root = join(import.meta.dir, "../..");
 const baselinePath = "scripts/ci/landmines-baseline.json";
 const configPath = ".oxlintrc.json";
 
-function nativeAllowances({ overrides = [] }: LintConfig) {
+function nativeAllowances({ rules: globalRules = {}, overrides = [] }: LintConfig) {
+  for (const [rule, setting] of Object.entries(globalRules)) {
+    if (Array.isArray(setting) && setting[1]?.allow)
+      throw new Error(`${rule}: put allowances in path-specific overrides`);
+  }
   const allowances: Counts = {};
   for (const { files, rules = {} } of overrides) {
     for (const [rule, setting] of Object.entries(rules)) {
@@ -27,7 +34,8 @@ function nativeAllowances({ overrides = [] }: LintConfig) {
       if (entries.length !== files.length || entries.some(([file]) => !files.includes(file))) {
         throw new Error(`${rule}: override paths must exactly match the allowance paths`);
       }
-      const counts = (allowances[rule] ??= {});
+      allowances[rule] ??= {};
+      const counts = allowances[rule];
       for (const [file, count] of entries) {
         if (Object.hasOwn(counts, file)) throw new Error(`${file}: duplicate ${rule} allowance`);
         counts[file] = count;
