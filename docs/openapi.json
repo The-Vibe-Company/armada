@@ -6696,10 +6696,16 @@
                   {
                     "type": "object",
                     "properties": {
-                      "org": {
+                      "externalRef": {
                         "type": "string",
-                        "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$",
-                        "description": "Organization UUID."
+                        "minLength": 1,
+                        "maxLength": 200,
+                        "pattern": "^[^\\x00-\\x1f\\x7f-\\x9f]+(?![\\s\\S])"
+                      },
+                      "org": {
+                        "description": "Organization name or UUID. Omit when scoped to one organization.",
+                        "type": "string",
+                        "minLength": 1
                       },
                       "provider": {
                         "type": "string",
@@ -6722,11 +6728,6 @@
                         "type": "integer",
                         "minimum": 1,
                         "maximum": 9007199254740991
-                      },
-                      "requestId": {
-                        "type": "string",
-                        "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$",
-                        "description": "Caller-chosen UUID; replaying it returns the same launch."
                       },
                       "prompt": {
                         "description": "First prompt: not blank. The whole request body is limited to 128 KiB.",
@@ -6853,25 +6854,35 @@
                           ],
                           "additionalProperties": false
                         }
+                      },
+                      "requestId": {
+                        "type": "string",
+                        "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$",
+                        "description": "Legacy caller-chosen replay UUID."
                       }
                     },
                     "required": [
-                      "org",
                       "provider",
                       "harness",
-                      "requestId",
-                      "hostId"
+                      "hostId",
+                      "requestId"
                     ],
                     "additionalProperties": false,
-                    "description": "Launch on a registered Docker host from the official Armada environment. There is no golden."
+                    "description": "Launch on a Docker host with a request UUID."
                   },
                   {
                     "type": "object",
                     "properties": {
-                      "org": {
+                      "externalRef": {
                         "type": "string",
-                        "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$",
-                        "description": "Organization UUID."
+                        "minLength": 1,
+                        "maxLength": 200,
+                        "pattern": "^[^\\x00-\\x1f\\x7f-\\x9f]+(?![\\s\\S])"
+                      },
+                      "org": {
+                        "description": "Organization name or UUID. Omit when scoped to one organization.",
+                        "type": "string",
+                        "minLength": 1
                       },
                       "provider": {
                         "type": "string",
@@ -6894,11 +6905,6 @@
                         "type": "integer",
                         "minimum": 1,
                         "maximum": 9007199254740991
-                      },
-                      "requestId": {
-                        "type": "string",
-                        "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$",
-                        "description": "Caller-chosen UUID; replaying it returns the same launch."
                       },
                       "prompt": {
                         "description": "First prompt: not blank. The whole request body is limited to 128 KiB.",
@@ -7008,17 +7014,360 @@
                         "description": "Optional; when present it must be the snapshot's host.",
                         "type": "string",
                         "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$"
+                      },
+                      "requestId": {
+                        "type": "string",
+                        "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$",
+                        "description": "Legacy caller-chosen replay UUID."
                       }
                     },
                     "required": [
-                      "org",
                       "provider",
                       "harness",
-                      "requestId",
-                      "snapshotId"
+                      "snapshotId",
+                      "requestId"
                     ],
                     "additionalProperties": false,
-                    "description": "Launch from a Docker snapshot on the host that holds it. There is no golden and no repos."
+                    "description": "Launch from a Docker snapshot with a request UUID."
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "externalRef": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 200,
+                        "pattern": "^[^\\x00-\\x1f\\x7f-\\x9f]+(?![\\s\\S])"
+                      },
+                      "org": {
+                        "description": "Organization name or UUID. Omit when scoped to one organization.",
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "provider": {
+                        "type": "string",
+                        "const": "docker"
+                      },
+                      "harness": {
+                        "type": "string",
+                        "enum": [
+                          "claude",
+                          "codex",
+                          "opencode"
+                        ]
+                      },
+                      "credentialId": {
+                        "description": "Omit to use the caller's compatible personal default, frozen at admission.",
+                        "type": "string",
+                        "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$"
+                      },
+                      "credentialVersion": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      },
+                      "prompt": {
+                        "description": "First prompt: not blank. The whole request body is limited to 128 KiB.",
+                        "type": "string",
+                        "maxLength": 131072,
+                        "pattern": "\\S"
+                      },
+                      "model": {
+                        "type": "string"
+                      },
+                      "reasoningEffort": {
+                        "type": "string"
+                      },
+                      "ttlSeconds": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 86400
+                      },
+                      "visibility": {
+                        "type": "string",
+                        "const": "private"
+                      },
+                      "skills": {
+                        "maxItems": 20,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "pattern": "^(?:[a-z0-9][a-z0-9-]*\\/)?[a-z0-9][a-z0-9-]*@[0-9]+\\.[0-9]+\\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$"
+                        }
+                      },
+                      "skipSkillDefaults": {
+                        "type": "boolean"
+                      },
+                      "stopWhenWorkMerged": {
+                        "description": "Default true: stop the sandbox once every pull request it opened is merged and the agent is idle.",
+                        "type": "boolean"
+                      },
+                      "connections": {
+                        "description": "MCP connection UUIDs.",
+                        "maxItems": 100,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$"
+                        }
+                      },
+                      "variables": {
+                        "maxItems": 64,
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "key": {
+                              "type": "string"
+                            },
+                            "variableId": {
+                              "type": "string",
+                              "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$"
+                            },
+                            "version": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "key",
+                            "variableId",
+                            "version"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "secrets": {
+                        "maxItems": 64,
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "key": {
+                              "type": "string"
+                            },
+                            "secretId": {
+                              "type": "string",
+                              "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$"
+                            },
+                            "version": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "key",
+                            "secretId",
+                            "version"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "hostId": {
+                        "type": "string",
+                        "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$",
+                        "description": "Docker host UUID."
+                      },
+                      "repos": {
+                        "description": "GitHub repositories to check out with bounded history: enough to find a merge base with the default branch.",
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "url": {
+                              "type": "string"
+                            },
+                            "branch": {
+                              "type": "string"
+                            },
+                            "dir": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "url"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "idempotencyKey": {
+                        "type": "string",
+                        "minLength": 16,
+                        "maxLength": 128,
+                        "description": "Replay key scoped to the caller and organization."
+                      }
+                    },
+                    "required": [
+                      "provider",
+                      "harness",
+                      "hostId",
+                      "idempotencyKey"
+                    ],
+                    "additionalProperties": false,
+                    "description": "Launch on a Docker host with an idempotency key."
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "externalRef": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 200,
+                        "pattern": "^[^\\x00-\\x1f\\x7f-\\x9f]+(?![\\s\\S])"
+                      },
+                      "org": {
+                        "description": "Organization name or UUID. Omit when scoped to one organization.",
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "provider": {
+                        "type": "string",
+                        "const": "docker"
+                      },
+                      "harness": {
+                        "type": "string",
+                        "enum": [
+                          "claude",
+                          "codex",
+                          "opencode"
+                        ]
+                      },
+                      "credentialId": {
+                        "description": "Omit to use the caller's compatible personal default, frozen at admission.",
+                        "type": "string",
+                        "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$"
+                      },
+                      "credentialVersion": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      },
+                      "prompt": {
+                        "description": "First prompt: not blank. The whole request body is limited to 128 KiB.",
+                        "type": "string",
+                        "maxLength": 131072,
+                        "pattern": "\\S"
+                      },
+                      "model": {
+                        "type": "string"
+                      },
+                      "reasoningEffort": {
+                        "type": "string"
+                      },
+                      "ttlSeconds": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 86400
+                      },
+                      "visibility": {
+                        "type": "string",
+                        "const": "private"
+                      },
+                      "skills": {
+                        "maxItems": 20,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "pattern": "^(?:[a-z0-9][a-z0-9-]*\\/)?[a-z0-9][a-z0-9-]*@[0-9]+\\.[0-9]+\\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$"
+                        }
+                      },
+                      "skipSkillDefaults": {
+                        "type": "boolean"
+                      },
+                      "stopWhenWorkMerged": {
+                        "description": "Default true: stop the sandbox once every pull request it opened is merged and the agent is idle.",
+                        "type": "boolean"
+                      },
+                      "connections": {
+                        "description": "MCP connection UUIDs.",
+                        "maxItems": 100,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$"
+                        }
+                      },
+                      "variables": {
+                        "maxItems": 64,
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "key": {
+                              "type": "string"
+                            },
+                            "variableId": {
+                              "type": "string",
+                              "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$"
+                            },
+                            "version": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "key",
+                            "variableId",
+                            "version"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "secrets": {
+                        "maxItems": 64,
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "key": {
+                              "type": "string"
+                            },
+                            "secretId": {
+                              "type": "string",
+                              "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$"
+                            },
+                            "version": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "key",
+                            "secretId",
+                            "version"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "snapshotId": {
+                        "type": "string",
+                        "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$",
+                        "description": "Docker snapshot UUID. It selects the host and workspace."
+                      },
+                      "hostId": {
+                        "description": "Optional; when present it must be the snapshot's host.",
+                        "type": "string",
+                        "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$"
+                      },
+                      "idempotencyKey": {
+                        "type": "string",
+                        "minLength": 16,
+                        "maxLength": 128,
+                        "description": "Replay key scoped to the caller and organization."
+                      }
+                    },
+                    "required": [
+                      "provider",
+                      "harness",
+                      "snapshotId",
+                      "idempotencyKey"
+                    ],
+                    "additionalProperties": false,
+                    "description": "Launch from a Docker snapshot with an idempotency key."
                   }
                 ]
               }

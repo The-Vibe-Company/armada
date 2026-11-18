@@ -208,14 +208,14 @@ Sizing resolves as explicit size > repository default > snapshot default > legac
 with legacy launch. Size labels do not imply equal performance or billing.
 
 Docker form:
-  armada launch [prompt] --provider docker --agent claude|codex|opencode --org UUID
+  armada launch [prompt] --provider docker --agent claude|codex|opencode [--org NAME|UUID]
     [--host UUID|NAME | --golden snapshot-UUID] [--credential-id UUID]
     [--repo owner/repo[@branch] ...] [--variable KEY:UUID:VERSION ...]
     [--secret KEY:UUID:VERSION ...] [--request-id UUID] [--ttl <duration>] [--json]
     [--model <id>] [--reasoning-effort <level>] [--credential-version <version>]
     [--skill org/slug@version|slug@version ...] [--connections <id,...> | --no-connections]
 Uses the official Armada environment or an existing host-local snapshot.
-Docker defaults to codex. A snapshot cannot be combined with --repo.
+A snapshot cannot be combined with --repo.
 Boat supports Claude/Codex natively and OpenCode when the server runtime is installed.
 OpenCode is also supported on Modal and Docker.
 --golden is the existing Docker snapshot selector, not a new snapshot command.

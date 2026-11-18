@@ -57,6 +57,7 @@ type Row = {
   harness: Harness;
   status: SandboxRecord["status"];
   status_reason: string | null;
+  external_ref: string | null;
   pull_requests: NonNullable<SandboxRecord["pullRequests"]>;
   stopped_at: string | Date | null;
   model: string | null;
@@ -136,7 +137,7 @@ export function createDockerSandboxControls(
     if (!UUID.test(id) || !UUID.test(caller.userId) || caller.orgs.some((org) => !UUID.test(org.orgId))) throw denied();
     const row = (
       await sql.query<Row>(
-        `select s.id,s.org_id,s.owner_id,s.provider,s.docker_host_id,s.docker_image,s.docker_snapshot_id,s.harness,s.status,s.status_reason,s.pull_requests,s.task_prompt_id,s.lifecycle_generation,
+        `select s.id,s.org_id,s.owner_id,s.provider,s.docker_host_id,s.docker_image,s.docker_snapshot_id,s.harness,s.status,s.status_reason,s.external_ref,s.pull_requests,s.task_prompt_id,s.lifecycle_generation,
         s.stopped_at,s.model,s.reasoning_effort,s.conversation_ids,s.expires_at,s.usage_turns,m.role,e.prompt_projection_sequence::text,e.latest_prompt_enc,
        (select coalesce(max(c.sequence),0)::text from public.runtime_commands c where c.sandbox_id=s.id and starts_with(c.request_id,'docker_prompt_')) as prompt_sequence,
        (select coalesce(max(e.sequence),0)::text from public.runtime_events e where e.sandbox_id=s.id) as journal_sequence
@@ -452,6 +453,7 @@ export function createDockerSandboxControls(
       id: row.id,
       golden: null,
       visibility: "private",
+      ...(row.external_ref ? { externalRef: row.external_ref } : {}),
       harness: row.harness,
       repositoryDir,
       machineSize: null,

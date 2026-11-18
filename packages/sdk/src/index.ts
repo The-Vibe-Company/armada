@@ -87,14 +87,17 @@ export interface GoldenLaunchInput {
   connections?: string[];
 }
 interface DockerLaunchFields {
-  org: string;
+  org?: string;
   provider: "docker";
   harness: "claude" | "codex" | "opencode";
   /** Omit to use the caller's compatible personal default, frozen at admission. */
   credentialId?: string;
   credentialVersion?: number;
   /** Caller-chosen UUID; replaying it returns the same launch. */
-  requestId: string;
+  requestId?: string;
+  /** Supply exactly one of requestId and idempotencyKey. */
+  idempotencyKey?: string;
+  externalRef?: string;
   /** First prompt: omit it or send a non-blank one; a blank prompt is refused before launch. */
   prompt?: string;
   model?: string;

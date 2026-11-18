@@ -61,6 +61,7 @@ import type { CredentialBindingRecovery } from "./credential-binding-recovery.ts
 import { listControlCredentials } from "./credential-list.ts";
 import type { createSqlCredentialList } from "./credential-list-sql.ts";
 import type { DataSource, ScopedData } from "./data.ts";
+import { dockerLaunchRequestId } from "./docker-launch-identity.ts";
 import { DOCKER_LAUNCH_REQUEST } from "./docker-launch-request-schema.ts";
 import type { GitHubAccountApi } from "./github-account.ts";
 import {
@@ -1010,8 +1011,17 @@ export async function dispatchControlCommand(
     case "sandbox/launch":
       if (body.provider === "docker") {
         if (!options.dockerLaunch) throw new VaultError("unavailable", "Normal Docker launch is not configured.");
+        const organization = await resolveOrg(store, userId, org);
+        const selected = { ...caller, orgs: caller.orgs.filter((item) => item.orgId === organization.id) };
+        const { idempotencyKey, ...request } = body;
         return canonicalLaunchResponse(
-          await options.dockerLaunch.launch(await selectedCaller(options, caller, optional(body, "org")), body),
+          await options.dockerLaunch.launch(selected, {
+            ...request,
+            org: organization.id,
+            ...(typeof idempotencyKey === "string"
+              ? { requestId: dockerLaunchRequestId(encryptionKey, userId, organization.id, idempotencyKey) }
+              : {}),
+          }),
         );
       }
       return canonicalLaunchResponse(await launchRoute(options, caller, body));

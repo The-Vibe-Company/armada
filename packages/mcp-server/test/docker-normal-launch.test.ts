@@ -994,6 +994,27 @@ test("Docker sends through the production-wired account queue key a legacy body,
     }),
   ]);
 });
+test("canonical Docker admission replays a scoped key and makes the external reference discoverable", async () => {
+  const f = await fixture();
+  const { org, requestId: _requestId, ...fields } = f.body;
+  const body = { ...fields, idempotencyKey: "customer_launch_1", externalRef: "customer:42" };
+  const { options, post } = restControl(f, { dockerLaunch: f.service(sql, true, 10000, officialImage, true) });
+
+  const admitted = (await post("sandbox/launch", body)) as DockerLaunchResult;
+  expect(admitted.sandbox).toMatchObject({ status: "starting", externalRef: body.externalRef });
+  expect(await post("sandbox/launch", { ...body, org: `normal-launch-${org}` })).toEqual(admitted);
+  await expect(
+    dispatchControlCommand("sandbox/launch", f.caller, { ...body, externalRef: "customer:43" }, options),
+  ).rejects.toMatchObject({ code: "conflict" });
+  expect(await post("sandbox/list", { org, externalRef: body.externalRef })).toMatchObject({
+    sandboxes: [{ id: admitted.sandbox.id, externalRef: body.externalRef }],
+  });
+  expect(await post("sandbox/detail", { org, id: admitted.sandbox.id })).toMatchObject({
+    externalRef: body.externalRef,
+  });
+  expect(await post("sandbox/list", { org, externalRef: "customer:43" })).toMatchObject({ sandboxes: [] });
+});
+
 test("the normal HTTP route accepts the dashboard body and returns a launched sandbox readable through normal controls", async () => {
   const f = await fixture();
   const body = dockerLaunchBody({

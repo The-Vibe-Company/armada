@@ -194,7 +194,7 @@ export interface DockerLaunchRequest {
   variables?: import("./readable-variables.ts").ReadableVariableBinding[];
   /** GitHub checkouts, using the same single-segment directory rules as goldens. */
   repos?: import("./golden-config.ts").GoldenRepo[];
-  org: string;
+  org?: string;
   provider: "docker";
   hostId?: string;
   snapshotId?: string;
@@ -202,7 +202,10 @@ export interface DockerLaunchRequest {
   /** Omit to resolve the caller's compatible personal default, then freeze its ID/version at admission. */
   credentialId?: string;
   credentialVersion?: number;
-  requestId: string;
+  requestId?: string;
+  /** Supply exactly one of requestId and idempotencyKey. */
+  idempotencyKey?: string;
+  externalRef?: string;
   prompt?: string;
   model?: string;
   reasoningEffort?: string;
@@ -241,6 +244,7 @@ export interface DockerLaunchResult {
   promptId?: string;
 }
 export interface DockerSandboxStatus {
+  externalRef?: string;
   pullRequests?: NonNullable<SandboxRecord["pullRequests"]>;
   /** Additive idle-pause wording; canonical status remains stopped. */
   statusMessage?: string | null;

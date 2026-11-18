@@ -2,12 +2,12 @@
 
 An embedding product (for example one sandbox per tender application) needs to
 launch exactly one sandbox per business object and find it again. Two launch
-fields serve that, on every ordinary Boat and Modal launch surface (#2568).
-Docker launches use a different contract, described [below](#docker-launches).
+fields serve that. Docker has its own [receipt lifecycle](#docker-launches).
 
 | Surface | Exactly-once field | External reference |
 | --- | --- | --- |
 | `POST /api/v1/sandbox/launch` for Boat and Modal (and the `launch-sized-v1`, `launch-access-v1`, runtime variants) | `idempotencyKey`, 16–128 characters | `externalRef` |
+| `POST /api/v1/sandbox/launch` for Docker | `idempotencyKey` or legacy `requestId` | `externalRef` |
 | MCP `launch` / `launch_sized_v1` | `idempotencyKey`, 16–128 characters | `externalRef` |
 | `POST /api/v1/templates/launch` | `requestKey` (required, see [templates](templates-cli.md)) | `externalRef` |
 
@@ -18,7 +18,8 @@ provider allocation.
 
 ## Idempotency key
 
-A key is scoped to the caller and organization.
+A key is scoped to the caller and organization. The following receipt rules
+apply to ordinary Boat and Modal launches.
 
 - Same key, same request: the recorded answer, with the same sandbox id. No
   second fork. This holds only while the request still passes launch
@@ -35,29 +36,36 @@ A key is scoped to the caller and organization.
   credentials, a non-mutating provider refusal): the same refusal. Correct the
   cause and use a new key.
 
-Without a key the REST route behaves as before: every call launches. A server
+For Boat and Modal, every unkeyed REST call launches. A server
 without durable receipts, or a launch path that cannot pin its allocation
 authority, refuses a keyed launch rather than launching without the guarantee.
 
 ## Docker launches
 
-`POST /api/v1/sandbox/launch` with `"provider":"docker"` goes to the normal
-Docker handler, which has its own list of accepted fields. It refuses `golden`,
-`idempotencyKey` and `externalRef` with 400 `invalid_request`, so a Docker
-sandbox carries no external reference and `sandbox/list` with `externalRef`
-never finds it. Instead:
+Send exactly one of these fields with `"provider":"docker"`:
 
-- `requestId`, a fresh UUID you generate and store before launching, is the
-  sandbox ID and the replay key. The comparison uses the normalized request:
-  spelling out a default such as `ttlSeconds` is not a change. A changed body
-  returns `conflict` (409).
-- `org` is the organization UUID. `hostId` names the Docker host, unless
-  `snapshotId` names a Docker snapshot, which selects its own host.
+- `idempotencyKey` is a 16–128 character key scoped to the caller and
+  organization. Armada derives the sandbox ID using the server encryption key,
+  so keep that key consistent across servers handling retries.
+- `requestId` is a caller-chosen UUID used by existing clients. It is also the
+  sandbox ID.
+
+For either field, replay the same launch inputs. After admission, a changed
+normalized request, including a changed `externalRef`, is refused. For example,
+spelling out the default TTL is equivalent to omitting it. A refusal before
+admission does not reserve the key. Set `externalRef` to find an admitted
+sandbox with `sandbox/list` even if the original response was lost.
+
+Select the organization by name or UUID. You can omit it when you belong to a
+single organization or use an org-scoped token. For a scoped token, an explicit
+organization must be its UUID. In the CLI, pass `--agent` for Docker launches
+as you would for golden launches. A `hostId` selects a Docker host. A
+`snapshotId` selects a Docker snapshot and its host.
 
 The launch call returns once Armada admits the launch, normally with
 `sandbox.status: "starting"` and null `promptId` and `conversationId`. A worker starts
 the sandbox and sends the prompt afterwards. A replay with the same
-`requestId` and body never launches twice:
+key and normalized inputs never launches twice:
 
 - The replay reports the sandbox's current status, not the status of an
   earlier response. Until the worker publishes the launch receipt, a `ready`
@@ -66,8 +74,8 @@ the sandbox and sends the prompt afterwards. A replay with the same
 - The recorded `promptId` and `conversationId` appear only after the worker
   publishes the launch receipt, and only when the launch sent a prompt.
 
-After an uncertain Docker launch, poll `sandbox/status` with that UUID as
-`id`. For a launch that sent a prompt, replay the same request and look for
+After an uncertain Docker launch, replay the original request or poll
+`sandbox/status` with the sandbox ID when it is known. For a launch that sent a prompt, replay the same request and look for
 `promptId` and `conversationId` rather than at the status. `starting` without
 them means the launch is still pending. `stopped`, `failed` or `deleted`
 without them is a separate outcome: no receipt will appear, and the prompt
@@ -75,12 +83,12 @@ outcome is uncertain. The sandbox may have ended before the launch prompt was
 sent, or after the worker sent it but before the receipt was recorded, in which
 case the agent may already have acted on it. Inspect the original sandbox's
 status and logs before you repeat the work. Do not launch with a new
-`requestId` until you know that the first launch failed or ended.
+key until you know that the first launch failed or ended.
 See
 [Docker hosts](docker-host-daemon.md) for an example body.
-The rest of this page covers Boat and Modal launches.
 
-## Retry contract for an uncertain launch
+
+## Retry contract for an uncertain Boat or Modal launch
 
 A timeout, a dropped connection or `outcome_unknown` (503) means the sandbox may
 or may not exist. Never retry with a new key: that is how duplicates happen.
@@ -126,7 +134,7 @@ each payload, with null when the sandbox has no reference.
 
 The [OpenAPI contract](openapi.json) describes the validated request variants for
 `POST /api/v1/sandbox/launch`: golden, explicit Boat runtime, explicit Modal
-runtime, Docker host and Docker snapshot. Unknown fields are rejected. Use
+runtime, Docker host and Docker snapshot, each with its supported replay fields. Unknown fields are rejected. Use
 `ttlSeconds` and `reasoningEffort` for REST launch requests. Provider-specific
 settings and server opt-ins still apply.
 

@@ -1,18 +1,13 @@
 import {
   HARNESSES,
   MACHINE_SIZES,
-  MAX_EXTERNAL_REF_LENGTH,
   MAX_LAUNCH_TTL_SECONDS,
   MAX_MCP_CONNECTIONS,
   SANDBOX_PROVIDERS,
   SKILL_PIN_PATTERN,
 } from "@armada/core";
 import { z } from "zod";
-import {
-  DOCKER_HOST_LAUNCH_REQUEST,
-  DOCKER_SNAPSHOT_LAUNCH_REQUEST,
-  launchUuid,
-} from "./docker-launch-request-schema.ts";
+import { DOCKER_LAUNCH_VARIANTS, launchCorrelationFields, launchUuid } from "./docker-launch-request-schema.ts";
 
 const goldenFields = {
   golden: z.string().min(1).describe("The name returned by golden/list."),
@@ -31,14 +26,7 @@ const goldenFields = {
   skipSkillDefaults: z.boolean().optional(),
   connections: z.array(launchUuid).max(MAX_MCP_CONNECTIONS).optional(),
   stopWhenWorkMerged: z.boolean().optional(),
-  idempotencyKey: z.string().min(16).max(128).optional(),
-  externalRef: z
-    .string()
-    .min(1)
-    .max(MAX_EXTERNAL_REF_LENGTH)
-    // biome-ignore lint/suspicious/noControlCharactersInRegex: controls are explicitly excluded from external references
-    .regex(/^[^\x00-\x1f\x7f-\x9f]+(?![\s\S])/)
-    .optional(),
+  ...launchCorrelationFields,
 };
 
 const goldenLaunch = z
@@ -83,6 +71,5 @@ export const LAUNCH_REQUEST_VARIANTS = [
   goldenLaunch,
   boatRuntimeLaunch,
   modalRuntimeLaunch,
-  DOCKER_HOST_LAUNCH_REQUEST,
-  DOCKER_SNAPSHOT_LAUNCH_REQUEST,
+  ...DOCKER_LAUNCH_VARIANTS,
 ] as const;

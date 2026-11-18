@@ -11,6 +11,8 @@ const args = [
   "launch",
   "--provider",
   "docker",
+  "--agent",
+  "codex",
   "--org",
   org,
   "--host",
@@ -62,7 +64,7 @@ test.each(["codex", "claude", "opencode"] as const)(
       conversationId: "conversation",
     };
     const result = await capture(
-      [...args, "--agent", harness, "--ttl", "30m", "answer once", "--json"],
+      [...args.map((arg) => (arg === "codex" ? harness : arg)), "--ttl", "30m", "answer once", "--json"],
       async (request) => {
         calls.push(request);
         return Response.json(receipt);
@@ -177,7 +179,11 @@ test("Docker launch resolves an exact unique non-revoked host name and refuses m
     golden: null,
     runtime: { epoch: "1" },
   };
-  const namedArgs = [...args.map((arg) => (arg === host ? "office" : arg)), "--repo", "acme/web@feature/work"];
+  const namedArgs = [
+    ...args.map((arg) => (arg === host ? "office" : arg === org ? "engineering" : arg)),
+    "--repo",
+    "acme/web@feature/work",
+  ];
   const summary = {
     id: host,
     name: "office",
@@ -191,6 +197,8 @@ test("Docker launch resolves an exact unique non-revoked host name and refuses m
   for (const mode of ["unique", "missing", "ambiguous"]) {
     let launched = 0;
     const result = await capture(namedArgs, async (request) => {
+      if (new URL(request.url).pathname.endsWith("/org/list"))
+        return Response.json({ orgs: [{ id: org, name: "engineering", role: "member" }] });
       if (new URL(request.url).pathname.endsWith("/hosts/list")) {
         expect(await request.json()).toEqual({ org });
         return Response.json({
@@ -206,6 +214,7 @@ test("Docker launch resolves an exact unique non-revoked host name and refuses m
       launched++;
       expect(await request.json()).toMatchObject({
         hostId: host,
+        org: "engineering",
         repos: [{ url: "https://github.com/acme/web", branch: "feature/work", dir: "web" }],
       });
       return Response.json(receipt);
@@ -391,7 +400,7 @@ test("Docker launch omits an unspecified account for server default resolution w
 });
 
 test("Docker launch text exposes snapshot refresh warnings", async () => {
-  const result = await capture([...args, "--agent", "codex"], async () =>
+  const result = await capture(args, async () =>
     Response.json({
       sandbox: { id: requestId, provider: "docker", providerSandboxId: "docker-logical", status: "ready" },
       golden: null,

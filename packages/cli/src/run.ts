@@ -7,8 +7,6 @@ import {
   type GoldenRecord,
   goldenBuildFailureText,
   goldenResponse,
-  HARNESSES,
-  type Harness,
   isSandboxProvider,
   LaunchError,
   type LaunchResult,
@@ -24,6 +22,7 @@ import {
   VERSION,
 } from "@armada/core";
 import { accountCommand } from "./account-commands.ts";
+import { requireLaunchAgent } from "./agent-validation.ts";
 import { applicationVaultCommand } from "./application-vault-commands.ts";
 import { acceptedOptions, flag, parseArgs, providerFlag, single, values } from "./args.ts";
 import { ArmadaApiError, createArmadaApiClient, resolveArmadaOrigin } from "./armada-api.ts";
@@ -948,7 +947,7 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
   if (name === undefined || extra.length > 0) {
     throw new GoldenError("invalid_config", "Give a snapshot name and at most one prompt.");
   }
-  const harness = harnessOf(single(args, "--agent"));
+  const harness = requireLaunchAgent(single(args, "--agent"));
   const repo = single(args, "--repo");
   resolveModelChoice(harness, { model: single(args, "--model"), reasoningEffort: single(args, "--reasoning-effort") });
   const ttl = single(args, "--ttl");
@@ -1115,12 +1114,6 @@ function eventText(event: Awaited<ReturnType<Provider["events"]>>["events"][numb
       return `${data.message} (retry ${data.retryCount}, total wait ${Number(data.totalWaitMs) / 1000} s)`;
   }
   return JSON.stringify(event);
-}
-
-function harnessOf(value: string | undefined): Harness {
-  const harness = HARNESSES.find((candidate) => candidate === value);
-  if (!harness) throw new GoldenError("invalid_config", `Pass --agent ${HARNESSES.join(" or ")}.`);
-  return harness;
 }
 
 function launchText(result: LaunchResult, now: Date): string {
