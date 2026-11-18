@@ -61,10 +61,11 @@ inherit snapshot visibility. A private snapshot is visible to its owner.
   up recorded sandboxes with `POST /api/v1/sandbox/list` and
   `{"externalRef":"application-1042"}`. An empty list is expected when the
   allocation succeeded but the sandbox was never registered.
-- If an earlier answer was `outcome_unknown`, it named the receipt UUID, which
-  is also the sandbox ID the launch would have. As the launching user, call the
-  MCP `launch_receipt` tool with `{"id":"<receipt UUID>"}` (add `"org"` when you
-  belong to several organizations). It looks up provider allocations through
+- An `outcome_unknown` or 409 `conflict` answer for the key normally names
+  the receipt UUID, which is also the sandbox ID the launch would have. As the
+  launching user, call the MCP `launch_receipt` tool with
+  `{"id":"<receipt UUID>"}` (add `"org":"<organization UUID>"` when you belong
+  to several organizations). It looks up provider allocations through
   the provider binding recorded on the receipt, so it works after the snapshot
   is removed. An empty `allocations` list does not prove that nothing was
   allocated.

@@ -19,7 +19,8 @@ returns `outcome_unknown` and the stable UUID.
 It does not claim that the machine is stopped or safe to recreate.
 
 Use `launch_receipt` with `id` (the receipt UUID) and, when the caller belongs
-to several organizations, `org`. Only the launching owner can read the receipt.
+to several organizations, `org` (the organization UUID). A replay that answers
+`outcome_unknown` or `conflict` names the receipt UUID. Only the launching owner can read the receipt.
 The lookup uses the provider binding stored on the receipt at admission
 (provider target, backend identity and management identity), not the source
 golden, and returns physical IDs even if sandbox registration never happened.
