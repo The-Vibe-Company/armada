@@ -17,6 +17,7 @@ import { HARNESS_CAPABILITIES } from "./harnesses.ts";
 import { type HelperNegotiation, negotiateHelper } from "./helper.ts";
 import { LaunchError, type LaunchInitializationStage } from "./launch-error.ts";
 import { nativeLaunch } from "./launch-native.ts";
+import { goldenLaunchPlacements } from "./launch-placement.ts";
 import {
   admitLaunchPlan,
   applyLaunchAccountDefaults,
@@ -37,7 +38,7 @@ import { sandboxActivity } from "./sandbox-activity.ts";
 import { DEFAULT_SANDBOX_EXTENSION_HEADROOM_SECONDS, SANDBOX_STOP_MARGIN_SECONDS } from "./sandbox-lifetime.ts";
 import { OUTPUT_DIRECTORY } from "./sandbox-output-limits.ts";
 import * as placement from "./sandbox-provider.ts";
-import { assertProviderOf, HOST_CAPABILITIES, PROVIDER_LIMITS, type SandboxProviderId } from "./sandbox-provider.ts";
+import { assertProviderOf, PROVIDER_LIMITS, type SandboxProviderId } from "./sandbox-provider.ts";
 
 export { prepareLaunchWorkspace } from "./launch-workspace.ts";
 
@@ -248,7 +249,7 @@ export interface LaunchPlan {
   prompt: string | undefined;
   choice: ModelChoice;
   ttlSeconds: number;
-  extensionHeadroom: number;
+  allocationTtlSeconds: number;
   repositoryDir: string | null;
   resourceProject: GoldenRepo | undefined;
   machineSize: ReturnType<typeof resolveMachineSize>;
@@ -282,11 +283,9 @@ async function resolveLaunchPlan(
   const golden = await goldenForLaunch(stores.goldens, actor, request.golden, request.provider);
   if (golden.visibility === "private" && golden.ownerId !== actor.userId)
     throw new GoldenError("not_found", `No golden named '${golden.name}'.`);
-  const runtimeDefaults = {
-    boat: options.boatRuntimeDefault ?? (request.harness === "opencode" ? options.boatEndpointRuntime : undefined),
-    modal: options.modalRuntimeDefault,
-  };
-  const defaultRuntime = !options.runtime && !options.boatRuntime ? runtimeDefaults[golden.provider] : undefined;
+  const launchPlacement = goldenLaunchPlacements[golden.provider];
+  const defaultRuntime =
+    !options.runtime && !options.boatRuntime ? launchPlacement.runtimeDefault(options, request.harness) : undefined;
   if (defaultRuntime) {
     const providerName = placement.SANDBOX_PLACEMENT_LABELS[golden.provider];
     const rollback = `ARMADA_${golden.provider.toUpperCase()}_AGENT_PATH`;
@@ -401,17 +400,13 @@ async function resolveLaunchPlan(
     if (!models.includes(choice.model))
       throw new LaunchError("invalid_request", "Choose a Morph plan model for this account.");
   }
-  if (
-    placement.launchInfrastructure(provider.id).nativeCli &&
-    !runtime &&
-    (credentials.env[CLAUDE_ENDPOINT_ENV] || credentials.env[CODEX_ENDPOINT_ENV]) &&
-    options.boatEndpointRuntime
-  ) {
+  const endpointRuntime = launchPlacement.endpointRuntime?.(options);
+  if (!runtime && (credentials.env[CLAUDE_ENDPOINT_ENV] || credentials.env[CODEX_ENDPOINT_ENV]) && endpointRuntime) {
     // Re-enter through the shared runtime selection before allocating compute.
     // Its resolver excludes native GitHub/model environment delivery.
     return resolveLaunchPlan(provider, stores, actor, request, {
       ...options,
-      boatRuntimeDefault: options.boatEndpointRuntime,
+      boatRuntimeDefault: endpointRuntime,
     });
   }
   if (defaultRuntime && !credentials.binding)
@@ -466,7 +461,12 @@ async function resolveLaunchPlan(
     prompt,
     choice,
     ttlSeconds,
-    extensionHeadroom,
+    // Managed parents own their separate lifecycle policy. Ordinary workers need stop headroom.
+    allocationTtlSeconds: launchPlacement.allocationTtlSeconds(
+      ttlSeconds,
+      extensionHeadroom,
+      options.privateParent === true,
+    ),
     repositoryDir,
     resourceProject,
     machineSize,
@@ -511,7 +511,7 @@ export async function launchSandbox(
     prompt,
     choice,
     ttlSeconds,
-    extensionHeadroom,
+    allocationTtlSeconds,
     repositoryDir,
     resourceProject,
     machineSize,
@@ -542,15 +542,7 @@ export async function launchSandbox(
         ...(machineSize.effective ? { size: machineSize.effective } : {}),
         noEnv: true,
         env: strategy.forkEnv(plan),
-        // Managed parents own their separate lifecycle policy. Ordinary workers need stop headroom.
-        ttlSeconds: options.privateParent
-          ? ttlSeconds
-          : Math.min(
-              PROVIDER_LIMITS[golden.provider].maxTtlSeconds,
-              ttlSeconds +
-                SANDBOX_STOP_MARGIN_SECONDS +
-                (HOST_CAPABILITIES[golden.provider].reserveExtensionHeadroom ? extensionHeadroom : 0),
-            ),
+        ttlSeconds: allocationTtlSeconds,
         labels: {
           armada: "sandbox",
           sandbox: id,
