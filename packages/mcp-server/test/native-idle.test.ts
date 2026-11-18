@@ -420,6 +420,7 @@ test.each([
   "opted out",
   "running-turn",
   "corrected report",
+  "out-of-grant report",
 ] as const)("GitHub observation and idle admission agree for %s work", async (state) => {
   const f = await fixture(state === "running-turn" ? state : "quiet");
   const owner = f.caller.userId;
@@ -444,6 +445,15 @@ test.each([
     await f.db.query("update sandboxes set status='ready' where id=$1", [f.id]);
     await f.data.sandboxes.reportTaskOutcome!(f.id, "turn", { state: "ready", prNumber: 4 });
     await f.data.sandboxes.reportTaskOutcome!(f.id, "turn", { state: "ready", prNumber: 12 });
+  }
+  if (state === "out-of-grant report") {
+    // A report outside the launch grant vetoes the stop but must not hide the
+    // pushed, verified and merged pull request in the grant.
+    await f.db.query("update sandboxes set status='ready' where id=$1", [f.id]);
+    await f.data.sandboxes.reportTaskOutcome!(f.id, "turn", {
+      state: "ready",
+      prUrl: "https://github.com/example/another/pull/99",
+    });
   }
   const pull = {
     number: 12,

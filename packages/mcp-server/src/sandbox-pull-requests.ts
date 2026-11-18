@@ -251,6 +251,9 @@ export function createSandboxPullRequests(
         numbers.set(urlFor(identity), identity);
         discovered.set(urlFor(identity), identity);
       }
+      // A report this scan cannot verify (malformed, or outside the launch
+      // grant) vetoes the stop without hiding the authorized pull requests.
+      let complete = true;
       const selected =
         configured.length === 1 ? configured[0] : configured.find(({ dir }) => dir === row.repository_dir);
       const defaultRepo = selected && repoUrl.exec(selected.url)?.[1]?.toLowerCase();
@@ -266,8 +269,10 @@ export function createSandboxPullRequests(
           number < 1 ||
           (report.prUrl && !match) ||
           (report.prNumber !== undefined && report.prNumber !== number)
-        )
-          return;
+        ) {
+          complete = false;
+          continue;
+        }
         const identity = { repository, number };
         numbers.set(urlFor(identity), identity);
       }
@@ -280,7 +285,6 @@ export function createSandboxPullRequests(
       )
         return;
       const found = new Map<string, SandboxPullRequest>();
-      let complete = true;
       const checkedAt = new Date().toISOString();
       if (numbers.size || branchCount) {
         const request = github.fetch ?? fetch;
