@@ -7,12 +7,6 @@ import xml.etree.ElementTree as ET
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 FILES = sorted(str(p.relative_to(ROOT)) for p in ROOT.glob("packages/*/test/*.release.ts"))
 FILES += ["scripts/build-migration.release.ts"]
-# Native process/protocol owners stay in PR CI with fake transports, but their
-# additional real-binary declarations are required only after the release build.
-FILES += [
-    "packages/provider-boat/test/native-cwd.test.ts",
-    "packages/mcp-server/test/mcp-codex-bridge.test.ts",
-]
 for source in FILES:
     with tempfile.TemporaryDirectory() as directory:
         report = pathlib.Path(directory) / "contracts.xml"

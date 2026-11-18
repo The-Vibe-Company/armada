@@ -387,7 +387,7 @@ control replies stay private. Invalid config, refused reload or timeout produces
 a sanitized error for that request, not an app-server kill/restart. Other threads
 continue. No gateway header enters exec argv or control-request params.
 
-`mcp-codex-bridge.test.ts` now proves actual native behavior, not just file effects:
+The publishing-only `mcp-codex-bridge.release.ts` contract proves actual native behavior, not just file effects:
 with one unchanged Rust native PID and one persisted thread ID, real app-server
 RPC tools succeed initially, after rotated credentials + thread/resume, and after
 another rotation with turn/start ONLY. A second real loaded thread remains loaded
@@ -405,14 +405,21 @@ already managed wrapper, to avoid nesting a legacy bridge):
 
 ```
 CODEX_NATIVE_TEST_BINARY="$(pwd)/packages/agent-runtime/dist/codex" bun test \
-  packages/mcp-server/test/mcp-codex-bridge.test.ts \
-  packages/provider-boat/test/native-cwd.test.ts
+  ./packages/mcp-server/test/mcp-codex-bridge.release.ts
 ```
+
+This file is the only real-binary case. The unit files
+`mcp-codex-bridge.test.ts` and `native-cwd.test.ts` use synthetic stdio peers and
+pass without any native binary, so selecting them is not evidence about the real
+executable. The release step `python3 scripts/validate-release-contracts.py`
+runs this contract and rejects a skipped case. Phase 0 also requires the real
+native writer to hold an exclusive `FLOCK` on the managed writer lock, read
+from `/proc/<pid>/fdinfo`. A matching but unlocked descriptor fails the check.
 
 On this worker the nominal `/usr/local/bin/codex` already had a legacy bridge;
 source/metadata inspection found it, and the scoped fixture uses its preserved
 native executable. No active VM config or installed native executable was modified.
-The current opt-in run has six passes. Restoring the pre-fix bridge reproduces
+At the time, the opt-in run had six passes. Restoring the pre-fix bridge reproduces
 native resumed-tool HTTP 403, with the safe boolean `upstreamRejectedStale=true`.
 The fixed native test also proves unchanged executable PIDs, fresh bridge ancestry,
 installed-native executable inode match, and no nested/legacy injection bridge.
@@ -487,7 +494,7 @@ to Armada's wrapper is refused. The wrapper is prepared under a private temp
 name and its entrypoint symlink is published with Linux coreutils atomic rename.
 These are VM-side Linux primitives, not assumptions about the operator's Mac.
 
-`native-install-race.test.ts` runs two actual installer processes against owned
+`native-install-race.conformance.ts` runs two actual installer processes against owned
 temporary executable paths. A waits just before its original-preservation mv;
 B either blocks on real flock (fixed) or reaches its own stale absent-original
 mv (old). A publishes before B is released. The original symlink must still

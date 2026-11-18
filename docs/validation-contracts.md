@@ -24,15 +24,38 @@ Missing PostgreSQL/native prerequisites fail closed. No PR job/service is added.
 | mcp-server/runtime-native-auth-postgres | credential publication/lifecycle replacement |
 | mcp-server/sql | advisory lock exclusion across commit/rollback |
 | provider-modal/artifact | built native artifact bootstrap, checkpoint, journal reopening |
+| mcp-server/mcp-codex-bridge | pinned Codex process/thread continuity through MCP credential rotation |
 | cli/binary | compiled CLI packaging and argument/environment boundaries |
 
 `scripts/build-migration.release.ts` retains the standalone compiled migration
 contract in the same gate. Mixed core and SQL files retain their deterministic
 unit declarations in sibling `.test.ts` files; only real PostgreSQL cases moved.
-Native cwd and MCP credential rotation tests remain mixed unit/protocol files;
-the release runner explicitly re-executes them with the real pinned Codex binary.
-No contract was deleted as redundant, and no native or PostgreSQL success is
-claimed from this local environment.
+The Boat cwd sentinel in the unit JUnit report uses a synthetic Codex
+protocol peer. It verifies that the wrapper rewrites explicit thread and turn
+cwd parameters and starts the peer inside the selected repository. The
+pinned Codex credential-rotation contract runs once in the explicit release
+runner, verifies that the pinned Codex process holds its managed writer lock,
+and fails if the native binary is missing. The Claude MCP refresh test in
+`packages/provider-boat/test/native-claude-mcp.test.ts` stays in the unit suite:
+it runs the wrapper against a synthetic stream-JSON peer, starts no pinned
+harness and finishes in about 0.1 s.
+
+## Local process conformance
+
+These Linux guest-process checks run only when explicitly invoked with
+`bun test ./path/to/file.conformance.ts`. They use temporary local fixtures.
+
+- `packages/mcp-server/test/boat-delegated-access-provider.conformance.ts`
+  checks SSH authorization cleanup on guest-script success and conflict.
+- `packages/provider-boat/test/native-install-race.conformance.ts` checks
+  concurrent native installation with real lock and rename primitives.
+- `packages/provider-boat/test/native-writer.conformance.ts` checks
+  managed writer serialization, guest admission and orphan recovery.
+- `packages/provider-boat/test/runtime-bootstrap.conformance.ts` checks
+  artifact verification and detached boot in a local Linux mount namespace
+  (requires sudo and mount namespace support).
+- `packages/provider-modal/test/snapshot.conformance.ts` checks the guest
+  snapshot command against a real open journal descriptor.
 
 ## Remaining skip audit
 
@@ -40,8 +63,8 @@ Repository-wide search includes `skipIf`, `test.skip`, conditional test aliases,
 `describe.skip` and `todo`. No todo declarations were found. Dispositions:
 
 - Linux platform skips remain in core `docker-snapshot-init`, `golden-helper`,
-  `golden-scan`, `golden-script-shell`; provider-modal `snapshot`, `distribution`;
-  provider-boat `runtime-bootstrap`, `native-install-race`, `native-cwd`;
+  `golden-scan`, `golden-script-shell`; provider-modal `distribution`;
+  provider-boat `native-cwd`;
   mcp-server `templates`, `managed-inspection`, `runtime-native-auth`;
   agent-runtime `skills`, `runtime`, `readable-variables`, `exec-env`,
   `enrolled-harness`, `messages`, `cwd`, `codex`, `claude`.
@@ -57,8 +80,8 @@ Repository-wide search includes `skipIf`, `test.skip`, conditional test aliases,
   billed-compute opt-in command. It is not part of release/staging acceptance:
   `boat: not part of the release gate`.
 - PostgreSQL skips and artifact portable-manifest skips were replaced by
-  explicit release prerequisites. Missing native-binary skips in `native-cwd`
-  and `mcp-codex-bridge` are forbidden by the release runner's no-skip report.
+  explicit release prerequisites. The native `mcp-codex-bridge` release
+  contract requires the pinned binary and a no-skip report.
 
 ## Evidence owed after merge
 

@@ -78,13 +78,11 @@ export { runtimeBootstrapScript } from "./runtime-bootstrap.ts";
 export { sandboxActivity } from "./sandbox-activity.ts";
 export {
   admitOutputs,
-  DOCKER_OUTPUT_DIRECTORY,
   OUTPUT_COLLECTOR,
   OUTPUT_DIRECTORY,
   OUTPUT_MAX_BYTES,
   OUTPUT_MAX_FILES,
   type OutputFile,
-  outputDirectory,
   parseCollectorOutput,
   parseOutputFiles,
 } from "./sandbox-outputs.ts";
