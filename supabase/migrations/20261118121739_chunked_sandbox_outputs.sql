@@ -53,8 +53,9 @@ $$;
 create trigger reject_tainted_sandbox_output_transfers before insert or update on public.sandbox_output_transfers
  for each row execute function public.reject_tainted_sandbox_outputs();
 
+-- Runs as definer: members stop sandboxes through RLS but hold no grant on transfer storage.
 create function public.discard_stopped_output_transfers() returns trigger
-language plpgsql set search_path='' as $$
+language plpgsql security definer set search_path='' as $$
 begin
  delete from public.sandbox_output_transfers t
  where t.sandbox_id=new.id and not exists(select 1 from public.sandbox_outputs o where o.sandbox_id=t.sandbox_id and o.transfer_id=t.id);

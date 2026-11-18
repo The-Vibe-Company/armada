@@ -747,3 +747,17 @@ test("other sandboxes' in-progress reservations count toward the organization li
   await captureFinalOutputs(sql, reader, id, { key: KEY });
   expect(await (await route(new Request(url + "/report.pdf")))?.text()).toBe("a");
 });
+
+test("a member stopping the sandbox discards its incomplete output transfers", async () => {
+  const { db, people, id } = await fixture();
+  await db.query(
+    `insert into sandbox_output_transfers(sandbox_id,name,revision,size,scan) values($1,'partial.pdf','1:2:3:4',65536,now())`,
+    [id],
+  );
+  await db.exec("begin");
+  await db.query("select set_config('request.jwt.claim.sub', $1, true)", [people.owner]);
+  await db.exec("set local role authenticated");
+  await db.query(`update sandboxes set status='stopped',stopped_at=now() where id=$1`, [id]);
+  await db.exec("commit");
+  expect((await db.query(`select 1 from sandbox_output_transfers where sandbox_id=$1`, [id])).rows).toHaveLength(0);
+});
