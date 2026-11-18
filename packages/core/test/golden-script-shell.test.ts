@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GITHUB_TOKEN_PATTERN, goldenScript, OUTPUT_COLLECTOR_PROBE, withGoldenDirs } from "../src/server.ts";
@@ -445,6 +445,7 @@ test.each([false, true])(
 
 test.each([
   ["the managed collector answers", "probe", 0],
+  ["the image already ships the managed Bun", "preinstalled", 0],
   ["an incompatible Bun exits 0 without answering", "help", 96],
 ])("the golden build provisions its own collector Bun and requires the probe answer: %s", (_, mode, status) => {
   const base = mkdtempSync(join(tmpdir(), "golden-collector-"));
@@ -461,14 +462,24 @@ test.each([
       join(bin, "npm"),
       `#!/bin/sh
 [ "$1 $2 $3 $5" = "install --global --prefix bun@1.4.2" ] || exit 95
+: > "$HOME/npm-called"
 mkdir -p "$4/bin"
 printf '#!/bin/sh\\n[ "$1" = --version ] && echo 1.4.2 || echo armada-output-collector-ready\\n' > "$4/bin/bun"
 chmod +x "$4/bin/bun"
 `,
       { mode: 0o755 },
     );
+    if (mode === "preinstalled") {
+      // Modal's managed image: the protected Bun is already at the pin, so nothing is installed.
+      mkdirSync(join(opt, "runtime-bun"), { recursive: true });
+      writeFileSync(
+        join(opt, "runtime-bun", "bun"),
+        '#!/bin/sh\n[ "$1" = --version ] && echo 1.4.2 || echo armada-output-collector-ready # image\n',
+        { mode: 0o755 },
+      );
+    }
     const prepared = withGoldenDirs([{ owner: "acme", repo: "web", id: 1, installationId: 2 }]);
-    const probe = mode === "probe" ? `${opt}/runtime-bun/bun probe` : `${bin}/bun probe`;
+    const probe = mode !== "help" ? `${opt}/runtime-bun/bun probe` : `${bin}/bun probe`;
     const block = extract(goldenScript(prepared), "armada_phase=output_collector", "probe did not answer")
       .replaceAll(shellQuote(OUTPUT_COLLECTOR_PROBE), shellQuote(probe))
       .replaceAll("/opt/armada", opt);
@@ -478,6 +489,7 @@ chmod +x "$4/bin/bun"
     });
     expect(result.status).toBe(status);
     expect(readFileSync(join(opt, "runtime-bun", "bun"), "utf8")).toContain("armada-output-collector-ready");
+    expect(existsSync(join(base, "npm-called"))).toBe(mode !== "preinstalled");
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
