@@ -35,12 +35,14 @@ import {
   tokenRevoke,
 } from "./auth-commands.ts";
 import { commandWords, HELP, LOGS_HELP } from "./command-catalog.ts";
+import { findCommand } from "./commands/index.ts";
 import { completion, doctor, prepareLaunch } from "./devx.ts";
 import { launchDocker } from "./docker-launch.ts";
 import { dockerSnapshotCommand } from "./docker-snapshots.ts";
 import { failureHint } from "./failure-hint.ts";
 import { hostCommand } from "./host-commands.ts";
 import { type LocalHostIo, localHostCommand, productionLocalHostIo } from "./local-host.ts";
+import { mcpCommand } from "./mcp-commands.ts";
 import { onboardingHelp } from "./onboarding-help.ts";
 import { operation, parseTtl } from "./operations.ts";
 import { profileStores, selectProfile } from "./profiles.ts";
@@ -247,34 +249,15 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
     io.out(command === "logs" ? LOGS_HELP : HELP);
     return 0;
   }
+  const registered = command ? findCommand(command) : undefined;
   let rest = original;
   const terminator = rest.indexOf("--");
   const optionArgs = terminator < 0 ? rest : rest.slice(0, terminator);
-  const scoped = [
-    "doctor",
-    "host",
-    "golden",
-    "launch",
-    "list",
-    "bind-credential",
-    "detail",
-    "status",
-    "advice",
-    "send",
-    "report",
-    "steer",
-    "interrupt",
-    "exec",
-    "stop",
-    "extend",
-    "rm",
-    "wait",
-    "logs",
-    "mcp",
-  ];
+  const scoped = ["doctor", "host", "golden", "launch", "bind-credential", "logs", "mcp"];
   if (
     command &&
-    (scoped.includes(command) ||
+    ((registered && registered.useSelectedOrg !== false) ||
+      scoped.includes(command) ||
       (command === "org" && ["members", "setup", "connect"].includes(rest[0] ?? "")) ||
       (command === "creds" && rest[0] === "list") ||
       (command === "token" && rest[0] === "create")) &&
@@ -288,6 +271,7 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
         split < 0 ? [...rest, "--org", selected] : [...rest.slice(0, split), "--org", selected, ...rest.slice(split)];
     }
   }
+  if (registered) return registered.run(rest, authOf(io, deps));
   switch (command) {
     case "--version":
     case "-v":
@@ -309,24 +293,10 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
       return golden(rest, io, deps);
     case "launch":
       return launch(rest, io, deps);
-    case "list":
     case "bind-credential":
-    case "detail":
-    case "recovery":
-    case "status":
-    case "advice":
-    case "send":
-    case "report":
-    case "steer":
-    case "interrupt":
-    case "exec":
-    case "stop":
-    case "extend":
-    case "rm":
-    case "wait":
+      return operation(command, rest, authOf(io, deps));
     case "mcp":
-      return operation(
-        command,
+      return mcpCommand(
         rest,
         authOf(io, deps),
         (path) =>

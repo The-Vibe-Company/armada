@@ -4,19 +4,15 @@ import { invalidAgentMessage } from "./agent-validation.ts";
 import { acceptedOptions, flag, parseArgs, single, uuid } from "./args.ts";
 import { ArmadaApiError, type ArmadaCommandClient, createArmadaApiClient } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
-import { mcpCommand } from "./mcp-commands.ts";
 import { resourceAdviceText } from "./resource-advice.ts";
 import { sandboxListText } from "./sandbox-list.ts";
 
 /** API-only command boundary: server-side schemas and policy remain authoritative. */
 export async function operation(
-  command: Exclude<keyof ArmadaCommandClient["sandboxes"], "launch" | "logs"> | "rm" | "mcp",
+  command: Exclude<keyof ArmadaCommandClient["sandboxes"], "launch" | "logs"> | "rm",
   argv: readonly string[],
   auth: AuthIo,
-  read: (path?: string) => Promise<string>,
-  readOptionalStdin: () => Promise<string> = async () => "",
 ) {
-  if (command === "mcp") return mcpCommand(argv, auth, read, readOptionalStdin);
   const args = parseArgs(
     argv,
     command === "report"
