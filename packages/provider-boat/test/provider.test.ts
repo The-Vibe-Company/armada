@@ -1392,6 +1392,27 @@ test("Boat does not publish an older snapshot without verification for the curre
   expect(boat.requests).toHaveLength(1);
 });
 
+test("Boat finishes retained collection if the sandbox disappears after its metadata lookup", async () => {
+  const completedAt = "2026-11-18T10:00:00Z";
+  const boat = fakeBoat(
+    {
+      body: {
+        sandbox: sandbox({
+          state: "archived",
+          snapshotAvailable: true,
+          snapshotCompletedAt: completedAt,
+          stoppedAt: completedAt,
+        }),
+      },
+    },
+    errorBody(404, "not_found", "Sandbox not found"),
+  );
+  expect(await boat.provider.openRetainedOutputs!({ sandboxId: ID, signal: new AbortController().signal })).toBe(
+    "gone",
+  );
+  expect(boat.requests).toHaveLength(2);
+});
+
 test("Boat reports a missing sandbox as a definitive retained-output result", async () => {
   const boat = fakeBoat(errorBody(404, "not_found", "Sandbox not found"));
   expect(await boat.provider.openRetainedOutputs!({ sandboxId: ID, signal: new AbortController().signal })).toBe(

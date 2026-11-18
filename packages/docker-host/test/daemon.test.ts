@@ -409,7 +409,7 @@ test("the retained Docker reader treats a missing output directory as absence an
     }),
     exited: Promise.resolve(exit),
     exitCode: exit,
-  })) as typeof Bun.spawn);
+  })) as unknown as typeof Bun.spawn);
   try {
     expect(await readDockerOutputArchive([])).toBeNull();
     exit = 1;
