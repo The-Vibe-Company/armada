@@ -45,6 +45,7 @@ import { resolveRepositoryDir } from "./repository-context.ts";
 import { isExternalRef, type SandboxRecord, type SandboxStore } from "./sandbox.ts";
 import { sandboxActivity } from "./sandbox-activity.ts";
 import { DEFAULT_SANDBOX_EXTENSION_HEADROOM_SECONDS, SANDBOX_STOP_MARGIN_SECONDS } from "./sandbox-lifetime.ts";
+import { OUTPUT_DIRECTORY } from "./sandbox-output-limits.ts";
 import * as placement from "./sandbox-provider.ts";
 import { assertProviderOf, HOST_CAPABILITIES, PROVIDER_LIMITS, type SandboxProviderId } from "./sandbox-provider.ts";
 import { mergeSkillPins } from "./skill-merge.ts";
@@ -792,7 +793,7 @@ export async function launchSandbox(
       const promptRequest = {
         sandboxId: ready.id,
         harness,
-        text: prompt,
+        text: `${prompt}\n\nSave any deliverable files directly in ${OUTPUT_DIRECTORY}. Create that directory if needed.`,
         signal,
         ...choice,
       };

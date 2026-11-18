@@ -176,20 +176,18 @@ checkout behavior is unchanged.
 
 ### Clone cost evaluation (#2563)
 
-Decision (2026-11-17): retain depth-one, single-branch checkouts for Docker
-launches with `--repo` and for snapshot builds. At main `932a1e5`, both
-`packages/mcp-server/src/docker-normal-launch.ts` and
-`packages/core/src/docker-snapshot-build.ts` already select this default.
-The ticket's full-history clone premise does not describe these paths anymore;
-no runtime change is needed. Snapshot recipes can explicitly request full
-history with `history: "full"`.
+The 2026-11-17 evaluation compared clone modes at main `932a1e5`, when both
+direct Docker launches and snapshot builds used depth-one, single-branch clones.
+Snapshot builds still use that default, and recipes can request full history with
+`history: "full"`. Direct launches now use
+[bounded review history](docker-host-daemon.md#repository-history-for-direct-launches).
 
 A fresh public `git/git` checkout on this Linux sandbox measured:
 
 | Checkout | Elapsed seconds | `.git` KiB | Reachable commits |
 | --- | ---: | ---: | ---: |
 | Full single branch | 28.899 | 326,704 | 83,045 |
-| Depth-one single branch (current default) | 2.270 | 13,856 | 1 |
+| Depth-one single branch (snapshot build default) | 2.270 | 13,856 | 1 |
 | Depth-one plus `--filter=blob:none` | 8.855 | 14,024 | 1 |
 
 All three resolved `master` to `e1ec09b23c8e0deb21a0b95ac5996422277395d4`.
@@ -219,16 +217,16 @@ access isolation, eviction and object-lifetime management. Do not automatically
 substitute a snapshot for `--repo`: snapshot selection carries host, ownership,
 recipe and initialization semantics. The measured shallow partial clone still needs
 the working tree's blobs and adds lazy-fetch behavior: it took 8.855 seconds
-versus 2.270 for the existing shallow path, with identical checked-out files.
-Retain shallow alone; the measurement provides no reason to add partial clone.
+versus 2.270 for the depth-one checkout, with identical working trees. These
+measurements supported keeping snapshot builds depth-one. The later direct launch
+checkout fetches both working tips before requesting filtered deeper history.
 Mirror and automatic snapshot alternatives were not benchmarked here.
 
 This decision changes no checkout authorization, source/image pinning or scan
 boundary. Snapshot builds retain their immutable host/provider binding,
 credential-safe checkout, fail-closed file/Git-object scan and verified image
-provenance. Plain `--repo` launches retain their existing GitHub preparation and
-branch-head checkout; this measurement does not establish a pre-resolved commit
-pin or snapshot-publication secret scan for that separate launch path.
+provenance. Direct `--repo` launches check out the requested remote branch after
+GitHub preparation. The snapshot publication scan applies to snapshot builds.
 
 ### Normal launch preparation
 
@@ -241,7 +239,7 @@ obtain the final prompt receipt, or inspect sandbox status for a plain failure
 reason. `scripts/smoke-docker-lifecycle.py` handles both accepted and older
 synchronous responses. A starting receipt is not proof that checkout succeeded.
 
-Repository checkout uses a shallow branch clone with a bounded runtime command;
+Repository checkout uses a bounded runtime command;
 a slow clone no longer holds the launch HTTP response open. The server stores
 only fixed phase diagnostics, never Git output, credentials or exception text.
 Missing GitHub access becomes an authorization failure on the admitted sandbox.

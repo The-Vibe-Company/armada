@@ -79,12 +79,20 @@ export { sandboxActivity } from "./sandbox-activity.ts";
 export {
   admitOutputs,
   OUTPUT_COLLECTOR,
+  OUTPUT_COLLECTOR_BUN_VERSION,
+  OUTPUT_COLLECTOR_MANAGED_PROBE,
+  OUTPUT_COLLECTOR_PROBE,
+  OUTPUT_COLLECTOR_PROBE_MARKER,
   OUTPUT_DIRECTORY,
   OUTPUT_MAX_BYTES,
   OUTPUT_MAX_FILES,
+  OutputCollectionError,
+  type OutputFailureReason,
   type OutputFile,
   parseCollectorOutput,
   parseOutputFiles,
+  readCollectorProbeResult,
+  readCollectorResult,
 } from "./sandbox-outputs.ts";
 export {
   createUsagePricingContext,

@@ -46,6 +46,7 @@ import { resolveDockerLaunchAccount } from "./docker-launch-account.ts";
 import { createDockerLaunchEnvironment } from "./docker-launch-environment.ts";
 import { dockerLaunchRequestHash, matchesDockerLaunchRequestHash } from "./docker-launch-identity.ts";
 import { createDockerPromptWorker } from "./docker-prompt-worker.ts";
+import { dockerRepositoryCheckout } from "./docker-repository-checkout.ts";
 import { reservationDatabaseDiagnostic, reservationSql } from "./docker-reservation-sql.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
@@ -800,15 +801,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           receipt.github = { status: "connected", login: github.login };
           if (manifest.request.repos) {
             phase = DOCKER_LAUNCH_FAILURE_MESSAGES.checkout;
-            const quote = (v: string) => `'${v.replaceAll("'", "'\\''")}'`;
-            const command = [
-              "set -euo pipefail",
-              "export GIT_TERMINAL_PROMPT=0",
-              ...manifest.request.repos.map(
-                (repo) =>
-                  `git clone --depth=1 --single-branch --branch ${quote(repo.branch)} -- ${quote(repo.url)} ${quote(`/home/user/${repo.dir}`)}`,
-              ),
-            ].join("\n");
+            const command = dockerRepositoryCheckout(manifest.request.repos, "/home/user");
             const commands = createRuntimeCommands(createRuntimeEnrolments(sql, key), key);
             const id = `docker_checkout_${request.requestId}`;
             await commands.enqueue(

@@ -30,6 +30,8 @@ export interface Provider {
     sandboxId: string;
     configuration: GitHubRuntimeConfiguration | null;
   }): Promise<{ acknowledged: boolean }>;
+  /** Fixed capability check of live compute. Shares the output reader transport and never resumes. */
+  probeOutputs?(request: { sandboxId: string; signal?: AbortSignal }): Promise<boolean>;
   /** Fixed bounded read of the declared output directory (`/home/user/outputs`) of live compute
    * through the provider's own channel: never caller commands or the agent runtime, never starts or
    * resumes compute. Null means unavailable: not live (stopped, stopping, starting), or a failed read.
@@ -392,6 +394,8 @@ export interface ExecRequest {
   onlyIfRunning?: boolean;
   /** Trusted diagnostic phase only; not shell input. Boat omits it from the HTTP command body. */
   preservationStage?: "collect_exec" | "chunk_exec";
+  /** Fixed private output collection, logged by the server once per reason. */
+  outputCollection?: boolean;
   /** Trusted capture correlation only; never forwarded as command input. */
   preservationContext?: {
     source: "user_stop" | "lifecycle_stop" | "managed_child_stop" | "unspecified";
