@@ -114,10 +114,12 @@ describe("gateway", () => {
       token: "user-jwt",
       fetch: async () => new Response("Private proxy diagnostics", { status: 503 }),
     });
-    await expect(gateway.call("stop", {})).rejects.toMatchObject({
+    const error = await gateway.call("stop", {}).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({
       status: 503,
       message: expect.stringContaining("Reload to check the current state before retrying."),
     });
+    expect((error as GatewayError).message).not.toContain("Private proxy diagnostics");
   });
 
   test("a refused session and an unreachable server are told apart", async () => {
