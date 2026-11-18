@@ -2087,6 +2087,9 @@ function PersonalDefaultSentence({
   const [error, setError] = useState<string | null>(null);
   const resolved = modelsPageDefault(accounts, harness, now, [current]);
   const account = resolved.state === "resolved" || resolved.state === "unusable" ? resolved.account : null;
+  const model = account ? (current.model ?? modelsPageModel(account, harness)) : undefined;
+  const catalogModel = MODEL_CATALOG[harness].models.find((entry) => entry.id === model);
+  const modelLabel = catalogModel?.label ?? model;
   const id = useId();
   const save = async (next: AgentDefault, restoring = false) => {
     setPending(true);
@@ -2123,24 +2126,15 @@ function PersonalDefaultSentence({
             <>
               <button
                 type="button"
-                className={cn(
-                  word,
-                  !MODEL_CATALOG[harness].models.some(
-                    (model) => model.id === (current.model ?? modelsPageModel(account, harness)),
-                  ) && "font-mono",
-                  "wrap-anywhere text-[13px]",
-                )}
+                className={cn(word, !catalogModel && "font-mono", "wrap-anywhere text-[13px]")}
                 onClick={(event) => {
                   opener.current = event.currentTarget;
                   setOpen(true);
                 }}
                 aria-label={`Change default model for ${HARNESS_LABELS[harness]}`}
+                aria-description={modelLabel}
               >
-                {MODEL_CATALOG[harness].models.find(
-                  (model) => model.id === (current.model ?? modelsPageModel(account, harness)),
-                )?.label ??
-                  current.model ??
-                  modelsPageModel(account, harness)}
+                {modelLabel}
               </button>{" "}
             </>
           ) : resolved.state === "missing" ? (
