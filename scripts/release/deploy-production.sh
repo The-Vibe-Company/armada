@@ -31,7 +31,15 @@ if [[ "${STAGING_FORWARD_HISTORY:-}" == true ]]; then
 fi
 # No provider API receives the orchestration/tooling checkout or local caches.
 source_dir=$(mktemp -d)
-trap 'rm -rf "$source_dir"' EXIT
+railway_wait_pid=
+cleanup() {
+  if [[ -n "$railway_wait_pid" ]]; then
+    kill "$railway_wait_pid" 2>/dev/null || true
+    wait "$railway_wait_pid" 2>/dev/null || true
+  fi
+  rm -rf "$source_dir"
+}
+trap cleanup EXIT
 git archive "$RELEASE_SHA" | tar -x -C "$source_dir"
 # git archive intentionally omits generated release metadata. Carry only the
 # validated public pin into the source-built server, never the tooling checkout.
@@ -77,36 +85,59 @@ upload=$(railway up --detach --json --project "$RAILWAY_PROJECT_ID" \
   --environment "$RAILWAY_ENVIRONMENT_ID" --service "$RAILWAY_SERVICE_ID" \
   --message "Release $RELEASE_VERSION ($RELEASE_SHA)")
 deployment_id=$(jq -er '.deploymentId | select(type == "string" and length > 0)' <<< "$upload")
-echo "Waiting for Railway deployment $deployment_id"
-deadline=$((SECONDS + 900))
-while (( SECONDS < deadline )); do
-  deployments=$(railway deployment list --json --project "$RAILWAY_PROJECT_ID" \
-    --environment "$RAILWAY_ENVIRONMENT_ID" --service "$RAILWAY_SERVICE_ID")
-  status=$(jq -r --arg id "$deployment_id" '.[] | select(.id == $id) | .status' <<< "$deployments")
-  case "$status" in
-    SUCCESS) break ;;
-    FAILED|CRASHED|REMOVED|SKIPPED) fail "Railway deployment $deployment_id ended in $status; dashboard/npm not released." ;;
-  esac
-  sleep 10
-done
-[[ "${status:-}" == SUCCESS ]] || fail "Timed out waiting for Railway deployment $deployment_id."
-# Prove the public route serves this exact source, not another same-version deployment.
-healthy=false
-for _ in {1..12}; do
-  if curl --fail --silent --show-error --max-time 15 "${ARMADA_SERVER_URL%/}/healthz" \
-    | bun "$health_tool" "$RELEASE_VERSION" "$RELEASE_SHA"; then
-    healthy=true
-    break
-  fi
-  sleep 5
-done
-[[ "$healthy" == true ]] || fail 'Public server did not report the expected version/commit; dashboard/npm not released.'
+wait_for_server() {
+  echo "Waiting for Railway deployment $deployment_id"
+  deadline=$((SECONDS + 900))
+  while (( SECONDS < deadline )); do
+    # A transient list/decode failure is retried within the same deadline; only a
+    # terminal status or the deadline fails the release.
+    status=
+    if ! deployments=$(railway deployment list --json --project "$RAILWAY_PROJECT_ID" \
+        --environment "$RAILWAY_ENVIRONMENT_ID" --service "$RAILWAY_SERVICE_ID") \
+      || ! status=$(jq -r --arg id "$deployment_id" '.[] | select(.id == $id) | .status' <<< "$deployments"); then
+      status=
+      echo "Railway deployment list failed or was unparseable; retrying until the deadline."
+      sleep 10
+      continue
+    fi
+    case "$status" in
+      SUCCESS) break ;;
+      FAILED|CRASHED|REMOVED|SKIPPED) fail "Railway deployment $deployment_id ended in $status; dashboard/npm not released." ;;
+    esac
+    sleep 10
+  done
+  [[ "${status:-}" == SUCCESS ]] || fail "Timed out waiting for Railway deployment $deployment_id."
+  # Prove the public route serves this exact source, not another same-version deployment.
+  healthy=false
+  for _ in {1..12}; do
+    if curl --fail --silent --show-error --max-time 15 "${ARMADA_SERVER_URL%/}/healthz" \
+      | bun "$health_tool" "$RELEASE_VERSION" "$RELEASE_SHA"; then
+      healthy=true
+      break
+    fi
+    sleep 5
+  done
+  [[ "$healthy" == true ]] || fail 'Public server did not report the expected version/commit; dashboard/npm not released.'
+}
 
 # Build the archived commit on the Actions runner for both protected environments.
 # The Vercel project Root Directory remains apps/dashboard with workspace inclusion.
 # VERCEL_TOKEN is consumed from the environment, never exposed in argv.
-vercel pull --yes --environment=production
-vercel build --prod
+build_dashboard() {
+  vercel pull --yes --environment=production
+  vercel build --prod
+}
+
+if [[ "${RELEASE_ENVIRONMENT:-}" == production ]]; then
+  wait_for_server &
+  railway_wait_pid=$!
+  build_dashboard
+  wait "$railway_wait_pid"
+  railway_wait_pid=
+else
+  wait_for_server
+  build_dashboard
+fi
 # Wait for Ready; upload only the output, with no remote Vercel build.
 vercel deploy --prebuilt --prod --yes \
   --meta "githubCommitSha=$RELEASE_SHA" --meta "armadaVersion=$RELEASE_VERSION"
