@@ -1,5 +1,6 @@
 import type { CredentialKind } from "./database.types.ts";
 import type { HarnessModels } from "./models.ts";
+import { GENERATED_HARNESS_MODELS } from "./pricing/model-options.generated.ts";
 import type { HarnessCapabilities } from "./provider.ts";
 
 /** Browser-safe harness metadata. Driver implementations and SQL enums remain at their native boundaries. */
@@ -22,9 +23,6 @@ const COMMON_CAPABILITIES = {
   approvals: false,
 } as const;
 
-const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
-const CODEX_EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"] as const;
-
 export const HARNESS_CATALOG = {
   claude: {
     label: "Claude Code",
@@ -32,13 +30,7 @@ export const HARNESS_CATALOG = {
     credentialKinds: ["claude_oauth", "anthropic", "morph"],
     boatProvider: "claude-code",
     capabilities: { ...COMMON_CAPABILITIES, steer: "native" },
-    defaultModel: "claude-opus-5-5",
-    defaultReasoningEffort: "medium",
-    reasoningEfforts: CLAUDE_EFFORTS,
-    models: [
-      { id: "claude-opus-5-5", label: "Claude Opus 5.5", reasoningEfforts: CLAUDE_EFFORTS },
-      { id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5", reasoningEfforts: CLAUDE_EFFORTS },
-    ],
+    ...GENERATED_HARNESS_MODELS.claude,
   },
   codex: {
     label: "Codex",
@@ -46,18 +38,7 @@ export const HARNESS_CATALOG = {
     credentialKinds: ["openai", "codex_auth", "morph"],
     boatProvider: "codex",
     capabilities: { ...COMMON_CAPABILITIES, steer: "restart" },
-    defaultModel: "gpt-6.2-sol",
-    defaultReasoningEffort: "medium",
-    reasoningEfforts: CODEX_EFFORTS,
-    models: [
-      { id: "gpt-6.2-sol", label: "GPT-6.2 Sol", reasoningEfforts: CODEX_EFFORTS },
-      { id: "gpt-6.2-astra", label: "GPT-6.2 Astra", reasoningEfforts: CODEX_EFFORTS },
-      { id: "gpt-6.1-sol", label: "GPT-6.1 Sol", reasoningEfforts: CODEX_EFFORTS },
-      { id: "gpt-6.1-terra", label: "GPT-6.1 Terra", reasoningEfforts: CODEX_EFFORTS },
-      { id: "gpt-6-astra", label: "GPT-6 Astra", reasoningEfforts: CODEX_EFFORTS },
-      { id: "gpt-6-sol", label: "GPT-6 Sol", reasoningEfforts: CODEX_EFFORTS },
-      { id: "gpt-6-luna", label: "GPT-6 Luna", reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
-    ],
+    ...GENERATED_HARNESS_MODELS.codex,
   },
   opencode: {
     label: "OpenCode",
@@ -65,10 +46,7 @@ export const HARNESS_CATALOG = {
     credentialKinds: ["opencode", "morph"],
     boatProvider: null,
     capabilities: { ...COMMON_CAPABILITIES, steer: "restart", fast: false },
-    defaultModel: "armada/deepseek-flash",
-    defaultReasoningEffort: "default",
-    reasoningEfforts: ["default"],
-    models: [{ id: "armada/deepseek-flash", label: "DeepSeek Flash (custom endpoint)", reasoningEfforts: ["default"] }],
+    ...GENERATED_HARNESS_MODELS.opencode,
   },
 } as const satisfies Record<string, HarnessDescriptor>;
 
