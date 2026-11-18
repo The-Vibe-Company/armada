@@ -211,8 +211,6 @@ export async function forwardControl(
       : fail(400, "Invalid request body.");
   }
   const target = new URL(`${CONTROL_PREFIX}${relative}`, upstream);
-  // A dot segment would let URL normalization retarget an outputs request to another route.
-  if (sandboxOutputs && target.pathname !== `${CONTROL_PREFIX}${relative}`) return fail(404, "Not found.");
   if (method === "GET" || sandboxDeletion || relative === "skillpack/catalog" || relative === "skillpack/versions")
     target.search = new URL(request.url).search;
   let response: Response;
@@ -268,11 +266,12 @@ export async function forwardControl(
 }
 
 const SANDBOX_OUTPUTS =
-  /^\/api\/v1\/(sandboxes\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/outputs(?:\/[^/]+)?)$/i;
+  /^\/api\/v1\/(sandboxes\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/outputs(?:\/[^/]+)?)$/;
 
 /**
  * The authenticated sandbox outputs list and download, read from the raw request path rather than the
  * decoded catch-all segments, so an encoded filename is forwarded as the single segment the caller sent.
+ * URL parsing has already resolved dot segments, so none can retarget the request.
  */
 function sandboxOutputsPath(url: string): string | null {
   return SANDBOX_OUTPUTS.exec(new URL(url).pathname)?.[1] ?? null;

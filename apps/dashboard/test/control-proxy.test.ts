@@ -558,6 +558,8 @@ test("snapshot create forwards bounded golden configs up to one MiB and refuses 
 test("GET proxy forwards the authenticated sandbox outputs list and download with the encoded filename intact", async () => {
   process.env.ARMADA_MCP_URL = "https://armada.test/mcp";
   const id = "11111111-1111-4111-8111-111111111111";
+  // The server matches lowercase identifiers only; the proxy admits exactly what it serves.
+  const upper = "AAAAAAAA-1111-4111-8111-111111111111";
   const seen: Request[] = [];
   const send = (rawPath: string, path: string[], bearer = true) =>
     forwardControl(
@@ -601,6 +603,8 @@ test("GET proxy forwards the authenticated sandbox outputs list and download wit
     [`sandboxes/not-a-uuid/outputs`, ["sandboxes", "not-a-uuid", "outputs"]],
     [`sandboxes/${id}/outputs/a/b`, ["sandboxes", id, "outputs", "a", "b"]],
     [`sandboxes/${id}/files`, ["sandboxes", id, "files"]],
+    [`sandboxes/${id}/outputs/%2e%2e`, ["sandboxes", id]],
+    [`sandboxes/${upper}/outputs`, ["sandboxes", upper, "outputs"]],
   ] as const)
     expect((await send(rawPath, [...path])).status).toBe(404);
   const post = await forwardControl(
