@@ -25,8 +25,8 @@ access needs an authorized admin, not a retry loop.
 
 Read [setup and configuration](references/setup.md) when connecting GitHub,
 selecting model accounts, creating goldens/templates, or configuring variables.
-Manage templates and default skill pins through the dashboard or the authenticated
-REST API. MCP `template_launch` launches an existing template.
+Manage templates, default skill pins, variables and application secrets through
+the dashboard or the authenticated REST API. MCP `template_launch` launches an existing template.
 
 ## 2. Choose before launching
 

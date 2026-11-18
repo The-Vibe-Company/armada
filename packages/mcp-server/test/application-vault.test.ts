@@ -2,11 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { createSqlAuthStore } from "@armada/auth";
 import { createApplicationVault, createSqlVaultStore, decryptSecret, type Sql } from "@armada/core/server";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
-import { createSqlData } from "../src/data.ts";
-import { createArmadaServer } from "../src/tools.ts";
 import { rowOnlyConnection } from "./row-only-database.ts";
 
 const sharedDatabase = rowOnlyConnection();
@@ -83,42 +79,7 @@ async function fixture(db: Awaited<ReturnType<typeof sharedDatabase>>) {
     expectNoCanary(bodyResult, REPLACEMENT);
     return { status: result.status, text, body: JSON.parse(text), headers: result.headers };
   }
-  async function mcp(user: string) {
-    const logs: string[] = [];
-    const server = createArmadaServer(
-      {
-        applicationVault: vault,
-        caller: actor(user),
-        data: createSqlData(sql)(actor(user)),
-        launchCredentials: {
-          resolve: async () => {
-            throw new Error("no launch");
-          },
-        },
-        exposedSecrets: async () => [],
-        provider: async () => {
-          throw new Error("no provider");
-        },
-        now: () => new Date(),
-        sleep: async () => {},
-        logError: (line) => logs.push(line),
-      },
-      "test",
-    );
-    const client = new Client({ name: "vault-test", version: "1" });
-    const [a, b] = InMemoryTransport.createLinkedPair();
-    await server.connect(a);
-    await client.connect(b);
-    return {
-      client,
-      logs,
-      close: async () => {
-        await client.close();
-        await server.close();
-      },
-    };
-  }
-  return { db, sql, vault, options, owner, peer, admin, org, other, api, mcp, actor };
+  return { db, sql, vault, options, owner, peer, admin, org, other, api, actor };
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 async function withVault(work: (f: Fixture) => Promise<void>) {
@@ -132,7 +93,7 @@ async function withVault(work: (f: Fixture) => Promise<void>) {
   }
 }
 
-describe("application vault control API and MCP", () => {
+describe("application vault control API", () => {
   test("duplicate personal/org variable and revoked secret names are readable conflicts with Bun PostgreSQL errors", async () => {
     await withVault(async (f) => {
       // Real constraints decide conflicts; adapt only the database driver's error envelope.
@@ -250,7 +211,6 @@ describe("application vault control API and MCP", () => {
   for (const ingress of ["api", "upload"] as const) {
     test(`secret expiry survives ${ingress} set/rotation, changes explicitly and clears only on null`, async () => {
       await withVault(async (f) => {
-        const mcp = await f.mcp(f.owner);
         const write = async (operation: "set" | "rotate", fields: Record<string, unknown>) => {
           const input = { org: f.org, value: CANARY, ...fields };
           if (ingress === "api") {
@@ -260,34 +220,29 @@ describe("application vault control API and MCP", () => {
           }
           const upload = await f.api(f.owner, "secrets/upload", { ...input, operation });
           expect(upload.status).toBe(200);
-          const result = await mcp.client.callTool({
-            name: "secret_commit",
-            arguments: { org: f.org, uploadReference: upload.body.uploadReference },
+          const result = await f.api(f.owner, "secrets/commit", {
+            org: f.org,
+            uploadReference: upload.body.uploadReference,
           });
-          expectNoCanary(result);
-          expect(result.isError).not.toBe(true);
-          return (result.structuredContent as { item: { id: string; version: number; expiresAt: string | null } }).item;
+          expect(result.status).toBe(200);
+          return result.body.item as { id: string; version: number; expiresAt: string | null };
         };
-        try {
-          const firstExpiry = "2030-01-01T00:00:00.000Z",
-            nextExpiry = "2031-01-01T00:00:00.000Z";
-          let item = await write("set", { scope: "personal", name: "EXPIRING_TOKEN", expiresAt: firstExpiry });
-          expect(item.expiresAt).toBe(firstExpiry);
-          item = await write("rotate", { id: item.id, expectedVersion: item.version });
-          expect(item.expiresAt).toBe(firstExpiry);
-          item = await write("rotate", { id: item.id, expectedVersion: item.version, expiresAt: nextExpiry });
-          expect(item.expiresAt).toBe(nextExpiry);
-          item = await write("rotate", { id: item.id, expectedVersion: item.version, expiresAt: null });
-          expect(item.expiresAt).toBeNull();
-          const persisted = (
-            await f.db.query<{ expires_at: Date | null }>("select expires_at from application_secrets where id=$1", [
-              item.id,
-            ])
-          ).rows[0];
-          expect(persisted?.expires_at).toBeNull();
-        } finally {
-          await mcp.close();
-        }
+        const firstExpiry = "2030-01-01T00:00:00.000Z",
+          nextExpiry = "2031-01-01T00:00:00.000Z";
+        let item = await write("set", { scope: "personal", name: "EXPIRING_TOKEN", expiresAt: firstExpiry });
+        expect(item.expiresAt).toBe(firstExpiry);
+        item = await write("rotate", { id: item.id, expectedVersion: item.version });
+        expect(item.expiresAt).toBe(firstExpiry);
+        item = await write("rotate", { id: item.id, expectedVersion: item.version, expiresAt: nextExpiry });
+        expect(item.expiresAt).toBe(nextExpiry);
+        item = await write("rotate", { id: item.id, expectedVersion: item.version, expiresAt: null });
+        expect(item.expiresAt).toBeNull();
+        const persisted = (
+          await f.db.query<{ expires_at: Date | null }>("select expires_at from application_secrets where id=$1", [
+            item.id,
+          ])
+        ).rows[0];
+        expect(persisted?.expires_at).toBeNull();
       });
     });
   }
@@ -370,117 +325,74 @@ describe("application vault control API and MCP", () => {
     });
   });
 
-  test("MCP consumes API uploads only once, bound to actor/org/expiry/version, and never accepts plaintext writes", async () => {
+  test("REST commits API uploads only once, bound to actor/org/expiry/version, and never accepts plaintext writes", async () => {
     await withVault(async (f) => {
-      const owner = await f.mcp(f.owner),
-        peer = await f.mcp(f.peer);
-      try {
-        const upload = await f.api(f.owner, "secrets/upload", {
-          org: f.org,
-          operation: "set",
-          scope: "personal",
-          name: "UPLOADED_TOKEN",
-          value: CANARY,
-        });
-        expect(upload.status).toBe(200);
-        const ref = upload.body.uploadReference;
-        const uploadRow = (
-          await f.db.query<{ hash: string; value_enc: Uint8Array }>(
-            "select hash,value_enc from application_secret_uploads",
-          )
-        ).rows[0];
-        expect(uploadRow?.hash).not.toBe(ref);
-        expect((await decryptSecret(uploadRow?.value_enc as Uint8Array<ArrayBuffer>, KEY)) === CANARY).toBe(true);
-        const args = { org: f.org, uploadReference: ref };
-        expect((await peer.client.callTool({ name: "secret_commit", arguments: args })).isError).toBe(true);
-        const committed = await owner.client.callTool({ name: "secret_commit", arguments: args });
-        expect(committed.isError).not.toBe(true);
-        expectNoCanary(committed);
-        const id = (committed.structuredContent as { item: { id: string } }).item.id;
-        expect((await owner.client.callTool({ name: "secret_commit", arguments: args })).isError).toBe(true);
-        const replacement = await f.api(f.owner, "secrets/upload", {
-          org: f.org,
-          operation: "rotate",
-          id,
-          expectedVersion: 1,
-          value: REPLACEMENT,
-        });
-        const rotated = await owner.client.callTool({
-          name: "secret_commit",
-          arguments: { org: f.org, uploadReference: replacement.body.uploadReference },
-        });
-        expect(rotated.isError).not.toBe(true);
-        expectNoCanary(rotated, REPLACEMENT);
-        expect(rotated.structuredContent).toMatchObject({ item: { id, version: 2, epoch: 2 } });
-        const rotate = await f.api(f.owner, "secrets/upload", {
-          org: f.org,
-          operation: "rotate",
-          id,
-          expectedVersion: 2,
-          value: REPLACEMENT,
-        });
-        await f.api(f.owner, "secrets/revoke", { org: f.org, id, expectedVersion: 2 });
-        expect(
-          (
-            await owner.client.callTool({
-              name: "secret_commit",
-              arguments: { org: f.org, uploadReference: rotate.body.uploadReference },
-            })
-          ).isError,
-        ).toBe(true);
-        const expired = await f.api(f.owner, "secrets/upload", {
-          org: f.org,
-          operation: "set",
-          scope: "personal",
-          name: "EXPIRED_TOKEN",
-          value: CANARY,
-        });
-        await f.db.query("update application_secret_uploads set expires_at=now()-interval '1 second'");
-        expect(
-          (
-            await owner.client.callTool({
-              name: "secret_commit",
-              arguments: { org: f.org, uploadReference: expired.body.uploadReference },
-            })
-          ).isError,
-        ).toBe(true);
-        await f.db.query("update application_vault_audit set created_at=now()-interval '91 days'");
-        await f.vault.purgeExpired();
-        expect((await f.db.query("select hash from application_secret_uploads")).rows).toEqual([]);
-        expect((await f.db.query("select id from application_vault_audit")).rows).toEqual([]);
-        expect((await f.db.query("select status from application_secrets where id=$1", [id])).rows).toEqual([
-          { status: "revoked" },
-        ]);
-        const list = await owner.client.listTools();
-        expect(list.tools.some((t) => ["secret_set", "secret_rotate", "secret_read"].includes(t.name))).toBe(false);
-        const rejected = await owner.client.callTool({
-          name: "secret_commit",
-          arguments: { org: f.org, uploadReference: ref, value: CANARY },
-        });
-        expect(rejected.isError).toBe(true);
-        expectNoCanary(rejected);
-        expectNoCanary(owner.logs);
-        expectNoCanary(owner.logs, REPLACEMENT);
-        expectNoCanary(peer.logs);
-        expect(owner.logs).toEqual([]);
-        expect(peer.logs).toEqual([]);
-        const readable = await owner.client.callTool({
-          name: "variable_set",
-          arguments: { org: f.org, scope: "personal", name: "REGION", value: "eu" },
-        });
-        expect(readable.isError).not.toBe(true);
-        expect(
-          (
-            await owner.client.callTool({
-              name: "variable_read",
-              arguments: { org: f.org, id: (readable.structuredContent as { item: { id: string } }).item.id },
-            })
-          ).structuredContent,
-        ).toMatchObject({ value: "eu" });
-      } finally {
-        await owner.close();
-        await peer.close();
-      }
+      const upload = await f.api(f.owner, "secrets/upload", {
+        org: f.org,
+        operation: "set",
+        scope: "personal",
+        name: "UPLOADED_TOKEN",
+        value: CANARY,
+      });
+      expect(upload.status).toBe(200);
+      const ref = upload.body.uploadReference;
+      const uploadRow = (
+        await f.db.query<{ hash: string; value_enc: Uint8Array }>(
+          "select hash,value_enc from application_secret_uploads",
+        )
+      ).rows[0];
+      expect(uploadRow?.hash).not.toBe(ref);
+      expect((await decryptSecret(uploadRow?.value_enc as Uint8Array<ArrayBuffer>, KEY)) === CANARY).toBe(true);
+      const args = { org: f.org, uploadReference: ref };
+      expect((await f.api(f.owner, "secrets/commit", { ...args, value: CANARY })).status).toBe(400);
+      expect((await f.api(f.owner, "secrets/commit", { ...args, org: f.other })).status).toBe(403);
+      expect((await f.api(f.peer, "secrets/commit", args)).status).toBe(404);
+      const committed = await f.api(f.owner, "secrets/commit", args);
+      expect(committed.status).toBe(200);
+      const id = committed.body.item.id;
+      expect((await f.api(f.owner, "secrets/commit", args)).status).toBe(404);
+      const replacement = await f.api(f.owner, "secrets/upload", {
+        org: f.org,
+        operation: "rotate",
+        id,
+        expectedVersion: 1,
+        value: REPLACEMENT,
+      });
+      const rotated = await f.api(f.owner, "secrets/commit", {
+        org: f.org,
+        uploadReference: replacement.body.uploadReference,
+      });
+      expect(rotated.status).toBe(200);
+      expect(rotated.body).toMatchObject({ item: { id, version: 2, epoch: 2 } });
+      const rotate = await f.api(f.owner, "secrets/upload", {
+        org: f.org,
+        operation: "rotate",
+        id,
+        expectedVersion: 2,
+        value: REPLACEMENT,
+      });
+      await f.api(f.owner, "secrets/revoke", { org: f.org, id, expectedVersion: 2 });
+      expect(
+        (await f.api(f.owner, "secrets/commit", { org: f.org, uploadReference: rotate.body.uploadReference })).status,
+      ).toBe(409);
+      const expired = await f.api(f.owner, "secrets/upload", {
+        org: f.org,
+        operation: "set",
+        scope: "personal",
+        name: "EXPIRED_TOKEN",
+        value: CANARY,
+      });
+      await f.db.query("update application_secret_uploads set expires_at=now()-interval '1 second'");
+      expect(
+        (await f.api(f.owner, "secrets/commit", { org: f.org, uploadReference: expired.body.uploadReference })).status,
+      ).toBe(404);
+      await f.db.query("update application_vault_audit set created_at=now()-interval '91 days'");
+      await f.vault.purgeExpired();
+      expect((await f.db.query("select hash from application_secret_uploads")).rows).toEqual([]);
+      expect((await f.db.query("select id from application_vault_audit")).rows).toEqual([]);
+      expect((await f.db.query("select status from application_secrets where id=$1", [id])).rows).toEqual([
+        { status: "revoked" },
+      ]);
     });
   });
 
@@ -595,21 +507,13 @@ describe("application vault control API and MCP", () => {
         value: CANARY,
       });
       expect(upload.status).toBe(200);
-      const mcp = await f.mcp(f.owner);
-      try {
-        const rejected = await mcp.client.callTool({
-          name: "secret_commit",
-          arguments: { org: f.org, uploadReference: upload.body.uploadReference },
-        });
-        expect(rejected.isError).toBe(true);
-        expectNoCanary(rejected);
-        expectNoCanary(mcp.logs);
-        expect(mcp.logs).toEqual([]);
-        expect((await f.db.query("select id from application_secrets where name='APP_BACKEND'")).rows).toEqual([]);
-        expect((await f.db.query("select hash from application_secret_uploads")).rows).toHaveLength(1);
-      } finally {
-        await mcp.close();
-      }
+      const rejected = await f.api(f.owner, "secrets/commit", {
+        org: f.org,
+        uploadReference: upload.body.uploadReference,
+      });
+      expect(rejected.status).toBe(503);
+      expect((await f.db.query("select id from application_secrets where name='APP_BACKEND'")).rows).toEqual([]);
+      expect((await f.db.query("select hash from application_secret_uploads")).rows).toHaveLength(1);
     });
   });
 
