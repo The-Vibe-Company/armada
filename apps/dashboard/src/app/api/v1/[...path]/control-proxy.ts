@@ -1,8 +1,8 @@
-import { PUBLIC_CONTROL_ROUTES } from "@armada/core";
+import { CONTROL_BODY_MAX_BYTES, PUBLIC_CONTROL_ROUTES } from "@armada/core";
 import { NextResponse } from "next/server";
 
 const CONTROL_PREFIX = "/api/v1/";
-const MAX_BODY_BYTES = 128 * 1024;
+const MAX_BODY_BYTES = CONTROL_BODY_MAX_BYTES;
 
 /** POST routes the public endpoint forwards with a bearer. */
 export const PRIVATE_POST_PATHS: ReadonlySet<string> = new Set([

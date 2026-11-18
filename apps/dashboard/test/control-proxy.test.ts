@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { PUBLIC_CONTROL_ROUTES } from "@armada/core";
+import { CONTROL_BODY_MAX_BYTES, PUBLIC_CONTROL_ROUTES } from "@armada/core";
 import { forwardControl } from "../src/app/api/v1/[...path]/control-proxy.ts";
 import { POST } from "../src/app/api/v1/[...path]/route.ts";
 
@@ -710,4 +710,41 @@ test("every route the public proxy forwards is published or has a recorded reaso
       key.endsWith("/") ? !forwarded.some((route) => route.startsWith(key)) : !forwarded.includes(key),
     ),
   ).toEqual([]);
+});
+
+test("a keyed Docker send prompt the published variant admits crosses the proxy, and one it refuses never reaches upstream", async () => {
+  const { publishedRequest } = await import("../../../packages/mcp-server/test/published-response.ts");
+  const docker = publishedRequest("sandbox/send", "Docker sandbox send");
+  const id = "11111111-1111-4111-8111-111111111111";
+  const body = (bytes: number) => ({ org: id, id, prompt: "x".repeat(bytes), request_id: id });
+  const env = process.env.ARMADA_MCP_URL;
+  process.env.ARMADA_MCP_URL = "https://armada.test/mcp";
+  let sent = 0;
+  const send = (input: object) =>
+    forwardControl(
+      new Request("https://dashboard.test/api/v1/sandbox/send", {
+        method: "POST",
+        headers: { authorization: "Bearer proxy-fixture" },
+        body: JSON.stringify(input),
+      }),
+      ["sandbox", "send"],
+      async () => {
+        sent++;
+        return Response.json({ ok: true });
+      },
+    );
+  try {
+    // Under Docker's 256 KiB admission limit, but over the public body limit.
+    const oversized = body(150 * 1024);
+    expect(docker.safeParse(oversized).success).toBe(false);
+    expect((await send(oversized)).status).toBe(413);
+    expect(sent).toBe(0);
+    const fits = body(CONTROL_BODY_MAX_BYTES - 1024);
+    expect(docker.safeParse(fits).success).toBe(true);
+    expect((await send(fits)).status).toBe(200);
+    expect(sent).toBe(1);
+  } finally {
+    if (env === undefined) delete process.env.ARMADA_MCP_URL;
+    else process.env.ARMADA_MCP_URL = env;
+  }
 });

@@ -204,6 +204,7 @@ export interface WaitInput extends SandboxRef {
 }
 /** A send to a golden (Boat or Modal) sandbox. A Docker sandbox refuses this shape unless it is a `DockerSendInput`. */
 export interface SendInput extends SandboxRef {
+  /** The whole serialized request body is limited to 128 KiB; a larger one fails with HTTP 413 before dispatch. */
   prompt: string;
   request_id?: string;
   conversation_id?: string;
@@ -218,6 +219,7 @@ export interface SendInput extends SandboxRef {
  * stay pinned to launch, so per-turn overrides are refused.
  */
 export interface DockerSendInput extends SandboxRef {
+  /** The whole serialized request body is limited to 128 KiB (below Docker's 256 KiB admission limit); a larger one fails with HTTP 413 before dispatch. */
   prompt: string;
   request_id: string;
   /** A lowercase conversation UUID of the sandbox. Default: the latest. */

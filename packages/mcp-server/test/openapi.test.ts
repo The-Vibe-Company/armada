@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { TEMPLATE_LAUNCH_FIELDS } from "@armada/core/server";
+import { CONTROL_BODY_MAX_BYTES, TEMPLATE_LAUNCH_FIELDS, VAULT_CONTROL_BODY_MAX_BYTES } from "@armada/core/server";
 import published from "../../../docs/openapi.json";
 import releasePlease from "../../../release-please-config.json";
 import { generateOpenApi, REST_FIELD_NAMES } from "../src/openapi.ts";
@@ -44,6 +44,19 @@ test("published OpenAPI matches current server contracts and preserves REST fiel
     type: "boolean",
     description: "Follow events within the bounded HTTP request.",
   });
+});
+
+test("every published operation states the body limit both public boundaries enforce", () => {
+  type Operation = { post: { requestBody: { "x-max-body-bytes": number }; responses: Record<string, unknown> } };
+  const limits = Object.fromEntries(
+    Object.entries(published.paths as unknown as Record<string, Operation>).map(([path, operation]) => {
+      expect(operation.post.responses["413"]).toBeDefined();
+      return [path, operation.post.requestBody["x-max-body-bytes"]];
+    }),
+  );
+  expect(limits["/api/v1/sandbox/send"]).toBe(CONTROL_BODY_MAX_BYTES);
+  // Template routes are read with the server's stricter vault body limit.
+  expect(limits["/api/v1/templates/launch"]).toBe(VAULT_CONTROL_BODY_MAX_BYTES);
 });
 
 test("published OpenAPI keeps the plain JSON layout that release version bumps write", async () => {

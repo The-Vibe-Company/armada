@@ -363,7 +363,12 @@ export {
   launchResponse,
   sandboxIdentity,
 } from "./provider-response.ts";
-export { PUBLIC_CONTROL_ROUTES } from "./public-control-routes.ts";
+export {
+  CONTROL_BODY_MAX_BYTES,
+  controlBodyMaxBytes,
+  PUBLIC_CONTROL_ROUTES,
+  VAULT_CONTROL_BODY_MAX_BYTES,
+} from "./public-control-routes.ts";
 export {
   isApplicationVariableName,
   parseReadableVariableBindings,

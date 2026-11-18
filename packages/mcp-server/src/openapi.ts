@@ -1,4 +1,4 @@
-import { API_FAILURE_STATUS, VERSION } from "@armada/core";
+import { API_FAILURE_STATUS, controlBodyMaxBytes, VERSION } from "@armada/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { z } from "zod";
@@ -70,6 +70,16 @@ const REST_EXTRA_FIELDS: Readonly<Record<string, Readonly<Record<string, object>
     },
   },
 };
+/**
+ * Bound a top-level string field by the route's serialized-body limit: no longer string
+ * can arrive through either public boundary, whatever the handler itself would admit.
+ */
+function boundByBody(schema: Record<string, unknown>, field: string, maxBytes: number, description?: string) {
+  const property = (schema.properties as Record<string, Record<string, unknown>> | undefined)?.[field];
+  if (!property) throw new Error(`No ${field} field to bound`);
+  property.maxLength = Math.min(typeof property.maxLength === "number" ? property.maxLength : maxBytes, maxBytes);
+  if (description) property.description = description;
+}
 /** MCP tool names in shared prose, as the REST routes that serve them. */
 const REST_PROSE_NAMES: Readonly<Record<string, string>> = { golden_list: "golden/list" };
 /** Rewrites every string (prose and `required` entries); object keys are renamed by the caller. */
@@ -118,6 +128,7 @@ export async function generateOpenApi() {
       // REST selects org scope before calling shared tools.
       if (tool && route !== "templates/launch") input.properties = { ...input.properties, org: { type: "string" } };
       let request: object = input;
+      const maxBodyBytes = controlBodyMaxBytes(route);
       if (route === "sandbox/launch") {
         // One public path, two handlers: provider "docker" is dispatched to the normal Docker launch.
         const { $schema: _golden, ...golden } = input as Record<string, unknown>;
@@ -134,6 +145,15 @@ export async function generateOpenApi() {
         // also applies its own admission rules (docker-normal-send.ts).
         const { $schema: _shared, ...shared } = input as Record<string, unknown>;
         const { $schema: _docker, ...docker } = requestJsonSchema(DOCKER_SEND_REQUEST);
+        // Docker admission alone allows a 256 KiB prompt (MCP has no such body cap), but the
+        // REST body limit is lower and applies first, so publish the effective bound.
+        boundByBody(shared, "prompt", maxBodyBytes);
+        boundByBody(
+          docker,
+          "prompt",
+          maxBodyBytes,
+          `The instruction: not blank. The whole serialized JSON request body is limited to ${maxBodyBytes} bytes, so this bound, not Docker's 256 KiB admission limit, is the effective prompt limit over REST.`,
+        );
         // A Docker body must satisfy the shared send input and Docker admission.
         request = {
           anyOf: [
@@ -149,7 +169,12 @@ export async function generateOpenApi() {
           operationId: route.replaceAll("/", "_").replaceAll("-", "_"),
           description,
           security: [{ serviceToken: [] }],
-          requestBody: { required: true, content: { "application/json": { schema: request } } },
+          requestBody: {
+            required: true,
+            description: `The serialized JSON body is limited to ${maxBodyBytes} bytes; a larger body is refused with HTTP 413 before any handler runs.`,
+            "x-max-body-bytes": maxBodyBytes,
+            content: { "application/json": { schema: request } },
+          },
           responses: {
             "200": {
               description: "Success",
@@ -160,6 +185,10 @@ export async function generateOpenApi() {
                     : (tool?.outputSchema ?? {}),
                 },
               },
+            },
+            "413": {
+              description: `The serialized request body exceeds ${maxBodyBytes} bytes. Nothing was dispatched.`,
+              content: { "application/json": { schema: { $ref: "#/components/schemas/Failure" } } },
             },
             "503": {
               description:

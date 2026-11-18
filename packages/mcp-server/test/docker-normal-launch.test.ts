@@ -835,6 +835,17 @@ test("SDK sends to a Docker sandbox meet the published Docker variant exactly wh
   expect(docker.safeParse(keyed).success).toBe(true);
   expect(await sdk.send(keyed)).toMatchObject({ requestId: keyed.request_id, promptId: expect.any(String) });
   expect(f.native.at(-1)).toMatchObject({ op: "prompt", input: { text: keyed.prompt } });
+  // Docker admission alone would take this 150 KiB prompt; the REST body limit refuses it
+  // first, and the published variant says so in advance.
+  const oversized: DockerSendInput = { ...ref, prompt: "x".repeat(150 * 1024), request_id: randomUUID() };
+  expect(docker.safeParse(oversized).success).toBe(false);
+  const dispatched = f.native.length;
+  expect(await sdk.send(oversized).catch((caught: unknown) => caught)).toMatchObject({
+    code: "invalid",
+    status: 413,
+    outcomeUnknown: false,
+  });
+  expect(f.native.length).toBe(dispatched);
   const refused: SendInput[] = [
     { ...ref, prompt: "No request key" },
     { ...ref, prompt: "Per-turn model", request_id: randomUUID(), model: "normal-http-model" },

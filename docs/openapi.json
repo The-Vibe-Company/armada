@@ -17,6 +17,8 @@
         ],
         "requestBody": {
           "required": true,
+          "description": "The serialized JSON body is limited to 131072 bytes; a larger body is refused with HTTP 413 before any handler runs.",
+          "x-max-body-bytes": 131072,
           "content": {
             "application/json": {
               "schema": {
@@ -237,6 +239,16 @@
               }
             }
           },
+          "413": {
+            "description": "The serialized request body exceeds 131072 bytes. Nothing was dispatched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          },
           "503": {
             "description": "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
             "headers": {
@@ -287,6 +299,8 @@
         ],
         "requestBody": {
           "required": true,
+          "description": "The serialized JSON body is limited to 131072 bytes; a larger body is refused with HTTP 413 before any handler runs.",
+          "x-max-body-bytes": 131072,
           "content": {
             "application/json": {
               "schema": {
@@ -476,6 +490,16 @@
               }
             }
           },
+          "413": {
+            "description": "The serialized request body exceeds 131072 bytes. Nothing was dispatched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          },
           "503": {
             "description": "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
             "headers": {
@@ -526,6 +550,8 @@
         ],
         "requestBody": {
           "required": true,
+          "description": "The serialized JSON body is limited to 131072 bytes; a larger body is refused with HTTP 413 before any handler runs.",
+          "x-max-body-bytes": 131072,
           "content": {
             "application/json": {
               "schema": {
@@ -611,6 +637,16 @@
               }
             }
           },
+          "413": {
+            "description": "The serialized request body exceeds 131072 bytes. Nothing was dispatched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          },
           "503": {
             "description": "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
             "headers": {
@@ -661,6 +697,8 @@
         ],
         "requestBody": {
           "required": true,
+          "description": "The serialized JSON body is limited to 131072 bytes; a larger body is refused with HTTP 413 before any handler runs.",
+          "x-max-body-bytes": 131072,
           "content": {
             "application/json": {
               "schema": {
@@ -717,6 +755,16 @@
               }
             }
           },
+          "413": {
+            "description": "The serialized request body exceeds 131072 bytes. Nothing was dispatched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          },
           "503": {
             "description": "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
             "headers": {
@@ -767,6 +815,8 @@
         ],
         "requestBody": {
           "required": true,
+          "description": "The serialized JSON body is limited to 131072 bytes; a larger body is refused with HTTP 413 before any handler runs.",
+          "x-max-body-bytes": 131072,
           "content": {
             "application/json": {
               "schema": {
@@ -838,6 +888,16 @@
               }
             }
           },
+          "413": {
+            "description": "The serialized request body exceeds 131072 bytes. Nothing was dispatched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          },
           "503": {
             "description": "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
             "headers": {
@@ -888,6 +948,8 @@
         ],
         "requestBody": {
           "required": true,
+          "description": "The serialized JSON body is limited to 131072 bytes; a larger body is refused with HTTP 413 before any handler runs.",
+          "x-max-body-bytes": 131072,
           "content": {
             "application/json": {
               "schema": {
@@ -971,6 +1033,16 @@
               }
             }
           },
+          "413": {
+            "description": "The serialized request body exceeds 131072 bytes. Nothing was dispatched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          },
           "503": {
             "description": "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
             "headers": {
@@ -1021,6 +1093,8 @@
         ],
         "requestBody": {
           "required": true,
+          "description": "The serialized JSON body is limited to 131072 bytes; a larger body is refused with HTTP 413 before any handler runs.",
+          "x-max-body-bytes": 131072,
           "content": {
             "application/json": {
               "schema": {
@@ -1628,6 +1702,16 @@
               }
             }
           },
+          "413": {
+            "description": "The serialized request body exceeds 131072 bytes. Nothing was dispatched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          },
           "503": {
             "description": "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
             "headers": {
@@ -1678,6 +1762,8 @@
         ],
         "requestBody": {
           "required": true,
+          "description": "The serialized JSON body is limited to 131072 bytes; a larger body is refused with HTTP 413 before any handler runs.",
+          "x-max-body-bytes": 131072,
           "content": {
             "application/json": {
               "schema": {
@@ -2499,6 +2585,16 @@
                   ],
                   "$schema": "http://json-schema.org/draft-07/schema#",
                   "additionalProperties": false
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The serialized request body exceeds 131072 bytes. Nothing was dispatched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
                 }
               }
             }
@@ -2553,6 +2649,8 @@
         ],
         "requestBody": {
           "required": true,
+          "description": "The serialized JSON body is limited to 131072 bytes; a larger body is refused with HTTP 413 before any handler runs.",
+          "x-max-body-bytes": 131072,
           "content": {
             "application/json": {
               "schema": {
@@ -3378,6 +3476,16 @@
               }
             }
           },
+          "413": {
+            "description": "The serialized request body exceeds 131072 bytes. Nothing was dispatched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          },
           "503": {
             "description": "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
             "headers": {
@@ -3428,6 +3536,8 @@
         ],
         "requestBody": {
           "required": true,
+          "description": "The serialized JSON body is limited to 131072 bytes; a larger body is refused with HTTP 413 before any handler runs.",
+          "x-max-body-bytes": 131072,
           "content": {
             "application/json": {
               "schema": {
@@ -3474,6 +3584,16 @@
                   ],
                   "$schema": "http://json-schema.org/draft-07/schema#",
                   "additionalProperties": false
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The serialized request body exceeds 131072 bytes. Nothing was dispatched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
                 }
               }
             }
@@ -3528,6 +3648,8 @@
         ],
         "requestBody": {
           "required": true,
+          "description": "The serialized JSON body is limited to 131072 bytes; a larger body is refused with HTTP 413 before any handler runs.",
+          "x-max-body-bytes": 131072,
           "content": {
             "application/json": {
               "schema": {
@@ -3564,6 +3686,16 @@
                   ],
                   "$schema": "http://json-schema.org/draft-07/schema#",
                   "additionalProperties": false
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The serialized request body exceeds 131072 bytes. Nothing was dispatched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
                 }
               }
             }
@@ -3618,6 +3750,8 @@
         ],
         "requestBody": {
           "required": true,
+          "description": "The serialized JSON body is limited to 131072 bytes; a larger body is refused with HTTP 413 before any handler runs.",
+          "x-max-body-bytes": 131072,
           "content": {
             "application/json": {
               "schema": {
@@ -3639,7 +3773,8 @@
                       "prompt": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "The instruction."
+                        "description": "The instruction.",
+                        "maxLength": 131072
                       },
                       "conversation_id": {
                         "description": "A conversation of the sandbox. Default: the latest.",
@@ -3684,7 +3819,8 @@
                           "prompt": {
                             "type": "string",
                             "minLength": 1,
-                            "description": "The instruction."
+                            "description": "The instruction.",
+                            "maxLength": 131072
                           },
                           "conversation_id": {
                             "description": "A conversation of the sandbox. Default: the latest.",
@@ -3715,9 +3851,9 @@
                         "properties": {
                           "prompt": {
                             "type": "string",
-                            "maxLength": 262144,
+                            "maxLength": 131072,
                             "pattern": "\\S",
-                            "description": "The instruction: not blank, at most 256 KiB of UTF-8."
+                            "description": "The instruction: not blank. The whole serialized JSON request body is limited to 131072 bytes, so this bound, not Docker's 256 KiB admission limit, is the effective prompt limit over REST."
                           },
                           "request_id": {
                             "type": "string",
@@ -3814,6 +3950,16 @@
               }
             }
           },
+          "413": {
+            "description": "The serialized request body exceeds 131072 bytes. Nothing was dispatched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          },
           "503": {
             "description": "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
             "headers": {
@@ -3864,6 +4010,8 @@
         ],
         "requestBody": {
           "required": true,
+          "description": "The serialized JSON body is limited to 131072 bytes; a larger body is refused with HTTP 413 before any handler runs.",
+          "x-max-body-bytes": 131072,
           "content": {
             "application/json": {
               "schema": {
@@ -3913,6 +4061,16 @@
                   ],
                   "$schema": "http://json-schema.org/draft-07/schema#",
                   "additionalProperties": false
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The serialized request body exceeds 131072 bytes. Nothing was dispatched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
                 }
               }
             }
@@ -3967,6 +4125,8 @@
         ],
         "requestBody": {
           "required": true,
+          "description": "The serialized JSON body is limited to 131072 bytes; a larger body is refused with HTTP 413 before any handler runs.",
+          "x-max-body-bytes": 131072,
           "content": {
             "application/json": {
               "schema": {
@@ -4116,6 +4276,16 @@
               }
             }
           },
+          "413": {
+            "description": "The serialized request body exceeds 131072 bytes. Nothing was dispatched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          },
           "503": {
             "description": "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
             "headers": {
@@ -4166,6 +4336,8 @@
         ],
         "requestBody": {
           "required": true,
+          "description": "The serialized JSON body is limited to 131072 bytes; a larger body is refused with HTTP 413 before any handler runs.",
+          "x-max-body-bytes": 131072,
           "content": {
             "application/json": {
               "schema": {
@@ -4232,6 +4404,16 @@
               }
             }
           },
+          "413": {
+            "description": "The serialized request body exceeds 131072 bytes. Nothing was dispatched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          },
           "503": {
             "description": "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
             "headers": {
@@ -4282,6 +4464,8 @@
         ],
         "requestBody": {
           "required": true,
+          "description": "The serialized JSON body is limited to 131072 bytes; a larger body is refused with HTTP 413 before any handler runs.",
+          "x-max-body-bytes": 131072,
           "content": {
             "application/json": {
               "schema": {
@@ -4340,6 +4524,16 @@
               }
             }
           },
+          "413": {
+            "description": "The serialized request body exceeds 131072 bytes. Nothing was dispatched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          },
           "503": {
             "description": "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
             "headers": {
@@ -4390,6 +4584,8 @@
         ],
         "requestBody": {
           "required": true,
+          "description": "The serialized JSON body is limited to 131072 bytes; a larger body is refused with HTTP 413 before any handler runs.",
+          "x-max-body-bytes": 131072,
           "content": {
             "application/json": {
               "schema": {
@@ -4438,6 +4634,16 @@
                   ],
                   "$schema": "http://json-schema.org/draft-07/schema#",
                   "additionalProperties": false
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The serialized request body exceeds 131072 bytes. Nothing was dispatched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
                 }
               }
             }
@@ -4492,6 +4698,8 @@
         ],
         "requestBody": {
           "required": true,
+          "description": "The serialized JSON body is limited to 131072 bytes; a larger body is refused with HTTP 413 before any handler runs.",
+          "x-max-body-bytes": 131072,
           "content": {
             "application/json": {
               "schema": {
@@ -5322,6 +5530,16 @@
               }
             }
           },
+          "413": {
+            "description": "The serialized request body exceeds 131072 bytes. Nothing was dispatched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          },
           "503": {
             "description": "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
             "headers": {
@@ -5372,6 +5590,8 @@
         ],
         "requestBody": {
           "required": true,
+          "description": "The serialized JSON body is limited to 131072 bytes; a larger body is refused with HTTP 413 before any handler runs.",
+          "x-max-body-bytes": 131072,
           "content": {
             "application/json": {
               "schema": {
@@ -5464,6 +5684,16 @@
               }
             }
           },
+          "413": {
+            "description": "The serialized request body exceeds 131072 bytes. Nothing was dispatched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          },
           "503": {
             "description": "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
             "headers": {
@@ -5514,6 +5744,8 @@
         ],
         "requestBody": {
           "required": true,
+          "description": "The serialized JSON body is limited to 131072 bytes; a larger body is refused with HTTP 413 before any handler runs.",
+          "x-max-body-bytes": 131072,
           "content": {
             "application/json": {
               "schema": {
@@ -5595,6 +5827,16 @@
               }
             }
           },
+          "413": {
+            "description": "The serialized request body exceeds 131072 bytes. Nothing was dispatched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          },
           "503": {
             "description": "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
             "headers": {
@@ -5645,6 +5887,8 @@
         ],
         "requestBody": {
           "required": true,
+          "description": "The serialized JSON body is limited to 131072 bytes; a larger body is refused with HTTP 413 before any handler runs.",
+          "x-max-body-bytes": 131072,
           "content": {
             "application/json": {
               "schema": {
@@ -5702,6 +5946,16 @@
               }
             }
           },
+          "413": {
+            "description": "The serialized request body exceeds 131072 bytes. Nothing was dispatched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          },
           "503": {
             "description": "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
             "headers": {
@@ -5752,6 +6006,8 @@
         ],
         "requestBody": {
           "required": true,
+          "description": "The serialized JSON body is limited to 131072 bytes; a larger body is refused with HTTP 413 before any handler runs.",
+          "x-max-body-bytes": 131072,
           "content": {
             "application/json": {
               "schema": {
@@ -6324,6 +6580,16 @@
               }
             }
           },
+          "413": {
+            "description": "The serialized request body exceeds 131072 bytes. Nothing was dispatched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          },
           "503": {
             "description": "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
             "headers": {
@@ -6374,6 +6640,8 @@
         ],
         "requestBody": {
           "required": true,
+          "description": "The serialized JSON body is limited to 65536 bytes; a larger body is refused with HTTP 413 before any handler runs.",
+          "x-max-body-bytes": 65536,
           "content": {
             "application/json": {
               "schema": {
@@ -6569,6 +6837,16 @@
               }
             }
           },
+          "413": {
+            "description": "The serialized request body exceeds 65536 bytes. Nothing was dispatched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          },
           "503": {
             "description": "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
             "headers": {
@@ -6619,6 +6897,8 @@
         ],
         "requestBody": {
           "required": true,
+          "description": "The serialized JSON body is limited to 131072 bytes; a larger body is refused with HTTP 413 before any handler runs.",
+          "x-max-body-bytes": 131072,
           "content": {
             "application/json": {
               "schema": {
@@ -6819,6 +7099,16 @@
                     "hasMore"
                   ],
                   "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The serialized request body exceeds 131072 bytes. Nothing was dispatched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
                 }
               }
             }
