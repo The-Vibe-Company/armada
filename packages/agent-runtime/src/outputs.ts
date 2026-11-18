@@ -2,7 +2,7 @@ import { CString, dlopen, FFIType, ptr } from "bun:ffi";
 import { constants } from "node:fs";
 import { type FileHandle, open } from "node:fs/promises";
 import {
-  DOCKER_OUTPUT_DIRECTORY,
+  OUTPUT_DIRECTORY,
   OUTPUT_MAX_BYTES,
   OUTPUT_MAX_ENTRIES,
   OUTPUT_MAX_FILES,
@@ -57,7 +57,7 @@ export function listEntries(path: string, onEntry?: () => void): string[] {
  * count and byte bounds count admitted files only, in name order.
  */
 export async function readOutputDirectory(
-  directory: string = DOCKER_OUTPUT_DIRECTORY,
+  directory: string = OUTPUT_DIRECTORY,
 ): Promise<{ name: string; base64: string }[]> {
   let handle: FileHandle;
   try {

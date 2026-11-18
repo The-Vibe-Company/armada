@@ -1,13 +1,17 @@
 /** Declared sandbox outputs (#2570): one fixed directory, bounded snapshot, no caller-supplied path. */
-import { OUTPUT_MAX_BYTES, OUTPUT_MAX_ENTRIES, OUTPUT_MAX_FILES, validOutputName } from "./sandbox-output-limits.ts";
-
-export {
-  DOCKER_OUTPUT_DIRECTORY,
+import {
   OUTPUT_DIRECTORY,
   OUTPUT_MAX_BYTES,
   OUTPUT_MAX_ENTRIES,
   OUTPUT_MAX_FILES,
-  outputDirectory,
+  validOutputName,
+} from "./sandbox-output-limits.ts";
+
+export {
+  OUTPUT_DIRECTORY,
+  OUTPUT_MAX_BYTES,
+  OUTPUT_MAX_ENTRIES,
+  OUTPUT_MAX_FILES,
 } from "./sandbox-output-limits.ts";
 
 /** One declared output file as read by a provider. Callers still validate with `admitOutputs`. */
@@ -25,9 +29,12 @@ export const OUTPUT_COLLECTOR = `cd / && PATH=/usr/local/bin:/usr/bin:/bin exec 
 import os,stat,json,base64,sys
 files=[]
 try:
- root=os.open('/workspace',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
- try: directory=os.open('outputs',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=root)
- finally: os.close(root)
+ flags=os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW
+ directory=os.open('/',flags)
+ for part in ${JSON.stringify(OUTPUT_DIRECTORY)}.strip('/').split('/'):
+  parent=directory
+  try: directory=os.open(part,flags,dir_fd=parent)
+  finally: os.close(parent)
 except FileNotFoundError: directory=None
 if directory is not None:
  try:
