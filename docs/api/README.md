@@ -122,7 +122,7 @@ Send rules depend on the sandbox:
 | --- | --- | --- | --- |
 | Native Boat or Modal | Optional | Optional | Optional, for this turn only |
 | Runtime Boat or Modal, including OpenCode | Required without a pinned model account. Otherwise Armada generates one when omitted. | Optional. Omit it to continue the latest conversation. On an idle sandbox with no turn yet, omitting it opens the first conversation. A supplied ID must name an existing conversation of this sandbox. | Refused. Boat accepts values equal to the launch values. |
-| Docker | Armada generates one when omitted, because every Docker sandbox has a pinned model account | Optional UUID. Omit it to continue the latest conversation, or the launch conversation when none is recorded yet. | Refused |
+| Docker | Armada generates one when omitted, because every Docker sandbox has a pinned model account | Optional UUID. Omit it to continue the latest conversation, or the launch conversation when none is recorded yet. While the launch or an earlier queued prompt is still pending, Armada queues the send on the first conversation and returns HTTP 409 `conflict` for any other ID. | Refused |
 
 On runtime sandboxes, a refused override returns HTTP 400 `invalid`, as do a
 `conversation_id` that names no existing conversation and a send that requires
