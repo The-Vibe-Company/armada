@@ -57,6 +57,7 @@ export type SandboxDetail = Omit<
   | "pull_request_check_after"
   | "pull_request_merge_proof"
   | "stop_when_work_merged"
+  | "transition_context"
 >;
 
 /** The interior row. Row level security returns it only to its owner or a current organization admin. */
