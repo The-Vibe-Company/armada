@@ -174,7 +174,8 @@ export async function recordLaunchStageSql(
      select $1::uuid,max(l.activation),$2,clock_timestamp()-make_interval(secs=>$3::double precision/1000)
        from public.sandbox_launch_stages l
        join public.sandboxes s on s.id=l.sandbox_id
-       where l.sandbox_id=$1::uuid and ($4::bigint is null or (s.lifecycle_generation=$4 and s.status='starting'))
+       where l.sandbox_id=$1::uuid and ($4::bigint is null or (s.lifecycle_generation=$4
+         and (s.status='starting' or (s.status='ready' and $2='harness_ready' and s.activity_lease_id is not null))))
        having max(l.activation) is not null
      on conflict(sandbox_id,activation,stage) do update set at=least(sandbox_launch_stages.at,excluded.at)`,
     [sandboxId, stage, Math.max(0, Math.round(elapsedMs)), generation ?? null],

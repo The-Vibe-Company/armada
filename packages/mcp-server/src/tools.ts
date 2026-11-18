@@ -1872,6 +1872,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
         ...(machine.state === "stopped" ? { status: "starting" as const, stoppedAt: null } : {}),
       },
       async (signal, activityToken) => {
+        let activationOpened = machine.state === "stopped";
         const receipt = await measure("send_submit", () =>
           provider
             .prompt({
@@ -1888,7 +1889,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
                         if (stage === "accepted") {
                           // The provider can discover a stop after the initial state read.
                           // Open that activation while this send still owns the same lease.
-                          if (machine.state !== "stopped")
+                          if (!activationOpened) {
                             await data.sandboxes.update(found.id, {
                               status: "starting",
                               stoppedAt: null,
@@ -1896,7 +1897,9 @@ export function createArmadaServer(context: ToolContext, version: string, option
                               activityToken,
                               expectedGeneration: generation + 1,
                             });
-                        } else {
+                            activationOpened = true;
+                          }
+                        } else if (activationOpened) {
                           await data.sandboxes.recordLaunchStage?.(found.id, stage, 0, generation + 1);
                         }
                       } catch {
