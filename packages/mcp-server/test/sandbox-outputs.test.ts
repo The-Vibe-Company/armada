@@ -441,6 +441,9 @@ test("expired Modal reads leave final capture capacity for a healthy Boat sandbo
       deadline.abort();
       await expect(capture).rejects.toBe(deadline.signal.reason);
     }
+    await expect(captureFinalOutputs(sql, provider, stalled[4]!, { key: KEY })).rejects.toMatchObject({
+      reason: "output_busy",
+    });
     await captureFinalOutputs(sql, provider, id, { key: KEY });
     expect(await names()).toEqual([{ sandbox_id: id, name: "memo.txt" }]);
   } finally {
