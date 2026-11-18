@@ -1051,7 +1051,10 @@ describe("tools", () => {
     events.push({ id: "ev_msg", at: 2, kind: "message", text: "Working", partial: false, tools: [] });
     const first = await call(mcp, "logs", { id: launched.data.id });
     expect((first.data.events as { id: string; text: string }[]).map((event) => [event.id, event.text])).toEqual([
-      ["ev_prompt_1", "go"],
+      [
+        "ev_prompt_1",
+        "go\n\nSave any deliverable files directly in /home/user/outputs. Create that directory if needed.",
+      ],
       ["ev_msg", "Working"],
     ]);
     expect(first.data).toMatchObject({ cursor: "3", hasMore: false });
