@@ -1,5 +1,24 @@
 # Changelog
 
+## [2.53.0](https://github.com/The-Vibe-Company/armada/compare/v2.52.1...v2.53.0) (2026-11-18)
+
+
+### Features
+
+* **api:** list and download sandbox outputs ([#2591](https://github.com/The-Vibe-Company/armada/issues/2591)) ([6601625](https://github.com/The-Vibe-Company/armada/commit/6601625db9a99820b5605a18e1de18ad961b56da))
+
+
+### Bug Fixes
+
+* **modal:** confirm build artifact collection and claim image deletion exclusively ([#2620](https://github.com/The-Vibe-Company/armada/issues/2620)) ([bb88f5f](https://github.com/The-Vibe-Company/armada/commit/bb88f5f7dbf000f989067961cf0702b5f554858e))
+* **outputs:** use the sandbox user's home on all providers ([#2630](https://github.com/The-Vibe-Company/armada/issues/2630)) ([7fffb9a](https://github.com/The-Vibe-Company/armada/commit/7fffb9a73ea4158513873f43eca18009bead3d63))
+* **test:** remove flaky native process startup from unit checks ([#2625](https://github.com/The-Vibe-Company/armada/issues/2625)) ([523be6d](https://github.com/The-Vibe-Company/armada/commit/523be6dfe490d8d131cb51f354eb4fb3202e934d))
+
+
+### Performance Improvements
+
+* **release:** shorten the publishing release ([#2616](https://github.com/The-Vibe-Company/armada/issues/2616)) ([6ff291a](https://github.com/The-Vibe-Company/armada/commit/6ff291a1a63b538456401d456c58fb6d14102f86))
+
 ## [2.52.1](https://github.com/The-Vibe-Company/armada/compare/v2.52.0...v2.52.1) (2026-11-18)
 
 
