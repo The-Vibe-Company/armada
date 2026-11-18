@@ -53,8 +53,14 @@ staging_armada launch "$staging_snapshot" --org "$staging_org" --provider modal 
 
 Use the launch response's sandbox ID for the commands below. Read the result
 and confirm the task completed. If the launch response was lost, reconcile the
-attempt in staging by matching the snapshot and start time in the output of
-`staging_armada list --org "$staging_org" --json` before trying another launch.
+attempt before trying another launch. Find the snapshot UUID in the first
+command's output, then match the sandbox by launch start time.
+
+```bash
+staging_armada snapshot list --org "$staging_org" --provider modal --json
+read -r -p 'Staging Modal snapshot UUID: ' snapshot_id
+staging_armada list --org "$staging_org" --golden "$snapshot_id" --owner me --json
+```
 
 ```bash
 read -r -p 'Returned sandbox ID: ' sandbox_id
