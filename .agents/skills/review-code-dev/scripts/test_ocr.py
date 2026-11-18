@@ -61,7 +61,11 @@ class BootstrapTests(unittest.TestCase):
             self.assertEqual(binary.read_bytes(), data)
             self.assertTrue(os.access(binary, os.X_OK))
             self.assertEqual(ocr.ensure_binary(), binary)
-            download.assert_called_once()
+            download.assert_called_once_with(
+                "https://github.com/alibaba/open-code-review/releases/download/"
+                "v1.13.12/opencodereview-linux-arm64",
+                timeout=60,
+            )
             binary.write_bytes(b"corrupted")
             with self.assertRaisesRegex(RuntimeError, "checksum mismatch"):
                 ocr.ensure_binary()

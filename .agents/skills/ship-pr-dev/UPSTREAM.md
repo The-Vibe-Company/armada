@@ -2,7 +2,7 @@
 
 ship-pr-dev is distributed under the MIT License (see LICENSE).
 Copyright (c) 2026 The Vibe Company.
-Imported package version: 1.6.0.
+Imported package version: 1.6.2.
 The imported workflow, references, metadata and evals are unchanged.
 
 Armada adaptations after independent review:
