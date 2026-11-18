@@ -184,8 +184,7 @@ function LangfuseCounters({ counters }: { counters: LangfuseAdmin["counters"] })
               <div>
                 <strong>{number.format(dropped)} traces dropped by Armada</strong>
                 <p className="text-muted-foreground">
-                  Armada had too much to send at once. Nothing to do unless this keeps rising; then contact whoever runs
-                  your Armada server.
+                  Armada skipped these traces. If this keeps rising, contact whoever runs your Armada server.
                 </p>
               </div>
             </li>
