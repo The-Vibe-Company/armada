@@ -12,7 +12,7 @@ export class RuntimeCommandConflict extends Error {
     super("runtime_command_conflict");
   }
 }
-/** Refused before admission: no command row was written, so nothing can execute. */
+/** Refused before admission: no row exists for this request ID, so nothing can execute. */
 export class RuntimeCommandRefused extends RuntimeCommandConflict {}
 export class RuntimeCommandPending extends Error {
   constructor() {
@@ -123,8 +123,9 @@ export function createRuntimeCommands(
         )
       ).rows[0];
       if (previous) {
+        // A row with this ID already exists and may have executed: not a definite refusal.
         if (previous.epoch !== scope.epoch || (await decryptSecret(previous.request_enc, key)) !== serialized)
-          throw new RuntimeCommandRefused();
+          throw new RuntimeCommandConflict();
       } else {
         await tx.query(
           "insert into public.runtime_commands(sandbox_id,request_id,epoch,request_enc) values($1,$2,$3,$4)",

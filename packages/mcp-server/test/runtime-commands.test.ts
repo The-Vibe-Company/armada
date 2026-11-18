@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import type { RunnerRequest } from "@armada/agent-runtime";
 import type { Sql } from "@armada/core/server";
 import { createOutboundWebhooks } from "../src/outbound-webhooks.ts";
-import { createRuntimeCommands } from "../src/runtime-commands.ts";
+import { createRuntimeCommands, RuntimeCommandRefused } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
@@ -135,7 +135,14 @@ test("replacement epoch refuses old replies and never silently adopts unfinished
   expect((await f.request("results", old.runtimeToken, old.epoch, reply)).status).toBe(401);
   expect(await f.bridge().result(f.people.owner, f.id, request.requestId)).toEqual({ state: "superseded" });
   expect((await f.bridge().next(current.runtimeToken, current.epoch)).command).toBeNull();
-  await expect(f.bridge().enqueue(f.people.owner, request)).rejects.toThrow("runtime_command_conflict");
+  // The old-epoch row may already have executed: this refusal must stay ambiguous, never a definite refusal.
+  const resent = await f
+    .bridge()
+    .enqueue(f.people.owner, request)
+    .catch((error: unknown) => error);
+  expect(resent).toBeInstanceOf(Error);
+  expect((resent as Error).message).toBe("runtime_command_conflict");
+  expect(resent).not.toBeInstanceOf(RuntimeCommandRefused);
   expect(
     (await f.request("results", current.runtimeToken, current.epoch, { ...reply, epoch: current.epoch })).status,
   ).toBe(409);
@@ -147,8 +154,9 @@ test("replacement epoch refuses old replies and never silently adopts unfinished
     harness: "codex",
     model: "deployment",
   };
-  await expect(f.bridge().enqueue(f.people.owner, healthPinnedCheck, old.epoch)).rejects.toThrow(
-    "runtime_command_conflict",
+  // Fenced before any row is written: a definite refusal.
+  await expect(f.bridge().enqueue(f.people.owner, healthPinnedCheck, old.epoch)).rejects.toBeInstanceOf(
+    RuntimeCommandRefused,
   );
   expect(
     (await f.db.query("select request_id from runtime_commands where request_id='old-health-check'")).rows,
