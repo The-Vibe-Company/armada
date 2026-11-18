@@ -34,7 +34,7 @@ Review checks the code against the note. A gap in the note is one finding, not o
 
 ## Public surface
 
-Scope: `packages/mcp-server/src/control.ts`, `packages/mcp-server/src/control-tool-routes.ts` and other control route files, `packages/mcp-server/src/tools.ts`, `packages/mcp-server/src/public-rest-routes.ts`, `packages/mcp-server/src/openapi.ts`, `packages/mcp-server/src/launch-request-schema.ts`, `packages/mcp-server/src/launch-response-schemas.ts`, and their callers in `packages/sdk`, `packages/cli`, `apps/dashboard`, `apps/ios` and `.agents/skills/armada`.
+Scope: `packages/mcp-server/src/control.ts`, `packages/mcp-server/src/control-tool-routes.ts` and other control route files, `packages/mcp-server/src/tools.ts`, `packages/mcp-server/src/public-rest-routes.ts`, `packages/mcp-server/src/openapi.ts`, `packages/core/src/contract/launch.ts`, `packages/mcp-server/src/launch-request-schema.ts`, `packages/mcp-server/src/launch-response-schemas.ts`, and their callers in `packages/sdk`, `packages/cli`, `apps/dashboard`, `apps/ios` and `.agents/skills/armada`.
 Authority: `docs/api/README.md`, `docs/sdk.md`.
 
 1. **The schema is what the handler does.** Every shape a handler can return, including refusals, `retryAfter`, nulls and every provider variant, is in its output schema. A test passes the handler's real responses through the published schema.
