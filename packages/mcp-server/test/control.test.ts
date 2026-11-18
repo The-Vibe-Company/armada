@@ -1169,6 +1169,56 @@ describe("control API", () => {
     });
   }
 
+  test("a keyed runtime launch refuses an unbound account before opening the provider", async () => {
+    await withServer(async ({ db, options }) => {
+      const org = (await options.store.createOrg("RuntimeAccount", STAN)).id;
+      options.authStore.addMembership(STAN, { orgId: org, name: "RuntimeAccount", role: "admin" });
+      await db.query(
+        "insert into goldens (org_id, name, visibility, owner_id, boat_snapshot_id, config) values ($1, 'web', 'org', $2, $3, $4::jsonb)",
+        [
+          org,
+          STAN,
+          `a${"b".repeat(62)}`,
+          JSON.stringify({ repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }], init: [] }),
+        ],
+      );
+      const openProvider = (): never => {
+        throw Error("An account refusal must precede provider initialization");
+      };
+      const response = await handleControlRequest(
+        new Request("https://armada.test/api/v1/sandbox/launch", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`,
+          },
+          body: JSON.stringify({ org, golden: "web", harness: "codex", idempotencyKey: "unbound-account-launch" }),
+        }),
+        {
+          ...options,
+          providerFor: openProvider,
+          providers: { resolve: async () => openProvider() },
+          ordinaryLaunchReceipts: createOrdinaryLaunchReceipts(db as unknown as Sql),
+          launch: {
+            boatRuntimeDefault: {
+              policy: { start: async () => openProvider() },
+              provider: async () => openProvider(),
+              credentials: {
+                async resolve() {
+                  return { env: { OPENAI_API_KEY: "fixture_key" }, secrets: [], codexAuthJson: false };
+                },
+              },
+              connections: { async validate() {}, async bind() {} },
+            },
+          },
+        },
+      );
+      expect(response?.status).toBe(409);
+      expect(await response?.json()).toMatchObject({
+        error: { code: "credential_binding_required", message: expect.stringContaining("--credential-id") },
+      });
+    });
+  });
+
   test("sandbox/launch replays one sandbox per idempotencyKey and refuses a changed request", async () => {
     await withServer(async ({ db, options }) => {
       const org = (await options.store.createOrg("Keyed", STAN)).id;

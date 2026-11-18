@@ -34,9 +34,31 @@ export function createOrdinaryLaunchReceipts(sql: Sql) {
       key: string,
       payload: unknown,
       dispatch: (id: string) => Promise<T>,
-      authority: { target: ProviderTarget; backendId: string; management: { scope: "org" | "user"; ownerId: string } },
+      prepareAuthority: () => Promise<{
+        target: ProviderTarget;
+        backendId: string;
+        management: { scope: "org" | "user"; ownerId: string };
+      }>,
     ): Promise<T> {
       const fingerprint = createHash("sha256").update(canonical(payload)).digest("hex");
+      const find = async () =>
+        (
+          await sql.query<Receipt>(
+            `SELECT id, fingerprint, response, failure FROM public.ordinary_launch_receipts
+             WHERE org_id=$1 AND owner_id=$2 AND request_key=$3`,
+            [actor.orgId, actor.userId, key],
+          )
+        ).rows[0];
+      const replay = (prior: Receipt): T => {
+        if (prior.fingerprint !== fingerprint)
+          throw new GoldenError("conflict", `Launch key conflicts with receipt ${prior.id}.`);
+        if (prior.failure) throw replayFailure(prior.failure);
+        if (prior.response !== null) return prior.response as T;
+        throw new LaunchError("outcome_unknown", `Launch outcome unknown; receipt ${prior.id}. Do not use a new key.`);
+      };
+      const prior = await find();
+      if (prior) return replay(prior);
+      const authority = await prepareAuthority();
       const id = crypto.randomUUID();
       const inserted = await sql.query<Receipt>(
         `INSERT INTO public.ordinary_launch_receipts (id, org_id, owner_id, request_key, fingerprint, authority)
@@ -44,19 +66,10 @@ export function createOrdinaryLaunchReceipts(sql: Sql) {
         [id, actor.orgId, actor.userId, key, fingerprint, JSON.stringify(authority)],
       );
       if (!inserted.rows.length) {
-        const { rows } = await sql.query<Receipt>(
-          `SELECT id, fingerprint, response, failure FROM public.ordinary_launch_receipts
-           WHERE org_id=$1 AND owner_id=$2 AND request_key=$3`,
-          [actor.orgId, actor.userId, key],
-        );
-        const prior = rows[0];
-        if (!prior)
+        const winner = await find();
+        if (!winner)
           throw new LaunchError("outcome_unknown", "Launch receipt unavailable; do not retry with a new key.");
-        if (prior.fingerprint !== fingerprint)
-          throw new GoldenError("conflict", `Launch key conflicts with receipt ${prior.id}.`);
-        if (prior.failure) throw replayFailure(prior.failure);
-        if (prior.response !== null) return prior.response as T;
-        throw new LaunchError("outcome_unknown", `Launch outcome unknown; receipt ${prior.id}. Do not use a new key.`);
+        return replay(winner);
       }
       try {
         const response = await dispatch(id);
