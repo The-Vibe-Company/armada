@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { ProviderError, type ProviderInventoryMachine } from "@armada/core";
 import type { ModalClient } from "modal";
+import { observeProvider } from "../../mcp-server/src/request-observability.ts";
 import { createModalProvider, type Machine, type ModalProviderOptions, type ModalStore } from "../src/index.ts";
 
 const appId = "ap_bound";
@@ -91,7 +92,7 @@ test("Modal inventory paginates the bound App and yields only exact deployment m
     pages.delete(request.beforeTimestamp);
     return { sandboxes };
   };
-  const provider = fixture({}, { cpClient: { sandboxListV2 } as ModalClient["cpClient"] });
+  const provider = observeProvider("modal", fixture({}, { cpClient: { sandboxListV2 } as ModalClient["cpClient"] }));
 
   expect(await collect(provider.listInventory())).toEqual([
     { machineId: "sb_first", sandboxId: "modal_owned", generation: "3", deploymentId, createdAt: new Date(50_125) },
