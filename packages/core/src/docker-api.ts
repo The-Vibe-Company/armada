@@ -266,6 +266,9 @@ export const DOCKER_SNAPSHOT_STATUSES = ["building", "ready", "failed"] as const
 export interface DockerSnapshotRecord {
   /** Frozen server release version; null only for snapshots created before version recording. */
   builtOnVersion: string | null;
+  /** Absent from older APIs and null when a verified build receipt is unavailable. */
+  baselineVersion?: number | null;
+  baselineOutdated?: boolean;
   id: string;
   orgId: string;
   ownerId: string;

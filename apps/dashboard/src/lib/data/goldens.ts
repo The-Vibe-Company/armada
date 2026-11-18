@@ -5,7 +5,7 @@ import { selectedOrganization } from "./selected-org";
 
 // Explicit JWT projection: schema additions must be reviewed before becoming dashboard data.
 const GOLDENS_COLUMNS =
-  "id,org_id,name,visibility,owner_id,boat_snapshot_id,config,created_at,boat_sandbox_id,provider,provider_sandbox_id,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,removed_at,size_policy,build_warnings,helper_receipt";
+  "id,org_id,name,visibility,owner_id,boat_snapshot_id,config,created_at,boat_sandbox_id,provider,provider_sandbox_id,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,removed_at,size_policy,build_warnings,helper_receipt,baseline_version";
 
 /**
  * A golden row as read here. `removed_at` (#566) is set once the golden is retired: the row stays readable as a

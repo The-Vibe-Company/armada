@@ -835,6 +835,8 @@ export type Database = {
           created_at: string;
           built_on_version: string | null;
           failure_reason: string | null;
+          baseline_version: number | null;
+          baseline_failure_tool: string | null;
         };
         Insert: {
           id: string;
@@ -856,6 +858,8 @@ export type Database = {
           created_at?: string;
           built_on_version?: string | null;
           failure_reason?: string | null;
+          baseline_version?: number | null;
+          baseline_failure_tool?: string | null;
         };
         Update: {
           id?: string;
@@ -877,6 +881,8 @@ export type Database = {
           created_at?: string;
           built_on_version?: string | null;
           failure_reason?: string | null;
+          baseline_version?: number | null;
+          baseline_failure_tool?: string | null;
         };
         Relationships: [
           {
@@ -1562,6 +1568,7 @@ export type Database = {
           size_policy: Json | null;
           build_warnings: string[];
           helper_receipt: Json | null;
+          baseline_version: number | null;
         };
         Insert: {
           id?: string;
@@ -1583,6 +1590,7 @@ export type Database = {
           size_policy?: Json | null;
           build_warnings?: string[];
           helper_receipt?: Json | null;
+          baseline_version?: number | null;
         };
         Update: {
           id?: string;
@@ -1604,6 +1612,7 @@ export type Database = {
           size_policy?: Json | null;
           build_warnings?: string[];
           helper_receipt?: Json | null;
+          baseline_version?: number | null;
         };
         Relationships: [
           {

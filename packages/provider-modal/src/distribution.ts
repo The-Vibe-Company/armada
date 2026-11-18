@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
+import { snapshotBaselineInstall } from "@armada/core/server";
 import type { ModalClient, Sandbox } from "modal";
 import { refusal } from "./errors.ts";
 import type { Machine, RunnerDistribution } from "./ports.ts";
@@ -10,7 +11,6 @@ export interface DistributionOptions {
   base: string;
   /** Exact Debian package versions from a pinned Debian snapshot repository in the base image. */
   apt: {
-    git: string;
     gh: string;
     opensshServer: string;
     sudo: string;
@@ -41,7 +41,7 @@ export function createRunnerDistribution(options: DistributionOptions): RunnerDi
     createHash("sha256").update(options.bundle).digest("hex") !== options.sha256
   )
     throw refusal("invalid_request", "Distribution requires an immutable base and verified runner artifact.");
-  for (const key of ["git", "gh", "opensshServer", "sudo", "caCertificates", "curl", "unzip", "python3"] as const) {
+  for (const key of ["gh", "opensshServer", "sudo", "caCertificates", "curl", "unzip", "python3"] as const) {
     const value = options.apt[key];
     if (typeof value !== "string" || !/^[a-zA-Z0-9.+:~_-]+$/.test(value))
       throw refusal("invalid_request", "Missing or invalid exact apt version lock.");
@@ -65,8 +65,17 @@ export function createRunnerDistribution(options: DistributionOptions): RunnerDi
     },
     async image(client: ModalClient) {
       const commands = [
-        `RUN apt-get update && apt-get install -y --no-install-recommends git=${options.apt.git} gh=${options.apt.gh} openssh-server=${options.apt.opensshServer} sudo=${options.apt.sudo} ca-certificates=${options.apt.caCertificates} curl=${options.apt.curl} unzip=${options.apt.unzip} python3=${options.apt.python3} && rm -rf /var/lib/apt/lists/* /etc/ssh/ssh_host_*`,
-        `RUN npm install -g bun@1.4.2 @anthropic-ai/claude-agent-sdk@0.3.322 @anthropic-ai/claude-code@2.1.322 @openai/codex@0.167.0 && install -d -m 755 /opt/armada/runtime-bun && install -m 555 /usr/local/lib/node_modules/bun/bin/bun.exe /opt/armada/runtime-bun/bun && test "$(/opt/armada/runtime-bun/bun --version)" = 1.4.2 && npm cache clean --force`,
+        `RUN ${snapshotBaselineInstall(
+          {
+            gh: options.apt.gh,
+            "ca-certificates": options.apt.caCertificates,
+            curl: options.apt.curl,
+            unzip: options.apt.unzip,
+            python3: options.apt.python3,
+          },
+          [`openssh-server=${options.apt.opensshServer}`, `sudo=${options.apt.sudo}`],
+        )} && rm -f /etc/ssh/ssh_host_*`,
+        `RUN npm install -g @anthropic-ai/claude-agent-sdk@0.3.322 @anthropic-ai/claude-code@2.1.322 @openai/codex@0.167.0 && npm cache clean --force`,
         "RUN useradd --create-home --shell /bin/bash --password '*' user && mkdir -p /opt/armada /home/user/repos && chown -R user:user /home/user && printf '%s\\n' 'user ALL=(ALL:ALL) NOPASSWD: ALL' > /etc/sudoers.d/armada-build-user && chmod 440 /etc/sudoers.d/armada-build-user && visudo -cf /etc/sudoers.d/armada-build-user",
         ...artifactRuns,
         "WORKDIR /home/user",
