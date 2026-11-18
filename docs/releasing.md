@@ -18,7 +18,9 @@ so the package has no dependencies.
 3. Review the version PR and merge it after all checks pass. Release Please creates `v<version>` and
    the GitHub release, then the **same workflow** validates, builds and publishes it. It does not
    rely on a tag-push event from the bot token.
-4. Four native runners compile and smoke-test the binaries. The publisher stages and packs the
+4. The release `check` job runs lint, typecheck, release-only contracts and the named
+   sentinel files. The merge queue runs the ordinary unit suite for the same source tree.
+5. Four native runners compile and smoke-test the binaries. The publisher stages and packs the
    six npm packages, saves their tarballs and SHA-256 checksums as an Actions artifact, runs the
    installation smoke test (including an isolated install, Node import and TypeScript check of the SDK),
    and publishes platform packages before the main package, then the SDK.
