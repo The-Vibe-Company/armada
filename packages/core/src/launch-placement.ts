@@ -4,7 +4,7 @@ import type { GoldenActor } from "./golden.ts";
 import type { LaunchOptions, LaunchPlan } from "./launch.ts";
 import { LaunchError } from "./launch-error.ts";
 import { admitLaunchPlan, type LaunchPlacement } from "./launch-plan.ts";
-import { type ForkRequest, isNonMutatingProviderRefusal, type Provider } from "./provider.ts";
+import { type ForkRequest, isNonMutatingProviderRefusal } from "./provider.ts";
 import type { SandboxRecord } from "./sandbox.ts";
 import { SANDBOX_STOP_MARGIN_SECONDS } from "./sandbox-lifetime.ts";
 import { HOST_CAPABILITIES, PROVIDER_LIMITS, type SandboxProviderId } from "./sandbox-provider.ts";

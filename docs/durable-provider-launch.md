@@ -151,3 +151,21 @@ scoped-child contracts, and golden retirement around upgrade. Verify real-provid
 recovery across the fork/receipt boundary and overlapping forks from one
 snapshot through the authorized provider acceptance paths, including
 coordinator-only verification for Boat.
+
+## Modal boot rollout
+
+The synchronous ordinary Modal path now admits a sandbox, encrypted fork
+request and snapshot fence in one transaction. Modal uses a stable logical
+provider ID derived from the Armada UUID, so existing identity columns can stay
+non-null while physical compute is pending. The worker rechecks authority and
+retries the exact Modal reservation by the same UUID. Requests continue to
+wait for boot and then run the existing initialization and initial-prompt path.
+If the caller disappears after admission, the worker can still finish boot.
+The ordinary sandbox lifecycle retires a sandbox whose initialization was
+interrupted after that handoff. An unresolved fork retains its golden fence
+for reconciliation.
+
+This path depends on the previously added `provider_launch_requests` migration.
+The next stages cover independent cleanup of unresolved or cancelled forks,
+durable initialization and initial-prompt checkpoints, a shorter Modal source
+lease, versioned async clients, and Boat admission after recovery is proven.
