@@ -3,21 +3,17 @@ import { createSqlVaultStore, decryptSecret } from "@armada/core/server";
 import { type BoatProvider, createBoatProvider } from "@armada/provider-boat";
 import { bunSql } from "./sql.ts";
 
-/** Logical sandbox observations. Boat does not expose physical VM identity or age here. */
 export async function reportBoatInventory(
   sql: Sql,
   provider: Pick<BoatProvider, "listSandboxInventory">,
   deploymentId: string,
-  signal?: AbortSignal,
 ) {
   const seen = new Set<string>();
   const cursors = new Set<string>();
   let unmatched = 0;
   let cursor: string | undefined;
   do {
-    signal?.throwIfAborted();
-    const page = await provider.listSandboxInventory({ cursor, signal });
-    signal?.throwIfAborted();
+    const page = await provider.listSandboxInventory(cursor === undefined ? undefined : { cursor });
     const ids = [];
     for (const item of page.items) {
       if (item.deploymentId !== deploymentId || seen.has(item.sandboxId)) continue;
@@ -30,7 +26,6 @@ export async function reportBoatInventory(
          where provider = 'boat' and provider_sandbox_id = any($1::text[])`,
         [ids],
       );
-      signal?.throwIfAborted();
       unmatched += ids.length - rows.length;
     }
     if (page.cursor !== null) {
@@ -87,7 +82,6 @@ if (import.meta.main) {
   try {
     process.exitCode = await main(process.argv.slice(2), process.env);
   } catch {
-    // SDK or database errors may contain credential-bearing request details.
     console.error("Boat sandbox inventory report failed.");
     process.exitCode = 1;
   }
