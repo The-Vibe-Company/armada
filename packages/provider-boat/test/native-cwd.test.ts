@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Provider } from "@armada/core/server";
 import { nativeCwdCommand, nativeCwdInstallScript } from "../src/native-cwd.ts";
 import { admitNativeUsage, bindNativeUsage, collectNativeUsage } from "../src/native-usage.ts";
 
