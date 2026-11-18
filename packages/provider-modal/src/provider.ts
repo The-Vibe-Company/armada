@@ -582,7 +582,9 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         throw refusal("conflict", "Launch is in a terminal or checkpoint phase.");
       return true;
     };
-    if (!needsBoot(row)) return sandboxInfo(row);
+    // Row-first replay must reclaim a crashed child lease even if the
+    // previous holder already committed the active machine.
+    if (!needsBoot(row) && launchId === undefined) return sandboxInfo(row);
     let observed = row;
     try {
       return await store.lease(

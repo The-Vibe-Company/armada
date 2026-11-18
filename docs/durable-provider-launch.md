@@ -164,8 +164,8 @@ If the caller disappears after admission, the worker can still finish boot.
 The ordinary sandbox lifecycle retires a sandbox whose initialization was
 interrupted after that handoff. An owner can stop a pending boot before
 allocation. If dispatch already started, the worker uses the pinned Modal
-identity to retire the allocation and keeps the golden fence if the outcome
-remains uncertain. Receipt inspection reports the persisted boot phase.
+identity to retire the allocation. Receipt inspection reports the persisted boot
+phase.
 
 This path depends on the previously added `provider_launch_requests` migration.
 Modal locks the snapshot source row only through the transaction that pins the
@@ -176,7 +176,14 @@ The reservation transaction locks the worker claim so a successor can establish
 pre-create absence from the missing exact-key reservation. Child lease renewals
 require live dispatch authority and stop when the worker aborts its attempt.
 Once dispatch expires, unresolved allocations enter leased, delete-only cleanup
-under the original Modal authority. The worker clears the recovery request and
-golden fence in one transaction after the adapter confirms pre-create absence
-or removal. Ambiguous name lookups or unavailable authority leave cleanup pending.
-The next stages cover durable initialization and initial-prompt checkpoints, versioned async clients, and Boat admission after recovery is proven.
+under the original Modal authority. The worker releases the golden fence once
+the adapter proves absence, confirms removal, or has a durable child image
+reference that protects the snapshot. Cleanup retains its request until removal
+or absence is confirmed, even after golden retirement.
+
+A crash after committing create intent can leave a named create with an unknown
+outcome. [Modal guarantees name uniqueness for running sandboxes](https://modal.com/docs/guide/sandboxes#named-sandboxes).
+That guarantee cannot distinguish an undispatched create from a delayed create
+when lookup returns no result. Preserve the reservation and keep cleanup
+delete-only in this case. Durable initialization and initial-prompt checkpoints,
+versioned async clients, and Boat admission remain separate rollout steps.
