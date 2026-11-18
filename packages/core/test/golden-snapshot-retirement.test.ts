@@ -377,6 +377,35 @@ test("a deleted snapshot whose artifact awaits collection is retried by the work
   expect(f.vmActions()).toBe(0);
 });
 
+test("a tombstoned snapshot is collected even after a transient failure overwrote the row's diagnostic", async () => {
+  const db = database();
+  const f = await fixture(db, "modal");
+  await f.publish();
+  const row = async () =>
+    (await db.query<{ state: string; reason: string }>("select state,reason from golden_snapshot_retirements"))
+      .rows[0]!;
+  // The tombstone is committed, then the call fails before the worker records collection pending.
+  f.pause(async () => {
+    f.snapshots.delete(f.old);
+    throw Error("connection reset after the tombstone");
+  });
+  await f.retirement.runOne();
+  expect(await row()).toEqual({ state: "uncertain", reason: "delete_outcome_unknown" });
+  // A transient backend identity failure overwrites the diagnostic reason.
+  f.account("transient-backend");
+  await f.due();
+  await f.retirement.runOne();
+  expect((await row()).reason).toBe("authority_changed");
+  // Access returns, but the replacement artifact is now unavailable. The collection phase comes
+  // from the provider's tombstone, not from the reason, so the row is still collected.
+  f.account(f.backend);
+  f.snapshots.delete(f.next);
+  await f.due();
+  await f.retirement.runOne();
+  expect(await row()).toEqual({ state: "retired", reason: "already_absent" });
+  expect(f.deleted).toEqual([f.old]);
+});
+
 test("historical dry-run follows proven succeeded chains, mutates nothing, and never enqueues the current handle", async () => {
   const db = database();
   const f = await fixture(db);

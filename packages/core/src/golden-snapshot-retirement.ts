@@ -34,7 +34,6 @@ interface Candidate {
   publication_id: string;
   replacement_id: string;
   state: string;
-  reason: string | null;
   sealed: boolean;
   delete_started: boolean;
   claim_id: string | null;
@@ -390,7 +389,6 @@ export class GoldenSnapshotRetirements {
     proof: Proof,
     signal: AbortSignal = new AbortController().signal,
     reviewCurrent?: Proof,
-    collectOnly = false,
   ): Promise<{ provider: Provider; absent: boolean; currentSnapshot: string } | string> {
     if (
       proof.golden_id !== c.golden_id ||
@@ -426,9 +424,19 @@ export class GoldenSnapshotRetirements {
       )
     )
       return "authority_changed";
-    // The snapshot is already deleted: collecting its artifact needs only the proven source
-    // authority, not the deletion-safety checks on the golden's current revision.
-    if (collectOnly) return { provider, absent: true, currentSnapshot: "" };
+    // A provider that collects artifacts after deletion records the deletion durably (Modal's
+    // tombstone). Once the old snapshot is gone there is nothing left for the current revision's
+    // safety checks to protect, so the row goes straight to collection. The phase is derived from
+    // the provider on every attempt, never from a diagnostic column, so a transient failure or an
+    // interrupted handoff after the tombstone cannot strand the artifact.
+    if (provider.collectRetiredSnapshot) {
+      try {
+        await read(() => provider.getSnapshot(c.old_snapshot));
+      } catch (e) {
+        if (!notFound(e)) throw e;
+        return { provider, absent: true, currentSnapshot: g.provider_snapshot_id ?? "" };
+      }
+    }
     if (
       PROVIDER_LIMITS[c.provider].defaultGoldenCapacity !== undefined &&
       !(
@@ -572,6 +580,7 @@ export class GoldenSnapshotRetirements {
     // durable tombstone while a fork references it or its source is leased; this row is the
     // server-owned retry that collects it, across restarts and without any user request.
     let collecting = false;
+    let collects = false;
     const retire = async (provider: Provider, reason: string) => {
       collecting = true;
       const pending = (await provider.collectRetiredSnapshot?.(row.old_snapshot)) === "pending";
@@ -587,7 +596,7 @@ export class GoldenSnapshotRetirements {
         await finish("deferred", "provenance_unavailable");
         return true;
       }
-      const checked = await this.inspect(row, proof, signal, undefined, row.reason === "artifact_collection_pending");
+      const checked = await this.inspect(row, proof, signal);
       if (typeof checked === "string") {
         await finish("deferred", checked);
         return true;
@@ -638,13 +647,17 @@ export class GoldenSnapshotRetirements {
       }
       started = true;
       deleting = true;
+      collects = Boolean(checked.provider.collectRetiredSnapshot);
       await checked.provider.deleteSnapshot(row.old_snapshot);
       // The snapshot is deleted; a collection failure after this point is retried, never re-deleted.
       deleting = false;
       await retire(checked.provider, "deleted");
     } catch (e) {
       if (collecting) await finish("deferred", "artifact_collection_pending", false, "5 minutes");
-      else if (deleting && notFound(e)) await finish("retired", "already_absent");
+      // Absent at deletion: a provider that collects afterwards may still hold its tombstone, so
+      // the next attempt collects it (inspect sees the snapshot absent) before the row retires.
+      else if (deleting && notFound(e))
+        await (collects ? finish("deferred", "artifact_collection_pending") : finish("retired", "already_absent"));
       else if (deleting && isNonMutatingProviderRefusal(e)) await finish("deferred", "provider_unavailable", true);
       else if (started) await finish("uncertain", "delete_outcome_unknown");
       else await finish("deferred", "provider_unavailable");
@@ -855,7 +868,6 @@ export class GoldenSnapshotRetirements {
           publication_id: oldProof.id,
           replacement_id: nextProof.id,
           state: "pending",
-          reason: null,
           sealed: false,
           delete_started: false,
           claim_id: null,

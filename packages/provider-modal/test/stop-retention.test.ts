@@ -51,8 +51,10 @@ function fixture(stage: "scrub" | "snapshot", { productionDetach = false } = {})
       images = [...images.filter((x) => x.info.name !== image.info.name), structuredClone(image)];
     },
     images: async () => structuredClone(images),
-    purgeImage: async (name: string) => {
-      images = images.filter((x) => x.info.name !== name || !x.deleted);
+    purgeImage: async (name: string, sourceId: string, imageId: string) => {
+      images = images.filter(
+        (x) => x.info.name !== name || !x.deleted || x.sourceId !== sourceId || x.imageId !== imageId,
+      );
     },
     claimImage: async (name: string) => {
       images = images.map((x) => (x.info.name === name && x.deleted ? { ...x, collecting: true } : x));

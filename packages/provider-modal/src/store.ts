@@ -152,12 +152,14 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
         [key, name],
       );
     },
-    async purgeImage(name) {
+    async purgeImage(name, sourceId, imageId) {
       await authorize();
-      await sql.query(`delete from public.modal_images where scope=$1 and name=$2 and record->>'deleted'='true'`, [
-        key,
-        name,
-      ]);
+      // Conditional on the exact claimed artifact: a stale collector finishing late never erases
+      // a later tombstone that reused the name for another source or image.
+      await sql.query(
+        `delete from public.modal_images where scope=$1 and name=$2 and source_id=$3 and record->>'imageId'=$4 and record->>'deleted'='true'`,
+        [key, name, sourceId, imageId],
+      );
     },
     async claimImage(name) {
       await authorize();

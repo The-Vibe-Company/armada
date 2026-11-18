@@ -696,7 +696,10 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     row.info.stoppedAt = new Date();
     await save(row);
   }
-  async function collectFrom(imagesStore: ModalStore, skipBusy = false, sources?: string[]) {
+  /** Collects retired images in scope, or only the tombstone `name` when given. Every image is
+   * attempted: one failing image never blocks another, and the first failure is rethrown last. */
+  async function collectFrom(imagesStore: ModalStore, skipBusy = false, sources?: string[], name?: string) {
+    let failure: { error: unknown } | undefined;
     // Visit only sources with retired images. Every scope machine ever launched stays in the
     // store, so a full scan made each sandbox deletion cost minutes of SQL round trips.
     for (const sourceId of sources ?? (await imagesStore.tombstoneSources())) {
@@ -705,7 +708,9 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       const retired = async () =>
         (await imagesStore.images(source.info.id)).filter(
           (x): x is SavedImage & { imageId: string } =>
-            Boolean(x.deleted && x.imageId) && matchesManagementAuthority(x.managementAuthority, managementAuthority),
+            Boolean(x.deleted && x.imageId) &&
+            (name === undefined || x.info.name === name) &&
+            matchesManagementAuthority(x.managementAuthority, managementAuthority),
         );
       // Lease a source only to claim a tombstone that can be removed now. A tombstone still
       // referenced by a live machine stays put, and leasing its source for nothing would refuse
@@ -738,11 +743,35 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         try {
           await client.images.delete(image.imageId);
         } catch (error) {
-          if (modalError(error).code !== "not_found") throw error;
+          if (modalError(error).code !== "not_found") {
+            failure ??= { error };
+            continue;
+          }
         }
-        await imagesStore.purgeImage(image.info.name);
+        await imagesStore.purgeImage(image.info.name, image.sourceId, image.imageId);
       }
     }
+    if (failure) throw failure.error;
+  }
+  function logDeferredCollection(context: Record<string, string>) {
+    return (error: unknown) => {
+      const safe = modalError(error);
+      console.warn(
+        JSON.stringify({
+          event: "modal_retired_collection_deferred",
+          ...context,
+          code: safe.code,
+          ...(safe.providerCode ? { providerCode: safe.providerCode } : {}),
+        }),
+      );
+    };
+  }
+  /** After a tombstone is committed, the retirement has succeeded: nothing after it may fail the
+   * call. Its own image is collected best-effort now (the retirement worker retries it through
+   * collectRetiredSnapshot); other retired images are collected detached, once. */
+  async function collectAfterRetirement(snapshot: string) {
+    await collectFrom(source.store, true, undefined, snapshot).catch(logDeferredCollection({ snapshot }));
+    detachCollection(() => collectImages(true).catch(logDeferredCollection({ snapshot, scope: "unrelated" })));
   }
   async function collectImages(skipBusy = false) {
     await collectFrom(source.store, skipBusy);
@@ -1634,7 +1663,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         assertAuthority(image);
       } catch (error) {
         if (modalError(error).code !== "not_found") throw error;
-        await collectImages();
+        await collectAfterRetirement(name);
         return;
       }
       let admitted = false;
@@ -1658,7 +1687,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           });
         throw error;
       }
-      await collectImages();
+      await collectAfterRetirement(name);
     },
     async collectRetiredSnapshot(name) {
       if (scopeKey(source.scope) !== scopeKey(options.scope))
@@ -1669,13 +1698,15 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       await snapshotBackend();
       const owner = async () => {
         for (const sourceId of await source.store.tombstoneSources())
-          if ((await source.store.images(sourceId)).some((image) => image.info.name === name)) return sourceId;
+          if ((await source.store.images(sourceId)).some((image) => image.deleted && image.info.name === name))
+            return sourceId;
       };
       const sourceId = await owner();
       if (!sourceId) return "collected";
-      // Only the snapshot's own source: another source's failing image never blocks this one.
-      // A busy source is skipped, not failed: the caller (the retirement worker) retries later.
-      await collectFrom(source.store, true, [sourceId]);
+      // Only this snapshot's own tombstone, for both claim and deletion: another retired image,
+      // of this source or another, never blocks it. A busy source is skipped, not failed: the
+      // caller (the retirement worker) retries later.
+      await collectFrom(source.store, true, [sourceId], name);
       return (await owner()) ? "pending" : "collected";
     },
     quiesce: (r) => call(r.sandboxId, "interrupt", r),
