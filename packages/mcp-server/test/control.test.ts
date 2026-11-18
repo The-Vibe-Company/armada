@@ -2377,7 +2377,11 @@ test("access launch resolves an omitted account and grants only its persisted bi
       const events = await read("logs/read");
       expect(events?.status).toBe(200);
       expect(await events?.json()).toMatchObject({
-        events: [expect.objectContaining({ text: "Remember the child task" })],
+        events: [
+          expect.objectContaining({
+            text: "Remember the child task\n\nSave any deliverable files directly in /home/user/outputs. Create that directory if needed.",
+          }),
+        ],
       });
       expect(
         (await db.query("select scope,visibility from modal_machines where id=$1", [launched.providerSandboxId])).rows,

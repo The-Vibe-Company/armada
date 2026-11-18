@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { GITHUB_TOKEN_PATTERN, goldenScript, withGoldenDirs } from "../src/server.ts";
+import { GITHUB_TOKEN_PATTERN, goldenScript, OUTPUT_COLLECTOR_MANAGED_PROBE, withGoldenDirs } from "../src/server.ts";
+import { shellQuote } from "../src/shell-quote.ts";
 
 /** Pulls one named line-range out of the generated script, by its start and end markers (both included). */
 function extract(script: string, startMarker: string, endMarker: string): string {
@@ -441,3 +442,55 @@ test.each([false, true])(
     expect(invocations.every((args) => args.includes("--single-branch"))).toBe(true);
   },
 );
+
+test.each([
+  ["the managed collector answers", "probe", 0],
+  ["the image already ships the managed Bun", "preinstalled", 0],
+  ["an incompatible Bun exits 0 without answering", "help", 96],
+])("the golden build provisions its own collector Bun and requires the probe answer: %s", (_, mode, status) => {
+  const base = mkdtempSync(join(tmpdir(), "golden-collector-"));
+  try {
+    const bin = join(base, "bin");
+    const opt = join(base, "opt");
+    mkdirSync(bin);
+    // The repository pinned an old Bun first on PATH: it must never become the collector.
+    writeFileSync(join(bin, "bun"), "#!/bin/sh\n[ \"$1\" = --version ] && echo 1.0.0 || echo 'Bun CLI help'\n", {
+      mode: 0o755,
+    });
+    writeFileSync(join(bin, "sudo"), '#!/bin/sh\n[ "$1" = -n ] || exit 95\nshift\nexec "$@"\n', { mode: 0o755 });
+    writeFileSync(
+      join(bin, "npm"),
+      `#!/bin/sh
+[ "$1 $2 $3 $5" = "install --global --prefix bun@1.4.2" ] || exit 95
+: > "$HOME/npm-called"
+mkdir -p "$4/bin"
+printf '#!/bin/sh\\n[ "$1" = --version ] && echo 1.4.2 || echo armada-output-collector-ready\\n' > "$4/bin/bun"
+chmod +x "$4/bin/bun"
+`,
+      { mode: 0o755 },
+    );
+    if (mode === "preinstalled") {
+      // Modal's managed image: the protected Bun is already at the pin, so nothing is installed.
+      mkdirSync(join(opt, "runtime-bun"), { recursive: true });
+      writeFileSync(
+        join(opt, "runtime-bun", "bun"),
+        '#!/bin/sh\n[ "$1" = --version ] && echo 1.4.2 || echo armada-output-collector-ready # image\n',
+        { mode: 0o755 },
+      );
+    }
+    const prepared = withGoldenDirs([{ owner: "acme", repo: "web", id: 1, installationId: 2 }]);
+    const probe = mode !== "help" ? `${opt}/runtime-bun/bun probe` : `${bin}/bun probe`;
+    const block = extract(goldenScript(prepared), "armada_phase=output_collector", "probe did not answer")
+      .replaceAll(shellQuote(OUTPUT_COLLECTOR_MANAGED_PROBE), shellQuote(probe))
+      .replaceAll("/opt/armada", opt);
+    const result = spawnSync("/bin/bash", ["-euo", "pipefail", "-c", block], {
+      env: { PATH: `${bin}:/usr/bin:/bin`, HOME: base },
+      encoding: "utf8",
+    });
+    expect(result.status).toBe(status);
+    expect(readFileSync(join(opt, "runtime-bun", "bun"), "utf8")).toContain("armada-output-collector-ready");
+    expect(existsSync(join(base, "npm-called"))).toBe(mode !== "preinstalled");
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});

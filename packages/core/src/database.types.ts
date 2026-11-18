@@ -4590,6 +4590,9 @@ export type Database = {
           external_ref: string | null;
           outputs_checked_at: string | null;
           outputs_published_scan: string | null;
+          outputs_failure_reasons: string[];
+          outputs_probe_at: string | null;
+          outputs_collector_supported: boolean;
         };
         Insert: {
           id?: string;
@@ -4654,6 +4657,9 @@ export type Database = {
           external_ref?: string | null;
           outputs_checked_at?: string | null;
           outputs_published_scan?: string | null;
+          outputs_failure_reasons?: string[];
+          outputs_probe_at?: string | null;
+          outputs_collector_supported?: boolean;
         };
         Update: {
           id?: string;
@@ -4718,6 +4724,9 @@ export type Database = {
           external_ref?: string | null;
           outputs_checked_at?: string | null;
           outputs_published_scan?: string | null;
+          outputs_failure_reasons?: string[];
+          outputs_probe_at?: string | null;
+          outputs_collector_supported?: boolean;
         };
         Relationships: [
           {

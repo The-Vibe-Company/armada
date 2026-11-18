@@ -17,6 +17,11 @@ import { GOLDEN_SKILLPACK_SETUP } from "./golden-skillpack.ts";
 import type { HelperReceipt } from "./helper.ts";
 import { isNonMutatingProviderRefusal, type Provider, ProviderError } from "./provider.ts";
 import {
+  OUTPUT_COLLECTOR_BUN_VERSION,
+  OUTPUT_COLLECTOR_MANAGED_PROBE,
+  OUTPUT_COLLECTOR_PROBE_MARKER,
+} from "./sandbox-outputs.ts";
+import {
   assertProviderOf,
   HOST_CAPABILITIES,
   isSandboxProvider,
@@ -730,9 +735,17 @@ export function goldenScript(
     "armada_command=0",
     "armada_phase=ownership",
     "normalize_armada_build_ownership",
+    "armada_phase=output_collector",
+    // A snapshot can later be read by a privileged provider exec. Never point that reader
+    // at the agent-writeable Bun installed by the repository baseline, and never copy the
+    // repository's Bun pin: Armada provisions its own pinned collector Bun.
+    `if [ "$(/opt/armada/runtime-bun/bun --version 2>/dev/null || true)" != ${OUTPUT_COLLECTOR_BUN_VERSION} ]; then armada_bun_prefix=$(mktemp -d); npm install --global --prefix "$armada_bun_prefix" bun@${OUTPUT_COLLECTOR_BUN_VERSION}; sudo -n install -d -m 755 /opt/armada /opt/armada/runtime-bun; sudo -n install -m 555 "$armada_bun_prefix/bin/bun" /opt/armada/runtime-bun/bun; rm -rf "$armada_bun_prefix"; fi`,
+    `[ "$(/opt/armada/runtime-bun/bun --version)" = ${OUTPUT_COLLECTOR_BUN_VERSION} ] || { printf "%s\\n" "The output collector Bun does not match the managed pin." >&2; exit 96; }`,
+    // Exit 0 alone is not proof: an incompatible Bun can print help and succeed.
+    `armada_probe=$(if [ "$(id -u)" -eq 0 ]; then /bin/sh -c ${shellQuote(OUTPUT_COLLECTOR_MANAGED_PROBE)}; else sudo -n /bin/sh -c ${shellQuote(OUTPUT_COLLECTOR_MANAGED_PROBE)}; fi)`,
+    `[ "$armada_probe" = ${OUTPUT_COLLECTOR_PROBE_MARKER} ] || { printf "%s\\n" "The output collector probe did not answer." >&2; exit 96; }`,
     "armada_phase=credential_cleanup",
     `if [ "$(id -u)" -eq 0 ]; then bash -c ${shellQuote(CREDENTIAL_CLEANUP)}; else sudo -n bash -c ${shellQuote(CREDENTIAL_CLEANUP)}; fi 2>/dev/null`,
-    "armada_phase=inline_scan",
     // A quick, same-session check; the independent, far more thorough scan (working tree, binaries
     // and every git object, reachable or not) is `scanGoldenSandbox`, run over the provider's own
     // exec channel after this session closes, and is what actually gates the snapshot.

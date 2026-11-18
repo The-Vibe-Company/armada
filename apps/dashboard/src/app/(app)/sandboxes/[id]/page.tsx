@@ -1,10 +1,4 @@
-import {
-  accountBindingAvailability,
-  isSandboxProvider,
-  MODEL_CATALOG,
-  type Sandbox,
-  type SandboxListMetadata,
-} from "@armada/core";
+import { accountBindingAvailability, isSandboxProvider, MODEL_CATALOG, type SandboxListMetadata } from "@armada/core";
 import { ArrowLeftIcon, ContainerIcon, LockIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -35,7 +29,13 @@ import { type AccountChoices, readAccountChoices } from "@/lib/data/account-reco
 import { listSandboxConnections, type SandboxConnections } from "@/lib/data/connections";
 import { hostListForPage, readDockerLaunchOption } from "@/lib/data/docker-hosts";
 import { findGoldenLabel } from "@/lib/data/goldens";
-import { credentialMetadata, getLaunchTiming, getSandbox, getSandboxMetadata } from "@/lib/data/sandboxes";
+import {
+  credentialMetadata,
+  getLaunchTiming,
+  getSandbox,
+  getSandboxMetadata,
+  type SandboxDetail,
+} from "@/lib/data/sandboxes";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { displayUser, listMemberships, memberDirectory, requireViewer, type Viewer } from "@/lib/data/viewer";
 import { sandboxHostLabel } from "@/lib/docker-hosts";
@@ -393,10 +393,7 @@ function DockerSandbox({
   host,
   launchFact,
 }: {
-  sandbox: Omit<
-    Sandbox,
-    "docker_retention_deadline" | "external_ref" | "outputs_checked_at" | "outputs_published_scan"
-  >;
+  sandbox: SandboxDetail;
   viewer: Viewer;
   controls: DockerSandboxControls;
   org: string;

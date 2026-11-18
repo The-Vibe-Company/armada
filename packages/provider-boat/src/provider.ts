@@ -42,7 +42,10 @@ import {
 import {
   isNonMutatingProviderRefusal,
   OUTPUT_COLLECTOR,
-  parseCollectorOutput,
+  OUTPUT_COLLECTOR_PROBE,
+  OutputCollectionError,
+  readCollectorProbeResult,
+  readCollectorResult,
   sshReadableVariables,
 } from "@armada/core/server";
 import {
@@ -308,6 +311,34 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
     throw invalidRequest("Sandbox archival remains unconfirmed.");
   }
 
+  async function collectOutputs<T>(
+    { sandboxId, signal }: Parameters<NonNullable<Provider["readOutputs"]>>[0],
+    command: string,
+    read: (status: number | null, stdout: string) => T,
+  ): Promise<T | null> {
+    // Live disk only: the fixed collector through the Boat command API. onlyIfRunning refuses a
+    // stopping or stopped sandbox instead of resuming it; its retained disk is not read (#2570 scope).
+    const result = await provider
+      .exec({
+        sandboxId,
+        command,
+        outputCollection: true,
+        onlyIfRunning: true,
+        timeoutSeconds: 10,
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(20_000)]) : AbortSignal.timeout(20_000),
+      })
+      .catch((error: unknown) => {
+        // Not live (stopping, stopped): unavailable, as on Modal.
+        if (error instanceof ProviderError && error.code === "sandbox_not_ready") return null;
+        throw error;
+      });
+    if (!result) return null;
+    if (result.detached) throw new OutputCollectionError("collector_failed");
+    if (result.timedOut) throw new OutputCollectionError("output_timeout");
+    if (result.truncated) throw new OutputCollectionError("collector_failed");
+    return read(result.exitCode, result.stdout);
+  }
+
   const provider: BoatProvider & BoatRuntimeHost = {
     id: PROVIDER_ID,
     harnesses: HARNESSES.filter((id) => HARNESS_CATALOG[id].boatProvider !== null),
@@ -413,24 +444,11 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       );
     },
 
-    async readOutputs({ sandboxId, signal }) {
-      // Live disk only: the fixed collector through the Boat command API. onlyIfRunning refuses a
-      // stopping or stopped sandbox instead of resuming it; its retained disk is not read (#2570 scope).
-      const result = await provider
-        .exec({
-          sandboxId,
-          command: OUTPUT_COLLECTOR,
-          onlyIfRunning: true,
-          timeoutSeconds: 10,
-          signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(20_000)]) : AbortSignal.timeout(20_000),
-        })
-        .catch((error: unknown) => {
-          // Not live (stopping, stopped): unavailable, as on Modal.
-          if (error instanceof ProviderError && error.code === "sandbox_not_ready") return null;
-          throw error;
-        });
-      if (!result || result.detached || result.exitCode !== 0 || result.truncated || result.timedOut) return null;
-      return parseCollectorOutput(result.stdout);
+    readOutputs(request) {
+      return collectOutputs(request, OUTPUT_COLLECTOR, readCollectorResult);
+    },
+    async probeOutputs(request) {
+      return (await collectOutputs(request, OUTPUT_COLLECTOR_PROBE, readCollectorProbeResult)) !== null;
     },
 
     async observeResources(sandboxId) {
@@ -744,7 +762,7 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
           ? request.preservationStage
           : "exec";
       const observation = (attempt: number, fields: Record<string, unknown>) => {
-        if (request.onlyIfRunning)
+        if (request.onlyIfRunning && !request.outputCollection)
           trace({
             event: "boat_preservation_exec",
             providerSandboxId: request.sandboxId,

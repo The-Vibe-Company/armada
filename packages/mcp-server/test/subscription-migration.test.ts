@@ -270,7 +270,7 @@ test("first shared launch drains known writers, keeps their latest auth and upgr
   expect(JSON.stringify(restoredEnv)).not.toContain("migration-refresh-");
 
   expect(boat.stops).toContain(unknownPin.id);
-  expect(boat.prompts.map((prompt) => prompt.text)).toEqual(["shared-0", "shared-1", "shared-2"]);
+  expect(boat.prompts.map((prompt) => prompt.text.split("\n\n", 1)[0])).toEqual(["shared-0", "shared-1", "shared-2"]);
   expect(await auth.broker!.access(actor, account.id, 1)).toMatchObject({
     accessToken: "migration-access-2",
     revision: 2,
