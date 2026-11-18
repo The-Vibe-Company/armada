@@ -977,6 +977,7 @@ function dockerSnapshotRow(
       <SnapshotLaunchDialog
         golden={snapshot.name}
         snapshotId={snapshot.id}
+        hostName={snapshot.hostName ?? DOCKER_HOST_LABEL}
         provider="docker"
         orgId={snapshot.orgId}
         catalog={MODEL_CATALOG}

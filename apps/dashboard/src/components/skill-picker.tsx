@@ -20,6 +20,7 @@ interface Props {
   value: string[];
   onChange: (pins: string[]) => void;
   disabled?: boolean;
+  inline?: boolean;
 }
 
 function Visibility({ source }: { source: SkillCatalogSource }) {
@@ -31,11 +32,12 @@ function Visibility({ source }: { source: SkillCatalogSource }) {
 }
 
 /** Lazy, metadata-only browsing. Exact pins remain usable when catalog discovery is unavailable. */
-export function SkillPicker({ orgId, value, onChange, disabled = false }: Props) {
+export function SkillPicker({ orgId, value, onChange, disabled = false, inline = false }: Props) {
   const id = useId();
   const { pending } = useFormStatus();
   const locked = disabled || pending;
-  const [open, setOpen] = useState(false);
+  const [expanded, setOpen] = useState(false);
+  const open = inline || expanded;
   const [source, setSource] = useState<SkillCatalogSource>("private");
   const [query, setQuery] = useState("");
   const [items, setItems] = useState<SkillCatalogItem[]>([]);
@@ -154,285 +156,295 @@ export function SkillPicker({ orgId, value, onChange, disabled = false }: Props)
     setPin("");
     setPinError(null);
     setOpen(false);
+    if (inline) {
+      setChosen(null);
+      setManual(false);
+    }
   }
+
+  const picker = (
+    <>
+      <fieldset className="flex items-center gap-1 border-b p-2" aria-label="Skill source">
+        {(
+          [
+            ["private", "Workspace"],
+            ["public", "Public catalog"],
+          ] as const
+        ).map(([kind, label]) => (
+          <Button
+            key={kind}
+            type="button"
+            size="sm"
+            variant={source === kind ? "secondary" : "ghost"}
+            aria-pressed={source === kind}
+            disabled={locked}
+            onClick={() => {
+              ++versionRequest.current;
+              setChosen(null);
+              setSource(kind);
+              setQuery("");
+              setManual(false);
+              searchInput.current?.focus();
+            }}
+          >
+            {label}
+          </Button>
+        ))}
+      </fieldset>
+      {!manual && !chosen && (
+        <>
+          <Command>
+            <CommandInput
+              ref={searchInput}
+              placeholder="Search skills"
+              value={query}
+              onValueChange={setQuery}
+              disabled={locked}
+            />
+            <CommandList className="max-h-60 overscroll-contain">
+              {!loading && !error && <CommandEmpty>No matching skills in the loaded results.</CommandEmpty>}
+              {items.map((item) => (
+                <CommandItem
+                  key={item.reference}
+                  value={item.reference}
+                  keywords={[item.name, item.description]}
+                  disabled={locked}
+                  onSelect={() => void choose(item)}
+                  className="items-start gap-2 px-3 py-3"
+                >
+                  <div className="min-w-0 flex-1 space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className="min-w-0 break-words font-medium">{item.name}</span>
+                      <Visibility source={item.visibility} />
+                    </div>
+                    <p className="line-clamp-2 text-xs leading-4 text-muted-foreground">{item.description}</p>
+                    <p className="break-all font-mono text-[11px] text-muted-foreground">
+                      {item.reference}@{item.versions[0]}
+                    </p>
+                  </div>
+                  {value.includes(`${item.reference}@${item.versions[0]}`) && (
+                    <CheckIcon className="mt-0.5 size-3.5 shrink-0" />
+                  )}
+                </CommandItem>
+              ))}
+            </CommandList>
+          </Command>
+          <div className="space-y-2 border-t px-3 py-2.5">
+            {loading && (
+              <p role="status" className="flex items-center gap-2 text-xs text-muted-foreground">
+                <LoaderCircleIcon className="size-3.5 animate-spin motion-reduce:animate-none" /> Loading skills…
+              </p>
+            )}
+            {error && (
+              <p role="alert" className="text-xs text-destructive">
+                {error}
+              </p>
+            )}
+            {credentialIssue && (
+              <p className="text-xs text-muted-foreground">
+                <Link href="/skills" className="underline underline-offset-4">
+                  Manage your Skillpack key
+                </Link>{" "}
+                to browse workspace skills.
+              </p>
+            )}
+            {error && (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={loading || locked}
+                onClick={() => void loadPage(items.length ? (nextOffset ?? 0) : 0, ++listRequest.current, source)}
+              >
+                Try again
+              </Button>
+            )}
+            {nextOffset !== null && !error && (
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                disabled={loading || locked}
+                onClick={() => void loadPage(nextOffset, ++listRequest.current, source)}
+              >
+                Load more
+              </Button>
+            )}
+            <p className="text-[11px] text-muted-foreground">Search covers loaded results only.</p>
+          </div>
+        </>
+      )}
+      {chosen && !manual && (
+        <div className="space-y-3 p-3">
+          <Button
+            ref={versionsBack}
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="-ml-2"
+            onClick={() => {
+              ++versionRequest.current;
+              setChosen(null);
+              setPinError(null);
+            }}
+          >
+            <ChevronLeftIcon /> All skills
+          </Button>
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <p className="font-medium">{chosen.name}</p>
+              <Visibility source={chosen.visibility} />
+            </div>
+            <p className="line-clamp-4 break-words text-xs leading-5 text-muted-foreground">{chosen.description}</p>
+            <p className="break-all font-mono text-xs text-muted-foreground">{chosen.reference}</p>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor={`${id}-version`}>Version</Label>
+            <NativeSelect
+              ref={versionSelect}
+              id={`${id}-version`}
+              value={version}
+              onChange={(event) => setVersion(event.target.value)}
+              disabled={locked || versionLoading || !versions.length}
+            >
+              {!versions.length && (
+                <option value="">{versionLoading ? "Loading versions…" : "No version available"}</option>
+              )}
+              {versions.map((entry) => (
+                <option key={entry} value={entry}>
+                  {entry}
+                </option>
+              ))}
+            </NativeSelect>
+          </div>
+          {versionError && (
+            <p role="alert" className="text-xs text-destructive">
+              {versionError}
+            </p>
+          )}
+          {pinError && (
+            <p role="alert" className="text-xs text-destructive">
+              {pinError}
+            </p>
+          )}
+          <Button
+            type="button"
+            size="sm"
+            className="w-full"
+            disabled={locked || versionLoading || !version || !!versionError}
+            onClick={() => add(`${chosen.reference}@${version}`, chosen)}
+          >
+            Add skill
+          </Button>
+        </div>
+      )}
+      {manual && (
+        <div className="space-y-3 p-3">
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="-ml-2"
+            onClick={() => {
+              ++versionRequest.current;
+              setChosen(null);
+              setManual(false);
+              setPinError(null);
+            }}
+          >
+            <ChevronLeftIcon /> Browse skills
+          </Button>
+          <div className="space-y-2">
+            <Label htmlFor={`${id}-pin`}>Exact skill pin</Label>
+            <Input
+              ref={exactPinInput}
+              id={`${id}-pin`}
+              value={pin}
+              onChange={(event) => {
+                setPin(event.target.value);
+                setPinError(null);
+              }}
+              placeholder="org/skill@1.2.3"
+              autoComplete="off"
+              spellCheck={false}
+              disabled={locked}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  if (pin.trim()) add(pin.trim());
+                }
+              }}
+            />
+            <p className="text-xs leading-5 text-muted-foreground">{SKILL_PIN_HINT}</p>
+          </div>
+          {pinError && (
+            <p role="alert" className="text-xs text-destructive">
+              {pinError}
+            </p>
+          )}
+          <Button
+            type="button"
+            size="sm"
+            className="w-full"
+            disabled={locked || !pin.trim()}
+            onClick={() => add(pin.trim())}
+          >
+            Add pin
+          </Button>
+        </div>
+      )}
+      {!manual && (
+        <div className="border-t px-3 py-2">
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="w-full justify-start text-muted-foreground"
+            onClick={() => {
+              ++versionRequest.current;
+              setManual(true);
+              setPinError(null);
+            }}
+          >
+            Enter exact pin
+          </Button>
+        </div>
+      )}
+    </>
+  );
 
   return (
     <div className="space-y-2" data-launch-skills>
-      {value.map((exact) => (
-        <input key={exact} type="hidden" name="skills" value={exact} />
-      ))}
-      <div className="flex items-center justify-between gap-3">
-        <div className="space-y-1">
-          <p className="text-sm font-medium">Additional skills</p>
-          <p className="text-xs text-muted-foreground">Installed alongside any configured defaults.</p>
+      {!inline && value.map((exact) => <input key={exact} type="hidden" name="skills" value={exact} />)}
+      {inline ? (
+        picker
+      ) : (
+        <div className="flex items-center justify-between gap-3">
+          <div className="space-y-1">
+            <p className="text-sm font-medium">Additional skills</p>
+            <p className="text-xs text-muted-foreground">Installed alongside any configured defaults.</p>
+          </div>
+          <Popover open={open} onOpenChange={setOpen}>
+            <PopoverTrigger asChild>
+              <Button type="button" variant="outline" size="sm" disabled={locked}>
+                <PlusIcon /> Add skills
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent
+              align="end"
+              className="max-h-[var(--radix-popover-content-available-height)] w-[min(26rem,calc(100vw-3rem))] overflow-y-auto overscroll-contain p-0"
+              aria-label="Choose additional skills"
+              onOpenAutoFocus={(event) => {
+                event.preventDefault();
+                focusView();
+              }}
+            >
+              {picker}
+            </PopoverContent>
+          </Popover>
         </div>
-        <Popover open={open} onOpenChange={setOpen}>
-          <PopoverTrigger asChild>
-            <Button type="button" variant="outline" size="sm" disabled={locked}>
-              <PlusIcon /> Add skills
-            </Button>
-          </PopoverTrigger>
-          <PopoverContent
-            align="end"
-            className="max-h-[var(--radix-popover-content-available-height)] w-[min(26rem,calc(100vw-3rem))] overflow-y-auto overscroll-contain p-0"
-            aria-label="Choose additional skills"
-            onOpenAutoFocus={(event) => {
-              event.preventDefault();
-              focusView();
-            }}
-          >
-            <fieldset className="flex items-center gap-1 border-b p-2" aria-label="Skill source">
-              {(
-                [
-                  ["private", "Workspace"],
-                  ["public", "Public catalog"],
-                ] as const
-              ).map(([kind, label]) => (
-                <Button
-                  key={kind}
-                  type="button"
-                  size="sm"
-                  variant={source === kind ? "secondary" : "ghost"}
-                  aria-pressed={source === kind}
-                  disabled={locked}
-                  onClick={() => {
-                    ++versionRequest.current;
-                    setChosen(null);
-                    setSource(kind);
-                    setQuery("");
-                    setManual(false);
-                    searchInput.current?.focus();
-                  }}
-                >
-                  {label}
-                </Button>
-              ))}
-            </fieldset>
-            {!manual && !chosen && (
-              <>
-                <Command>
-                  <CommandInput
-                    ref={searchInput}
-                    placeholder="Search skills"
-                    value={query}
-                    onValueChange={setQuery}
-                    disabled={locked}
-                  />
-                  <CommandList className="max-h-60 overscroll-contain">
-                    {!loading && !error && <CommandEmpty>No matching skills in the loaded results.</CommandEmpty>}
-                    {items.map((item) => (
-                      <CommandItem
-                        key={item.reference}
-                        value={item.reference}
-                        keywords={[item.name, item.description]}
-                        disabled={locked}
-                        onSelect={() => void choose(item)}
-                        className="items-start gap-2 px-3 py-3"
-                      >
-                        <div className="min-w-0 flex-1 space-y-1">
-                          <div className="flex items-center gap-2">
-                            <span className="min-w-0 break-words font-medium">{item.name}</span>
-                            <Visibility source={item.visibility} />
-                          </div>
-                          <p className="line-clamp-2 text-xs leading-4 text-muted-foreground">{item.description}</p>
-                          <p className="break-all font-mono text-[11px] text-muted-foreground">
-                            {item.reference}@{item.versions[0]}
-                          </p>
-                        </div>
-                        {value.includes(`${item.reference}@${item.versions[0]}`) && (
-                          <CheckIcon className="mt-0.5 size-3.5 shrink-0" />
-                        )}
-                      </CommandItem>
-                    ))}
-                  </CommandList>
-                </Command>
-                <div className="space-y-2 border-t px-3 py-2.5">
-                  {loading && (
-                    <p role="status" className="flex items-center gap-2 text-xs text-muted-foreground">
-                      <LoaderCircleIcon className="size-3.5 animate-spin motion-reduce:animate-none" /> Loading skills…
-                    </p>
-                  )}
-                  {error && (
-                    <p role="alert" className="text-xs text-destructive">
-                      {error}
-                    </p>
-                  )}
-                  {credentialIssue && (
-                    <p className="text-xs text-muted-foreground">
-                      <Link href="/skills" className="underline underline-offset-4">
-                        Manage your Skillpack key
-                      </Link>{" "}
-                      to browse workspace skills.
-                    </p>
-                  )}
-                  {error && (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      disabled={loading || locked}
-                      onClick={() => void loadPage(items.length ? (nextOffset ?? 0) : 0, ++listRequest.current, source)}
-                    >
-                      Try again
-                    </Button>
-                  )}
-                  {nextOffset !== null && !error && (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="ghost"
-                      disabled={loading || locked}
-                      onClick={() => void loadPage(nextOffset, ++listRequest.current, source)}
-                    >
-                      Load more
-                    </Button>
-                  )}
-                  <p className="text-[11px] text-muted-foreground">Search covers loaded results only.</p>
-                </div>
-              </>
-            )}
-            {chosen && !manual && (
-              <div className="space-y-3 p-3">
-                <Button
-                  ref={versionsBack}
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  className="-ml-2"
-                  onClick={() => {
-                    ++versionRequest.current;
-                    setChosen(null);
-                    setPinError(null);
-                  }}
-                >
-                  <ChevronLeftIcon /> All skills
-                </Button>
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2">
-                    <p className="font-medium">{chosen.name}</p>
-                    <Visibility source={chosen.visibility} />
-                  </div>
-                  <p className="line-clamp-4 break-words text-xs leading-5 text-muted-foreground">
-                    {chosen.description}
-                  </p>
-                  <p className="break-all font-mono text-xs text-muted-foreground">{chosen.reference}</p>
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor={`${id}-version`}>Version</Label>
-                  <NativeSelect
-                    ref={versionSelect}
-                    id={`${id}-version`}
-                    value={version}
-                    onChange={(event) => setVersion(event.target.value)}
-                    disabled={locked || versionLoading || !versions.length}
-                  >
-                    {!versions.length && (
-                      <option value="">{versionLoading ? "Loading versions…" : "No version available"}</option>
-                    )}
-                    {versions.map((entry) => (
-                      <option key={entry} value={entry}>
-                        {entry}
-                      </option>
-                    ))}
-                  </NativeSelect>
-                </div>
-                {versionError && (
-                  <p role="alert" className="text-xs text-destructive">
-                    {versionError}
-                  </p>
-                )}
-                {pinError && (
-                  <p role="alert" className="text-xs text-destructive">
-                    {pinError}
-                  </p>
-                )}
-                <Button
-                  type="button"
-                  size="sm"
-                  className="w-full"
-                  disabled={locked || versionLoading || !version || !!versionError}
-                  onClick={() => add(`${chosen.reference}@${version}`, chosen)}
-                >
-                  Add skill
-                </Button>
-              </div>
-            )}
-            {manual && (
-              <div className="space-y-3 p-3">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  className="-ml-2"
-                  onClick={() => {
-                    ++versionRequest.current;
-                    setChosen(null);
-                    setManual(false);
-                    setPinError(null);
-                  }}
-                >
-                  <ChevronLeftIcon /> Browse skills
-                </Button>
-                <div className="space-y-2">
-                  <Label htmlFor={`${id}-pin`}>Exact skill pin</Label>
-                  <Input
-                    ref={exactPinInput}
-                    id={`${id}-pin`}
-                    value={pin}
-                    onChange={(event) => {
-                      setPin(event.target.value);
-                      setPinError(null);
-                    }}
-                    placeholder="org/skill@1.2.3"
-                    autoComplete="off"
-                    spellCheck={false}
-                    disabled={locked}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        if (pin.trim()) add(pin.trim());
-                      }
-                    }}
-                  />
-                  <p className="text-xs leading-5 text-muted-foreground">{SKILL_PIN_HINT}</p>
-                </div>
-                {pinError && (
-                  <p role="alert" className="text-xs text-destructive">
-                    {pinError}
-                  </p>
-                )}
-                <Button
-                  type="button"
-                  size="sm"
-                  className="w-full"
-                  disabled={locked || !pin.trim()}
-                  onClick={() => add(pin.trim())}
-                >
-                  Add pin
-                </Button>
-              </div>
-            )}
-            {!manual && (
-              <div className="border-t px-3 py-2">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  className="w-full justify-start text-muted-foreground"
-                  onClick={() => {
-                    ++versionRequest.current;
-                    setManual(true);
-                    setPinError(null);
-                  }}
-                >
-                  Enter exact pin
-                </Button>
-              </div>
-            )}
-          </PopoverContent>
-        </Popover>
-      </div>
+      )}
       {value.length > 0 && (
         <ul aria-label="Additional skills" className="divide-y rounded-md border">
           {value.map((exact) => {

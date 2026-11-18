@@ -1,35 +1,25 @@
 "use client";
 
-import type { Harness, MachineSize, MachineSizePolicy, SandboxPlacementProviderId } from "@armada/core";
+import type { Harness, MachineSizePolicy, SandboxPlacementProviderId } from "@armada/core";
 import { MODEL_CATALOG, SANDBOX_PLACEMENT_LABELS as PROVIDER_LABELS } from "@armada/core";
 import { CircleAlertIcon, RocketIcon } from "lucide-react";
 import Link from "next/link";
 import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { launchFromDockerSnapshot } from "@/app/actions/docker-snapshots";
 import { launchFromGolden, readLaunchDialogOptions } from "@/app/actions/sandboxes";
-import { ActionForm, SubmitButton } from "@/components/action-form";
+import { ActionForm } from "@/components/action-form";
 import { ConnectionStatusBadge } from "@/components/connections";
 import { DockerLaunchForm } from "@/components/docker-launch";
+import { ComposerLocation, ComposerStop, DockerLimits, LaunchChip, LaunchComposer } from "@/components/launch-composer";
 import { LaunchAccountNotice, LaunchSentence } from "@/components/launch-sentence";
-import {
-  LaunchAdvanced,
-  LaunchChoice,
-  LaunchDialogContent,
-  LaunchDialogHeader,
-  LaunchFields,
-  LaunchLocation,
-  LaunchSetting,
-  LaunchTaskField,
-  useLaunchSurface,
-} from "@/components/launch-surface";
+import { LaunchDialogContent } from "@/components/launch-surface";
 import { MachineSizeField } from "@/components/machine-size-field";
-import { SubmitShortcut } from "@/components/mod-key";
 import type { ModelCatalog } from "@/components/model-fields";
 import { SkillPicker } from "@/components/skill-picker";
 import { TemplateLaunchForm } from "@/components/templates";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Dialog, DialogClose, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogTrigger } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import {
   CONNECTION_CHOICE_FIELD,
@@ -39,11 +29,11 @@ import {
   unreadyDefaults,
 } from "@/lib/connections";
 import { DOCKER_HOST_LABEL, dockerHostGroup } from "@/lib/labels";
+import { composerChips, launchHoldIds } from "@/lib/launch-composer";
 import { LAUNCH_KEY_FIELD, type LaunchKey, launchKeyFor } from "@/lib/launch-key";
 import { initialLaunchSelection, type LaunchStartTarget } from "@/lib/launch-picker";
 import { accountProblem, accountsFor, type LaunchAccounts } from "@/lib/model-accounts";
 import type { TemplateLaunchTarget } from "@/lib/template-launch";
-import { ttlOptions } from "@/lib/templates";
 import { cn } from "@/lib/utils";
 
 /** The selected org's connections for the launch dialog, or why they are not listed. */
@@ -59,6 +49,9 @@ export type LaunchProps = {
   golden: string;
   provider: SandboxPlacementProviderId;
   snapshotId?: string;
+  hostName?: string;
+  unavailable?: readonly { name: string; reason: string }[] | undefined;
+  harnesses?: readonly Harness[] | undefined;
   boatOpenCodeAvailable?: boolean;
   orgId: string;
   catalog: ModelCatalog;
@@ -76,6 +69,7 @@ export type LaunchProps = {
   idleDelaySeconds?: number | undefined;
   templateChooser?: ReactNode;
   launchBlockedReason?: string | undefined;
+  loadingError?: string;
   task?: string;
   onTask?: (value: string) => void;
 };
@@ -144,6 +138,7 @@ export function LaunchStart(
         provider: props.provider,
         repositories: props.repositories,
         ...(props.snapshotId ? { snapshotId: props.snapshotId } : {}),
+        ...(props.hostName ? { hostName: props.hostName } : {}),
         ...(props.sizing ? { sizing: props.sizing } : {}),
       };
   const [selected, setSelected] = useState(fallback.id);
@@ -196,7 +191,7 @@ export function LaunchStart(
   const template = templates.find((item) => item.id === templateId);
   const chooser = templates.length > 0 && (
     <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground" data-launch-start>
-      <span>Or start from</span>
+      <span>Or start from a template</span>
       {templates.map((item) => (
         <Button
           key={item.id}
@@ -221,22 +216,22 @@ export function LaunchStart(
     },
     idleDelaySeconds: options?.idleDelaySeconds,
     launchBlockedReason: target.reason,
+    loadingError,
     task,
     onTask: setTask,
   };
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <LaunchDialogHeader title="Launch a sandbox" description="Choose who works and where it starts." />
-      {loadingError && (
-        <p role="alert" className="px-6 pb-3 text-xs text-warning">
-          {loadingError}
-        </p>
-      )}
       {template ? (
-        <>
-          <div className="px-6 pb-3">{chooser}</div>
-          <TemplateLaunchForm key={template.id} target={template} />
-        </>
+        <TemplateLaunchForm
+          key={template.id}
+          target={template}
+          task={task}
+          onTask={setTask}
+          loadingError={loadingError}
+          idleDelaySeconds={options?.idleDelaySeconds}
+          onRemove={() => setTemplateId("")}
+        />
       ) : target.hostId ? (
         <DockerLaunchForm
           key={target.id}
@@ -257,6 +252,9 @@ export function LaunchStart(
           key={target.id}
           golden={target.golden}
           provider={target.provider}
+          hostName={target.hostName ?? DOCKER_HOST_LABEL}
+          unavailable={props.unavailable}
+          harnesses={target.harnesses}
           orgId={props.orgId}
           {...(target.snapshotId ? { snapshotId: target.snapshotId } : {})}
           repositories={target.repositories}
@@ -280,6 +278,9 @@ function LaunchForm({
   golden,
   provider,
   snapshotId,
+  hostName,
+  unavailable,
+  harnesses,
   boatOpenCodeAvailable = false,
   orgId,
   catalog,
@@ -295,10 +296,13 @@ function LaunchForm({
   task,
   onTask,
   launchBlockedReason,
+  loadingError,
 }: LaunchProps) {
   const id = useId();
-  const [harness, setHarness] = useState<Harness>("claude");
-  const [credential, setCredential] = useState(() => initialLaunchSelection(accounts, catalog, "claude").credentialId);
+  const [harness, setHarness] = useState<Harness>(
+    harnesses?.includes("claude") ? "claude" : (harnesses?.[0] ?? "claude"),
+  );
+  const [credential, setCredential] = useState(() => initialLaunchSelection(accounts, catalog, harness).credentialId);
   const [accountBlocked, setAccountBlocked] = useState(false);
   const [armadaAccess, setArmadaAccess] = useState(false);
   const usableCodexAccount = (value: string) =>
@@ -310,10 +314,9 @@ function LaunchForm({
   const access = useLaunchAccess(connections);
   const root = useRef<HTMLDivElement>(null);
   const launchKey = useRef<LaunchKey | null>(null);
-  const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [ttl, setTtl] = useState("");
+  const [modelOpen, setModelOpen] = useState(false);
+  const [localTask, setLocalTask] = useState("");
   const [skills, setSkills] = useState<string[]>([]);
-  useLaunchSurface(root);
 
   useEffect(() => {
     const node = root.current;
@@ -349,170 +352,149 @@ function LaunchForm({
 
   // The selected project: the machine size default follows it, and a single repository's choice is summarized.
   const [project, setProject] = useState(repositories.length === 1 ? (repositories[0] ?? "") : "");
-  // The size that will be requested, null while the provider decides.
-  const [, setSize] = useState<MachineSize | null>(null);
+  const chips = composerChips(provider, repositories.length, Boolean(sizing));
+  const holds = launchHoldIds(id, {
+    source: Boolean(launchBlockedReason),
+    account: accountBlocked || accounts.state === "unavailable",
+    tools: access.held,
+  });
 
   return (
-    <div ref={root} className="flex min-h-0 flex-1 flex-col">
+    <div ref={root}>
       <ActionForm
         action={provider === "docker" ? launchFromDockerSnapshot : launchFromGolden}
-        className="flex min-h-0 flex-1 flex-col"
         focusError
-        footerClassName="space-y-2 border-t px-6 py-4"
-        footer={
-          <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-2">
-            {launchBlockedReason && (
-              <p id={`${id}-source-blocked`} role="alert" className="mr-auto text-xs text-warning">
-                {launchBlockedReason}{" "}
-                <Link className="underline" href="/snapshots">
-                  Open Snapshots
-                </Link>
-              </p>
-            )}
-            <LaunchAccountNotice
-              idPrefix={id}
-              harness={harness}
-              account={credential}
-              accounts={accounts}
-              onPick={() => root.current?.querySelector<HTMLButtonElement>("[data-launch-account-picker]")?.click()}
-            />
-            {access.alerts(() => {
-              focusLaunch.current = true;
-            }, id)}
-            <DialogClose asChild>
-              <Button type="button" variant="ghost">
-                Cancel
-              </Button>
-            </DialogClose>
-            {/* Only set when blocked: preserve SubmitButton's own pending lock otherwise. */}
-            <SubmitButton
-              className="max-sm:ml-auto"
-              {...(access.held || accountBlocked || accounts.state === "unavailable" || launchBlockedReason
-                ? {
-                    disabled: true,
-                    "aria-describedby": launchBlockedReason
-                      ? `${id}-source-blocked`
-                      : access.held
-                        ? `${id}-held`
-                        : `${id}-account-unavailable`,
-                  }
-                : {})}
-            >
-              {task?.trim() ? "Launch" : "Launch idle"}
-              <SubmitShortcut />
-            </SubmitButton>
-          </div>
-        }
-      >
-        <input type="hidden" name="golden" value={golden} />
-        {provider === "docker" && <input type="hidden" name="snapshotId" value={snapshotId ?? ""} />}
-        <input type="hidden" name="provider" value={provider} />
-        <input type="hidden" name="org" value={orgId} />
-        {/* Untouched, or not listed: the launch names no connections and the server applies the defaults (#681). */}
-        <input type="hidden" name={CONNECTION_CHOICE_FIELD} value={access.explicit ? "explicit" : "defaults"} />
-        <LaunchFields>
-          <LaunchTaskField idPrefix={id} value={task} onChange={onTask} />
-          {!task?.trim() && templateChooser}
-          <div className="space-y-2">
-            <p className="text-[13px] font-medium">Settings</p>
-            <div className="divide-y overflow-hidden rounded-[10px] border [&_section]:border-0 [&_section>div]:rounded-none [&_section>div]:border-0 [&_[data-launch-location]>div]:rounded-none [&_[data-launch-location]>div]:border-0">
-              <LaunchLocation
-                compact
-                provider={provider}
-                start={
-                  selectedStart ??
-                  `${golden} · ${provider === "boat" ? "Boat cloud" : provider === "modal" ? "Modal cloud" : DOCKER_HOST_LABEL}`
-                }
-                starts={starts?.map((item) => ({
-                  value: item.id,
-                  label: item.label,
-                  group: item.group,
-                  reason: item.reason,
-                }))}
-                onStart={onStart}
-                idleDelaySeconds={idleDelaySeconds}
-                repositories={repositories}
-                project={project}
-                onProject={setProject}
-              />
-              <LaunchSentence
-                idPrefix={id}
-                onBlocked={setAccountBlocked}
-                harness={harness}
-                onHarness={(next) => {
-                  setHarness(next);
-                  setArmadaAccess(false);
-                }}
-                account={credential}
-                onAccount={(next) => {
-                  setCredential(next);
-                  setArmadaAccess(false);
-                }}
-                accounts={accounts}
-                catalog={catalog}
-                boatOpenCodeDisabled={provider === "boat" && !boatOpenCodeAvailable}
-              />
-              {provider !== "docker" && sizing && (
-                <MachineSizeField
-                  composer
-                  idPrefix={id}
-                  provider={provider}
-                  policy={sizing.policy}
-                  repositoryDir={project}
-                  onSize={setSize}
-                />
-              )}
-              {(!sizing || provider === "docker") && (
-                <LaunchSetting
-                  label="Machine"
-                  value="Provider default"
-                  description="Uses the selected snapshot’s machine configuration"
+        renderContent={(result) => (
+          <>
+            <input type="hidden" name="golden" value={golden} />
+            {provider === "docker" && <input type="hidden" name="snapshotId" value={snapshotId ?? ""} />}
+            <input type="hidden" name="provider" value={provider} />
+            <input type="hidden" name="org" value={orgId} />
+            {provider !== "docker" && <input type="hidden" name="repo" value={project} />}
+            <input type="hidden" name={CONNECTION_CHOICE_FIELD} value={access.explicit ? "explicit" : "defaults"} />
+            {access.inputs}
+            {skills.map((exact) => (
+              <input key={exact} type="hidden" name="skills" value={exact} />
+            ))}
+            {armadaAccess && canDelegate && <input type="hidden" name="armada_access" value="on" />}
+            <LaunchComposer
+              id={id}
+              headline={
+                provider === "docker"
+                  ? `What should we build on ${hostName ?? DOCKER_HOST_LABEL}?`
+                  : `What should we build in ${project || golden}?`
+              }
+              docker={chips.docker}
+              loadingError={loadingError}
+              task={task ?? localTask}
+              onTask={onTask ?? setLocalTask}
+              chooser={templateChooser}
+              holds={holds}
+              tools={
+                <LaunchChip
+                  title="Tools"
+                  label={`Tools · ${mcpFact(access)}`}
+                  warning={access.held || access.unavailable}
                 >
-                  <p className="text-sm text-muted-foreground">
-                    Machine overrides are not available for this starting point.
-                  </p>
-                </LaunchSetting>
-              )}
-              <LaunchSetting
-                label="Options"
-                value={`Stops after ${
-                  ttlOptions(provider)
-                    .find((x) => x.value === ttl)
-                    ?.label.replace("Default (", "")
-                    .replace(")", "") ?? "4 hours"
-                }`}
-                description={`Private sandbox · ${mcpFact(access)}`}
-              >
-                <LaunchChoice label="Stops after" value={ttl} options={ttlOptions(provider)} onChange={setTtl} />
-                <input type="hidden" name="ttl" value={ttl} />
-                {access.fields(id)}
-                <p className="mt-3 text-xs text-muted-foreground">
-                  The machine pauses without activity and wakes on your next message, until the time is up.
-                </p>
-                <LaunchAdvanced open={advancedOpen} onOpenChange={setAdvancedOpen}>
-                  <SkillPicker orgId={orgId} value={skills} onChange={setSkills} />
-                  {provider !== "docker" && (
-                    <Label className="flex min-h-11 items-center gap-2">
-                      <Checkbox
-                        name="armada_access"
-                        checked={armadaAccess && canDelegate}
-                        onCheckedChange={(checked) => setArmadaAccess(checked === true)}
-                        disabled={!canDelegate}
-                      />
-                      Let this agent launch other sandboxes
-                      <span className="sr-only">
+                  {access.fields(id)}
+                </LaunchChip>
+              }
+              skills={
+                <LaunchChip title="Skills" label={`Skills · ${skills.length}`}>
+                  <SkillPicker inline orgId={orgId} value={skills} onChange={setSkills} />
+                </LaunchChip>
+              }
+              agent={
+                <LaunchSentence
+                  onBlocked={setAccountBlocked}
+                  harness={harness}
+                  onHarness={(next) => {
+                    setHarness(next);
+                    setArmadaAccess(false);
+                  }}
+                  account={credential}
+                  onAccount={(next) => {
+                    setCredential(next);
+                    setArmadaAccess(false);
+                  }}
+                  accounts={accounts}
+                  catalog={catalog}
+                  allowedHarnesses={harnesses}
+                  boatOpenCodeDisabled={provider === "boat" && !boatOpenCodeAvailable}
+                  open={modelOpen}
+                  onOpenChange={setModelOpen}
+                />
+              }
+              alerts={
+                <>
+                  {launchBlockedReason && (
+                    <p id={`${id}-source-blocked`} tabIndex={-1} role="alert" className="text-sm text-warning">
+                      {launchBlockedReason}{" "}
+                      <Link className="underline" href="/snapshots">
+                        Open Snapshots
+                      </Link>
+                    </p>
+                  )}
+                  <LaunchAccountNotice
+                    idPrefix={id}
+                    harness={harness}
+                    account={credential}
+                    accounts={accounts}
+                    onPick={() => setModelOpen(true)}
+                  />
+                  {access.alerts(() => {
+                    focusLaunch.current = true;
+                  }, id)}
+                  {result}
+                </>
+              }
+              location={
+                <>
+                  <ComposerLocation
+                    name={golden}
+                    starts={starts}
+                    selectedStart={selectedStart}
+                    onStart={onStart}
+                    folder={chips.folder}
+                    repositories={repositories}
+                    project={project}
+                    onProject={setProject}
+                  />
+                  {provider !== "docker" && chips.machine && sizing && (
+                    <MachineSizeField provider={provider} policy={sizing.policy} repositoryDir={project} />
+                  )}
+                </>
+              }
+              options={
+                <>
+                  <ComposerStop provider={provider} idleDelaySeconds={idleDelaySeconds} />
+                  {chips.access && (
+                    <LaunchChip
+                      title="Access"
+                      label={`Access · ${armadaAccess && canDelegate ? "Can launch sandboxes" : "Private"}`}
+                    >
+                      <Label className="flex min-h-11 items-center gap-2 p-2">
+                        <Checkbox
+                          checked={armadaAccess && canDelegate}
+                          onCheckedChange={(checked) => setArmadaAccess(checked === true)}
+                          disabled={!canDelegate}
+                        />
+                        Let this agent launch other sandboxes
+                      </Label>
+                      <p className="px-2 pb-2 text-sm text-muted-foreground">
                         {canDelegate
                           ? "Manage up to 3 child sandboxes in this organization using the selected snapshot and account."
                           : "Choose Codex and an active account to enable."}
-                      </span>
-                    </Label>
+                      </p>
+                    </LaunchChip>
                   )}
-                </LaunchAdvanced>
-              </LaunchSetting>
-            </div>
-          </div>
-        </LaunchFields>
-      </ActionForm>
+                  {chips.docker && <DockerLimits unavailable={unavailable} />}
+                </>
+              }
+            />
+          </>
+        )}
+      />
     </div>
   );
 }
@@ -549,7 +531,12 @@ export function useLaunchAccess(connections: LaunchConnections) {
     <>
       {unready.length > 0 && (
         <div data-unready-defaults className="contents">
-          <p id={`${idPrefix}-held`} role="alert" className="flex basis-full items-center gap-2 text-xs text-warning">
+          <p
+            id={`${idPrefix}-held`}
+            role="alert"
+            tabIndex={-1}
+            className="flex basis-full items-center gap-2 text-xs text-warning"
+          >
             <CircleAlertIcon className="size-4 shrink-0" />
             {unready.map((connection) => connection.name).join(", ")}{" "}
             {unready.length === 1
@@ -635,6 +622,9 @@ export function useLaunchAccess(connections: LaunchConnections) {
     // Only a listed selection the person changed is sent; otherwise the server snapshots the defaults.
     explicit: picked !== null && "connections" in connections,
     selected,
+    inputs: list
+      .filter((connection) => chosen.includes(connection.id) && !launchBlocker(connection))
+      .map((connection) => <input key={connection.id} type="hidden" name="connections" value={connection.id} />),
     selectedName: list.find((connection) => chosen.includes(connection.id) && launchBlocker(connection) === null)?.name,
     held: unready.length > 0,
     unavailable: "unavailable" in connections,
@@ -673,8 +663,6 @@ function ConnectionOption({
     <li className={cn("flex items-start gap-3 px-3 py-2.5", blocker && "opacity-70")}>
       <Checkbox
         id={inputId}
-        name="connections"
-        value={connection.id}
         checked={checked && !blocker}
         disabled={blocker !== null}
         onCheckedChange={(value) => onChange(value === true)}

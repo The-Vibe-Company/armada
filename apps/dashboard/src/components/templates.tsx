@@ -33,17 +33,15 @@ import {
 import { SubmitButton } from "@/components/action-form";
 import { CreateDialog } from "@/components/create-dialog";
 import {
-  LaunchAdvanced,
-  LaunchChoice,
-  LaunchDialogContent,
-  LaunchDialogHeader,
-  LaunchFields,
-  LaunchLocation,
-  LaunchTaskField,
-  useLaunchSurface,
-} from "@/components/launch-surface";
+  ChoiceChip,
+  ComposerLocation,
+  ComposerStop,
+  DockerLimits,
+  LaunchChip,
+  LaunchComposer,
+} from "@/components/launch-composer";
+import { LaunchChoice, LaunchDialogContent } from "@/components/launch-surface";
 import { MachineSizeField } from "@/components/machine-size-field";
-import { SubmitShortcut } from "@/components/mod-key";
 import type { ModelCatalog } from "@/components/model-fields";
 import { SkillPicker } from "@/components/skill-picker";
 import {
@@ -59,6 +57,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogDescription,
   DialogHeader,
@@ -67,17 +66,16 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { NativeSelect } from "@/components/ui/native-select";
 import { useToast } from "@/components/ui/toast";
 import { useMutationState } from "@/components/use-mutation-state";
 import type { ActionResult } from "@/lib/action";
 import { PROVIDER_LABELS } from "@/lib/golden-form";
-import { EFFORT_LABEL, HARNESS_LABELS } from "@/lib/labels";
+import { HARNESS_LABELS } from "@/lib/labels";
+import { composerChips, launchHoldIds } from "@/lib/launch-composer";
 import { accountProblem, accountsFor, HARNESS_PATH, launchDefault } from "@/lib/model-accounts";
 import type { TemplateLaunchTarget } from "@/lib/template-launch";
 import {
   MAX_TEMPLATE_NAME,
-  modelLabel,
   newRequestKey,
   type TemplateDefinition,
   type TemplateLookups,
@@ -716,7 +714,21 @@ function PickList({
  * project, the machine size and how long it runs can change. One request key per opening: a retry after a lost
  * answer returns that launch instead of starting another, and a definite refusal takes a fresh key.
  */
-export function TemplateLaunchForm({ target }: { target: TemplateLaunchTarget }) {
+export function TemplateLaunchForm({
+  target,
+  task,
+  onTask,
+  onRemove,
+  loadingError,
+  idleDelaySeconds,
+}: {
+  target: TemplateLaunchTarget;
+  task?: string;
+  onTask?: (task: string) => void;
+  onRemove?: () => void;
+  loadingError?: string;
+  idleDelaySeconds?: number | undefined;
+}) {
   const id = useId();
   const [requestKey, setRequestKey] = useState(newRequestKey);
   const run = useCallback(async (previous: TemplateLaunchResult | null, data: FormData) => {
@@ -728,7 +740,11 @@ export function TemplateLaunchForm({ target }: { target: TemplateLaunchTarget })
   const [project, setProject] = useState(target.repositories.length === 1 ? (target.repositories[0] ?? "") : "");
   const root = useRef<HTMLFormElement>(null);
   useKeepOnReset(root);
-  useLaunchSurface(root);
+  const [localTask, setLocalTask] = useState("");
+  const error = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    if (state && !state.ok) error.current?.focus();
+  }, [state]);
   const accountList = target.accounts;
   const eligible =
     accountList?.state === "ready"
@@ -743,132 +759,139 @@ export function TemplateLaunchForm({ target }: { target: TemplateLaunchTarget })
   const preset =
     defaultAccount?.state === "resolved" ? `${defaultAccount.account.id}:${defaultAccount.account.version}` : "";
 
+  const [account, setAccount] = useState(preset);
+  const named = target.definition.modelAccount;
+  const chosen = eligible.find((row) => `${row.id}:${row.version}` === account);
+  const namedLabel =
+    accountList?.state === "ready"
+      ? (accountList.accounts.find((row) => row.id === named?.id)?.name ?? "Unavailable account")
+      : "Unavailable account";
+  const accountHold = !named && eligible.length > 0 && !chosen;
+  const holds = launchHoldIds(id, { account: accountHold, template: Boolean(target.blocker) });
+  const { provider } = target.definition;
+  const chips = composerChips(provider, target.repositories.length, Boolean(target.sizing), true);
+  const name = target.goldenName ?? "Unavailable snapshot";
+  const pill = (
+    <Button
+      type="button"
+      variant="secondary"
+      size="sm"
+      className="rounded-full"
+      onClick={onRemove}
+      aria-label={`${target.name}, remove template`}
+    >
+      {target.name} ×
+    </Button>
+  );
+
   return (
-    <form ref={root} action={formAction} className="flex min-h-0 flex-1 flex-col" data-template-launch={target.name}>
+    <form ref={root} action={formAction} data-template-launch={target.name}>
       <input type="hidden" name="org" value={target.orgId} />
       <input type="hidden" name="id" value={target.id} />
       <input type="hidden" name="revision" value={target.revision} />
       <input type="hidden" name="request_key" value={requestKey} />
-      <LaunchFields>
-        <LaunchTaskField idPrefix={id} />
-        <div className="overflow-hidden rounded-[10px] border">
-          <LaunchChoice
-            label="Agent"
-            value={HARNESS_LABELS[target.definition.harness]}
-            options={[]}
-            disabled
-            onChange={() => {}}
-          />
-          <LaunchChoice
-            label="Model"
-            value={modelLabel(target.definition.harness, target.definition.model)}
-            options={[]}
-            disabled
-            onChange={() => {}}
-          />
-          <LaunchChoice
-            label="Effort"
-            value={EFFORT_LABEL[target.definition.reasoningEffort] ?? target.definition.reasoningEffort}
-            options={[]}
-            disabled
-            onChange={() => {}}
-          />
-        </div>
-        {target.definition.modelAccount ? (
-          <LaunchChoice
-            label="Account"
-            value={
-              accountList?.state === "ready"
-                ? (accountList.accounts.find((account) => account.id === target.definition.modelAccount?.id)?.name ??
-                  "Unavailable account")
-                : "Unavailable account"
-            }
-            options={[]}
-            disabled
-            onChange={() => {}}
-          />
-        ) : eligible.length > 0 ? (
-          <div className="space-y-2">
-            <Label htmlFor={`${id}-account`}>Account</Label>
-            <NativeSelect id={`${id}-account`} name="model_account" defaultValue={preset} required>
-              {!preset && (
-                <option value="" disabled>
-                  Choose an account
-                </option>
-              )}
-              {eligible.map((account) => (
-                <option key={account.id} value={`${account.id}:${account.version}`}>
-                  {account.name} · {account.scope === "org" ? "Organization" : "Personal"}
-                </option>
-              ))}
-            </NativeSelect>
-            <p className="text-xs text-muted-foreground">
-              Choose another account if a subscription is busy.{" "}
-              <Link className="underline" href={HARNESS_PATH}>
-                Manage model accounts
-              </Link>
-            </p>
-          </div>
-        ) : null}
-        <LaunchLocation
-          lockedStart
-          provider={target.definition.provider}
-          start={target.goldenName ?? "Unavailable snapshot"}
-          repositories={target.repositories}
-          project={project}
-          onProject={setProject}
-        />
-        <p className="text-xs text-muted-foreground">
-          Agent, model, effort and snapshot come from the template, with its tools and skills. The account is locked too
-          when the template names one. Remove the template to change them.
-        </p>
-        {target.sizing && target.definition.provider !== "docker" && (
-          <MachineSizeField
-            composer
-            idPrefix={id}
-            provider={target.definition.provider}
-            policy={target.sizing.policy}
-            repositoryDir={project}
-          />
-        )}
-        <LaunchAdvanced
-          summary={
-            <span className="text-xs text-muted-foreground">
-              {target.tools.length} {target.tools.length === 1 ? "tool" : "tools"} · {target.definition.skills.length}{" "}
-              extra {target.definition.skills.length === 1 ? "skill" : "skills"}
-            </span>
-          }
-        >
-          <p className="text-sm">Tools: {target.tools.join(", ") || "None"}</p>
-          <p className="text-sm">Extra skills: {target.definition.skills.join(", ") || "None"}</p>
-        </LaunchAdvanced>
-      </LaunchFields>
-      <div className="space-y-2 border-t px-6 py-4">
-        {state && !state.ok && (
-          <p role="alert" className={cn("text-sm", state.pending ? "text-warning" : "text-destructive")}>
-            {state.error}{" "}
-            {state.pending && (
-              <Link className="underline underline-offset-4" href="/sandboxes">
-                Open Sandboxes
-              </Link>
+      {provider !== "docker" && <input type="hidden" name="repo" value={project} />}
+      {!named && eligible.length > 0 && <input type="hidden" name="model_account" value={chosen ? account : ""} />}
+      <LaunchComposer
+        id={id}
+        headline={`What should we build ${chips.docker ? "on" : "in"} ${project || name}?`}
+        template={target.name}
+        templatePill={onRemove ? pill : <DialogClose asChild>{pill}</DialogClose>}
+        docker={chips.docker}
+        loadingError={loadingError}
+        task={task ?? localTask}
+        onTask={onTask ?? setLocalTask}
+        holds={holds}
+        tools={
+          <LaunchChip label={`Tools · ${target.tools.length}`} locked title="Tools">
+            <p className="p-2 text-sm">{target.tools.join(", ") || "None"}</p>
+          </LaunchChip>
+        }
+        skills={
+          <LaunchChip label={`Skills · ${target.definition.skills.length}`} locked title="Skills">
+            <p className="p-2 text-sm">{target.definition.skills.join(", ") || "None"}</p>
+          </LaunchChip>
+        }
+        agent={
+          <LaunchChip label={target.agent} title="Agent, model and effort" locked>
+            <div className="space-y-2 p-2 text-sm">
+              <p>{target.agent}</p>
+              {named && <p>Account · {namedLabel}</p>}
+              <p>Agent, model and effort come from the template.</p>
+            </div>
+          </LaunchChip>
+        }
+        alerts={
+          <>
+            {accountHold && (
+              <p id={`${id}-account-unavailable`} role="alert" tabIndex={-1} className="text-sm text-warning">
+                Choose an account.
+              </p>
             )}
-          </p>
-        )}
-        <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-2">
-          {target.blocker && (
-            <p id={`${id}-blocked`} className="mr-auto text-xs text-warning">
-              {target.blocker}
-            </p>
-          )}
-          <SubmitButton
-            className="w-full sm:w-auto"
-            {...(target.blocker ? { disabled: true, "aria-describedby": `${id}-blocked` } : {})}
-          >
-            <RocketIcon /> Launch
-            <SubmitShortcut />
-          </SubmitButton>
-        </div>
-      </div>
+            {target.blocker && (
+              <p id={`${id}-blocked`} role="alert" tabIndex={-1} className="text-sm text-warning">
+                {target.blocker}
+              </p>
+            )}
+            {state && !state.ok && (
+              <p
+                ref={error}
+                role="alert"
+                tabIndex={-1}
+                className={cn("text-sm", state.pending ? "text-warning" : "text-destructive")}
+              >
+                {state.error}{" "}
+                {state.pending && (
+                  <Link className="underline underline-offset-4" href="/sandboxes">
+                    Open Sandboxes
+                  </Link>
+                )}
+              </p>
+            )}
+          </>
+        }
+        location={
+          <>
+            <ComposerLocation
+              locked
+              name={name}
+              folder={chips.folder}
+              repositories={target.repositories}
+              project={project}
+              onProject={setProject}
+            />
+            {provider !== "docker" && chips.machine && target.sizing && (
+              <MachineSizeField provider={provider} policy={target.sizing.policy} repositoryDir={project} />
+            )}
+            {!named && (
+              <ChoiceChip
+                title="Account"
+                label={`Account · ${chosen?.name ?? "Choose an account"}`}
+                value={account}
+                options={eligible.map((row) => ({
+                  value: `${row.id}:${row.version}`,
+                  label: row.name,
+                  group: row.scope === "org" ? "Organization" : "Personal",
+                }))}
+                onChange={setAccount}
+              >
+                <p className="border-t p-2 text-sm text-muted-foreground">
+                  Choose another account if a subscription is busy.{" "}
+                  <Link className="underline" href={HARNESS_PATH}>
+                    Manage model accounts
+                  </Link>
+                </p>
+              </ChoiceChip>
+            )}
+          </>
+        }
+        options={
+          <>
+            <ComposerStop provider={provider} idleDelaySeconds={idleDelaySeconds} />
+            {chips.docker && <DockerLimits />}
+          </>
+        }
+      />
     </form>
   );
 }
@@ -889,10 +912,6 @@ export function TemplateLaunchDialog({
         </Button>
       </DialogTrigger>
       <LaunchDialogContent>
-        <LaunchDialogHeader
-          title={`Launch ${target.name}`}
-          description={`Version ${target.revision}. Its choices are fixed; the task and the run are yours.`}
-        />
         <TemplateLaunchForm target={target} />
       </LaunchDialogContent>
     </Dialog>
