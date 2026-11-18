@@ -426,6 +426,7 @@ test.each([
   "other commit",
   "merged after head advanced",
   "merged after head advanced past an unknown push",
+  "closed after head advanced",
   "revoked",
   "opted out",
   "running-turn",
@@ -503,11 +504,14 @@ test.each([
   const pull = {
     number: 12,
     state: state === "open" ? "open" : "closed",
-    merged_at: state === "open" || state === "closed" ? null : new Date(f.at).toISOString(),
+    merged_at:
+      state === "open" || state === "closed" || state === "closed after head advanced"
+        ? null
+        : new Date(f.at).toISOString(),
     // A moved head: another commit, or a reviewer's commit on top of the push.
     head: {
       ref: "topic",
-      sha: state === "other commit" || state.startsWith("merged after head advanced") ? "b".repeat(40) : sha,
+      sha: state === "other commit" || state.includes("after head advanced") ? "b".repeat(40) : sha,
       repo: { full_name: repository },
     },
     base: { repo: { full_name: repository } },
@@ -541,7 +545,12 @@ test.each([
         const advanced = String(url).endsWith(`/compare/${sha}...${"b".repeat(40)}?per_page=1`);
         if (advanced && state === "merged after head advanced past an unknown push")
           return new Response("", { status: 404 });
-        return Response.json({ status: advanced && state === "merged after head advanced" ? "ahead" : "diverged" });
+        return Response.json({
+          status:
+            advanced && (state === "merged after head advanced" || state === "closed after head advanced")
+              ? "ahead"
+              : "diverged",
+        });
       }
       // Only the rejected attempt's commit is unknown to GitHub.
       if (String(url).includes(`/repos/${repository}/commits/`))
@@ -641,7 +650,13 @@ test.each([
       ? []
       : state === "merged after closed"
         ? ["merged", "closed"]
-        : [state === "open" || state === "closed" ? state : "merged"],
+        : [
+            state === "open" || state === "closed"
+              ? state
+              : state === "closed after head advanced"
+                ? "closed"
+                : "merged",
+          ],
   );
   await f.worker.drain();
 });
