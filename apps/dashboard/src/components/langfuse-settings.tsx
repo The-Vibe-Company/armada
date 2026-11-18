@@ -16,6 +16,7 @@ const METADATA = "timing, model, tokens, cost and tool names only";
 const number = new Intl.NumberFormat("en");
 
 export function LangfuseSettingsCard({ org, settings, now }: { org: string; settings: LangfuseSettings; now: number }) {
+  const [testGeneration, setTestGeneration] = useState(0);
   const admin = settings.scope === "admin" ? settings : null;
   const connected = admin?.configured ?? false;
   const full = settings.contentMode === "full";
@@ -28,7 +29,11 @@ export function LangfuseSettingsCard({ org, settings, now }: { org: string; sett
         tone: "text-muted-foreground",
       }
     : failed > 0
-      ? { label: `Exporting · ${number.format(failed)} traces refused`, icon: CircleXIcon, tone: "text-destructive" }
+      ? {
+          label: `Exporting · ${number.format(failed)} trace exports failed`,
+          icon: CircleXIcon,
+          tone: "text-destructive",
+        }
       : dropped > 0
         ? {
             label: `Exporting · ${number.format(dropped)} traces dropped`,
@@ -84,15 +89,22 @@ export function LangfuseSettingsCard({ org, settings, now }: { org: string; sett
             </p>
           </div>
         </div>
-        {admin && <LangfuseControls key={String(connected)} org={org} settings={admin} />}
+        {admin && (
+          <LangfuseControls
+            key={String(connected)}
+            org={org}
+            settings={admin}
+            onSaved={() => setTestGeneration((generation) => generation + 1)}
+          />
+        )}
       </div>
       {admin && connected && <LangfuseCounters counters={admin.counters} />}
-      {admin && connected && <TestStored org={org} host={admin.host} />}
+      {admin && connected && <TestStored key={testGeneration} org={org} host={admin.host} />}
     </div>
   );
 }
 
-function LangfuseControls({ org, settings }: { org: string; settings: LangfuseAdmin }) {
+function LangfuseControls({ org, settings, onSaved }: { org: string; settings: LangfuseAdmin; onSaved: () => void }) {
   const switchId = useId();
   const [pending, start] = useTransition();
   const [error, setError] = useState("");
@@ -116,7 +128,7 @@ function LangfuseControls({ org, settings }: { org: string; settings: LangfuseAd
             <Switch id={switchId} checked={settings.enabled} onCheckedChange={toggle} disabled={pending} />
           </label>
         )}
-        <LangfuseDialog org={org} settings={settings} />
+        <LangfuseDialog org={org} settings={settings} onSaved={onSaved} />
       </div>
       {pending && (
         <p role="status" className="text-xs text-muted-foreground">
@@ -140,8 +152,8 @@ function LangfuseCounters({ counters }: { counters: LangfuseAdmin["counters"] })
         {(
           [
             ["Traces sent", exported, ""],
-            ["Refused by Langfuse", failed, "text-destructive"],
-            ["Dropped by Armada (overload)", dropped, "text-warning"],
+            ["Trace exports failed", failed, "text-destructive"],
+            ["Dropped by Armada", dropped, "text-warning"],
           ] as const
         ).map(([label, value, tone]) => (
           <div key={label} className="flex flex-col justify-between gap-1 px-3 py-3 sm:px-4">
@@ -158,10 +170,10 @@ function LangfuseCounters({ counters }: { counters: LangfuseAdmin["counters"] })
             <li className="flex items-start gap-2">
               <CircleXIcon aria-hidden className="mt-0.5 size-4 shrink-0 text-destructive" />
               <div>
-                <strong>{number.format(failed)} traces refused by Langfuse</strong>
+                <strong>{number.format(failed)} trace exports failed</strong>
                 <p className="text-muted-foreground">
-                  Langfuse refused {number.format(failed)} traces; they are not sent again. Test the connection to see
-                  whether this is still happening. If the test fails, open Edit and replace the keys.
+                  These traces are not sent again. Test the connection to check the host and keys. If failures keep
+                  rising, contact whoever runs your Armada server.
                 </p>
               </div>
             </li>

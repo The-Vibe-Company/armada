@@ -67,7 +67,15 @@ export function LangfuseTestResult({ result, host }: { result: LangfuseTest; hos
   );
 }
 
-export function LangfuseDialog({ org, settings }: { org: string; settings: LangfuseAdmin }) {
+export function LangfuseDialog({
+  org,
+  settings,
+  onSaved,
+}: {
+  org: string;
+  settings: LangfuseAdmin;
+  onSaved: () => void;
+}) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const edit = settings.configured;
@@ -86,7 +94,17 @@ export function LangfuseDialog({ org, settings }: { org: string; settings: Langf
       showPlus={!edit}
       className="sm:max-w-lg"
     >
-      {open && <LangfuseForm org={org} settings={settings} close={() => setOpen(false)} setBusy={setBusy} />}
+      {open && (
+        <LangfuseForm
+          org={org}
+          settings={settings}
+          close={() => {
+            onSaved();
+            setOpen(false);
+          }}
+          setBusy={setBusy}
+        />
+      )}
     </CreateDialog>
   );
 }
