@@ -487,7 +487,7 @@ to Armada's wrapper is refused. The wrapper is prepared under a private temp
 name and its entrypoint symlink is published with Linux coreutils atomic rename.
 These are VM-side Linux primitives, not assumptions about the operator's Mac.
 
-`native-install-race.test.ts` runs two actual installer processes against owned
+`native-install-race.conformance.ts` runs two actual installer processes against owned
 temporary executable paths. A waits just before its original-preservation mv;
 B either blocks on real flock (fixed) or reaches its own stale absent-original
 mv (old). A publishes before B is released. The original symlink must still

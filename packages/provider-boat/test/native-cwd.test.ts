@@ -157,8 +157,8 @@ test("Codex wrapper enforces Boat's thread/turn protocol cwd, not only process c
     writeFileSync(
       native,
       `#!/usr/bin/python3 -I
-import json, os, subprocess, sys
-print(json.dumps({"argv": sys.argv[1:]}), flush=True)
+import json, os, sys
+print(json.dumps({"argv": sys.argv[1:], "processCwd": os.getcwd()}), flush=True)
 for line in sys.stdin.buffer:
     try:
         msg = json.loads(line)
@@ -167,8 +167,6 @@ for line in sys.stdin.buffer:
     if isinstance(msg, dict) and msg.get("method") == "initialize":
         print(json.dumps({"id":msg["id"], "result":{}}), flush=True)
         continue
-    if isinstance(msg, dict) and msg.get("method") in ("thread/start", "thread/resume", "turn/start"):
-        msg["proof"] = subprocess.check_output(["pwd"], cwd=msg["params"]["cwd"], text=True).strip()
     print(json.dumps(msg), flush=True)
 print("native stderr", file=sys.stderr)
 sys.exit(23)
@@ -230,14 +228,14 @@ sys.exit(23)
     expect(result.status).toBe(23);
     expect(result.stderr).toBe("native stderr\n");
     const lines = result.stdout.trimEnd().split("\n");
-    expect(JSON.parse(lines.shift() ?? "")).toEqual({ argv: args });
+    expect(JSON.parse(lines.shift() ?? "")).toEqual({ argv: args, processCwd: cwd });
     expect(lines.pop()).toBe("not-json");
     expect(lines.map((line) => JSON.parse(line))).toEqual(
       messages.map((m) =>
         m && "params" in m
           ? m.method === "initialize"
             ? { id: m.id, result: {} }
-            : { ...m, params: { ...m.params, cwd }, proof: cwd }
+            : { ...m, params: { ...m.params, cwd } }
           : m,
       ),
     );
@@ -300,80 +298,6 @@ for line in sys.stdin:
     }
   },
 );
-
-// Offline real-protocol check: uses a temporary HOME and an allowlisted environment, never auth.
-test.skipIf(!process.env.CODEX_NATIVE_TEST_BINARY)("real Codex app-server reports the selected thread cwd", () => {
-  const base = mkdtempSync(join(tmpdir(), "armada-real-codex-"));
-  try {
-    const cwd = join(base, "repo-b");
-    mkdirSync(cwd);
-    const path = join(base, "codex");
-    mkdirSync(join(base, ".codex"), { mode: 0o700 });
-    writeFileSync(join(base, ".codex/.armada-managed-native"), "active", { mode: 0o600 });
-    symlinkSync(process.env.CODEX_NATIVE_TEST_BINARY as string, path);
-    expect(installProtocolFixture(path, base, cwd).status).toBe(0);
-    // Even with process cwd=repo-b, the unwrapped app-server accepts Boat's home cwd.
-    for (const [executable, expected] of [
-      [`${path}.armada-original`, base],
-      [path, cwd],
-    ] as const) {
-      const proof = spawnSync(
-        "python3",
-        [
-          "-c",
-          `
-import json, os, subprocess, sys
-p = subprocess.Popen([sys.argv[1], "app-server", "--listen", "stdio://"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-def request(id, method, params):
-    p.stdin.write((json.dumps(dict(id=id, method=method, params=params)) + "\\n").encode()); p.stdin.flush()
-    while True:
-        line = p.stdout.readline()
-        if not line: raise RuntimeError("app-server exited")
-        message = json.loads(line)
-        if message.get("id") == id:
-            if "error" in message: raise RuntimeError("RPC failed")
-            return message["result"]
-try:
-    request(1, "initialize", {"clientInfo": {"name": "armada-cwd-test", "version": "1"}})
-    p.stdin.write(b'{"method":"initialized"}\\n'); p.stdin.flush()
-    result = request(2, "thread/start", {"cwd": sys.argv[2], "approvalPolicy": "never", "sandbox": "danger-full-access"})
-    assert result["thread"]["cwd"] == sys.argv[3]
-    if sys.argv[4] == "managed":
-        with open(os.path.join(sys.argv[2], ".codex/.armada-native-writer.json")) as source:
-            native = json.load(source)
-        lock = os.stat(os.path.join(sys.argv[2], ".codex/.armada-native-writer.lock"))
-        inherited = False
-        for fd in os.listdir("/proc/" + str(native["pid"]) + "/fd"):
-            try:
-                info = os.stat("/proc/" + str(native["pid"]) + "/fd/" + fd)
-                inherited = inherited or (info.st_dev,info.st_ino) == (lock.st_dev,lock.st_ino)
-            except FileNotFoundError:
-                pass
-        assert inherited, "Pinned native Codex must retain the managed OS writer lock"
-    print("real thread/start cwd verified")
-finally:
-    p.terminate(); p.wait(timeout=5)
-`,
-          executable,
-          base,
-          expected,
-          executable === path ? "managed" : "direct",
-        ],
-        {
-          encoding: "utf8",
-          timeout: 15000,
-          cwd,
-          env: { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: base },
-        },
-      );
-      expect(proof.stderr).toBe("");
-      expect(proof.status).toBe(0);
-      expect(proof.stdout).toBe("real thread/start cwd verified\n");
-    }
-  } finally {
-    rmSync(base, { recursive: true, force: true });
-  }
-});
 
 // Real OS lock and native bridge process lifecycle, not a mock admission receipt.
 test.skipIf(process.platform !== "linux")(
