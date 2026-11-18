@@ -10,6 +10,7 @@ import {
   launchFailureHelp,
   TEMPLATE_REFUSAL_HELP,
 } from "@armada/core";
+import { requestApi, apiUrl as sdkApiUrl } from "@armada/sdk/request";
 import { validApiReceipt } from "./api-receipts.ts";
 import { sandboxFailure } from "./sandbox-errors.ts";
 import type { Session, SessionStore } from "./session.ts";
@@ -89,45 +90,38 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
   return {
     async request<T>(path: string, init: RequestInit = {}): Promise<T> {
       const url = apiUrl(origin, path);
-      const signal = init.signal ?? AbortSignal.timeout(timeoutMs);
-      const attempt = async (): Promise<Response> => {
-        try {
-          return await io.fetch(url, {
-            ...init,
-            // Bun has an independent fetch idle deadline. The explicit AbortSignal
-            // owns this request's budget, including long synchronous golden builds.
-            ...{ timeout: false },
-            headers: {
-              ...headers(init.headers),
-              authorization: `Bearer ${token}`,
-              accept: "application/json",
-            },
-            redirect: "error",
-            signal,
-          });
-        } catch (error) {
-          throw new AuthError(
-            path === "/api/v1/templates/launch"
-              ? TEMPLATE_LAUNCH_UNKNOWN
-              : signal.aborted || (error instanceof Error && error.name === "TimeoutError")
-                ? `The server did not answer in time; the operation may have been accepted.${
-                    isSandboxLaunchPath(path) ? " Run armada list to check before retrying." : ""
-                  }`
-                : isSandboxLaunchPath(path)
-                  ? "Launch outcome unknown. Run armada list to check before retrying."
-                  : "Armada could not reach the server.",
-            "unavailable",
-          );
-        }
-      };
-      let response = await attempt();
-
-      if (response.status === 401 && !environmentToken && saved) {
-        saved = await refresh(origin, io, saved.refreshToken, saved, timeoutMs, init.signal ?? undefined);
-        token = saved.accessToken;
-        response = await attempt();
+      const result = await requestApi(url, init, {
+        // Bun has an independent idle deadline. The explicit signal owns the request budget.
+        fetch: (input, options) => io.fetch(input, { ...options, ...{ timeout: false } }),
+        token,
+        timeoutMs,
+        signal: init.signal,
+        ...(!environmentToken && saved
+          ? {
+              renewToken: async () => {
+                if (!saved) throw new Error("No saved login to refresh.");
+                saved = await refresh(origin, io, saved.refreshToken, saved, timeoutMs, init.signal ?? undefined);
+                token = saved.accessToken;
+                return token;
+              },
+            }
+          : {}),
+      });
+      if (result.kind === "transport") {
+        throw new AuthError(
+          path === "/api/v1/templates/launch"
+            ? TEMPLATE_LAUNCH_UNKNOWN
+            : result.timedOut
+              ? `The server did not answer in time; the operation may have been accepted.${
+                  isSandboxLaunchPath(path) ? " Run armada list to check before retrying." : ""
+                }`
+              : isSandboxLaunchPath(path)
+                ? "Launch outcome unknown. Run armada list to check before retrying."
+                : "Armada could not reach the server.",
+          "unavailable",
+        );
       }
-      const payload: unknown = await response.json().catch(() => null);
+      const { response, payload, rawCode: failureCode } = result;
       if (
         response.ok &&
         path === "/api/v1/templates/launch" &&
@@ -143,10 +137,6 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
           );
         return normalizeProviderDto(path, payload) as T;
       }
-      const failureCode =
-        payload && typeof payload === "object" && "error" in payload
-          ? (payload as { error?: { code?: string } }).error?.code
-          : undefined;
       if (response.status === 409 && failureCode === "host_full")
         throw new ArmadaApiError(
           "host_full",
@@ -362,12 +352,10 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
       }
       if (response.status === 401) throw new AuthError("Run armada login or update ARMADA_TOKEN.", "unauthorized");
       if (options.preserveServerErrors) {
-        const code =
-          payload && typeof payload === "object" && "error" in payload
-            ? (payload as { error?: { code?: unknown } }).error?.code
-            : undefined;
         throw new ArmadaApiError(
-          typeof code === "string" && /^[a-z][a-z0-9_]{0,79}$/.test(code) ? code : "unavailable",
+          result.failure?.serverCode && result.failure.serverCode.length <= 80 && failureCode
+            ? failureCode
+            : "unavailable",
           response.status,
           apiMessage(payload, `Armada server request failed (${response.status}) at ${origin}.`),
         );
@@ -414,19 +402,18 @@ async function refreshLocked(
   timeoutMs: number,
   signal?: AbortSignal,
 ): Promise<NonNullable<Awaited<ReturnType<SessionStore["read"]>>>> {
-  let response: Response;
-  try {
-    response = await io.fetch(apiUrl(origin, "/api/v1/auth/refresh"), {
+  const result = await requestApi(
+    apiUrl(origin, "/api/v1/auth/refresh"),
+    {
       method: "POST",
-      headers: { "content-type": "application/json", accept: "application/json" },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({ refreshToken: saved.refreshToken }),
-      redirect: "error",
-      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
-    });
-  } catch {
-    throw new AuthError("Armada could not reach the server.", "unavailable");
-  }
-  const value = (await response.json().catch(() => null)) as {
+    },
+    { fetch: (input, init) => io.fetch(input, init), timeoutMs, signal, combineSignal: true },
+  );
+  if (result.kind === "transport") throw new AuthError("Armada could not reach the server.", "unavailable");
+  const { response, payload } = result;
+  const value = payload as {
     accessToken?: unknown;
     refreshToken?: unknown;
     expiresAt?: unknown;
@@ -502,15 +489,12 @@ export function armadaApiUrl(value: string | undefined): string {
 }
 
 function apiUrl(origin: string, path: string): URL {
-  if (!path.startsWith("/")) throw new AuthError("API paths must start with '/'.", "usage");
-  const url = new URL(path, origin);
-  if (url.origin !== origin) throw new AuthError("API paths must stay on the Armada origin.", "usage");
-  return url;
-}
-
-function headers(value: RequestInit["headers"]): Record<string, string> {
-  if (!value) return {};
-  return Object.fromEntries(new Headers(value).entries());
+  try {
+    return sdkApiUrl(origin, path);
+  } catch (error) {
+    if (error instanceof TypeError) throw new AuthError(error.message, "usage");
+    throw error;
+  }
 }
 
 function apiMessage(payload: unknown, fallback: string): string {

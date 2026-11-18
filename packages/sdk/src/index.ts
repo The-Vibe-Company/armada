@@ -6,6 +6,7 @@ import {
   type ProviderErrorCode,
   type VaultErrorCode,
 } from "@armada/core";
+import { apiUrl, requestApi } from "./request.ts";
 
 export type FailureCode =
   | ApiFailureCode
@@ -268,58 +269,6 @@ interface ExecResult {
   timedOut: boolean;
   truncated: boolean;
 }
-const commonCodes = {
-  build_failed: true,
-  busy: true,
-  conflict: true,
-  credential_binding_required: true,
-  credential_binding_unsafe: true,
-  credential_binding_unsupported: true,
-  credential_busy: true,
-  credential_refused: true,
-  denied: true,
-  forbidden: true,
-  host_draining: true,
-  host_full: true,
-  init_failed: true,
-  internal: true,
-  invalid: true,
-  invalid_config: true,
-  invalid_request: true,
-  missing_credential: true,
-  no_credentials: true,
-  no_running_turn: true,
-  not_found: true,
-  payment_required: true,
-  prompt_failed: true,
-  provider_not_configured: true,
-  provider_routing_unavailable: true,
-  rate_limited: true,
-  sandbox_not_ready: true,
-  sandbox_retention_ended: true,
-  sandbox_terminal: true,
-  setup_failed: true,
-  snapshot_failed: true,
-  start_failed: true,
-  unauthorized: true,
-  unavailable: true,
-  unknown: true,
-  unknown_route: true,
-  unsupported: true,
-  upstream: true,
-} satisfies Record<
-  | Exclude<LaunchErrorCode | ProviderErrorCode | VaultErrorCode | GoldenErrorCode, ApiFailureCode>
-  | "internal"
-  | "unknown_route"
-  | "sandbox_terminal"
-  | "busy"
-  | "denied"
-  | "upstream",
-  boolean
-> &
-  Partial<Record<ApiFailureCode, boolean>>;
-const retryStatuses = new Set([429, 502, 503, 504]);
-
 /** Loopback hosts never leave this machine: localhost, 127.0.0.0/8 and ::1. Other names depend on the resolver. */
 function loopbackHost(hostname: string): boolean {
   const host = hostname.toLowerCase();
@@ -427,105 +376,45 @@ export class Armada {
     options: RequestOptions = {},
     defaultTimeoutMs = 300000,
   ): Promise<T> {
-    const deadline = AbortSignal.timeout(options.timeoutMs ?? this.timeoutMs ?? defaultTimeoutMs);
-    const signal = options.signal ? AbortSignal.any([options.signal, deadline]) : deadline;
-    for (let attempt = 0; ; attempt++) {
-      let response: Response;
-      try {
-        response = await this.fetcher(`${this.origin}/api/v1/${route}`, {
-          method: "POST",
-          headers: {
-            authorization: `Bearer ${this.#token}`,
-            "content-type": "application/json",
-            accept: "application/json",
-          },
-          body: JSON.stringify(body),
-          redirect: "error",
-          signal,
-        });
-      } catch {
-        // No automatic transport replay: acceptance may already have happened.
-        throw new ArmadaError("transport_error", 0, undefined, !readOnly);
-      }
-      let text = "";
-      try {
-        text = await response.text();
-      } catch {
-        // A success body that fails or hits the deadline after headers is a transport failure,
-        // not a malformed payload; a mutation may already have been accepted. A failure status
-        // keeps its HTTP status and Retry-After, classified below without the body.
-        if (response.ok) throw new ArmadaError("transport_error", 0, undefined, !readOnly);
-      }
-      let value: unknown = null;
-      try {
-        value = JSON.parse(text);
-      } catch {
-        // Malformed payloads are classified below as unknown_response.
-      }
-      const error = value && typeof value === "object" && "error" in value ? value.error : undefined;
-      const retryAfterSeconds = response.ok ? undefined : retryAfter(response.headers.get("retry-after"), error);
-      // A draining or auth-unavailable server refuses with this body before dispatching anything.
-      if (
-        response.status === 503 &&
-        value &&
-        typeof value === "object" &&
-        "error" in value &&
-        value.error === "temporarily_unavailable"
-      )
-        throw new ArmadaError("unavailable", 503, "temporarily_unavailable", false, retryAfterSeconds);
-      if (response.ok) {
-        if (!value || typeof value !== "object" || Array.isArray(value))
-          throw new ArmadaError("unknown_response", response.status, undefined, !readOnly);
-        return value as T;
-      }
-      // A server-requested delay belongs to the caller's scheduler: never replay early.
-      if (
-        readOnly &&
-        retryStatuses.has(response.status) &&
-        attempt < this.retries &&
-        retryAfterSeconds === undefined &&
-        !response.headers.has("retry-after") &&
-        !signal.aborted
-      )
-        continue;
-      const rawCode =
-        error && typeof error === "object" && "code" in error && typeof error.code === "string"
-          ? error.code
-          : undefined;
-      const code: FailureCode =
-        rawCode && (Object.hasOwn(API_FAILURE_HELP, rawCode) || Object.hasOwn(commonCodes, rawCode))
-          ? (rawCode as FailureCode)
-          : "unknown_response";
-      // Untrusted messages/details may echo secrets; errors retain only the code and status.
-      const serverCode = rawCode && /^[a-z][a-z0-9_]{0,99}$/.test(rawCode) ? rawCode : undefined;
-      throw new ArmadaError(
-        code,
-        response.status,
-        serverCode,
-        !readOnly && (response.status >= 500 || code === "outcome_unknown"),
-        retryAfterSeconds,
-      );
+    let serialized: string | undefined;
+    try {
+      serialized = JSON.stringify(body);
+    } catch {
+      throw new ArmadaError("transport_error", 0, undefined, !readOnly);
     }
+    const result = await requestApi(
+      apiUrl(this.origin, `/api/v1/${route}`),
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        ...(serialized !== undefined ? { body: serialized } : {}),
+      },
+      {
+        fetch: (url, init) => this.fetcher(String(url), init),
+        token: this.#token,
+        timeoutMs: options.timeoutMs ?? this.timeoutMs ?? defaultTimeoutMs,
+        signal: options.signal,
+        combineSignal: true,
+        readOnly,
+        readRetries: this.retries,
+      },
+    );
+    if (result.kind === "transport")
+      throw new ArmadaError(result.failure.code, 0, undefined, result.failure.outcomeUnknown);
+    const { response, payload, failure, bodyReadFailed } = result;
+    if (failure)
+      throw new ArmadaError(
+        failure.code,
+        response.status,
+        failure.serverCode,
+        failure.outcomeUnknown,
+        failure.retryAfterSeconds,
+      );
+    if (bodyReadFailed) throw new ArmadaError("transport_error", 0, undefined, !readOnly);
+    if (!payload || typeof payload !== "object" || Array.isArray(payload))
+      throw new ArmadaError("unknown_response", response.status, undefined, !readOnly);
+    return payload as T;
   }
-}
-/** Accept only a delay in seconds or an HTTP date (header), or a whole number of seconds (failure body). */
-function retryAfter(header: string | null, error: unknown): number | undefined {
-  const seconds = (value: number) => (Number.isFinite(value) && value >= 0 ? Math.ceil(value) : undefined);
-  if (header !== null) {
-    const text = header.trim();
-    if (/^\d{1,10}$/.test(text)) return seconds(Number(text));
-    const date = /[a-z]{3}, \d{2} [a-z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT$/i.test(text) ? Date.parse(text) : Number.NaN;
-    if (Number.isFinite(date)) return seconds(Math.max(0, (date - Date.now()) / 1000));
-  }
-  if (!error || typeof error !== "object") return undefined;
-  const details = "details" in error && error.details && typeof error.details === "object" ? error.details : undefined;
-  const value =
-    "retryAfterSeconds" in error
-      ? error.retryAfterSeconds
-      : details && "retryAfterSeconds" in details
-        ? details.retryAfterSeconds
-        : undefined;
-  return typeof value === "number" && Number.isSafeInteger(value) ? seconds(value) : undefined;
 }
 function shellPath(path: string): string {
   if (!path || path.includes("\0")) throw new TypeError("A nonempty file path without NUL is required.");
