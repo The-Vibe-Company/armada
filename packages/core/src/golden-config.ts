@@ -251,6 +251,35 @@ export function parseGoldenConfig(input: unknown): GoldenConfig {
 export const REPOSITORY_FETCH_FAILED_EXIT = 75;
 export const REPOSITORY_FETCH_FAILED_MARKER = "ARMADA_REPOSITORY_FETCH_FAILED";
 
+/** First line of the hook that records pushes; the observer requires it before trusting the ledger. */
+export const PUSH_LEDGER_MARKER = "# armada-push-ledger v1";
+/** Per-repository ledger in the common Git directory, one `<unix time>\t<branch>\t<sha>` line per push. */
+export const PUSH_LEDGER_FILE = "armada-pushes";
+
+// A reference-transaction hook cannot be skipped with --no-verify and runs after
+// the tracking ref's reflog entry is written, so "update by push" separates a
+// push from a fetch. The ledger survives pruning or deleting the tracking ref,
+// which also deletes that ref's reflog.
+const pushLedgerHook = `#!/bin/sh
+${PUSH_LEDGER_MARKER}
+test "$1" = committed || exit 0
+ledger="$(git rev-parse --git-common-dir)/${PUSH_LEDGER_FILE}" || exit 0
+while read -r old new ref; do
+  case "$ref" in refs/remotes/origin/*) ;; *) continue ;; esac
+  case "$new" in *[!0]*) ;; *) continue ;; esac
+  if [ "$(git reflog show --format='%H %gs' -n 1 "$ref" -- 2>/dev/null)" = "$new update by push" ]; then
+    printf '%s\\t%s\\t%s\\n' "$(date +%s)" "\${ref#refs/remotes/origin/}" "$new" >>"$ledger"
+  fi
+done
+exit 0
+`;
+
+/**
+ * Installs the push ledger hook in the current repository. It never replaces a
+ * different existing hook; the observer then sees no marker and refuses merge stops.
+ */
+export const pushLedgerInstall = `{ hooks=$(git rev-parse --git-path hooks) && mkdir -p "$hooks" && hook="$hooks/reference-transaction" && { [ ! -e "$hook" ] || [ "$(sed -n 2p "$hook")" = ${shQuote(PUSH_LEDGER_MARKER)} ]; } && printf '%s' ${shQuote(pushLedgerHook)} >"$hook" && chmod +x "$hook"; } >/dev/null 2>&1 || :`;
+
 /** Fast-forward refresh using the caller-authorized helper already installed by launch. Never prompts. */
 export function pullCommand(repo: GoldenRepo, trackPushes = false): ShellCommand {
   // Fetch cannot mutate the checkout. Only its completed failures may safely
@@ -258,7 +287,7 @@ export function pullCommand(repo: GoldenRepo, trackPushes = false): ShellCommand
   // Upgrade the default narrow clone mapping while preserving custom refspecs.
   const singleBranch = shQuote(`+refs/heads/${repo.branch}:refs/remotes/origin/${repo.branch}`);
   const tracking = trackPushes
-    ? `if [ "$(git config --local --get-all remote.origin.fetch 2>/dev/null)" = ${singleBranch} ]; then git config --local --replace-all remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*' >/dev/null 2>&1 || :; fi; `
+    ? `if [ "$(git config --local --get-all remote.origin.fetch 2>/dev/null)" = ${singleBranch} ]; then git config --local --replace-all remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*' >/dev/null 2>&1 || :; fi; ${pushLedgerInstall}; `
     : "";
   const command = `${tracking}if env GIT_TERMINAL_PROMPT=0 git fetch origin ${shQuote(repo.branch)}; then env GIT_TERMINAL_PROMPT=0 git merge --ff-only FETCH_HEAD; else printf '%s\\n' ${REPOSITORY_FETCH_FAILED_MARKER} >&2; exit ${REPOSITORY_FETCH_FAILED_EXIT}; fi`;
   return { command, cwd: `${GOLDEN_ROOT}/${repo.dir}`, timeoutSeconds: CLONE_TIMEOUT_SECONDS };

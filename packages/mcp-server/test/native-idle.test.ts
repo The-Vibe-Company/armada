@@ -409,6 +409,7 @@ test.each([
   "merged with scratch push",
   "merged with later push",
   "merged after closed",
+  "ledger gap",
   "open",
   "closed",
   "no push",
@@ -488,7 +489,7 @@ test.each([
       stdout:
         state === "no push" || state === "corrected report"
           ? ""
-          : `topic\t${sha}\n${state === "merged after closed" ? `topic\t${"e".repeat(40)}\n` : ""}${state.startsWith("merged with") ? `scratch\t${"c".repeat(40)}\n` : ""}`,
+          : `${state === "ledger gap" ? "!untracked\n" : ""}topic\t${sha}\n${state === "merged after closed" ? `topic\t${"e".repeat(40)}\n` : ""}${state.startsWith("merged with") ? `scratch\t${"c".repeat(40)}\n` : ""}`,
       stderr: "",
       timedOut: false,
       truncated: false,

@@ -1,4 +1,4 @@
-import type { SandboxPullRequest } from "@armada/core";
+import { PUSH_LEDGER_FILE, PUSH_LEDGER_MARKER, type SandboxPullRequest } from "@armada/core";
 import {
   type ExecRequest,
   type ExecResult,
@@ -34,6 +34,8 @@ type Scan = {
   // Per repository and branch, every pushed SHA, newest first.
   pushes: Record<string, [string, string[]][]>;
   discovered: Identity[];
+  // Sticky: once a push may have escaped the ledger, coverage is unprovable.
+  untracked?: true;
 };
 type Target = {
   id: string;
@@ -61,23 +63,42 @@ const maxKnownPulls = 64;
 const maxPushesPerBranch = 16;
 
 // A local branch name or matching SHA alone also describes a checkout made by
-// another sandbox. Only reflog records written by a push qualify for discovery.
-// The reflog lists each branch's pushes newest first; every distinct SHA is kept.
-const readPushes = `remote=$(git remote get-url --push --all origin) || exit 1
-case "$remote" in
-  "https://github.com/$2"|"https://github.com/$2.git"|"git@github.com:$2"|"git@github.com:$2.git"|"ssh://git@github.com/$2"|"ssh://git@github.com/$2.git") ;;
-  *) exit 1 ;;
-esac
+// another sandbox. Only pushes qualify for discovery: the launch-installed
+// ledger (which survives a pruned or deleted tracking ref) and reflog records
+// written by a push. Output lists each branch's pushes newest first. A missing
+// ledger hook, or a reflog push the ledger lacks, prints `!untracked`: pushes
+// may have gone unrecorded, so the scan can no longer prove coverage.
+export const readPushEvidence = `hook="$(git rev-parse --git-path hooks)/reference-transaction" || exit 1
+ledger="$(git rev-parse --git-common-dir)/${PUSH_LEDGER_FILE}" || exit 1
+if [ ! -x "$hook" ] || [ "$(sed -n 2p "$hook")" != '${PUSH_LEDGER_MARKER}' ]; then echo '!untracked'; fi
+entries=$(if [ -f "$ledger" ]; then cat "$ledger"; fi) || exit 1
 logs=$(git reflog show --all --date=unix --format='%gD%x09%gs%x09%H') || exit 1
-printf '%s\\n' "$logs" |
-awk -v since="$1" -F '\\t' '$1 ~ /^refs\\/remotes\\/origin\\// && $2 == "update by push" {
+{ printf '%s\\n' "$logs"; if [ -n "$entries" ]; then printf '%s\\n' "$entries" | awk '{ print "L\\t" $0 }'; fi; } |
+awk -v since="$1" -F '\\t' '$1 == "L" {
+    if ($2+0 >= since && $3 != "" && $4 != "") { n++; lref[n]=$3; lsha[n]=$4; ledger[$3 "\\t" $4]=1 }
+    next
+  }
+  $1 ~ /^refs\\/remotes\\/origin\\// && $2 == "update by push" {
     timestamp=$1
     sub(/^.*@\\{/, "", timestamp)
     if (timestamp+0 < since) next
     sub(/@\\{[^@]*\\}$/, "", $1)
     sub(/^refs\\/remotes\\/origin\\//, "", $1)
-    if (!seen[$1 "\\t" $3]++) print $1 "\\t" $3
-}'`;
+    m++; rref[m]=$1; rsha[m]=$3
+  }
+  END {
+    for (i=1; i<=m; i++) {
+      if (!ledger[rref[i] "\\t" rsha[i]]) print "!untracked"
+      if (!seen[rref[i] "\\t" rsha[i]]++) print rref[i] "\\t" rsha[i]
+    }
+    for (i=n; i>=1; i--) if (!seen[lref[i] "\\t" lsha[i]]++) print lref[i] "\\t" lsha[i]
+  }'`;
+const readPushes = `remote=$(git remote get-url --push --all origin) || exit 1
+case "$remote" in
+  "https://github.com/$2"|"https://github.com/$2.git"|"git@github.com:$2"|"git@github.com:$2.git"|"ssh://git@github.com/$2"|"ssh://git@github.com/$2.git") ;;
+  *) exit 1 ;;
+esac
+${readPushEvidence}`;
 
 export function createSandboxPullRequests(
   sql: Sql,
@@ -169,6 +190,10 @@ export function createSandboxPullRequests(
         const lines = result.stdout.trimEnd() ? result.stdout.trimEnd().split("\n") : [];
         const pushed = new Map<string, string[]>();
         for (const line of lines) {
+          if (line === "!untracked") {
+            scan.untracked = true;
+            continue;
+          }
           const [ref, sha] = line.split("\t");
           if (!ref || ref.length > 255 || /\s/.test(ref) || [...ref].some((char) => char.charCodeAt(0) < 32)) return;
           if (!sha || !/^[a-f0-9]{40}$/.test(sha)) return;
@@ -334,7 +359,12 @@ export function createSandboxPullRequests(
       signal.throwIfAborted();
       const list = [...found.values()];
       const proof =
-        row.active && row.launch_authorized && complete && list.length > 0 && list.every((pr) => pr.state === "merged")
+        row.active &&
+        row.launch_authorized &&
+        complete &&
+        !scan.untracked &&
+        list.length > 0 &&
+        list.every((pr) => pr.state === "merged")
           ? {
               checkedAt,
               connectionEpoch: row.connection_epoch,

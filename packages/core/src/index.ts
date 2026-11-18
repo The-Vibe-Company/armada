@@ -206,9 +206,12 @@ export {
   type GoldenErrorCode,
   type GoldenRepo,
   normalizeGitHubGoldenConfig,
+  PUSH_LEDGER_FILE,
+  PUSH_LEDGER_MARKER,
   parseGoldenConfig,
   parseGoldenName,
   pullCommand,
+  pushLedgerInstall,
   secretKeyPath,
   splitRepoArg,
 } from "./golden-config.ts";

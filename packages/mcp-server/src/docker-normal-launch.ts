@@ -20,6 +20,7 @@ import {
   parseApplicationSecretBindings,
   parseGoldenConfig,
   parseReadableVariableBindings,
+  pushLedgerInstall,
   type ReadableVariableBinding,
   resolveModelChoice,
   type SkillReceipt,
@@ -805,7 +806,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
               "export GIT_TERMINAL_PROMPT=0",
               ...manifest.request.repos.map(
                 (repo) =>
-                  `git clone --depth=1 --single-branch --branch ${quote(repo.branch)} -- ${quote(repo.url)} ${quote(`/home/user/${repo.dir}`)} && git -C ${quote(`/home/user/${repo.dir}`)} config --local --replace-all remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'`,
+                  `git clone --depth=1 --single-branch --branch ${quote(repo.branch)} -- ${quote(repo.url)} ${quote(`/home/user/${repo.dir}`)} && git -C ${quote(`/home/user/${repo.dir}`)} config --local --replace-all remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*' && (cd ${quote(`/home/user/${repo.dir}`)} && ${pushLedgerInstall})`,
               ),
             ].join("\n");
             const commands = createRuntimeCommands(createRuntimeEnrolments(sql, key), key);
