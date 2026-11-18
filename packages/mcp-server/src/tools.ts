@@ -2566,7 +2566,8 @@ function publicationFailure(error: unknown, acknowledged: boolean): never {
 
 /** The run a successful steer left in progress, or "" when it cannot be proven.
  * Boat may answer with a steer-record ID; then the newest prompt event names the
- * run. A restart must not settle as the interrupted run it replaced.
+ * run, but only relative to a known prior run: a restart must not settle as the
+ * run it interrupted, and an unresolved earlier steer leaves nothing to compare.
  */
 async function steeredRun(
   provider: Provider,
@@ -2581,9 +2582,11 @@ async function steeredRun(
   } catch {
     /* Not a pollable run: resolve it from events below. */
   }
+  // Without a concrete prior run, a stale newest event is indistinguishable
+  // from the replacement; keep the empty marker so report resolves it later.
+  if (!found.taskPromptId) return "";
   try {
-    signal.throwIfAborted();
-    const latest = (await latestPrompt(provider, found.providerSandboxId, true))?.promptId;
+    const latest = (await latestPrompt(provider, found.providerSandboxId, true, signal))?.promptId;
     if (latest && (delivery === "native" || latest !== found.taskPromptId)) return latest;
   } catch {
     /* Accepted steer stays reportable through the empty marker. */

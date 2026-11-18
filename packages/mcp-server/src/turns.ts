@@ -379,6 +379,7 @@ export async function latestPrompt(
   provider: Provider,
   sandboxId: string,
   complete = false,
+  signal?: AbortSignal,
 ): Promise<{ promptId: string; conversationId: string | null } | null> {
   let latest: AgentEvent | undefined;
   let cursor: string | undefined;
@@ -388,6 +389,7 @@ export async function latestPrompt(
       direction: "backward",
       limit: EVENT_PAGE_LIMIT,
       ...(cursor ? { cursor } : {}),
+      ...(signal ? { signal } : {}),
     });
     latest = latestPromptEvent(read.events);
     if (latest || !read.hasMore) break;

@@ -210,3 +210,30 @@ test("a restart steer registers its replacement run so settlement exports it", a
     await server.close();
   }
 });
+
+test("a restart steer after an unresolved steer keeps the marker instead of the interrupted run", async () => {
+  const server = await harness({}, await sharedDatabase());
+  try {
+    const { client, token, people, boat, db } = server;
+    const mcp = await client(await token(people.member));
+    const id = (await call(mcp, "launch", { golden: "shared", harness: "codex", prompt: "first" })).data.id;
+    // The replacement run is not visible yet when the steer returns.
+    let interrupting = "prompt_1";
+    boat.provider.steer = async (input) => {
+      boat.finish(input.sandboxId, interrupting, "interrupted");
+      return { conversationId: "conv_1", promptId: "unpollable-steer-record", mode: "restart" };
+    };
+    const taskPromptId = async () =>
+      (await db.query<{ task_prompt_id: string | null }>("select task_prompt_id from sandboxes where id=$1", [id]))
+        .rows[0]?.task_prompt_id;
+    expect((await call(mcp, "steer", { id, text: "change course" })).isError).toBe(false);
+    expect(await taskPromptId()).toBe("");
+    // The first replacement appears late, then a second steer interrupts it.
+    await boat.provider.prompt({ sandboxId: "bx_1", harness: "codex", text: "change course" });
+    interrupting = "prompt_2";
+    expect((await call(mcp, "steer", { id, text: "again" })).isError).toBe(false);
+    expect(await taskPromptId()).toBe("");
+  } finally {
+    await server.close();
+  }
+});
