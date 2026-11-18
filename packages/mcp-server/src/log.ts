@@ -8,11 +8,16 @@ const LIMIT = 600;
  * can echo a parameter, so nothing is logged raw.
  */
 export function redactForLog(text: string): string {
-  const masked = redactKnownTokens(text)
+  const masked = redactCredentials(text);
+  return masked.length > LIMIT ? `${masked.slice(0, LIMIT)}...` : masked;
+}
+
+/** The same credential masking as {@link redactForLog}, without truncation, for exported content. */
+export function redactCredentials(text: string): string {
+  return redactKnownTokens(text)
     .replace(/\b(bearer\s+)\S+/gi, "$1***")
     .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s/]*@/gi, (match) => `${match.slice(0, match.indexOf("://") + 3)}***@`)
     .replace(/\beyJ[\w-]+\.[\w-]+\.[\w-]+/g, "***")
     .replace(/\barmada_[a-z]+_[\w-]{8,}/gi, "***")
     .replace(/\b(?:sk|sb)[-_][\w-]{8,}/gi, "***");
-  return masked.length > LIMIT ? `${masked.slice(0, LIMIT)}...` : masked;
 }
