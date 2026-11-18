@@ -68,6 +68,18 @@ progress. Delete the corresponding entry when a file is removed or made
 compliant. CI compares the inventory with the base commit of the checked-out candidate
 and rejects additions or hash changes.
 
+## Table ownership
+
+`bun run lint` checks literal SQL insert/update/delete statements and Supabase
+mutation chains in non-test TypeScript against the owner globs in
+[`tables.ts`](tables.ts). New writes to those tables belong in the owning module.
+Each allowlist line covers one existing write by file, table and verb. Delete the
+matching line when a write moves into its owning module or is removed. Shard 1
+checks that exception counts do not increase against the same frozen base used by the docs guard.
+Local lint uses the merge base with `origin/main` when available.
+Dynamic SQL identifiers, indirect client calls, raw HTTP requests and SQL files
+are outside the scanner's scope.
+
 ## Landmines
 
 `bun run lint` runs Landmines through Oxlint with Node 22.18 or newer.

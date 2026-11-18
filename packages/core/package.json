@@ -5,6 +5,10 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./accounts": "./src/account-binding-policy.ts",
+    "./docker": "./src/docker-api.ts",
+    "./launch": "./src/launch.ts",
+    "./runtime": "./src/runtime-startup-failure.ts",
     "./server": "./src/server.ts"
   },
   "dependencies": {

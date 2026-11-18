@@ -12,7 +12,7 @@ import type { Caller } from "./caller.ts";
 import { createSqlData } from "./data.ts";
 import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
-import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
+import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
 import { selfFinishToken } from "./sandbox-finish.ts";
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -284,7 +284,7 @@ export function createRuntimeMcp(options: {
       };
       // Serialize preparation AND enqueue, not network waits. Concurrent updated
       // grants can never queue an older snapshot behind a newer configuration.
-      const local: Sql = { query: tx.query.bind(tx), transaction: async (work) => work(local) };
+      const local = scopedRuntimeSql(tx);
       signal?.throwIfAborted();
       await createRuntimeCommands(createRuntimeEnrolments(local, key), key).enqueue(s.ownerId, wire, live.epoch);
       return { ...p, epoch: live.epoch, wire };

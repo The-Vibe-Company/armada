@@ -30,6 +30,8 @@ export class Journal {
  CREATE TABLE IF NOT EXISTS requests(id TEXT PRIMARY KEY,body TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS processes(pid INTEGER PRIMARY KEY,body TEXT NOT NULL);`);
   }
+  // The listener only schedules work, so a synchronous transaction can commit before it runs.
+  onAppend: ((sequence: number) => void) | undefined;
   append(event: AgentEvent): number {
     const terminalSnapshot = event.kind === "message" && !event.partial && event.textMode === "snapshot";
     // Control events must retain their identity, status and failure reason. Bound only
@@ -53,6 +55,7 @@ export class Journal {
         data: { originalKind: event.kind, bytes: body.length, ...(terminalSnapshot ? { terminal: true } : {}) },
       });
     const sequence = Number(this.db.query("INSERT INTO events(body) VALUES(?)").run(body).lastInsertRowid);
+    this.onAppend?.(sequence);
     // A terminal snapshot is an answer receipt. Never acknowledge a finished answer whose full text
     // was replaced by a truncation marker (including size growth caused by secret redaction).
     if (oversized && terminalSnapshot) throw new HarnessError("invalid_harness_protocol");
