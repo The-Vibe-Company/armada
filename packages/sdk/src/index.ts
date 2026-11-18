@@ -135,12 +135,12 @@ export interface GoldenLaunchResult {
   expiresAt: string | null;
   [key: string]: unknown;
 }
-/** A Docker launch has no golden; the prompt and conversation IDs are present only when a first prompt was sent. */
+/** A Docker launch has no golden; the prompt and conversation IDs are null until a first prompt is recorded. */
 export interface DockerLaunchResult {
   sandbox: { id: string; provider: "docker"; status: string; hostId: string; [key: string]: unknown };
   golden: null;
-  promptId?: string;
-  conversationId?: string;
+  promptId?: string | null;
+  conversationId?: string | null;
   ttlSeconds: number;
   expiresAt: string;
   [key: string]: unknown;

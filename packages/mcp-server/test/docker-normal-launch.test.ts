@@ -784,11 +784,12 @@ test("prompt-free, image-free launch normalizes UUIDs, uses the default image, h
   expect(result.ttlSeconds).toBe(3600);
   expect(result.promptId).toBeUndefined();
   expect(result.conversationId).toBeUndefined();
-  expect(
-    await f
-      .service(sql, true, 10_000, `ghcr.io/the-vibe-company/armada-sandbox@sha256:${"b".repeat(64)}`)
-      .launch(f.caller, body),
-  ).toEqual(result);
+  const { post } = restControl(f, {
+    dockerLaunch: f.service(sql, true, 10_000, `ghcr.io/the-vibe-company/armada-sandbox@sha256:${"b".repeat(64)}`),
+  });
+  const replay = await post("sandbox/launch", { ...base, ttlSeconds: 3600 });
+  publishedResponse("sandbox/launch").parse(replay);
+  expect(replay).toEqual({ ...result, promptId: null, conversationId: null });
   expect(await counts(f)).toEqual({ sandboxes: 1, claims: 1, jobs: 2, commands: 3 });
 });
 

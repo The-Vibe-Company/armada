@@ -21,7 +21,6 @@ import {
   resolveRepositoryDir,
   VaultError,
 } from "@armada/core/server";
-import type { z } from "zod";
 import type { Caller } from "./caller.ts";
 import type { ControlOptions } from "./control.ts";
 import { scopedOrg } from "./control-caller.ts";
@@ -29,7 +28,6 @@ import { isLaunchConnectionList, optional, required, requiredNumber } from "./co
 import type { ScopedData } from "./data.ts";
 import { providerForGolden } from "./golden-control.ts";
 import { launchCredentials } from "./launch-credentials.ts";
-import type { REST_LAUNCH_RESPONSE } from "./launch-response-schemas.ts";
 import { parseSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 
 type LaunchControlOptions = Pick<
@@ -59,7 +57,7 @@ export async function launchRoute(
   caller: Caller,
   body: Record<string, unknown>,
   runtime: boolean | "modal" = false,
-): Promise<unknown> {
+) {
   const modalRuntime = runtime === "modal";
   const runtimePolicy = modalRuntime ? options.modalRuntimeLaunch : runtime ? options.boatRuntimeLaunch : undefined;
   const runtimeHost = runtime && !modalRuntime ? options.runtimeHostFor : undefined;
@@ -289,7 +287,7 @@ function launchJson(result: LaunchResult) {
     ttlSeconds: result.ttlSeconds,
     expiresAt: result.expiresAt?.toISOString() ?? null,
     github: launchGitHubResponse(result.github),
-  } satisfies z.input<typeof REST_LAUNCH_RESPONSE>;
+  };
 }
 
 function modelChoice(

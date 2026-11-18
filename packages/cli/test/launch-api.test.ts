@@ -106,6 +106,7 @@ describe("launch through the Armada API", () => {
         expect(JSON.parse(out)).toMatchObject({
           machineSize,
           golden: "web",
+          sandbox: { id: "11111111-1111-4111-8111-111111111111", provider: "boat" },
           credentialId: "33333333-3333-4333-8333-333333333333",
           credentialVersion: 7,
           harness: "codex",

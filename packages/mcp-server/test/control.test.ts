@@ -1211,6 +1211,9 @@ describe("control API", () => {
         externalRef: "tender:1",
       };
       publishedRequest("sandbox/launch").parse({ org, ...request });
+      const malformed = await call("sandbox/launch", { ...request, ttl_seconds: 60 });
+      expect(malformed?.status).toBe(400);
+      expect(boat.forks).toHaveLength(0);
       const first = await call("sandbox/launch", request);
       expect(first?.status).toBe(200);
       const receipt = await first!.json();

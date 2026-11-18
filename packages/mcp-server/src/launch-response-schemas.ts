@@ -3,9 +3,7 @@ import { z } from "zod";
 import { GOLDEN_OUTPUT, LOGS_OUTPUT } from "./tools.ts";
 
 /**
- * Public HTTP 200 bodies of the two REST launch routes. Their MCP tools have no typed
- * output, so the OpenAPI description is generated from these schemas, and the
- * handlers' representative responses are tested against them.
+ * Public HTTP 200 envelope of the canonical sandbox launch route.
  * Records stay open: providers and later releases add fields.
  */
 export const REST_LAUNCH_RESPONSE = z
@@ -23,18 +21,33 @@ export const REST_LAUNCH_RESPONSE = z
       .passthrough()
       .nullable()
       .describe("Null for Docker launches, which have no golden."),
-    promptId: z.string().nullable().optional(),
-    conversationId: z.string().nullable().optional(),
+    promptId: z.string().nullable(),
+    conversationId: z.string().nullable(),
     ttlSeconds: z.number(),
     expiresAt: z.string().nullable(),
     github: z.object({ status: z.string() }).passthrough(),
-    helper: z.unknown().optional(),
-    runtime: z
-      .object({ kind: z.literal("armada"), epoch: z.string() })
-      .nullable()
-      .optional(),
+    helper: z.object({ status: z.string() }).passthrough().nullable(),
+    runtime: z.object({ kind: z.literal("armada"), epoch: z.string() }).nullable(),
   })
   .passthrough();
+
+/** Fill missing fields from asynchronous Docker launches and pre-existing golden receipts. */
+export function canonicalLaunchResponse<
+  T extends {
+    helper?: { status: string } | null;
+    runtime?: { kind: "armada"; epoch: string } | null;
+    promptId?: string | null;
+    conversationId?: string | null;
+  },
+>(result: T) {
+  return {
+    ...result,
+    helper: result.helper ?? null,
+    runtime: result.runtime ?? null,
+    promptId: result.promptId ?? null,
+    conversationId: result.conversationId ?? null,
+  };
+}
 
 /** States of `public.template_launch_requests.state`. */
 const TEMPLATE_LAUNCH_STATES = ["claimed", "allocating", "succeeded", "failed", "reconciling"] as const;
