@@ -16,9 +16,12 @@ export function observeRequest<T extends Response | undefined>(work: () => T | P
   return current.run({ id, log }, async () => {
     const started = performance.now();
     let response: T | Response;
+    let errorClass: string | undefined;
     try {
       response = await work();
-    } catch {
+    } catch (error) {
+      // Keep the cause's class (a code identifier), never its message: messages may carry caller data.
+      errorClass = errorClassOf(error);
       response = Response.json({ error: "internal" }, { status: 500 });
     }
     log(
@@ -27,6 +30,7 @@ export function observeRequest<T extends Response | undefined>(work: () => T | P
         requestId: id,
         status: response?.status ?? 101,
         durationMs: Math.round(performance.now() - started),
+        ...(errorClass ? { errorClass } : {}),
       }),
     );
     if (!response) return response;
@@ -34,6 +38,11 @@ export function observeRequest<T extends Response | undefined>(work: () => T | P
     headers.set(REQUEST_ID_HEADER, id);
     return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
   });
+}
+
+function errorClassOf(error: unknown): string {
+  const name = error instanceof Error ? error.constructor.name : typeof error;
+  return /^[A-Za-z_$][\w$]{0,63}$/.test(name) ? name : "Error";
 }
 
 export async function observeProviderCall<T>(

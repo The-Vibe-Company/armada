@@ -149,7 +149,7 @@ test("overlapping requests correlate provider outcomes, response headers and saf
     { event: "provider_call", provider: "boat", operation: "get", requestId: okId, outcome: "ok" },
     { event: "http_request", requestId: okId, status: 200 },
     { event: "provider_call", provider: "boat", operation: "get", requestId: failedId, outcome: "error" },
-    { event: "http_request", requestId: failedId, status: 500 },
+    { event: "http_request", requestId: failedId, status: 500, errorClass: "Error" },
   ]);
   expect(lines.join("\n")).not.toContain(privateValue);
 });

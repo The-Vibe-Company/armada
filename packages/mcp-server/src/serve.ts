@@ -717,7 +717,10 @@ export async function startServer(
               options.logError,
             )
           : fetch(request),
-      error: () => observeRequest(() => Response.json({ error: "internal" }, { status: 500 }), options.logError),
+      error: (error) =>
+        observeRequest(() => {
+          throw error;
+        }, options.logError),
       websocket: runtimeSockets.websocket,
     }),
     {
