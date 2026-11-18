@@ -336,7 +336,6 @@ test("the Modal reaper discovers bound Apps and reports only machines without a 
   });
 
   const logs: unknown[] = [];
-  const closed: string[] = [];
   const lane = createModalReaper(
     db,
     "https://armada.test",
@@ -350,7 +349,6 @@ test("the Modal reaper discovers bound Apps and reports only machines without a 
           yield { ...base, sandboxId: "admitted", machineId: "physical-current" };
           yield { ...base, sandboxId: "lost-admission", machineId: "physical-orphan" };
         },
-        close: () => void closed.push(target.appId),
       };
     },
     (line) => logs.push(JSON.parse(line)),
@@ -358,7 +356,6 @@ test("the Modal reaper discovers bound Apps and reports only machines without a 
   );
 
   await lane.reconcileOne(new AbortController().signal);
-  expect(closed).toEqual([binding.appId]);
   expect(logs).toContainEqual({
     metric: "reaper_unknown_machines",
     provider: "modal",

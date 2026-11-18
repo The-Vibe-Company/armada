@@ -15,14 +15,18 @@ type OpenInventory = (
   binding: ModalBinding,
   deploymentId: string,
   signal: AbortSignal,
-) => Promise<ProviderReaperSource["inventory"] & { close(): void }>;
+) => Promise<ProviderReaperSource["inventory"]>;
 
-function reaperQuery<T>(sql: Sql, query: string, params?: unknown[]) {
-  if (!sql.transaction) return sql.query<T>(query, params);
-  return sql.transaction(async (tx) => {
-    await tx.query("set local statement_timeout = '5s'");
-    return tx.query<T>(query, params);
-  });
+export function modalReaperSql(sql: Sql) {
+  return {
+    async query<T>(query: string, params?: unknown[]) {
+      if (!sql.transaction) return sql.query<T>(query, params);
+      return sql.transaction(async (tx) => {
+        await tx.query("set local statement_timeout = '5s'");
+        return tx.query<T>(query, params);
+      });
+    },
+  } satisfies Sql;
 }
 
 async function lookupOwnership(
@@ -33,14 +37,13 @@ async function lookupOwnership(
 ) {
   signal.throwIfAborted();
   if (!machine.sandboxId) return { kind: "unresolved" } as const;
-  const { rows } = await reaperQuery<{
+  const { rows } = await sql.query<{
     status: SandboxStatus | null;
     bound: boolean | null;
     physical_count: number;
     physical_owner_matches: boolean;
     physical_generation: string | null;
   }>(
-    sql,
     `with physical as (
       select id, org_id, record->>'generation' as generation
       from public.modal_machines where record->>'physicalId'=$2 limit 2
@@ -76,8 +79,7 @@ export function createModalReaper(
 ) {
   return createProviderReaperLane(
     async (signal) => {
-      const { rows } = await reaperQuery<ModalInventoryRegistration>(
-        sql,
+      const { rows } = await sql.query<ModalInventoryRegistration>(
         `select distinct app_id, app_name, environment, authority_scope, authority_owner_id
        from public.modal_server_apps
        where authority_scope='user' or authority_owner_id=org_id`,
@@ -94,12 +96,8 @@ export function createModalReaper(
             async *listInventory() {
               signal.throwIfAborted();
               const connection = await openInventory(registration, binding, deploymentId, signal);
-              try {
-                signal.throwIfAborted();
-                yield* connection.listInventory(signal);
-              } finally {
-                connection.close();
-              }
+              signal.throwIfAborted();
+              yield* connection.listInventory(signal);
             },
           },
           lookupOwnership: (machine, signal) => lookupOwnership(sql, binding, machine, signal),

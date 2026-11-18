@@ -65,7 +65,7 @@ export function createProviderReaper(
   return createProviderReaperLane(async () => [source], log, now);
 }
 
-/** Refresh the registry each sweep. Each source reports independently and owns its client lifetime. */
+/** Refresh the registry each sweep. Each source reports independently. */
 export function createProviderReaperLane(
   discover: (signal: AbortSignal) => Promise<readonly ProviderReaperSource[]>,
   log: (line: string) => void = console.log,

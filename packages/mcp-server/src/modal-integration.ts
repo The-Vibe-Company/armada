@@ -1,6 +1,7 @@
 import { hkdfSync } from "node:crypto";
 import {
   type CredentialReader,
+  createSqlVaultStore,
   decryptSecret,
   EncryptionKeyError,
   type ModalBinding,
@@ -30,7 +31,7 @@ import type { GitHubLaunchOptions } from "./launch-credentials.ts";
 import { observeNativeFirstToken } from "./launch-stage-record.ts";
 import { projectModalEventUsage } from "./modal-event-usage.ts";
 import { modalLaunchEnvironment } from "./modal-launch-environment.ts";
-import { createModalReaper } from "./modal-reaper.ts";
+import { createModalReaper, modalReaperSql } from "./modal-reaper.ts";
 import { createModelAuthOwnership } from "./model-auth.ts";
 import { diagnosticSandboxId } from "./provider-sandbox-target.ts";
 import { observeProvider, observeProviderCall } from "./request-observability.ts";
@@ -140,8 +141,9 @@ export async function createModalIntegration(options: {
   }
   async function resolveManagementCredentials(
     authority: Pick<ModalManagementAuthority, "credentialScope" | "credentialOwnerId">,
+    vault: CredentialReader = options.vault,
   ): Promise<ResolvedModalManagementCredentials> {
-    const row = (await options.vault.credentials(authority.credentialScope, authority.credentialOwnerId)).find(
+    const row = (await vault.credentials(authority.credentialScope, authority.credentialOwnerId)).find(
       (candidate) => candidate.kind === "modal",
     );
     if (!row)
@@ -283,18 +285,33 @@ export async function createModalIntegration(options: {
       await client.close();
     }
   }
-  return {
-    inventoryReaper: (log?: (line: string) => void) =>
-      createModalReaper(
-        options.sql,
-        options.publicUrl,
-        async (registration, binding, deploymentId, shutdown) => {
-          const { tokenId, tokenSecret } = await resolveManagementCredentials({
-            credentialScope: registration.authority_scope,
-            credentialOwnerId: registration.authority_owner_id,
-          });
-          shutdown.throwIfAborted();
-          const client = new ModalClient({
+  function inventoryReaper(log?: (line: string) => void) {
+    const sql = modalReaperSql(options.sql);
+    const vault = createSqlVaultStore(sql);
+    const clients = new Map<string, ModalClient>();
+    const lane = createModalReaper(
+      sql,
+      options.publicUrl,
+      async (registration, binding, deploymentId, shutdown) => {
+        const authority = {
+          credentialScope: registration.authority_scope,
+          credentialOwnerId: registration.authority_owner_id,
+        };
+        const slot = `${authority.credentialScope}:${authority.credentialOwnerId}`;
+        let client = clients.get(slot);
+        const { tokenId, tokenSecret } = await resolveManagementCredentials(authority, vault).catch(
+          (error: unknown) => {
+            if (error instanceof VaultError && error.code === "missing_credential") {
+              client?.close();
+              clients.delete(slot);
+            }
+            throw error;
+          },
+        );
+        shutdown.throwIfAborted();
+        if (client?.profile.tokenId !== tokenId || client?.profile.tokenSecret !== tokenSecret) {
+          client?.close();
+          client = new ModalClient({
             tokenId,
             tokenSecret,
             maxThrottleWaitSecs: 0,
@@ -306,13 +323,23 @@ export async function createModalIntegration(options: {
               },
             ],
           });
-          return {
-            ...createModalInventory(client, registration.app_name, binding, deploymentId),
-            close: () => client.close(),
-          };
-        },
-        log,
-      ),
+          clients.set(slot, client);
+        }
+        return createModalInventory(client, registration.app_name, binding, deploymentId);
+      },
+      log,
+    );
+    return {
+      ...lane,
+      async drain() {
+        await lane.drain();
+        for (const client of clients.values()) client.close();
+        clients.clear();
+      },
+    };
+  }
+  return {
+    inventoryReaper,
     modalProviderFor,
     storedProviderFor: async (target: ProviderTarget, caller: { userId: string }) => {
       if (target.provider !== "modal" || !target.modal) throw new VaultError("invalid", "Expected Modal binding.");
