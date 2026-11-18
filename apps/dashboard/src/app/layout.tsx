@@ -6,7 +6,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: { default: "Armada", template: "%s · Armada" },
-  description: "Launch coding agents on boat.dev sandboxes.",
+  description: "Launch Claude Code, Codex and OpenCode agents into Boat, Modal or Docker sandboxes.",
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

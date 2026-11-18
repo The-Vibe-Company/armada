@@ -2,6 +2,7 @@ import type { SandboxProviderId } from "@armada/core";
 import { cache } from "react";
 import { CAPABILITIES_TIMEOUT_MS, createControlClient } from "@/lib/control";
 import { mcpUrl } from "@/lib/env";
+import { CLOUD_PROVIDERS_LABEL } from "@/lib/labels";
 import { isConfigured, SETUP_PROVIDER_INFO } from "@/lib/provider-setup";
 import { type ProviderSetup, readSetupWith } from "@/lib/provider-setup-read";
 import { requireViewer } from "./viewer";
@@ -33,5 +34,5 @@ export async function newWorkBlocker(org: string, provider: SandboxProviderId): 
     return `The organization's sandbox providers could not be checked. ${setup.message}`;
   if (isConfigured(setup.status, provider)) return null;
   const label = SETUP_PROVIDER_INFO[provider].label;
-  return `${label} is not connected for this organization. An admin connects it in Machines → Overview.`;
+  return `${label} is not connected for this organization. An admin connects it in Machines → ${CLOUD_PROVIDERS_LABEL}.`;
 }

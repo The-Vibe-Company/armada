@@ -1,8 +1,9 @@
 import { formatLaunchDuration } from "@armada/core";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import type { ProviderLaunchTimes } from "@/lib/data/launch-times";
+import { DOCKER_HOSTS_LABEL } from "@/lib/labels";
 
-const PROVIDER_LABELS: Record<string, string> = { boat: "Boat", modal: "Modal", docker: "Your servers" };
+const PROVIDER_LABELS: Record<string, string> = { boat: "Boat", modal: "Modal", docker: DOCKER_HOSTS_LABEL };
 
 const KIND_LABELS = { launch: "Launch", resume: "Resume" } as const;
 

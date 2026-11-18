@@ -2,11 +2,12 @@
 
 An embedding product (for example one sandbox per tender application) needs to
 launch exactly one sandbox per business object and find it again. Two launch
-fields serve that, on every ordinary launch surface (#2568):
+fields serve that, on every ordinary Boat and Modal launch surface (#2568).
+Docker launches use a different contract, described [below](#docker-launches).
 
 | Surface | Exactly-once field | External reference |
 | --- | --- | --- |
-| `POST /api/v1/sandbox/launch` (and the `launch-sized-v1`, `launch-access-v1`, runtime variants) | `idempotencyKey`, 16–128 characters | `externalRef` |
+| `POST /api/v1/sandbox/launch` for Boat and Modal (and the `launch-sized-v1`, `launch-access-v1`, runtime variants) | `idempotencyKey`, 16–128 characters | `externalRef` |
 | MCP `launch` / `launch_sized_v1` | `idempotencyKey`, 16–128 characters | `externalRef` |
 | `POST /api/v1/templates/launch` | `requestKey` (required, see [templates](templates-cli.md)) | `externalRef` |
 
@@ -20,7 +21,14 @@ provider allocation.
 A key is scoped to the caller and organization.
 
 - Same key, same request: the recorded answer, with the same sandbox id. No
-  second fork.
+  second fork. This holds only while the request still passes launch
+  preflight, which runs before the receipt is read: the same snapshot is still
+  visible to the caller under the same name and provider, its provider account
+  is still configured, and the server can pin an allocation authority.
+  Otherwise the replay returns the preflight error (for example `not_found`
+  after the snapshot was removed). The snapshot id is part of the request, so
+  a snapshot recreated under the same name yields `conflict` (409). Neither
+  error is the original outcome.
 - Same key, any different field (including `externalRef` or `prompt`):
   refused with `conflict` (409). Nothing is launched.
 - Same key after a terminal refusal recorded under it (bad configuration, no
@@ -30,7 +38,47 @@ A key is scoped to the caller and organization.
 Without a key the REST route behaves as before: every call launches. A server
 without durable receipts, or a launch path that cannot pin its allocation
 authority, refuses a keyed launch rather than launching without the guarantee.
-Normal Docker launch has its own `requestId` and refuses both fields.
+
+## Docker launches
+
+`POST /api/v1/sandbox/launch` with `"provider":"docker"` goes to the normal
+Docker handler, which has its own list of accepted fields. It refuses `golden`,
+`idempotencyKey` and `externalRef` with 400 `invalid_request`, so a Docker
+sandbox carries no external reference and `sandbox/list` with `externalRef`
+never finds it. Instead:
+
+- `requestId`, a fresh UUID you generate and store before launching, is the
+  sandbox ID and the replay key. The comparison uses the normalized request:
+  spelling out a default such as `ttlSeconds` is not a change. A changed body
+  returns `conflict` (409).
+- `org` is the organization UUID. `hostId` names the Docker host, unless
+  `snapshotId` names a Docker snapshot, which selects its own host.
+
+The launch call returns once Armada admits the launch, normally with
+`"status":"starting"` and no `promptId` or `conversationId`. A worker starts
+the sandbox and sends the prompt afterwards. A replay with the same
+`requestId` and body never launches twice:
+
+- The replay reports the sandbox's current status, not the status of an
+  earlier response. Until the worker publishes the launch receipt, a `ready`
+  or `running` sandbox is reported as `starting`. A stopped, failed or deleted
+  sandbox keeps that status.
+- The recorded `promptId` and `conversationId` appear only after the worker
+  publishes the launch receipt, and only when the launch sent a prompt.
+
+After an uncertain Docker launch, poll `sandbox/status` with that UUID as
+`id`. For a launch that sent a prompt, replay the same request and look for
+`promptId` and `conversationId` rather than at the status. `starting` without
+them means the launch is still pending. `stopped`, `failed` or `deleted`
+without them is a separate outcome: no receipt will appear, and the prompt
+outcome is uncertain. The sandbox may have ended before the launch prompt was
+sent, or after the worker sent it but before the receipt was recorded, in which
+case the agent may already have acted on it. Inspect the original sandbox's
+status and logs before you repeat the work. Do not launch with a new
+`requestId` until you know that the first launch failed or ended.
+See
+[Docker hosts](docker-host-daemon.md) for an example body.
+The rest of this page covers Boat and Modal launches.
 
 ## Retry contract for an uncertain launch
 
@@ -40,12 +88,24 @@ or may not exist. Never retry with a new key: that is how duplicates happen.
 1. Retry with the **same key and the same body**. A completed launch answers
    with its recorded sandbox; a still-unknown one answers `outcome_unknown`
    again and names the receipt id, which is also the sandbox id it would have.
+   A preflight error such as `not_found` says nothing about the first launch;
+   keep the key and continue with the next steps.
 2. Look the sandbox up by reference: `sandbox/list` with `externalRef` returns
    every sandbox you own or administer carrying it, including a launch whose
    answer was lost after the sandbox was recorded.
-3. If neither shows it, inspect the receipt with MCP `launch_receipt`: it lists
-   provider allocations labelled with that id. An empty lookup is not proof of
-   no allocation; keep the key and ask an operator rather than relaunching.
+3. If neither shows it and an `outcome_unknown` or `conflict` answer named a
+   receipt id, inspect it as the launching user with MCP `launch_receipt`
+   (`{"id":"<receipt UUID>"}`, plus `org` set to the organization UUID when
+   you belong to several). It lists
+   provider allocations labelled with that id, using the provider binding
+   recorded on the receipt, so a removed snapshot does not prevent the lookup.
+   An empty lookup is not proof of no allocation; keep the key and ask an
+   operator rather than relaunching.
+4. If you never received a receipt id (the first answer was lost and the replay
+   fails preflight, for example with `not_found`, or the receipt itself could
+   not be read), there is no self-service
+   lookup. Keep the original key, do not relaunch, and escalate to an operator
+   with the organization, the key and the `externalRef`.
 
 Template launches follow the same rule with `requestKey`: a replay answers the
 recorded state (`succeeded`, `failed`, `reconciling`), and `reconciling` is
@@ -59,6 +119,5 @@ never re-dispatched.
   without its reference, and filtering by reference never matches it.
 - The launch answer returns it too.
 
-Armada has no outbound webhooks today (the `notify_subscriptions` table from the
-initial schema has no delivery), so there is no webhook payload to carry the
-reference. When webhook delivery is built it should include `externalRef`.
+Signed [outbound webhooks](outbound-webhooks.md) include `externalRef` in
+each payload, with null when the sandbox has no reference.

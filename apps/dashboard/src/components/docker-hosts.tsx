@@ -305,7 +305,7 @@ export function RevokeHost({
       triggerLabel={`Unlink ${name}`}
       title={`Unlink ${name}?`}
       description={revokeWarning(sandboxes)}
-      confirm="Unlink server"
+      confirm="Unlink Docker host"
       pendingLabel="Unlinking…"
       successFocusId={`host-${hostId}-title`}
     >
@@ -319,16 +319,18 @@ export function RevokeHost({
 export function HostLimitsDialog({ orgId, host }: { orgId: string; host: DockerHost }) {
   const [open, setOpen] = useState(false);
   if (host.state === "revoked")
-    return <p className="text-sm text-muted-foreground">Resource limits are unavailable for unlinked servers.</p>;
+    return <p className="text-sm text-muted-foreground">Resource limits are unavailable for unlinked Docker hosts.</p>;
   if (!host.limitsSupported)
     return (
       <p className="text-sm text-muted-foreground">
-        Limits unavailable. Update the server and wait for it to report machine resources.
+        Limits unavailable. Update the Docker host and wait for it to report machine resources.
       </p>
     );
   if (!host.canManageLimits)
     return (
-      <p className="text-sm text-muted-foreground">Only the member who added the server can change resource limits.</p>
+      <p className="text-sm text-muted-foreground">
+        Only the member who added the Docker host can change resource limits.
+      </p>
     );
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -339,12 +341,12 @@ export function HostLimitsDialog({ orgId, host }: { orgId: string; host: DockerH
           </Button>
         </DialogTrigger>
         {host.state !== "online" && (
-          <p className="text-sm text-muted-foreground">Bring the server online to change limits.</p>
+          <p className="text-sm text-muted-foreground">Bring the Docker host online to change limits.</p>
         )}
       </div>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Server limits</DialogTitle>
+          <DialogTitle>Docker host limits</DialogTitle>
           <DialogDescription>
             Stop all sandboxes and wait for builds and pending work to finish before changing CPU or memory. Capacity
             can change while running, but cannot be lowered below current reservations.
@@ -449,7 +451,7 @@ export function HostRetention({ orgId, host }: { orgId: string; host: DockerHost
     <div className="space-y-3 text-sm">
       <p>
         Retention:{" "}
-        {host.retentionSeconds == null ? "Unknown — update the server daemon" : `${host.retentionSeconds} seconds`}
+        {host.retentionSeconds == null ? "Unknown — update the Docker host daemon" : `${host.retentionSeconds} seconds`}
       </p>
       <p>
         Docker disk free:{" "}
@@ -466,7 +468,7 @@ export function HostRetention({ orgId, host }: { orgId: string; host: DockerHost
       </p>
       <p>Next cleanup: {host.nextCleanupAt ? new Date(host.nextCleanupAt).toISOString() : "None reported"}</p>
       <p className="text-xs text-muted-foreground">
-        As of last check-in: {host.lastSeenAt ?? "Never"}. Offline servers enforce their last saved policy.
+        As of last check-in: {host.lastSeenAt ?? "Never"}. Offline Docker hosts enforce their last saved policy.
       </p>
       {host.retentionOverrideSeconds != null && host.retentionOverrideSeconds !== host.retentionSeconds && (
         <p>Requested: {host.retentionOverrideSeconds} seconds; waiting for check-in.</p>
@@ -497,7 +499,7 @@ export function HostRetention({ orgId, host }: { orgId: string; host: DockerHost
           {state && <p role="status">{state.ok ? state.message : state.error}</p>}
         </form>
       ) : (
-        <p className="text-muted-foreground">Only the member who added this server can change retention.</p>
+        <p className="text-muted-foreground">Only the member who added this Docker host can change retention.</p>
       )}
     </div>
   );

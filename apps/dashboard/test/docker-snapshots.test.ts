@@ -109,7 +109,9 @@ test("a stale build form naming a draining host shows the uninstall reason, not 
   });
   expect(snapshotBuildHostBlocker([host("online")], host("online").id)).toBeNull();
   expect(snapshotBuildHostBlocker([host("draining")], host("draining").id)).toContain("draining for uninstall");
-  expect(snapshotBuildHostBlocker([host("offline")], host("offline").id)).toBe("Bring this server online to build.");
+  expect(snapshotBuildHostBlocker([host("offline")], host("offline").id)).toBe(
+    "Bring this Docker host online to build.",
+  );
   expect(snapshotBuildHostBlocker([host("revoked")], host("revoked").id)).toBe(
     "Choose an online host with snapshot support.",
   );

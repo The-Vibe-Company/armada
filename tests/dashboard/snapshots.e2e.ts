@@ -58,7 +58,7 @@ for (const org of [
     await expect(dialog.getByRole("textbox", "Snapshot name")).toHaveValue("capacity-check");
     if (org.session === "large") {
       await expect(dialog.getByRole("button", /Offline spare workstation/)).toBeDisabled();
-      await dialog.getByRole("button", /^your server Large platform/).tap();
+      await dialog.getByRole("button", /^Docker host Large platform/).tap();
       const hostForm = browser
         .locator("form")
         .filter({ has: screen.getByRole("textbox", "Snapshot name", { visible: true }) });
