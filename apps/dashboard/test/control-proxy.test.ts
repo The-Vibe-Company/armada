@@ -554,3 +554,66 @@ test("snapshot create forwards bounded golden configs up to one MiB and refuses 
     else process.env.ARMADA_MCP_URL = env;
   }
 });
+
+test("GET proxy forwards the authenticated sandbox outputs list and download with the encoded filename intact", async () => {
+  process.env.ARMADA_MCP_URL = "https://armada.test/mcp";
+  const id = "11111111-1111-4111-8111-111111111111";
+  const seen: Request[] = [];
+  const send = (rawPath: string, path: string[], bearer = true) =>
+    forwardControl(
+      new Request(`https://dashboard.test/api/v1/${rawPath}`, {
+        headers: bearer ? { authorization: "Bearer masked" } : {},
+      }),
+      path,
+      async (input, init) => {
+        seen.push(new Request(input, init));
+        return new Response("pdf", {
+          headers: {
+            "content-type": "application/pdf",
+            "content-length": "3",
+            "content-disposition": "attachment; filename*=UTF-8''a%2Fb%20memo.pdf",
+            "x-content-type-options": "nosniff",
+            "set-cookie": "private=must-not-forward",
+          },
+        });
+      },
+    );
+  // Next decodes catch-all segments; the raw request path keeps the filename as one segment.
+  expect(
+    (await send(`sandboxes/${id}/outputs/a%2Fb%20memo.pdf`, ["sandboxes", id, "outputs", "a/b memo.pdf"], false))
+      .status,
+  ).toBe(401);
+  const download = await send(`sandboxes/${id}/outputs/a%2Fb%20memo.pdf`, ["sandboxes", id, "outputs", "a/b memo.pdf"]);
+  expect(download.status).toBe(200);
+  expect(seen[0]?.url).toBe(`https://armada.test/api/v1/sandboxes/${id}/outputs/a%2Fb%20memo.pdf`);
+  expect(seen[0]?.method).toBe("GET");
+  expect(seen[0]?.headers.get("authorization")).toBe("Bearer masked");
+  expect(download.headers.get("content-disposition")).toBe("attachment; filename*=UTF-8''a%2Fb%20memo.pdf");
+  expect(download.headers.get("x-content-type-options")).toBe("nosniff");
+  expect(download.headers.get("content-type")).toBe("application/pdf");
+  expect(download.headers.get("content-length")).toBe("3");
+  expect(download.headers.get("cache-control")).toBe("private, no-store");
+  expect(download.headers.get("set-cookie")).toBeNull();
+  expect(await download.text()).toBe("pdf");
+  expect((await send(`sandboxes/${id}/outputs`, ["sandboxes", id, "outputs"])).status).toBe(200);
+  expect(seen[1]?.url).toBe(`https://armada.test/api/v1/sandboxes/${id}/outputs`);
+  for (const [rawPath, path] of [
+    [`sandboxes/not-a-uuid/outputs`, ["sandboxes", "not-a-uuid", "outputs"]],
+    [`sandboxes/${id}/outputs/a/b`, ["sandboxes", id, "outputs", "a", "b"]],
+    [`sandboxes/${id}/files`, ["sandboxes", id, "files"]],
+  ] as const)
+    expect((await send(rawPath, [...path])).status).toBe(404);
+  const post = await forwardControl(
+    new Request(`https://dashboard.test/api/v1/sandboxes/${id}/outputs`, {
+      method: "POST",
+      headers: { authorization: "Bearer masked" },
+      body: "{}",
+    }),
+    ["sandboxes", id, "outputs"],
+    async () => {
+      throw new Error("must not forward");
+    },
+  );
+  expect(post.status).toBe(404);
+  expect(seen).toHaveLength(2);
+});
