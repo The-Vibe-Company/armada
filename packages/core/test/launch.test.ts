@@ -961,19 +961,21 @@ exit 1
     },
   );
 
-  test("idle explicit repo is prepared before launch returns and a later native send", async () => {
+  test("idle explicit repo persists the selected repository and prepares cwd before launch returns", async () => {
     const world = setup({ golden: golden("org"), prepare: true });
     const result = await launchSandbox(world.provider, world.stores, owner, {
       golden: "web",
       harness: "claude",
       repo: "example/web",
     });
-    expect(result.sandbox.status).toBe("ready");
+    expect(result.sandbox).toMatchObject({ status: "ready", repositoryDir: "web" });
+    expect(world.rows.get(result.sandbox.id)).toMatchObject({
+      repositoryDir: "web",
+      resourceProject: { version: 1, dir: "web" },
+    });
     expect(world.prompts).toEqual([]);
     expect(world.order).toEqual(["credentials", "fork", "ready", "exec", "exec", "exec", "prepare", "exec"]);
-    await world.provider.prompt({ sandboxId: result.sandbox.providerSandboxId, harness: "claude", text: "Later" });
-    expect(world.order.slice(-3)).toEqual(["prepare", "exec", "prompt"]);
-    expect(world.preparations).toHaveLength(1);
+    expect(world.preparations).toEqual([{ sandboxId: "bx_1", harness: "claude", cwd: `${GOLDEN_ROOT}/web` }]);
   });
 
   test("preparation failure stops and records the sandbox, redacts errors, and never prompts", async () => {
