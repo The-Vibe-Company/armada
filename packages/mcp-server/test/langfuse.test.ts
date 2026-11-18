@@ -329,6 +329,9 @@ const bindApplicationSecret = {
        select id,1,repeat('a',64),$1 from sandboxes where boat_id='boat_export'`,
       [await encryptSecret(JSON.stringify({ variables: {}, request: { secrets: [secretBinding] } }), key)],
     ),
+  // The irreversible sandbox marker alone, with no launch-request binding.
+  tainted: async (db: Awaited<ReturnType<typeof settledBoatTurn>>["db"]) =>
+    db.query("update sandboxes set application_secret_tainted=true where boat_id='boat_export'"),
 };
 for (const [source, bind] of Object.entries(bindApplicationSecret))
   test(`a sandbox with ${source} application-secret bindings exports metadata only in full mode`, async () => {

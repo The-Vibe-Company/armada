@@ -297,8 +297,9 @@ export function createLangfuse(
     const usage = persisted.some((turn) => turn.model !== null || turn.inputTokens != null || turn.outputTokens != null)
       ? persisted
       : reportedTurnUsage(events).turns;
-    // Application secrets bound by a template (Boat, Modal) or a Docker launch
-    // reach the sandbox as raw values that no pattern matches, and the export
+    // Application secrets bound by a template (Boat, Modal) or a Docker launch,
+    // or recorded by the sandbox's irreversible application_secret_tainted
+    // marker, reach the sandbox as raw values that no pattern matches, and the export
     // cannot recover them to mask exactly, so such a sandbox exports metadata
     // only, whatever the organization mode.
     const withheld = job.content_mode === "full" && (await bindsApplicationSecrets(job));
@@ -352,7 +353,7 @@ export function createLangfuse(
           case when c.org_id is null then null
             when j.allowed_content_mode='full' and c.content_mode='full' then 'full' else 'metadata' end
             as content_mode,
-          exists(select 1 from public.template_launch_requests r
+          s.application_secret_tainted or exists(select 1 from public.template_launch_requests r
             where r.sandbox_id=j.sandbox_id
               and coalesce(r.manifest->'definition'->'secrets','[]'::jsonb) not in ('[]'::jsonb,'null'::jsonb)
           ) as application_secrets,
