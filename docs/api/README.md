@@ -83,8 +83,8 @@ for receipt lookup and template launch keys.
 
 ### Docker launches
 
-A launch with `"provider":"docker"` goes to a separate handler that accepts an
-exact list of fields. It refuses `golden`, `idempotencyKey` and `externalRef`
+A launch with `"provider":"docker"` goes to a separate handler with its own
+list of accepted fields. It refuses `golden`, `idempotencyKey` and `externalRef`
 with HTTP 400 `invalid_request`. A Docker sandbox therefore has no external
 reference, and `sandbox/list` with `externalRef` never returns it.
 
@@ -94,10 +94,12 @@ reference, and `sandbox/list` with `externalRef` never returns it.
   `requestId` and body returns the original result. A changed body returns
   409 `conflict`.
 - `hostId` (a Docker host UUID) is required, unless you launch from a Docker
-  snapshot with `snapshotId` (a snapshot UUID). The snapshot selects its host.
-- `harness` is required. `credentialId`, `credentialVersion`, `model`,
-  `reasoningEffort`, `prompt`, `ttlSeconds` and `"visibility":"private"` are
-  optional.
+  snapshot with `snapshotId` (a snapshot UUID). The snapshot selects its host:
+  a different `hostId` returns 404 `not_found`, and `repos` with
+  `snapshotId` returns 400 `invalid_request`.
+- `harness` is required. Optional fields include `credentialId`,
+  `credentialVersion`, `model`, `reasoningEffort`, `prompt`, `ttlSeconds`,
+  `repos`, `skills` and `"visibility":"private"`.
 
 After a dropped response, replay with the same `requestId` and body, or call
 `sandbox/status` with that UUID as `id`. Do not launch with a new `requestId`
@@ -161,10 +163,13 @@ this order:
    `armada bind-credential`, or with `POST /api/v1/sandbox/bind-credential`
    and `{"id":"<sandbox UUID>","credentialId":"<account UUID>"}`. The
    workspace and conversations are retained.
-3. HTTP 409 `sandbox_terminal` when the sandbox can no longer take a send. It
-   has expired, failed or been deleted, or it is stopped and cannot resume.
-   Stopped Boat and Modal sandboxes resume on send when their work was
-   retained, and idle-paused sandboxes wake on send.
+3. HTTP 409 `sandbox_terminal` when the sandbox cannot take a send in its
+   current state: it has expired, failed or been deleted, or it is stopped and
+   a send cannot resume it. Stopped Boat and Modal sandboxes resume on send
+   when their work was retained, and idle-paused sandboxes wake on send. A
+   Docker sandbox stopped any other way refuses sends. Its owner can try
+   `POST /api/v1/sandbox/resume` with `id` and a `request_id` UUID, which
+   restarts the same allocation when it is still retained.
 
 Sends that pass these checks to a sandbox with a pinned model account, which
 includes every Docker sandbox, then pass through the account turn queue. For runtime and Docker
@@ -250,8 +255,11 @@ code. Handle 400 `invalid` for request correction, 401 `unauthorized` for
 authentication, 403 `forbidden` for permission, and 404 `not_found` for a
 missing or inaccessible sandbox. A 409 `conflict` or `sandbox_not_ready`
 requires checking the current state or request before retrying. A 409
-`sandbox_terminal` means the sandbox can no longer take that control, so do
-not retry. A 409 `credential_binding_required` means the sandbox owner must
+`sandbox_terminal` means the sandbox cannot take that control in its current
+state, and the message says why. An expired, failed or deleted sandbox is
+final. A stopped Boat or Modal sandbox with retained work resumes on a send,
+after which steer, exec and interrupt work again. A stopped Docker sandbox
+needs `sandbox/resume` first. A 409 `credential_binding_required` means the sandbox owner must
 bind a model account before a control can succeed. Docker launches report
 request errors as 400 `invalid_request`. A 503
 `outcome_unknown` requires inspecting or replaying the existing operation

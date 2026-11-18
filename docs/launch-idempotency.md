@@ -42,7 +42,7 @@ authority, refuses a keyed launch rather than launching without the guarantee.
 ## Docker launches
 
 `POST /api/v1/sandbox/launch` with `"provider":"docker"` goes to the normal
-Docker handler, which accepts an exact list of fields. It refuses `golden`,
+Docker handler, which has its own list of accepted fields. It refuses `golden`,
 `idempotencyKey` and `externalRef` with 400 `invalid_request`, so a Docker
 sandbox carries no external reference and `sandbox/list` with `externalRef`
 never finds it. Instead:
@@ -54,8 +54,8 @@ never finds it. Instead:
   `snapshotId` names a Docker snapshot, which selects its own host.
 
 After an uncertain Docker launch, replay with the same `requestId` and body,
-or read `sandbox/status` with that UUID as `id`. Never retry with a new
-`requestId`. See [Docker hosts](docker-host-daemon.md) for an example body.
+or read `sandbox/status` with that UUID as `id`. Do not launch with a new
+`requestId` until you know that the first launch failed. See [Docker hosts](docker-host-daemon.md) for an example body.
 The rest of this page covers Boat and Modal launches.
 
 ## Retry contract for an uncertain launch
