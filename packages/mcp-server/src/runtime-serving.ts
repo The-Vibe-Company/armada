@@ -138,7 +138,7 @@ export function createRuntimeServing(sql: Sql, key: string) {
                 const value = Reflect.get(instance, property, instance);
                 return typeof value === "function" ? value.bind(instance) : value;
               }
-              return async (request: { sandboxId: string }) => {
+              return async (request: Parameters<Provider["stop"]>[0]) => {
                 if (request.sandboxId !== sandbox.providerSandboxId)
                   throw new VaultError("not_found", "No runtime stop target.");
                 const proof = (
@@ -153,7 +153,11 @@ export function createRuntimeServing(sql: Sql, key: string) {
                     [sandbox.id, sandbox.ownerId, sandbox.providerSandboxId],
                   )
                 ).rows[0];
-                if (!proof) return instance.stop(request); // No checkpoint: compute-only cleanup, no disk claim.
+                if (!proof) {
+                  if (request.requireRetention)
+                    throw new VaultError("conflict", "No current checkpoint for the required retained stop.");
+                  return instance.stop(request);
+                }
                 const current = await instance.get(request.sandboxId);
                 if (current.state === "stopped") return;
                 const watermark = Number(proof.watermark);
@@ -165,7 +169,7 @@ export function createRuntimeServing(sql: Sql, key: string) {
                 )
                   throw new VaultError("conflict", "No physical checkpoint binding.");
                 return (instance as import("@armada/provider-modal").ModalProvider).stopRuntime({
-                  ...request,
+                  sandboxId: request.sandboxId,
                   physicalGeneration: current.physicalGeneration!,
                   epoch: proof.epoch,
                   watermark,

@@ -13,6 +13,8 @@ import { nativeIdleDue, nativeQuiescent } from "./native-idle.ts";
 import { INTERRUPTED_LAUNCH_REASON } from "./turns.ts";
 import { preserveBeforeStop, recordStopDispatch } from "./work-preservation.ts";
 
+export const UNENROLLED_RESUME_STOP = "runtime_resume_unenrolled";
+
 /** One bounded batch in the existing server loop. SQL leases serialize replicas; generation
  * fencing prevents an old observation from publishing over a newly admitted resume. */
 export function createSandboxLifecycle(
@@ -66,6 +68,7 @@ export function createSandboxLifecycle(
           credential_id: string | null;
           credential_version: number | null;
           owner_is_member: boolean;
+          retained_resume: boolean;
           work_merged: boolean | null;
           preservation_note: string | null;
           stop_requested_at: Date | string | null;
@@ -82,8 +85,12 @@ export function createSandboxLifecycle(
           order by candidate.reconcile_after limit 1 for update of candidate skip locked)
         returning s.id,s.provider_sandbox_id,s.runtime_transport,s.boat_runtime,s.lifecycle_generation,s.expires_at,s.status::text as status,s.status_reason,s.task_prompt_id,s.activity_lease_id,s.application_secret_tainted,s.credential_id,s.credential_version,s.stop_requested_at,s.preservation_note,
           ${mergedWorkProof("s")} as work_merged,
+          (s.status='stopping' and exists(
+            select 1 from public.sandbox_transitions t where t.sandbox_id=s.id and t.generation=s.lifecycle_generation
+            and t.actor='runtime_resume' and t.code=$3 and t.to_status='stopping'
+          )) as retained_resume,
           exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id) as owner_is_member`,
-          [token, providerId],
+          [token, providerId, UNENROLLED_RESUME_STOP],
         )
       ).rows[0];
       if (!row) return false;
@@ -129,6 +136,7 @@ export function createSandboxLifecycle(
       let resolved = false;
       let stoppedAt: Date | undefined;
       const expired = new Date(row.expires_at).getTime() <= now();
+      const retainedResume = row.retained_resume;
       const native = !row.boat_runtime && row.runtime_transport !== "dialout";
       // Lease expiry is not evidence a native exec completed. Retain its identity
       // until an owner outcome or explicit/TTL cleanup, rather than inventing idle.
@@ -307,7 +315,8 @@ export function createSandboxLifecycle(
           signal?.throwIfAborted();
           if (idleStop && !reconcilingStop) await operation(signal, requireIdle);
           const requireRetention =
-            !expired && (idleStop || ["idle_paused", "work_merged"].includes(row.status_reason ?? ""));
+            !expired &&
+            (retainedResume || idleStop || ["idle_paused", "work_merged"].includes(row.status_reason ?? ""));
           recordStopDispatch(row.id, row.provider_sandbox_id, "lifecycle_stop");
           await operation(signal, () =>
             provider.stop({
@@ -318,7 +327,10 @@ export function createSandboxLifecycle(
           info = await operation(signal, () => provider.get(row.provider_sandbox_id));
         }
         signal?.throwIfAborted();
-        physicalExit = info.physicalExitConfirmed === true || info.stopNote === "checkpoint_failed_disk_not_retained";
+        physicalExit =
+          info.physicalExitConfirmed === true ||
+          info.stopNote === "checkpoint_failed_disk_not_retained" ||
+          (retainedResume && info.state === "deleted");
         stoppedAt = info.stoppedAt;
         terminal = physicalExit || ["stopped", "deleted"].includes(info.state);
         if (!terminal && (expired || row.status === "stopping" || row.stop_requested_at !== null))
@@ -334,7 +346,10 @@ export function createSandboxLifecycle(
         }
         // A definitive absence for the exact registered identity is terminal.
         // Never infer absence from transport errors or discover resources by name.
-        if (resolved && caught instanceof ProviderError && caught.code === "not_found") terminal = true;
+        if (resolved && caught instanceof ProviderError && caught.code === "not_found") {
+          terminal = true;
+          if (retainedResume) physicalExit = true;
+        }
         // No provider exception text: SDK errors may contain credential-bearing requests.
         else error = "Provider lifecycle observation unavailable. Retrying without deleting retained data.";
       }

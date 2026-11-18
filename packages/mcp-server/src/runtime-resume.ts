@@ -10,6 +10,7 @@ import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
+import { UNENROLLED_RESUME_STOP } from "./sandbox-lifecycle.ts";
 
 export interface RuntimeResumeInput {
   id: string;
@@ -332,36 +333,54 @@ export function createRuntimeResume(
       const completed = await read(sql, found.id, requestId).catch(() => undefined);
       if (completed?.receipt && (await store.get(found.id))) return completed.receipt;
       // Preserve recoverable live-epoch uncertainty. Never re-activate or reissue a ticket.
-      const owned = await sql
+      const cleanup = await sql
         .transaction(async (tx) => {
-          await tx.query("select user_id from public.members where user_id=$1 and org_id=$2 for update", [
-            caller.userId,
-            found.orgId,
-          ]);
+          const member = await tx.query(
+            "select user_id from public.members where user_id=$1 and org_id=$2 for update",
+            [caller.userId, found.orgId],
+          );
+          if (!member.rows.length) return;
           await tx.query("select id from public.sandboxes where id=$1 for update", [found.id]);
-          const live = (
-            await tx.query<{ epoch: string; live: boolean }>(
-              "select epoch::text,(runtime_hash is not null) as live from public.runtime_enrolments where sandbox_id=$1 for update",
-              [found.id],
+          const runtime = (
+            await tx.query<{ epoch: string; live: boolean; pending: boolean }>(
+              `select epoch::text,(runtime_hash is not null) as live,
+                  (enrolment_hash is not null and lifecycle_generation=$2) as pending
+               from public.runtime_enrolments where sandbox_id=$1 for update`,
+              [found.id, admitted.current.lifecycleGeneration],
             )
           ).rows[0];
-          if (live?.live && live.epoch === admitted.op.target_epoch) return false;
-          const changed = await tx.query(
-            `update public.sandboxes set status='failed',
-          transition_context=jsonb_build_object('actor','runtime_resume','code','restore_unconfirmed'),
-          status_reason='Runtime resume failed before a restored worker was confirmed; cleanup requested.',stop_requested_at=coalesce(stop_requested_at,now()),activity_lease_id=null,activity_until=null,lifecycle_generation=lifecycle_generation+1,reconcile_after=now()
-          where id=$1 and activity_lease_id=$2 and lifecycle_generation=$3 and stop_requested_at is null returning id`,
-            [found.id, requestId, admitted.current.lifecycleGeneration],
+          if (runtime?.live && runtime.epoch === admitted.op.target_epoch) return;
+          // Issuance occurs after provider activation. Without a pending ticket we cannot
+          // tell a failed activation from a late provider create/resume.
+          const retained = Boolean(runtime?.pending && !runtime.live && runtime.epoch === admitted.op.source_epoch);
+          const changed = await tx.query<{ status: "stopping" | "failed" }>(
+            `update public.sandboxes set
+          status=case when $4 and not application_secret_tainted then 'stopping'::public.sandbox_status else 'failed'::public.sandbox_status end,
+          transition_context=jsonb_build_object('actor','runtime_resume','code',
+            case when $4 and not application_secret_tainted then $5::text else 'restore_unconfirmed' end),
+          status_reason=case when $4 and not application_secret_tainted then null
+            else 'Runtime resume failed before a restored worker was confirmed; cleanup requested.' end,
+          stop_requested_at=now(),stop_generation=stop_generation+1,
+          activity_lease_id=null,activity_until=null,lifecycle_generation=lifecycle_generation+1,reconcile_after=now()
+          where id=$1 and activity_lease_id=$2 and lifecycle_generation=$3
+            and stop_requested_at is null and deleted_at is null returning status`,
+            [found.id, requestId, admitted.current.lifecycleGeneration, retained, UNENROLLED_RESUME_STOP],
           );
-          if (changed.rows.length)
+          const status = changed.rows[0]?.status;
+          if (status)
             await tx.query(
-              "update public.runtime_resumes set phase='failed' where sandbox_id=$1 and request_id=$2 and receipt is null",
-              [found.id, requestId],
+              "update public.runtime_resumes set phase=$3 where sandbox_id=$1 and request_id=$2 and receipt is null",
+              [found.id, requestId, status === "stopping" ? "abandoned" : "failed"],
             );
-          return changed.rows.length > 0;
+          return status;
         })
-        .catch(() => false);
-      if (owned && placement) await placement.stop().catch(() => {});
+        .catch(() => undefined);
+      if (cleanup === "failed" && placement) await placement.stop().catch(() => {});
+      if (cleanup === "stopping")
+        throw new VaultError(
+          "conflict",
+          "Runtime did not enrol. Wait for a confirmed retained stop before resuming with a new request_id.",
+        );
       throw new VaultError(
         "conflict",
         "Runtime resume outcome is uncertain; retain the original request_id, inspect status/stop, and do not launch or activate again.",
