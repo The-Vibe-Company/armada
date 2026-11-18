@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
-import { snapshotBaselineInstall, snapshotBaselineVerify } from "@armada/core/server";
+import { snapshotBaselineInstall } from "@armada/core/server";
 import type { ModalClient, Sandbox } from "modal";
 import { refusal } from "./errors.ts";
 import type { Machine, RunnerDistribution } from "./ports.ts";
@@ -78,7 +78,6 @@ export function createRunnerDistribution(options: DistributionOptions): RunnerDi
         `RUN npm install -g @anthropic-ai/claude-agent-sdk@0.3.322 @anthropic-ai/claude-code@2.1.322 @openai/codex@0.167.0 && npm cache clean --force`,
         "RUN useradd --create-home --shell /bin/bash --password '*' user && mkdir -p /opt/armada /home/user/repos && chown -R user:user /home/user && printf '%s\\n' 'user ALL=(ALL:ALL) NOPASSWD: ALL' > /etc/sudoers.d/armada-build-user && chmod 440 /etc/sudoers.d/armada-build-user && visudo -cf /etc/sudoers.d/armada-build-user",
         ...artifactRuns,
-        `RUN ${snapshotBaselineVerify}`,
         "WORKDIR /home/user",
       ];
       if (commands.some((command) => Buffer.byteLength(command) > 48 * 1024))

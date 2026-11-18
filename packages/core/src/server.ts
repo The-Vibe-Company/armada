@@ -113,7 +113,6 @@ export {
   type SnapshotBaselineTool,
   snapshotBaselineFailureMessage,
   snapshotBaselineInstall,
-  snapshotBaselineVerify,
 } from "./snapshot-baseline.ts";
 export { type PrivateDelegatedSshReceipt, sshDelegatedReceipt } from "./ssh-delegated-access.ts";
 export {

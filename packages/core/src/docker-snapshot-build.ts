@@ -154,6 +154,7 @@ export async function buildDockerSnapshot(
 FROM ${job.request.image}
 USER root
 RUN ${snapshotBaselineInstall()}
+RUN ${snapshotBaselineVerify}
 RUN (id user >/dev/null 2>&1 || useradd --create-home --uid 1000 user) && mkdir -p /home/user && chown 1000:1000 /home/user
 ENV HOME=/home/user
 WORKDIR /home/user
