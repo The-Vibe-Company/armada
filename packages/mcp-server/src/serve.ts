@@ -666,6 +666,10 @@ export async function startServer(
                 }),
               {
                 placement: dockerLaunchEnabled,
+                automaticUpdateHostIds: (env.ARMADA_DOCKER_HOST_AUTO_UPDATE_HOST_IDS ?? "")
+                  .split(",")
+                  .map((id) => id.trim())
+                  .filter(Boolean),
                 configureArchiveTimeout: (request) => configureDockerArchiveTimeout?.(request),
                 publicUrl: config.publicUrl,
                 snapshots: createDockerSnapshots(sql, config.encryptionKey, {

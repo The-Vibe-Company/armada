@@ -583,14 +583,12 @@ export function automaticUpdate(
   io = { service: command, now: Date.now, request: fetch },
 ) {
   const p = paths(home, instance);
-  let staged = false;
   let nextManifestCheck = 0;
   let durableCommit: string | undefined;
   async function confirm(event: { type: "offer"; version: unknown } | { type: "poll-failed" }) {
     return withUpdateLock(home, instance, async () => {
       const current = await readUpdate(home, instance);
       if (current?.phase !== "staged") {
-        staged = false;
         return false;
       }
       if (
@@ -601,7 +599,6 @@ export function automaticUpdate(
       )
         return true;
       await saveUpdate(home, instance, transition(current, "defer", io.now()));
-      staged = false;
       return false;
     });
   }
@@ -615,27 +612,31 @@ export function automaticUpdate(
         return { version: VERSION, trialId: trial.trialId, invocationId };
     },
     confirm,
-    get staged() {
-      return staged;
-    },
-    trialActive,
-    async checkRecovery() {
-      return (await trialActive()) && (await supervisorAbsent(io.service, instance)) && (await trialActive());
-    },
-    async beforeAdmission(target: unknown) {
+    async pollMode() {
       const last = await readUpdate(home, instance);
-      // A trial polls for health but cannot admit jobs.
-      if (last?.phase === "starting") return true;
+      if (last?.phase === "starting") return "trial";
+      if (await uninstallPending(home, instance)) return "cleanup";
+      if (last?.phase === "staged") return "staged";
       if (last?.phase === "updated" && durableCommit !== last.version) {
         // The rename is visible before the supervisor syncs the directory.
-        // Admission needs a durable commit even if that supervisor died.
         await syncDirectory(stateDirectory(home, instance));
         durableCommit = last.version;
       }
-      if (last?.phase === "staged") {
-        staged = await confirm({ type: "offer", version: target });
-        return staged;
-      }
+      return "normal";
+    },
+    async pollWhileInstalled<T>(poll: () => Promise<T>): Promise<T> {
+      // Serialize the wire claim with the durable uninstall intent. Work
+      // returned by a poll that already held the lock can finish normally.
+      return withUpdateLock(home, instance, async () => {
+        if (await uninstallPending(home, instance)) throw new Error("Docker host uninstall pending");
+        return poll();
+      });
+    },
+    async checkRecovery() {
+      return (await trialActive()) && (await supervisorAbsent(io.service, instance)) && (await trialActive());
+    },
+    async prepare(target: unknown) {
+      const last = await readUpdate(home, instance);
       const cutoff = attemptedVersion(last);
       if (
         process.env.ARMADA_DOCKER_HOST_AUTO_UPDATE === "0" ||
@@ -700,7 +701,6 @@ export function automaticUpdate(
             instance,
             transition({ ...attempt, previousDigest, candidateDigest: sha256(bytes) }, "stage"),
           );
-          staged = true;
           return true;
         });
       } catch {
@@ -739,7 +739,6 @@ export function automaticUpdate(
           if (!(await supervisorAbsent(io.service, instance))) return true;
           if (update?.phase === "staged") {
             await saveUpdate(home, instance, transition(update, "defer", io.now()));
-            staged = false;
           }
           return false;
         }

@@ -156,9 +156,10 @@ async function main(args: string[]) {
   if (command === "install") await servicePreflight(instance);
   if (command === "uninstall") {
     const state = await store.load();
+    const api = httpApi();
+    await api.checkUninstallCompatibility(state);
     await prepareUninstall(state, instance);
     const deadline = Date.now() + 10 * 60_000;
-    const api = httpApi();
     // Keep the service alive to execute ordinary bound stop/delete jobs. The
     // server fences new allocations as soon as draining begins; retries retain
     // the original cleanup requests. No local resource deletion bypasses ACKs.
@@ -293,16 +294,9 @@ async function main(args: string[]) {
         stopping: () => stopping,
         ...(update
           ? {
-              beforeAdmission: update.beforeAdmission,
               trialPoll: update.trialPoll,
               retryCompletion: () => !stopping,
-              update: {
-                staged: () => update.staged,
-                confirm: update.confirm,
-                checkRecovery: update.checkRecovery,
-                trialActive: update.trialActive,
-                restart: update.restart,
-              },
+              update,
             }
           : {}),
         sleep: Bun.sleep,

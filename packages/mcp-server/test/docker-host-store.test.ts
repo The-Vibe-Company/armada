@@ -897,6 +897,37 @@ test("uninstall drains bound machines through stop/delete ACKs before idempotent
   await denied(store.unregister(a.hostToken, randomUUID()));
 });
 
+test("an uninstall with queued startup retires it after local admission drains and can clean up", async () => {
+  const a = await boundFixture();
+  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+  expect(await store.unregister(a.hostToken, a.installationId)).toBe(false);
+  const cleanup = (running: string[] = []) =>
+    store.poll(
+      a.hostToken,
+      a.installationId,
+      undefined,
+      false,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      running,
+      undefined,
+      false,
+      true,
+    );
+  expect(await cleanup([a.create.requestId])).toBeNull();
+  expect((await lifecycle(a.sandboxId))?.status).toBe("starting");
+  expect(await cleanup()).toBeNull();
+  expect((await lifecycle(a.sandboxId))?.status).toBe("failed");
+  expect(await store.unregister(a.hostToken, a.installationId)).toBe(false);
+  const remove = await cleanup();
+  expect(remove?.operation).toBe("delete");
+  if (!remove) throw new Error("Missing delete");
+  await store.complete(a.hostToken, a.installationId, { requestId: remove.requestId, outcome: "completed" });
+  expect(await store.unregister(a.hostToken, a.installationId)).toBe(true);
+});
+
 test("a completed uninstall ends the drain, so its snapshots report the revoked host instead of a retry", async () => {
   const db = database();
   const a = await boundFixture(),

@@ -4,7 +4,8 @@ import { chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { VERSION } from "../../core/src/version.ts";
-import { type Job, type State, tick } from "../src/daemon.ts";
+import { type Job, runJobs, type State, tick } from "../src/daemon.ts";
+import { httpApi } from "../src/native.ts";
 import {
   automaticUpdate,
   instanceName,
@@ -379,14 +380,14 @@ test.each(["healthy", "failed start", "crashes immediately", "crashes after firs
                     },
                   },
                   {
-                    poll: async () => ({ job: null, targetVersion: VERSION }),
+                    poll: async () => ({ job: null, updateVersion: VERSION }),
                     register: unexpected,
                     result: unexpected,
                   },
                   { create: unexpected, stop: unexpected, delete: unexpected, stopIfExpired: unexpected },
                   false,
                   Date.now,
-                  { trialPoll: updater.trialPoll, beforeAdmission: updater.beforeAdmission },
+                  { trialPoll: updater.trialPoll, reconcileOnly: true },
                 );
               } finally {
                 if (invocation === undefined) delete process.env.INVOCATION_ID;
@@ -426,7 +427,11 @@ test.each(["healthy", "failed start", "crashes immediately", "crashes after firs
   },
 );
 
-async function writeUpdateFixture(f: Awaited<ReturnType<typeof upgradeFixture>>, phase: "staged" | "starting") {
+async function writeUpdateFixture(
+  f: Awaited<ReturnType<typeof upgradeFixture>>,
+  phase: "staged" | "starting" | "cancelled" | "failed" | "updated",
+  preparing = false,
+) {
   const journal = join(f.directory, "update.json");
   await writeFile(`${f.binary}.previous`, f.oldBytes, { mode: 0o700 });
   await writeFile(
@@ -434,6 +439,7 @@ async function writeUpdateFixture(f: Awaited<ReturnType<typeof upgradeFixture>>,
     JSON.stringify({
       version: "9.0.0",
       phase,
+      ...(preparing ? { preparing: true } : {}),
       previousDigest: f.hash(f.oldBytes),
       candidateDigest: f.hash(f.newBytes),
     }),
@@ -509,7 +515,7 @@ test.each([
         await chmod(f.directory, 0o300);
         try {
           await expect(superviseUpdate(f.store, undefined, { home: f.home, service })).rejects.toThrow();
-          await expect(updater.beforeAdmission(undefined)).rejects.toThrow();
+          await expect(updater.pollMode()).rejects.toThrow();
         } finally {
           await chmod(f.directory, 0o700);
         }
@@ -519,7 +525,7 @@ test.each([
       }
       expect(await readFile(f.binary, "utf8")).toBe(committed ? f.newBytes : f.oldBytes);
     } else if (failure === "artifact unavailable") {
-      expect(await updater.beforeAdmission(offer)).toBe(false);
+      expect(await updater.prepare(offer)).toBe(false);
       releaseUnavailable = false;
     } else if (failure === "backup rename interrupted") {
       await writeFile(
@@ -534,7 +540,7 @@ test.each([
         { mode: 0o600 },
       );
     } else {
-      expect(await updater.beforeAdmission(offer)).toBe(true);
+      expect(await updater.prepare(offer)).toBe(true);
       if (failure === "supervisor unavailable") {
         expect(await updater.confirm({ type: "offer", version: offer })).toBe(true);
         expect(await updater.restart()).toBe(false);
@@ -569,7 +575,7 @@ test.each([
       throw new Error("Unexpected machine operation");
     };
     let accepted = false;
-    await tick(
+    await runJobs(
       store,
       {
         register: unexpected,
@@ -589,33 +595,115 @@ test.each([
           accepted = request.sandboxId === job.request.sandboxId;
         },
       },
-      false,
-      () => now,
-      { beforeAdmission: restarted.beforeAdmission },
+      { stopping: () => accepted, sleep: async () => {}, now: () => now, update: restarted },
     );
     expect(accepted).toBe(true);
     await validateInstallation(f.state, f.home);
     const expected = committed ? f.newBytes : f.oldBytes;
     expect(await readFile(f.binary, "utf8")).toBe(expected);
 
-    expect(await restarted.beforeAdmission(offer)).toBe(false);
+    expect(await restarted.prepare(offer)).toBe(false);
     now += 300_000;
     if (trial) {
       // An actual attempt stays fenced even when a newer stage overwrites its journal.
-      expect(await restarted.beforeAdmission(offer)).toBe(false);
+      expect(await restarted.prepare(offer)).toBe(false);
       offer = "9.0.1";
       if (interruptedCommit) {
-        expect(await restarted.beforeAdmission(offer)).toBe(false);
+        expect(await restarted.prepare(offer)).toBe(false);
         supervisorRestarting = false;
       }
-      expect(await restarted.beforeAdmission(offer)).toBe(true);
+      expect(await restarted.prepare(offer)).toBe(true);
       expect(await restarted.confirm({ type: "poll-failed" })).toBe(false);
       now += 300_000;
       offer = "9.0.0";
-      expect(await restarted.beforeAdmission(offer)).toBe(false);
+      expect(await restarted.prepare(offer)).toBe(false);
       offer = "9.0.1";
     }
-    expect(await restarted.beforeAdmission(offer)).toBe(true);
+    expect(await restarted.prepare(offer)).toBe(true);
+  } finally {
+    await rm(f.home, { recursive: true, force: true });
+  }
+});
+
+test.each([
+  ["idle", "normal"],
+  ["preparing", "normal"],
+  ["cancelled", "normal"],
+  ["failed", "normal"],
+  ["updated", "normal"],
+  ["staged", "heartbeat"],
+  ["starting", "heartbeat"],
+  ["uninstall intent", "cleanup"],
+] as const)("first poll after reboot in %s uses %s dispatch", async (phase, expected) => {
+  const f = await upgradeFixture();
+  try {
+    const io = {
+      async service() {
+        return "armada-docker-host-update.service loaded active running";
+      },
+      now: Date.now,
+      request: fetch,
+    };
+    if (phase === "uninstall intent") await prepareUninstall(f.state, undefined, { ...io, home: f.home });
+    else if (phase !== "idle")
+      await writeUpdateFixture(f, phase === "preparing" ? "cancelled" : phase, phase === "preparing");
+    const updater = automaticUpdate(f.state, { home: f.home }, io);
+    const job: Job = {
+      requestId: crypto.randomUUID(),
+      operation: expected === "cleanup" ? "stop" : "create",
+      request: {
+        sandboxId: crypto.randomUUID(),
+        generation: crypto.randomUUID(),
+        image: `debian@sha256:${"a".repeat(64)}`,
+        ttlSeconds: 60,
+      },
+    };
+    if (expected === "cleanup") {
+      await writeFile(
+        join(f.directory, "state.json"),
+        JSON.stringify({
+          ...f.state,
+          resumeClaims: [
+            {
+              requestId: crypto.randomUUID(),
+              sandboxId: job.request.sandboxId,
+              generation: job.request.generation,
+              accepted: true,
+              active: true,
+            },
+          ],
+        }),
+      );
+    }
+    const modes: string[] = [];
+    const executed: string[] = [];
+    const run = async () => {
+      executed.push(job.operation);
+    };
+    const unexpected = async () => {
+      throw new Error("Unexpected machine operation");
+    };
+    await runJobs(
+      {
+        load: f.store.load,
+        async save(state) {
+          await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+        },
+      },
+      {
+        register: unexpected,
+        async poll(_state, options) {
+          const mode = options?.heartbeatOnly ? "heartbeat" : options?.cleanupOnly ? "cleanup" : "normal";
+          modes.push(mode);
+          return { job: mode === "heartbeat" ? null : job, updateVersion: "9.0.0" };
+        },
+        async result() {},
+      },
+      { create: run, stop: run, delete: unexpected, stopIfExpired: unexpected },
+      { stopping: () => modes.length > 0, sleep: async () => {}, update: updater },
+    );
+    expect(modes).toEqual([expected]);
+    expect(executed).toEqual(expected === "heartbeat" ? [] : [job.operation]);
   } finally {
     await rm(f.home, { recursive: true, force: true });
   }
@@ -626,7 +714,7 @@ test("uninstall cancels a staged release even without a successful poll", async 
   try {
     const journal = await writeUpdateFixture(f, "staged");
     const updater = automaticUpdate(f.state, { home: f.home });
-    expect(await updater.beforeAdmission("9.0.0")).toBe(true);
+    expect(await updater.pollMode()).toBe("staged");
 
     const io = {
       home: f.home,
@@ -635,6 +723,23 @@ test("uninstall cancels a staged release even without a successful poll", async 
       },
     };
     await prepareUninstall(f.state, undefined, io);
+    // An iteration that already selected ordinary dispatch must still recheck
+    // the persisted intent at the wire boundary.
+    const requests: unknown[] = [];
+    const api = httpApi(
+      (async (_url, init) => {
+        requests.push(JSON.parse(String(init?.body)));
+        return Response.json({ job: null });
+      }) as typeof fetch,
+      undefined,
+      undefined,
+      undefined,
+      updater,
+    );
+    await expect(api.poll(f.state, { waitSeconds: 20 })).rejects.toThrow("uninstall pending");
+    expect(requests).toEqual([]);
+    await api.poll(f.state, { cleanupOnly: true });
+    expect(requests).toEqual([expect.objectContaining({ cleanupOnly: true })]);
     // A daemon that was already draining must not schedule the cancelled candidate.
     expect(await updater.restart()).toBe(false);
     expect(JSON.parse(await readFile(journal, "utf8")).phase).toBe("cancelled");

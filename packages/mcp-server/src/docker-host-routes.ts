@@ -99,6 +99,7 @@ export function createDockerHostRoutes(
   authenticate: (request: Request) => Promise<CallerResult>,
   options: {
     placement?: boolean;
+    automaticUpdateHostIds?: readonly string[];
     publicUrl?: string;
     snapshots?: DockerSnapshots;
     clock?: DockerHostPollClock;
@@ -106,6 +107,7 @@ export function createDockerHostRoutes(
   } = {},
 ): Route {
   const clock = options.clock ?? pollClock;
+  const automaticUpdates = new Set(options.automaticUpdateHostIds);
   let uploadingOutputs = false;
   return async (request) => {
     const path = new URL(request.url).pathname;
@@ -248,6 +250,7 @@ export function createDockerHostRoutes(
                 ...("diskFreeBytes" in body ? ["diskFreeBytes"] : []),
                 ...("stoppedSandboxBytes" in body ? ["stoppedSandboxBytes"] : []),
                 ...("heartbeatOnly" in body ? ["heartbeatOnly"] : []),
+                ...("cleanupOnly" in body ? ["cleanupOnly"] : []),
                 ...("waitSeconds" in body ? ["waitSeconds"] : []),
                 ...("running" in body ? ["running"] : []),
               ]
@@ -313,6 +316,8 @@ export function createDockerHostRoutes(
         const wait = body.waitSeconds;
         if (body.heartbeatOnly !== undefined && (body.heartbeatOnly !== true || wait !== undefined))
           throw new InvalidInput();
+        if (body.cleanupOnly !== undefined && (body.cleanupOnly !== true || wait !== undefined))
+          throw new InvalidInput();
         if (wait !== undefined && (!Number.isSafeInteger(wait) || Number(wait) < 1)) throw new InvalidInput();
         const holdUntil = clock.now() + Math.min(Number(wait ?? 0), DOCKER_HOST_POLL_HOLD_SECONDS) * 1000;
         // Machine operations the daemon is still executing. Their sandboxes stay
@@ -325,6 +330,12 @@ export function createDockerHostRoutes(
             running.some((item) => typeof item !== "string" || !uuid.test(item)))
         )
           throw new InvalidInput();
+        if (body.heartbeatOnly && body.cleanupOnly) {
+          // Compatibility probe before uninstall intent. Authenticate without
+          // changing heartbeat, admission, or cleanup state.
+          await store.pendingStartsForHost(token, installationId);
+          return Response.json({ job: null }, { headers });
+        }
         const retentionSeconds = await store.retentionForHost(
           token,
           installationId,
@@ -342,7 +353,10 @@ export function createDockerHostRoutes(
         const runningIds = (running as string[] | undefined) ?? [];
         let probed = false;
         for (;;) {
-          resumeClaims = body.resumeClaimProtocol === 1 ? await store.resumeClaimsForHost(token, installationId) : [];
+          resumeClaims =
+            body.resumeClaimProtocol === 1 && !body.heartbeatOnly && !body.cleanupOnly
+              ? await store.resumeClaimsForHost(token, installationId)
+              : [];
           job = await store.poll(
             token,
             installationId,
@@ -355,6 +369,7 @@ export function createDockerHostRoutes(
             runningIds,
             baseline,
             body.heartbeatOnly === true,
+            body.cleanupOnly === true,
           );
           if (job || resumeClaims.length) break;
           // The probe is broader than the poll (admission refusals, job order). A
@@ -391,13 +406,15 @@ export function createDockerHostRoutes(
             JSON.stringify({ event: "docker_host_update_failed", installationId, targetVersion: failedUpdate }),
           );
         }
+        const eligibleHostId = await store.updateEligibleHostId(token, installationId);
         return Response.json(
           {
             ...(retentionSeconds === undefined ? {} : { retentionSeconds }),
             ...(wait === undefined ? {} : { held: true }),
             minimumVersion: dockerHostVersions.minimumVersion,
-            ...((await store.canOfferUpdate(token, installationId))
-              ? { targetVersion: dockerHostVersions.targetVersion }
+            ...(eligibleHostId ? { targetVersion: dockerHostVersions.targetVersion } : {}),
+            ...(eligibleHostId && !body.cleanupOnly && automaticUpdates.has(eligibleHostId)
+              ? { updateVersion: dockerHostVersions.targetVersion }
               : {}),
             resumeClaims,
             job,

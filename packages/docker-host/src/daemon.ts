@@ -100,6 +100,7 @@ export interface Api {
       reuseTelemetry?: boolean;
       /** Refresh authenticated status and reconciliation without dispatching a job. */
       heartbeatOnly?: boolean;
+      cleanupOnly?: boolean;
       /** Ask the server to hold the poll until work exists, at most this long (#2561). */
       waitSeconds?: number;
       /** Request IDs still executing here; the server hands out other sandboxes' jobs. */
@@ -107,6 +108,8 @@ export interface Api {
     },
   ): Promise<
     DockerHostVersionOffer & {
+      /** Only an explicit server policy offer authorizes a binary update. */
+      updateVersion?: string;
       job: Job | null;
       /** The server held this poll until work existed or its hold elapsed. */
       held?: true;
@@ -311,7 +314,8 @@ export type TickOptions = {
   running?: ReadonlySet<string>;
   trialPoll?(target: string | undefined): Promise<State["trialPoll"]>;
   reconcileOnly?: boolean;
-  beforeAdmission?(target: string | undefined): Promise<boolean | "repoll">;
+  cleanupOnly?: boolean;
+  onUpdateOffer?(version: string | undefined): void;
   persistCompletion?(save: () => Promise<void>): Promise<void>;
   /** Sandboxes whose machine operation is still executing in this process. */
   sandboxes?: ReadonlySet<string>;
@@ -404,14 +408,13 @@ export async function runJobs(
     stopping(): boolean;
     sleep(ms: number): Promise<unknown>;
     beforeTick?(): Promise<void>;
-    beforeAdmission?: TickOptions["beforeAdmission"];
     trialPoll?: TickOptions["trialPoll"];
     retryCompletion?(): boolean;
     update?: {
-      staged(): boolean;
+      pollMode(): Promise<"normal" | "cleanup" | "trial" | "staged">;
+      prepare(version: string): Promise<boolean>;
       confirm(event: { type: "offer"; version: unknown } | { type: "poll-failed" }): Promise<boolean>;
       checkRecovery(): Promise<boolean>;
-      trialActive?(): Promise<boolean>;
       restart(): Promise<boolean>;
     };
     failed?(what: "tick" | "job"): void;
@@ -433,7 +436,7 @@ export async function runJobs(
   let reconciliation: Promise<void> | undefined;
   async function pollWithoutAdmission(skipSnapshots: boolean, deferSave = false) {
     try {
-      const { targetVersion } = await api.poll(await store.load(), {
+      const { updateVersion } = await api.poll(await store.load(), {
         skipSnapshots,
         reuseTelemetry: true,
         heartbeatOnly: true,
@@ -449,31 +452,22 @@ export async function runJobs(
           heartbeatSave = undefined;
         });
       if (!deferSave) await heartbeatSave;
-      return { type: "offer" as const, version: targetVersion };
+      return { type: "offer" as const, version: updateVersion };
     } catch {
       loop.failed?.("tick");
       return { type: "poll-failed" as const };
     }
   }
-  const prepareUpdate = loop.beforeAdmission;
-  async function beforeAdmission(target: string | undefined) {
-    if (!prepareUpdate) return false;
+  async function prepareUpdate(version: string) {
     let pending = true;
-    let repolled = false;
-    const preparation = prepareUpdate(target).finally(() => {
+    const preparation = loop.update?.prepare(version).finally(() => {
       pending = false;
     });
     while (pending && !loop.stopping()) {
       await Promise.race([preparation, loop.sleep(DOCKER_HOST_IDLE_MS)]);
-      if (pending && !loop.stopping()) {
-        repolled = true;
-        await pollWithoutAdmission(true);
-      }
+      if (pending && !loop.stopping()) await pollWithoutAdmission(true);
     }
-    // A heartbeat may have seen a new offer or revoked authorization while
-    // preparation ran. Only an ordinary fresh poll can provide the next job.
-    const fenced = await preparation;
-    return repolled ? ("repoll" as const) : fenced || loop.stopping();
+    return preparation;
   }
   async function persistCompletion(save: () => Promise<void>) {
     for (;;) {
@@ -489,7 +483,8 @@ export async function runJobs(
   }
   try {
     while (!loop.stopping()) {
-      if (loop.update?.staged()) {
+      const mode = loop.update ? await loop.update.pollMode() : "normal";
+      if (mode === "staged" && loop.update) {
         // Keep the host online while admitted operations finish. A short poll
         // updates the heartbeat without holding the ledger or accepting jobs.
         // Pace these polls even when the server has queued work to return.
@@ -520,7 +515,13 @@ export async function runJobs(
         continue;
       }
       // An orphaned trial can roll back even when authentication is denied.
-      if (loop.update && (await loop.update.checkRecovery()) && !loop.stopping() && (await loop.update.restart()))
+      if (
+        mode === "trial" &&
+        loop.update &&
+        (await loop.update.checkRecovery()) &&
+        !loop.stopping() &&
+        (await loop.update.restart())
+      )
         break;
       await loop.beforeTick?.();
       if (running.size >= DOCKER_HOST_CONCURRENT_JOBS) {
@@ -530,12 +531,22 @@ export async function runJobs(
       const finishedBefore = finished;
       let outcome: TickOutcome;
       try {
-        const trial = loop.update?.trialActive && (await loop.update.trialActive());
+        let offer: string | undefined;
         if (loop.stopping()) break;
         outcome = await tick(store, api, executor, live.snapshots.size > 0, loop.now ?? Date.now, {
-          ...(trial ? { reconcileOnly: true } : { waitSeconds: DOCKER_HOST_POLL_WAIT_SECONDS }),
+          ...(mode === "trial" || (mode === "cleanup" && running.size > 0)
+            ? { reconcileOnly: true }
+            : mode === "cleanup"
+              ? { cleanupOnly: true }
+              : { waitSeconds: DOCKER_HOST_POLL_WAIT_SECONDS }),
           ...live,
-          ...(prepareUpdate ? { beforeAdmission } : {}),
+          ...(loop.update && mode === "normal"
+            ? {
+                onUpdateOffer: (version) => {
+                  offer = version;
+                },
+              }
+            : {}),
           ...(loop.trialPoll ? { trialPoll: loop.trialPoll } : {}),
           ...(loop.retryCompletion ? { persistCompletion } : {}),
           dispatch(job, work) {
@@ -554,12 +565,14 @@ export async function runJobs(
             if (job.operation === "buildSnapshot") live.snapshots.add(job.requestId);
           },
         });
+        // The ordinary poll may already have recorded a provider claim.
+        // Admit that job before staging an update.
+        if (offer && !loop.stopping() && (await prepareUpdate(offer))) continue;
       } catch {
         loop.failed?.("tick");
         outcome = "idle";
       }
       if (loop.stopping()) break;
-      if (loop.update?.staged()) continue;
       if (outcome === "busy" && finished !== finishedBefore) continue;
       if (outcome === "busy" && running.size) await Promise.race([settled(), loop.sleep(DOCKER_HOST_IDLE_MS)]);
       else if (outcome === "busy" || outcome === "idle") await loop.sleep(DOCKER_HOST_IDLE_MS);
@@ -686,21 +699,18 @@ async function admitLocked(
   lock.release();
   let polled: Awaited<ReturnType<Api["poll"]>> | undefined;
   let pollError: unknown;
-  let upgradeFenced = options.reconcileOnly ?? false;
   let trialPoll: State["trialPoll"];
   try {
     polled = await api.poll(state, {
       skipSnapshots,
       ...(options.reconcileOnly ? { heartbeatOnly: true } : {}),
+      ...(options.cleanupOnly ? { cleanupOnly: true } : {}),
       ...(options.waitSeconds === undefined
         ? {}
         : { waitSeconds: options.waitSeconds, running: [...(options.running ?? [])] }),
     });
-    // Release downloads must not hold up durable completion of admitted jobs.
-    const admission = await options.beforeAdmission?.(polled.targetVersion);
-    if (admission === "repoll") return "held";
-    upgradeFenced ||= admission ?? false;
-    trialPoll = await options.trialPoll?.(polled.targetVersion);
+    options.onUpdateOffer?.(polled.updateVersion);
+    trialPoll = await options.trialPoll?.(polled.updateVersion);
   } catch (error) {
     pollError = error;
   } finally {
@@ -719,7 +729,7 @@ async function admitLocked(
   // A claim and cleanup authorization are serialized by this single durable
   // host ledger. Merely requesting a resume on the server never admits it.
   let unacknowledged = 0;
-  for (const intent of polled?.resumeClaims ?? []) {
+  for (const intent of options.reconcileOnly || options.cleanupOnly ? [] : (polled?.resumeClaims ?? [])) {
     state.resumeClaims ??= [];
     let claim = state.resumeClaims.find((item) => item.requestId === intent.requestId);
     if (!claim) {
@@ -982,13 +992,16 @@ async function admitLocked(
   /** Ledger-side preconditions, inside the serialized section. Returns a refusal. */
   async function prepare(receipt: Receipt): Promise<unknown> {
     try {
-      if (
-        (receipt.operation === "stop" || receipt.operation === "delete") &&
-        state.resumeClaims?.some(
-          (claim) => claim.active && claim.accepted && generationKey(claim) === generationKey(receipt.request),
-        )
-      )
-        throw new Error("Generation claimed for resume");
+      if (receipt.operation === "stop" || receipt.operation === "delete") {
+        const key = generationKey(receipt.request);
+        for (const claim of state.resumeClaims ?? []) {
+          if (!claim.active || !claim.accepted || generationKey(claim) !== key) continue;
+          if (!options.cleanupOnly) throw new Error("Generation claimed for resume");
+          // The durable uninstall fence prevents future local resume work and
+          // the server has authorized cleanup of this exact generation.
+          claim.active = false;
+        }
+      }
       if (receipt.operation === "delete") {
         state.cleanupGenerations ??= [];
         state.cleanupGenerations.push(generationKey(receipt.request));
@@ -1092,7 +1105,11 @@ async function admitLocked(
   }
   if (pollError) throw pollError;
   if (!polled) throw pollError ?? new Error("Host poll unavailable");
-  if (upgradeFenced || !polled.job) {
+  if (
+    options.reconcileOnly ||
+    !polled.job ||
+    (options.cleanupOnly && polled.job.operation !== "stop" && polled.job.operation !== "delete")
+  ) {
     await store.save(state);
     if (polled.job) return "idle";
     // A claim this host cannot acknowledge would end every held poll at once.

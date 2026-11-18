@@ -230,9 +230,17 @@ gets the same bounded reconnect wait.
 
 ### Automatic daemon updates on Linux
 
-Install an update-capable daemon once using the normal installer. A managed Linux
-systemd user service then considers newer stable versions offered on its
-authenticated outbound poll. It fetches the standalone install manifest from
+Automatic updates are off by default. To trial them on a managed Linux systemd
+user service, install an update-capable daemon with the normal installer and put
+its host ID from the Docker hosts list in the server's
+`ARMADA_DOCKER_HOST_AUTO_UPDATE_HOST_IDS` environment variable. Restart the server
+with the updated configuration. Use a comma-separated list to enable additional
+hosts, or remove a host ID to withdraw its update offer. All eligible hosts still
+report their installed version and receive minimum and target versions for skew
+reporting. Only an enabled host receives the separate update offer.
+
+An enabled daemon considers newer stable versions on its authenticated outbound
+poll. It fetches the standalone install manifest from
 `https://armada-mcp-production.up.railway.app/api/docker-host/install.json`,
 requires a matching version, and verifies the Linux x64 or arm64 daemon against
 the manifest's SHA-256 before staging it. The artifact uses the installer’s
@@ -247,8 +255,10 @@ finishes on the original binary. An admitted launch job finishes there too.
 A later launch job stays queued until the service reconnects. Running containers
 and volumes survive the daemon restart and the next process reconciles them
 through the usual ledger. The update uses no sudo and opens no listening port.
-A daemon resuming a staged update after startup checks that the server still
-offers that version before draining. During the drain, authenticated polling
+Before its first poll, the daemon reads the durable update journal and uninstall
+intent. A daemon resuming a staged update starts with admission fenced, so
+checking the current offer cannot record a launch claim. If an ordinary poll
+returns a job alongside a new offer, the daemon admits the job before staging. During the drain, authenticated polling
 continues to refresh the server and local status heartbeats. Any newly offered
 jobs stay queued without recording a provider claim. These short polls reuse the latest resource measurements
 so Docker inspection cannot delay them. In-flight jobs save their receipts and submit results on the original binary.
@@ -272,7 +282,8 @@ failure or deferred offer preserves the cutoff.
 | State | Event and allowed transition | Durable state and recovery |
 | --- | --- | --- |
 | Idle, preparing, cancelled, failed or updated | An eligible newer offer starts preparing after backoff. Eligibility also requires a managed service, no uninstall intent, and an absent or inactive supervisor from the preceding attempt. | The running executable stays in place. The preparing journal preserves the highest attempted version and the next retry time. It uses the existing cancelled phase with a preparation flag so older recovery binaries can read it. A manifest fetch that fails before the journal write backs off in memory. |
-| Preparing | Continue authenticated heartbeat polls while release verification and backup are in progress. Admitted operations can finish and report results. If preparation fails after an interim heartbeat, ordinary admission requires a new poll. Verified download and backup finish → staged. Download, disk failure or reboot before the staged write → preparing or the preceding state. | The candidate is stored privately. Before rotating `.previous`, the journal accepts both the old and intended backup digests. A restart on either side of the backup rename keeps the old daemon serving and can prepare the same release again. |
+| Preparing | Continue authenticated heartbeat polls while release verification and backup are in progress. Admitted operations can finish and report results. Verified download and backup finish → staged. Download, disk failure or reboot before the staged write → preparing or the preceding state. | The candidate is stored privately. Before rotating `.previous`, the journal accepts both the old and intended backup digests. A restart on either side of the backup rename keeps the old daemon serving and can prepare the same release again. |
+| Any durable state at startup | Load the journal and uninstall intent before choosing the first poll. | Staged and starting use no-dispatch polls, with orphaned trial recovery first. An uninstall intent allows only bound stop/delete jobs after admitted operations settle. Once server drain begins, the cleanup poll also retires queued startup and snapshot work. Idle, preparing, cancelled, failed and durably updated states allow ordinary polling. |
 | Staged | Check the current offer, fence admission and drain admitted jobs. | Candidate and backup digests are durable. After a reboot the old binary runs and checks the offer again before a supervisor can start. |
 | Staged, jobs draining | Continue authenticated polls on the idle interval while long-running builds or launches finish. Ignore newly offered jobs and wait for admitted operations to save receipts and attempt to report results. Expiry and retention reconciliation continues independently of the short heartbeats. | In-flight work continues on the old binary. Poll failures during the drain leave admission fenced and the next poll retries the heartbeat. Unacknowledged results can be replayed from durable receipts. |
 | Staged, drain complete | Start a fresh authenticated poll with admission fenced. A matching offer dispatches the supervisor. | A poll started during the drain cannot authorize the restart. |
@@ -289,7 +300,12 @@ Armada host unit to disable automatic updates. Run `systemctl --user edit
 armada-docker-host.service` (or the matching instance unit), add
 `Environment=ARMADA_DOCKER_HOST_AUTO_UPDATE=0` under `[Service]`, and restart
 during a maintenance window. The manual installer remains available. Foreground
-daemons and macOS launchd installations use manual updates.
+daemons and macOS launchd installations use manual updates. Uninstalling the
+update-capable managed daemon requires a server that supports cleanup-only
+polls. Uninstall probes the server without requesting work and stops before
+writing the local intent if an older server rejects the protocol. If a server
+rollback interrupts an existing drain, keep the service and private state,
+restore the compatible server, and retry uninstall.
 
 A fresh registration token can cancel its own unused ticket and resolve an existing
 registered host's name through `POST /api/docker-host/reuse-registration`. It cannot

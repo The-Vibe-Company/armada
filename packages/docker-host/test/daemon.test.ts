@@ -686,6 +686,15 @@ test("unregister distinguishes a pending drain from confirmed revocation and rej
   }
 });
 
+test("uninstall compatibility check rejects a legacy server without requesting work", async () => {
+  const f = fixture();
+  const api = httpApi((async (_url, options) => {
+    expect(JSON.parse(String(options?.body))).toMatchObject({ heartbeatOnly: true, cleanupOnly: true });
+    return new Response(null, { status: 400 });
+  }) as typeof fetch);
+  await expect(api.checkUninstallCompatibility(f.state())).rejects.toThrow("Restore a compatible server");
+});
+
 // The daemon's loop passes `dispatch`, but an older server never holds a poll, so
 // the build still runs inline and must keep the other work moving (#2561).
 for (const [caller, options] of [
@@ -2230,24 +2239,22 @@ test.each([
         if (isPreparing) {
           expect(options?.heartbeatOnly).toBe(true);
           preparationHeartbeats.push(now);
-          return { job: next.job, targetVersion: "9.0.0" };
+          return { job: next.job, updateVersion: "9.0.0" };
         }
         if (staged && !released) {
           expect(options?.heartbeatOnly).toBe(true);
           if (options?.reuseTelemetry) drainHeartbeats.push(now);
-          return { job: next.job, targetVersion: "9.0.0" };
+          return { job: next.job, updateVersion: "9.0.0" };
         }
         if (released) {
           if (options?.reuseTelemetry) {
             postDrainReceipt = [...acknowledged];
             if (outcome === "poll failed") throw new Error("Lost poll response");
-            return { job: next.job, ...(matching ? { targetVersion: "9.0.0" } : {}) };
+            return { job: next.job, ...(matching ? { updateVersion: "9.0.0" } : {}) };
           }
           return { job: null };
         }
-        if (options?.running?.includes(first.job.requestId))
-          return { job: next.job, held: true, targetVersion: "9.0.0" };
-        return { job, held: true };
+        return { job, held: true, updateVersion: "9.0.0" };
       },
       async result(_state, receipt, expired) {
         if (expired) {
@@ -2279,7 +2286,19 @@ test.each([
     {
       stopping: () => confirmed,
       update: {
-        staged: () => staged,
+        pollMode: async () => (staged ? "staged" : "normal"),
+        async prepare(target) {
+          if (!target) return false;
+          if (slowPreparation) {
+            isPreparing = true;
+            preparing.resolve();
+            await finishPreparation.promise;
+            isPreparing = false;
+          }
+          staged = true;
+          offered.resolve();
+          return true;
+        },
         async checkRecovery() {
           return false;
         },
@@ -2299,19 +2318,6 @@ test.each([
         },
       },
       retryCompletion: () => true,
-      async beforeAdmission(target) {
-        if (released) confirmed = true;
-        if (!target) return false;
-        if (slowPreparation) {
-          isPreparing = true;
-          preparing.resolve();
-          await finishPreparation.promise;
-          isPreparing = false;
-        }
-        staged = true;
-        offered.resolve();
-        return true;
-      },
       now: () => now,
       async sleep(ms) {
         if (released) return;
@@ -2361,35 +2367,6 @@ test.each([
       .receipts.filter(({ requestId }) => requestId !== expiring.job.requestId)
       .map(({ requestId, outcome }) => [requestId, outcome]),
   ).toEqual([[first.job.requestId, "completed"]]);
-});
-
-test("a failed update preparation discards a job from before an intervening poll denial", async () => {
-  const f = fixture();
-  const denied = Promise.withResolvers<void>();
-  let polls = 0;
-  await runJobs(
-    f.store,
-    {
-      ...f.api,
-      async poll() {
-        if (++polls === 1) return { job: f.job, targetVersion: "9.0.0", held: true };
-        denied.resolve();
-        throw new Error("Host no longer authorized");
-      },
-    },
-    f.executor,
-    {
-      stopping: () => polls >= 3,
-      async beforeAdmission() {
-        await denied.promise;
-        return false;
-      },
-      async sleep() {},
-    },
-  );
-  expect(polls).toBe(3);
-  expect(f.executed).toEqual([]);
-  expect(f.state().receipts).toEqual([]);
 });
 
 test("completion retry persists an already compacted outcome after a directory sync failure", async () => {

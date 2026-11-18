@@ -661,13 +661,13 @@ export function createDockerHostStore(sql: Sql, key: string) {
         if (!result.rows.length) deny();
       });
     },
-    async canOfferUpdate(hostToken: string, installationId: string) {
-      const result = await sql.query(
-        `select 1 from public.docker_hosts h join public.members m on m.org_id=h.org_id and m.user_id=h.owner_id
+    async updateEligibleHostId(hostToken: string, installationId: string) {
+      const result = await sql.query<{ id: string }>(
+        `select h.id from public.docker_hosts h join public.members m on m.org_id=h.org_id and m.user_id=h.owner_id
          where h.hash=$1 and h.installation_id=$2 and h.revoked_at is null and h.draining_at is null`,
         [hash(hostToken), installationId],
       );
-      return result.rows.length > 0;
+      return result.rows[0]?.id;
     },
     /** Every generation with a queued resume/bootstrap, so the daemon fences all of them, not only the head job. */
     pendingStartsForHost(hostToken: string, installationId: string) {
@@ -1136,6 +1136,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
       running: readonly string[] = [],
       snapshotBaselineVersion?: number,
       heartbeatOnly = false,
+      cleanupOnly = false,
     ): Promise<Job | null> {
       // A revoked host or a removed owner can never authenticate again. Retire its
       // undispatchable work in its own committed transaction before the normal
@@ -1176,8 +1177,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
           : (
               await tx.query<StoredJob>(
                 `select j.* from public.docker_host_jobs j join public.docker_hosts h on h.id=j.host_id
-           where h.hash=$1 and h.installation_id=$2 and j.outcome is null and (not $3::boolean or j.snapshot_id is null) and ${notRunning(4)} order by case when j.bound_operation in ('stop','delete') then 0 else 1 end,(j.snapshot_id is not null),j.position limit 1`,
-                [hash(hostToken), installationId, skipSnapshots, running],
+           where h.hash=$1 and h.installation_id=$2 and j.outcome is null and (not $3::boolean or j.snapshot_id is null) and ${notRunning(4)} and (not $5::boolean or j.bound_operation in ('stop','delete')) order by case when j.bound_operation in ('stop','delete') then 0 else 1 end,(j.snapshot_id is not null),j.position limit 1`,
+                [hash(hostToken), installationId, skipSnapshots, running, cleanupOnly],
               )
             ).rows[0];
         const host =
@@ -1240,10 +1241,27 @@ export function createDockerHostStore(sql: Sql, key: string) {
           }
         }
         if (heartbeatOnly) return null;
+        if (
+          cleanupOnly &&
+          !running.length &&
+          (
+            await tx.query(`select 1 from public.docker_hosts where id=$1 and ${hostDrainingSql("docker_hosts")}`, [
+              host.id,
+            ])
+          ).rows.length
+        ) {
+          // An uninstalling daemon requests cleanup-only dispatch after its
+          // admitted operations settle. Retire work it will never take so the
+          // next unregister attempt can enqueue bound stop/delete jobs.
+          await retireUndispatchable(tx, host.id, {
+            sandbox: DOCKER_LAUNCH_FAILURE_MESSAGES.hostUnavailable,
+            snapshot: DOCKER_SNAPSHOT_FAILURE_MESSAGES.retired,
+          });
+        }
         const row = (
           await tx.query<StoredJob>(
-            `select j.* from public.docker_host_jobs j where j.host_id=$1 and j.outcome is null and (not $2::boolean or j.snapshot_id is null) and ${notRunning(3)} order by case when j.bound_operation in ('stop','delete') then 0 else 1 end,(j.snapshot_id is not null),j.position limit 1`,
-            [host.id, skipSnapshots, running],
+            `select j.* from public.docker_host_jobs j where j.host_id=$1 and j.outcome is null and (not $2::boolean or j.snapshot_id is null) and ${notRunning(3)} and (not $4::boolean or j.bound_operation in ('stop','delete')) order by case when j.bound_operation in ('stop','delete') then 0 else 1 end,(j.snapshot_id is not null),j.position limit 1`,
+            [host.id, skipSnapshots, running, cleanupOnly],
           )
         ).rows[0];
         if (!row || row.request_id !== hint?.request_id) return null;

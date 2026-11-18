@@ -162,9 +162,14 @@ export function httpApi(
   resources?: (state: State) => Promise<DockerHostResources>,
   diskFreeBytes?: () => Promise<number | null>,
   stoppedBytes?: (state: State) => Promise<number | null>,
-  update?: { failure(): Promise<string | undefined>; acknowledge(version: string): Promise<void> },
+  update?: {
+    failure(): Promise<string | undefined>;
+    acknowledge(version: string): Promise<void>;
+    pollWhileInstalled?<T>(poll: () => Promise<T>): Promise<T>;
+  },
 ): Api & {
   retainedOutputs(state: State, requestId: string, read: () => Promise<Uint8Array<ArrayBuffer> | null>): Promise<void>;
+  checkUninstallCompatibility(state: State): Promise<void>;
   unregister(state: State): Promise<boolean>;
   reuseRegistration(state: State, token: string): Promise<{ hostId: string; name: string | null }>;
 } {
@@ -175,7 +180,7 @@ export function httpApi(
     return { disk, stopped, sampledResources };
   }
   let lastTelemetry: Awaited<ReturnType<typeof sampleTelemetry>> | undefined;
-  async function post(
+  async function send(
     server: string,
     endpoint: string,
     token: string,
@@ -225,6 +230,19 @@ export function httpApi(
       await update?.acknowledge(failure).catch(() => {});
     return result;
   }
+  function post(...args: Parameters<typeof send>) {
+    const [, endpoint, , body] = args;
+    if (
+      endpoint === "poll" &&
+      body &&
+      typeof body === "object" &&
+      !("heartbeatOnly" in body) &&
+      !("cleanupOnly" in body) &&
+      update?.pollWhileInstalled
+    )
+      return update.pollWhileInstalled(() => send(...args));
+    return send(...args);
+  }
   return {
     async reuseRegistration(state, token) {
       if (!validToken(token)) throw new Error("Invalid registration token");
@@ -247,6 +265,23 @@ export function httpApi(
       )
         throw new Error("Invalid existing host identity");
       return { hostId: state.hostId, name: result.name as string | null };
+    },
+    async checkUninstallCompatibility(state) {
+      try {
+        await post(state.server, "poll", state.hostToken, {
+          installationId: state.installationId,
+          version: VERSION,
+          heartbeatOnly: true,
+          cleanupOnly: true,
+        });
+      } catch (error) {
+        if (error instanceof HostRequestDenied && error.status === 400)
+          throw new Error(
+            "The server does not support cleanup-only Docker host polls. Restore a compatible server before uninstalling.",
+          );
+        // An offline or already revoked host still follows the normal durable
+        // uninstall and retry path. Only an explicit protocol refusal stops it.
+      }
     },
     async unregister(state) {
       const result = await post(state.server, "unregister", state.hostToken, { installationId: state.installationId });
@@ -298,7 +333,7 @@ export function httpApi(
         stopped: {},
         sampledResources: dockerHostResources(),
       };
-      if (options?.waitSeconds !== undefined && !options.heartbeatOnly) {
+      if (options?.waitSeconds !== undefined && !options.heartbeatOnly && !options.cleanupOnly) {
         // Held poll (#2561): the server answers as soon as work exists. Servers
         // without it refuse the additive fields before claiming, and the
         // daemon then keeps its own idle period.
@@ -338,10 +373,10 @@ export function httpApi(
         resourcePolicyVersion: 1,
       };
       // Never retry a fenced heartbeat as a job-bearing poll.
-      if (options?.heartbeatOnly)
+      if (options?.heartbeatOnly || options?.cleanupOnly)
         return (await post(state.server, "poll", state.hostToken, {
           ...currentPoll,
-          heartbeatOnly: true,
+          ...(options.heartbeatOnly ? { heartbeatOnly: true } : { cleanupOnly: true }),
         })) as Awaited<ReturnType<Api["poll"]>>;
       try {
         return (await post(state.server, "poll", state.hostToken, currentPoll)) as Awaited<ReturnType<Api["poll"]>>;
