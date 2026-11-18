@@ -16,6 +16,7 @@ import { dockerHostVersions } from "./docker-host-version.ts";
 import { DockerSnapshotHostUpgradeRequired, type DockerSnapshots } from "./docker-snapshots.ts";
 import type { Route } from "./http.ts";
 import { withRequestBodyCeiling } from "./request-body-ceiling.ts";
+import { runtimeWakes, waitForTimeout } from "./wake-bus.ts";
 
 const machinePaths = [
   "/api/docker-host/register",
@@ -78,18 +79,7 @@ export interface DockerHostPollClock {
 }
 const pollClock: DockerHostPollClock = {
   now: () => Date.now(),
-  async wait(ms, signal) {
-    if (signal.aborted) return;
-    await new Promise<void>((resolve) => {
-      const finish = () => {
-        clearTimeout(timer);
-        signal.removeEventListener("abort", finish);
-        resolve();
-      };
-      const timer = setTimeout(finish, ms);
-      signal.addEventListener("abort", finish, { once: true });
-    });
-  },
+  wait: waitForTimeout,
 };
 
 /** Mounted only by ARMADA_DOCKER_HOSTS=1. Machine authority never authenticates a user API. */
@@ -321,7 +311,7 @@ export function createDockerHostRoutes(
             running.some((item) => typeof item !== "string" || !uuid.test(item)))
         )
           throw new InvalidInput();
-        const retentionSeconds = await store.retentionForHost(
+        const { hostId, retentionSeconds } = await store.retentionForHost(
           token,
           installationId,
           "retentionSeconds" in body
@@ -337,48 +327,51 @@ export function createDockerHostRoutes(
         const skipSnapshots = body.skipSnapshots === true;
         const runningIds = (running as string[] | undefined) ?? [];
         let probed = false;
-        for (;;) {
-          resumeClaims = body.resumeClaimProtocol === 1 ? await store.resumeClaimsForHost(token, installationId) : [];
-          job = await store.poll(
-            token,
-            installationId,
-            version,
-            skipSnapshots,
-            body.resources as DockerHostResources | undefined,
-            body.resourcePolicyVersion as 1 | undefined,
-            body.diskFreeBytes as number | null | undefined,
-            body.stoppedSandboxBytes as number | null | undefined,
-            runningIds,
-            baseline,
-          );
-          if (job || resumeClaims.length) break;
-          // The probe is broader than the poll (admission refusals, job order). A
-          // probe the full poll could not serve is not retried within this hold,
-          // so such a job costs one more full poll per hold, not one per second.
-          if (probed) {
-            const remaining = holdUntil - clock.now();
-            if (remaining > 0) await clock.wait(remaining, request.signal);
-            break;
-          }
-          // Recheck every second with a read-only probe; the full poll above
-          // (host reconciliation, heartbeat and claim writes) runs again only
-          // when something may be ready, not once a second per idle host.
-          let ready = false;
-          while (!ready) {
-            const remaining = holdUntil - clock.now();
-            if (remaining <= 0 || request.signal.aborted) break;
-            await clock.wait(Math.min(1000, remaining), request.signal);
-            if (request.signal.aborted) break;
-            ready = await store.mayHaveWork(
+        const wake = runtimeWakes.watch(`host:${hostId}`);
+        try {
+          for (;;) {
+            resumeClaims = body.resumeClaimProtocol === 1 ? await store.resumeClaimsForHost(token, installationId) : [];
+            job = await store.poll(
               token,
               installationId,
+              version,
               skipSnapshots,
+              body.resources as DockerHostResources | undefined,
+              body.resourcePolicyVersion as 1 | undefined,
+              body.diskFreeBytes as number | null | undefined,
+              body.stoppedSandboxBytes as number | null | undefined,
               runningIds,
-              body.resumeClaimProtocol === 1,
+              baseline,
             );
+            if (job || resumeClaims.length) break;
+            // Recheck every second with a read-only probe; the full poll above
+            // (host reconciliation, heartbeat and claim writes) runs again only
+            // when something may be ready, not once a second per idle host.
+            let ready = false;
+            while (!ready) {
+              const remaining = holdUntil - clock.now();
+              if (remaining <= 0 || request.signal.aborted) break;
+              // After a false positive, stop periodic reads for this hold. A
+              // fresh local enqueue can still trigger a probe.
+              const notified = await wake.wait(
+                request.signal,
+                probed ? remaining : Math.min(1000, remaining),
+                clock.wait.bind(clock),
+              );
+              if (request.signal.aborted || (probed && !notified)) break;
+              ready = await store.mayHaveWork(
+                token,
+                installationId,
+                skipSnapshots,
+                runningIds,
+                body.resumeClaimProtocol === 1,
+              );
+            }
+            if (!ready) break;
+            probed = true;
           }
-          if (!ready) break;
-          probed = true;
+        } finally {
+          wake.close();
         }
         return Response.json(
           {

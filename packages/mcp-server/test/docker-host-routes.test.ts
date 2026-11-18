@@ -6,6 +6,7 @@ import { createDockerHostRoutes } from "../src/docker-host-routes.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
 import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
 import { observeRequest } from "../src/request-observability.ts";
+import { collectTransactionWakes } from "../src/wake-bus.ts";
 import { rowOnlyConnection } from "./row-only-database.ts";
 
 const connection = rowOnlyConnection();
@@ -26,7 +27,16 @@ async function fixture() {
   ]);
   const sql: Sql = {
     query: (q, p) => db.query(q, p),
-    transaction: (work) => db.transaction((tx) => work({ query: (q, p) => tx.query(q, p) })),
+    async transaction(work) {
+      let publish: (() => void) | undefined;
+      const result = await db.transaction((tx) => {
+        const scoped: Sql = { query: (q, p) => tx.query(q, p) };
+        publish = collectTransactionWakes(scoped);
+        return work(scoped);
+      });
+      publish?.();
+      return result;
+    },
   };
   const store = createDockerHostStore(sql, Buffer.alloc(32, 8).toString("base64"));
   const authenticate = async (request: Request) => {
@@ -493,6 +503,41 @@ test("a host reporting many retained deadlines still fits the poll body limit", 
   expect(response.status).toBe(200);
 });
 
+test("a held host poll returns a locally enqueued job with the clock frozen", async () => {
+  const { userId, orgId, store, authenticate, post } = await fixture();
+  const actor = { userId, orgId };
+  const ticket = await store.issueRegistration(actor);
+  const installationId = randomUUID();
+  const host = await store.exchangeRegistration(ticket.registrationToken, installationId);
+  const job = {
+    requestId: randomUUID(),
+    operation: "create" as const,
+    request: {
+      sandboxId: randomUUID(),
+      generation: randomUUID(),
+      image: `example/worker@sha256:${"a".repeat(64)}`,
+      ttlSeconds: 300,
+    },
+  };
+  const held = createDockerHostRoutes(store, authenticate, {
+    clock: {
+      now: () => 0,
+      async wait(_ms, signal) {
+        await store.enqueue(actor, host.hostId, job);
+        expect(signal.aborted).toBe(true);
+      },
+    },
+  });
+  const response = await post(
+    "/api/docker-host/poll",
+    host.hostToken,
+    { installationId, version: "2.51.0", waitSeconds: 20 },
+    {},
+    held,
+  );
+  expect(await response.json()).toMatchObject({ held: true, job });
+});
+
 test("a held host poll answers as soon as work appears and never beyond its hold", async () => {
   let time = 0;
   let polls = 0;
@@ -505,7 +550,7 @@ test("a held host poll answers as soon as work appears and never beyond its hold
   const store = {
     async retentionForHost() {
       retentionWrites++;
-      return undefined;
+      return { hostId: randomUUID(), retentionSeconds: undefined };
     },
     resumeClaimsForHost: async () => [],
     pendingStartsForHost: async () => [],
