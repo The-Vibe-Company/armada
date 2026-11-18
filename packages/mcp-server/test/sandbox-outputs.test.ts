@@ -92,7 +92,9 @@ test("collected outputs survive stop, deduplicate webhook events and enforce int
   expect(await sample(service)).toBe(false);
   expect(state.reads).toBe(2);
   const url = `https://armada.example/api/v1/sandboxes/${id}/outputs`;
-  const response = await routeFor(service, people.owner, people.org)(new Request(`${url}/memo.pdf`));
+  const route = routeFor(service, people.owner, people.org);
+  expect(await (await route(new Request(url)))?.json()).toMatchObject({ directory: "/home/user/outputs" });
+  const response = await route(new Request(`${url}/memo.pdf`));
   expect(response?.status).toBe(200);
   expect(response?.headers.get("content-type")).toBe("application/pdf");
   expect(await response?.text()).toBe("document");
