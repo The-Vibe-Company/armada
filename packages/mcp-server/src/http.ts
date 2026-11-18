@@ -117,7 +117,6 @@ export interface HandlerOptions {
   ordinaryLaunchReceipts?: ReturnType<typeof createOrdinaryLaunchReceipts>;
   templates?: import("@armada/core/server").TemplateService;
   skillDefaults?: import("@armada/core/server").SkillDefaultsService;
-  applicationVault?: import("@armada/core/server").ApplicationVault;
   connections?: LaunchStores["connections"];
   /** Where the real cause of a 503 goes. Defaults to stderr. Never given a token or a key. */
   log?: (line: string) => void;
@@ -206,7 +205,6 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
         ...(options.runtimeGitHub ? { runtimeGitHub: options.runtimeGitHub } : {}),
         ...(options.skillDefaults ? { skillDefaults: options.skillDefaults } : {}),
         ...(options.templates ? { templates: options.templates } : {}),
-        ...(options.applicationVault ? { applicationVault: options.applicationVault } : {}),
         ...(options.connections ? { connections: options.connections } : {}),
         data: options.data(caller),
         launchCredentials: launchCredentials(options.vault, options.encryptionKey, options.github, options.modelAuth),

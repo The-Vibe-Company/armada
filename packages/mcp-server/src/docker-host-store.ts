@@ -41,6 +41,7 @@ import { recordLaunchStageForActivation } from "./launch-stage-record.ts";
 import { collectOutputTransfers, DOCKER_RETAINED_OUTPUT_STOP } from "./output-transfers.ts";
 import { noteAdmission } from "./request-observability.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
+import { deferTransactionWake } from "./wake-bus.ts";
 
 type Actor = { userId: string; orgId: string };
 type Job = DockerHostJob;
@@ -252,7 +253,12 @@ export function createDockerHostStore(sql: Sql, key: string) {
     )
       deny();
     // A conflicting row is a replay of an already admitted request: no new host work.
-    if (inserted.rows.length) noteAdmission();
+    if (inserted.rows.length) {
+      // The SQL adapter publishes after the outer transaction commits, including
+      // enqueues made through a scoped transaction owned by another service.
+      deferTransactionWake(tx, `host:${hostId}`);
+      noteAdmission();
+    }
     return { requestId: job.requestId };
   }
   async function readJob(row: StoredJob): Promise<Job> {
@@ -589,14 +595,11 @@ export function createDockerHostStore(sql: Sql, key: string) {
             );
           }
         }
-        return (
-          (
-            await tx.query<{ retention_seconds: number | null }>(
-              "select retention_seconds from public.docker_hosts where id=$1",
-              [host.id],
-            )
-          ).rows[0]?.retention_seconds ?? undefined
+        const retention = await tx.query<{ retention_seconds: number | null }>(
+          "select retention_seconds from public.docker_hosts where id=$1",
+          [host.id],
         );
+        return { hostId: host.id, retentionSeconds: retention.rows[0]?.retention_seconds ?? undefined };
       });
     },
     /**

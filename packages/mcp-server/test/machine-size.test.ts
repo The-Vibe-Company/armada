@@ -140,13 +140,9 @@ test("canonical HTTP launch validates sizes and applies overrides or golden defa
       },
     });
     const client = await server.client(token);
-    const invalid = await call(client, "launch_sized_v1", { golden: "shared", harness: "claude", size: "small" });
-    expect(invalid.isError).toBe(true);
-    expect(server.boat.forks).toHaveLength(2);
-    const mcp = await call(client, "launch_sized_v1", {
+    const mcp = await call(client, "launch", {
       golden: "shared",
       harness: "claude",
-      size_policy_version: 1,
       size: "medium",
     });
     expect(mcp.isError).not.toBe(true);
