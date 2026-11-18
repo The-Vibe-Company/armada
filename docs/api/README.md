@@ -108,18 +108,24 @@ therefore normally carries `"status":"starting"` and no `promptId` or
 `requestId` as `id`. A replay with the same `requestId` and body never starts
 a second launch:
 
-- While the worker has not published the launch receipt, the replay returns
-  the same pending answer: the sandbox ID, `starting` and no prompt receipt.
-- Once the worker has published the receipt, the replay returns the same
-  sandbox ID and the recorded `promptId` and `conversationId` (when the launch
-  sent a prompt), with the sandbox's current metadata. Its status is the
-  current one (for example `running`, `stopped`, `failed` or `deleted`), not
-  the status of an earlier response.
+- The replay reports the sandbox's current status, not the status of an
+  earlier response. Until the worker publishes the launch receipt, a sandbox
+  that is `ready` or `running` is reported as `starting`. A sandbox that is
+  stopped, failed or deleted keeps that status.
+- The replay carries the recorded `promptId` and `conversationId` only once the
+  worker has published the launch receipt and the launch sent a prompt. It
+  never carries them before.
 
 After a dropped response, poll `sandbox/status` with the `requestId` as `id`.
-To read the prompt receipt, replay the same request until it returns a
-status other than `starting`. A `failed` status means the launch failed. Do not launch with a new
-`requestId` until you know that the first launch failed. See
+For a launch that sent a prompt, read the prompt receipt by replaying the same
+request and checking the response for `promptId` and `conversationId`, not its
+status. A `starting` response without
+them means the launch is still pending, so replay again later. A `stopped`,
+`failed` or `deleted` response without them is a separate outcome: the sandbox
+ended before the worker sent the launch prompt (for example, it was stopped
+while the launch was queued), so no prompt receipt will ever exist. Do not launch
+with a new `requestId` until you know that the first launch failed or ended.
+See
 [Docker hosts](../docker-host-daemon.md) for an example body.
 
 ## Embed the conversation

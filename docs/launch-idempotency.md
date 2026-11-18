@@ -59,18 +59,21 @@ The launch call returns once Armada admits the launch, normally with
 the sandbox and sends the prompt afterwards. A replay with the same
 `requestId` and body never launches twice:
 
-- Before the worker publishes the launch receipt, the replay returns the same
-  pending answer: the sandbox ID, `starting` and no prompt receipt.
-- After it publishes the receipt, the replay returns the same sandbox ID and
-  the recorded `promptId` and `conversationId` (when the launch sent a prompt)
-  with the sandbox's current metadata. The status is the current one, for
-  example `stopped` or `deleted` after a stop or delete, not the status of an
-  earlier response.
+- The replay reports the sandbox's current status, not the status of an
+  earlier response. Until the worker publishes the launch receipt, a `ready`
+  or `running` sandbox is reported as `starting`. A stopped, failed or deleted
+  sandbox keeps that status.
+- The recorded `promptId` and `conversationId` appear only after the worker
+  publishes the launch receipt, and only when the launch sent a prompt.
 
 After an uncertain Docker launch, poll `sandbox/status` with that UUID as
-`id`. To read the prompt receipt, replay the same request until it returns a
-status other than `starting`. `failed` means the launch failed. Do not launch with a new
-`requestId` until you know that the first launch failed. See
+`id`. For a launch that sent a prompt, replay the same request and look for
+`promptId` and `conversationId` rather than at the status. `starting` without
+them means the launch is still pending. `stopped`, `failed` or `deleted`
+without them is a separate outcome: the sandbox ended before the launch prompt
+was sent, so no receipt will appear. Do not launch with a new `requestId`
+until you know that the first launch failed or ended.
+See
 [Docker hosts](docker-host-daemon.md) for an example body.
 The rest of this page covers Boat and Modal launches.
 

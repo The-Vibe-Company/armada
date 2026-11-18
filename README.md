@@ -190,11 +190,12 @@ Your coordinator decides what to work on and when to merge; Armada gives each ta
 
 | | Admin | Member |
 | --- | :---: | :---: |
-| Launch, watch and stop the organization's agents | ✓ | ✓ |
+| Launch agents, and watch and stop your own | ✓ | ✓ |
+| Watch and stop any sandbox in the organization | ✓ | |
 | Create private snapshots and private sandboxes | ✓ | ✓ |
 | Change organization snapshots, members and provider keys | ✓ | |
 
-A private snapshot or sandbox is visible only to its owner, not even to admins. Admins can add an existing account immediately with `armada org members add` (no invitation email), or create a pending invitation, including before the recipient has an account. An invitation grants membership only after explicit acceptance by a personal login with the matching verified email; opening its link does not join. See [invitations and acceptance](docs/cli-invitations.md#accept-an-invitation).
+Snapshots and sandboxes follow two separate rules. A private snapshot is visible only to its owner, not even to admins. A sandbox's interior (transcript, logs, outputs, prompts and controls) is open to its owner and to organization admins, whether the sandbox is private or not. Ordinary members see only the metadata of sandboxes they do not own, such as status, agent and owner, in the organization's list. Admins can add an existing account immediately with `armada org members add` (no invitation email), or create a pending invitation, including before the recipient has an account. An invitation grants membership only after explicit acceptance by a personal login with the matching verified email; opening its link does not join. See [invitations and acceptance](docs/cli-invitations.md#accept-an-invitation).
 
 ## Documentation
 
