@@ -1,16 +1,14 @@
+import { isHarness, parseApplicationSecretBindings } from "@armada/core";
 import { type Sql, VaultError, validateReadableVariables } from "@armada/core/server";
 import { type RuntimeConfigurationInput, runtimeConfiguration } from "./runtime-configuration.ts";
 
-/** Readable values were copied at template admission. Never re-resolve mutable
- * variable sources on later turns/resume, and never decrypt application secrets.
- * This projection stays server-side until encrypted enrolment delivers it.
- */
-export async function readRuntimeVariables(
+/** Read frozen readable values and value-free, version-pinned application-secret references. */
+export async function readRuntimeTemplateEnvironment(
   sql: Sql,
   actor: { userId: string; orgId: string },
   sandboxId: string,
   provider: "boat" | "modal",
-): Promise<Record<string, string>> {
+) {
   try {
     const rows = (
       await sql.query<{
@@ -23,7 +21,9 @@ export async function readRuntimeVariables(
         request_id: string | null;
         actor_id: string | null;
         request_org: string | null;
+        actor_epoch: string;
         manifest: {
+          actorEpoch?: number;
           actorId?: string;
           version?: number;
           golden?: { id?: string; provider?: string };
@@ -40,7 +40,8 @@ export async function readRuntimeVariables(
         } | null;
       }>(
         `select s.golden_id,s.harness::text,s.credential_id,s.credential_version,s.model,s.reasoning_effort,
-      r.id as request_id,r.actor_id,r.org_id as request_org,r.manifest
+      r.id as request_id,r.actor_id,r.org_id as request_org,r.manifest,
+      coalesce((select e.epoch from public.mcp_actor_epochs e where e.org_id=s.org_id and e.user_id=s.owner_id),0)::text as actor_epoch
       from public.sandboxes s join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
       left join public.template_launch_requests r on r.sandbox_id=s.id
       where s.id=$1 and s.owner_id=$2 and s.org_id=$3 and s.provider=$4
@@ -50,7 +51,8 @@ export async function readRuntimeVariables(
     ).rows;
     if (rows.length !== 1 || !rows[0]) throw Error();
     const row = rows[0];
-    if (!row.request_id) return {};
+    if (!isHarness(row.harness)) throw Error();
+    if (!row.request_id) return { harness: row.harness, variables: {}, bindings: [] };
     const m = row.manifest;
     if (
       !m ||
@@ -65,8 +67,7 @@ export async function readRuntimeVariables(
       m.definition?.provider !== provider ||
       m.definition.harness !== row.harness ||
       m.definition.model !== row.model ||
-      m.definition.reasoningEffort !== row.reasoning_effort ||
-      (m.definition.secrets !== undefined && (!Array.isArray(m.definition.secrets) || m.definition.secrets.length > 0))
+      m.definition.reasoningEffort !== row.reasoning_effort
     )
       throw Error();
     const values = validateReadableVariables(m.variables);
@@ -76,7 +77,15 @@ export async function readRuntimeVariables(
         JSON.stringify(m.definition.variables.map((binding) => binding.key).sort())
     )
       throw Error();
-    return values;
+    const bindings = parseApplicationSecretBindings(m.definition.secrets === undefined ? [] : m.definition.secrets);
+    if (
+      bindings.length &&
+      (provider !== "modal" ||
+        String(m.actorEpoch) !== row.actor_epoch ||
+        bindings.some(({ key }) => Object.hasOwn(values, key)))
+    )
+      throw Error();
+    return { harness: row.harness, variables: values, bindings };
   } catch {
     throw new VaultError("unavailable", "Frozen runtime readable configuration is unavailable.");
   }
@@ -90,7 +99,7 @@ export async function runtimeConfigurationWithVariables(
   emptyMcpRevision: string,
 ) {
   const plan = await runtimeConfiguration(input, provider, emptyMcpRevision);
-  const variables = await readRuntimeVariables(sql, input.actor, input.sandbox.id, provider);
+  const { variables } = await readRuntimeTemplateEnvironment(sql, input.actor, input.sandbox.id, provider);
   Object.assign(plan.configuration[`${input.sandbox.harness}Env`], variables);
   return { ...plan, configuration: { ...plan.configuration, readableVariables: variables } };
 }

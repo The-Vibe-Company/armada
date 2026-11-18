@@ -3,6 +3,7 @@ import { type PromptReceipt, type Sql, sandboxActivity, VaultError } from "@arma
 import type { Caller } from "./caller.ts";
 import { createSqlData, type SandboxView } from "./data.ts";
 import { recordLaunchStageQuietly } from "./launch-stage-record.ts";
+import { createModalRuntimeEnvironment } from "./modal-runtime-environment.ts";
 import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 import { lockRuntimeAccount } from "./runtime-account-admission.ts";
 import { runtimeAgentFor } from "./runtime-agent.ts";
@@ -64,6 +65,7 @@ export function createRuntimeResume(
   prepareGitHub?: RuntimeGitHub["prepareLaunch"],
 ) {
   const authority = createRuntimeEnrolments(sql, key);
+  const modalEnvironment = createModalRuntimeEnvironment(sql, key);
   const read = async (tx: Sql, id: string, request: string) =>
     (
       await tx.query<Operation>(
@@ -98,6 +100,8 @@ export function createRuntimeResume(
       if (!(await store.get(found.id))) throw new VaultError("not_found", "Runtime membership was revoked.");
       return prior.receipt;
     } // Historical accepted outcome, not a new activation.
+    const actor = { userId: caller.userId, orgId: found.orgId };
+    if (!prior && found.provider === "modal") await modalEnvironment.validate(actor, found.id);
     if (!sql.transaction) throw new VaultError("unavailable", "Runtime resume requires transactional admission.");
     const pricingContext = await store.captureUsagePricingContext?.(found.id);
     const admitted = await sql.transaction(async (tx) => {
@@ -277,6 +281,8 @@ export function createRuntimeResume(
           if (existing.state === "missing") {
             // Restored disk state carries revoked epoch authority. Reauthorize before
             // inference, never on a replay of an already dispatched prompt.
+            if (!admitted.first && found.provider === "modal")
+              await modalEnvironment.deliver(actor, found.id, admitted.op.target_epoch, signal);
             await prepareGitHub?.(caller, found.id);
             await prepareMcp?.(caller, found.id, signal);
           }
