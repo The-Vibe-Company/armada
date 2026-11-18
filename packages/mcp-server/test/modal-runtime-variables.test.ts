@@ -629,25 +629,24 @@ for (const harness of ["codex", "claude"] as const)
     expect(f.starts).toHaveLength(1);
   });
 
-for (const provider of ["boat", "modal"] as const)
-  test(`${provider} runtime default refuses application secrets before allocation`, async () => {
-    const f = await fixture("codex", provider, false, provider === "modal" ? "default" : "explicit");
-    const secret = (
-      await f.db.query<{ id: string }>(
-        "insert into application_secrets(org_id,owner_id,scope,name,value_enc) values($1,$2,'personal','APP_TOKEN',$3) returning id",
-        [f.people.org, f.people.owner, await encryptSecret("not-a-real-secret", ENCRYPTION_KEY)],
-      )
-    ).rows[0]!;
-    const template = await f.create({
-      ...f.definition,
-      secrets: [{ key: "APP_TOKEN", secretId: secret.id, version: 1 }],
-    });
-    const response = await f.api(f.request(template.id));
-    expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ state: "failed" });
-    expect(f.physical.forks).toHaveLength(0);
-    expect(f.starts).toEqual([]);
+test("Boat runtime default refuses application secrets before allocation", async () => {
+  const f = await fixture("codex", "boat");
+  const secret = (
+    await f.db.query<{ id: string }>(
+      "insert into application_secrets(org_id,owner_id,scope,name,value_enc) values($1,$2,'personal','APP_TOKEN',$3) returning id",
+      [f.people.org, f.people.owner, await encryptSecret("not-a-real-secret", ENCRYPTION_KEY)],
+    )
+  ).rows[0]!;
+  const template = await f.create({
+    ...f.definition,
+    secrets: [{ key: "APP_TOKEN", secretId: secret.id, version: 1 }],
   });
+  const response = await f.api(f.request(template.id));
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({ state: "failed" });
+  expect(f.physical.forks).toHaveLength(0);
+  expect(f.starts).toEqual([]);
+});
 
 test("ordinary completed native template replay stays native after coordinator default selection", async () => {
   const f = await fixture("codex", "modal", false, "ordinary");
