@@ -123,14 +123,18 @@ export function createModalBootWorker(
     const deadline = performance.now() + DEADLINE_MS + 5_000;
     while (accepting && performance.now() < deadline) {
       const result = (
-        await sql.query<{ outcome: Outcome | null; expires_at: string | Date }>(
-          `select r.outcome,s.expires_at from public.provider_launch_requests r
+        await sql.query<{ outcome: Outcome | null; expires_at: string | Date; handoff: boolean }>(
+          `select r.outcome,s.expires_at,(${BOOT_ALLOWED} and s.activity_until>clock_timestamp()
+           and s.lifecycle_generation=$2 and exists(
+             select 1 from public.members m join public.mcp_actor_epochs e using(org_id,user_id)
+             where m.org_id=s.org_id and m.user_id=s.owner_id and e.epoch=r.actor_epoch
+           )) as handoff from public.provider_launch_requests r
          join public.sandboxes s on s.id=r.sandbox_id where r.sandbox_id=$1`,
-          [record.id],
+          [record.id, record.lifecycleGeneration ?? 1],
         )
       ).rows[0];
       const outcome = result?.outcome;
-      if (outcome && "expiresAt" in outcome) {
+      if (result?.handoff && outcome && "expiresAt" in outcome) {
         return {
           id: record.providerSandboxId,
           ...(outcome.expiresAt ? { expiresAt: new Date(outcome.expiresAt) } : {}),
@@ -160,6 +164,12 @@ export function createModalBootWorker(
     const bootExpiry = "expiresAt" in outcome ? outcome.expiresAt : undefined;
     const succeeded = bootExpiry !== undefined;
     const cancelled = "reason" in outcome && outcome.cancelled === true;
+    let recoveryInput: Uint8Array<ArrayBuffer> | null = null;
+    if (keepFence) {
+      const pinned = JSON.parse(await decryptSecret(claim.request_enc, encryptionKey)) as PinnedFork;
+      delete pinned.request.env;
+      recoveryInput = await encryptSecret(JSON.stringify(pinned), encryptionKey);
+    }
     const published = await sql.transaction!(async (tx) => {
       await tx.query("select id from public.sandboxes where id=$1 for update", [id]);
       const row = (
@@ -196,10 +206,16 @@ export function createModalBootWorker(
         return false;
       }
       await tx.query(
-        `update public.provider_launch_requests set phase=$2,outcome=$3::jsonb,request_enc=null,
+        `update public.provider_launch_requests set phase=$2,outcome=$3::jsonb,request_enc=$5,
           lease_owner=null,lease_expires_at=null,fence_id=case when $4 then fence_id else null end
          where sandbox_id=$1`,
-        [id, succeeded ? "succeeded" : cancelled ? "cancelled" : "failed", JSON.stringify(outcome), keepFence],
+        [
+          id,
+          succeeded ? "succeeded" : cancelled ? "cancelled" : "failed",
+          JSON.stringify(outcome),
+          keepFence,
+          recoveryInput,
+        ],
       );
       if (!keepFence && row.fence_id)
         await tx.query("delete from public.golden_operation_fences where id=$1", [row.fence_id]);
@@ -211,16 +227,17 @@ export function createModalBootWorker(
     }
   }
 
-  async function runClaim(claim: Claim) {
-    const signal = AbortSignal.timeout(DEADLINE_MS);
+  async function runClaim(claim: Claim, signal: AbortSignal) {
     const { sandbox_id: id, lease_epoch: epoch } = claim;
     const token = [id, owner, epoch];
-    const reschedule = () =>
-      sql.query(
+    const reschedule = async () => {
+      if (signal.aborted) return;
+      await sql.query(
         `update public.provider_launch_requests set lease_owner=null,lease_expires_at=null,next_attempt_at=now()+interval '2 seconds'
        where sandbox_id=$1 and lease_owner=$2 and lease_epoch=$3 and lease_expires_at>clock_timestamp()`,
         token,
       );
+    };
     const timer = setInterval(() => {
       if (signal.aborted) return;
       void sql
@@ -232,6 +249,8 @@ export function createModalBootWorker(
         .catch(() => {});
     }, 10_000);
     timer.unref();
+    const stopHeartbeat = () => clearInterval(timer);
+    signal.addEventListener("abort", stopHeartbeat, { once: true });
     try {
       const live = (
         await sql.query<{
@@ -252,6 +271,7 @@ export function createModalBootWorker(
           [id],
         )
       ).rows[0];
+      if (signal.aborted) return;
       if (live?.cancelled && claim.phase === "queued") {
         await settle(claim, { reason: "cancelled_before_boot", cancelled: true }, false);
         return;
@@ -262,23 +282,30 @@ export function createModalBootWorker(
         return;
       }
       const pinned = JSON.parse(await decryptSecret(claim.request_enc, encryptionKey)) as PinnedFork;
-      const provider = await resolve(
-        pinned.target,
-        {
-          userId: claim.owner_id,
-          orgs: [{ orgId: claim.org_id, role: live.role }],
-          via: "service",
-        },
-        pinned.runtime,
-      );
-      const management = await provider.managementIdentity?.();
-      if (
-        provider.id !== "modal" ||
-        (await provider.backendIdentity?.())?.id !== pinned.backendId ||
-        management?.scope !== pinned.management.scope ||
-        management.ownerId !== pinned.management.ownerId
-      ) {
-        await settle(claim, { reason: "provider_authority_changed" }, claim.phase === "booting");
+      let provider: Provider;
+      try {
+        provider = await resolve(
+          pinned.target,
+          { userId: claim.owner_id, orgs: [{ orgId: claim.org_id, role: live.role }], via: "service" },
+          pinned.runtime,
+        );
+        if (signal.aborted) return;
+        const management = await provider.managementIdentity?.();
+        const backendId = (await provider.backendIdentity?.())?.id;
+        if (signal.aborted) return;
+        if (
+          provider.id !== "modal" ||
+          backendId !== pinned.backendId ||
+          management?.scope !== pinned.management.scope ||
+          management.ownerId !== pinned.management.ownerId
+        ) {
+          await settle(claim, { reason: "provider_authority_changed" }, claim.phase === "booting");
+          return;
+        }
+      } catch {
+        if (!signal.aborted && live.expired)
+          await settle(claim, { reason: "provider_authority_unavailable" }, claim.phase === "booting");
+        else await reschedule();
         return;
       }
       if (!accepting || signal.aborted) {
@@ -290,13 +317,16 @@ export function createModalBootWorker(
           // The Modal adapter verifies the pinned scope and logical ID, then
           // resumes any deletion by durable machine record. Missing record is
           // still ambiguous because an earlier dispatch might not have reserved it yet.
-          if ((await provider.delete({ sandboxId: claim.provider_sandbox_id })).status === "deleted") {
+          const removed = await provider.delete({ sandboxId: claim.provider_sandbox_id });
+          if (signal.aborted) return;
+          if (removed.status === "deleted") {
             await settle(claim, { reason: "cancelled_during_boot", cancelled: true }, false);
             return;
           }
         } catch {
           // Preserve the request until cleanup can be retried or the deadline expires.
         }
+        if (signal.aborted) return;
         if (live.expired) await settle(claim, { reason: "cancelled_boot_outcome_unknown" }, true);
         else await reschedule();
         return;
@@ -323,10 +353,12 @@ export function createModalBootWorker(
         await reschedule();
         return;
       }
+      if (signal.aborted) return;
       let machine: Machine;
       try {
         machine = await provider.fork(pinned.request);
       } catch (error) {
+        if (signal.aborted) return;
         if (error instanceof ProviderError && isNonMutatingProviderRefusal(error) && claim.phase === "queued") {
           if (error.providerCode === "fork_source_busy") {
             await sql.query(
@@ -357,6 +389,7 @@ export function createModalBootWorker(
         await reschedule();
         return;
       }
+      if (signal.aborted) return;
       if (machine.id !== claim.provider_sandbox_id) {
         await settle(claim, { reason: "provider_identity_mismatch" }, true);
         return;
@@ -369,7 +402,8 @@ export function createModalBootWorker(
         false,
       );
     } finally {
-      clearInterval(timer);
+      stopHeartbeat();
+      signal.removeEventListener("abort", stopHeartbeat);
     }
   }
 
@@ -393,9 +427,19 @@ export function createModalBootWorker(
         )
       ).rows[0];
       if (!claim) return false;
-      const task = runClaim(claim).catch(() => {
+      const controller = new AbortController();
+      const deadline = setTimeout(() => controller.abort(), DEADLINE_MS);
+      deadline.unref();
+      const elapsed = new Promise<void>((resolve) =>
+        controller.signal.addEventListener("abort", () => resolve(), { once: true }),
+      );
+      const work = runClaim(claim, controller.signal).catch(() => {
         // A failed DB or provider operation leaves its claim to expire.
       });
+      // At the budget boundary durable dispatch intent and the provider's
+      // reservation take over. An SDK reply can no longer publish worker
+      // state, and a hung call cannot hold a consumer slot indefinitely.
+      const task = Promise.race([work, elapsed]).finally(() => clearTimeout(deadline));
       inFlight.add(task);
       void task.then(() => inFlight.delete(task));
       return true;

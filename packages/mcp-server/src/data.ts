@@ -433,16 +433,24 @@ export function createSqlData(
         return mapSandboxRow(row);
       },
       async requestPendingModalStop(id) {
-        const result = await sql.query(
-          `update public.sandboxes s set stop_requested_at=coalesce(s.stop_requested_at,now()),
-             status='stopping', transition_context=jsonb_build_object('actor','api','code','sandbox_stopping')
-           from public.goldens g where s.id=$3 and s.golden_id=g.id and ${SANDBOX_VISIBLE}
-           and s.provider='modal' and s.status in ('starting','stopping')
-           and exists(select 1 from public.provider_launch_requests r
-             where r.sandbox_id=s.id and r.phase in ('queued','booting')) returning s.id`,
-          [...scope, id],
-        );
-        return result.rows.length === 1;
+        return sql.transaction!(async (tx) => {
+          // Serialize on the same sandbox row as dispatch and settlement. The
+          // second statement sees the request phase after any lock wait.
+          const locked = await tx.query(
+            `select s.id from public.sandboxes s where s.id=$3 and ${SANDBOX_VISIBLE}
+             and s.provider='modal' and s.status in ('starting','stopping') for update of s`,
+            [...scope, id],
+          );
+          if (!locked.rows.length) return false;
+          const result = await tx.query(
+            `update public.sandboxes s set stop_requested_at=coalesce(s.stop_requested_at,now()),
+               status='stopping', transition_context=jsonb_build_object('actor','api','code','sandbox_stopping')
+             where s.id=$1 and exists(select 1 from public.provider_launch_requests r
+               where r.sandbox_id=s.id and r.phase in ('queued','booting')) returning s.id`,
+            [id],
+          );
+          return result.rows.length === 1;
+        });
       },
       async assertExtensionAllowed(id) {
         if (!UUID.test(id)) throw new GoldenError("not_found", "Sandbox not found.");
