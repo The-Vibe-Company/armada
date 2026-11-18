@@ -1,5 +1,6 @@
 import type { Sql } from "@armada/core";
 import { measureDbAcquire, measureSqlQuery } from "./request-timing.ts";
+import { collectTransactionWakes } from "./wake-bus.ts";
 
 /** The one method of Bun's Postgres client the server uses. */
 export interface SqlDriver {
@@ -49,7 +50,18 @@ export function sqlOver(driver: SqlDriver): Sql {
     query,
     ...(driver.autonomous ? { autonomousQuery: sqlOver({ unsafe: driver.autonomous }).query } : {}),
     ...(transaction
-      ? { transaction: <T>(work: (sql: Sql) => Promise<T>) => transaction(async (tx) => work(sqlOver(tx))) }
+      ? {
+          async transaction<T>(work: (sql: Sql) => Promise<T>) {
+            let publish: (() => void) | undefined;
+            const result = await transaction(async (tx) => {
+              const sql = sqlOver(tx);
+              publish = collectTransactionWakes(sql);
+              return work(sql);
+            });
+            publish?.();
+            return result;
+          },
+        }
       : {}),
   };
 }

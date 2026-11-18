@@ -9,6 +9,7 @@ import {
 } from "./request-observability.ts";
 import { type createRuntimeEnrolments, RuntimeEnrolmentDenied, type RuntimeOwnerScope } from "./runtime-enrolment.ts";
 import { runtimeHttpFailure } from "./runtime-http-failure.ts";
+import { deferTransactionWake, runtimeWakes, waitForTimeout } from "./wake-bus.ts";
 
 const MAX_COMMAND = 1048576;
 const MAX_REPLY = MAX_COMMAND * 2;
@@ -36,18 +37,7 @@ interface Clock {
 }
 const clock: Clock = {
   now: () => Date.now(),
-  async wait(ms, signal) {
-    if (signal.aborted) return;
-    await new Promise<void>((resolve) => {
-      const finish = () => {
-        clearTimeout(timer);
-        signal.removeEventListener("abort", finish);
-        resolve();
-      };
-      const timer = setTimeout(finish, ms);
-      signal.addEventListener("abort", finish, { once: true });
-    });
-  },
+  wait: waitForTimeout,
 };
 function record(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -91,7 +81,9 @@ export function createRuntimeCommands(
     const serialized = JSON.stringify(request);
     if (Buffer.byteLength(serialized) > MAX_COMMAND) throw new RuntimeCommandRefused();
     const sealed = await encryptSecret(serialized, key);
-    return authority.withOwner(request.sandboxId, ownerId, async (tx, scope) => {
+    const wakeKey = `socket:${request.sandboxId}`;
+    let deferred = false;
+    const admitted = await authority.withOwner(request.sandboxId, ownerId, async (tx, scope) => {
       // Application-secret taint forbids file egress: never admit or replay an output read (row
       // locked here). A stored reply may predate the taint, and a read has no effect to reconcile.
       if (
@@ -152,9 +144,12 @@ export function createRuntimeCommands(
           request.op === "prompt" ? (currentRequestId() ?? null) : null,
         ],
       );
+      deferred = deferTransactionWake(tx, wakeKey);
       noteAdmission();
       return { epoch: scope.epoch, requestId: request.requestId, provider: scope.provider, fresh: true };
     });
+    if (admitted.fresh && !deferred) runtimeWakes.notify(wakeKey);
+    return admitted;
   }
   /** Keep admission fenced through synchronous socket enqueue; never await network I/O here. */
   async function withNext<T>(
@@ -203,7 +198,7 @@ export function createRuntimeCommands(
     const serialized = JSON.stringify(value);
     if (Buffer.byteLength(serialized) > MAX_REPLY) throw new RuntimeCommandConflict();
     let sealed = await encryptSecret(serialized, key);
-    return authority.withSession(token, epoch, async (tx, scope) => {
+    const { sandboxId, ...receipt } = await authority.withSession(token, epoch, async (tx, scope) => {
       // Keep the ordered acknowledgement even if the caller's deadline or the taint fence
       // invalidated the read. No reader can use these bytes now.
       const outputDeadline = /^outputs_(\d{1,16})_/.exec(String(value.requestId))?.[1];
@@ -247,8 +242,11 @@ export function createRuntimeCommands(
           [scope.sandboxId, queued[1], result.promptId],
         );
       }
-      return { epoch: scope.epoch, requestId: value.requestId };
+      return { sandboxId: scope.sandboxId, epoch: scope.epoch, requestId: value.requestId };
     });
+    runtimeWakes.notify(`reply:${sandboxId}:${receipt.epoch}:${receipt.requestId}`);
+    runtimeWakes.notify(`socket:${sandboxId}`);
+    return receipt;
   }
   async function result(ownerId: string, sandboxId: string, id: string, expectedEpoch?: string) {
     if (!requestId(id)) throw new RuntimeCommandConflict();
@@ -327,9 +325,17 @@ export function createRuntimeCommands(
         const deadline = time.now() + timeout;
         const admitted = await enqueue(ownerId, request, options.expectedEpoch);
         provider = admitted.provider;
+        const wakeKey = `reply:${request.sandboxId}:${admitted.epoch}:${request.requestId}`;
         while (true) {
           signal.throwIfAborted();
-          const response = await result(ownerId, request.sandboxId, request.requestId, admitted.epoch);
+          // A result may commit while the read still has a pending snapshot.
+          let woken = false;
+          const unsubscribe = runtimeWakes.subscribe(wakeKey, () => {
+            woken = true;
+          });
+          const response = await result(ownerId, request.sandboxId, request.requestId, admitted.epoch).finally(
+            unsubscribe,
+          );
           signal.throwIfAborted();
           if (response.state === "finished") return response.reply;
           if (response.state !== "pending") throw new RuntimeCommandConflict();
@@ -339,7 +345,7 @@ export function createRuntimeCommands(
           if (remaining <= 0) throw new RuntimeCommandPending();
           // A final large output needs many sequential reads within the stop budget.
           const interval = request.op === "readOutputs" && request.part ? 100 : 250;
-          await time.wait(Math.min(interval, remaining), signal);
+          if (!woken) await runtimeWakes.wait(wakeKey, signal, Math.min(interval, remaining), time.wait.bind(time));
         }
       },
       (reply) => {
