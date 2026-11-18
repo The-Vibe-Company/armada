@@ -4262,6 +4262,7 @@ export type Database = {
           counted_prompt_id: string | null;
           event_enc: string;
           created_at: string | null;
+          visible_text_prompt_id: string | null;
         };
         Insert: {
           sandbox_id: string;
@@ -4270,6 +4271,7 @@ export type Database = {
           counted_prompt_id?: string | null;
           event_enc: string;
           created_at?: string | null;
+          visible_text_prompt_id?: string | null;
         };
         Update: {
           sandbox_id?: string;
@@ -4278,6 +4280,7 @@ export type Database = {
           counted_prompt_id?: string | null;
           event_enc?: string;
           created_at?: string | null;
+          visible_text_prompt_id?: string | null;
         };
         Relationships: [
           {
