@@ -381,7 +381,7 @@ test("admin extension and deletion resolve private-source resources through thei
       ]);
       expect((await db.query("select id from sandbox_work_recovery where sandbox_id=$1", [id])).rows).toEqual([]);
     }
-    expect(accounts).toEqual(["owner", "owner", "owner", "owner"]);
+    expect(accounts).toEqual(["owner", "owner", "owner", "owner", "owner"]);
   } finally {
     await server.close();
   }
