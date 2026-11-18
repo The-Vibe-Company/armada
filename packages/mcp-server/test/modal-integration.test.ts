@@ -11,6 +11,7 @@ import {
 import { AppService } from "modal";
 import { createSqlData } from "../src/data.ts";
 import { createModalIntegration, MODAL_INGEST_PATH } from "../src/modal-integration.ts";
+import { createModalReaper } from "../src/modal-reaper.ts";
 import { observeRequest } from "../src/request-observability.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
@@ -302,4 +303,64 @@ test("scoped golden CAS supports NULL masters without broadening private-owner o
     )
   ).rows[0];
   expect(row).toEqual({ provider_sandbox_id: null, provider_snapshot_id: "new-image" });
+});
+
+test("the Modal reaper discovers bound Apps and reports only machines without a durable sandbox owner", async () => {
+  const { db, people } = await sharedDatabase();
+  const binding = { workspace: "app:ap-inventory", appId: "ap-inventory", environment: "main" };
+  await db.query(
+    `insert into public.modal_server_apps(org_id,authority,authority_scope,authority_owner_id,app_name,app_id,environment)
+     values ($1,'org:inventory','org',$1,'inventory',$2,$3)`,
+    [people.org, binding.appId, binding.environment],
+  );
+  await db.query(
+    `insert into public.goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,
+                               modal_workspace,modal_environment,modal_app_id,config)
+     values ($1,$2,'inventory','org','modal','builder','image',$3,$4,$5,'{"repos":[],"init":[]}')`,
+    [people.org, people.owner, binding.workspace, binding.environment, binding.appId],
+  );
+  await db.query(
+    `insert into public.sandboxes(golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status)
+     select id,org_id,owner_id,'modal','admitted','claude','ready' from public.goldens where name='inventory'`,
+  );
+  const scope: Scope = { orgId: people.org, userId: people.owner, visibility: "org", binding };
+  await createSqlModalStore(db, scope).reserve("inventory-reservation", {
+    info: { id: "admitted", name: "inventory", state: "ready", providerState: "active", labels: {} },
+    phase: "active",
+    generation: 1,
+    golden: false,
+    ttlSeconds: 60,
+    physicalId: "physical-admitted",
+    physicalName: "test",
+    grantExpiresAt: 0,
+  });
+
+  const logs: unknown[] = [];
+  const lane = createModalReaper(
+    db,
+    "https://armada.test",
+    async (registration, target, deploymentId) => {
+      expect(registration.authority_owner_id).toBe(people.org);
+      expect(target).toEqual(binding);
+      const base = { deploymentId, generation: "1", createdAt: new Date(0) };
+      return {
+        async *listInventory() {
+          yield { ...base, sandboxId: "conflicting-tag", machineId: "physical-admitted" };
+          yield { ...base, sandboxId: "admitted", machineId: "physical-current" };
+          yield { ...base, sandboxId: "lost-admission", machineId: "physical-orphan" };
+        },
+      };
+    },
+    { log: (line) => logs.push(JSON.parse(line)), now: () => 16 * 60_000 },
+  );
+
+  await lane.reconcileOne(new AbortController().signal);
+  expect(logs).toContainEqual({
+    metric: "reaper_unknown_machines",
+    provider: "modal",
+    source: binding.appId,
+    count: 1,
+    overdue: 1,
+    complete: true,
+  });
 });
