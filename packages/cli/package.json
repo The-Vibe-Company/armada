@@ -8,7 +8,8 @@
   },
   "dependencies": {
     "@armada/auth": "workspace:*",
-    "@armada/core": "workspace:*"
+    "@armada/core": "workspace:*",
+    "@armada/sdk": "workspace:*"
   },
   "devDependencies": {
     "@armada/mcp-server": "workspace:*"
