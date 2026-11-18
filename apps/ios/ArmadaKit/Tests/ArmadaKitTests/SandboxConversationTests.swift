@@ -105,8 +105,9 @@ private func detail(status: String, settled: Bool, prompt: String? = nil) -> Str
     #expect(receipt.promptId == "pr_2")
     do { _ = try await client.sendSandboxPrompt(id: sandboxID, text: "Again"); Issue.record("Expected a failure") }
     catch { #expect(SandboxMutationFailure.classify(error) == .unconfirmed) }
+    let unconfirmed = try #require(await client.unconfirmedSandboxPrompt(id: sandboxID))
     // A person checked the transcript and explicitly dismissed this unknown outcome.
-    try await client.dismissSandboxPrompt(id: try #require(await client.unconfirmedSandboxPrompt(id: sandboxID)).id)
+    try await client.dismissSandboxPrompt(id: unconfirmed.id)
     do { _ = try await client.sendSandboxPrompt(id: sandboxID, text: "Unknown"); Issue.record("Expected a failure") }
     catch { #expect(SandboxMutationFailure.classify(error) == .unconfirmed) }
     // A person checked the transcript and explicitly dismissed this unknown outcome.
@@ -123,7 +124,13 @@ private func detail(status: String, settled: Bool, prompt: String? = nil) -> Str
     let requests = Array(await transport.requests.dropFirst(2))
     #expect(requests.map { $0.url!.path } == Array(repeating: "/api/v1/sandbox/send", count: 6) + ["/api/v1/sandbox/stop"])
     #expect(requests.allSatisfy { $0.value(forHTTPHeaderField: "Idempotency-Key") == nil })
-    #expect(try body(requests[0]) == ["id": sandboxID, "org": "org-a", "prompt": "Add tests"])
+    // Docker send admission requires a lowercase UUID request_id: each send carries its pending prompt's UUID.
+    let first = try body(requests[0])
+    let firstKey = try #require(first["request_id"])
+    #expect(UUID(uuidString: firstKey) != nil && firstKey == firstKey.lowercased())
+    #expect(first == ["id": sandboxID, "org": "org-a", "prompt": "Add tests", "request_id": firstKey])
+    #expect(try body(requests[1])["request_id"] == unconfirmed.id.uuidString.lowercased())
+    #expect(Set(try requests.prefix(6).map { try body($0)["request_id"] }).count == 6)
     #expect(try body(requests[6]) == ["id": sandboxID, "org": "org-a"])
 }
 
