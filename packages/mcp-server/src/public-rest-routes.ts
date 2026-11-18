@@ -1,5 +1,5 @@
 /**
- * The integration REST contract inventory. `docs/openapi.json` publishes exactly
+ * The integration REST contract inventory. `packages/mcp-server/openapi.json` publishes exactly
  * `PUBLISHED_REST_ROUTES` and `PUBLISHED_REST_GET_ROUTES`. Every other route that the public dashboard endpoint
  * (`/api/v1/*`) forwards must have a reason in `UNPUBLISHED_REST_ROUTES`. The
  * dashboard proxy test checks both directions, so a new forwarded route cannot

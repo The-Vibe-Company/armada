@@ -19,6 +19,14 @@ closed rather than falling back to a main-push apply.
 
 Before opening a PR, and again against current main before merge:
 
+- Put at most one migration in each PR. Ship additive changes first so both
+  revisions can use the schema during the
+  [180-second deployment overlap](deployment-draining.md). Then deploy code
+  that no longer uses the column or table being removed, or whose writes already
+  satisfy the invariant the trigger enforces. A column or table drop, or an
+  enforcement trigger, ships one deploy after that code change. Before applying
+  the migration in each environment, confirm the preceding deploy has completed
+  and all older processes have exited. A merge alone does not meet this rule.
 - Name each new file `<14-digit-version>_<description>.sql`. The version must
   be unique across `supabase/migrations` and strictly newer than the largest
   version on current `origin/main`, not just the branch's original base.
@@ -51,6 +59,16 @@ Before opening a PR, and again against current main before merge:
   CI check for filename format, duplicate versions and new versions strictly
   greater than the current base's maximum. Even a passing check is not merge serialization, enforced
   branch protection or a deployment gate; recheck the current base before merge.
+- Wait one deploy after the last use before dropping or renaming a database
+  object. Old and new server processes can share the database for up to 180
+  seconds. For new migrations, the CI guard checks supported top-level object
+  drops and table renames for whole-name references in source at both the
+  current base and latest stable release tag. For a column drop, column rename,
+  or enum value rename, place `-- contract: last-used-in vX.Y.Z` directly
+  above the SQL statement. The version is self-declared and must be at or below
+  the latest release and older than the candidate package version. The guard
+  cannot detect DDL inside procedural SQL or changes such as new constraints,
+  required columns without defaults, or enum additions consumed by older code.
 - Correct a collision by renaming only a **confirmed-unapplied** migration,
   after checking relevant migration histories with an authorized operator.
   Never rename or edit an applied version. Uncertain or applied-history

@@ -135,7 +135,7 @@ each payload, with null when the sandbox has no reference.
 
 ## Canonical launch API
 
-The [OpenAPI contract](openapi.json) describes the validated request variants for
+The [OpenAPI contract](../packages/mcp-server/openapi.json) describes the validated request variants for
 `POST /api/v1/sandbox/launch`: golden, explicit Boat runtime, explicit Modal
 runtime from a golden or pinned template, Docker host and Docker snapshot, each
 with its supported replay fields. Unknown fields are rejected. Use

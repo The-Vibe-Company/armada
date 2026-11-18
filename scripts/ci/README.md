@@ -59,6 +59,15 @@ waited 11–71 seconds; eight unit job runtimes ranged 60–90 seconds. Actual
 post-change queue wait and runtime must be measured on the PR/after merge; local
 worker timings or old isolated-file sums are not an observed six-shard result.
 
+## Documentation assets
+
+`bun run lint` checks `docs/` for images, video, other non-text files and
+files over 200,000 bytes. The generated `docs-guard-allowlist.json` records
+the exact paths and SHA-256 hashes of existing violations while #2713 is in
+progress. Delete the corresponding entry when a file is removed or made
+compliant. CI compares the inventory with the base commit of the checked-out candidate
+and rejects additions or hash changes.
+
 ## Table ownership
 
 `bun run lint` checks literal SQL insert/update/delete statements and Supabase
@@ -66,7 +75,7 @@ mutation chains in non-test TypeScript against the owner globs in
 [`tables.ts`](tables.ts). New writes to those tables belong in the owning module.
 Each allowlist line covers one existing write by file, table and verb. Delete the
 matching line when a write moves into its owning module or is removed. Shard 1
-checks that exception counts do not increase relative to its fetched base.
+checks that exception counts do not increase against the same frozen base used by the docs guard.
 Local lint uses the merge base with `origin/main` when available.
 Dynamic SQL identifiers, indirect client calls, raw HTTP requests and SQL files
 are outside the scanner's scope.

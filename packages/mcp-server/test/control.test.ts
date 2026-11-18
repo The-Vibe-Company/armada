@@ -894,7 +894,7 @@ describe("control API", () => {
 
   test("every published route refuses a body over its published limit with its published status", async () => {
     await withServer(async ({ options }) => {
-      const published = (await import("../../../docs/openapi.json")).default as unknown as {
+      const published = (await import("../openapi.json")).default as unknown as {
         paths: Record<
           string,
           { post: { requestBody: { "x-max-body-bytes": number; "x-oversized-body-status": number } } }
