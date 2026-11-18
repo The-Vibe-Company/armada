@@ -131,3 +131,7 @@ delete from public.native_webhook_prompts where prompt_id='';
 -- The receipt worker finalizes exhausted receipts whose final lease expired.
 create index native_webhook_prompts_expired_final on public.native_webhook_prompts(lease_until)
   where completed_at is null and failures>=5 and lease_id is not null;
+-- Final claims abandoned before this rollout predate durable drop accounting:
+-- release them without counting, like the already-observed turns seeded above.
+update public.native_webhook_prompts set lease_id=null,lease_until=null
+where completed_at is null and failures>=5 and lease_id is not null and lease_until<now();

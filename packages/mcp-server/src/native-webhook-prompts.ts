@@ -23,9 +23,11 @@ export function createNativeWebhookPrompts(
           where completed_at is null and failures>=5 and lease_id is not null and lease_until<now()
           for update skip locked limit 100
         ) x where p.sandbox_id=x.sandbox_id and p.prompt_id=x.prompt_id
-        returning p.org_id
+        returning p.sandbox_id,p.prompt_id,p.org_id
       ) insert into public.org_langfuse_export_stats as stats(org_id,dropped)
         select e.org_id,count(*) from exhausted e join public.org_langfuse c on c.org_id=e.org_id and c.enabled
+        -- Lifecycle reconciliation can settle the turn without completing its receipt.
+        where not exists(select 1 from public.langfuse_turn_exports t where t.sandbox_id=e.sandbox_id and t.prompt_id=e.prompt_id)
         group by e.org_id
         on conflict(org_id) do update set dropped=stats.dropped+excluded.dropped`,
     );
@@ -98,6 +100,8 @@ export function createNativeWebhookPrompts(
         insert into public.org_langfuse_export_stats as stats(org_id,dropped)
         select s.org_id,1 from settled s join public.org_langfuse c on c.org_id=s.org_id and c.enabled
         where $5 and s.failures>=5
+          -- Lifecycle reconciliation can settle the turn without completing its receipt.
+          and not exists(select 1 from public.langfuse_turn_exports t where t.sandbox_id=s.sandbox_id and t.prompt_id=s.prompt_id)
         on conflict(org_id) do update set dropped=stats.dropped+1
       ) select public.enqueue_webhook_turn(sandbox_id,prompt_id,$4::text) from settled
         where $4::text is not null`,

@@ -443,6 +443,45 @@ test("a native receipt abandoned after its final failed observation counts one d
   expect(await dropped()).toBe("1");
 });
 
+test("an exhausted receipt whose turn lifecycle reconciliation already settled counts no drop", async () => {
+  const { db, people } = await database();
+  const id = crypto.randomUUID();
+  await db.query(
+    `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status,task_prompt_id)
+     select $1,id,org_id,owner_id,'boat_settled','codex','ready','turn'
+     from goldens where owner_id=$2 and visibility='private' limit 1`,
+    [id, people.owner],
+  );
+  await db.query("insert into org_langfuse(org_id,enabled,content_mode,config_enc) values($1,true,'full',$2)", [
+    people.org,
+    await encryptConfig(),
+  ]);
+  // Lifecycle reconciliation settles the turn but leaves its receipt pending.
+  await db.query("select public.enqueue_webhook_turn($1,'turn','finished')", [id]);
+  const provider = {
+    id: "boat",
+    getPrompt: async () => {
+      throw Error("provider_unavailable");
+    },
+  } as const;
+  const native = createNativeWebhookPrompts(db, async () => provider as unknown as Pick<Provider, "id" | "getPrompt">);
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    await db.query("update native_webhook_prompts set next_attempt_at=now()");
+    expect(await native.reconcileOne(new AbortController().signal)).toBe(true);
+  }
+  // The same receipt left behind by a cancelled final claim is released without a drop.
+  await db.query("update native_webhook_prompts set lease_id=$1,lease_until=now()-interval '1 second'", [
+    crypto.randomUUID(),
+  ]);
+  expect(await native.reconcileOne(new AbortController().signal)).toBe(false);
+  expect((await db.query("select failures,lease_id from native_webhook_prompts")).rows).toEqual([
+    { failures: 5, lease_id: null },
+  ]);
+  expect((await db.query("select coalesce(sum(dropped),0)::int as n from org_langfuse_export_stats")).rows).toEqual([
+    { n: 0 },
+  ]);
+});
+
 test("a native receipt whose final observations are all cancelled counts one durable drop", async () => {
   const { db, people } = await database();
   await db.query(
