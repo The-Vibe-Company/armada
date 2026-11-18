@@ -39,6 +39,9 @@ import type {
 import { createSshPreparation, SSH_PORT } from "./ssh.ts";
 import { scopeKey } from "./store.ts";
 
+/** In-request retry delays after the first attempt for deletion's image cleanup. */
+const CLEANUP_RETRY_MS = [1_000, 5_000];
+
 export type ModalPromptPhase =
   | "modal_prepare"
   | "modal_before_prompt"
@@ -58,6 +61,11 @@ export interface ModalProviderOptions extends ModalConnection {
   storedReads?: boolean;
   /** Scheduler for lifecycle admission backoff; defaults to the Bun timer. */
   admissionSleep?(milliseconds: number): Promise<void>;
+  /** Scheduler for deletion image-cleanup retries; defaults to the Bun timer. */
+  cleanupSleep?(milliseconds: number): Promise<void>;
+  /** Runs the best-effort collection of other sources' retired images after a delete. Defaults to
+   * a detached task, so neither the delete receipt nor the server's activity lease waits on it. */
+  detachCollection?(work: () => Promise<void>): void;
   scope: Scope;
   /** Trusted immutable source credential selection; never a requested access visibility. */
   managementAuthority?: ModalManagementProvenance;
@@ -102,6 +110,7 @@ export interface ModalProvider extends Provider {
   restoreGoldenMaster(request: { sandboxId?: string; snapshotId: string }): Promise<SandboxInfo>;
   resourceReceipts(): Promise<ModalResourceReceipt[]>;
   collectGarbage(): Promise<void>;
+  collectRetiredSnapshot: NonNullable<Provider["collectRetiredSnapshot"]>;
   sshKey(request: {
     sandboxId: string;
     key: string;
@@ -123,6 +132,16 @@ export function assertSourceTargetScopes(source: Scope, target: Scope): void {
   )
     throw refusal("forbidden", "Source golden and target machine authority do not match.");
 }
+const detachedCollections = new Set<Promise<void>>();
+function trackDetachedCollection(work: () => Promise<void>) {
+  const run = work().finally(() => detachedCollections.delete(run));
+  detachedCollections.add(run);
+}
+/** Settles every detached retired-image collection. The server awaits this before closing SQL,
+ * so shutdown never interrupts a claim or purge mid-collection. */
+export async function settleDetachedModalCollections(): Promise<void> {
+  while (detachedCollections.size) await Promise.allSettled([...detachedCollections]);
+}
 export function createModalProvider(options: ModalProviderOptions): ModalProvider {
   const { store, distribution } = options;
   const runner: RunnerTransport = {
@@ -132,6 +151,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       return options.runner.call(row, op, input);
     },
   };
+  const detachCollection = options.detachCollection ?? trackDetachedCollection;
   const measure: NonNullable<ModalProviderOptions["measure"]> = options.measure ?? ((_phase, work) => work());
   const source = options.source ?? { scope: options.scope, store };
   assertSourceTargetScopes(source.scope, options.scope);
@@ -228,7 +248,9 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
   }
   async function namedOwned(row: Machine): Promise<Sandbox> {
     assertMachineSource(row);
-    await bound();
+    // Name reconciliation exists because the create outcome is unknown: a missing App must
+    // preserve the reservation, never read as the machine's absence.
+    await boundNotAbsence();
     let sb: Sandbox;
     try {
       sb = await client.sandboxes.fromName(options.appName, row.physicalName, {
@@ -674,30 +696,119 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     row.info.stoppedAt = new Date();
     await save(row);
   }
-  async function collectFrom(imagesStore: ModalStore) {
-    for (const source of await imagesStore.list()) {
+  /** Collects retired images in scope, or only the tombstone `name` when given. Every image is
+   * attempted: one failing image never blocks another, and the first failure is rethrown last. */
+  async function collectFrom(imagesStore: ModalStore, skipBusy = false, sources?: string[], name?: string) {
+    let failure: { error: unknown } | undefined;
+    // Visit only sources with retired images. Every scope machine ever launched stays in the
+    // store, so a full scan made each sandbox deletion cost minutes of SQL round trips.
+    for (const sourceId of sources ?? (await imagesStore.tombstoneSources())) {
+      const source = await imagesStore.get(sourceId);
       if (!matchesManagementAuthority(source.managementAuthority, managementAuthority)) continue;
-      const pending = (await imagesStore.images(source.info.id)).filter((x) => x.deleted);
-      if (!pending.length) continue;
-      await imagesStore.lease(source.info.id, async () => {
-        for (const image of (await imagesStore.images(source.info.id)).filter(
-          (x) => x.deleted && matchesManagementAuthority(x.managementAuthority, managementAuthority),
-        )) {
-          if (!image.imageId || (await imagesStore.imageReferenced(image.imageId))) continue;
-          if (image.imageId) {
-            try {
-              await client.images.delete(image.imageId);
-            } catch (error) {
-              if (modalError(error).code !== "not_found") throw error;
-            }
-          }
-          await imagesStore.purgeImage(image.info.name);
+      const retired = async () =>
+        (await imagesStore.images(source.info.id)).filter(
+          (x): x is SavedImage & { imageId: string } =>
+            Boolean(x.deleted && x.imageId) &&
+            (name === undefined || x.info.name === name) &&
+            matchesManagementAuthority(x.managementAuthority, managementAuthority),
+        );
+      // Lease a source only to claim a tombstone that can be removed now. A tombstone still
+      // referenced by a live machine stays put, and leasing its source for nothing would refuse
+      // that source's own lifecycle requests. The lease re-checks every condition before a claim.
+      let claimable = false;
+      for (const image of await retired())
+        if (!image.collecting && !(await imagesStore.imageReferenced(image.imageId))) {
+          claimable = true;
+          break;
         }
-      });
+      if (claimable) {
+        const claim = imagesStore.lease(source.info.id, async () => {
+          for (const image of await retired())
+            if (!image.collecting && !(await imagesStore.imageReferenced(image.imageId)))
+              await imagesStore.claimImage(image.info.name, image.sourceId, image.imageId);
+        });
+        // Another controller owns this source now (a golden prompt, snapshot, restore or a
+        // concurrent delete). Its tombstones stay durable for the next collection in scope.
+        await (skipBusy
+          ? claim.catch((error) => {
+              if (modalError(error).providerCode !== "lifecycle_lease_busy") throw error;
+            })
+          : claim);
+      }
+      // The source lease is released before any remote call: a slow or failing image deletion
+      // never refuses the source's own lifecycle (delete, snapshot, fork). A claim survives a
+      // failure or crash and is retried by the next collection in scope, again without the lease.
+      for (const image of await retired()) {
+        if (!image.collecting || (await imagesStore.imageReferenced(image.imageId))) continue;
+        try {
+          await client.images.delete(image.imageId);
+        } catch (error) {
+          if (modalError(error).code !== "not_found") {
+            failure ??= { error };
+            continue;
+          }
+        }
+        await imagesStore.purgeImage(image.info.name, image.sourceId, image.imageId);
+      }
+    }
+    if (failure) throw failure.error;
+  }
+  function logDeferredCollection(context: Record<string, string>) {
+    return (error: unknown) => {
+      const safe = modalError(error);
+      console.warn(
+        JSON.stringify({
+          event: "modal_retired_collection_deferred",
+          ...context,
+          code: safe.code,
+          ...(safe.providerCode ? { providerCode: safe.providerCode } : {}),
+        }),
+      );
+    };
+  }
+  /** After a tombstone is committed, the retirement has succeeded: nothing after it may fail the
+   * call. Its own image is collected best-effort now (the retirement worker retries it through
+   * collectRetiredSnapshot); other retired images are collected detached, once. */
+  async function collectAfterRetirement(snapshot: string, sourceId?: string) {
+    await collectFrom(source.store, true, sourceId ? [sourceId] : undefined, snapshot).catch(
+      logDeferredCollection({ snapshot }),
+    );
+    detachCollection(() => collectImages(true).catch(logDeferredCollection({ snapshot, scope: "unrelated" })));
+  }
+  async function collectImages(skipBusy = false) {
+    await collectFrom(source.store, skipBusy);
+  }
+  /** Retries a transient image-service failure inside the delete request, so one DELETE
+   * completes. A persistent failure still fails the delete; the durable phase resumes it. */
+  async function cleanupStep(sandboxId: string, step: () => Promise<void>) {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await step();
+      } catch (error) {
+        const safe = modalError(error);
+        const delay = CLEANUP_RETRY_MS[attempt - 1];
+        console.warn(
+          JSON.stringify({
+            event: "modal_delete_image_cleanup_failed",
+            sandboxId,
+            attempt,
+            code: safe.code,
+            ...(safe.providerCode ? { providerCode: safe.providerCode } : {}),
+            retrying: delay !== undefined,
+          }),
+        );
+        if (delay === undefined) throw error;
+        await (options.cleanupSleep ?? Bun.sleep)(delay);
+      }
     }
   }
-  async function collectImages() {
-    await collectFrom(source.store);
+  /** App lookup for paths whose not_found would read as a machine's absence. A missing App says
+   * nothing about this sandbox, so it must never publish a deletion that never ran. */
+  async function boundNotAbsence() {
+    await bound().catch((error) => {
+      if (modalError(error).code !== "not_found") throw error;
+      throw refusal("unavailable", "Modal App lookup failed; the sandbox was not deleted.");
+    });
   }
   function assertRecoveryTarget({ ownerId, target }: Parameters<NonNullable<Provider["findGoldenBuilder"]>>[0]) {
     if (
@@ -1115,6 +1226,10 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           if (row.phase !== "restoring") {
             if (!["deleted", "stopped"].includes(row.phase) && !(row.phase === "checkpoint" && row.quiesced))
               throw refusal("conflict", "Uncertain golden checkpoint retained; restore cannot discard that source.");
+            // Re-read under the source lease: a snapshot retired since the read above may already be
+            // claimed for physical collection, and a tombstone must never gain a reference.
+            if ((await source.store.image(snapshotId)).imageId !== snapshot.imageId)
+              throw refusal("conflict", "Golden snapshot changed during restore admission.");
             const latestBase = row.snapshotImages?.at(-1)?.name ?? row.goldenRestore?.snapshotId;
             const restoreImage =
               row.phase === "stopped" && latestBase === snapshotId && row.recoveryImageId
@@ -1550,14 +1665,51 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         assertAuthority(image);
       } catch (error) {
         if (modalError(error).code !== "not_found") throw error;
-        await collectImages();
+        await collectAfterRetirement(name);
         return;
       }
-      await store.lease(image.sourceId, async () => {
-        const current = await store.image(name);
-        await store.removeImage(current.info.name);
-      });
-      await collectImages();
+      let admitted = false;
+      try {
+        await store.lease(image.sourceId, async () => {
+          admitted = true;
+          const current = await store.image(name);
+          await store.removeImage(current.info.name);
+        });
+      } catch (error) {
+        // Only acquisition refusal proves the tombstone was never written, so the caller may
+        // retry the retirement as non-mutating instead of treating the outcome as unknown.
+        if (!admitted && modalError(error).providerCode === "lifecycle_lease_busy")
+          throw new ProviderError({
+            provider: "modal",
+            code: "conflict",
+            providerCode: "snapshot_source_busy",
+            message:
+              "The Modal snapshot source is busy. The snapshot was not deleted; retry after the current operation.",
+            retryable: true,
+          });
+        throw error;
+      }
+      await collectAfterRetirement(name, image.sourceId);
+    },
+    async collectRetiredSnapshot(name) {
+      if (scopeKey(source.scope) !== scopeKey(options.scope))
+        throw refusal(
+          "forbidden",
+          "Snapshot collection requires the golden-source provider scope, not a private-fork adapter.",
+        );
+      await snapshotBackend();
+      const owner = async () => {
+        for (const sourceId of await source.store.tombstoneSources())
+          if ((await source.store.images(sourceId)).some((image) => image.deleted && image.info.name === name))
+            return sourceId;
+      };
+      const sourceId = await owner();
+      if (!sourceId) return "collected";
+      // Only this snapshot's own tombstone, for both claim and deletion: another retired image,
+      // of this source or another, never blocks it. A busy source is skipped, not failed: the
+      // caller (the retirement worker) retries later.
+      await collectFrom(source.store, true, [sourceId], name);
+      return (await owner()) ? "pending" : "collected";
     },
     quiesce: (r) => call(r.sandboxId, "interrupt", r),
     async extendLifetime({ sandboxId, ttlSeconds }) {
@@ -1652,43 +1804,74 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       return { status: "deleted" };
     },
     async delete({ sandboxId }) {
-      await bound();
+      await boundNotAbsence();
       await store.lease(sandboxId, async (row, save) => {
         if (row.phase === "deleted") return;
         assertMachineSource(row);
-        // Reserved is provably pre-create: SQL commits creating before issuing any remote request.
+        // Stop confirms exit. A reservation without an ID is pre-create because SQL
+        // commits creating before issuing the remote request. Carry either proof,
+        // scoped to this physical generation, through an interrupted deletion so a
+        // retry never terminates and waits on a machine that has already exited.
+        if (row.phase === "stopped" || (row.phase === "reserved" && !row.physicalId))
+          row.deletePhysicalExitGeneration = row.generation;
+        const exitConfirmed = row.deletePhysicalExitGeneration === row.generation;
         // Creating/booting/deleting without ID is NOT proof of absence, even if name lookup says 404.
-        if (!row.physicalId && row.phase !== "reserved") {
+        if (!exitConfirmed && !row.physicalId) {
           const reconciled = await namedOwned(row);
           row.physicalId = reconciled.sandboxId;
           await save(row);
         }
+        // Durable before any remote mutation. Every resume path refuses a deleting record, so
+        // this phase and the store lease, not the server's activity lease, fence a failed delete.
         row.phase = "deleting";
         await save(row);
-        if (row.physicalId) {
+        if (!exitConfirmed && row.physicalId) {
+          // Only the machine's own not_found proves exit; look the App up outside that catch.
+          await boundNotAbsence();
           try {
-            const sb = await physical(row);
+            const sb = await client.sandboxes.fromId(row.physicalId);
             await sb.terminate({ wait: true });
             if ((await sb.poll()) === null)
               throw refusal("unavailable", "Owned machine termination is not complete; delete remains pending.");
           } catch (error) {
             if (modalError(error).code !== "not_found") throw error;
           }
+          row.deletePhysicalExitGeneration = row.generation;
+          await save(row);
         }
         for (const imageId of new Set([
           ...(row.retainedRecoveryIds ?? []),
           ...(row.recoveryImageId ? [row.recoveryImageId] : []),
         ])) {
-          try {
-            await client.images.delete(imageId);
-          } catch (error) {
-            if (modalError(error).code !== "not_found") throw error;
-          }
+          await cleanupStep(sandboxId, async () => {
+            try {
+              await client.images.delete(imageId);
+            } catch (error) {
+              if (modalError(error).code !== "not_found") throw error;
+            }
+          });
         }
         row.phase = "deleted";
         await save(row);
       });
-      await collectImages();
+      // The target's compute and recovery images are gone and durably recorded, so the receipt
+      // is published now. Retired images of other sources are collected detached, once. Each is
+      // claimed under its source's lease with the same scope, authority and reference checks. A slow,
+      // busy or failing source never holds this receipt or the caller's activity lease; its
+      // tombstones stay durable for the next collection in scope.
+      detachCollection(() =>
+        collectImages(true).catch((error) => {
+          const safe = modalError(error);
+          console.warn(
+            JSON.stringify({
+              event: "modal_delete_retired_collection_deferred",
+              sandboxId,
+              code: safe.code,
+              ...(safe.providerCode ? { providerCode: safe.providerCode } : {}),
+            }),
+          );
+        }),
+      );
       return { status: "deleted" };
     },
     async resourceReceipts() {

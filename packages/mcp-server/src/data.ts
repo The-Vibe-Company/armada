@@ -729,8 +729,10 @@ export function createSqlData(
           params.push(patch.queueRequestId);
           fence += ` and not exists(select 1 from public.account_turn_queue q where q.sandbox_id=s.id and q.request_id=$${params.length}::uuid and q.state<>'dispatching')`;
         }
+        let generationParam: number | undefined;
         if (patch.expectedGeneration !== undefined) {
           params.push(patch.expectedGeneration);
+          generationParam = params.length;
           fence += ` and s.lifecycle_generation = $${params.length}`;
         }
         if (patch.deleteRequested)
@@ -759,16 +761,61 @@ export function createSqlData(
           patch.status === "deleted";
         const cancelTurns = patch.stopRequested === true;
         const wrapped = releaseReservation || cancelTurns;
-        const result = await sql.query<{ id: string }>(
-          `${wrapped ? "with updated as (" : ""}update public.sandboxes s set ${sets.join(", ")} from public.goldens g
+        const admission = !!patch.advanceGeneration && !!patch.activityToken;
+        // A refused delete admission names its predicates from the CAS statement's own snapshot,
+        // not a later read that a concurrent lease release could already have cleared. A row
+        // changed while this statement waited on its lock is rechecked at its newest version,
+        // so then the CAS may refuse a holder that this snapshot predates.
+        const observeRefusal = !!patch.deleteRequested && admission && !wrapped;
+        const update = `update public.sandboxes s set ${sets.join(", ")} from public.goldens g
            where s.id = $3 and g.id = s.golden_id and ${SANDBOX_VISIBLE}
-             and (${ownsActivity && patch.expectedGeneration !== undefined ? "true" : `${observationFence} and (s.activity_until is null or s.activity_until < now())`}) ${fence} returning s.id${wrapped ? `)${patch.status === "deleted" ? ", purged as (delete from public.sandbox_work_recovery r using updated u where r.sandbox_id=u.id)" : ""}${cancelTurns ? ", refused as (update public.account_turn_queue q set state='failed',failure_reason='Dispatch refused by owner stop.' from updated u where q.sandbox_id=u.id and q.state in ('queued','dispatching'))" : ""}${releaseReservation ? ", released as (delete from public.account_agent_reservations r using updated u where r.sandbox_id=u.id)" : ""} select id from updated` : ""}`,
+             and (${ownsActivity && patch.expectedGeneration !== undefined ? "true" : `${observationFence} and (s.activity_until is null or s.activity_until < now())`}) ${fence} returning s.id`;
+        const result = await sql.query<{ id: string | null; observed?: Record<string, unknown> | null }>(
+          observeRefusal
+            ? `with observed as (select s.status::text as status,
+                  s.activity_lease_id as "activityLeaseId",
+                  coalesce(s.activity_until>=now(),false) as "activityLeaseHeld",
+                  coalesce(s.reconcile_lease_until>=now(),false) as "reconcileLeaseHeld",
+                  s.stop_requested_at is not null as "stopRequested",
+                  ${generationParam ? `s.lifecycle_generation<>$${generationParam}::bigint` : "false"} as "generationChanged",
+                  ${SANDBOX_DELETION_MANAGED} as managed
+                from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE}),
+              updated as (${update})
+              select (select id from updated) as id, (select row_to_json(o) from observed o) as observed`
+            : `${wrapped ? "with updated as (" : ""}${update}${wrapped ? `)${patch.status === "deleted" ? ", purged as (delete from public.sandbox_work_recovery r using updated u where r.sandbox_id=u.id)" : ""}${cancelTurns ? ", refused as (update public.account_turn_queue q set state='failed',failure_reason='Dispatch refused by owner stop.' from updated u where q.sandbox_id=u.id and q.state in ('queued','dispatching'))" : ""}${releaseReservation ? ", released as (delete from public.account_agent_reservations r using updated u where r.sandbox_id=u.id)" : ""} select id from updated` : ""}`,
           params,
         );
-        if (!result.rows[0])
+        if (!result.rows[0]?.id) {
+          // Record only admission predicates. The provider has not received this delete.
+          if (observeRefusal)
+            console.info(
+              JSON.stringify({
+                event: "sandbox_delete_admission_refused",
+                sandboxId: id,
+                observed: result.rows[0]?.observed ?? null,
+              }),
+            );
           throw new DataError(
             "The sandbox is busy or its lifecycle changed; retry after refreshing status.",
             "sandbox_not_ready",
+          );
+        }
+        // Names the writer behind any later refusal's activityLeaseId. Lease IDs are random
+        // fences, not credentials.
+        if (admission)
+          console.info(
+            JSON.stringify({
+              event: "sandbox_activity_admitted",
+              sandboxId: id,
+              activityLeaseId: patch.activityToken,
+              kind: patch.deleteRequested
+                ? "delete"
+                : patch.stopRequested === true
+                  ? "stop"
+                  : patch.stopRequested === false
+                    ? "resume"
+                    : "activity",
+            }),
           );
       },
       async reportTaskOutcome(id, promptId, outcome, expectedGeneration) {
