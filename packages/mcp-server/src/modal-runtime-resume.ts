@@ -17,7 +17,7 @@ export function modalRuntimeResume(
     admissionError: "modal_resume_admission_changed",
     binding: ["modal", "dialout"],
     maxTtlSeconds: PROVIDER_LIMITS.modal.maxTtlSeconds,
-    restore: (host, sandbox, ttlSeconds, signal, checkpoint) =>
+    restore: (host, sandbox, ttlSeconds, signal, checkpoint, observe) =>
       host.resumeRuntime(
         {
           sandboxId: sandbox.providerSandboxId,
@@ -25,6 +25,7 @@ export function modalRuntimeResume(
           checkpoint: { epoch: checkpoint.epoch, watermark: checkpoint.watermark },
         },
         signal,
+        observe,
       ),
     stop: (host, sandbox) => host.stop({ sandboxId: sandbox.providerSandboxId }),
   });

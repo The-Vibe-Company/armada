@@ -210,6 +210,14 @@ export function createRuntimeResume(
         clearTaskOutcome: true,
         ...(current.lifecycleGeneration !== undefined ? { expectedGeneration: current.lifecycleGeneration } : {}),
       });
+      await tx.query(
+        `update public.sandbox_launch_stages l set at=least(l.at,r.created_at)
+           from public.runtime_resumes r
+          where l.sandbox_id=$1 and l.stage='accepted'
+            and l.activation=(select max(a.activation) from public.sandbox_launch_stages a where a.sandbox_id=$1)
+            and r.sandbox_id=l.sandbox_id and r.request_id=$2`,
+        [found.id, requestId],
+      );
       const active = await createSqlData(tx)(caller).sandboxes.get(found.id);
       if (!active) throw new VaultError("not_found", "Runtime resume admission disappeared.");
       return { current: active, op, first: true };
@@ -273,7 +281,7 @@ export function createRuntimeResume(
             await prepareMcp?.(caller, found.id, signal);
           }
           // #2560: restored, verified and reauthorized; the resume prompt's dispatch is not launch time.
-          await recordLaunchStageQuietly(sql, found.id, "harness_ready");
+          await recordLaunchStageQuietly(sql, found.id, "harness_ready", admitted.current.lifecycleGeneration);
           const accepted = await agent.prompt(
             {
               sandboxId: found.providerSandboxId,

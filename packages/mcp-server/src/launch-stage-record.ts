@@ -30,9 +30,14 @@ export async function recordLaunchStageForActivation(
 }
 
 /** Measurement outside a lifecycle transaction must never change the outcome it measures. */
-export async function recordLaunchStageQuietly(sql: Pick<Sql, "query">, sandboxId: string, stage: LaunchStage) {
+export async function recordLaunchStageQuietly(
+  sql: Pick<Sql, "query">,
+  sandboxId: string,
+  stage: LaunchStage,
+  generation?: number,
+) {
   try {
-    await recordLaunchStageSql(sql, sandboxId, stage);
+    await recordLaunchStageSql(sql, sandboxId, stage, 0, generation);
   } catch {
     quietFailure(stage);
   }

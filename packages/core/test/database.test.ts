@@ -437,6 +437,52 @@ describe("database", () => {
     });
   });
 
+  test("launch percentiles cover all complete, visible activations accepted in the last 30 days", async () => {
+    await withDb(async (db) => {
+      const people = await fixture(db);
+      const visible = await insertGolden(db, people, {
+        name: "visible-timing",
+        visibility: "org",
+        owner: people.owner,
+      });
+      const hidden = await insertGolden(db, people, {
+        name: "private-timing",
+        visibility: "private",
+        owner: people.owner,
+      });
+      const sandbox = await insertSandbox(db, people, visible, people.member);
+      const privateSandbox = await insertSandbox(db, people, hidden, people.owner);
+      await db.query(
+        `insert into sandbox_launch_stages (sandbox_id, activation, stage, at)
+         select $1::uuid, n, 'accepted', now() - interval '1 day' from generate_series(1, 1201) n
+         union all
+         select $1, n, 'harness_ready', now() - interval '1 day' + n * interval '1 millisecond'
+           from generate_series(1, 1200) n
+         union all
+         select $1, 1202, 'accepted', now() - interval '31 days'
+         union all
+         select $1, 1202, 'harness_ready', now() - interval '29 days'
+         union all
+         select $2::uuid, 1, 'accepted', now() - interval '1 second'
+         union all
+         select $2, 1, 'harness_ready', now()`,
+        [sandbox, privateSandbox],
+      );
+      const read = (userId: string) =>
+        asUser(
+          db,
+          userId,
+          async () => (await db.query("select * from public.sandbox_launch_percentiles($1)", [people.org])).rows,
+        );
+      expect(await read(people.member)).toEqual([
+        { provider: "boat", kind: "launch", count: 1, p50Ms: 1, p90Ms: 1 },
+        { provider: "boat", kind: "resume", count: 1199, p50Ms: 601, p90Ms: 1081 },
+      ]);
+      expect((await read(people.admin))[0]).toMatchObject({ kind: "launch", count: 2, p90Ms: 1000 });
+      expect(await read(people.outsider)).toEqual([]);
+    });
+  });
+
   test("launch stages follow the sandbox interior: owner and admin read them, other members and a JWT write nothing", async () => {
     await withDb(async (db) => {
       const people = await fixture(db);

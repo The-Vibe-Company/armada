@@ -20,7 +20,8 @@ export function boatRuntimeResume(options: RuntimeResumeOptions & { modelAuth: M
     },
     admissionError: "runtime_resume_admission_changed",
     maxTtlSeconds: PROVIDER_LIMITS.boat.maxTtlSeconds,
-    restore: (host, sandbox, ttl, signal) => host.resumeRuntime(sandbox.providerSandboxId, ttl, signal),
+    restore: (host, sandbox, ttl, signal, _checkpoint, observe) =>
+      host.resumeRuntime(sandbox.providerSandboxId, ttl, signal, observe),
     stop: (host, sandbox) => host.stopBestEffort(sandbox.providerSandboxId),
   });
 }

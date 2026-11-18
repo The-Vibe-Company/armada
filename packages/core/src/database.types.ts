@@ -1,4 +1,5 @@
 // Generated from supabase/migrations by `bun run db:types`. Do not edit.
+import type { LaunchPercentiles } from "./launch-stages.ts";
 import type { SandboxListMetadata } from "./sandbox-access.ts";
 
 export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[];
@@ -775,6 +776,8 @@ export type Database = {
           actor_id: string;
           lifecycle_generation: number;
           accepted: boolean | null;
+          created_at: string | null;
+          claimed_at: string | null;
         };
         Insert: {
           request_id: string;
@@ -785,6 +788,8 @@ export type Database = {
           actor_id: string;
           lifecycle_generation: number;
           accepted?: boolean | null;
+          created_at?: string | null;
+          claimed_at?: string | null;
         };
         Update: {
           request_id?: string;
@@ -795,6 +800,8 @@ export type Database = {
           actor_id?: string;
           lifecycle_generation?: number;
           accepted?: boolean | null;
+          created_at?: string | null;
+          claimed_at?: string | null;
         };
         Relationships: [
           {
@@ -5158,6 +5165,7 @@ export type Database = {
     };
     Functions: {
       sandbox_list_metadata: { Args: Record<string, never>; Returns: SandboxListMetadata[] };
+      sandbox_launch_percentiles: { Args: { target_org: string }; Returns: LaunchPercentiles[] };
       can_open_sandbox: { Args: { target_org: string; target_owner: string }; Returns: boolean };
     };
     Enums: {

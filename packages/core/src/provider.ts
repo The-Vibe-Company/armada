@@ -329,7 +329,13 @@ export interface ListRequest {
   cursor?: string;
 }
 
+/** Trusted in-process observation of provider resume boundaries. */
+export type ResumeStageObserver = (
+  stage: "accepted" | "provider_claimed" | "machine_started" | "harness_ready",
+) => Promise<void>;
+
 export interface PromptRequest {
+  onResumeStage?: ResumeStageObserver;
   /** Trusted server cancellation, never persisted or sent as model input. */
   signal?: AbortSignal;
   sandboxId: string;
