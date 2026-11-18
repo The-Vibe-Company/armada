@@ -99,7 +99,7 @@ export async function SandboxAttention({
     title = `${view.expiry?.text ?? "Little time left"} and the agent is still working.`;
     detail =
       sandbox.provider === "docker"
-        ? "The time limit cannot be extended on your own server."
+        ? "The time limit cannot be extended on a Docker host."
         : "When time is up Armada tries to save work that was not pushed.";
     const memberships = await listMemberships(await createClient(), viewer.id);
     if (

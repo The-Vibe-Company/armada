@@ -31,7 +31,7 @@ and a configured Codex account:
   "golden": "review",
   "provider": "modal",
   "harness": "codex",
-  "prompt": "Review the application and write a summary to /workspace/outputs/summary.md.",
+  "prompt": "Review the application and write a summary to /home/user/outputs/summary.md.",
   "idempotencyKey": "application-1042-launch-1",
   "externalRef": "application-1042"
 }
@@ -42,16 +42,25 @@ sandbox ID from `sandbox.id` for subsequent calls. Ordinary cloud launches
 inherit snapshot visibility. A private snapshot is visible to its owner.
 
 - Put `idempotencyKey` in the JSON body (16–128 characters). The receipt is
-  scoped to the caller and organization. Replay the same key and body to get
-  the recorded result. Reusing the key with changed input returns HTTP 409
-  `conflict`.
+  scoped to the caller and organization. Reusing the key with changed input
+  returns HTTP 409 `conflict`.
 - Set `externalRef` to an opaque product identifier (1–200 characters, no
   control characters). The reference can be shared by several sandboxes.
   It is returned by launch, authorized status and list reads, and webhooks.
 - After a dropped response or HTTP 503 `outcome_unknown`, keep the original
-  key and body. You can also look up recorded sandboxes using
-  `POST /api/v1/sandbox/list` with `{"externalRef":"application-1042"}`.
-  An empty list can occur while the allocation outcome is still unknown.
+  key and body. A replay returns the recorded result only if the request
+  still passes launch preflight: the snapshot must still be visible to the
+  caller under the same name and provider, the provider account must still be
+  configured, and the server must pin the same allocation authority. Armada
+  runs these checks before it reads the receipt. For example, if the snapshot
+  was removed, the replay returns `not_found` without consulting the receipt.
+  That error does not mean the original launch failed.
+- When a replay fails preflight, never launch with a new key. Look up recorded
+  sandboxes with `POST /api/v1/sandbox/list` and
+  `{"externalRef":"application-1042"}`. An empty list can occur while the
+  allocation outcome is still unknown. Then inspect the receipt with the MCP
+  `launch_receipt` tool, using the receipt ID from an earlier
+  `outcome_unknown` answer or the sandbox ID you expected.
 
 See [idempotency and recovery](../launch-idempotency.md) for receipt lookup,
 template launch keys and Docker's separate `requestId` contract.
@@ -91,11 +100,22 @@ the UUID bound to the token.
 | `sandbox/list` | None, send `{}` | `org`, `externalRef`, `harness`, `golden` (snapshot UUID), `owner` (UUID or `me`), `status` (nonempty array), `page`, `limit` | `sandboxes`, `total`, `page`, `limit`, `hasMore`, `nextPage`. Page starts at 1 and is capped at 1,000,000. Default limit 25, maximum 200. Deleted rows are excluded by default. |
 | `sandbox/status` | `id` | `prompt_id`, `recorded` (boolean) | Sandbox status and turn details. Omit `prompt_id` for the latest turn. With `recorded: true` use stored state. |
 | `sandbox/wait` | `id` | `prompt_id`, `timeout_seconds` (integer 0–600, default 60) | Status with `timedOut`. Call again to keep waiting. |
-| `sandbox/send` | `id`, `prompt` | `request_id` (UUID, required by direct runtime follow-up), `conversation_id`, `model`, `reasoning_effort` | Includes `promptId`, `conversationId` and the send status, which can be `queued`. |
+| `sandbox/send` | `id`, `prompt`, and `request_id` (UUID) on runtime and Docker sandboxes | `conversation_id`; `request_id`, `model` and `reasoning_effort` on native sandboxes | Includes `promptId`, `conversationId` and the send status, which can be `queued`. |
 | `sandbox/stop` | `id` | `request_id` (UUID), `only_if_idle` (boolean) | `id`, `status` and an optional `preservationNote`. |
 
-Model and reasoning effort overrides apply to native sends. Runtime sends
-keep the model and reasoning effort selected at launch.
+Send fields depend on the sandbox:
+
+| Sandbox | Required | Optional | Refused |
+| --- | --- | --- | --- |
+| Native Boat or Modal | `id`, `prompt` | `request_id` (UUID), `conversation_id`, `model`, `reasoning_effort` | None |
+| Runtime Boat or Modal, including OpenCode | `id`, `prompt`, `request_id` (UUID) | `conversation_id` | `model` and `reasoning_effort`. Boat accepts them only when they equal the launch values. |
+| Docker | `id`, `prompt`, `request_id` (UUID) | `conversation_id` (UUID) | `model`, `reasoning_effort` |
+
+A Docker send without a UUID `request_id`, or with a model or reasoning
+effort, returns HTTP 400 `invalid_request`. A runtime send without one returns
+HTTP 400 `invalid`. Model and reasoning effort overrides apply to native sends
+only. Runtime and Docker sends keep the model and reasoning effort selected at
+launch.
 
 Supply a stable request UUID for sends, as `request_id` on backend requests
 and `requestId` on viewer requests. The account turn queue deduplicates by
@@ -134,10 +154,10 @@ See [outbound webhooks](../outbound-webhooks.md) for payloads and endpoint manag
 
 ## Download outputs
 
-Have the agent write files directly to `/workspace/outputs` on Boat and Modal
-or `/home/user/outputs` on Docker. Authorized owners and organization admins
-can list metadata with `GET /api/v1/sandboxes/{id}/outputs` and download bytes
-with `GET /api/v1/sandboxes/{id}/outputs/{encodedName}`.
+Have the agent write files directly to `/home/user/outputs` on every provider.
+Authorized owners and organization admins can list metadata with
+`GET /api/v1/sandboxes/{id}/outputs` and download bytes with
+`GET /api/v1/sandboxes/{id}/outputs/{encodedName}`.
 
 Only regular files directly in that directory are collected. The snapshot is
 limited to 32 files, 32 KiB per file and 32 KiB total. A directory with more than

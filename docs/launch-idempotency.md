@@ -20,7 +20,12 @@ provider allocation.
 A key is scoped to the caller and organization.
 
 - Same key, same request: the recorded answer, with the same sandbox id. No
-  second fork.
+  second fork. This holds only while the request still passes launch
+  preflight, which runs before the receipt is read: the snapshot is still
+  visible to the caller under the same name and provider, its provider account
+  is still configured, and the server pins the same allocation authority.
+  Otherwise the replay returns the preflight error (for example `not_found`
+  after the snapshot was removed). That error is not the original outcome.
 - Same key, any different field (including `externalRef` or `prompt`):
   refused with `conflict` (409). Nothing is launched.
 - Same key after a terminal refusal recorded under it (bad configuration, no
@@ -40,6 +45,8 @@ or may not exist. Never retry with a new key: that is how duplicates happen.
 1. Retry with the **same key and the same body**. A completed launch answers
    with its recorded sandbox; a still-unknown one answers `outcome_unknown`
    again and names the receipt id, which is also the sandbox id it would have.
+   A preflight error such as `not_found` says nothing about the first launch;
+   keep the key and continue with the next steps.
 2. Look the sandbox up by reference: `sandbox/list` with `externalRef` returns
    every sandbox you own or administer carrying it, including a launch whose
    answer was lost after the sandbox was recorded.

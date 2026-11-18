@@ -273,10 +273,7 @@ export function LaunchChoice({
       <CommandList>
         <CommandEmpty>No matches.</CommandEmpty>
         {[...new Set(options.map((option) => option.group ?? ""))].map((group) => (
-          <CommandGroup
-            key={group}
-            heading={group.replace(/ · your own server(?= · |$)/, " · Docker host") || undefined}
-          >
+          <CommandGroup key={group} heading={group || undefined}>
             {options
               .filter((option) => (option.group ?? "") === group)
               .map((option) => (
@@ -440,7 +437,7 @@ export function LaunchLocation({
       </p>
       {provider === "docker" && (
         <p className="text-xs text-muted-foreground">
-          The first launch on your own server downloads Armada’s base image; it can take a few minutes.
+          The first launch on a Docker host downloads Armada’s base image; it can take a few minutes.
         </p>
       )}
     </div>

@@ -18,3 +18,8 @@ export const EFFORT_LABEL: Record<string, string> = {
 export const CLOUD_PROVIDERS_LABEL = "Cloud providers";
 export const DOCKER_HOST_LABEL = "Docker host";
 export const DOCKER_HOSTS_LABEL = "Docker hosts";
+
+/** A Docker host's launch-picker group: its name (when set), the shared term and details such as its state. */
+export function dockerHostGroup(name: string | null | undefined, ...details: string[]): string {
+  return [name, DOCKER_HOST_LABEL, ...details].filter(Boolean).join(" · ");
+}

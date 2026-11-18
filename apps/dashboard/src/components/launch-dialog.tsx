@@ -38,6 +38,7 @@ import {
   type McpConnection,
   unreadyDefaults,
 } from "@/lib/connections";
+import { DOCKER_HOST_LABEL, dockerHostGroup } from "@/lib/labels";
 import { LAUNCH_KEY_FIELD, type LaunchKey, launchKeyFor } from "@/lib/launch-key";
 import { initialLaunchSelection, type LaunchStartTarget } from "@/lib/launch-picker";
 import { accountProblem, accountsFor, type LaunchAccounts } from "@/lib/model-accounts";
@@ -126,7 +127,8 @@ export function LaunchStart(
     ? {
         id: `host:${props.hostId}`,
         label: `Empty machine · ${props.hostName}`,
-        group: `${props.hostName} · your own server`,
+        group: dockerHostGroup(props.hostName),
+        hostName: props.hostName,
         golden: "",
         provider: "docker",
         hostId: props.hostId,
@@ -136,8 +138,8 @@ export function LaunchStart(
       }
     : {
         id: props.snapshotId ? `snapshot:${props.snapshotId}` : `${props.provider}:${props.golden}`,
-        label: `${props.golden} · ${props.provider === "boat" ? "Boat cloud" : props.provider === "modal" ? "Modal cloud" : "your own server"}`,
-        group: props.provider === "docker" ? "Your own server" : `${PROVIDER_LABELS[props.provider]} cloud`,
+        label: `${props.golden} · ${props.provider === "boat" ? "Boat cloud" : props.provider === "modal" ? "Modal cloud" : DOCKER_HOST_LABEL}`,
+        group: props.provider === "docker" ? DOCKER_HOST_LABEL : `${PROVIDER_LABELS[props.provider]} cloud`,
         golden: props.golden,
         provider: props.provider,
         repositories: props.repositories,
@@ -239,7 +241,7 @@ export function LaunchStart(
           key={target.id}
           orgId={props.orgId}
           hostId={target.hostId}
-          hostName={target.group.replace(/ · your own server.*$/, "")}
+          hostName={target.hostName ?? DOCKER_HOST_LABEL}
           accounts={options?.accounts ?? props.accounts}
           connections={
             options?.connections ?? (!host ? props.connections : { unavailable: "Still loading connections." })
@@ -418,7 +420,7 @@ function LaunchForm({
                 provider={provider}
                 start={
                   selectedStart ??
-                  `${golden} · ${provider === "boat" ? "Boat cloud" : provider === "modal" ? "Modal cloud" : "your own server"}`
+                  `${golden} · ${provider === "boat" ? "Boat cloud" : provider === "modal" ? "Modal cloud" : DOCKER_HOST_LABEL}`
                 }
                 starts={starts?.map((item) => ({
                   value: item.id,

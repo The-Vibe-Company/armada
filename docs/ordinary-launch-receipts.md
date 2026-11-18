@@ -10,7 +10,9 @@ released for redispatch, including failed validation or uncertain persistence.
 The server commits the logical sandbox UUID before dispatch. This same UUID
 is sent in the provider's `sandbox` ownership label. A completed response is
 persisted before replying; replay returns it without initializing or prompting
-again. An unfinished receipt returns `outcome_unknown` and the stable UUID.
+again. Replay first repeats launch preflight (golden visibility, provider and
+allocation authority), so a removed golden returns `not_found` before the
+receipt is read; that error is not the original outcome. An unfinished receipt returns `outcome_unknown` and the stable UUID.
 It does not claim that the machine is stopped or safe to recreate.
 
 Use `launch_receipt` with the receipt UUID and source golden/org/provider to

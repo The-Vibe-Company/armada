@@ -32,6 +32,7 @@ import { snapshotLaunchEnabled } from "@/lib/docker-snapshots";
 import { mcpUrl } from "@/lib/env";
 import { createGateway, GatewayError } from "@/lib/gateway";
 import { goldenLaunchReadiness, PROVIDER_LABELS } from "@/lib/golden-form";
+import { DOCKER_HOST_LABEL, dockerHostGroup } from "@/lib/labels";
 import {
   decodeLaunchAttempt,
   encodeLaunchAttempt,
@@ -105,7 +106,7 @@ export async function extendSandbox(_previous: ActionResult | null, data: FormDa
   if (!isUuid(id)) return fail("That request is not valid.");
   const target = await gatewayFor(id);
   if (target.error) return target.error;
-  if (target.sandbox.provider === "docker") return fail("The time limit cannot be extended on your own server.");
+  if (target.sandbox.provider === "docker") return fail("The time limit cannot be extended on a Docker host.");
   const expires = Date.parse(target.sandbox.expires_at ?? "");
   if (!Number.isFinite(expires)) return fail("This sandbox has no recorded deadline to extend.");
   const viewer = await requireViewer();
@@ -483,8 +484,9 @@ export async function readLaunchDialogOptions() {
         golden: "",
         provider: "docker",
         hostId: host.id,
-        label: `Empty machine · ${host.name ?? "Your server"}`,
-        group: `${host.name ?? "Your server"} · your own server · ${host.state}`,
+        label: `Empty machine · ${host.name ?? DOCKER_HOST_LABEL}`,
+        group: dockerHostGroup(host.name, host.state),
+        hostName: host.name ?? DOCKER_HOST_LABEL,
         repositories: [],
         harnesses: agents.offered,
         ...(agents.initial ? { initialHarness: agents.initial } : {}),
@@ -497,17 +499,18 @@ export async function readLaunchDialogOptions() {
             (snapshot.status !== "ready"
               ? "Not built yet. Open Snapshots to build it."
               : !snapshot.hostAvailable
-                ? "This server is unavailable."
+                ? "This Docker host is unavailable."
                 : !snapshotLaunchEnabled(dockerOption, hostRead.list.placement)
-                  ? "This server does not support snapshot launches."
+                  ? "This Docker host does not support snapshot launches."
                   : null);
           targets.push({
             id: snapshot.id,
             golden: snapshot.name,
             provider: "docker",
             snapshotId: snapshot.id,
-            label: `${snapshot.name} · ${host.name ?? "Your server"}`,
-            group: `${host.name ?? "Your server"} · your own server · ${host.state}`,
+            label: `${snapshot.name} · ${host.name ?? DOCKER_HOST_LABEL}`,
+            group: dockerHostGroup(host.name, host.state),
+            hostName: host.name ?? DOCKER_HOST_LABEL,
             repositories: [],
             harnesses: agents.offered,
             ...(blocked ? { reason: blocked } : {}),

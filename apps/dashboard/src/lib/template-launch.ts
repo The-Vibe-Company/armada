@@ -1,5 +1,6 @@
 import type { MachineSizePolicy } from "@armada/core";
 import type { GoldenRow } from "./data/goldens.ts";
+import { DOCKER_HOST_LABEL } from "./labels.ts";
 import { goldenSizing } from "./machine-size.ts";
 import type { LaunchAccounts } from "./model-accounts.ts";
 import { goldenRepositoryDirs } from "./repository-context.ts";
@@ -56,7 +57,7 @@ export function launchTarget(
     ...(lookups.accounts ? { accounts: lookups.accounts } : {}),
     goldenName:
       definition.provider === "docker"
-        ? `${lookups.snapshots?.find((row) => row.id === definition.snapshotId && row.hostId === definition.hostId)?.name ?? (definition.snapshotId ? "Unavailable snapshot" : "Official image")} · ${lookups.hosts?.find((row) => row.id === definition.hostId)?.name ?? "Your own server"}`
+        ? `${lookups.snapshots?.find((row) => row.id === definition.snapshotId && row.hostId === definition.hostId)?.name ?? (definition.snapshotId ? "Unavailable snapshot" : "Official image")} · ${lookups.hosts?.find((row) => row.id === definition.hostId)?.name ?? DOCKER_HOST_LABEL}`
         : golden
           ? `${golden.name} · ${definition.provider === "boat" ? "Boat" : "Modal"} cloud`
           : null,
