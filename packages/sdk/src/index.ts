@@ -472,11 +472,9 @@ export class Armada {
     }
   }
 }
-const MAX_RETRY_AFTER_SECONDS = 86_400;
 /** Accept only a delay in seconds or an HTTP date (header), or a whole number of seconds (failure body). */
 function retryAfter(header: string | null, error: unknown): number | undefined {
-  const seconds = (value: number) =>
-    Number.isFinite(value) && value >= 0 ? Math.min(Math.ceil(value), MAX_RETRY_AFTER_SECONDS) : undefined;
+  const seconds = (value: number) => (Number.isFinite(value) && value >= 0 ? Math.ceil(value) : undefined);
   if (header !== null) {
     const text = header.trim();
     if (/^\d{1,10}$/.test(text)) return seconds(Number(text));

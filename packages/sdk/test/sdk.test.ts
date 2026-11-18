@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import { inspect } from "node:util";
 import type { DockerLaunchRequest, DockerSandboxStatus } from "@armada/core";
+import { ProviderError } from "@armada/core/server";
+import { controlFailureResponse } from "../../mcp-server/src/control-errors.ts";
 import { DOCKER_LAUNCH_REQUEST } from "../../mcp-server/src/docker-launch-request-schema.ts";
 import { REST_LAUNCH_RESPONSE } from "../../mcp-server/src/launch-response-schemas.ts";
 import { webhookSignature } from "../../mcp-server/src/outbound-webhooks.ts";
@@ -275,6 +277,40 @@ test("server-requested retry delays reach the caller and suppress early replays"
   await expect(unscheduled.status({ id: "sandbox_placeholder" })).rejects.toMatchObject({
     retryAfterSeconds: undefined,
   });
+});
+
+test("server retry delays longer than one day reach the caller unchanged", async () => {
+  // Two days: above any one-day cap, within the server's one-year provider limit.
+  const delay = 172_800;
+  const limited = controlFailureResponse(
+    new ProviderError({
+      provider: "boat",
+      code: "rate_limited",
+      status: 429,
+      message: "secret_echo",
+      retryable: true,
+      retryAfterSeconds: delay,
+      details: { window: "day" },
+    }),
+  );
+  expect(limited.status).toBe(429);
+  const body = await limited.text();
+  const responses = [
+    () => new Response(body, { status: 429, headers: limited.headers }),
+    () => Response.json({ error: { code: "unavailable" } }, { status: 503, headers: { "retry-after": String(delay) } }),
+    () =>
+      Response.json(
+        { error: { code: "unavailable" } },
+        { status: 503, headers: { "retry-after": new Date(Date.now() + delay * 1000).toUTCString() } },
+      ),
+  ];
+  for (const respond of responses) {
+    const client = new Armada({ token: "service_placeholder", fetch: async () => respond() });
+    const error = await client.launch({ golden: "worker", harness: "codex" }).catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(ArmadaError);
+    // HTTP dates round to whole seconds.
+    expect((error as ArmadaError).retryAfterSeconds).toBeWithin(delay - 1, delay + 1);
+  }
 });
 
 test("file helpers quote paths and reject truncated exec receipts", async () => {
