@@ -21,6 +21,7 @@ export const OUTPUT_CHUNK_BYTES = OUTPUT_MAX_BYTES;
 export const OUTPUT_MAX_READ_BYTES = 512 * 1024;
 export const OUTPUT_MAX_FILE_BYTES = 32 * 1024 * 1024;
 export const OUTPUT_MAX_SANDBOX_BYTES = 64 * 1024 * 1024;
+export const OUTPUT_ARCHIVE_LIMIT = OUTPUT_MAX_SANDBOX_BYTES + 8 * 1024 * 1024;
 export const OUTPUT_MAX_ORG_BYTES = 1024 * 1024 * 1024;
 
 export interface OutputEntry {

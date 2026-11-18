@@ -5,6 +5,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { DOCKER_HOST_SNAPSHOT_BASELINE_HEADER } from "../../core/src/docker-host-upgrade.ts";
 import type { DockerMachineCli } from "../../core/src/docker-machine.ts";
 import { type DockerHostResources, dockerHostResources } from "../../core/src/docker-resources.ts";
+import { OUTPUT_ARCHIVE_LIMIT } from "../../core/src/sandbox-output-limits.ts";
 import { SNAPSHOT_BASELINE_VERSION } from "../../core/src/snapshot-baseline.ts";
 import { VERSION } from "../../core/src/version.ts";
 import { type Api, compactReceipts, type State, type Store, serverOrigin, validId, validToken } from "./daemon.ts";
@@ -159,6 +160,7 @@ export function httpApi(
   diskFreeBytes?: () => Promise<number | null>,
   stoppedBytes?: (state: State) => Promise<number | null>,
 ): Api & {
+  retainedOutputs(state: State, requestId: string, read: () => Promise<Uint8Array<ArrayBuffer> | null>): Promise<void>;
   unregister(state: State): Promise<boolean>;
   reuseRegistration(state: State, token: string): Promise<{ hostId: string; name: string | null }>;
 } {
@@ -399,6 +401,29 @@ export function httpApi(
         ...(reason ? { cleanupReason: reason } : {}),
       });
     },
+    async retainedOutputs(state, requestId, read) {
+      async function send(body?: Uint8Array<ArrayBuffer>) {
+        const response = await request(`${serverOrigin(state.server)}/api/docker-host/retained-outputs`, {
+          method: "POST",
+          redirect: "error",
+          signal: AbortSignal.timeout(45_000),
+          headers: {
+            authorization: `Bearer ${state.hostToken}`,
+            "x-armada-installation-id": state.installationId,
+            "x-armada-request-id": requestId,
+            ...(body ? { "content-type": "application/x-tar" } : {}),
+          },
+          ...(body ? { body } : {}),
+        });
+        await response.body?.cancel();
+        if (response.status !== 204 && response.status !== 202) throw new HostRequestDenied(response.status);
+        return response.status;
+      }
+      // Admission denies tainted or superseded work before requesting any bytes.
+      if ((await send()) === 204) return;
+      const archive = await read();
+      if (archive && (await send(archive)) !== 204) throw new Error("Retained output upload not acknowledged");
+    },
     async result(state, receipt, expired) {
       const body = {
         installationId: state.installationId,
@@ -480,3 +505,32 @@ export const dockerCli: DockerMachineCli = {
     });
   },
 };
+
+/** Binary collector output with a hard byte budget. Never expose Docker diagnostics. */
+export async function readDockerOutputArchive(argv: readonly string[]): Promise<Uint8Array<ArrayBuffer>> {
+  const child = Bun.spawn(["docker", ...argv], {
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "ignore",
+    signal: AbortSignal.timeout(20_000),
+    killSignal: "SIGKILL",
+  });
+  const reader = child.stdout.getReader();
+  const parts: Uint8Array[] = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const next = await reader.read();
+      if (next.done) break;
+      size += next.value.length;
+      if (size > OUTPUT_ARCHIVE_LIMIT) throw new Error("Docker output archive exceeds its byte budget");
+      parts.push(next.value);
+    }
+    if ((await child.exited) !== 0) throw new Error("Docker output archive unavailable");
+    return Buffer.concat(parts, size);
+  } finally {
+    if (child.exitCode === null) child.kill("SIGKILL");
+    await reader.cancel().catch(() => {});
+    await child.exited;
+  }
+}

@@ -582,6 +582,14 @@ The existing machine results endpoint accepts either the original job outcome or
 The two packets are separate facts; expiry never rewrites the original job outcome.
 Older servers reject the new packet safely and it remains pending until upgrade.
 
+After the server acknowledges the physical expiry, the daemon can collect
+`/home/user/outputs` from the stopped allocation. A short-lived collector uses the
+official sandbox image, with networking disabled and the original workspace
+mounted read-only. A separate sweep retries transient reads and uploads after
+two minutes per workspace. The stop and configured retention cleanup proceed
+independently. Armada keeps the last successful capture until a complete
+replacement publishes. The server and host binary both need the new code.
+
 ### Fetching the image (#1507)
 
 Before it creates a container, the host checks whether it has the image. If it does
@@ -1026,7 +1034,8 @@ No deployment, remote migration or real-host acceptance was performed here.
 ### Durable receipt retention and capacity
 
 The daemon compacts terminal stop/delete/build receipts and TTL receipts whose
-expiry confirmation was acknowledged once state reaches 1 MiB. Pending receipts,
+expiry confirmation was acknowledged and any retained output capture has settled
+once state reaches 1 MiB. Pending receipts,
 uncertain machine outcomes without a terminal result, and active TTL obligations
 remain in full. Each retired record retains the request identity, SHA-256 of the
 exact operation/request/input fingerprint, and generation and machine fingerprint
