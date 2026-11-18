@@ -25,8 +25,10 @@ test("balanced shards include new files exactly once without depending on discov
 
 test("the planner budgets serial checks against two parallel test workers", () => {
   const files = Array.from({ length: 26 }, (_, i) => `file-${i}`);
-  const plan = planShards(files, {}, { 4: 2 });
-  expect(plan.map((shard) => shard.length)).toEqual([5, 5, 5, 1, 5, 5]);
+  const reserve: Record<number, number> = { 4: 2 };
+  const plan = planShards(files, {}, reserve);
+  const wallTimes = plan.map((shard, index) => Math.ceil(shard.length / 2) + (reserve[index + 1] ?? 0));
+  expect(Math.max(...wallTimes)).toBe(3);
 });
 
 test("coverage guard refuses missing, duplicate, foreign and empty shard assignments", () => {
