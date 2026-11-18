@@ -1,11 +1,40 @@
-import { MACHINE_SIZES, MAX_LAUNCH_TTL_SECONDS, SANDBOX_PROVIDERS } from "@armada/core";
-import { z } from "zod";
 import {
-  DOCKER_LAUNCH_VARIANTS,
-  launchCorrelationFields,
-  launchUuid,
-  sharedRestLaunchFields,
-} from "./docker-launch-request-schema.ts";
+  HARNESSES,
+  MACHINE_SIZES,
+  MAX_EXTERNAL_REF_LENGTH,
+  MAX_LAUNCH_TTL_SECONDS,
+  MAX_MCP_CONNECTIONS,
+  SANDBOX_PROVIDERS,
+  SKILL_PIN_PATTERN,
+} from "@armada/core";
+import { launch } from "@armada/core/contract";
+import { z } from "zod";
+
+export const dockerLaunchVariants = launch.input.body.options.filter(
+  (variant) => variant.shape.provider.value === "docker",
+);
+
+// Explicit case classes: JSON Schema patterns drop regex flags, so an `/i` flag would not be published.
+const launchUuid = z.string().regex(/^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$/);
+const sharedRestLaunchFields = {
+  harness: z.enum(HARNESSES),
+  credentialId: launchUuid.optional(),
+  skills: z.array(z.string().regex(SKILL_PIN_PATTERN)).max(20).optional(),
+  skipSkillDefaults: z.boolean().optional(),
+  connections: z.array(launchUuid).max(MAX_MCP_CONNECTIONS).optional(),
+  stopWhenWorkMerged: z.boolean().optional(),
+};
+
+const launchCorrelationFields = {
+  idempotencyKey: z.string().min(16).max(128).optional(),
+  externalRef: z
+    .string()
+    .min(1)
+    .max(MAX_EXTERNAL_REF_LENGTH)
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: controls are explicitly excluded from external references
+    .regex(/^[^\x00-\x1f\x7f-\x9f]+(?![\s\S])/)
+    .optional(),
+};
 
 const goldenFields = {
   golden: z.string().min(1).describe("The name returned by golden/list."),
@@ -95,5 +124,5 @@ export const LAUNCH_REQUEST_VARIANTS = [
   boatRuntimeLaunch,
   modalRuntimeLaunch,
   PINNED_MODAL_LAUNCH_REQUEST,
-  ...DOCKER_LAUNCH_VARIANTS,
+  ...dockerLaunchVariants,
 ] as const;

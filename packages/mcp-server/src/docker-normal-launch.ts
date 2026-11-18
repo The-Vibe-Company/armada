@@ -51,7 +51,6 @@ import type { createDockerBootstrapService } from "./docker-bootstrap-service.ts
 import { resolveDockerLaunchAccount } from "./docker-launch-account.ts";
 import { createDockerLaunchEnvironment } from "./docker-launch-environment.ts";
 import { dockerLaunchRequestHash, matchesDockerLaunchRequestHash } from "./docker-launch-identity.ts";
-import { DOCKER_LAUNCH_FIELDS } from "./docker-launch-request-schema.ts";
 import { createDockerPromptWorker } from "./docker-prompt-worker.ts";
 import { dockerRepositoryCheckout } from "./docker-repository-checkout.ts";
 import { reservationDatabaseDiagnostic, reservationSql } from "./docker-reservation-sql.ts";
@@ -59,6 +58,7 @@ import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import { DOCKER_PROMPT } from "./docker-send-request-schema.ts";
 import { resolveDockerSnapshot } from "./docker-snapshot-data.ts";
+import { dockerLaunchVariants } from "./launch-request-schema.ts";
 import { recordLaunchStageQuietly } from "./launch-stage-record.ts";
 import {
   continueRequest,
@@ -191,6 +191,8 @@ function identifier(value: unknown): string {
   if (typeof value !== "string" || !UUID.test(value)) throw failure("invalid_request");
   return value.toLowerCase();
 }
+const dockerLaunchFields = new Set(dockerLaunchVariants.flatMap((variant) => Object.keys(variant.shape)));
+
 function normalize(body: Record<string, unknown>, image: string): Request {
   if (body && typeof body === "object" && Object.hasOwn(body, "image"))
     throw failure(
@@ -201,7 +203,7 @@ function normalize(body: Record<string, unknown>, image: string): Request {
     !body ||
     typeof body !== "object" ||
     Array.isArray(body) ||
-    Object.keys(body).some((field) => !DOCKER_LAUNCH_FIELDS.includes(field)) ||
+    Object.keys(body).some((field) => !dockerLaunchFields.has(field)) ||
     body.provider !== "docker" ||
     body.idempotencyKey !== undefined ||
     (body.externalRef !== undefined && !isExternalRef(body.externalRef)) ||

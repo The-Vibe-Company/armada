@@ -43,6 +43,8 @@ any receipt UUID returned.
 - Choose Boat or Modal explicitly when ambiguous. A golden built on one provider
   is not automatically available on the other. Check
   `armada snapshot capabilities --provider boat --json` (or substitute modal).
+- Docker REST launch requires an explicit harness. Select the organization by slug or UUID.
+  A malformed request returns HTTP 400 with error code `invalid`.
 - Choose the harness and a model/effort it supports. Launch selections persist
   for later turns. Do not assume provider sizes have equal price or performance.
 - If a runtime launch returns `credential_binding_required`, add the model account

@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
 import { inspect } from "node:util";
 import type { DockerLaunchRequest, DockerSandboxStatus } from "@armada/core";
+import { launch } from "@armada/core/contract";
 import { ProviderError } from "@armada/core/server";
 import { controlFailureResponse } from "../../mcp-server/src/control-errors.ts";
-import { DOCKER_LAUNCH_REQUEST } from "../../mcp-server/src/docker-launch-request-schema.ts";
 import { REST_LAUNCH_RESPONSE } from "../../mcp-server/src/launch-response-schemas.ts";
 import { webhookSignature } from "../../mcp-server/src/outbound-webhooks.ts";
 import { createRuntimeAgent } from "../../mcp-server/src/runtime-agent.ts";
@@ -97,10 +97,10 @@ test("launch sends a Docker request and returns the Docker receipt without a gol
     prompt: "Work",
     repos: [{ url: "https://github.com/acme/app", branch: "main" }],
   } satisfies DockerLaunchInput;
-  expect(DOCKER_LAUNCH_REQUEST.safeParse(input).success).toBe(true);
+  expect(launch.input.body.safeParse(input).success).toBe(true);
   // Docker checkouts are always shallow, so the published contract does not offer golden-config history.
   const history = { ...input, repos: [{ url: "https://github.com/acme/app", history: "full" }] };
-  expect(DOCKER_LAUNCH_REQUEST.safeParse(history).success).toBe(false);
+  expect(launch.input.body.safeParse(history).success).toBe(false);
   const receipt = {
     sandbox: {
       id: "sandbox_placeholder",
@@ -155,12 +155,12 @@ test("the SDK Docker launch type admits exactly the host and snapshot sources th
     { ...common, snapshotId },
     { ...common, snapshotId, hostId },
   ];
-  for (const body of accepted) expect(DOCKER_LAUNCH_REQUEST.safeParse(body).success).toBe(true);
+  for (const body of accepted) expect(launch.input.body.safeParse(body).success).toBe(true);
   // @ts-expect-error A Docker launch needs a host or a snapshot.
   const noSource: DockerLaunchInput = { ...common };
   // @ts-expect-error A snapshot carries its own workspace, so repos are refused.
   const snapshotRepos: DockerLaunchInput = { ...common, snapshotId, repos: [{ url: "https://github.com/acme/app" }] };
-  for (const body of [noSource, snapshotRepos]) expect(DOCKER_LAUNCH_REQUEST.safeParse(body).success).toBe(false);
+  for (const body of [noSource, snapshotRepos]) expect(launch.input.body.safeParse(body).success).toBe(false);
 });
 
 test("status exposes the selected prompt by its promptId", async () => {

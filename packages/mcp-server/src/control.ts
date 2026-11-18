@@ -9,6 +9,7 @@ import {
   VERSION,
   vaultControlRoute,
 } from "@armada/core";
+import { launch as launchOperation } from "@armada/core/contract";
 import {
   type ApplicationVault,
   addMember,
@@ -29,7 +30,6 @@ import {
   listOrgs,
   mutateCredentialAccount,
   type Provider,
-  ProviderError,
   type ProviderRegistry,
   type ProviderTarget,
   parseCredentialKind,
@@ -62,7 +62,6 @@ import { listControlCredentials } from "./credential-list.ts";
 import type { createSqlCredentialList } from "./credential-list-sql.ts";
 import type { DataSource, ScopedData } from "./data.ts";
 import { dockerLaunchRequestId } from "./docker-launch-identity.ts";
-import { DOCKER_LAUNCH_REQUEST } from "./docker-launch-request-schema.ts";
 import type { GitHubAccountApi } from "./github-account.ts";
 import {
   connectGoldenRoute,
@@ -880,26 +879,27 @@ export async function dispatchControlCommand(
       });
     case "sandbox/launch":
       if (body.provider === "docker") {
-        if (!DOCKER_LAUNCH_REQUEST.safeParse(body).success)
-          throw new ProviderError({
-            provider: "docker",
-            code: "invalid_request",
-            retryable: false,
-            message: Object.hasOwn(body, "image")
+        const parsed = launchOperation.input.body.safeParse(body);
+        if (!parsed.success || parsed.data.provider !== "docker")
+          throw new VaultError(
+            "invalid",
+            Object.hasOwn(body, "image")
               ? "Remove the image field and retry. Armada chooses the Docker environment automatically."
               : "Invalid Docker launch request.",
-          });
-        if (!options.dockerLaunch) throw new VaultError("unavailable", "Normal Docker launch is not configured.");
+          );
+        const dockerLaunch = options.dockerLaunch;
+        if (!dockerLaunch) throw new VaultError("unavailable", "Normal Docker launch is not configured.");
         const organization = await resolveOrg(store, userId, org);
         const selected = { ...caller, orgs: caller.orgs.filter((item) => item.orgId === organization.id) };
-        const { idempotencyKey, ...request } = body;
-        if (typeof idempotencyKey === "string") {
+        const launchDocker = (request: Record<string, unknown>) =>
+          dockerLaunch.launch(selected, { ...request, org: organization.id });
+        if ("idempotencyKey" in parsed.data) {
           if (!encryptionKey) throw new VaultError("unavailable", "Docker launch replay keys are unavailable.");
-          request.requestId = dockerLaunchRequestId(encryptionKey, userId, organization.id, idempotencyKey);
+          const { idempotencyKey, ...request } = parsed.data;
+          const requestId = dockerLaunchRequestId(encryptionKey, userId, organization.id, idempotencyKey);
+          return canonicalLaunchResponse(await launchDocker({ ...request, requestId }));
         }
-        return canonicalLaunchResponse(
-          await options.dockerLaunch.launch(selected, { ...request, org: organization.id }),
-        );
+        return canonicalLaunchResponse(await launchDocker(parsed.data));
       }
       if (body.id !== undefined) {
         if (!PINNED_MODAL_LAUNCH_REQUEST.safeParse(body).success)
