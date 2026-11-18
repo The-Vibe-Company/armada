@@ -43,7 +43,7 @@ export function fakeBoat(...replies: Reply[]) {
       sleeps.push(ms);
     },
   });
-  return { provider, requests, sleeps, remaining: () => queue.length };
+  return { provider, fetch: fetchFake, requests, sleeps, remaining: () => queue.length };
 }
 
 export function sandbox(overrides: Record<string, unknown> = {}) {
