@@ -697,7 +697,7 @@ const GIT_FAILURE_CLASSIFIER = [
   "  shift",
   '  exec {fd}> >(armada_git_stderr "$index")',
   "  collector=$!",
-  '  if "$@" 2>&"$fd"; then status=0; else status=$?; fi',
+  '  if LC_ALL=C "$@" 2>&"$fd"; then status=0; else status=$?; fi',
   "  exec {fd}>&-",
   '  wait "$collector"',
   '  return "$status"',

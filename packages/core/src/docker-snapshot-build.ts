@@ -159,7 +159,7 @@ export async function buildDockerSnapshot(
     );
     await writeFile(join(directory, "public", "supervise.py"), SNAPSHOT_INIT_SUPERVISOR, { mode: 0o600, flag: "wx" });
     const initCommands = config.init
-      .map((_, index) => `python3 /opt/armada-build/supervise.py /opt/armada-build/init-${index}.sh`)
+      .map((_, index) => `python3 /opt/armada-build/supervise.py /opt/armada-build/init-${index}.sh >/dev/null 2>&1`)
       .join(" && ");
     const directories = config.repos.map((repo) => `'/home/user/${repo.dir}'`).join(" ");
     const dockerfile = `# syntax=docker/dockerfile:1

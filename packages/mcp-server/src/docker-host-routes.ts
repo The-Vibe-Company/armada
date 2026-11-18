@@ -7,7 +7,7 @@ import { VERSION } from "../../core/src/version.ts";
 import type { CallerResult } from "./caller.ts";
 import { DockerHostDraining, DockerLimitsRefused } from "./docker-capacity.ts";
 import { type createDockerHostStore, DockerHostDenied } from "./docker-host-store.ts";
-import type { DockerSnapshots } from "./docker-snapshots.ts";
+import { DockerSnapshotHostUpgradeRequired, type DockerSnapshots } from "./docker-snapshots.ts";
 import type { Route } from "./http.ts";
 
 const machinePaths = [
@@ -417,6 +417,11 @@ export function createDockerHostRoutes(
       });
       return Response.json({ requestId }, { headers });
     } catch (error) {
+      if (error instanceof DockerSnapshotHostUpgradeRequired)
+        return Response.json(
+          { error: { code: "docker_host_upgrade_required", message: error.message } },
+          { status: 409, headers },
+        );
       if (error instanceof DockerLimitsRefused)
         return Response.json(
           { error: { code: error.code, message: error.message } },

@@ -1,9 +1,16 @@
 import { createHash, randomUUID } from "node:crypto";
-import { normalizeGitHubGoldenConfig, officialSandboxImage, parseSnapshotConfig, VERSION } from "@armada/core";
+import {
+  dockerHostUpgradeMessage,
+  normalizeGitHubGoldenConfig,
+  officialSandboxImage,
+  parseSnapshotConfig,
+  VERSION,
+} from "@armada/core";
 import {
   type GitHubInstallationApp,
   type GitHubResolveDeps,
   goldenGitHubAdapter,
+  isLegacySnapshotRef,
   resolveGitHubAccess,
   type Sql,
   VaultError,
@@ -18,6 +25,8 @@ import { scopedRuntimeSql as scopedSql } from "./runtime-enrolment.ts";
 
 const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/;
 const invalid = () => new VaultError("invalid", "Invalid snapshot request.");
+export class DockerSnapshotHostUpgradeRequired extends Error {}
+
 export function createDockerSnapshots(
   sql: Sql,
   key: string,
@@ -130,8 +139,8 @@ export function createDockerSnapshots(
     }
     const baseImage = officialSandboxImage();
     const target = (
-      await sql.query<{ id: string; draining: boolean }>(
-        `select h.id,${hostDrainingSql("h")} as draining from public.docker_hosts h join public.members m on m.org_id=h.org_id and m.user_id=h.owner_id where h.id=$1 and h.org_id=$2 and h.hash is not null and h.registration_hash is null and h.revoked_at is null`,
+      await sql.query<{ id: string; draining: boolean; daemon_version: string | null }>(
+        `select h.id,h.daemon_version,${hostDrainingSql("h")} as draining from public.docker_hosts h join public.members m on m.org_id=h.org_id and m.user_id=h.owner_id where h.id=$1 and h.org_id=$2 and h.hash is not null and h.registration_hash is null and h.revoked_at is null`,
         [hostId, org],
       )
     ).rows[0];
@@ -163,6 +172,15 @@ export function createDockerSnapshots(
         branch: repo.branch ?? authorized.repos[index]!.branch,
       })),
     };
+    const requireCompatibleDaemon = (version: string | null) => {
+      if (config.repos.every((repo) => isLegacySnapshotRef(repo.branch))) return;
+      const upgrade = dockerHostUpgradeMessage(version?.split(/[-+]/, 1)[0]?.slice(0, 32), VERSION);
+      if (upgrade)
+        throw new DockerSnapshotHostUpgradeRequired(
+          `This snapshot uses a ref that requires a newer Docker host daemon. ${upgrade}`,
+        );
+    };
+    requireCompatibleDaemon(target.daemon_version);
     let token = authorized.token;
     const installations = new Set(authorized.repos.map((r) => r.installationId));
     if (authorizer.mint && installations.size === 1 && authorized.repos[0]?.installationId)
@@ -197,8 +215,8 @@ export function createDockerSnapshots(
           )
             throw new VaultError("forbidden", "Snapshot admission denied.");
           const host = (
-            await tx.query<{ installation_id: string; draining: boolean }>(
-              `select installation_id,${hostDrainingSql("docker_hosts")} as draining from public.docker_hosts where id=$1 and org_id=$2 and owner_id=$3 and hash is not null and revoked_at is null for update`,
+            await tx.query<{ installation_id: string; draining: boolean; daemon_version: string | null }>(
+              `select installation_id,daemon_version,${hostDrainingSql("docker_hosts")} as draining from public.docker_hosts where id=$1 and org_id=$2 and owner_id=$3 and hash is not null and revoked_at is null for update`,
               [hostId, org, hint.owner_id],
             )
           ).rows[0];
@@ -215,6 +233,7 @@ export function createDockerSnapshots(
               throw new VaultError("conflict", "Snapshot request changed.");
             return;
           }
+          requireCompatibleDaemon(host.daemon_version);
           if (
             (
               await tx.query(

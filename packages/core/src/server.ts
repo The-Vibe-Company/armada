@@ -30,7 +30,7 @@ export {
 } from "./github-installation.ts";
 export { createGoldenAdoption, type GoldenAdoption } from "./golden-adoption.ts";
 export { GoldenBuildJobs, type GoldenBuildJobsOptions } from "./golden-build-jobs.ts";
-export { snapshotMissingRefMessage } from "./golden-config.ts";
+export { isLegacySnapshotRef, snapshotMissingRefMessage } from "./golden-config.ts";
 export {
   assertGoldenBackendBinding,
   createGoldenCreateService,

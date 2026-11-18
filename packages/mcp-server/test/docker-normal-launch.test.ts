@@ -2711,8 +2711,11 @@ test.each(["private", "org"] as const)(
   "host snapshot %s publication enforces visibility and launches the baked image without cloning again",
   async (visibility) => {
     const db = database();
-    const f = await snapshotFixture(true, {}, "release+next"),
+    const branch = visibility === "private" ? "release+next" : "trunk";
+    const daemonVersion = visibility === "private" ? VERSION : "2.51.0";
+    const f = await snapshotFixture(true, {}, branch),
       id = randomUUID();
+    expect(await hosts.poll(f.hostToken, f.installationId, daemonVersion)).toBeNull();
     const creator = visibility === "private" ? f.caller : f.adminCaller;
     const input = {
       org: f.actor.orgId,
@@ -2722,6 +2725,13 @@ test.each(["private", "org"] as const)(
       visibility,
       config: { ...f.config, repos: [{ url: f.config.repos[0]!.url }] },
     };
+    if (visibility === "private") {
+      expect(await hosts.poll(f.hostToken, f.installationId, "2.51.0")).toBeNull();
+      await expect(f.snapshots.command(creator, "create", input)).rejects.toThrow(
+        "This snapshot uses a ref that requires a newer Docker host daemon.",
+      );
+      expect(await hosts.poll(f.hostToken, f.installationId, daemonVersion)).toBeNull();
+    }
     const created = await f.snapshots.command(creator, "create", input);
     expect(created).toMatchObject({ snapshot: { id, status: "building", visibility, builtOnVersion: VERSION } });
     expect(
@@ -2738,11 +2748,11 @@ test.each(["private", "org"] as const)(
     ).rejects.toThrow("Snapshot base is immutable");
     expect(JSON.stringify(created)).not.toContain("offline-snapshot-access");
     expect(await f.snapshots.command(creator, "create", input)).toMatchObject({ snapshot: { id } });
-    const build = await hosts.poll(f.hostToken, f.installationId, "2.51.0");
+    const build = await hosts.poll(f.hostToken, f.installationId, daemonVersion);
     if (build?.operation !== "buildSnapshot") throw Error("missing snapshot build");
     expect(build.build.config).toEqual({
       ...f.config,
-      repos: [{ ...f.config.repos[0]!, branch: "release+next" }],
+      repos: [{ ...f.config.repos[0]!, branch }],
     });
     expect(build.request.image).toBe(officialSandboxImage());
     expect(build.build).toMatchObject({ armadaVersion: VERSION });

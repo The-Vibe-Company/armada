@@ -15,6 +15,13 @@ export const GOLDEN_SNAPSHOT_POLLS = 1800;
 const CLONE_TIMEOUT_SECONDS = 600;
 const INIT_TIMEOUT_SECONDS = 600;
 
+// Older Docker daemons use this branch grammar to parse snapshot jobs.
+const LEGACY_BRANCH = /^(?![-/.])(?!.*\.\.)(?!.*@)[A-Za-z0-9._/-]{1,255}$/;
+
+export function isLegacySnapshotRef(ref: string): boolean {
+  return LEGACY_BRANCH.test(ref);
+}
+
 const DIR = /^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/;
 
 /**
@@ -159,7 +166,9 @@ export function splitRepoArg(arg: string): { url: string; branch?: string } {
     if (!isBranch(branch)) throw badBranch(branch);
     return { url, branch };
   }
-  const at = arg.lastIndexOf("@");
+  const scheme = arg.indexOf("://");
+  const path = scheme === -1 ? -1 : arg.indexOf("/", scheme + 3);
+  const at = path === -1 ? -1 : arg.indexOf("@", path + 1);
   if (at > 0) {
     const url = arg.slice(0, at);
     const branch = arg.slice(at + 1);
@@ -511,15 +520,16 @@ function parseRepoUrl(value: string): string {
 
 function isBranch(value: string): boolean {
   return (
-    value.length > 0 &&
-    value.length <= 255 &&
-    value !== "@" &&
-    !value.startsWith("-") &&
-    !value.endsWith(".") &&
-    !/[\p{Cc} ~^:?*[\\]/u.test(value) &&
-    !value.includes("..") &&
-    !value.includes("@{") &&
-    value.split("/").every((part) => part && !part.startsWith(".") && !part.endsWith(".lock"))
+    isLegacySnapshotRef(value) ||
+    (value.length > 0 &&
+      value.length <= 255 &&
+      value !== "@" &&
+      !value.startsWith("-") &&
+      !value.endsWith(".") &&
+      !/[\p{Cc} ~^:?*[\\]/u.test(value) &&
+      !value.includes("..") &&
+      !value.includes("@{") &&
+      value.split("/").every((part) => part && !part.startsWith(".") && !part.endsWith(".lock")))
   );
 }
 
