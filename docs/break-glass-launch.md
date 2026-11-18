@@ -53,8 +53,8 @@ staging_armada launch "$staging_snapshot" --org "$staging_org" --provider modal 
 
 Use the launch response's sandbox ID for the commands below. Read the result
 and confirm the task completed. If the launch response was lost, reconcile the
-attempt in staging using the org, snapshot and start time before trying another
-launch.
+attempt in staging by matching the snapshot and start time in the output of
+`staging_armada list --org "$staging_org" --json` before trying another launch.
 
 ```bash
 read -r -p 'Returned sandbox ID: ' sandbox_id
@@ -78,7 +78,9 @@ path 1. See the [Docker host quickstart](own-machine-quickstart.md) for setup.
 
 ```bash
 staging_armada host list --org "$staging_org" --json
+staging_armada creds list --org "$staging_org" --json
 read -r -p 'Owner staging Docker host UUID: ' staging_host
+read -r -p 'Staging Codex account UUID: ' docker_account
 read -r -p 'Repository and ref (owner/repo@ref): ' worker_repo
 docker_prompt='Summarize the repository without changing any files.'
 docker_request_id="$(node -p 'require("node:crypto").randomUUID()')"
@@ -86,21 +88,22 @@ printf '%s\n' "$docker_request_id" > "$break_glass_dir/docker-request-id"
 ```
 
 During an incident, set `docker_prompt` to the repair task before submitting
-the launch. Record the request ID, org, host, repo and exact prompt in your
+the launch. Record the request ID, org, host, account UUID, repo and exact prompt in your
 incident notes so you can recover the submission if you lose the terminal.
 Keep credentials out of the prompt and notes.
 
 ```bash
 staging_armada launch "$docker_prompt" \
   --provider docker --host "$staging_host" --org "$staging_org" \
-  --agent codex --repo "$worker_repo" --request-id "$docker_request_id"
+  --agent codex --credential-id "$docker_account" --repo "$worker_repo" \
+  --request-id "$docker_request_id"
 ```
 
 Use the returned sandbox ID with the same status and logs commands. If the
-response was lost, first inspect the existing staging workers.
+response was lost, check for the Docker sandbox using the request ID as its ID.
 
 ```bash
-staging_armada list --org "$staging_org" --json
+staging_armada status "$docker_request_id" --org "$staging_org"
 ```
 
 If you still need the receipt, recover `docker_request_id` from the saved file
