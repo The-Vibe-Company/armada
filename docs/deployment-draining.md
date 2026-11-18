@@ -37,7 +37,7 @@ shutdown implementation, **not a measured routing-propagation guarantee**:
   streams finish, closes MCP/idle GET streams, completes native HTTP shutdown,
   then closes SQL. A turn can still be running when its transport disconnects.
   Overlap and draining do not guarantee uninterrupted event delivery across
-  reconnects. If shutdown settles, Armada exits 0 immediately.
+  reconnects. If shutdown succeeds, Armada exits 0 immediately.
 - t=25 from SIGTERM: if still pending, Armada logs the fixed shutdown-deadline
   reason, force-stops HTTP and exits 1. Remote actions can remain ambiguous; do
   not blindly replay a launch or prompt. Reconciliation only covers registered
@@ -59,11 +59,11 @@ Run this check only in staging.
    draining. Establish a staging deployment with these settings and the shutdown
    implementation, then replace it in a second authorized deploy to exercise
    its teardown policy.
-2. Arrange for one controlled request on a disposable staging sandbox to be
-   active on the old deployment at SIGTERM and finish within 25 seconds of the
-   signal. Account for the overlap when timing the request. Record timestamps
-   for activation, old-process
-   drain log, client response, process exit, and sandbox identity. Confirm response
+2. Start one controlled request on a disposable staging sandbox before the
+   replacement activates. Confirm admission in the old deployment's logs.
+   Time the request to span the overlap and finish within 25 seconds of
+   SIGTERM. Record activation, the old process's drain log, the client response,
+   process exit, and the sandbox identity. Confirm response
    completion before exit 0, no premature SQL/MCP close, and one sandbox only.
    Confirm fresh traffic reaches the new version. Idle MCP notification streams
    must not prevent shutdown.
