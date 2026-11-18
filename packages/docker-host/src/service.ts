@@ -413,11 +413,17 @@ export function automaticUpdate(state: State, instance?: string) {
       if (last?.phase === "starting") {
         // A supervisor stopped while the trial is alive still needs to be
         // replaced. The replacement sees "starting" and can only roll back.
-        try {
-          await command(["systemctl", "--user", "is-active", updateUnit(instance)]);
-        } catch {
-          staged = true;
-        }
+        const supervisor = await command([
+          "systemctl",
+          "--user",
+          "show",
+          "-p",
+          "ActiveState",
+          "--value",
+          updateUnit(instance),
+        ]).catch(() => undefined);
+        if (supervisor === "inactive" || supervisor === "failed")
+          staged = (await readUpdate(home, instance))?.phase === "starting";
         return true;
       }
       if (last?.phase === "staged") {
