@@ -59,7 +59,13 @@ import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import { DOCKER_PROMPT } from "./docker-send-request-schema.ts";
 import { resolveDockerSnapshot } from "./docker-snapshot-data.ts";
 import { recordLaunchStageQuietly } from "./launch-stage-record.ts";
-import { continueRequest, currentRequestId, noteAdmission, observeProviderCall } from "./request-observability.ts";
+import {
+  continueRequest,
+  currentRequestId,
+  noteAdmission,
+  observeProviderCall,
+  recordOperatorFailure,
+} from "./request-observability.ts";
 import { createRuntimeAgent } from "./runtime-agent.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
@@ -456,6 +462,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
   ): Promise<DockerLaunchResult> {
     let dispatchPossible = false;
     let reason = "request_validation";
+    let diagnosticSandboxId: string | undefined;
     const validate = () => {
       const snapshotId = body.snapshotId === undefined ? undefined : identifier(body.snapshotId);
       if (snapshotId && (body.image !== undefined || body.repos !== undefined)) throw failure("invalid_request");
@@ -660,6 +667,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       const state = await launchPlan.admit(admission);
       if (state.row && state.receipt) return envelope(state.row, state.receipt);
       const manifest = state.manifest;
+      diagnosticSandboxId = state.row?.id;
       if (!manifest || !state.row) throw failure("unavailable");
       if (options.deferLaunch && !admission && !workerId) return envelope(state.row);
       // From here this call drives the host itself, even when it resumes a retried launch.
@@ -667,6 +675,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       let phase: string = DOCKER_LAUNCH_FAILURE_MESSAGES.startup;
       try {
         if (workerId && (request.repos?.length || manifest.snapshotConfig?.repos.length)) {
+          reason = "github_preparation";
           phase = DOCKER_LAUNCH_FAILURE_MESSAGES.github;
           const repositories = request.repos ?? manifest.snapshotConfig!.repos;
           await options.credentials.authorizeRepositories?.(
@@ -680,6 +689,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           }
         }
         phase = DOCKER_LAUNCH_FAILURE_MESSAGES.startup;
+        reason = "machine_start";
         const deadline = clock.now() + (options.timeoutMs ?? 600_000);
         async function live() {
           if (workerId) {
@@ -724,8 +734,10 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           }
           await wait();
         }
+        reason = "runtime_environment";
         phase = DOCKER_LAUNCH_FAILURE_MESSAGES.environment;
         await createDockerLaunchEnvironment(sql, key, clock)(caller, request.requestId);
+        reason = "github_preparation";
         phase = DOCKER_LAUNCH_FAILURE_MESSAGES.github;
         if (!manifest.request.repos && manifest.snapshotConfig?.repos.length) {
           receipt.github = options.github
@@ -734,6 +746,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
                 status: "not_connected",
                 message: "GitHub is not connected; public snapshot repositories refresh anonymously.",
               };
+          reason = "repository_checkout";
           phase = DOCKER_LAUNCH_FAILURE_MESSAGES.checkout;
           const agent = createRuntimeAgent(
             createRuntimeCommands(createRuntimeEnrolments(sql, key), key, {
@@ -789,6 +802,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           const github = await options.github.prepare(caller, request.requestId);
           receipt.github = { status: "connected", login: github.login };
           if (manifest.request.repos) {
+            reason = "repository_checkout";
             phase = DOCKER_LAUNCH_FAILURE_MESSAGES.checkout;
             const command = dockerRepositoryCheckout(manifest.request.repos, "/home/user");
             const commands = createRuntimeCommands(createRuntimeEnrolments(sql, key), key);
@@ -826,6 +840,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
             await recordLaunchStageQuietly(sql, request.requestId, "checkout_done");
           }
         }
+        reason = "skills";
         phase = DOCKER_LAUNCH_FAILURE_MESSAGES.preparation;
         const selections = manifest.preparation;
         if (selections?.skills.length) {
@@ -855,8 +870,10 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
             await createSqlSandboxStore(scopedRuntimeSql(tx)).recordSkills!(request.requestId, receipts);
           });
         }
+        reason = "mcp_preparation";
         if (options.mcp) await options.mcp.prepare(caller, request.requestId);
         else if (selections?.connections.length) throw failure("unavailable");
+        reason = "readiness_publication";
         await live();
         await createRuntimeEnrolments(sql, key).withOwner(request.requestId, actor.userId, async (tx, scope) => {
           if (scope.epoch !== receipt.epoch) throw failure("sandbox_not_ready");
@@ -864,6 +881,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
             request.requestId,
           ]);
         });
+        reason = "first_prompt";
         phase = DOCKER_LAUNCH_FAILURE_MESSAGES.prompt;
         if (manifest.request.prompt !== null) {
           const prior = (
@@ -896,6 +914,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
             await wait();
           }
         }
+        reason = "receipt_publication";
         const encrypted = await encryptSecret(JSON.stringify(receipt), key);
         return await transaction(async (tx) => {
           const authority = createRuntimeEnrolments(scopedRuntimeSql(tx), key);
@@ -940,6 +959,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         throw error;
       }
     } catch (error) {
+      recordOperatorFailure(`docker.launch.${reason}`, error, { sandboxId: diagnosticSandboxId });
       // Never log raw exception messages: account/provider errors can contain secrets.
       const requestId = currentRequestId();
       console.warn("docker_launch_failed", {

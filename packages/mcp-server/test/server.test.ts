@@ -181,8 +181,11 @@ describe("when the auth lookup fails", () => {
     });
     expect(response.status).toBe(503);
     expect(lines).toHaveLength(2);
-    expect(lines[0]).toContain("The membership store is unavailable.");
-    expect(lines[0]).toContain("membership query failed");
+    expect(JSON.parse(lines[0]!)).toMatchObject({
+      event: "operator_failure",
+      requestId: response.headers.get("x-request-id"),
+      phase: "mcp.authentication",
+    });
     for (const text of [lines[0] ?? "", await response.text()]) {
       expect(text).not.toContain(jwt);
       expect(text).not.toContain(credential);
@@ -274,8 +277,13 @@ describe("on the database client production uses", () => {
     expect(failure).toContain("error code: internal");
     expect(failure).not.toContain("hunter2");
     expect(lines).toHaveLength(2);
-    expect(lines[0]).toContain(`[request ${requestId}]`);
-    expect(lines[0]).toContain("tool list failed (internal): Error: connection to postgres://***@db.example.com");
+    expect(JSON.parse(lines[0]!)).toMatchObject({
+      event: "operator_failure",
+      phase: "tool.list",
+      requestId,
+      errorClass: "Error",
+      message: "Exception message withheld",
+    });
     expect(lines[0]).not.toContain("hunter2");
     expect(lines[0]).not.toContain(bearer);
   });

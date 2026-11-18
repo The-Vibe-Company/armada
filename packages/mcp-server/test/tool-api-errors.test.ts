@@ -132,7 +132,25 @@ test("start failures log missing-relation causes without changing the public err
     message: "The sandbox could not start. Check its recorded status, correct the provider setup and launch again.",
   });
   expect(logs).toHaveLength(1);
-  expect(logs[0]).toContain('relation "public.skill_defaults" does not exist');
+  expect(JSON.parse(logs[0] ?? "")).toMatchObject({
+    event: "operator_failure",
+    phase: "tool.github_refresh",
+    message: 'relation "public.skill_defaults" does not exist',
+  });
+
+  // Only identifier-shaped schema drift survives; free text in the same shape stays withheld.
+  logs.length = 0;
+  const unsafe = new LaunchError("start_failed", "The sandbox could not be started.", {
+    cause: new Error('relation "pw=hunter two" does not exist'),
+  });
+  const unsafeCtx = context(unsafe);
+  unsafeCtx.logError = (line) => logs.push(line);
+  await expect(callSharedTool(unsafeCtx, "github_refresh", { id: "sandbox" })).rejects.toMatchObject({
+    code: "start_failed",
+  });
+  expect(logs).toHaveLength(1);
+  expect(JSON.parse(logs[0] ?? "")).toMatchObject({ message: "Exception message withheld" });
+  expect(logs[0]).not.toContain("hunter");
 });
 
 test("provider start-limit reset survives the real MCP to HTTP bridge", async () => {

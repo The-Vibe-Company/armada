@@ -20,6 +20,7 @@ import {
   GoldenError,
   type GoldenRecord,
   isSandboxProvider,
+  LaunchError,
   type LaunchOptions,
   type LaunchStores,
   listConnectionModels,
@@ -92,6 +93,7 @@ import {
   exchangeRoute,
   refreshRoute,
 } from "./public-auth-control.ts";
+import { recordOperatorFailure } from "./request-observability.ts";
 import { measureRequestPhase, RequestTiming, withRequestTiming } from "./request-timing.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
@@ -310,7 +312,12 @@ async function timedControlRequest(
       headers: { "cache-control": "no-store", "server-timing": timing.header() },
     });
   } catch (error) {
-    return controlFailureResponse(error);
+    const response = controlFailureResponse(error);
+    if (response.status >= 500)
+      recordOperatorFailure("control.dispatch", error, {
+        sandboxId: error instanceof LaunchError ? error.sandboxId : undefined,
+      });
+    return response;
   }
 }
 

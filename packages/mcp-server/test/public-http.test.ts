@@ -116,14 +116,21 @@ test("overlapping requests correlate provider outcomes, response headers and saf
   const lines: string[] = [];
   const blocked = Promise.withResolvers<void>();
   const privateValue = "private_request_data";
-  const provider = observeProvider("boat", {
-    async get(fail: boolean) {
-      if (fail) {
-        await blocked.promise;
-        throw new Error(privateValue);
-      }
+  const sandboxId = crypto.randomUUID();
+  const provider = observeProvider(
+    "boat",
+    {
+      async get(fail: boolean) {
+        if (fail) {
+          await blocked.promise;
+          const error = Object.assign(new TypeError(privateValue), { code: "ECONNRESET" });
+          error.stack += `\n    at transport (/srv/${privateValue}/packages/provider-boat/src/provider.ts:12:3)`;
+          throw error;
+        }
+      },
     },
-  });
+    { sandboxId: () => sandboxId },
+  );
   const handle = handler({
     log: (line) => lines.push(line),
     routes: [
@@ -149,8 +156,18 @@ test("overlapping requests correlate provider outcomes, response headers and saf
   expect(lines.map((line) => JSON.parse(line))).toMatchObject([
     { event: "provider_call", provider: "boat", operation: "get", requestId: okId, outcome: "ok" },
     { event: "http_request", requestId: okId, status: 200 },
+    {
+      event: "operator_failure",
+      phase: "get",
+      requestId: failedId,
+      sandboxId,
+      errorClass: "TypeError",
+      message: "ECONNRESET",
+      stack: expect.arrayContaining(["provider.ts:12:3"]),
+    },
     { event: "provider_call", provider: "boat", operation: "get", requestId: failedId, outcome: "error" },
-    { event: "http_request", requestId: failedId, status: 500, errorClass: "Error" },
+    { event: "operator_failure", phase: "http.handler", requestId: failedId },
+    { event: "http_request", requestId: failedId, status: 500, errorClass: "TypeError" },
   ]);
   expect(lines.join("\n")).not.toContain(privateValue);
 });

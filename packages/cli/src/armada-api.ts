@@ -68,7 +68,7 @@ export interface ArmadaApiClient {
   request<T>(path: string, init?: RequestInit): Promise<T>;
 }
 
-interface ArmadaCommandClient extends ArmadaApiClient {
+export interface ArmadaCommandClient extends ArmadaApiClient {
   sandboxes: ReturnType<typeof sandboxClient>;
 }
 

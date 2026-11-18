@@ -13,6 +13,7 @@ import { admitAccountCapacity } from "./account-capacity.ts";
 import type { Caller } from "./caller.ts";
 import { DOCKER_SEND_REFUSAL, DOCKER_SEND_REQUEST } from "./docker-send-request-schema.ts";
 import { queuedPromptAliases } from "./queued-prompt-ids.ts";
+import { continueRequest, currentRequestId } from "./request-observability.ts";
 import type { RuntimeFollowupInput } from "./runtime-followup.ts";
 import { sandboxControlRefusal } from "./sandbox-control-refusal.ts";
 import { ToolError } from "./tools.ts";
@@ -90,7 +91,8 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
     };
     const serialized = JSON.stringify(normalized);
     const hash = createHash("sha256").update(serialized).digest("hex");
-    const sealed = await encryptSecret(serialized, key);
+    // The first insert owns correlation. Keep it outside the idempotency hash.
+    const sealed = await encryptSecret(JSON.stringify({ ...normalized, correlationId: currentRequestId() }), key);
     if (!sql.transaction) throw new VaultError("unavailable", "Transactional account admission unavailable.");
     const entry = await sql.transaction(async (tx) => {
       const target = (
@@ -486,8 +488,10 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
       if (!picked) return false;
       const work = (async () => {
         try {
-          const input = JSON.parse(await decryptSecret(picked.entry.input_enc, key)) as RuntimeFollowupInput;
-          const result = await dispatch!(picked.caller, input);
+          const { correlationId, ...input } = JSON.parse(
+            await decryptSecret(picked.entry.input_enc, key),
+          ) as RuntimeFollowupInput & { correlationId?: string };
+          const result = await continueRequest(correlationId, () => dispatch!(picked.caller, input));
           await sql.query(
             `with admitted as (update public.account_turn_queue set state='admitted',result_enc=$3
                  where sandbox_id=$1 and request_id=$2 and state='dispatching' returning sandbox_id)

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import type { DockerHostListResponse, Sql } from "@armada/core";
+import { type DockerHostListResponse, dockerHostMeetsVersion, type Sql, VERSION } from "@armada/core";
 import { DockerHostDraining } from "../src/docker-capacity.ts";
 import { createDockerHostRoutes } from "../src/docker-host-routes.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
@@ -274,7 +274,8 @@ test("host lists admit current members and expose only scoped safe heartbeat sum
     return (await response.json()) as DockerHostListResponse;
   };
   const result = await list();
-  expect(Object.keys(result).sort()).toEqual(["hosts", "placement", "serverVersion"]);
+  expect(result.targetVersion).toBe(VERSION);
+  expect(dockerHostMeetsVersion(result.targetVersion, result.minimumVersion ?? "")).toBe(true);
   expect(result.placement).toBe(false);
   expect(result.hosts).toHaveLength(6);
   const byId = new Map(result.hosts.map((host) => [host.id, host]));
@@ -419,7 +420,7 @@ test("only the owner changes a drained capable host; policy reaches admission an
   expect(await raised.json()).toMatchObject({ resources: { capacity: 4, mode: "manual" } });
   expect((await post(endpoint, "fixture-user-token", { ...body, maxSandboxes: 2 })).status).toBe(409);
   // An older daemon cannot execute override-sensitive starts, but cleanup stays available.
-  expect(await (await poll(false)).json()).toEqual({ job: null, pendingStarts: [], resumeClaims: [] });
+  expect(await (await poll(false)).json()).toMatchObject({ job: null, pendingStarts: [], resumeClaims: [] });
   const delivery = await (await poll(true)).json();
   expect(delivery).toMatchObject({
     job: { operation: "create" },
@@ -559,7 +560,16 @@ test("a held host poll answers as soon as work appears and never beyond its hold
   expect([polls, probes, time]).toEqual([2, 1, 20_000]);
   // Without the opt-in the poll answers at once, as for older daemons.
   [polls, probes, time] = [0, 0, 0];
-  expect(await poll({})).toEqual({ status: 200, body: { job: null, pendingStarts: [], resumeClaims: [] } });
+  expect(await poll({})).toMatchObject({
+    status: 200,
+    body: {
+      job: null,
+      pendingStarts: [],
+      resumeClaims: [],
+      targetVersion: VERSION,
+      minimumVersion: expect.any(String),
+    },
+  });
   expect([polls, time]).toEqual([1, 0]);
   retentionWrites = 0;
   for (const invalid of [{ waitSeconds: 0 }, { waitSeconds: 1.5 }, { running: ["not-a-uuid"] }, { running: "x" }])

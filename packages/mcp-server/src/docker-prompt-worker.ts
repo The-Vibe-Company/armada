@@ -5,6 +5,7 @@ import type { Caller } from "./caller.ts";
 import { createDockerNormalSend } from "./docker-normal-send.ts";
 import { createDockerQueuedPrompts, type QueuedDockerPrompt } from "./docker-queued-prompts.ts";
 import { createDockerSandboxControls } from "./docker-sandbox-controls.ts";
+import { continueRequest } from "./request-observability.ts";
 
 export function createDockerPromptWorker(sql: Sql, key: string, options: Parameters<typeof createDockerNormalSend>[2]) {
   const active = new Set<Promise<void>>();
@@ -74,14 +75,16 @@ export function createDockerPromptWorker(sql: Sql, key: string, options: Paramet
         const conversationId = previous
           ? (JSON.parse(await decryptSecret(previous.request_enc, key)).input.conversationId as string | undefined)
           : (q.conversation_id ?? payload.conversationId ?? undefined);
-        const result = await sender.send(
-          caller,
-          {
-            request_id: q.request_id,
-            prompt: payload.prompt,
-            ...(conversationId === undefined ? {} : { conversation_id: conversationId }),
-          },
-          row,
+        const result = await continueRequest(q.correlation_id ?? undefined, () =>
+          sender.send(
+            caller,
+            {
+              request_id: q.request_id,
+              prompt: payload.prompt,
+              ...(conversationId === undefined ? {} : { conversation_id: conversationId }),
+            },
+            row,
+          ),
         );
         if (!result.conversationId) throw Error("queued prompt dispatch unavailable");
         await sql.query(

@@ -8,7 +8,7 @@ import {
 } from "@armada/core";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
-import { noteAdmission } from "./request-observability.ts";
+import { currentRequestId, noteAdmission } from "./request-observability.ts";
 
 export function queuedFailure(reason: string | null): string {
   return reason === DOCKER_IMAGE_UNAVAILABLE_MESSAGE ||
@@ -26,6 +26,7 @@ export type QueuedDockerPrompt = {
   lifecycle_generation: string;
   input_enc: Uint8Array<ArrayBuffer>;
   input_hash: string;
+  correlation_id: string | null;
   status: "queued" | "dispatching" | "admitted" | "failed";
   failure_reason: string | null;
 };
@@ -172,8 +173,8 @@ export function createDockerQueuedPrompts(sql: Sql, key: string) {
             });
           queued = (
             await tx.query<QueuedDockerPrompt>(
-              `insert into public.docker_queued_prompts(sandbox_id,request_id,prompt_id,owner_id,actor_epoch,lifecycle_generation,input_enc,input_hash,conversation_id)
-            values($1,$2,$3,$4,$5,$6,$7,$8,$9) returning *`,
+              `insert into public.docker_queued_prompts(sandbox_id,request_id,prompt_id,owner_id,actor_epoch,lifecycle_generation,input_enc,input_hash,conversation_id,correlation_id)
+            values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) returning *`,
               [
                 sandboxId,
                 input.request_id,
@@ -184,6 +185,7 @@ export function createDockerQueuedPrompts(sql: Sql, key: string) {
                 await encryptSecret(payload, key),
                 hash,
                 conversationId,
+                currentRequestId() ?? null,
               ],
             )
           ).rows[0]!;

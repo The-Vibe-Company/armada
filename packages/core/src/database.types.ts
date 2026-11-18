@@ -563,6 +563,7 @@ export type Database = {
           next_cleanup_at: string | null;
           disk_free_bytes: number | null;
           stopped_sandbox_bytes: number | null;
+          snapshot_baseline_version: number | null;
         };
         Insert: {
           id: string;
@@ -591,6 +592,7 @@ export type Database = {
           next_cleanup_at?: string | null;
           disk_free_bytes?: number | null;
           stopped_sandbox_bytes?: number | null;
+          snapshot_baseline_version?: number | null;
         };
         Update: {
           id?: string;
@@ -619,6 +621,7 @@ export type Database = {
           next_cleanup_at?: string | null;
           disk_free_bytes?: number | null;
           stopped_sandbox_bytes?: number | null;
+          snapshot_baseline_version?: number | null;
         };
         Relationships: [
           {
@@ -701,6 +704,7 @@ export type Database = {
           worker_expires_at: string | null;
           created_at: string;
           conversation_id: string | null;
+          correlation_id: string | null;
         };
         Insert: {
           sandbox_id: string;
@@ -721,6 +725,7 @@ export type Database = {
           worker_expires_at?: string | null;
           created_at?: string;
           conversation_id?: string | null;
+          correlation_id?: string | null;
         };
         Update: {
           sandbox_id?: string;
@@ -741,6 +746,7 @@ export type Database = {
           worker_expires_at?: string | null;
           created_at?: string;
           conversation_id?: string | null;
+          correlation_id?: string | null;
         };
         Relationships: [
           {
@@ -838,6 +844,7 @@ export type Database = {
           baseline_version: number | null;
           baseline_failure_tool: string | null;
           missing_ref_index: number | null;
+          required_baseline_version: number | null;
         };
         Insert: {
           id: string;
@@ -862,6 +869,7 @@ export type Database = {
           baseline_version?: number | null;
           baseline_failure_tool?: string | null;
           missing_ref_index?: number | null;
+          required_baseline_version?: number | null;
         };
         Update: {
           id?: string;
@@ -886,6 +894,7 @@ export type Database = {
           baseline_version?: number | null;
           baseline_failure_tool?: string | null;
           missing_ref_index?: number | null;
+          required_baseline_version?: number | null;
         };
         Relationships: [
           {
@@ -4088,6 +4097,7 @@ export type Database = {
           epoch: number;
           request_enc: string;
           result_enc: string | null;
+          correlation_id: string | null;
         };
         Insert: {
           sandbox_id: string;
@@ -4096,6 +4106,7 @@ export type Database = {
           epoch: number;
           request_enc: string;
           result_enc?: string | null;
+          correlation_id?: string | null;
         };
         Update: {
           sandbox_id?: string;
@@ -4104,6 +4115,7 @@ export type Database = {
           epoch?: number;
           request_enc?: string;
           result_enc?: string | null;
+          correlation_id?: string | null;
         };
         Relationships: [
           {
@@ -4126,6 +4138,7 @@ export type Database = {
           runtime_hash: string | null;
           docker_issuer_fence: string | null;
           pricing_context: Json | null;
+          correlation_id: string | null;
         };
         Insert: {
           sandbox_id: string;
@@ -4137,6 +4150,7 @@ export type Database = {
           runtime_hash?: string | null;
           docker_issuer_fence?: string | null;
           pricing_context?: Json | null;
+          correlation_id?: string | null;
         };
         Update: {
           sandbox_id?: string;
@@ -4148,6 +4162,7 @@ export type Database = {
           runtime_hash?: string | null;
           docker_issuer_fence?: string | null;
           pricing_context?: Json | null;
+          correlation_id?: string | null;
         };
         Relationships: [
           {

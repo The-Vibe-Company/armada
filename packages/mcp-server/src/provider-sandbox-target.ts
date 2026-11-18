@@ -19,6 +19,7 @@ export interface PersistedSandboxTargetRow {
 export function sandboxRowProviderTarget(row: PersistedSandboxTargetRow): ProviderTarget {
   return {
     id: row.id,
+    sandboxId: row.id,
     ...(row.runtime_transport === "dialout" ? { runtimeTransport: "dialout" as const } : {}),
     ...(row.boat_runtime ? { boatRuntime: true as const } : {}),
     provider: row.provider,
@@ -27,4 +28,9 @@ export function sandboxRowProviderTarget(row: PersistedSandboxTargetRow): Provid
     sourceGoldenVisibility: row.source_golden_visibility,
     modal: sandboxRowModalBinding(row),
   };
+}
+
+/** Golden targets can also have an id; only a sandbox record or projection supplies this identity. */
+export function diagnosticSandboxId(target: ProviderTarget): string | undefined {
+  return target.sandboxId ?? ("harness" in target ? target.id : undefined);
 }

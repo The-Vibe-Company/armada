@@ -1,4 +1,5 @@
-import type { ResourceAdvice } from "@armada/core";
+import type { ResourceAdvice, ResourceAdviceRequest, ResourceAdviceResponse } from "@armada/core";
+import type { ArmadaCommandClient } from "./armada-api.ts";
 
 /** Only positive, sufficiently supported advice earns space in human output. */
 export function resourceAdviceText(advice: ResourceAdvice): string | null {
@@ -29,21 +30,16 @@ export function resourceAdviceText(advice: ResourceAdvice): string | null {
 
 /** Optional launch guidance is bounded and fail-open, including rolling older servers. */
 export async function printOptionalResourceAdvice(
-  client: import("./armada-api.ts").ArmadaApiClient,
+  client: Pick<ArmadaCommandClient, "sandboxes">,
   id: string,
   org: string | undefined,
   err: (text: string) => void,
 ): Promise<void> {
   try {
-    const { advice } = await client.request<import("@armada/core").ResourceAdviceResponse>("/api/v1/sandbox/advice", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        id,
-        ...(org === undefined ? {} : { org }),
-      } satisfies import("@armada/core").ResourceAdviceRequest),
-      signal: AbortSignal.timeout(2_000),
-    });
+    const { advice } = await client.sandboxes.advice<ResourceAdviceResponse>(
+      { id, ...(org === undefined ? {} : { org }) } satisfies ResourceAdviceRequest,
+      { signal: AbortSignal.timeout(2_000) },
+    );
     const text = resourceAdviceText(advice);
     if (text) err(`${text}\n`);
   } catch {

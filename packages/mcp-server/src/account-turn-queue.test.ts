@@ -9,6 +9,7 @@ import {
 import { PGlite } from "@electric-sql/pglite";
 import { createAccountTurnQueue } from "./account-turn-queue.ts";
 import type { Caller } from "./caller.ts";
+import { currentRequestId, observeRequest } from "./request-observability.ts";
 
 const db = new PGlite();
 const org = "10000000-0000-4000-8000-000000000001";
@@ -450,9 +451,19 @@ test("bounded queue scans advance past full accounts without starving another ac
 
 test("a proven pre-dispatch rejection requeues without leaking the account reservation", async () => {
   const input = { id: ids[1]!, request_id: requests[0]!, prompt: "retry after admission conflict" };
-  await queue.accept(caller, input);
+  const admit = () =>
+    observeRequest(
+      async () => Response.json(await queue.accept(caller, input), { status: 202 }),
+      () => {},
+    );
+  const original = await admit();
+  const correlationId = original?.headers.get("x-request-id") ?? undefined;
+  expect(correlationId).toBeString();
   let calls = 0;
-  queue.setDispatch(async () => {
+  const correlations: (string | undefined)[] = [];
+  queue.setDispatch(async (_caller, dispatched) => {
+    correlations.push(currentRequestId());
+    expect(dispatched).toEqual(input);
     calls++;
     if (calls === 1) {
       await db.query("insert into runtime_commands values($1,1,'readonly_get_prompt')", [input.id]);
@@ -464,8 +475,12 @@ test("a proven pre-dispatch rejection requeues without leaking the account reser
   await queue.drain();
   expect((await db.query("select * from account_agent_reservations")).rows).toEqual([]);
   expect((await queue.status(caller, input.id, input.request_id))?.message).toContain("waiting for sandbox dispatch");
+  const replay = await admit();
+  expect(replay?.status).toBe(202);
+  expect(replay?.headers.get("x-request-id")).not.toBe(correlationId);
   expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
   await queue.drain();
+  expect(correlations).toEqual([correlationId, correlationId]);
   expect(calls).toBe(2);
   expect(await queue.status(caller, input.id, input.request_id)).toEqual({ nativePromptId: "accepted_after_retry" });
 });

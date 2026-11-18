@@ -30,6 +30,7 @@ import { observeNativeFirstToken } from "./launch-stage-record.ts";
 import { projectModalEventUsage } from "./modal-event-usage.ts";
 import { modalLaunchEnvironment } from "./modal-launch-environment.ts";
 import { createModelAuthOwnership } from "./model-auth.ts";
+import { diagnosticSandboxId } from "./provider-sandbox-target.ts";
 import { observeProvider, observeProviderCall } from "./request-observability.ts";
 import { measureProviderPhase } from "./request-timing.ts";
 import { createRuntimeServing } from "./runtime-serving.ts";
@@ -236,8 +237,15 @@ export async function createModalIntegration(options: {
     };
     // Stored reads skip the App lookup and every live Modal call: they read Armada's database, so no provider record.
     if (storedReads) return (await createComposedModalProvider(composed)).provider;
-    const { provider } = await observeProviderCall("modal", "initialize", () => createComposedModalProvider(composed));
-    return observeProvider("modal", provider);
+    const sandbox = { sandboxId: () => diagnosticSandboxId(context.target) };
+    const { provider } = await observeProviderCall(
+      "modal",
+      "initialize",
+      () => createComposedModalProvider(composed),
+      undefined,
+      sandbox,
+    );
+    return observeProvider("modal", provider, sandbox);
   };
   async function goldenTarget(
     target: Omit<ProviderTarget, "modal">,

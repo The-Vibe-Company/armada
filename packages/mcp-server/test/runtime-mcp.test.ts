@@ -307,6 +307,16 @@ test.each(["boat", "modal"] as const)(
           expect.objectContaining({ requestId, provider, operation: "runtime.configureMcp", outcome: "error" }),
         ]),
       );
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          event: "operator_failure",
+          requestId,
+          sandboxId: f.row.id,
+          phase: "runtime.configureMcp",
+          errorClass: "RuntimeCommandReply",
+          message: "Runtime reply rejected (HTTP 503)",
+        }),
+      );
       expect(events.at(-1)).toMatchObject({ event: "http_request", requestId, status: 503 });
     } finally {
       await f.close();
@@ -430,13 +440,22 @@ test("configuration preparation commits queue order before waiting; an older ACK
       origin: "https://armada.test",
       commands: {
         ...f.bridge,
-        async call(owner, command, options) {
-          if (command.op === "configureMcp" && !updated) {
-            updated = true;
-            await f.db.query("update mcp_grants set generation=generation+1 where connection_id=$1", [x.c.id]);
-            newer = await x.service.prepare(f.caller, f.row.id);
-          }
-          return f.bridge.call(owner, command, options);
+        callPrepared(owner, operation, prepare, provider, sandboxId) {
+          return f.bridge.callPrepared(
+            owner,
+            operation,
+            async () => {
+              const prepared = await prepare();
+              if (operation === "configureMcp" && !updated) {
+                updated = true;
+                await f.db.query("update mcp_grants set generation=generation+1 where connection_id=$1", [x.c.id]);
+                newer = await x.service.prepare(f.caller, f.row.id);
+              }
+              return prepared;
+            },
+            provider,
+            sandboxId,
+          );
         },
       },
     });
