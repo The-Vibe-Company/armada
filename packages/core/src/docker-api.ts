@@ -48,7 +48,12 @@ export interface DockerHostSummary {
   /** Retained sandboxes, including stopped/failed, excluding deleted. */
   sandboxes: number;
 }
-export interface DockerHostListResponse {
+/** Version metadata shared by the machine poll and the owner host list. Older servers omit it. */
+export interface DockerHostVersionOffer {
+  targetVersion?: string;
+  minimumVersion?: string;
+}
+export interface DockerHostListResponse extends DockerHostVersionOffer {
   serverVersion?: string;
   /** Normal launch is wired and opted in, not merely private preview availability. */
   placement: boolean;

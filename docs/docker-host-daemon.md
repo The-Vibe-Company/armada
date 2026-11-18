@@ -742,6 +742,28 @@ This change delivers version reporting and the snapshot compatibility
 check. Continue using the managed installer to update manually.
 Automatic updates, rollback, and per-host policy will ship separately.
 
+On the owner's Linux host after a versioned release:
+
+1. Before upgrading the daemon, run `armada host list --json` against
+   that release. Check that the host's last reported `version` matches
+   its installed binary and that `targetVersion` matches the server
+   release. The host page should flag an installed version below
+   `minimumVersion`. With a daemon at 2.54.0 and authorized GitHub
+   access, try a new snapshot build and confirm HTTP 409
+   `host_update_required` with no build queued.
+2. Let any active build or launch finish. Follow the managed installer
+   instructions for that same server and account. Verify the systemd
+   user service reconnects, the same host ID reports the target version,
+   and the upgrade warning clears. Check that an existing sandbox
+   is still running with the same container and workspace.
+3. Build or rebuild a snapshot and confirm it reaches `ready`, with
+   `baselineVersion: 1` and `baselineOutdated: false` in snapshot get.
+   An existing snapshot created by an older daemon can still be used.
+
+The snapshot build floor is above the 2.54.0 release because baseline
+verification shipped after that tag. A source build still stamped
+2.54.0 reports that version and is subject to the same floor.
+
 ## Managed owner installation (#1453)
 
 The server image publishes Linux x64/arm64 host executables by SHA-256 alongside

@@ -1,5 +1,6 @@
 import {
   type DockerSnapshotRecord,
+  dockerHostMeetsVersion,
   dockerHostResourceDisplay,
   dockerHostUpgradeMessage,
   type Harness,
@@ -220,7 +221,8 @@ async function OwnServers({
         now,
         launch,
         snapshots.state === "ready" ? snapshots.snapshots : null,
-        hosts.list.serverVersion,
+        hosts.list.targetVersion ?? hosts.list.serverVersion,
+        hosts.list.minimumVersion,
       ),
     ),
   );
@@ -319,7 +321,8 @@ function row(
   now: number,
   launch: Launch,
   snapshots: DockerSnapshotRecord[] | null,
-  serverVersion?: string,
+  targetVersion?: string,
+  minimumVersion?: string,
 ): ResourceRow & { bucket: Bucket; actionLabel: string } {
   const resources = dockerHostResourceDisplay(host);
   const name = host.name ?? "Unnamed machine";
@@ -327,7 +330,15 @@ function row(
   const state = hostState(host, now);
   const seen = host.lastSeenAt ? relativeAge(host.lastSeenAt, now) : null;
   const upgrade =
-    host.state !== "pending" && host.state !== "revoked" ? dockerHostUpgradeMessage(host.version, serverVersion) : null;
+    host.state !== "pending" && host.state !== "revoked"
+      ? dockerHostUpgradeMessage(host.version, targetVersion, minimumVersion)
+      : null;
+  const belowMinimum = host.version && minimumVersion && !dockerHostMeetsVersion(host.version, minimumVersion);
+  const upgradeLabel = belowMinimum
+    ? "Daemon update required"
+    : host.version
+      ? "Daemon update available"
+      : "Version unknown";
   return {
     key: host.id,
     name,
@@ -339,7 +350,7 @@ function row(
     state: (
       <div className="space-y-1">
         <StateCell tone={state.tone} label={state.label} data-host-state={host.state} />
-        {upgrade && <span className="text-xs text-amber-700 dark:text-amber-400">Daemon update needed</span>}
+        {upgrade && <span className="text-xs text-amber-700 dark:text-amber-400">{upgradeLabel}</span>}
       </div>
     ),
     fact: (
@@ -437,6 +448,18 @@ function row(
               </dd>
               <dt className="text-muted-foreground">Daemon version</dt>
               <dd>{host.version ?? "Unknown"}</dd>
+              {targetVersion && (
+                <>
+                  <dt className="text-muted-foreground">Target version</dt>
+                  <dd>{targetVersion}</dd>
+                </>
+              )}
+              {minimumVersion && (
+                <>
+                  <dt className="text-muted-foreground">Minimum supported version</dt>
+                  <dd>{minimumVersion}</dd>
+                </>
+              )}
             </dl>
           </CollapsibleContent>
         </Collapsible>

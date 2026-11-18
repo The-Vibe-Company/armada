@@ -1,5 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
-import { normalizeGitHubGoldenConfig, officialSandboxImage, parseGoldenConfig, VERSION } from "@armada/core";
+import {
+  DOCKER_HOST_MINIMUM_VERSION,
+  dockerHostMeetsVersion,
+  normalizeGitHubGoldenConfig,
+  officialSandboxImage,
+  parseGoldenConfig,
+  VERSION,
+} from "@armada/core";
 import {
   type GitHubInstallationApp,
   type GitHubResolveDeps,
@@ -18,6 +25,16 @@ import { scopedRuntimeSql as scopedSql } from "./runtime-enrolment.ts";
 
 const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/;
 const invalid = () => new VaultError("invalid", "Invalid snapshot request.");
+export class DockerSnapshotHostUpgradeRequired extends Error {
+  readonly code = "host_update_required";
+
+  constructor(version: string | null) {
+    super(
+      `Snapshot builds require Docker host daemon ${DOCKER_HOST_MINIMUM_VERSION} or newer to verify the developer baseline. Installed version: ${version ?? "unknown"}. Update the host and wait for its next poll.`,
+    );
+  }
+}
+
 export function createDockerSnapshots(
   sql: Sql,
   key: string,
@@ -182,8 +199,8 @@ export function createDockerSnapshots(
           )
             throw new VaultError("forbidden", "Snapshot admission denied.");
           const host = (
-            await tx.query<{ installation_id: string; draining: boolean }>(
-              `select installation_id,${hostDrainingSql("docker_hosts")} as draining from public.docker_hosts where id=$1 and org_id=$2 and owner_id=$3 and hash is not null and revoked_at is null for update`,
+            await tx.query<{ installation_id: string; draining: boolean; daemon_version: string | null }>(
+              `select installation_id,daemon_version,${hostDrainingSql("docker_hosts")} as draining from public.docker_hosts where id=$1 and org_id=$2 and owner_id=$3 and hash is not null and revoked_at is null for update`,
               [hostId, org, hint.owner_id],
             )
           ).rows[0];
@@ -196,6 +213,8 @@ export function createDockerSnapshots(
               throw new VaultError("conflict", "Snapshot request changed.");
             return;
           }
+          if (!dockerHostMeetsVersion(host.daemon_version, DOCKER_HOST_MINIMUM_VERSION))
+            throw new DockerSnapshotHostUpgradeRequired(host.daemon_version);
           if (
             (
               await tx.query(

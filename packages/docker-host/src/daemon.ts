@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { DockerHostVersionOffer } from "@armada/core";
 import type { DockerJobFailureReason } from "../../core/src/docker-api.ts";
 import { DOCKER_DISK_FLOOR_BYTES, DockerDiskFloorError } from "../../core/src/docker-disk-policy.ts";
 import {
@@ -93,16 +94,18 @@ export interface Api {
       /** Request IDs still executing here; the server hands out other sandboxes' jobs. */
       running?: string[];
     },
-  ): Promise<{
-    job: Job | null;
-    /** The server held this poll until work existed or its hold elapsed. */
-    held?: true;
-    limits?: DockerSandboxLimits;
-    retentionSeconds?: number;
-    /** Every generation with a queued resume/bootstrap, not only the job handed out. */
-    pendingStarts?: { sandboxId: string; generation: string }[];
-    resumeClaims?: { requestId: string; sandboxId: string; generation: string }[];
-  }>;
+  ): Promise<
+    DockerHostVersionOffer & {
+      job: Job | null;
+      /** The server held this poll until work existed or its hold elapsed. */
+      held?: true;
+      limits?: DockerSandboxLimits;
+      retentionSeconds?: number;
+      /** Every generation with a queued resume/bootstrap, not only the job handed out. */
+      pendingStarts?: { sandboxId: string; generation: string }[];
+      resumeClaims?: { requestId: string; sandboxId: string; generation: string }[];
+    }
+  >;
   result(state: State, receipt: Receipt, expired?: true): Promise<void>;
   claim?(state: State, requestId: string, accepted: boolean): Promise<void>;
   cleaned?(state: State, requestId: string, reason?: "retention_elapsed" | "disk_pressure"): Promise<void>;

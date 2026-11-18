@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { createSqlAuthStore } from "@armada/auth";
 import {
   type AgentEvent,
+  DOCKER_HOST_MINIMUM_VERSION,
   DOCKER_IMAGE_UNAVAILABLE_MESSAGE,
   DOCKER_LAUNCH_FAILURE_MESSAGES,
   type DockerLaunchResult,
@@ -35,6 +36,7 @@ import type { Caller } from "../src/caller.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { createDockerBootstrapService } from "../src/docker-bootstrap-service.ts";
+import { createDockerHostRoutes } from "../src/docker-host-routes.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
 import { createDockerNormalLaunch } from "../src/docker-normal-launch.ts";
 import { createDockerNormalSend } from "../src/docker-normal-send.ts";
@@ -2369,6 +2371,7 @@ test("a lost Docker template response retains one reconciling claim and never re
 async function snapshotFixture(enabled = true, options: Parameters<typeof fixture>[0] = {}) {
   const db = database();
   const f = await fixture(options);
+  await hosts.poll(f.hostToken, f.installationId, DOCKER_HOST_MINIMUM_VERSION);
   for (const [userId, githubId, access] of [
     [f.actor.userId, 123, "offline-snapshot-access"],
     [f.admin.userId, 124, "offline-admin-access"],
@@ -3069,6 +3072,35 @@ test("old or unreported Docker daemons get an actionable resume refusal before a
   }
 });
 
+test("snapshot admission explains baseline incompatibility before creating a build", async () => {
+  const f = await snapshotFixture();
+  await hosts.poll(f.hostToken, f.installationId, "2.54.0");
+  const route = createDockerHostRoutes(hosts, async () => ({ ok: true, caller: f.caller }), {
+    snapshots: f.snapshots,
+  });
+  const requestId = randomUUID();
+  const response = await route(
+    new Request("https://fixture.example/api/v1/docker/snapshots/create", {
+      method: "POST",
+      body: JSON.stringify({
+        org: f.actor.orgId,
+        hostId: f.hostId,
+        requestId,
+        name: "baseline-required",
+        config: f.config,
+      }),
+    }),
+  );
+  expect(response?.status).toBe(409);
+  expect(await response?.json()).toMatchObject({
+    error: {
+      code: "host_update_required",
+      message: expect.stringContaining("verify the developer baseline"),
+    },
+  });
+  expect(await hosts.poll(f.hostToken, f.installationId, DOCKER_HOST_MINIMUM_VERSION)).toBeNull();
+});
+
 test.each(["private", "org"] as const)(
   "snapshot rebuild %s publishes a new immutable build and retains its source and retry receipt",
   async (visibility) => {
@@ -3085,7 +3117,7 @@ test.each(["private", "org"] as const)(
       visibility,
       config: f.config,
     });
-    const job = await hosts.poll(f.hostToken, f.installationId);
+    const job = await hosts.poll(f.hostToken, f.installationId, DOCKER_HOST_MINIMUM_VERSION);
     if (job?.operation !== "buildSnapshot") throw Error("Missing source build");
     await hosts.complete(f.hostToken, f.installationId, {
       requestId: id,

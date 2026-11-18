@@ -1,5 +1,5 @@
 import { readBoundedText } from "@armada/auth";
-import { DOCKER_JOB_FAILURE_REASONS, type DockerJobFailureReason } from "@armada/core";
+import { DOCKER_HOST_MINIMUM_VERSION, DOCKER_JOB_FAILURE_REASONS, type DockerJobFailureReason } from "@armada/core";
 import { isSnapshotBaselineTool } from "@armada/core/server";
 import { type DockerHostResources, validDockerAvailability } from "../../core/src/docker-resource-policy.ts";
 import { dockerResourceLimits } from "../../core/src/docker-resources.ts";
@@ -7,7 +7,7 @@ import { VERSION } from "../../core/src/version.ts";
 import type { CallerResult } from "./caller.ts";
 import { DockerHostDraining, DockerLimitsRefused } from "./docker-capacity.ts";
 import { type createDockerHostStore, DockerHostDenied } from "./docker-host-store.ts";
-import type { DockerSnapshots } from "./docker-snapshots.ts";
+import { DockerSnapshotHostUpgradeRequired, type DockerSnapshots } from "./docker-snapshots.ts";
 import type { Route } from "./http.ts";
 
 const machinePaths = [
@@ -16,6 +16,7 @@ const machinePaths = [
   "/api/docker-host/results",
   "/api/docker-host/unregister",
 ];
+const hostVersions = { targetVersion: VERSION, minimumVersion: DOCKER_HOST_MINIMUM_VERSION };
 const reusePath = "/api/docker-host/reuse-registration";
 const ownerPaths = [
   "/api/v1/docker/snapshots/list",
@@ -139,7 +140,12 @@ export function createDockerHostRoutes(
         }
         if (listing)
           return Response.json(
-            { serverVersion: VERSION, placement: options.placement === true, hosts: await store.list(actor) },
+            {
+              ...hostVersions,
+              serverVersion: VERSION,
+              placement: options.placement === true,
+              hosts: await store.list(actor),
+            },
             { headers },
           );
         if (path.endsWith("/register-token")) {
@@ -334,6 +340,7 @@ export function createDockerHostRoutes(
           {
             ...(retentionSeconds === undefined ? {} : { retentionSeconds }),
             ...(wait === undefined ? {} : { held: true }),
+            ...hostVersions,
             resumeClaims,
             job,
             // Every generation with a queued resume/bootstrap, so the daemon
@@ -410,7 +417,7 @@ export function createDockerHostRoutes(
           { status: error.code === "invalid_request" ? 400 : 409, headers },
         );
       // A drain is a typed state refusal so the dashboard can show the uninstall reason, not a generic conflict.
-      if (error instanceof DockerHostDraining)
+      if (error instanceof DockerHostDraining || error instanceof DockerSnapshotHostUpgradeRequired)
         return Response.json({ error: { code: error.code, message: error.message } }, { status: 409, headers });
       return Response.json(
         {

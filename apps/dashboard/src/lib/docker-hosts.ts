@@ -119,6 +119,8 @@ export function parseDockerHostList(value: unknown): DockerHostList | null {
   return {
     placement: value.placement,
     ...(typeof value.serverVersion === "string" ? { serverVersion: value.serverVersion } : {}),
+    ...(typeof value.targetVersion === "string" ? { targetVersion: value.targetVersion } : {}),
+    ...(typeof value.minimumVersion === "string" ? { minimumVersion: value.minimumVersion } : {}),
     hosts: list,
     skipped: value.hosts.length - list.length,
   };
