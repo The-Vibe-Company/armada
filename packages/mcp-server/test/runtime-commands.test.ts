@@ -1057,6 +1057,18 @@ test.each(["accepted", "rejected"] as const)(
             session.epoch,
           )
           .catch((error) => failures.push(error));
+        // A caller-supplied receipt check (as resume uses) also decides the recorded outcome.
+        answer({ conversationId: kind === "accepted" ? "thread" : "foreign", promptId: "prompt-1" });
+        await agent
+          .prompt(
+            { sandboxId: "command-native", harness: "codex", text: "continue" },
+            undefined,
+            session.epoch,
+            (r) => {
+              if (r.conversationId !== "thread") throw Error("caller-conflict");
+            },
+          )
+          .catch((error) => failures.push(error));
         return new Response(null, { status: 204 });
       },
       (line) => lines.push(line),
@@ -1066,6 +1078,7 @@ test.each(["accepted", "rejected"] as const)(
       expect(failures).toEqual([
         Error("Runtime workspace setup requires updated runtime artifacts; no native fallback."),
         expect.objectContaining({ code: "unavailable" }),
+        Error("caller-conflict"),
       ]);
     else expect(failures).toEqual([]);
     const outcome = kind === "accepted" ? "ok" : "error";
@@ -1078,6 +1091,11 @@ test.each(["accepted", "rejected"] as const)(
       expect.objectContaining({
         requestId: response?.headers.get("x-request-id"),
         operation: "runtime.workspaceExec",
+        outcome,
+      }),
+      expect.objectContaining({
+        requestId: response?.headers.get("x-request-id"),
+        operation: "runtime.prompt",
         outcome,
       }),
     ]);

@@ -284,9 +284,11 @@ export function createRuntimeResume(
             },
             `resume_${requestId}`,
             admitted.op.target_epoch,
+            (receipt) => {
+              if (receipt.conversationId !== conversation || !receipt.promptId)
+                throw new VaultError("conflict", "Runtime did not acknowledge the admitted conversation.");
+            },
           );
-          if (accepted.conversationId !== conversation || !accepted.promptId)
-            throw new VaultError("conflict", "Runtime did not acknowledge the admitted conversation.");
           receipt = {
             id: found.id,
             requestId,

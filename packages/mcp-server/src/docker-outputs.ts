@@ -67,6 +67,8 @@ export function createDockerOutputReader(sql: Sql, key: string, clock?: Clock) {
       // admission the runtime fence refuses the sample's reply, which would otherwise be lost).
       if (queue?.busy) return null;
       const requestId = `outputs_${deadline}_${randomUUID().replaceAll("-", "")}`;
+      // Parsed once: under a request the boundary's check parses this same reply.
+      let files: OutputFile[] | null | undefined;
       try {
         const reply = await commands.call(
           row.owner_id,
@@ -76,11 +78,14 @@ export function createDockerOutputReader(sql: Sql, key: string, clock?: Clock) {
             ...(request.signal ? { signal: request.signal } : {}),
             ...(expectedEpoch !== undefined ? { expectedEpoch } : {}),
             // Same parse as the snapshot below, so a reply whose files Armada rejects is not `ok`.
-            accept: (candidate) => parsed(candidate.body.result) !== null,
+            accept: (candidate) => {
+              files = parsed(candidate.body.result);
+              return files !== null;
+            },
           },
         );
         if (reply.status !== 200 || reply.body.requestId !== requestId) return null;
-        return parsed(reply.body.result);
+        return files === undefined ? parsed(reply.body.result) : files;
       } catch {
         // Not live (stop requested, no enrolment, other epoch), refused or timed out: keep the
         // previous snapshot. A read left unanswered expires at its deadline.

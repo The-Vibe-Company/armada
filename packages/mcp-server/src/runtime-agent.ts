@@ -343,11 +343,13 @@ export function createRuntimeAgent(
         },
       );
     },
-    /** Supply the same requestId to reconcile an uncertain prompt admission. */
+    /** Supply the same requestId to reconcile an uncertain prompt admission. `check` is the
+     * caller's receipt validation (it throws the caller's error); the runtime record reuses it. */
     async prompt(
       request: PromptRequest,
       requestId: string = randomUUID(),
       expectedEpoch?: string,
+      check?: (receipt: PromptReceipt) => void,
     ): Promise<PromptReceipt> {
       target(request.sandboxId);
       if (request.harness !== binding.harness || !request.text.trim()) throw refusal("invalid_request");
@@ -368,6 +370,8 @@ export function createRuntimeAgent(
         },
         request.signal,
         expectedEpoch,
+        undefined,
+        check,
       );
     },
     async steer(request: SteerRequest, requestId: string = randomUUID()): Promise<SteerReceipt> {
