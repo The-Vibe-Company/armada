@@ -658,3 +658,50 @@ test("worker shutdown finishes while a cancelled sample's provider read is still
   expect((await db.query(`select 1 from sandbox_outputs where sandbox_id=$1`, [id])).rows).toHaveLength(0);
   expect(state.reads).toBe(1);
 });
+
+test("a failed chunk read resumes from durable progress and publishes a ranged download", async () => {
+  const { db, people, id, sql } = await fixture();
+  const bytes = Buffer.alloc(65538, 7);
+  Buffer.from("abcd").copy(bytes, 32766);
+  const entries = [
+    { name: "document.pdf", size: bytes.length, revision: "1:2:3:4" },
+    { name: "oversized.zip", size: 33554433, revision: "1:3:3:4" },
+  ];
+  const offsets: number[] = [];
+  let interrupted = false;
+  const reader = {
+    listOutputEntries: async () => entries,
+    readOutputChunk: async ({ chunk }: Parameters<NonNullable<Provider["readOutputChunk"]>>[0]) => {
+      expect(chunk.entry.name).toBe("document.pdf");
+      offsets.push(chunk.offset);
+      if (chunk.offset === 32768 && !interrupted) {
+        interrupted = true;
+        return null;
+      }
+      return bytes.subarray(chunk.offset, chunk.offset + 32768);
+    },
+  };
+  const service = createSandboxOutputs(sql, KEY, async () => reader);
+  const route = routeFor(service, people.owner, people.org);
+  const url = `https://armada.example/api/v1/sandboxes/${id}/outputs`;
+  await expect(captureFinalOutputs(sql, reader, id, { key: KEY })).rejects.toThrow("output_unavailable");
+  expect((await route(new Request(`${url}/document.pdf`)))?.status).toBe(404);
+  await captureFinalOutputs(sql, reader, id, { key: KEY });
+  expect(offsets).toEqual([0, 32768, 32768, 65536]);
+  const list = await (await route(new Request(url)))?.json();
+  expect(publishedGetResponse("sandboxes/{id}/outputs", "200").parse(list)).toMatchObject({
+    files: [
+      { name: "document.pdf", size: bytes.length, sha256: new Bun.CryptoHasher("sha256").update(bytes).digest("hex") },
+      { name: "oversized.zip", size: 33554433, skipped: "too_large", sha256: null },
+    ],
+    limits: { maxFileBytes: 33554432 },
+  });
+  expect((await route(new Request(`${url}/oversized.zip`)))?.status).toBe(404);
+  const response = await route(new Request(`${url}/document.pdf`, { headers: { range: "bytes=32766-32769" } }));
+  expect(response?.status).toBe(206);
+  expect(response?.headers.get("content-range")).toBe("bytes 32766-32769/65538");
+  expect(await response?.text()).toBe("abcd");
+  await db.query("update sandboxes set application_secret_tainted=true where id=$1", [id]);
+  expect((await route(new Request(`${url}/document.pdf`)))?.status).toBe(404);
+  expect((await db.query("select 1 from sandbox_output_chunks")).rows).toHaveLength(0);
+});

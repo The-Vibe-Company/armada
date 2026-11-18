@@ -90,6 +90,7 @@ export function createRuntimeProvider(
           },
         }
       : {}),
+    ...(host.outputReadBytes !== undefined ? { outputReadBytes: host.outputReadBytes } : {}),
     ...(host.readOutputChunk
       ? {
           async readOutputChunk(request: Parameters<NonNullable<Provider["readOutputChunk"]>>[0]) {

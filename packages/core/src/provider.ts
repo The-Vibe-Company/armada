@@ -40,7 +40,12 @@ export interface Provider {
     sandboxId: string;
     signal?: AbortSignal;
   }): Promise<import("./sandbox-outputs.ts").OutputFile[] | null>;
-  listOutputEntries?(request: { sandboxId: string; signal?: AbortSignal }): Promise<import("./sandbox-output-limits.ts").OutputEntry[] | null>;
+  listOutputEntries?(request: {
+    sandboxId: string;
+    signal?: AbortSignal;
+  }): Promise<import("./sandbox-output-limits.ts").OutputEntry[] | null>;
+  /** Plaintext bytes allowed by this transport in one read. */
+  readonly outputReadBytes?: number;
   readOutputChunk?(request: {
     sandboxId: string;
     signal?: AbortSignal;

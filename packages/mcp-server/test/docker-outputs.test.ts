@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { decryptSecret, type Sql } from "@armada/core/server";
-import { readOutputDirectory } from "../../agent-runtime/src/outputs.ts";
+import { readOutputDirectory, readOutputPart } from "../../agent-runtime/src/outputs.ts";
 import { captureDockerStopOutputs, createDockerOutputReader } from "../src/docker-outputs.ts";
 import { observeRequest } from "../src/request-observability.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
@@ -74,7 +74,17 @@ async function fixture() {
     const { command } = await runtime.next(session.runtimeToken, session.epoch);
     if (!command) return;
     ops.push(command.op);
-    const result = "result" in forced ? forced.result : { files: await readOutputDirectory(outputs) };
+    let result = forced.result;
+    if (!("result" in forced)) {
+      if (command.op !== "readOutputs" || command.part === undefined) {
+        result = { files: await readOutputDirectory(outputs) };
+      } else {
+        result = {
+          values:
+            command.part === null ? await readOutputPart(null, outputs) : await readOutputPart(command.part, outputs),
+        };
+      }
+    }
     await runtime.complete(session.runtimeToken, session.epoch, {
       epoch: session.epoch,
       requestId: command.requestId,
@@ -109,7 +119,7 @@ test("a Docker file produced while live is sampled through the runtime and stays
     writeFileSync(join(f.outputs, "memo.pdf"), "document");
     expect(await f.service.reconcileOne(new AbortController().signal)).toBe(true);
     await f.service.drain();
-    expect(f.ops).toEqual(["readOutputs"]);
+    expect(f.ops).toEqual(["readOutputs", "readOutputs"]);
     // The answered read stays (the runtime may still retry its acknowledgement) until a later
     // answer proves it was acknowledged; it never holds the queue.
     expect(
@@ -137,7 +147,7 @@ test("an Armada Docker stop captures the final bytes before admission, after whi
     expect(await f.service.reconcileOne(new AbortController().signal)).toBe(true);
     await f.service.drain();
     writeFileSync(join(f.outputs, "memo.txt"), "final");
-    // Under an HTTP request, the final read is one provider record with the request's ID.
+    // The final manifest and chunk reads both carry the HTTP request's ID.
     const lines: string[] = [];
     const captured = await observeRequest(
       async () => {
@@ -157,9 +167,15 @@ test("an Armada Docker stop captures the final bytes before admission, after whi
       },
       (line) => lines.push(line),
     );
-    expect(f.ops).toEqual(["readOutputs", "readOutputs"]);
+    expect(f.ops).toEqual(Array(4).fill("readOutputs"));
     // The refusal keeps its quiet public fallback, but the trace no longer reads as a success.
     expect(lines.map((line) => JSON.parse(line)).filter((event) => event.event === "provider_call")).toEqual([
+      expect.objectContaining({
+        requestId: captured?.headers.get("x-request-id"),
+        provider: "docker",
+        operation: "runtime.readOutputs",
+        outcome: "ok",
+      }),
       expect.objectContaining({
         requestId: captured?.headers.get("x-request-id"),
         provider: "docker",
@@ -193,7 +209,7 @@ test("a well-formed Docker read reply that Armada rejects keeps the snapshot and
       },
       (line) => lines.push(line),
     );
-    expect(f.ops).toEqual(["readOutputs", "readOutputs"]);
+    expect(f.ops).toEqual(Array(3).fill("readOutputs"));
     expect(await (await f.download("memo.txt"))?.text()).toBe("draft");
     expect(lines.map((line) => JSON.parse(line)).filter((event) => event.event === "provider_call")).toEqual([
       expect.objectContaining({
@@ -262,7 +278,6 @@ test("a Docker stop during an in-flight sample queues its final read behind it b
     // the sample's reply and result poll, so only a capture taken before admission survives.
     await f.db.query(`update sandboxes set status='stopping',stop_requested_at=now() where id=$1`, [f.id]);
     await f.service.drain();
-    expect(f.ops).toEqual(["readOutputs", "readOutputs"]);
     await f.db.query(`update sandboxes set status='stopped',stopped_at=now() where id=$1`, [f.id]);
     const response = await f.download("memo.txt");
     expect(response?.status).toBe(200);

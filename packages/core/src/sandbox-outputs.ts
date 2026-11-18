@@ -4,13 +4,13 @@ import { SNAPSHOT_BASELINE_BUN } from "./snapshot-baseline.ts";
 import {
   OUTPUT_CHUNK_BYTES,
   OUTPUT_DIRECTORY,
+  OUTPUT_MAX_BYTES,
+  OUTPUT_MAX_ENTRIES,
+  OUTPUT_MAX_FILES,
   type OutputChunkRequest,
   type OutputEntry,
   validOutputChunk,
   validOutputEntry,
-  OUTPUT_MAX_BYTES,
-  OUTPUT_MAX_ENTRIES,
-  OUTPUT_MAX_FILES,
   validOutputName,
 } from "./sandbox-output-limits.ts";
 import { shellQuote } from "./shell-quote.ts";
@@ -158,9 +158,9 @@ part=json.loads(${JSON.stringify(JSON.stringify(chunk === undefined ? false : ch
 files=[]
 try:
  directory=os.open('/',flags)
- for part in ${JSON.stringify(OUTPUT_DIRECTORY)}.strip('/').split('/'):
+ for component in ${JSON.stringify(OUTPUT_DIRECTORY)}.strip('/').split('/'):
   parent=directory
-  try: directory=os.open(part,flags,dir_fd=parent)
+  try: directory=os.open(component,flags,dir_fd=parent)
   finally: os.close(parent)
 except FileNotFoundError: sys.exit(4)
 except OSError: sys.exit(5)
@@ -195,7 +195,7 @@ try:
      files.append(entry)
      continue
     if entry != part['entry']: continue
-    length=min(${OUTPUT_CHUNK_BYTES},entry['size']-part['offset'])
+    length=min(part.get('length',${OUTPUT_CHUNK_BYTES}),entry['size']-part['offset'])
     data=os.pread(fd,length,part['offset'])
     after=os.fstat(fd)
     if len(data)==length and after.st_nlink==1 and entry_for(after)==entry: files.append({'name':name,'base64':base64.b64encode(data).decode()})
@@ -219,8 +219,8 @@ print(json.dumps(files,separators=(',',':')))
 export const OUTPUT_COLLECTOR_PROBE = collectorShell(probeProgram, pythonProbe);
 function outputCollector(chunk?: OutputChunkRequest | null): string {
   return collectorShell(
-  collectorSetup +
-    String.raw`
+    collectorSetup +
+      String.raw`
 const files = [];
 const part = ${JSON.stringify(chunk === undefined ? false : chunk)};
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
@@ -285,7 +285,7 @@ try {
           continue;
         }
         if (entry.size !== part.entry.size || entry.revision !== part.entry.revision) continue;
-        const buffer = Buffer.alloc(Math.min(${OUTPUT_CHUNK_BYTES}, entry.size - part.offset));
+        const buffer = Buffer.alloc(Math.min(part.length ?? ${OUTPUT_CHUNK_BYTES}, entry.size - part.offset));
         const length = fs.readSync(fd, buffer, 0, buffer.length, part.offset);
         if (length === buffer.length && entryFor().revision === entry.revision)
           files.push({ name, base64: buffer.toString("base64") });
@@ -314,18 +314,23 @@ try {
 }
 console.log(JSON.stringify(files));
 `,
-  pythonCollector(chunk),
-);
+    pythonCollector(chunk),
+  );
 }
 
 export const OUTPUT_COLLECTOR = outputCollector();
 
 export function outputEntryCollector(chunk: OutputChunkRequest | null): string {
   if (chunk !== null && !validOutputChunk(chunk)) throw Error("invalid_output_chunk");
-  return outputCollector(chunk === null ? null : {
-    entry: { name: chunk.entry.name, size: chunk.entry.size, revision: chunk.entry.revision },
-    offset: chunk.offset,
-  });
+  return outputCollector(
+    chunk === null
+      ? null
+      : {
+          entry: { name: chunk.entry.name, size: chunk.entry.size, revision: chunk.entry.revision },
+          offset: chunk.offset,
+          length: chunk.length,
+        },
+  );
 }
 
 export function parseOutputEntries(values: unknown): OutputEntry[] {
@@ -337,13 +342,16 @@ export function parseOutputEntries(values: unknown): OutputEntry[] {
 
 export function parseOutputChunk(values: unknown, chunk: OutputChunkRequest): Uint8Array | null {
   if (Array.isArray(values) && values.length === 0) return null;
-  if (!Array.isArray(values) || values.length !== 1 ||
-      typeof values[0]?.base64 !== "string" || values[0].base64.length > Math.ceil(OUTPUT_CHUNK_BYTES / 3) * 4)
+  const length = Math.min(chunk.length ?? OUTPUT_CHUNK_BYTES, chunk.entry.size - chunk.offset);
+  if (
+    !Array.isArray(values) ||
+    values.length !== 1 ||
+    typeof values[0]?.base64 !== "string" ||
+    values[0].base64.length > Math.ceil(length / 3) * 4
+  )
     throw Error("invalid_output");
   const [file] = parseOutputFiles(values);
-  if (!file || file.name !== chunk.entry.name ||
-      file.bytes.length !== Math.min(OUTPUT_CHUNK_BYTES, chunk.entry.size - chunk.offset))
-    throw Error("invalid_output");
+  if (!file || file.name !== chunk.entry.name || file.bytes.length !== length) throw Error("invalid_output");
   return file.bytes;
 }
 
@@ -353,9 +361,13 @@ export function readCollectorEntries(status: number | null, stdout: string): Out
   return parseOutputEntries(JSON.parse(stdout));
 }
 
-export function readCollectorChunk(status: number | null, stdout: string, chunk: OutputChunkRequest): Uint8Array | null {
+export function readCollectorChunk(
+  status: number | null,
+  stdout: string,
+  chunk: OutputChunkRequest,
+): Uint8Array | null {
   if (status !== 0) readCollectorResult(status, stdout);
-  if (stdout.length > 60000) throw Error("output_limit");
+  if (stdout.length > Math.ceil((chunk.length ?? OUTPUT_CHUNK_BYTES) / 3) * 4 + 4096) throw Error("output_limit");
   return parseOutputChunk(JSON.parse(stdout), chunk);
 }
 
@@ -364,6 +376,7 @@ export type OutputFailureReason =
   | "output_directory_missing"
   | "output_limit"
   | "collector_failed"
+  | "output_protocol_unsupported"
   | "output_unavailable"
   | "output_timeout"
   | "output_busy"

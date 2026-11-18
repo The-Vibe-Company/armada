@@ -7458,13 +7458,46 @@
                   "type": "object",
                   "required": [
                     "directory",
-                    "files"
+                    "files",
+                    "limits"
                   ],
                   "additionalProperties": false,
                   "properties": {
                     "directory": {
                       "type": "string",
                       "description": "The declared outputs directory in the sandbox."
+                    },
+                    "limits": {
+                      "type": "object",
+                      "required": [
+                        "maxFiles",
+                        "maxFileBytes",
+                        "maxSandboxBytes",
+                        "maxOrgBytes"
+                      ],
+                      "additionalProperties": false,
+                      "properties": {
+                        "maxFiles": {
+                          "type": "integer",
+                          "const": 32
+                        },
+                        "maxFileBytes": {
+                          "type": "integer",
+                          "const": 33554432
+                        },
+                        "maxSandboxBytes": {
+                          "type": "integer",
+                          "const": 67108864
+                        },
+                        "maxOrgBytes": {
+                          "type": "integer",
+                          "const": 1073741824
+                        }
+                      }
+                    },
+                    "unavailable": {
+                      "type": "string",
+                      "const": "collector_unsupported"
                     },
                     "files": {
                       "type": "array",
@@ -7487,11 +7520,22 @@
                           "size": {
                             "type": "integer",
                             "minimum": 0,
-                            "maximum": 32768
+                            "maximum": 9007199254740991
                           },
                           "sha256": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "description": "Hex SHA-256 digest of the file bytes. Null for skipped files."
+                          },
+                          "skipped": {
                             "type": "string",
-                            "description": "Hex SHA-256 digest of the file bytes."
+                            "enum": [
+                              "too_large",
+                              "sandbox_limit",
+                              "org_limit"
+                            ]
                           },
                           "updatedAt": {
                             "type": "string",
@@ -7580,6 +7624,22 @@
             }
           },
           {
+            "name": "Range",
+            "in": "header",
+            "description": "One byte range, for example bytes=0-1023.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-Range",
+            "in": "header",
+            "description": "Apply the Range only when the file's ETag matches.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "name",
             "in": "path",
             "required": true,
@@ -7594,6 +7654,17 @@
           "200": {
             "description": "The file bytes. Content-Type is inferred from the file name, else application/octet-stream.",
             "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Accept-Ranges": {
+                "schema": {
+                  "type": "string",
+                  "const": "bytes"
+                }
+              },
               "Content-Disposition": {
                 "description": "attachment, with the UTF-8 file name (filename*).",
                 "schema": {
@@ -7628,8 +7699,32 @@
               }
             }
           },
+          "206": {
+            "description": "The requested byte range.",
+            "headers": {
+              "Content-Range": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Length": {
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string",
+                  "contentMediaType": "application/octet-stream"
+                }
+              }
+            }
+          },
           "400": {
-            "description": "The name is not valid percent-encoding.",
+            "description": "The file name is invalid.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7675,6 +7770,16 @@
                       "$ref": "#/components/schemas/OutputFailure"
                     }
                   ]
+                }
+              }
+            }
+          },
+          "416": {
+            "description": "The byte range is invalid or unsatisfiable.",
+            "headers": {
+              "Content-Range": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }

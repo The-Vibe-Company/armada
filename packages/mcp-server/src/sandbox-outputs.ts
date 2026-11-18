@@ -1,5 +1,13 @@
 import { createHash } from "node:crypto";
 import {
+  OUTPUT_CHUNK_BYTES,
+  OUTPUT_MAX_FILE_BYTES,
+  OUTPUT_MAX_FILES,
+  OUTPUT_MAX_ORG_BYTES,
+  OUTPUT_MAX_SANDBOX_BYTES,
+  validOutputName,
+} from "@armada/core";
+import {
   admitOutputs,
   decryptSecret,
   encryptionKey,
@@ -12,6 +20,7 @@ import {
 } from "@armada/core/server";
 import type { CallerResult } from "./caller.ts";
 import type { Route } from "./http.ts";
+import { collectOutputTransfers, remainingOutputOrgBytes } from "./output-transfers.ts";
 
 // Native and enrolled-runtime Boat/Modal sandboxes: providers read the declared directory through
 // their own fixed channel (Provider.readOutputs), never caller commands or the agent runtime.
@@ -21,7 +30,10 @@ const ELIGIBLE = `provider in ('boat','modal','docker') and not application_secr
   and not ('collector_unsupported' = any(outputs_failure_reasons))`;
 
 /** The only provider surface output collection uses. */
-type OutputReader = Pick<Provider, "readOutputs" | "probeOutputs">;
+type OutputReader = Pick<
+  Provider,
+  "readOutputs" | "probeOutputs" | "listOutputEntries" | "readOutputChunk" | "outputReadBytes"
+>;
 
 /** SDKs may ignore cancellation once a request reached the provider. Callers wait at most until
  * their signal aborts; the outstanding read stays tracked, bounded and fenced from persisting. */
@@ -128,6 +140,28 @@ async function collect(
     if (!(await probeOutputCapability(sql, provider, id, providerId, signal))) return;
   }
   signal?.throwIfAborted();
+  if (provider.listOutputEntries && provider.readOutputChunk) {
+    try {
+      await collectOutputTransfers(
+        sql,
+        {
+          ...(provider.outputReadBytes !== undefined ? { outputReadBytes: provider.outputReadBytes } : {}),
+          listOutputEntries: provider.listOutputEntries.bind(provider),
+          readOutputChunk: provider.readOutputChunk.bind(provider),
+        },
+        id,
+        { sandboxId: providerId, ...(signal ? { signal } : {}) },
+        scan,
+        key,
+        writes,
+      );
+      return;
+    } catch (error) {
+      // Runtimes enrolled before chunk support still serve their original small snapshots.
+      if (!(error instanceof OutputCollectionError) || error.reason !== "output_protocol_unsupported") throw error;
+    }
+  }
+  signal?.throwIfAborted();
   const read = provider.readOutputs
     ? await provider.readOutputs({ sandboxId: providerId, ...(signal ? { signal } : {}) })
     : null;
@@ -156,22 +190,35 @@ async function collect(
   // expired collection rolls back its files and webhook events.
   const write = sql.transaction(async (tx) => {
     signal?.throwIfAborted();
-    const authority = await tx.query(
-      `select id from public.sandboxes where id=$1 and status<>'deleted' and not application_secret_tainted
+    const authority = await tx.query<{ org_id: string }>(
+      `select org_id from public.sandboxes where id=$1 and status<>'deleted' and not application_secret_tainted
         and (outputs_published_scan is null or outputs_published_scan<$2::timestamptz) for update`,
       [id, scan],
     );
     // A newer read (e.g. a pre-stop capture claimed after this sample) already committed: never go
     // back. An older read whose newer rival failed still publishes what live compute held.
-    if (!authority.rows.length) return;
+    const sandbox = authority.rows[0];
+    if (!sandbox) return;
+    signal?.throwIfAborted();
+    const remaining = await remainingOutputOrgBytes(tx, sandbox.org_id);
+    const existing =
+      (
+        await tx.query<{ bytes: number }>(
+          "select coalesce(sum(size),0)::integer as bytes from public.sandbox_outputs where sandbox_id=$1 and content_enc is not null",
+          [id],
+        )
+      ).rows[0]?.bytes ?? 0;
+    if (payload.reduce((total, file) => total + file.size, 0) > Math.max(0, remaining) + existing)
+      throw new OutputCollectionError("output_limit");
     signal?.throwIfAborted();
     await tx.query(
       `with incoming as (select * from jsonb_to_recordset($2::jsonb) as f(name text,digest text,size integer,content text)),
       removed as (delete from public.sandbox_outputs where sandbox_id=$1 and name not in(select name from incoming))
       insert into public.sandbox_outputs(sandbox_id,name,digest,size,content_enc)
       select $1,name,digest,size,decode(content,'hex') from incoming
-      on conflict(sandbox_id,name) do update set digest=excluded.digest,size=excluded.size,content_enc=excluded.content_enc,updated_at=now()
-      where sandbox_outputs.digest<>excluded.digest`,
+      on conflict(sandbox_id,name) do update set digest=excluded.digest,size=excluded.size,content_enc=excluded.content_enc,
+        transfer_id=null,skipped=null,updated_at=now()
+      where sandbox_outputs.digest is distinct from excluded.digest`,
       [id, JSON.stringify(payload)],
     );
     await tx.query(`update public.sandboxes set outputs_published_scan=$2::timestamptz where id=$1`, [id, scan]);
@@ -345,8 +392,15 @@ export function createSandboxOutputs(
           return Response.json({ error: "invalid_name" }, { status: 400 });
         }
         if (!name) {
-          const files = await sql.query(
-            `select name,size,digest as sha256,updated_at as "updatedAt" from public.sandbox_outputs where sandbox_id=$1 order by name limit 32`,
+          const files = await sql.query<{
+            name: string;
+            size: number;
+            sha256: string | null;
+            updatedAt: string;
+            skipped?: string | null;
+          }>(
+            `select name,size::double precision as size,digest as sha256,updated_at as "updatedAt",skipped
+              from public.sandbox_outputs where sandbox_id=$1 order by name limit ${OUTPUT_MAX_FILES}`,
             [row.id],
           );
           const current = await authorize();
@@ -354,7 +408,13 @@ export function createSandboxOutputs(
           return Response.json(
             {
               directory: OUTPUT_DIRECTORY,
-              files: files.rows,
+              limits: {
+                maxFiles: OUTPUT_MAX_FILES,
+                maxFileBytes: OUTPUT_MAX_FILE_BYTES,
+                maxSandboxBytes: OUTPUT_MAX_SANDBOX_BYTES,
+                maxOrgBytes: OUTPUT_MAX_ORG_BYTES,
+              },
+              files: files.rows.map(({ skipped, ...file }) => (skipped ? { ...file, skipped } : file)),
               ...(current.outputs_failure_reasons.includes("collector_unsupported")
                 ? { unavailable: "collector_unsupported" }
                 : {}),
@@ -362,21 +422,76 @@ export function createSandboxOutputs(
             { headers: { "cache-control": "private, no-store" } },
           );
         }
+        if (!validOutputName(name)) return Response.json({ error: "invalid_name" }, { status: 400 });
         const file = (
-          await sql.query<{ name: string; content_enc: Uint8Array<ArrayBuffer> }>(
-            `select name,content_enc from public.sandbox_outputs where sandbox_id=$1 and name=$2`,
+          await sql.query<{
+            name: string;
+            size: number;
+            transfer_id: string | null;
+            digest: string;
+            content_enc: Uint8Array<ArrayBuffer> | null;
+          }>(
+            `select name,content_enc,size::integer,transfer_id,digest from public.sandbox_outputs
+              where sandbox_id=$1 and name=$2 and skipped is null`,
             [row.id, name],
           )
         ).rows[0];
-        if (!file) return Response.json({ error: "not_found" }, { status: 404 });
+        if (!file) return notFound();
         if (!key) return Response.json({ error: "unavailable" }, { status: 503 });
-        const bytes = Buffer.from(await decryptSecret(file.content_enc, key), "base64");
+        const bytes = file.content_enc ? Buffer.from(await decryptSecret(file.content_enc, key), "base64") : null;
         if (!(await authorize())) return notFound();
+        const size = bytes?.length ?? file.size;
+        const etag = JSON.stringify(file.digest);
+        const ifRange = request.headers.get("if-range");
+        const requestedRange = !ifRange || ifRange === etag ? request.headers.get("range") : null;
+        const range = requestedRange ? outputRange(requestedRange, size) : { start: 0, end: size };
+        if (!range)
+          return new Response(null, {
+            status: 416,
+            headers: { "content-range": `bytes */${size}`, "cache-control": "private, no-store" },
+          });
+        const { start, end } = range;
+        let offset = start;
+        const stream =
+          file.transfer_id && end > start
+            ? new ReadableStream<Uint8Array>(
+                {
+                  // Pull at most one encrypted chunk at a time, with backpressure from the HTTP consumer.
+                  async pull(controller) {
+                    request.signal.throwIfAborted();
+                    const base = offset - (offset % OUTPUT_CHUNK_BYTES);
+                    const chunk = (
+                      await sql.query<{ content_enc: Uint8Array<ArrayBuffer> }>(
+                        `select c.content_enc from public.sandbox_output_chunks c
+                join public.sandbox_outputs o on o.transfer_id=c.transfer_id
+                where c.transfer_id=$1 and c.byte_offset=$2 and o.sandbox_id=$3 and o.name=$4`,
+                        [file.transfer_id, base, row.id, name],
+                      )
+                    ).rows[0];
+                    if (!chunk) throw Error("output_snapshot_changed");
+                    const buffer = Buffer.from(await decryptSecret(chunk.content_enc, key), "base64");
+                    if (!(await authorize())) throw Error("output_unavailable");
+                    request.signal.throwIfAborted();
+                    if (buffer.length !== Math.min(size - base, OUTPUT_CHUNK_BYTES))
+                      throw Error("invalid_output_chunk");
+                    const next = Math.min(end, base + buffer.length);
+                    controller.enqueue(buffer.subarray(offset - base, next - base));
+                    offset = next;
+                    if (offset === end) controller.close();
+                  },
+                },
+                { highWaterMark: 0 },
+              )
+            : null;
         const type = new Blob([], { type: Bun.file(file.name).type }).type || "application/octet-stream";
-        return new Response(bytes, {
+        return new Response(bytes?.subarray(start, end) ?? stream, {
+          status: requestedRange ? 206 : 200,
           headers: {
             "content-type": type,
-            "content-length": String(bytes.length),
+            "accept-ranges": "bytes",
+            etag,
+            ...(requestedRange ? { "content-range": `bytes ${start}-${end - 1}/${size}` } : {}),
+            "content-length": String(end - start),
             "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`,
             "x-content-type-options": "nosniff",
             "cache-control": "private, no-store",
@@ -385,4 +500,15 @@ export function createSandboxOutputs(
       };
     },
   };
+}
+
+function outputRange(header: string, size: number): { start: number; end: number } | null {
+  const match = /^bytes=(\d*)-(\d*)$/.exec(header);
+  if (!match || !size || (!match[1] && !match[2])) return null;
+  const first = Number(match[1]);
+  const last = Number(match[2]);
+  if (!Number.isSafeInteger(first) || !Number.isSafeInteger(last)) return null;
+  if (!match[1]) return last > 0 ? { start: Math.max(0, size - last), end: size } : null;
+  if (first >= size || (match[2] && last < first)) return null;
+  return { start: first, end: match[2] ? Math.min(size, last + 1) : size };
 }

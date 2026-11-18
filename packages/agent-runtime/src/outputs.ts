@@ -4,11 +4,11 @@ import { type FileHandle, open } from "node:fs/promises";
 import {
   OUTPUT_CHUNK_BYTES,
   OUTPUT_DIRECTORY,
-  type OutputChunkRequest,
-  type OutputEntry,
   OUTPUT_MAX_BYTES,
   OUTPUT_MAX_ENTRIES,
   OUTPUT_MAX_FILES,
+  type OutputChunkRequest,
+  type OutputEntry,
   validOutputName,
 } from "@armada/core";
 
@@ -104,13 +104,16 @@ export async function readOutputDirectory(
 }
 
 /** Read metadata or one range, anchored to the declared directory and a stable file revision. */
-export async function readOutputPart(chunk: OutputChunkRequest): Promise<{ name: string; base64: string }[]>;
-export async function readOutputPart(chunk: null): Promise<OutputEntry[]>;
-export async function readOutputPart(chunk: OutputChunkRequest | null) {
+export async function readOutputPart(
+  chunk: OutputChunkRequest,
+  directory?: string,
+): Promise<{ name: string; base64: string }[]>;
+export async function readOutputPart(chunk: null, directory?: string): Promise<OutputEntry[]>;
+export async function readOutputPart(chunk: OutputChunkRequest | null, path = OUTPUT_DIRECTORY) {
   const flags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
   let directory = await open("/", flags);
   try {
-    for (const part of OUTPUT_DIRECTORY.slice(1).split("/")) {
+    for (const part of path.slice(1).split("/")) {
       const parent = directory;
       try {
         directory = await open(`/proc/self/fd/${parent.fd}/${part}`, flags);
@@ -121,13 +124,18 @@ export async function readOutputPart(chunk: OutputChunkRequest | null) {
       await parent.close();
     }
     const base = `/proc/self/fd/${directory.fd}`;
-    const names = chunk ? [chunk.entry.name] :
-      listEntries(base).filter(validOutputName).sort((a,b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
+    const names = chunk
+      ? [chunk.entry.name]
+      : listEntries(base)
+          .filter(validOutputName)
+          .sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
     const entries: OutputEntry[] = [];
     for (const name of names) {
       if (entries.length === OUTPUT_MAX_FILES) break;
-      const file = await open(`${base}/${name}`, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
-        .catch(() => null);
+      const file = await open(
+        `${base}/${name}`,
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      ).catch(() => null);
       if (!file) continue;
       try {
         const stat = await file.stat({ bigint: true });
@@ -140,7 +148,7 @@ export async function readOutputPart(chunk: OutputChunkRequest | null) {
           continue;
         }
         if (size !== chunk.entry.size || revision !== chunk.entry.revision) return [];
-        const buffer = Buffer.alloc(Math.min(OUTPUT_CHUNK_BYTES, size - chunk.offset));
+        const buffer = Buffer.alloc(Math.min(chunk.length ?? OUTPUT_CHUNK_BYTES, size - chunk.offset));
         const { bytesRead } = await file.read(buffer, 0, buffer.length, chunk.offset);
         const after = await file.stat({ bigint: true });
         if (bytesRead === buffer.length && after.nlink === 1n && revisionOf(after) === revision)

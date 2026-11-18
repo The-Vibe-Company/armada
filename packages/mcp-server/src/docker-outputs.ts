@@ -1,12 +1,20 @@
-import type { OutputChunkRequest } from "@armada/core";
 import { randomUUID } from "node:crypto";
-import { type OutputFile, type Provider, parseOutputFiles, parseOutputEntries, parseOutputChunk, type Sql } from "@armada/core/server";
+import { OUTPUT_MAX_READ_BYTES, type OutputChunkRequest } from "@armada/core";
+import {
+  OutputCollectionError,
+  type OutputFile,
+  type Provider,
+  parseOutputChunk,
+  parseOutputEntries,
+  parseOutputFiles,
+  type Sql,
+} from "@armada/core/server";
 import { createRuntimeCommands, expiredOutputRead } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import { captureFinalOutputs, recordOutputFailure } from "./sandbox-outputs.ts";
 
 type Clock = Parameters<typeof createRuntimeCommands>[2];
-type OutputReader = Pick<Provider, "readOutputs" | "listOutputEntries" | "readOutputChunk">;
+type OutputReader = Pick<Provider, "readOutputs" | "listOutputEntries" | "readOutputChunk" | "outputReadBytes">;
 
 /** Docker sandboxes have no provider exec: the machine channel is the host daemon, and the only
  * server-to-sandbox channel is the enrolled runtime. Outputs use its fixed, read-only
@@ -89,9 +97,12 @@ export function createDockerOutputReader(sql: Sql, key: string, clock?: Clock) {
             },
           },
         );
+        if (part === null && reply.body.error === "invalid_request")
+          throw new OutputCollectionError("output_protocol_unsupported");
         if (reply.status !== 200 || reply.body.requestId !== requestId) return null;
         return files === undefined ? decode(reply.body.result) : files;
-      } catch {
+      } catch (error) {
+        if (error instanceof OutputCollectionError) throw error;
         // Not live (stop requested, no enrolment, other epoch), refused or timed out: keep the
         // previous snapshot. A read left unanswered expires at its deadline.
         return null;
@@ -99,24 +110,32 @@ export function createDockerOutputReader(sql: Sql, key: string, clock?: Clock) {
     }
     const values = (result: unknown) => (result as { values?: unknown } | null)?.values;
     return {
+      outputReadBytes: OUTPUT_MAX_READ_BYTES,
       readOutputs: (request) => read(request, parsed),
-      listOutputEntries: async (request) => {
-        const result = await read(request, (result) => {
-          try {
-            return parseOutputEntries(values(result));
-          } catch {
-            return null;
-          }
-        }, null);
-        return result;
-      },
-      readOutputChunk: (request) => read(request, (result) => {
-        try {
-          return parseOutputChunk(values(result), request.chunk);
-        } catch {
-          return null;
-        }
-      }, request.chunk),
+      listOutputEntries: (request) =>
+        read(
+          request,
+          (result) => {
+            try {
+              return parseOutputEntries(values(result));
+            } catch {
+              return null;
+            }
+          },
+          null,
+        ),
+      readOutputChunk: (request) =>
+        read(
+          request,
+          (result) => {
+            try {
+              return parseOutputChunk(values(result), request.chunk);
+            } catch {
+              return null;
+            }
+          },
+          request.chunk,
+        ),
     };
   };
 }
