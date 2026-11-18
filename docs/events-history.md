@@ -10,7 +10,9 @@ with count limit 500. Core exports `EventsRequest` and `EventPage`.
 Responses contain chronological `events`, `cursor` (forward continuation after
 newest included raw event), `olderCursor` (backward continuation before oldest
 included raw event, absent on empty pages), and direction-relative `hasMore`.
-Logs retains `settled`.
+HTTP logs returns `settled` for follow handling. The MCP `logs` tool includes
+`settled` for Docker sandboxes only. Use `status` or `wait` to check whether
+a turn has settled on any provider.
 Cursors are opaque and exclusive; never decode or mix sources.
 
 Start with `direction: backward` without a cursor. Save its `cursor` as the

@@ -1,8 +1,13 @@
-import type { Provider } from "@armada/core";
+import { type Provider, VaultError } from "@armada/core";
 
 type Page = Awaited<ReturnType<Provider["events"]>>;
 type ReadPage = (cursor: string | undefined) => Promise<Page>;
 export const MAX_LOG_PAGES = 100;
+
+export function validateLogPagination({ direction, all }: { direction?: unknown; all?: unknown }): void {
+  if (direction === "backward" && all === true)
+    throw new VaultError("invalid", "Backward reads cannot drain all pages.");
+}
 
 /** Bounded traversal only; callers retain authorization, request projection and response policy. */
 export async function readEventPages(read: ReadPage, cursor: string | undefined, all: boolean) {

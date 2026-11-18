@@ -64,7 +64,7 @@ import type { Caller } from "./caller.ts";
 import { INTERNAL_FAILURE_MESSAGE } from "./control-response.ts";
 import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
 import { DataError, type SandboxView, type ScopedData } from "./data.ts";
-import { MAX_LOG_PAGES, readEventPages } from "./event-pagination.ts";
+import { MAX_LOG_PAGES, readEventPages, validateLogPagination } from "./event-pagination.ts";
 import { publicLogEvents } from "./model-usage.ts";
 import type { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import type { GoldenProviderMetadata } from "./provider-metadata.ts";
@@ -551,6 +551,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
             const queued = await context.accountTurns?.status(caller, input.id as string, input.prompt_id as string);
             if (queued && "nativePromptId" in queued) input.prompt_id = queued.nativePromptId;
           }
+          if (name === "logs") validateLogPagination(args as Record<string, unknown>);
           const routed = ["send", "status", "wait"].includes(name)
             ? undefined
             : await context.dockerControls?.invoke(caller, name, args);
@@ -1640,12 +1641,15 @@ export function createArmadaServer(context: ToolContext, version: string, option
         since_cursor: z.string().min(1).optional().describe("The cursor of the previous page."),
         conversation_id: conversationId,
         limit: z.number().int().min(1).max(500).optional(),
-        all: z.boolean().optional().describe("Read all available pages, bounded at 100 pages."),
+        all: z.boolean().optional().describe("Read up to 100 pages. Use forward direction only."),
         direction: z.enum(["forward", "backward"]).optional(),
         maxBytes: z.number().int().min(256).max(1048576).optional(),
         coalesce: z.boolean().optional(),
       },
-      output: LOGS_OUTPUT,
+      output: {
+        ...LOGS_OUTPUT,
+        settled: LOGS_OUTPUT.settled.describe("Docker only. Use status or wait to check whether a turn has settled."),
+      },
       readOnly: true,
     },
     async (args) => {
@@ -2503,7 +2507,6 @@ async function readLogs(
     coalesce?: boolean;
   },
 ) {
-  if (args.direction === "backward" && args.all) throw new Error("Backward reads cannot drain all pages.");
   const { events, cursor, hasMore, olderCursor, source, runtimeFailure } = await readEventPages(
     (cursor) =>
       provider.events({

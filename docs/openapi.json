@@ -8084,7 +8084,7 @@
                     "maximum": 500
                   },
                   "all": {
-                    "description": "Read all available pages, bounded at 100 pages.",
+                    "description": "Read up to 100 pages. Use forward direction only.",
                     "type": "boolean"
                   },
                   "direction": {
