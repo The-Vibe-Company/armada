@@ -39,6 +39,7 @@ import {
   PROVIDER_LABELS,
   type RepoRow,
 } from "@/lib/golden-form";
+import { embeddedSnapshotParams } from "@/lib/launch-repositories";
 import { replaceResourceUrl } from "@/lib/resource-history";
 import { ITEM_PARAM } from "@/lib/resource-list";
 import { snapshotBuildFeedback } from "@/lib/snapshot-build-feedback";
@@ -99,7 +100,7 @@ function buildScope({
   embedded,
 }: Pick<Props, "mode" | "orgId" | "goldenId" | "embedded">): string {
   if (mode === "update") return `rebuild.${goldenId ?? ""}`;
-  return embedded ? `composer.${orgId}.${embedded.repository}` : `create.${orgId}`;
+  return embedded ? embeddedSnapshotParams(orgId, embedded.repository).cloudScope : `create.${orgId}`;
 }
 
 function RepositoryDetails({ embedded, children }: { embedded: boolean; children: React.ReactNode }) {

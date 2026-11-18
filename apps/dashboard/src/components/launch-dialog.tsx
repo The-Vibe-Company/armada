@@ -29,6 +29,7 @@ import { composerChips, launchHoldIds, MISSING_LAUNCH_START } from "@/lib/launch
 import { LAUNCH_KEY_FIELD, type LaunchKey, launchKeyFor } from "@/lib/launch-key";
 import { initialLaunchSelection, type LaunchStartTarget } from "@/lib/launch-picker";
 import {
+  embeddedSnapshotParams,
   launchRepositoryChoices,
   launchRepositoryFolder,
   launchRepositoryStarts,
@@ -174,7 +175,10 @@ export function LaunchStart(
     initialTemplate?: TemplateLaunchTarget | undefined;
   },
 ) {
-  const [options, setOptions] = useState<Awaited<ReturnType<typeof readLaunchDialogOptions>> | null>(null);
+  const [options, setOptions] = useState<Awaited<ReturnType<typeof readLaunchDialogOptions>> | null>(
+    () => props.initialOptions ?? null,
+  );
+  const optionsRevision = useRef(0);
   const [loadingError, setLoadingError] = useState("");
   const host = "hostId" in props;
   const fallback: LaunchStartTarget = host
@@ -229,6 +233,7 @@ export function LaunchStart(
   const [announcement, setAnnouncement] = useState("");
   const onSaved = useCallback(
     (source: LaunchStartTarget, next: Awaited<ReturnType<typeof readLaunchDialogOptions>>) => {
+      optionsRevision.current++;
       setOptions(next);
       selectedTarget.current = source;
       setSelected(source.id);
@@ -241,10 +246,12 @@ export function LaunchStart(
   );
   const [task, setTask] = useState(props.initialTask ?? "");
   useEffect(() => {
+    if (props.initialOptions) return;
     let active = true;
-    (props.initialOptions ? Promise.resolve(props.initialOptions) : readLaunchDialogOptions())
+    const revision = optionsRevision.current;
+    readLaunchDialogOptions()
       .then((next) => {
-        if (!active) return;
+        if (!active || optionsRevision.current !== revision) return;
         if (next.orgId !== props.orgId) {
           setLoadingError("Switch to this organization before launching.");
           return;
@@ -289,7 +296,17 @@ export function LaunchStart(
     if (value === repository) return;
     setRepository(value);
     setTemplateId("");
-    setShowBuild(false);
+    const params = new URLSearchParams(window.location.search);
+    const recovery = value && embeddedSnapshotParams(props.orgId, value);
+    setShowBuild(
+      Boolean(
+        recovery &&
+          (params.has(recovery.dockerReceipt) ||
+            params.has(recovery.cloudJob) ||
+            params.has(recovery.cloudKey) ||
+            params.has(recovery.dockerKey)),
+      ),
+    );
     setOthersOpen(false);
     const next = launchRepositoryStarts(starts, value).preferred;
     if (next) {

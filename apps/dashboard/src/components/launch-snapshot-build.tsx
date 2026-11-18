@@ -5,6 +5,7 @@ import { readLaunchDialogOptions } from "@/app/actions/sandboxes";
 import { type EmbeddedSnapshotBuild, SnapshotCreateChoice } from "@/components/docker-snapshot-forms";
 import { GoldenForm } from "@/components/golden-form";
 import type { LaunchStartTarget } from "@/lib/launch-picker";
+import { embeddedSnapshotParams } from "@/lib/launch-repositories";
 
 type Options = Awaited<ReturnType<typeof readLaunchDialogOptions>>;
 
@@ -22,6 +23,14 @@ export const LaunchSnapshotBuild = memo(function LaunchSnapshotBuild({
   const { orgId } = options;
   const [buildInfo, setBuildInfo] = useState<Options["build"]>();
   const [capacityError, setCapacityError] = useState(false);
+  const [initialPlacement] = useState(() => {
+    if (typeof window === "undefined") return undefined;
+    const receipt = new URLSearchParams(window.location.search).get(
+      embeddedSnapshotParams(orgId, repository).dockerReceipt,
+    );
+    if (!receipt) return undefined;
+    return options.targets.find((target) => target.snapshotId === receipt)?.snapshotHostId;
+  });
   const mounted = useRef(false);
   useEffect(() => {
     mounted.current = true;
@@ -56,8 +65,9 @@ export const LaunchSnapshotBuild = memo(function LaunchSnapshotBuild({
       const target = next.targets.find((item) => item.snapshotId === id);
       if (mounted.current && target && !target.building && !target.failed) {
         const url = new URL(window.location.href);
-        url.searchParams.delete(`composer-docker-build-key.${orgId}.${repository}`);
-        url.searchParams.delete(`composer-docker-build-id.${orgId}.${repository}`);
+        const { dockerKey, dockerReceipt } = embeddedSnapshotParams(orgId, repository);
+        url.searchParams.delete(dockerKey);
+        url.searchParams.delete(dockerReceipt);
         window.history.replaceState(window.history.state, "", url);
         onSaved(target, next);
       }
@@ -109,6 +119,7 @@ export const LaunchSnapshotBuild = memo(function LaunchSnapshotBuild({
       ) : build.providers.length || build.hosts.length ? (
         <SnapshotCreateChoice
           cloudForms={cloudForms}
+          initialPlacement={initialPlacement}
           hosts={build.hosts}
           orgId={orgId}
           isAdmin={build.isAdmin}

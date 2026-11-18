@@ -35,6 +35,7 @@ import { useMutationState } from "@/components/use-mutation-state";
 import { isUuid } from "@/lib/action";
 import { type DockerHost, hostBuildBlocker } from "@/lib/docker-hosts";
 import { goldenRequest, type RepoRow } from "@/lib/golden-form";
+import { embeddedSnapshotParams } from "@/lib/launch-repositories";
 
 type SnapshotPlacement = {
   value: string;
@@ -70,6 +71,7 @@ export function SnapshotCreateChoice({
   snapshots = [],
   launch,
   embedded,
+  initialPlacement,
 }: {
   cloudForms: Partial<Record<"boat" | "modal", ReactNode>>;
   hosts: DockerHost[];
@@ -79,11 +81,14 @@ export function SnapshotCreateChoice({
   githubConnected?: boolean;
   snapshots?: DockerSnapshotRecord[];
   embedded?: EmbeddedSnapshotBuild | undefined;
+  initialPlacement?: string | undefined;
   launch?: Omit<ComponentProps<typeof LaunchDialog>, "golden" | "provider" | "repositories" | "snapshotId">;
 }) {
   const cloud = (Object.keys(cloudForms) as ("boat" | "modal")[]).slice(0, 1);
   const [provider, setProvider] = useState<string>(
-    cloud[0] ?? hosts.find((host) => host.state === "online")?.id ?? hosts[0]?.id ?? "",
+    initialPlacement && hosts.some((host) => host.id === initialPlacement)
+      ? initialPlacement
+      : (cloud[0] ?? hosts.find((host) => host.state === "online")?.id ?? hosts[0]?.id ?? ""),
   );
   const options = [
     ...Object.keys(cloudForms).map((value) => ({ value, label: `${value === "boat" ? "Boat" : "Modal"} cloud` })),
@@ -196,10 +201,11 @@ function DockerSnapshotForm({
   const [requestId, setRequestId] = useState("");
   const form = useRef<HTMLFormElement>(null),
     close = useRef<HTMLButtonElement>(null);
-  const router = useRouter(),
-    id = useId(),
-    param = embedded ? `composer-docker-build-key.${orgId}.${embedded.repository}` : `snapshot-build-key.${orgId}`;
-  const receiptParam = embedded ? `composer-docker-build-id.${orgId}.${embedded.repository}` : "";
+  const router = useRouter();
+  const id = useId();
+  const paramsForComposer = embedded && embeddedSnapshotParams(orgId, embedded.repository);
+  const param = paramsForComposer?.dockerKey ?? `snapshot-build-key.${orgId}`;
+  const receiptParam = paramsForComposer?.dockerReceipt ?? "";
   const readDocker = embedded?.readDocker;
   const onBuilding = embedded?.onBuilding;
   useEffect(() => {

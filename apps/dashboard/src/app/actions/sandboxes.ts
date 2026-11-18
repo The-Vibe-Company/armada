@@ -529,6 +529,7 @@ export async function readLaunchDialogOptions(includeBuildCapacity = false) {
             golden: snapshot.name,
             provider: "docker",
             snapshotId: snapshot.id,
+            snapshotHostId: snapshot.hostId,
             label: `${snapshot.name} · ${host.name ?? DOCKER_HOST_LABEL}`,
             group: dockerHostGroup(host.name, host.state),
             hostName: host.name ?? DOCKER_HOST_LABEL,

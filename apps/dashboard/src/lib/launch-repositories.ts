@@ -50,3 +50,14 @@ export function launchRepositoryTemplates(
       : matches(selected);
   });
 }
+
+export function embeddedSnapshotParams(org: string, repository: string) {
+  const scope = `${org}.${repository}`;
+  return {
+    cloudScope: `composer.${scope}`,
+    cloudJob: `build.composer.${scope}`,
+    cloudKey: `build-key.composer.${scope}`,
+    dockerKey: `composer-docker-build-key.${scope}`,
+    dockerReceipt: `composer-docker-build-id.${scope}`,
+  };
+}

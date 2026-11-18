@@ -290,7 +290,7 @@ export function LaunchSentence({
                         onAccount(group.account.id);
                         chooseModel(
                           group.options.find(
-                            (option) => option.id === (chosen?.models?.[0]?.model ?? entry.defaultModel),
+                            (option) => option.id === (group.account.models?.[0]?.model ?? entry.defaultModel),
                           )?.id ??
                             group.options[0]?.id ??
                             entry.defaultModel,
