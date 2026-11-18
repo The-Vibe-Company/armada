@@ -264,6 +264,32 @@ export interface LaunchPlan {
   secrets: HarnessCredentials["secrets"];
 }
 
+/** The shared golden launcher owns these sequential intervals from admission to harness readiness. */
+function modalLaunchTiming(startedAt: number) {
+  const stages: { stage: string; ms: number }[] = [];
+  let previous = startedAt;
+  let enabled = false;
+  return {
+    mark(stage: string, at?: number) {
+      if (stage === "launch_plan") enabled = true;
+      if (!enabled) return;
+      const now = at ?? performance.now();
+      stages.push({ stage, ms: now - previous });
+      previous = now;
+    },
+    report(sandboxId: string, path: "native" | "enrolled") {
+      if (!enabled) return;
+      try {
+        console.error(
+          JSON.stringify({ event: "modal_launch_timing", sandboxId, path, totalMs: previous - startedAt, stages }),
+        );
+      } catch {
+        // Timing must not change the launch outcome.
+      }
+    },
+  };
+}
+
 function validateGoldenLaunch(request: LaunchRequest) {
   // The sandbox row (and so the stage table) exists only after the fork (#2560).
   const acceptedAt = performance.now();
@@ -283,6 +309,7 @@ async function resolveGoldenLaunch(
   actor: GoldenActor,
   validated: ReturnType<typeof validateGoldenLaunch>,
   options: LaunchOptions,
+  timing: ReturnType<typeof modalLaunchTiming>,
 ): Promise<LaunchPlan> {
   let { request } = validated;
   const { acceptedAt } = validated;
@@ -391,7 +418,9 @@ async function resolveGoldenLaunch(
   );
   const snapshot = golden.providerSnapshotId;
   if (!snapshot) throw new GoldenError("conflict", `Golden '${golden.name}' has no snapshot yet.`);
+  if (golden.provider === "modal") timing.mark("launch_plan");
   const credentials = await stores.credentials.resolve(actor, harness, request.credentialId, options.credentialVersion);
+  if (golden.provider === "modal") timing.mark("credential_resolution");
   if (
     [CLAUDE_ENDPOINT_ENV, CODEX_ENDPOINT_ENV].some((name) => {
       const raw = credentials.env[name];
@@ -410,10 +439,17 @@ async function resolveGoldenLaunch(
   if (!runtime && (credentials.env[CLAUDE_ENDPOINT_ENV] || credentials.env[CODEX_ENDPOINT_ENV]) && endpointRuntime) {
     // Re-enter through the shared runtime selection before allocating compute.
     // Its resolver excludes native GitHub/model environment delivery.
-    return resolveGoldenLaunch(provider, stores, actor, validateGoldenLaunch(request), {
-      ...options,
-      boatRuntimeDefault: endpointRuntime,
-    });
+    return resolveGoldenLaunch(
+      provider,
+      stores,
+      actor,
+      validateGoldenLaunch(request),
+      {
+        ...options,
+        boatRuntimeDefault: endpointRuntime,
+      },
+      timing,
+    );
   }
   if (defaultRuntime && !credentials.binding)
     throw new LaunchError(
@@ -505,9 +541,11 @@ export async function launchSandbox(
   initialRequest: LaunchRequest,
   initialOptions: LaunchOptions = {},
 ): Promise<LaunchResult> {
+  const validated = validateGoldenLaunch(initialRequest);
+  const timing = modalLaunchTiming(validated.acceptedAt);
   const launch = await prepareLaunchPlan(
-    () => validateGoldenLaunch(initialRequest),
-    (validated) => resolveGoldenLaunch(initialProvider, initialStores, actor, validated, initialOptions),
+    () => validated,
+    (validated) => resolveGoldenLaunch(initialProvider, initialStores, actor, validated, initialOptions, timing),
     (plan) => goldenLaunchPlacements[plan.golden.provider],
   );
   const plan = launch.resolved;
@@ -544,12 +582,14 @@ export async function launchSandbox(
       actor,
       id,
       forkEnv: () => strategy.forkEnv(plan),
+      beforeAllocation: () => timing.mark("preallocation_admission"),
       allocationRisk: (risk) => {
         noAllocation = !risk;
       },
     });
 
     const claimedAt = performance.now();
+    timing.mark("provider_allocation", claimedAt);
     const activityLeaseId = stores.sandboxes.activityOwnership ? crypto.randomUUID() : undefined;
     let record: SandboxRecord;
     try {
@@ -642,8 +682,10 @@ export async function launchSandbox(
       progress("initialization_bind");
       await stores.connections?.bind(record.id, connectionIds);
       progress("initialization_ready");
+      timing.mark("registration_and_binding");
       const ready = await waitReady(provider, forked.id, options);
       await mark("machine_started");
+      timing.mark("machine_readiness");
       const {
         github: launchGithub,
         prompt: dispatchPrompt,
@@ -655,7 +697,11 @@ export async function launchSandbox(
         providerSandboxId: ready.id,
         signal,
         progress,
-        mark,
+        runtimeStarted: () => timing.mark("runtime_startup"),
+        mark: async (stage) => {
+          await mark(stage);
+          if (stage === "checkout_done") timing.mark("workspace_preparation");
+        },
         reportGitHub: (launchGithub) => {
           try {
             console.error(
@@ -675,9 +721,12 @@ export async function launchSandbox(
           }
         },
       });
+      timing.mark("finish_initialization");
       progress("initialization_publish");
       // Every harness and path is ready for a prompt here; a launch prompt's dispatch is not launch time.
       await mark("harness_ready");
+      timing.mark("ready_stage_record");
+      timing.report(record.id, strategy.kind);
       if (prompt === undefined) {
         signal.throwIfAborted();
         return {
