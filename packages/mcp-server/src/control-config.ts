@@ -74,6 +74,7 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
   const providerFor = (apiKey: string, caller?: { userId: string; orgId: string }) =>
     createObservedBoatProvider({
       apiKey,
+      deploymentId: env.ARMADA_BOAT_DEPLOYMENT_ID?.trim(),
       beforePrompt: async (provider, id) => {
         if (caller) await lifecycle().beforePrompt(provider, id, caller);
       },

@@ -120,6 +120,7 @@ export async function startServer(
   } = {},
 ) {
   const config = configFromEnv(env);
+  const boatDeploymentId = env.ARMADA_BOAT_DEPLOYMENT_ID?.trim();
   const idleDelayMs = idlePauseDelayMs(env);
   const launch: LaunchOptions = { extensionHeadroomSeconds: config.sandboxExtensionHeadroomSeconds };
   const catalogAuthentication = catalogAuthenticationFromEnv(
@@ -199,6 +200,7 @@ export async function startServer(
     const provider = createObservedBoatProvider(
       {
         apiKey,
+        deploymentId: boatDeploymentId,
         sanitizeEvents: async (provider, id, events) => {
           if (!caller) throw Error("Native events require trusted Armada caller scope.");
           return modelAuth.redactEvents(provider, id, caller, events);
@@ -313,6 +315,7 @@ export async function startServer(
       connections: runtimeMcp.connections,
       provider: async (actor, golden) =>
         createObservedBoatProvider({
+          deploymentId: boatDeploymentId,
           apiKey: (
             await resolveBoatKey(store, config.encryptionKey, {
               userId: actor.userId,
@@ -494,7 +497,10 @@ export async function startServer(
         }
       : {}),
     ...(runtimeLaunch
-      ? { boatRuntimeLaunch: runtimeLaunch, runtimeHostFor: (apiKey: string) => createObservedBoatProvider({ apiKey }) }
+      ? {
+          boatRuntimeLaunch: runtimeLaunch,
+          runtimeHostFor: (apiKey: string) => createObservedBoatProvider({ apiKey, deploymentId: boatDeploymentId }),
+        }
       : {}),
     launch,
     publicUrl: config.publicUrl,
