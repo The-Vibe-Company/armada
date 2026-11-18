@@ -10,6 +10,7 @@ test("Boat composition uses pinned stdin for probe/install/scrub and never publi
   const argv: string[][] = [],
     payloads: Record<string, unknown>[] = [],
     writes: string[] = [];
+  let bridgeAcknowledged = true;
   const run = ((file: string, args: string[]) => {
     argv.push(args);
     const child = Object.assign(new EventEmitter(), {
