@@ -606,8 +606,13 @@ export function createDockerHostStore(sql: Sql, key: string) {
     async inventoryOwnership(hostToken: string, installationId: string, sandboxIds: readonly string[]) {
       return transaction(async (tx) => {
         const host = await authenticate(tx, hostToken, installationId);
-        const { rows } = await tx.query<{ id: string; status: SandboxStatus; generation: string }>(
-          `select id,status,docker_generation as generation from public.sandboxes
+        const { rows } = await tx.query<{
+          id: string;
+          status: SandboxStatus;
+          generation: string;
+          provider_sandbox_id: string;
+        }>(
+          `select id,status,docker_generation as generation,provider_sandbox_id from public.sandboxes
            where provider='docker' and org_id=$1 and docker_host_id=$2 and docker_installation_id=$3
              and id=any($4::uuid[])
              and provider_sandbox_id=concat('armada-',docker_installation_id,'-',docker_host_id,'-',id,'-',docker_generation)`,

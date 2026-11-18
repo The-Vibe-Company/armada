@@ -101,6 +101,7 @@ test("an authenticated Docker inventory report counts only unknown containers in
     machineId: "a".repeat(64),
     sandboxId: sandbox.id,
     generation: sandbox.generation,
+    containerName: `armada-${installationId}-${host.hostId}-${sandbox.id}-${sandbox.generation}`,
     deploymentId,
     createdAt: "2026-11-18T00:00:00.000Z",
   };
@@ -116,7 +117,7 @@ test("an authenticated Docker inventory report counts only unknown containers in
     containers: [
       owned,
       unknown,
-      unknown,
+      { ...owned, machineId: "e".repeat(64), containerName: "operator-renamed" },
       { ...owned, machineId: "c".repeat(64), generation: randomUUID() },
       {
         ...unknown,
@@ -128,6 +129,7 @@ test("an authenticated Docker inventory report counts only unknown containers in
   const send = (token: string, body: unknown) => post("/api/docker-host/container-inventory", token, body, {}, route);
   expect((await send(ticket.registrationToken, report)).status).toBe(401);
   expect((await send(host.hostToken, { ...report, installationId: randomUUID() })).status).toBe(401);
+  expect((await send(host.hostToken, { ...report, containers: [owned, unknown, unknown] })).status).toBe(400);
   expect(records).toHaveLength(0);
   expect((await send(host.hostToken, report)).status).toBe(204);
   expect(records).toEqual([
@@ -135,8 +137,8 @@ test("an authenticated Docker inventory report counts only unknown containers in
       metric: "reaper_unknown_machines",
       provider: "docker",
       source: host.hostId,
-      count: 2,
-      overdue: 2,
+      count: 3,
+      overdue: 3,
       complete: true,
     },
     { metric: "reaper_deleted", provider: "docker", source: host.hostId, reason: "unknown", count: 0 },

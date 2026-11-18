@@ -73,16 +73,21 @@ function deadlinesOf(value: unknown): { sandboxId: string; generation: string; d
   });
 }
 
-type DockerInventoryMachine = ProviderInventoryMachine & { sandboxId: string; generation: string };
+type DockerInventoryMachine = ProviderInventoryMachine & {
+  sandboxId: string;
+  generation: string;
+  containerName: string;
+};
 function containersOf(value: unknown): DockerInventoryMachine[] {
   if (!Array.isArray(value) || value.length > 4096) throw new InvalidInput();
   return value.map((entry) => {
     if (!object(entry)) throw new InvalidInput();
-    fields(entry, ["machineId", "sandboxId", "generation", "deploymentId", "createdAt"]);
+    fields(entry, ["machineId", "sandboxId", "generation", "deploymentId", "createdAt", "containerName"]);
     const machineId = string(entry.machineId);
     const sandboxId = string(entry.sandboxId);
     const generation = string(entry.generation);
     const deploymentId = string(entry.deploymentId);
+    const containerName = string(entry.containerName);
     const timestamp = string(entry.createdAt);
     const createdAt = new Date(timestamp);
     if (
@@ -90,11 +95,12 @@ function containersOf(value: unknown): DockerInventoryMachine[] {
       !uuid.test(sandboxId) ||
       !uuid.test(generation) ||
       deploymentId.length > 512 ||
+      !/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,254}$/.test(containerName) ||
       !Number.isFinite(createdAt.getTime()) ||
       createdAt.toISOString() !== timestamp
     )
       throw new InvalidInput();
-    return { machineId, sandboxId, generation, deploymentId, createdAt };
+    return { machineId, sandboxId, generation, deploymentId, createdAt, containerName };
   });
 }
 
@@ -229,10 +235,13 @@ export function createDockerHostRoutes(
         const installationId = string(body.installationId);
         if (!uuid.test(installationId)) throw new InvalidInput();
         const machines = containersOf(body.containers);
+        const names = new Map(machines.map((machine) => [machine.machineId, machine.containerName]));
+        if (names.size !== machines.length) throw new InvalidInput();
         const { hostId, rows } = await store.inventoryOwnership(token, installationId, [
           ...new Set(machines.map(({ sandboxId }) => sandboxId)),
         ]);
         const ownership = new Map(rows.map((row) => [row.id, row]));
+
         const origin = new URL(options.publicUrl ?? request.url).origin;
         const reaper = createProviderReaper(
           {
@@ -246,7 +255,11 @@ export function createDockerHostRoutes(
             },
             async lookupOwnership(machine) {
               const row = machine.sandboxId ? ownership.get(machine.sandboxId) : undefined;
-              return row && row.generation === machine.generation ? { kind: "owned", ...row } : { kind: "absent" };
+              return row &&
+                row.generation === machine.generation &&
+                row.provider_sandbox_id === names.get(machine.machineId)
+                ? { kind: "owned", status: row.status, generation: row.generation }
+                : { kind: "absent" };
             },
           },
           options.log,
