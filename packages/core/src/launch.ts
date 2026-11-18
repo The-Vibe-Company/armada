@@ -35,7 +35,14 @@ import {
 import { HARNESS_CAPABILITIES } from "./harnesses.ts";
 import { type HelperNegotiation, negotiateHelper } from "./helper.ts";
 import { LaunchError, type LaunchInitializationStage } from "./launch-error.ts";
+import {
+  admitLaunchPlan,
+  applyLaunchAccountDefaults,
+  resolveLaunchConnections,
+  resolveLaunchSkills,
+} from "./launch-plan.ts";
 import type { LaunchStage } from "./launch-stages.ts";
+import { isLaunchTtlSeconds, validateLaunchSkillPins } from "./launch-validation.ts";
 import { type MachineSize, resolveMachineSize } from "./machine-size.ts";
 import { type ModelChoice, resolveModelChoice } from "./models.ts";
 import { OPENCODE_CONNECTION_PROVIDER, OPENCODE_ENDPOINT_ENV, parseOpenCodeEndpoint } from "./opencode-endpoint.ts";
@@ -48,8 +55,7 @@ import { DEFAULT_SANDBOX_EXTENSION_HEADROOM_SECONDS, SANDBOX_STOP_MARGIN_SECONDS
 import { OUTPUT_DIRECTORY } from "./sandbox-output-limits.ts";
 import * as placement from "./sandbox-provider.ts";
 import { assertProviderOf, HOST_CAPABILITIES, PROVIDER_LIMITS, type SandboxProviderId } from "./sandbox-provider.ts";
-import { mergeSkillPins } from "./skill-merge.ts";
-import { installSkill, skillExclusionCommand, validateSkillPins } from "./skillpack.ts";
+import { installSkill, skillExclusionCommand } from "./skillpack.ts";
 
 /** Four hours: long enough for an autonomous run, short enough that a forgotten sandbox stops by itself. */
 export const DEFAULT_LAUNCH_TTL_SECONDS = 14_400;
@@ -249,33 +255,43 @@ export interface LaunchOptions extends GoldenLimits {
   newId?: () => string;
 }
 
-/**
- * Forks a golden into a sandbox, brings its repos up to date, runs its init commands and, with a
- * prompt, starts the agent.
- *
- * The caller's own database role does the reads and writes: a private golden of someone else is
- * `not_found`. The fork starts from the stored snapshot name, gets `noEnv` and an environment with
- * only the credentials of this harness (user over org), and never writes them to the golden. A fork
- * inherits neither TTL nor labels, so both are set here. When anything fails after the fork the
- * sandbox is recorded as `failed` and its machine is stopped.
- */
-export async function launchSandbox(
+interface LaunchPlan {
+  acceptedAt: number;
+  provider: Provider;
+  stores: LaunchStores;
+  request: LaunchRequest;
+  options: LaunchOptions;
+  golden: GoldenRecord;
+  runtime: LaunchOptions["runtime"];
+  harness: Harness;
+  prompt: string | undefined;
+  choice: ModelChoice;
+  ttlSeconds: number;
+  extensionHeadroom: number;
+  repositoryDir: string | null;
+  resourceProject: GoldenRepo | undefined;
+  machineSize: ReturnType<typeof resolveMachineSize>;
+  prepareNativeCwd: Provider["prepareNativeHarnessCwd"];
+  visibility: "private" | "org";
+  connectionIds: string[];
+  snapshot: string;
+  credentials: HarnessCredentials;
+  github: GitHubAccess;
+  connected: Extract<GitHubAccess, { status: "connected" }> | null;
+  env: HarnessCredentials["env"];
+  secrets: HarnessCredentials["secrets"];
+}
+
+async function resolveLaunchPlan(
   provider: Provider,
   stores: LaunchStores,
   actor: GoldenActor,
   request: LaunchRequest,
-  options: LaunchOptions = {},
-): Promise<LaunchResult> {
+  options: LaunchOptions,
+): Promise<LaunchPlan> {
   // #2560: the request is accepted here; the sandbox row (and so the stage table) exists only after the fork.
   const acceptedAt = performance.now();
-  try {
-    validateSkillPins(request.skills ?? []);
-  } catch {
-    throw new LaunchError(
-      "invalid_request",
-      "Skills require distinct org/slug@exact-version or slug@exact-version pins (maximum 20).",
-    );
-  }
+  validateLaunchSkillPins(request.skills ?? []);
   if (request.skipSkillDefaults !== undefined && typeof request.skipSkillDefaults !== "boolean")
     throw new LaunchError("invalid_request", "skipSkillDefaults must be a boolean.");
   if (request.stopWhenWorkMerged !== undefined && typeof request.stopWhenWorkMerged !== "boolean")
@@ -320,32 +336,17 @@ export async function launchSandbox(
       "The experimental runtime supports ordinary Boat or Modal Codex/Claude/OpenCode workers only.",
     );
   const prompt = checkPrompt(request.prompt);
-  const preference = await stores.credentials.defaults?.(actor, harness);
-  if (preference && (request.credentialId === undefined || request.credentialId === preference.credentialId)) {
-    request = {
-      ...request,
-      ...(request.credentialId === undefined && preference.credentialId
-        ? { credentialId: preference.credentialId }
-        : {}),
-      ...(request.model === undefined && preference.model ? { model: preference.model } : {}),
-    };
-  }
+  request = applyLaunchAccountDefaults(request, await stores.credentials.defaults?.(actor, harness));
   const choice = checkModel(provider, harness, request, Boolean(runtime));
 
-  const defaults = !request.skipSkillDefaults ? await stores.skillDefaults?.resolve(actor, golden) : undefined;
-  try {
-    request = {
-      ...request,
-      skills: mergeSkillPins(
-        defaults?.environment ?? [],
-        defaults?.org ?? [],
-        defaults?.personal ?? [],
-        request.skills ?? [],
-      ),
-    };
-  } catch {
-    throw new LaunchError("invalid_request", "Merged skills exceed 20 distinct exact pins.");
-  }
+  request = {
+    ...request,
+    skills: await resolveLaunchSkills(
+      request,
+      () => stores.skillDefaults?.resolve(actor, golden),
+      () => new LaunchError("invalid_request", "Merged skills exceed 20 distinct exact pins."),
+    ),
+  };
   if (request.skills?.length && !stores.sandboxes.recordSkills)
     throw new LaunchError("invalid_request", "Skill receipts are not supported by this store.");
 
@@ -391,14 +392,17 @@ export async function launchSandbox(
   // Public launch visibility cannot change access or source authority. Only the
   // trusted managed-parent caller may narrow sandbox access; the source stays unchanged.
   const visibility = options.privateParent || options.privateVisibility ? "private" : golden.visibility;
-  const connectionIds = [
-    ...new Set(request.connections ?? (await stores.connections?.defaults?.(actor, visibility)) ?? []),
-  ];
-  if (runtime && request.helperCapabilities?.length)
-    throw new LaunchError("invalid_request", "The experimental runtime does not yet support helpers.");
-  if (connectionIds.length && !stores.connections)
-    throw new LaunchError("invalid_request", "MCP launch connections are not configured.");
-  await stores.connections?.validate(actor, connectionIds, visibility);
+  const connectionIds = await resolveLaunchConnections(
+    request.connections,
+    () => stores.connections?.defaults?.(actor, visibility),
+    async (ids) => {
+      if (runtime && request.helperCapabilities?.length)
+        throw new LaunchError("invalid_request", "The experimental runtime does not yet support helpers.");
+      if (ids.length && !stores.connections)
+        throw new LaunchError("invalid_request", "MCP launch connections are not configured.");
+      await stores.connections?.validate(actor, ids, visibility);
+    },
+  );
   const snapshot = golden.providerSnapshotId;
   if (!snapshot) throw new GoldenError("conflict", `Golden '${golden.name}' has no snapshot yet.`);
   const credentials = await stores.credentials.resolve(actor, harness, request.credentialId, options.credentialVersion);
@@ -424,7 +428,7 @@ export async function launchSandbox(
   ) {
     // Re-enter through the shared runtime selection before allocating compute.
     // Its resolver excludes native GitHub/model environment delivery.
-    return launchSandbox(provider, stores, actor, request, {
+    return resolveLaunchPlan(provider, stores, actor, request, {
       ...options,
       boatRuntimeDefault: options.boatEndpointRuntime,
     });
@@ -469,6 +473,78 @@ export async function launchSandbox(
   const secrets = connected ? [...credentials.secrets, connected.token] : credentials.secrets;
 
   await stores.credentials.authorizeRepositories?.(actor, credentials, golden.config.repos);
+  return {
+    acceptedAt,
+    provider,
+    stores,
+    request,
+    options,
+    golden,
+    runtime,
+    harness,
+    prompt,
+    choice,
+    ttlSeconds,
+    extensionHeadroom,
+    repositoryDir,
+    resourceProject,
+    machineSize,
+    prepareNativeCwd,
+    visibility,
+    connectionIds,
+    snapshot,
+    credentials,
+    github,
+    connected,
+    env,
+    secrets,
+  };
+}
+
+/**
+ * Forks a golden into a sandbox, brings its repos up to date, runs its init commands and, with a
+ * prompt, starts the agent.
+ *
+ * The caller's own database role does the reads and writes: a private golden of someone else is
+ * `not_found`. The fork starts from the stored snapshot name, gets `noEnv` and an environment with
+ * only the credentials of this harness (user over org), and never writes them to the golden. A fork
+ * inherits neither TTL nor labels, so both are set here. When anything fails after the fork the
+ * sandbox is recorded as `failed` and its machine is stopped.
+ */
+export async function launchSandbox(
+  initialProvider: Provider,
+  initialStores: LaunchStores,
+  actor: GoldenActor,
+  initialRequest: LaunchRequest,
+  initialOptions: LaunchOptions = {},
+): Promise<LaunchResult> {
+  const plan = await resolveLaunchPlan(initialProvider, initialStores, actor, initialRequest, initialOptions);
+  const {
+    acceptedAt,
+    provider,
+    stores,
+    request,
+    options,
+    golden,
+    runtime,
+    harness,
+    prompt,
+    choice,
+    ttlSeconds,
+    extensionHeadroom,
+    repositoryDir,
+    resourceProject,
+    machineSize,
+    prepareNativeCwd,
+    visibility,
+    connectionIds,
+    snapshot,
+    credentials,
+    github,
+    connected,
+    env,
+    secrets,
+  } = plan;
   const id = (options.newId ?? (() => crypto.randomUUID()))();
   const releaseOperation = await stores.goldens.beginOperation?.(golden.id, {
     kind: "launch",
@@ -478,8 +554,10 @@ export async function launchSandbox(
   let childRecorded = false;
   let noAllocation = true;
   try {
-    await stores.credentials.admit?.(actor, credentials, id, choice.model);
-    await options.beforeFork?.(id);
+    await admitLaunchPlan(
+      () => stores.credentials.admit?.(actor, credentials, id, choice.model),
+      () => options.beforeFork?.(id),
+    );
     noAllocation = false;
     const forked = await provider
       .fork({
@@ -1220,7 +1298,7 @@ function checkModel(provider: Provider, harness: Harness, request: LaunchRequest
 /** Refused when the golden's provider cannot keep a machine that long: never clamped. */
 function checkTtl(provider: SandboxProviderId, ttlSeconds: number): number {
   const limits = PROVIDER_LIMITS[provider];
-  if (!Number.isInteger(ttlSeconds) || ttlSeconds < 1 || ttlSeconds > limits.maxTtlSeconds) {
+  if (!isLaunchTtlSeconds(provider, ttlSeconds)) {
     throw new LaunchError(
       "invalid_request",
       `The TTL must be a whole number of seconds from 1 to ${limits.maxTtlSeconds} (${limits.maxTtlLabel} on ${provider}).`,

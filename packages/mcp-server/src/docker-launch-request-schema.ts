@@ -1,4 +1,10 @@
-import { type DockerLaunchRequest, HARNESSES, MAX_MCP_CONNECTIONS, SKILL_PIN_PATTERN } from "@armada/core";
+import {
+  type DockerLaunchRequest,
+  HARNESSES,
+  MAX_MCP_CONNECTIONS,
+  PROVIDER_LIMITS,
+  SKILL_PIN_PATTERN,
+} from "@armada/core";
 import { z } from "zod";
 import { DOCKER_PROMPT } from "./docker-send-request-schema.ts";
 
@@ -24,7 +30,7 @@ const dockerLaunchFields = {
   prompt: DOCKER_PROMPT.optional().describe("First prompt: not blank. The whole request body is limited to 128 KiB."),
   model: z.string().optional(),
   reasoningEffort: z.string().optional(),
-  ttlSeconds: z.number().int().min(1).max(86400).optional(),
+  ttlSeconds: z.number().int().min(1).max(PROVIDER_LIMITS.docker.maxTtlSeconds).optional(),
   visibility: z.literal("private").optional(),
   skills: z.array(z.string().regex(SKILL_PIN_PATTERN)).max(20).optional(),
   skipSkillDefaults: z.boolean().optional(),
