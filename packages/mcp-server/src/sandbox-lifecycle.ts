@@ -76,7 +76,7 @@ export function createSandboxLifecycle(
           where candidate.provider = $2 and candidate.status not in ('stopped','deleted')
           and not exists(select 1 from public.orchestrators parent where parent.sandbox_id=candidate.id)
           and not exists(select 1 from public.provider_launch_requests r
-            where r.sandbox_id=candidate.id and r.phase in ('queued','booting'))
+            where r.sandbox_id=candidate.id and (r.phase in ('queued','booting','cleanup_pending') or (r.phase='failed' and r.fence_id is not null)))
           and not (candidate.status='failed' and candidate.stopped_at is not null)
           and candidate.reconcile_after<=now()
           and (candidate.activity_until is null or candidate.activity_until<now())

@@ -32,7 +32,7 @@ type Claim = {
   sandbox_id: string;
   lease_epoch: string;
   request_enc: Uint8Array<ArrayBuffer>;
-  phase: "queued" | "booting";
+  phase: "queued" | "booting" | "cleanup_pending";
   org_id: string;
   owner_id: string;
   provider_sandbox_id: string;
@@ -40,6 +40,7 @@ type Claim = {
 };
 const DEADLINE_MS = 15 * 60_000;
 const MAX_CONCURRENT_BOOTS = 4;
+const CLEANUP_ATTEMPT_MS = 30_000;
 const BOOT_ALLOWED = `s.status='starting' and s.stop_requested_at is null
   and (s.credential_id is null or exists(select 1 from public.credentials c
     where c.id=s.credential_id and c.version=s.credential_version and c.status='active'
@@ -212,7 +213,7 @@ export function createModalBootWorker(
          where sandbox_id=$1`,
         [
           id,
-          succeeded ? "succeeded" : cancelled ? "cancelled" : "failed",
+          keepFence ? "cleanup_pending" : succeeded ? "succeeded" : cancelled ? "cancelled" : "failed",
           JSON.stringify(outcome),
           keepFence,
           recoveryInput,
@@ -277,13 +278,15 @@ export function createModalBootWorker(
         await settle(claim, { reason: "cancelled_before_boot", cancelled: true }, false);
         return;
       }
-      const cleanup = live?.cancelled === true && claim.phase === "booting";
-      if (cleanup && live.expired) {
+      const recovery = claim.phase === "cleanup_pending";
+      const cleanup = recovery || (live?.cancelled === true && claim.phase === "booting");
+      if (!recovery && cleanup && live?.expired) {
         await settle(claim, { reason: "cancelled_boot_outcome_unknown" }, true);
         return;
       }
       if (!live?.role || !live.same_actor || (!cleanup && !live.allowed)) {
-        await settle(claim, { reason: "admission_expired_or_revoked" }, claim.phase === "booting");
+        if (recovery) await reschedule();
+        else await settle(claim, { reason: "admission_expired_or_revoked" }, claim.phase === "booting");
         return;
       }
       const pinned = JSON.parse(await decryptSecret(claim.request_enc, encryptionKey)) as PinnedFork;
@@ -304,7 +307,8 @@ export function createModalBootWorker(
           management?.scope !== pinned.management.scope ||
           management.ownerId !== pinned.management.ownerId
         ) {
-          await settle(claim, { reason: "provider_authority_changed" }, claim.phase === "booting");
+          if (recovery) await reschedule();
+          else await settle(claim, { reason: "provider_authority_changed" }, claim.phase === "booting");
           return;
         }
       } catch {
@@ -315,7 +319,7 @@ export function createModalBootWorker(
         await reschedule();
         return;
       }
-      const liveDispatch = async (cancelled: boolean) =>
+      const liveDispatch = async () =>
         (
           await sql.query<{ expired: boolean }>(
             `select r.dispatch_deadline<=clock_timestamp() as expired
@@ -323,24 +327,28 @@ export function createModalBootWorker(
              join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
              join public.mcp_actor_epochs e on e.org_id=m.org_id and e.user_id=m.user_id
              where r.sandbox_id=$1 and r.lease_owner=$2 and r.lease_epoch=$3
-               and r.lease_expires_at>clock_timestamp() and r.phase='booting' and e.epoch=r.actor_epoch
-               and ${cancelled ? "s.status='stopping' and s.stop_requested_at is not null" : BOOT_ALLOWED}`,
+               and r.lease_expires_at>clock_timestamp() and e.epoch=r.actor_epoch
+               and ${
+                 recovery
+                   ? "r.phase='cleanup_pending' and r.fence_id is not null"
+                   : `r.phase='booting' and ${cleanup ? "s.status='stopping' and s.stop_requested_at is not null" : BOOT_ALLOWED}`
+               }`,
             token,
           )
         ).rows[0];
       const guardDispatch = async () => {
-        const dispatch = await liveDispatch(cleanup);
-        if (!accepting || signal.aborted || !dispatch || dispatch.expired)
+        const dispatch = await liveDispatch();
+        if (!accepting || signal.aborted || !dispatch || (!recovery && dispatch.expired))
           throw new LaunchError("outcome_unknown", "Modal dispatch authority expired or changed.", { sandboxId: id });
       };
       if (cleanup) {
-        const dispatch = await liveDispatch(true);
+        const dispatch = await liveDispatch();
         if (signal.aborted) return;
         if (!accepting || !dispatch) {
           await reschedule();
           return;
         }
-        if (dispatch.expired) {
+        if (!recovery && dispatch.expired) {
           await settle(claim, { reason: "cancelled_boot_outcome_unknown" }, true);
           return;
         }
@@ -351,11 +359,17 @@ export function createModalBootWorker(
           const removed = await provider.delete({ sandboxId: claim.provider_sandbox_id }, guardDispatch);
           if (signal.aborted) return;
           if (removed.status === "deleted") {
-            await settle(claim, { reason: "cancelled_during_boot", cancelled: true }, false);
+            await settle(
+              claim,
+              live.cancelled
+                ? { reason: "cancelled_during_boot", cancelled: true }
+                : { reason: "failed_boot_allocation_removed" },
+              false,
+            );
             return;
           }
         } catch {
-          // Preserve the request until cleanup can be retried or the deadline expires.
+          // Preserve the request until cleanup can be retried.
         }
         if (signal.aborted) return;
         await reschedule();
@@ -447,11 +461,16 @@ export function createModalBootWorker(
           `with due as (
            select r.sandbox_id,s.org_id,s.owner_id,s.provider_sandbox_id
            from public.provider_launch_requests r join public.sandboxes s on s.id=r.sandbox_id
-           where s.provider='modal' and r.phase in ('queued','booting') and r.next_attempt_at<=now()
+           where s.provider='modal'
+           and (r.phase in ('queued','booting','cleanup_pending')
+             or (r.phase='failed' and r.fence_id is not null and r.request_enc is not null))
+           and r.next_attempt_at<=now()
            and (r.lease_expires_at is null or r.lease_expires_at<=now())
            order by r.next_attempt_at,r.created_at,r.sandbox_id limit 1 for update of r skip locked
          ) update public.provider_launch_requests r set lease_owner=$1,lease_epoch=r.lease_epoch+1,
-           lease_expires_at=now()+interval '45 seconds' from due where r.sandbox_id=due.sandbox_id
+           lease_expires_at=now()+interval '45 seconds',
+           phase=case when r.phase='failed' then 'cleanup_pending' else r.phase end
+           from due where r.sandbox_id=due.sandbox_id
            returning r.sandbox_id,r.lease_epoch::text,r.phase,r.request_enc,due.org_id,due.owner_id,due.provider_sandbox_id,
            greatest(0,ceil(extract(epoch from (r.dispatch_deadline-clock_timestamp()))*1000))::integer as remaining_ms`,
           [owner],
@@ -460,7 +479,8 @@ export function createModalBootWorker(
       if (!claim) return false;
       const controller = new AbortController();
       // Already expired rows still need a local terminal transition.
-      const deadline = claim.remaining_ms > 0 ? setTimeout(() => controller.abort(), claim.remaining_ms) : undefined;
+      const attemptMs = claim.phase === "cleanup_pending" ? CLEANUP_ATTEMPT_MS : claim.remaining_ms;
+      const deadline = attemptMs > 0 ? setTimeout(() => controller.abort(), attemptMs) : undefined;
       deadline?.unref();
       const elapsed = new Promise<void>((resolve) =>
         controller.signal.addEventListener("abort", () => resolve(), { once: true }),

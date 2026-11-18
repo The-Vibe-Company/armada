@@ -446,7 +446,7 @@ export function createSqlData(
             `update public.sandboxes s set stop_requested_at=coalesce(s.stop_requested_at,now()),
                status='stopping', transition_context=jsonb_build_object('actor','api','code','sandbox_stopping')
              where s.id=$1 and exists(select 1 from public.provider_launch_requests r
-               where r.sandbox_id=s.id and r.phase in ('queued','booting')) returning s.id`,
+               where r.sandbox_id=s.id and (r.phase in ('queued','booting','cleanup_pending') or (r.phase='failed' and r.fence_id is not null))) returning s.id`,
             [id],
           );
           return result.rows.length === 1;
@@ -817,7 +817,7 @@ export function createSqlData(
         const admission = !!patch.advanceGeneration && !!patch.activityToken;
         if (admission)
           fence += ` and not exists(select 1 from public.provider_launch_requests r
-            where r.sandbox_id=s.id and r.phase in ('queued','booting'))`;
+            where r.sandbox_id=s.id and (r.phase in ('queued','booting','cleanup_pending') or (r.phase='failed' and r.fence_id is not null)))`;
         // A refused delete admission names its predicates from the CAS statement's own snapshot,
         // not a later read that a concurrent lease release could already have cleared. A row
         // changed while this statement waited on its lock is rechecked at its newest version,

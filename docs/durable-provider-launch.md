@@ -171,6 +171,9 @@ This path depends on the previously added `provider_launch_requests` migration.
 Modal locks the snapshot source row only through the transaction that pins the
 image in the child reservation. A successor can recover that reservation directly
 once the renewable child lease expires. The worker checks its persisted lease,
-deadline and cancellation immediately before adapter allocation and cleanup.
-The next stages cover continued cleanup of unresolved forks beyond the dispatch deadline,
-durable initialization and initial-prompt checkpoints, versioned async clients, and Boat admission after recovery is proven.
+deadline and cancellation immediately before adapter allocation. Once dispatch
+expires, unresolved allocations enter leased, delete-only cleanup under the
+original Modal authority. The worker clears the recovery request and golden
+fence in one transaction after the adapter confirms removal. Ambiguous name
+lookups or unavailable authority leave cleanup pending.
+The next stages cover durable initialization and initial-prompt checkpoints, versioned async clients, and Boat admission after recovery is proven.

@@ -143,15 +143,18 @@ test.each([
     if (expiredBeforeClaim) await expire();
     let resolutions = 0;
     let deletes = 0;
+    let allowRemoval = false;
     const cancelling = createModalBootWorker(sql, ENCRYPTION_KEY, async () => {
       resolutions++;
       if (!expiredInsideAdapter) await expire();
       return {
         ...provider,
-        async delete(_request, guard) {
+        async delete(request, guard) {
+          expect(request.sandboxId).toBe(providerSandboxId);
           await expire();
           await guard?.();
           deletes++;
+          if (!allowRemoval) throw new Error("Modal removal is uncertain.");
           return { status: "deleted" };
         },
       };
@@ -168,7 +171,28 @@ test.each([
     expect(resolutions).toBe(expiredBeforeClaim ? 0 : 1);
     expect(deletes).toBe(0);
     expect(attempts).toBe(1);
-    expect(await persisted()).toMatchObject({ phase: "failed", status: "stopping", fenced: true, sealed: true });
+    expect(await persisted()).toMatchObject({
+      phase: "cleanup_pending",
+      status: "stopping",
+      fenced: true,
+      sealed: true,
+    });
+    await db.query("select set_config('request.jwt.claim.sub',$1,false)", [people.owner]);
+    await expect(db.query("select remove_golden($1)", [golden.id])).rejects.toThrow("unresolved");
+    await db.query("update provider_launch_requests set next_attempt_at=now() where sandbox_id=$1", [id]);
+    expect(await cancelling.reconcileOne(signal)).toBe(true);
+    await cancelling.drain();
+    expect(await persisted()).toMatchObject({ phase: "cleanup_pending", fenced: true, sealed: true });
+    allowRemoval = true;
+    await db.query("update provider_launch_requests set next_attempt_at=now() where sandbox_id=$1", [id]);
+    expect(await cancelling.reconcileOne(signal)).toBe(true);
+    await cancelling.drain();
+    expect(deletes).toBe(2);
+    expect(attempts).toBe(1);
+    expect(await persisted()).toMatchObject({ phase: "cancelled", status: "stopped", fenced: false, sealed: false });
+    expect((await db.query("select remove_golden($1) as removed_at", [golden.id])).rows[0]).toMatchObject({
+      removed_at: expect.any(Date),
+    });
     return;
   }
 
