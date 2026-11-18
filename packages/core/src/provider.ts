@@ -113,6 +113,9 @@ export interface Provider {
     requestKey: string;
     ownerId: string;
     target: ProviderTarget;
+    /** The job's recorded, confirmed-unpublished artifact, already retired AND collected. Snapshot
+     * history consisting only of this artifact is then no reason to retain the builder. */
+    collected?: string;
   }): Promise<{ sandboxId: string; disposition: "disposable" | "retained" } | null>;
   /** Recovery-only disposal, rechecking exact reservation/provenance/retention under the
    * provider lifecycle lease. Never invokes create, build commands or snapshot cleanup. */
@@ -121,6 +124,8 @@ export interface Provider {
     ownerId: string;
     target: ProviderTarget;
     sandboxId: string;
+    /** See findGoldenBuilder. */
+    collected?: string;
   }): Promise<DeleteReceipt>;
   /** Authorized credential-free golden restoration, never a normal agent fork. Source is derived
    * exclusively from the bound snapshot; optional prior ID must match that image's own source. */
