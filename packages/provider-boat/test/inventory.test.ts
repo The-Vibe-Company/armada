@@ -27,9 +27,12 @@ test("Boat inventory uses the deployment label on managed forks and rechecks sco
     { body: { sandboxes: [owned], pageInfo: { hasMore: false, nextCursor: null } } },
   );
   const inventory = createBoatProvider({ apiKey: KEY, deploymentId, fetch: listing.fetch });
-  const rows = [];
-  for await (const item of inventory.listSandboxInventory()) rows.push(item);
-  expect(rows).toEqual([{ sandboxId: "bx_23456789", deploymentId, createdAt: new Date("2026-11-09T09:00:00Z") }]);
+  const first = await inventory.listSandboxInventory();
+  expect(first).toEqual({ items: [], cursor: "page-two" });
+  expect(await inventory.listSandboxInventory({ cursor: "page-two" })).toEqual({
+    items: [{ sandboxId: "bx_23456789", deploymentId, createdAt: new Date("2026-11-09T09:00:00Z") }],
+    cursor: null,
+  });
   expect(listing.requests.map((request) => [request.query.get("label"), request.query.get("cursor")])).toEqual([
     [`${deploymentLabel}=${labels[deploymentLabel]}`, null],
     [`${deploymentLabel}=${labels[deploymentLabel]}`, "page-two"],
@@ -38,7 +41,6 @@ test("Boat inventory uses the deployment label on managed forks and rechecks sco
 
 test("Boat inventory makes no account-wide request when the deployment is unbound", async () => {
   const boat = fakeBoat();
-  const iterator = boat.provider.listSandboxInventory()[Symbol.asyncIterator]();
-  expect((await iterator.next()).done).toBe(true);
+  expect(await boat.provider.listSandboxInventory()).toEqual({ items: [], cursor: null });
   expect(boat.requests).toHaveLength(0);
 });

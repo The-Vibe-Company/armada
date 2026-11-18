@@ -205,9 +205,10 @@ interface BoatRuntimeHost {
 export interface BoatProvider extends Provider {
   /** Report-only observations from Boat's label-filtered sandbox API. The timestamps
    * and IDs describe logical sandboxes. Resume can replace the underlying machine. */
-  listSandboxInventory(
-    signal?: AbortSignal,
-  ): AsyncIterable<{ sandboxId: string; deploymentId: string; createdAt: Date }>;
+  listSandboxInventory(request?: {
+    cursor?: string;
+    signal?: AbortSignal;
+  }): Promise<Page<{ sandboxId: string; deploymentId: string; createdAt: Date }>>;
   /** Ordinary VM activation only. Does not restore or verify a native harness session. */
   resumeBestEffort(sandboxId: string): Promise<void>;
   /** One ordinary stop dispatch followed by bounded reads of its exact archival operation. */
@@ -682,38 +683,34 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       return page((response.sandboxes ?? []).map(sandboxInfo), response.pageInfo);
     },
 
-    async *listSandboxInventory(signal) {
-      if (!deploymentId || !deploymentLabel) return;
-      const seenCursors = new Set<string>();
-      let cursor: string | undefined;
-      while (true) {
-        signal?.throwIfAborted();
-        const timeout = AbortSignal.timeout(10_000);
-        const response = await call<SandboxListResponse>(() =>
-          api.sandboxes(
-            { label: [`${DEPLOYMENT_LABEL}=${deploymentLabel}`], sort: "desc", ...(cursor ? { cursor } : {}) },
-            { signal: signal ? AbortSignal.any([signal, timeout]) : timeout },
-          ),
-        );
-        for (const sandbox of response.sandboxes ?? []) {
-          signal?.throwIfAborted();
-          if (
-            sandbox.labels?.[DEPLOYMENT_LABEL] === deploymentLabel &&
-            sandbox.labels.armada === "sandbox" &&
-            sandbox.machineProvider &&
-            sandbox.id?.trim() &&
-            sandbox.createdAt &&
-            Number.isFinite(sandbox.createdAt.getTime())
-          ) {
-            yield { sandboxId: sandbox.id, deploymentId, createdAt: sandbox.createdAt };
-          }
-        }
-        if (!response.pageInfo?.hasMore) return;
-        const next = response.pageInfo.nextCursor;
-        if (!next || seenCursors.has(next)) throw unexpectedAnswer("sandbox inventory cursor");
-        seenCursors.add(next);
-        cursor = next;
+    async listSandboxInventory({ cursor, signal } = {}) {
+      if (!deploymentId || !deploymentLabel) return { items: [], cursor: null };
+      signal?.throwIfAborted();
+      const timeout = AbortSignal.timeout(10_000);
+      const response = await call<SandboxListResponse>(() =>
+        api.sandboxes(
+          { label: [`${DEPLOYMENT_LABEL}=${deploymentLabel}`], sort: "desc", ...(cursor ? { cursor } : {}) },
+          { signal: signal ? AbortSignal.any([signal, timeout]) : timeout },
+        ),
+      );
+      signal?.throwIfAborted();
+      if (response.pageInfo?.hasMore && (!response.pageInfo.nextCursor || response.pageInfo.nextCursor === cursor)) {
+        throw unexpectedAnswer("sandbox inventory cursor");
       }
+      const items = [];
+      for (const sandbox of response.sandboxes ?? []) {
+        if (
+          sandbox.labels?.[DEPLOYMENT_LABEL] === deploymentLabel &&
+          sandbox.labels.armada === "sandbox" &&
+          sandbox.machineProvider &&
+          sandbox.id?.trim() &&
+          sandbox.createdAt &&
+          Number.isFinite(sandbox.createdAt.getTime())
+        ) {
+          items.push({ sandboxId: sandbox.id, deploymentId, createdAt: sandbox.createdAt });
+        }
+      }
+      return page(items, response.pageInfo);
     },
 
     async configureReadableVariables({ sandboxId, harness, variables }) {
