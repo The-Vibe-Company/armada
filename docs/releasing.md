@@ -283,14 +283,15 @@ admitted deployments finish safely. Preparation and dry runs briefly serialize o
 the lock too, but do not create a separate reservation or read production configuration.
 
 A `workflow_run` completion wakeup (success, failure or cancellation) is the
-sole automatic ordinary staging trigger. GitHub supplies the default-branch
-SHA for the completion event. The deploy step checks that SHA against main
-before mutation, so a newer push can supersede queued work. Repeated wakeups
-share the latest-main group. A wakeup coalesces when a trusted ordinary run
-successfully deployed and smoked the same SHA and staging health still identifies
-it as live. This includes existing push runs during the transition. It reports a
-neutral coalescing summary. Unavailable or ambiguous evidence falls back to
-deployment. Pinned release calls always require
+sole automatic ordinary staging trigger. The wakeup resolves current main
+after acquiring the shared lock. The deploy step rechecks the SHA before
+mutation. Repeated wakeups share the latest-main group. A wakeup coalesces
+when a trusted ordinary run successfully deployed and smoked the checked-out
+SHA and staging health still identifies it as live. For a failed or cancelled
+Release, that deployment must have started after the Release finished to rule
+out partial changes from the failed attempt. This includes existing push runs
+during the transition. Coalescing reports a neutral summary. Unavailable or
+ambiguous evidence falls back to deployment. Pinned release calls always require
 fresh exact-schema acceptance and never use this optimization.
 Manual workflow_dispatch uses the same lock and proceeds too. Waiting admission
 is visibly queued in Actions, never a green deployment with every mutation skipped.

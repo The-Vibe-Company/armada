@@ -8,7 +8,7 @@ test("only authentic exact-SHA deployment plus smoke evidence permits reuse", ()
     run_attempt: 2,
     head_repository: { full_name: "owner/repo" },
     path: ".github/workflows/staging-gated-production.yml",
-    event: "workflow_run",
+    event: "push",
     head_branch: "main",
     head_sha: sha,
     status: "completed",
@@ -29,7 +29,6 @@ test("only authentic exact-SHA deployment plus smoke evidence permits reuse", ()
   };
   const accepts = (r = run, jobs = [job]) => authenticStagingEvidence(r, jobs, "owner/repo", sha);
   expect(accepts()).toBe(true);
-  expect(accepts({ ...run, event: "push" })).toBe(true);
   for (const patch of [
     { head_repository: { full_name: "fork/repo" } },
     { path: ".github/workflows/release.yml" },
@@ -69,28 +68,36 @@ test("repeated Release completions coalesce only when the successfully smoked so
     path: ".github/workflows/staging-gated-production.yml",
     event: "workflow_run",
     head_branch: "main",
-    head_sha: sha,
+    head_sha: "c".repeat(40),
     status: "completed",
     conclusion: "success",
   };
-  const steps = ["Migrate then deploy pinned server and dashboard", "Smoke pinned staging"].map((name) => ({
+  const steps = [`Migrate then deploy pinned server and dashboard (${sha})`, "Smoke pinned staging"].map((name) => ({
     name,
     status: "completed",
     conclusion: "success",
+    started_at: "2026-11-16T20:54:14Z",
   }));
   const job = {
     name: "staging",
     run_id: 42,
     run_attempt: 1,
-    head_sha: sha,
+    head_sha: "c".repeat(40),
     status: "completed",
     conclusion: "success",
     steps,
   };
   const health = { ok: true, version: "2.49.6", commit: sha };
-  const accepts = (live: unknown = health, jobs = [job]) =>
-    authenticWakeupEvidence(run, jobs, "owner/repo", sha, live, "2.49.6");
+  const accepts = (live: unknown = health, jobs = [job], deployedAfter?: string) =>
+    authenticWakeupEvidence(run, jobs, "owner/repo", sha, live, "2.49.6", deployedAfter);
   expect(accepts()).toBe(true);
+  expect(accepts(health, [job], "2026-11-16T20:54:15Z")).toBe(false);
+  expect(accepts(health, [job], "2026-11-16T20:54:10Z")).toBe(true);
+  expect(
+    accepts(health, [
+      { ...job, steps: [{ ...steps[0]!, name: "Migrate then deploy pinned server and dashboard" }, steps[1]!] },
+    ]),
+  ).toBe(false);
   expect(accepts({ ...health, commit: "b".repeat(40) })).toBe(false);
   expect(accepts(health, [{ ...job, conclusion: "failure" }])).toBe(false);
 });

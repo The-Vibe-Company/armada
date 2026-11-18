@@ -6,6 +6,7 @@ export function authenticStagingEvidence(
   jobs: Record<string, unknown>[],
   repository: string,
   sha: string,
+  deployedAfter?: string,
 ): boolean {
   const head = run.head_repository as { full_name?: string } | undefined;
   if (
@@ -14,7 +15,7 @@ export function authenticStagingEvidence(
     run.path !== ".github/workflows/staging-gated-production.yml" ||
     (run.event !== "workflow_run" && run.event !== "push") ||
     run.head_branch !== "main" ||
-    run.head_sha !== sha ||
+    (run.event === "push" && run.head_sha !== sha) ||
     run.status !== "completed" ||
     run.conclusion !== "success" ||
     !Number.isSafeInteger(run.id) ||
@@ -28,16 +29,22 @@ export function authenticStagingEvidence(
     !job ||
     job.run_id !== run.id ||
     job.run_attempt !== run.run_attempt ||
-    job.head_sha !== sha ||
+    job.head_sha !== run.head_sha ||
     job.status !== "completed" ||
     job.conclusion !== "success" ||
     !Array.isArray(job.steps)
   )
     return false;
-  return ["Migrate then deploy pinned server and dashboard", "Smoke pinned staging"].every((name) => {
+  const successfulStep = (name: string) => {
     const steps = (job.steps as Record<string, unknown>[]).filter((step) => step.name === name);
-    return steps.length === 1 && steps[0]?.status === "completed" && steps[0]?.conclusion === "success";
-  });
+    const step = steps[0];
+    return steps.length === 1 && step?.status === "completed" && step.conclusion === "success" ? step : undefined;
+  };
+  const deploymentName = "Migrate then deploy pinned server and dashboard";
+  const deployment = successfulStep(run.event === "workflow_run" ? `${deploymentName} (${sha})` : deploymentName);
+  if (!deployment || !successfulStep("Smoke pinned staging")) return false;
+  if (deployedAfter === undefined) return true;
+  return Date.parse(String(deployment.started_at ?? "")) >= Date.parse(deployedAfter);
 }
 
 /** A wakeup can reuse a successful deployment only while that exact source is live. */
@@ -48,8 +55,11 @@ export function authenticWakeupEvidence(
   sha: string,
   health: unknown,
   version: string,
+  deployedAfter?: string,
 ): boolean {
-  return authenticStagingEvidence(run, jobs, repository, sha) && matchesDeploymentHealth(health, version, sha);
+  return (
+    authenticStagingEvidence(run, jobs, repository, sha, deployedAfter) && matchesDeploymentHealth(health, version, sha)
+  );
 }
 
 if (import.meta.main) {
@@ -67,8 +77,11 @@ if (import.meta.main) {
       if (!response.ok) throw new Error("Evidence API unavailable");
       return (await response.json()) as T;
     };
+    const release = (await Bun.file(process.env.GITHUB_EVENT_PATH as string).json()).workflow_run;
+    // A failed or cancelled Release can leave staging partially deployed.
+    const deployedAfter = release?.conclusion === "success" ? undefined : String(release?.updated_at ?? "");
     const runs = await api<{ workflow_runs: (Record<string, unknown> & { id: number; run_attempt: number })[] }>(
-      `actions/workflows/staging-gated-production.yml/runs?branch=main&head_sha=${encodeURIComponent(sha)}&status=success&per_page=20`,
+      `actions/workflows/staging-gated-production.yml/runs?branch=main&status=success&per_page=20`,
     );
     const response = await fetch(`${process.env.ARMADA_SERVER_URL?.replace(/\/$/, "")}/healthz`, {
       signal: AbortSignal.timeout(15_000),
@@ -82,7 +95,17 @@ if (import.meta.main) {
         `actions/runs/${run.id}/attempts/${run.run_attempt}/jobs?per_page=100`,
       );
       if (result.total_count > 100) continue;
-      if (authenticWakeupEvidence(run, result.jobs, repository, sha, health, process.env.RELEASE_VERSION ?? "")) {
+      if (
+        authenticWakeupEvidence(
+          run,
+          result.jobs,
+          repository,
+          sha,
+          health,
+          process.env.RELEASE_VERSION ?? "",
+          deployedAfter,
+        )
+      ) {
         console.log(`Reusing authenticated staging run ${run.id} for ${sha}`);
         reused = true;
         break;

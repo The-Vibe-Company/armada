@@ -79,7 +79,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ inputs.source_sha || github.sha }}
+          ref: ${{ inputs.source_sha || (github.event_name == 'workflow_run' && 'main') || github.sha }}
           persist-credentials: false
       - uses: ./.github/actions/setup-bun
       - name: Authenticate ordinary staging source after acquiring admission
@@ -147,7 +147,9 @@ jobs:
       - name: Install pinned deployment clients
         if: (steps.evidence.outputs.reused != 'true')
         run: npm install --global @railway/cli@5.71.0 vercel@65.14.0
-      - name: Migrate then deploy pinned server and dashboard
+      # Stamp the checked-out SHA in ordinary wakeup evidence. GitHub run metadata
+      # can describe an older main tip than the source resolved under the lock.
+      - name: Migrate then deploy pinned server and dashboard${{ github.event_name == 'workflow_run' && inputs.source_sha == '' && format(' ({0})', env.RELEASE_SHA) || '' }}
         if: (steps.evidence.outputs.reused != 'true')
         id: deployment
         run: bash .release-tools/scripts/release/deploy-production.sh
