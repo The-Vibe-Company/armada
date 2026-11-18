@@ -15,6 +15,7 @@ const wakeup: ReceiptRun = {
 };
 const release: ReceiptRun = {
   ...wakeup,
+  id: 123,
   event: "push",
   path: ".github/workflows/release.yml",
   status: "completed",
@@ -24,6 +25,21 @@ test("completion receipts remain restorable by the shared ordinary and pinned sm
   expect(authenticateSmokeReceipt(wakeup, repository, release)).toBe(true);
   expect(authenticateSmokeReceipt({ ...release, head_branch: "v2.49.4" }, repository)).toBe(true);
   expect(authenticateSmokeReceipt({ ...wakeup, event: "push" }, repository)).toBe(true);
+});
+
+test("a publishing rerun can restore its earlier completion wakeup receipt", () => {
+  const rerun = { ...release, head_branch: "v2.49.4", status: "in_progress", run_attempt: 3 };
+  expect(authenticateSmokeReceipt(wakeup, repository, rerun, release.id)).toBe(true);
+  for (const invalid of [
+    { ...rerun, id: 456 },
+    { ...rerun, run_attempt: 1 },
+    { ...rerun, event: "pull_request" },
+    { ...rerun, path: ".github/workflows/ci.yml" },
+    { ...rerun, head_branch: "feature" },
+    { ...rerun, head_repository: { full_name: "fork/armada" } },
+  ]) {
+    expect(authenticateSmokeReceipt(wakeup, repository, invalid, release.id)).toBe(false);
+  }
 });
 
 test("completion receipt authentication retains repository, workflow and Release provenance boundaries", () => {
