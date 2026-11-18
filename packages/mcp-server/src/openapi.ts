@@ -137,6 +137,8 @@ export async function generateOpenApi() {
       if (tool && route !== "templates/launch") input.properties = { ...input.properties, org: { type: "string" } };
       let request: object = input;
       const maxBodyBytes = controlBodyMaxBytes(route);
+      // The server's own refusal of a body over maxBodyBytes: the vault reader's opaque 400, or 413.
+      const oversizedStatus = vaultControlRoute(route) ? 400 : 413;
       if (route === "sandbox/launch") {
         // One public path, two handlers: provider "docker" is dispatched to the normal Docker launch.
         const { $schema: _golden, ...golden } = input as Record<string, unknown>;
@@ -183,6 +185,7 @@ export async function generateOpenApi() {
               ? `Send at most ${maxBodyBytes} bytes of serialized JSON. The server reads this route with the vault body reader and refuses a larger body with HTTP 400 (code invalid); the dashboard endpoint refuses a body over ${CONTROL_BODY_MAX_BYTES} bytes with HTTP 413. Nothing is dispatched in either case.`
               : `Send at most ${maxBodyBytes} bytes of serialized JSON. The dashboard endpoint refuses a larger body with HTTP 413 without forwarding it, and the server refuses a body over its own limit, which is never lower, with HTTP 413 before any handler runs.`,
             "x-max-body-bytes": maxBodyBytes,
+            "x-oversized-body-status": oversizedStatus,
             content: { "application/json": { schema: request } },
           },
           responses: {
@@ -196,6 +199,14 @@ export async function generateOpenApi() {
                 },
               },
             },
+            ...(oversizedStatus === 400
+              ? {
+                  "400": {
+                    description: `Invalid request, including a serialized body over ${maxBodyBytes} bytes. Nothing was dispatched.`,
+                    content: { "application/json": { schema: { $ref: "#/components/schemas/Failure" } } },
+                  },
+                }
+              : {}),
             "413": {
               description: `The serialized request body exceeds ${CONTROL_BODY_MAX_BYTES} bytes. Nothing was dispatched.`,
               content: { "application/json": { schema: { $ref: "#/components/schemas/Failure" } } },

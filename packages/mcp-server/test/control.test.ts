@@ -895,7 +895,10 @@ describe("control API", () => {
   test("every published route refuses a body over its published limit with its published status", async () => {
     await withServer(async ({ options }) => {
       const published = (await import("../../../docs/openapi.json")).default as unknown as {
-        paths: Record<string, { post: { requestBody: { description: string; "x-max-body-bytes": number } } }>;
+        paths: Record<
+          string,
+          { post: { requestBody: { "x-max-body-bytes": number; "x-oversized-body-status": number } } }
+        >;
       };
       const authorization = `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`;
       // The server reads logs/read with a 512 KiB limit; the dashboard endpoint's lower bound is
@@ -903,7 +906,6 @@ describe("control API", () => {
       for (const route of PUBLISHED_REST_ROUTES.filter((route) => route !== "logs/read")) {
         const { requestBody } = published.paths[`/api/v1/${route}`]!.post;
         const limit = requestBody["x-max-body-bytes"];
-        const status = /HTTP (\d{3})/.exec(requestBody.description)![1];
         const response = await handleControlRequest(
           new Request(`https://armada.test/api/v1/${route}`, {
             method: "POST",
@@ -912,7 +914,7 @@ describe("control API", () => {
           }),
           options,
         );
-        expect({ route, status: response?.status }).toEqual({ route, status: Number(status) });
+        expect({ route, status: response?.status }).toEqual({ route, status: requestBody["x-oversized-body-status"] });
       }
     });
   });
