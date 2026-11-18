@@ -301,3 +301,45 @@ test("full host refusal is an actionable HTTP conflict rather than a generic ser
     message: expect.stringContaining("1/1 sandboxes running; stop one or raise the limit"),
   });
 });
+
+test("a retried preview launch or cleanup records host work only for the request that queued it", async () => {
+  const db = database();
+  const f = await fixture();
+  const observed = async (work: () => Promise<Response>) => {
+    const records: Record<string, unknown>[] = [];
+    const response = (await observeRequest(work, (line) => records.push(JSON.parse(line)))) as Response;
+    return { response, calls: records.filter((record) => record.event === "provider_call") };
+  };
+  const jobs = async () =>
+    Number(
+      (
+        await db.query<{ count: string }>("select count(*)::text as count from docker_host_jobs where host_id=$1", [
+          f.hostId,
+        ])
+      ).rows[0]?.count,
+    );
+  const first = await observed(() => f.post("launch", f.launch));
+  expect(first.response.status).toBe(201);
+  expect(first.calls).toEqual([
+    expect.objectContaining({
+      requestId: first.response.headers.get("x-request-id"),
+      provider: "docker",
+      operation: "reserve",
+      outcome: "ok",
+    }),
+  ]);
+  expect(await jobs()).toBe(1);
+  const replay = await observed(() => f.post("launch", f.launch));
+  expect(replay.response.status).toBe(201);
+  expect(replay.calls).toEqual([]);
+  expect(await jobs()).toBe(1);
+  const stop = { sandboxId: f.launch.requestId, requestId: randomUUID() };
+  const stopped = await observed(() => f.post("stop", stop));
+  expect(stopped.response.status).toBe(202);
+  expect(stopped.calls).toEqual([expect.objectContaining({ operation: "stop", outcome: "ok" })]);
+  expect(await jobs()).toBe(2);
+  const restopped = await observed(() => f.post("stop", stop));
+  expect(restopped.response.status).toBe(202);
+  expect(restopped.calls).toEqual([]);
+  expect(await jobs()).toBe(2);
+});

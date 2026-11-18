@@ -880,8 +880,11 @@ export function createDockerSandboxControls(
           return { handled: true as const, result };
         };
         // Runtime commands record themselves at the shared command boundary (runtime.<op>) and
-        // status/logs only read Armada's database: only host-side controls get a Docker record.
-        return DOCKER_HOST_CONTROLS.has(name) ? await observeProviderCall("docker", name, dispatch) : await dispatch();
+        // status/logs only read Armada's database: only host-side controls get a Docker record, and
+        // only when they admit new work (a retried request_id is answered from the database).
+        return DOCKER_HOST_CONTROLS.has(name)
+          ? await observeProviderCall("docker", name, dispatch, undefined, { replayable: true })
+          : await dispatch();
       } catch (error) {
         if (error instanceof ProviderError) throw error;
         if (error instanceof DockerRetentionEnded)

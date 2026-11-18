@@ -2788,6 +2788,24 @@ test.each(["auth", "auth-deferred", "network"] as const)(
           expect(records.filter((record) => record.event === "provider_call")).toEqual([
             expect.objectContaining({ requestId, provider: "docker", operation: "launch.admit", outcome: "ok" }),
           ]);
+          // A retry of the pending admission is answered from the database: no host job, no record.
+          const jobs = async () =>
+            (
+              await db.query("select request_id from docker_host_jobs where bound_sandbox_id=$1", [
+                admitted?.sandbox.id,
+              ])
+            ).rows.length;
+          const queuedJobs = await jobs();
+          records.length = 0;
+          await observeRequest(
+            async () => {
+              expect((await service.launch(f.caller, request)).sandbox.status).toBe("starting");
+              return new Response(null, { status: 201 });
+            },
+            (line) => records.push(JSON.parse(line)),
+          );
+          expect(records.map((record) => record.event)).toEqual(["http_request"]);
+          expect(await jobs()).toBe(queuedJobs);
           const background = spyOn(console, "error").mockImplementation(() => {});
           const warnings = spyOn(console, "warn").mockImplementation(() => {});
           try {

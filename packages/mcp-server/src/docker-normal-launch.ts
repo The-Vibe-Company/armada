@@ -51,7 +51,7 @@ import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import { resolveDockerSnapshot } from "./docker-snapshot-data.ts";
 import { recordLaunchStageQuietly } from "./launch-stage-record.ts";
-import { continueRequest, currentRequestId, observeProviderCall } from "./request-observability.ts";
+import { continueRequest, currentRequestId, noteAdmission, observeProviderCall } from "./request-observability.ts";
 import { createRuntimeAgent } from "./runtime-agent.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
@@ -673,6 +673,8 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       const manifest = state.manifest;
       if (!manifest || !state.row) throw failure("unavailable");
       if (options.deferLaunch && !admission && !workerId) return envelope(state.row);
+      // From here this call drives the host itself, even when it resumes a retried launch.
+      noteAdmission();
       let phase: string = DOCKER_LAUNCH_FAILURE_MESSAGES.startup;
       try {
         if (workerId && (request.repos?.length || manifest.snapshotConfig?.repos.length)) {
@@ -1083,6 +1085,8 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
   return {
     launch: (caller: Caller, body: Record<string, unknown>, admission?: Parameters<typeof launch>[2]) => {
       // A deferred launch returns at admission: record that as `launch.admit`, never as a launch outcome.
+      // A retry answered from a durable receipt or a pending admission reaches no host: no record, so
+      // the worker's outcome stays joined to the one admitting request.
       let operation = "launch";
       return observeProviderCall(
         "docker",
@@ -1093,6 +1097,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           return result;
         },
         launched,
+        { replayable: true },
       );
     },
     drain,

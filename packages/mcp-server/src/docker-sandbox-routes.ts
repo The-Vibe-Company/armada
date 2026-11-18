@@ -36,10 +36,12 @@ export function createDockerSandboxRoutes(
   authenticate: (request: Request) => Promise<CallerResult>,
 ): Route {
   // Calls that queue host work are provider calls; get, job and journal read Armada's database
-  // alone and go to the unobserved services, so they leave only the HTTP record.
-  const sandboxes = observeProvider("docker", services.sandboxes);
-  const runtime = observeProvider("docker", services.runtime);
-  const bootstrap = services.bootstrap && observeProvider("docker", services.bootstrap);
+  // alone and go to the unobserved services, so they leave only the HTTP record. A retry of an
+  // already admitted request ID queues nothing new, so it records nothing either.
+  const replayable = { replayable: true };
+  const sandboxes = observeProvider("docker", services.sandboxes, replayable);
+  const runtime = observeProvider("docker", services.runtime, replayable);
+  const bootstrap = services.bootstrap && observeProvider("docker", services.bootstrap, replayable);
   return async (request) => {
     const path = new URL(request.url).pathname;
     if (!path.startsWith(prefix)) return null;

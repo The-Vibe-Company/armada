@@ -1,7 +1,7 @@
 import type { RunnerRequest } from "@armada/agent-runtime";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
 import type { Route } from "./http.ts";
-import { observeProviderCall } from "./request-observability.ts";
+import { noteAdmission, observeProviderCall } from "./request-observability.ts";
 import { type createRuntimeEnrolments, RuntimeEnrolmentDenied, type RuntimeOwnerScope } from "./runtime-enrolment.ts";
 import { runtimeHttpFailure } from "./runtime-http-failure.ts";
 
@@ -128,6 +128,7 @@ export function createRuntimeCommands(
           "insert into public.runtime_commands(sandbox_id,request_id,epoch,request_enc) values($1,$2,$3,$4)",
           [scope.sandboxId, request.requestId, scope.epoch, sealed],
         );
+        noteAdmission();
       }
       return { epoch: scope.epoch, requestId: request.requestId, provider: scope.provider };
     });

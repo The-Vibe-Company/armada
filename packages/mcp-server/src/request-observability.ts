@@ -58,25 +58,42 @@ function errorClassOf(error: unknown): string {
 
 type Provider = "boat" | "modal" | "docker";
 
+/** A call's admission slot. Admission marks every enclosing call's slot too. */
+type Admission = { admitted: boolean; parent: Admission | undefined };
+const admissions = new AsyncLocalStorage<Admission>();
+
+/**
+ * Durable enqueue points (Docker host jobs, runtime commands) call this when they create new
+ * provider-bound work, never when they find a stored request with the same ID. A replayable call
+ * uses it to tell real admission from a retry answered by Armada's database.
+ */
+export function noteAdmission(): void {
+  for (let slot = admissions.getStore(); slot; slot = slot.parent) slot.admitted = true;
+}
+
 /**
  * One `provider_call` record per call made inside an HTTP request. `provider` may be resolved
  * late (the enrolled-runtime boundary learns it under its lock), and so may `operation`; `accepted` classifies a
  * returned value, so a refusal reply that does not throw still records `outcome: "error"`. `null` means no
- * provider was reached after all (a replay answered from Armada's database), so nothing is recorded.
+ * provider was reached after all, so nothing is recorded. With `replayable`, a call that returns without
+ * admitting new work (see `noteAdmission`) was a replay answered from Armada's database and records
+ * nothing; a thrown failure is still recorded.
  */
 export async function observeProviderCall<T>(
   provider: Provider | (() => Provider | undefined),
   operation: string | (() => string),
   work: () => Promise<T>,
   accepted: (result: T) => boolean | null = () => true,
+  options: { replayable?: boolean } = {},
 ): Promise<T> {
   const request = current.getStore();
   if (!request) return work();
   const started = performance.now();
+  const slot: Admission = { admitted: false, parent: admissions.getStore() };
   let outcome: "ok" | "error" | null = "error";
   try {
-    const result = await work();
-    const verdict = accepted(result);
+    const result = await admissions.run(slot, work);
+    const verdict = options.replayable && !slot.admitted ? null : accepted(result);
     outcome = verdict === null ? null : verdict ? "ok" : "error";
     return result;
   } finally {
@@ -97,13 +114,17 @@ export async function observeProviderCall<T>(
 }
 
 /** Provider methods are async. Preserve the original receiver and resolve context at invocation. */
-export function observeProvider<T extends object>(provider: Provider, adapter: T): T {
+export function observeProvider<T extends object>(
+  provider: Provider,
+  adapter: T,
+  options: { replayable?: boolean } = {},
+): T {
   return new Proxy(adapter, {
     get(instance, property) {
       const value = Reflect.get(instance, property, instance);
       if (typeof value !== "function" || typeof property !== "string") return value;
       return (...args: unknown[]) =>
-        observeProviderCall(provider, property, () => Reflect.apply(value, instance, args));
+        observeProviderCall(provider, property, () => Reflect.apply(value, instance, args), undefined, options);
     },
   });
 }

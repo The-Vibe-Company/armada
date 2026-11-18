@@ -194,7 +194,7 @@ export function createDockerSnapshots(
           if (previous) {
             if (previous.owner_id !== caller.userId || previous.org_id !== org || previous.request_hash !== digest)
               throw new VaultError("conflict", "Snapshot request changed.");
-            return false;
+            return;
           }
           if (
             (
@@ -244,10 +244,10 @@ export function createDockerSnapshots(
             request: { sandboxId: id, generation, image: baseImage, ttlSeconds: 3600, expiresAt: end },
             build: { id, ownerId: caller.userId, visibility, config, token, armadaVersion: VERSION },
           });
-          return true;
         }),
+      undefined,
       // A replay found in the database queues nothing, so it is not a provider call.
-      (queued) => (queued ? true : null),
+      { replayable: true },
     );
     const row = (await read(id))[0];
     if (!row) throw new VaultError("unavailable", "Snapshot outcome unknown; retry the same request ID.");
