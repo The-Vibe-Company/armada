@@ -1,6 +1,6 @@
 "use client";
 
-import { type Harness, idlePauseMessage, type SandboxStatus, sandboxControlRefusal } from "@armada/core";
+import { type Harness, idlePauseMessage, type SandboxStatus } from "@armada/core";
 import {
   AlertTriangleIcon,
   ArrowDownIcon,
@@ -52,6 +52,7 @@ import {
   toolText,
 } from "@/lib/chat";
 import {
+  composerAdmission,
   INCOMPLETE_MODEL,
   messageKeyFor,
   modelChange,
@@ -87,6 +88,8 @@ type Props = {
   provider?: string;
   preservationNote?: string | null;
   initialIdlePaused?: boolean;
+  /** The persisted stop reason of `initialStatus`; ignored once a poll reports another status. */
+  statusReason?: string | null;
   expiresAt?: string | null;
   initialUsageRevision: string;
   live: boolean;
@@ -1049,6 +1052,8 @@ function Composer({
   provider,
   preservationNote,
   expiresAt,
+  initialStatus,
+  statusReason,
 }: Props & {
   status: SandboxStatus;
   conversation: string | null;
@@ -1069,11 +1074,13 @@ function Composer({
    */
   const sendKey = useRef<LaunchKey | null>(null);
   const fieldId = useId();
-  const refusal = sandboxControlRefusal(
+  const { refusal, wakes } = composerAdmission(
     {
       provider: provider ?? "boat",
       status,
-      statusReason: idlePaused ? "idle_paused" : null,
+      renderedStatus: initialStatus,
+      renderedStatusReason: statusReason ?? null,
+      idlePaused,
       preservationNote: preservationNote ?? null,
       expiresAt: expiresAt ?? null,
     },
@@ -1115,7 +1122,7 @@ function Composer({
       data.set(SEND_KEY_FIELD, sendKey.current.key);
     }
     const action = intent === "send" ? sendToSandbox : intent === "steer" ? steerSandbox : interruptSandbox;
-    setWaking(intent === "send" && idlePaused);
+    setWaking(intent === "send" && wakes);
     setPending(intent);
     setResult(null);
     startTransition(async () => {

@@ -238,6 +238,7 @@ export default async function SandboxPage({ params }: Props) {
             preservationNote={sandbox.preservation_note}
             pinnedModel={sandbox.boat_runtime || sandbox.runtime_transport === "dialout"}
             initialIdlePaused={sandbox.status_reason === "idle_paused"}
+            statusReason={sandbox.status_reason}
             expiresAt={sandbox.expires_at}
             initialUsageRevision={usageRevision(sandbox.usage_turns)}
             live={isActiveStatus(sandbox.status)}
@@ -508,6 +509,7 @@ function DockerSandbox({
               provider={sandbox.provider}
               preservationNote={sandbox.preservation_note}
               initialIdlePaused={sandbox.status_reason === "idle_paused"}
+              statusReason={sandbox.status_reason}
               expiresAt={sandbox.expires_at}
               initialUsageRevision={usageRevision(sandbox.usage_turns)}
               live={isActiveStatus(sandbox.status)}

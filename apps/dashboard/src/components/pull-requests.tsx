@@ -32,6 +32,7 @@ export function PullRequestList({
           >
             <GitPullRequestIcon aria-hidden="true" className="size-3" />
             {pr.repository}#{pr.number}
+            <span className="sr-only">{pr.headBranch ? `, branch ${pr.headBranch}` : ""} (opens in a new tab)</span>
           </a>
           <span
             className={cn(
