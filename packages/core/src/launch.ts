@@ -35,6 +35,12 @@ import {
 import { HARNESS_CAPABILITIES } from "./harnesses.ts";
 import { type HelperNegotiation, negotiateHelper } from "./helper.ts";
 import { LaunchError, type LaunchInitializationStage } from "./launch-error.ts";
+import {
+  admitLaunchPlan,
+  applyLaunchAccountDefaults,
+  resolveLaunchConnections,
+  resolveLaunchSkills,
+} from "./launch-plan.ts";
 import type { LaunchStage } from "./launch-stages.ts";
 import { isLaunchTtlSeconds, validateLaunchSkillPins } from "./launch-validation.ts";
 import { type MachineSize, resolveMachineSize } from "./machine-size.ts";
@@ -49,7 +55,6 @@ import { DEFAULT_SANDBOX_EXTENSION_HEADROOM_SECONDS, SANDBOX_STOP_MARGIN_SECONDS
 import { OUTPUT_DIRECTORY } from "./sandbox-output-limits.ts";
 import * as placement from "./sandbox-provider.ts";
 import { assertProviderOf, HOST_CAPABILITIES, PROVIDER_LIMITS, type SandboxProviderId } from "./sandbox-provider.ts";
-import { mergeSkillPins } from "./skill-merge.ts";
 import { installSkill, skillExclusionCommand } from "./skillpack.ts";
 
 /** Four hours: long enough for an autonomous run, short enough that a forgotten sandbox stops by itself. */
@@ -331,32 +336,17 @@ async function resolveLaunchPlan(
       "The experimental runtime supports ordinary Boat or Modal Codex/Claude/OpenCode workers only.",
     );
   const prompt = checkPrompt(request.prompt);
-  const preference = await stores.credentials.defaults?.(actor, harness);
-  if (preference && (request.credentialId === undefined || request.credentialId === preference.credentialId)) {
-    request = {
-      ...request,
-      ...(request.credentialId === undefined && preference.credentialId
-        ? { credentialId: preference.credentialId }
-        : {}),
-      ...(request.model === undefined && preference.model ? { model: preference.model } : {}),
-    };
-  }
+  request = applyLaunchAccountDefaults(request, await stores.credentials.defaults?.(actor, harness));
   const choice = checkModel(provider, harness, request, Boolean(runtime));
 
-  const defaults = !request.skipSkillDefaults ? await stores.skillDefaults?.resolve(actor, golden) : undefined;
-  try {
-    request = {
-      ...request,
-      skills: mergeSkillPins(
-        defaults?.environment ?? [],
-        defaults?.org ?? [],
-        defaults?.personal ?? [],
-        request.skills ?? [],
-      ),
-    };
-  } catch {
-    throw new LaunchError("invalid_request", "Merged skills exceed 20 distinct exact pins.");
-  }
+  request = {
+    ...request,
+    skills: await resolveLaunchSkills(
+      request,
+      () => stores.skillDefaults?.resolve(actor, golden),
+      () => new LaunchError("invalid_request", "Merged skills exceed 20 distinct exact pins."),
+    ),
+  };
   if (request.skills?.length && !stores.sandboxes.recordSkills)
     throw new LaunchError("invalid_request", "Skill receipts are not supported by this store.");
 
@@ -402,14 +392,17 @@ async function resolveLaunchPlan(
   // Public launch visibility cannot change access or source authority. Only the
   // trusted managed-parent caller may narrow sandbox access; the source stays unchanged.
   const visibility = options.privateParent || options.privateVisibility ? "private" : golden.visibility;
-  const connectionIds = [
-    ...new Set(request.connections ?? (await stores.connections?.defaults?.(actor, visibility)) ?? []),
-  ];
-  if (runtime && request.helperCapabilities?.length)
-    throw new LaunchError("invalid_request", "The experimental runtime does not yet support helpers.");
-  if (connectionIds.length && !stores.connections)
-    throw new LaunchError("invalid_request", "MCP launch connections are not configured.");
-  await stores.connections?.validate(actor, connectionIds, visibility);
+  const connectionIds = await resolveLaunchConnections(
+    request.connections,
+    () => stores.connections?.defaults?.(actor, visibility),
+    async (ids) => {
+      if (runtime && request.helperCapabilities?.length)
+        throw new LaunchError("invalid_request", "The experimental runtime does not yet support helpers.");
+      if (ids.length && !stores.connections)
+        throw new LaunchError("invalid_request", "MCP launch connections are not configured.");
+      await stores.connections?.validate(actor, ids, visibility);
+    },
+  );
   const snapshot = golden.providerSnapshotId;
   if (!snapshot) throw new GoldenError("conflict", `Golden '${golden.name}' has no snapshot yet.`);
   const credentials = await stores.credentials.resolve(actor, harness, request.credentialId, options.credentialVersion);
@@ -508,12 +501,6 @@ async function resolveLaunchPlan(
   };
 }
 
-/** Admit under the golden operation fence before handing off to the provider. */
-async function admitLaunchPlan(plan: LaunchPlan, actor: GoldenActor, id: string): Promise<void> {
-  await plan.stores.credentials.admit?.(actor, plan.credentials, id, plan.choice.model);
-  await plan.options.beforeFork?.(id);
-}
-
 /**
  * Forks a golden into a sandbox, brings its repos up to date, runs its init commands and, with a
  * prompt, starts the agent.
@@ -567,7 +554,10 @@ export async function launchSandbox(
   let childRecorded = false;
   let noAllocation = true;
   try {
-    await admitLaunchPlan(plan, actor, id);
+    await admitLaunchPlan(
+      () => stores.credentials.admit?.(actor, credentials, id, choice.model),
+      () => options.beforeFork?.(id),
+    );
     noAllocation = false;
     const forked = await provider
       .fork({
