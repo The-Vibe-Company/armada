@@ -298,7 +298,10 @@ export class Armada {
   private readonly origin: string;
   private readonly fetcher: Fetch;
   private readonly retries: number;
-  constructor(private readonly options: ArmadaOptions) {
+  private readonly timeoutMs: number | undefined;
+  // An ECMAScript private field: JSON.stringify, util.inspect and Object.keys never expose the bearer token.
+  readonly #token: string;
+  constructor(options: ArmadaOptions) {
     const url = new URL(options.url ?? "https://armada.thevibecompany.co");
     if (
       !["https:", "http:"].includes(url.protocol) ||
@@ -310,6 +313,8 @@ export class Armada {
     )
       throw new TypeError("Use an HTTP(S) Armada origin.");
     if (!options.token || /[\r\n]/.test(options.token)) throw new TypeError("A service token is required.");
+    this.#token = options.token;
+    this.timeoutMs = options.timeoutMs;
     this.origin = url.origin;
     // Never call fetch as a method of this client: browsers' native fetch throws
     // "Illegal invocation" for any receiver other than the global object or undefined.
@@ -386,7 +391,7 @@ export class Armada {
     options: RequestOptions = {},
     defaultTimeoutMs = 300000,
   ): Promise<T> {
-    const deadline = AbortSignal.timeout(options.timeoutMs ?? this.options.timeoutMs ?? defaultTimeoutMs);
+    const deadline = AbortSignal.timeout(options.timeoutMs ?? this.timeoutMs ?? defaultTimeoutMs);
     const signal = options.signal ? AbortSignal.any([options.signal, deadline]) : deadline;
     for (let attempt = 0; ; attempt++) {
       let response: Response;
@@ -394,7 +399,7 @@ export class Armada {
         response = await this.fetcher(`${this.origin}/api/v1/${route}`, {
           method: "POST",
           headers: {
-            authorization: `Bearer ${this.options.token}`,
+            authorization: `Bearer ${this.#token}`,
             "content-type": "application/json",
             accept: "application/json",
           },

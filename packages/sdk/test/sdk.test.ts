@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { inspect } from "node:util";
 import type { DockerLaunchRequest, DockerSandboxStatus } from "@armada/core";
 import { DOCKER_LAUNCH_REQUEST } from "../../mcp-server/src/docker-launch-request-schema.ts";
 import { REST_LAUNCH_RESPONSE } from "../../mcp-server/src/launch-response-schemas.ts";
@@ -60,6 +61,21 @@ test("service-token methods use the REST routes and preserve wire field names", 
   expect(requests[0]?.body).toEqual({ golden: "worker", harness: "codex", ttlSeconds: 60 });
   expect(requests[2]?.body).toEqual({ id: "sandbox_placeholder", prompt: "Work", request_id: "request_placeholder" });
   expect(requests[5]?.body).toEqual({ id: "sandbox_placeholder", cursor: "cursor_placeholder" });
+});
+
+test("a logged or serialized client never exposes its service token, yet still authenticates", async () => {
+  let authorization: string | null = null;
+  const client = new Armada({
+    token: "service_secret_placeholder",
+    fetch: (async (_url, init) => {
+      authorization = new Headers(init?.headers).get("authorization");
+      return Response.json({ id: "sandbox_placeholder" });
+    }) as import("../src/index.ts").Fetch,
+  });
+  for (const shown of [JSON.stringify(client), inspect(client, { depth: 10, showHidden: true }), String(Object.values(client))])
+    expect(shown).not.toContain("service_secret_placeholder");
+  await client.status({ id: "sandbox_placeholder" });
+  expect(authorization).toBe("Bearer service_secret_placeholder");
 });
 
 test("launch sends a Docker request and returns the Docker receipt without a golden", async () => {

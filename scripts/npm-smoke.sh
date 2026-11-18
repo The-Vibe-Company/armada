@@ -72,6 +72,17 @@ const error = await armada.status({ id: "sandbox" }).catch((caught) => caught);
 if (!(error instanceof ArmadaError) || error.code !== "outcome_unknown" || seen.length !== 1) {
   throw new Error(`unexpected SDK result ${error} for ${seen}`);
 }
+const { inspect } = await import("node:util");
+let bearer;
+const logged = new Armada({ token: "smoke_secret", url: "https://armada.invalid", fetch: async (_url, init) => {
+  bearer = new Headers(init.headers).get("authorization");
+  return Response.json({ id: "s" });
+} });
+if (JSON.stringify(logged).includes("smoke_secret") || inspect(logged, { depth: 10, showHidden: true }).includes("smoke_secret")) {
+  throw new Error("a serialized or inspected SDK client exposes its token");
+}
+await logged.status({ id: "s" });
+if (bearer !== "Bearer smoke_secret") throw new Error(`unexpected SDK authorization ${bearer}`);
 const body = "{}", id = "evt", timestamp = String(Math.floor(Date.now() / 1000));
 const signature = `v1=${createHmac("sha256", "secret").update(`${timestamp}.${id}.${body}`).digest("hex")}`;
 const headers = { "armada-webhook-id": id, "armada-webhook-timestamp": timestamp, "armada-webhook-signature": signature };
