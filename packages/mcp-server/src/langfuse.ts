@@ -20,14 +20,14 @@ interface Config {
   secretKey: string;
 }
 const hash = (text: string, length: number) => createHash("sha256").update(text).digest("hex").slice(0, length);
-/** Native histories are not redacted at storage; mask credentials in every exported string. */
+/** Native histories are not redacted at storage; mask credentials in every exported string, keys included. */
 const scrub = (value: unknown): unknown =>
   typeof value === "string"
     ? redactCredentials(value)
     : Array.isArray(value)
       ? value.map(scrub)
       : value && typeof value === "object"
-        ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, scrub(item)]))
+        ? Object.fromEntries(Object.entries(value).map(([key, item]) => [redactCredentials(key), scrub(item)]))
         : value;
 const nano = (at: number) => (BigInt(Math.max(0, Math.trunc(at))) * 1000000n).toString();
 
@@ -143,6 +143,8 @@ export function langfuseSpans(
 const MAX_EXPORT_BYTES = 4 * 1024 * 1024;
 /** Claims reserve an attempt; a job aborted this many times settles as failed. */
 const MAX_ATTEMPTS = 5;
+/** Native history reads that outlived their deadline and still run detached. */
+const MAX_OUTSTANDING_HISTORY_READS = 4;
 type PromptEvent = Extract<AgentEvent, { kind: "prompt" }>;
 interface ExportJob {
   sandbox_id: string;
@@ -167,21 +169,45 @@ export function createLangfuse(
   // time for the receipt-only export and durable accounting.
   historyDeadline: () => AbortSignal = () => AbortSignal.timeout(10_000),
 ) {
-  async function history(
-    job: ExportJob,
-    signal: AbortSignal,
-  ): Promise<{ events: AgentEvent[]; nativeProvider?: string } | null> {
-    if (job.runtime_ack === null) {
-      const { provider, providerSandboxId } = await nativeProviderFor(job.sandbox_id);
-      if (providerSandboxId !== job.provider_sandbox_id) return null;
-      const request = { sandboxId: providerSandboxId, promptId: job.prompt_id, signal };
-      const read = await readPromptEvents(provider, request);
-      signal.throwIfAborted();
-      return {
-        events: read.events.filter((e) => e.promptId === job.prompt_id),
-        nativeProvider: provider.id,
-      };
-    }
+  type Evidence = { events: AgentEvent[]; nativeProvider?: string } | null;
+  async function nativeHistory(job: ExportJob, signal: AbortSignal): Promise<Evidence> {
+    const { provider, providerSandboxId } = await nativeProviderFor(job.sandbox_id);
+    if (providerSandboxId !== job.provider_sandbox_id) return null;
+    const request = { sandboxId: providerSandboxId, promptId: job.prompt_id, signal };
+    const read = await readPromptEvents(provider, request);
+    signal.throwIfAborted();
+    return {
+      events: read.events.filter((e) => e.promptId === job.prompt_id),
+      nativeProvider: provider.id,
+    };
+  }
+
+  // Provider resolution and provider stores can await SQL or HTTP without
+  // observing the signal, so the deadline is enforced around the whole read.
+  // A read that outlives it keeps running detached: at most one per job and
+  // MAX_OUTSTANDING_HISTORY_READS overall, so a stalled provider can neither
+  // hold the export lane nor pile up reads.
+  const outstanding = new Set<string>();
+  function boundedNativeHistory(job: ExportJob, signal: AbortSignal): Promise<Evidence> {
+    const id = `${job.sandbox_id}/${job.prompt_id}`;
+    if (signal.aborted) return Promise.reject(signal.reason);
+    if (outstanding.has(id) || outstanding.size >= MAX_OUTSTANDING_HISTORY_READS)
+      return Promise.reject(Error("native history read still outstanding"));
+    outstanding.add(id);
+    return new Promise<Evidence>((resolve, reject) => {
+      const onAbort = () => reject(signal.reason);
+      signal.addEventListener("abort", onAbort, { once: true });
+      nativeHistory(job, signal)
+        .then(resolve, reject)
+        .finally(() => {
+          outstanding.delete(id);
+          signal.removeEventListener("abort", onAbort);
+        });
+    });
+  }
+
+  async function history(job: ExportJob, signal: AbortSignal): Promise<Evidence> {
+    if (job.runtime_ack === null) return boundedNativeHistory(job, signal);
     // Read only this turn's window: from its first archived reference (the sparse
     // counted_prompt_id marker) to the settlement acknowledgement. Earlier turns
     // must not consume the bounds. Bound archive memory before fetching ciphertext.

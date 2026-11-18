@@ -283,7 +283,12 @@ test("full-mode native Boat content is credential-redacted before it is sent", a
       type: "response",
       data: {
         content: `printed ${token}`,
-        tools: [{ use: { id: "t", name: "exec", input: { env: { GH: token } } }, result: { content: [token] } }],
+        tools: [
+          {
+            use: { id: "t", name: "exec", input: { env: { GH: token }, [token]: "keyed" } },
+            result: { content: [token, { [`tokens/${token}`]: true }] },
+          },
+        ],
       },
     },
     { id: "f", timestamp: 1200, taskId: "turn", type: "prompt", data: { status: "failed", error: `denied ${token}` } },
@@ -303,7 +308,51 @@ test("full-mode native Boat content is credential-redacted before it is sent", a
   expect(await exporter.reconcileOne(new AbortController().signal)).toBe(true);
   expect(payload).toContain("printed ***");
   expect(payload).toContain("denied ***");
+  expect(payload).toContain("keyed");
+  expect(payload).toContain("tokens/***");
   expect(payload).not.toContain(token);
+});
+
+test("an in-flight native history read that outlives its deadline does not hold the export", async () => {
+  const { db, counters } = await settledBoatTurn("turn");
+  let deadline = new AbortController();
+  let resolutions = 0;
+  // Provider resolution never settles and never observes the signal, like a stalled SQL read.
+  const held = () => {
+    resolutions++;
+    queueMicrotask(() => deadline.abort());
+    return new Promise<never>(() => {});
+  };
+  const payloads: string[] = [];
+  const exporter = createLangfuse(
+    db,
+    key,
+    held,
+    (async (_url, init) => {
+      payloads.push(String(init?.body));
+      return new Response(null, { status: 200 });
+    }) as typeof fetch,
+    () => deadline.signal,
+  );
+  // A fresh receipt is retried later instead of exported without history.
+  expect(await exporter.reconcileOne(new AbortController().signal)).toBe(true);
+  expect(resolutions).toBe(1);
+  expect(payloads).toHaveLength(0);
+
+  // The stalled read is still outstanding: the next claim does not start another one.
+  deadline = new AbortController();
+  await db.query("update langfuse_turn_exports set lease_until=null");
+  expect(await exporter.reconcileOne(new AbortController().signal)).toBe(true);
+  expect(resolutions).toBe(1);
+  expect(payloads).toHaveLength(0);
+
+  // Once the receipt has aged, the saved receipt is exported and counted.
+  await db.query("update langfuse_turn_exports set lease_until=null,observed_at=observed_at-interval '2 minutes'");
+  expect(await exporter.reconcileOne(new AbortController().signal)).toBe(true);
+  expect(resolutions).toBe(1);
+  expect(payloads).toHaveLength(1);
+  expect(payloads[0]).toContain("history_unavailable");
+  expect(await counters()).toEqual([{ exported: "1", failed: "0" }]);
 });
 
 test("a timed-out native history exports the receipt, and an abandoned job settles as failed", async () => {

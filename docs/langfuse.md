@@ -28,7 +28,7 @@ IDs. Full mode additionally exports prompt/message text, tool inputs/results
 and failure text, which can contain customer data and secrets. Choose full
 only with the appropriate customer authorization and Langfuse retention policy.
 Raw unknown harness payloads are never exported. Every exported string,
-including nested tool fields and failure text, passes through the server's
+including nested tool fields, their object keys and failure text, passes through the server's
 credential redactor (GitHub, Armada gateway and Skillpack tokens, bearer
 values, JWTs, API keys and connection-string passwords) before it is sent,
 because native provider histories are not redacted at storage. Redaction is
@@ -56,7 +56,9 @@ for its terminal journal event before exporting the evidence available. If a
 native history read keeps failing for that minute, or does not answer within
 ten seconds, Armada exports the recorded
 status and observation time without transcript content, marked
-`history_unavailable`.
+`history_unavailable`. The ten-second deadline covers provider resolution
+too; a read that outlives it is abandoned, and at most one such read per
+turn and four in total stay outstanding before Armada stops starting new ones.
 Turns settled before export was enabled are not backfilled.
 
 Pending export identities survive server restarts. A worker leases each job and
