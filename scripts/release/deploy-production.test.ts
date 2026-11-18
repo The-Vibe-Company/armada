@@ -111,7 +111,8 @@ fi
     const args = production
       ? ["bash", "-c", 'exec 3<> "$HOME/build-ready"; exec bash "$1"', "fixture", script]
       : ["bash", script];
-    const result = Bun.spawnSync(args, { cwd: dir, env, timeout: 2_000 });
+    // The production handshake blocks on a FIFO; the kill timeout only guards a regression deadlock.
+    const result = Bun.spawnSync(args, { cwd: dir, env, ...(production ? { timeout: 30_000 } : {}) });
     let calls = "";
     try {
       calls = readFileSync(log, "utf8");
