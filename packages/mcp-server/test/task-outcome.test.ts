@@ -319,7 +319,10 @@ test("a restart steer whose replacement appears after the response still reaches
       task_prompt_id: "",
     });
     // The replacement run is published only after the steer response, then finishes.
+    // Its prompt event shares the original run's timestamp: only provider order separates them.
     await boat.provider.prompt({ sandboxId: "bx_1", harness: "codex", text: "change course" });
+    const events = boat.sandbox("bx_1").events;
+    events.find((e) => e.id === "ev_prompt_2")!.at = events.find((e) => e.id === "ev_prompt_1")!.at;
     boat.finish("bx_1", "prompt_2", "finished");
     await db.query("update sandboxes set reconcile_after=now() where id=$1", [id]);
     await createSandboxLifecycle(db, async () => boat.provider).reconcileOne();

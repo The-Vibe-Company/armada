@@ -32,7 +32,12 @@ including nested tool fields, their object keys and failure text, passes through
 credential redactor (GitHub, Armada gateway and Skillpack tokens, bearer
 values, JWTs, API keys and connection-string passwords) before it is sent,
 because native provider histories are not redacted at storage. Redaction is
-pattern-based; it does not know arbitrary customer secrets. Subscription quotes remain
+pattern-based; it does not know arbitrary customer secrets. A sandbox launched
+from a template that binds application secrets receives their raw values, which
+no pattern matches and which the export cannot recover to mask exactly. Its
+turns are therefore always exported in metadata mode, marked
+`content_withheld: application_secret_bindings`, even when the organization
+chose full mode. Subscription quotes remain
 estimates, not invoices; unavailable costs are omitted.
 
 Each sandbox has a stable trace ID, each completed turn a stable observation
@@ -68,7 +73,9 @@ newest prompt event, relative to the run it knew before the steer. If no new
 run is visible yet when steer returns, Armada keeps a durable steer cursor at
 the last known run. Native lifecycle reconciliation (about once a minute, for
 one hour after the steer) registers every later run as a native receipt, so the
-replacement settles and exports like any other turn. A steer that follows an
+replacement settles and exports like any other turn. Later runs are identified
+by the provider's event order, not by timestamps, so a replacement whose prompt
+event shares the previous run's timestamp is still found. A steer that follows an
 unresolved steer keeps the older cursor. If the cursor run falls outside the
 bounded event read, only the newest run is registered.
 

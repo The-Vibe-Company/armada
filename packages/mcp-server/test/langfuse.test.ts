@@ -313,6 +313,54 @@ test("full-mode native Boat content is credential-redacted before it is sent", a
   expect(payload).not.toContain(token);
 });
 
+test("a sandbox with template application-secret bindings exports metadata only in full mode", async () => {
+  const { db, counters } = await settledBoatTurn("turn");
+  const canary = ["opaque", "application", "canary"].join("-");
+  await db.exec("set session_replication_role=replica");
+  try {
+    await db.query(
+      `insert into template_launch_requests(org_id,actor_id,client_key,digest,template_id,revision_id,manifest,golden_operation_fence_id,sandbox_id,state)
+       select org_id,owner_id,'client',repeat('a',64),gen_random_uuid(),gen_random_uuid(),$1::jsonb,gen_random_uuid(),id,'succeeded'
+       from sandboxes where boat_id='boat_export'`,
+      [JSON.stringify({ definition: { secrets: [{ key: "APP", secretId: crypto.randomUUID(), version: 1 }] } })],
+    );
+  } finally {
+    await db.exec("set session_replication_role=origin");
+  }
+  const raw = [
+    { id: "p", timestamp: 1000, taskId: "turn", type: "prompt", data: { prompt: "print APP", status: "running" } },
+    {
+      id: "r",
+      timestamp: 1100,
+      taskId: "turn",
+      type: "response",
+      data: {
+        content: canary,
+        tools: [{ use: { id: "t", name: "exec", input: canary }, result: { content: canary } }],
+      },
+    },
+    { id: "f", timestamp: 1200, taskId: "turn", type: "prompt", data: { status: "failed", error: canary } },
+  ];
+  const provider = {
+    id: "boat",
+    events: async () => ({ events: raw.map((e) => normalizeEvent(e as never)), cursor: "native", hasMore: false }),
+  } satisfies Pick<Provider, "id" | "events">;
+  let payload = "";
+  const exporter = createLangfuse(db, key, async () => ({ provider, providerSandboxId: "boat_export" }), (async (
+    _url,
+    init,
+  ) => {
+    payload = String(init?.body);
+    return new Response(null, { status: 200 });
+  }) as typeof fetch);
+  expect(await exporter.reconcileOne(new AbortController().signal)).toBe(true);
+  expect(payload).toContain("application_secret_bindings");
+  expect(payload).toContain('"exec"');
+  expect(payload).not.toContain(canary);
+  expect(payload).not.toContain("print APP");
+  expect(await counters()).toEqual([{ exported: "1", failed: "0" }]);
+});
+
 test("an in-flight native history read that outlives its deadline does not hold the export", async () => {
   const { db, counters } = await settledBoatTurn("turn");
   let deadline = new AbortController();

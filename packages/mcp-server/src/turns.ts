@@ -412,7 +412,9 @@ export async function promptsAfter(
   signal?: AbortSignal,
   maxPages = 5,
 ): Promise<{ prompts: string[]; proven: boolean }> {
-  const prompts = new Map<string, number>();
+  // Order runs by provider event order, not timestamps: two prompt events can
+  // share a timestamp. Pages arrive newest first, each chronological.
+  const pages: AgentEvent[][] = [];
   let cursor: string | undefined;
   let reachedCursor = false;
   for (let page = 0; page < maxPages; page++) {
@@ -423,20 +425,17 @@ export async function promptsAfter(
       ...(cursor ? { cursor } : {}),
       ...(signal ? { signal } : {}),
     });
-    for (const event of read.events) {
-      if (event.kind !== "prompt" || !event.promptId) continue;
-      if (event.promptId === afterPromptId) reachedCursor = true;
-      const at = prompts.get(event.promptId);
-      if (at === undefined || event.at < at) prompts.set(event.promptId, event.at);
-    }
+    pages.unshift(read.events);
+    if (read.events.some((event) => event.kind === "prompt" && event.promptId === afterPromptId)) reachedCursor = true;
     if (reachedCursor || !read.hasMore || !read.olderCursor || read.olderCursor === cursor) break;
     cursor = read.olderCursor;
   }
-  const ordered = [...prompts].sort((a, b) => a[1] - b[1]);
-  if (!reachedCursor) return { prompts: ordered.length ? [ordered.at(-1)![0]] : [], proven: false };
-  const after = prompts.get(afterPromptId!)!;
-  const later = ordered.filter(([id, at]) => id !== afterPromptId && at > after).map(([id]) => id);
-  return { prompts: later.slice(-20), proven: true };
+  // Distinct runs in the order their first prompt event appears.
+  const ordered = [
+    ...new Set(pages.flat().flatMap((event) => (event.kind === "prompt" && event.promptId ? [event.promptId] : []))),
+  ];
+  if (!reachedCursor) return { prompts: ordered.length ? [ordered.at(-1)!] : [], proven: false };
+  return { prompts: ordered.slice(ordered.indexOf(afterPromptId!) + 1).slice(-20), proven: true };
 }
 
 async function allEvents(

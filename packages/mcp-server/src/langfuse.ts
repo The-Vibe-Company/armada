@@ -37,7 +37,7 @@ export function langfuseSpans(
   events: AgentEvent[],
   turns: TurnTokenUsage[],
   full: boolean,
-  marks: { historyUnavailable?: boolean } = {},
+  marks: { historyUnavailable?: boolean; contentWithheld?: string } = {},
 ) {
   const spans = [];
   for (const end of events) {
@@ -95,6 +95,7 @@ export function langfuseSpans(
         "langfuse.observation.metadata.status": end.status,
         "langfuse.observation.metadata.timing_incomplete": start?.at && end.at > startAt ? undefined : true,
         "langfuse.observation.metadata.history_unavailable": marks.historyUnavailable || undefined,
+        "langfuse.observation.metadata.content_withheld": marks.contentWithheld,
         "langfuse.observation.metadata.failure_reason": full
           ? end.reason
           : end.status === "failed"
@@ -158,6 +159,7 @@ interface ExportJob {
   waiting_for_history: boolean;
   config_enc: Uint8Array<ArrayBuffer> | null;
   content_mode: string | null;
+  application_secrets: boolean;
 }
 
 export function createLangfuse(
@@ -279,8 +281,13 @@ export function createLangfuse(
     const usage = persisted.some((turn) => turn.model !== null || turn.inputTokens != null || turn.outputTokens != null)
       ? persisted
       : reportedTurnUsage(events).turns;
-    const spans = langfuseSpans(job.sandbox_id, turnEvents, usage, job.content_mode === "full", {
+    // Template application secrets reach the sandbox as raw values that no
+    // pattern matches, and the export cannot recover them to mask exactly, so
+    // such a sandbox exports metadata only, whatever the organization mode.
+    const withheld = job.content_mode === "full" && job.application_secrets;
+    const spans = langfuseSpans(job.sandbox_id, turnEvents, usage, job.content_mode === "full" && !withheld, {
       historyUnavailable,
+      ...(withheld ? { contentWithheld: "application_secret_bindings" } : {}),
     });
     const body = JSON.stringify({
       resourceSpans: [
@@ -323,7 +330,10 @@ export function createLangfuse(
         )
         select j.*,extract(epoch from j.observed_at)::double precision*1000 as observed_ms,
           j.observed_at>clock_timestamp()-interval '60 seconds' as waiting_for_history,
-          c.config_enc,c.content_mode
+          c.config_enc,c.content_mode,exists(select 1 from public.template_launch_requests r
+            where r.sandbox_id=j.sandbox_id
+              and coalesce(r.manifest->'definition'->'secrets','[]'::jsonb) not in ('[]'::jsonb,'null'::jsonb)
+          ) as application_secrets
         from claimed j join public.sandboxes s on s.id=j.sandbox_id
         left join public.org_langfuse c on c.org_id=j.org_id and c.enabled and s.org_id=j.org_id`,
         [lease],
