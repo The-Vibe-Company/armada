@@ -62,7 +62,7 @@ export const CONNECTION_PRESETS: readonly ConnectionPreset[] = [
     id: "morph",
     label: "Morph",
     kind: "morph",
-    hint: "One account for Claude Code, Codex and OpenCode",
+    hint: "Claude Code, Codex and OpenCode on Modal, Docker or runtime-backed Boat",
     models: "harness",
     baseUrl: null,
     keyHint: "Your Morph API key. Use a Morph plan model on Modal, Docker or runtime-backed Boat.",

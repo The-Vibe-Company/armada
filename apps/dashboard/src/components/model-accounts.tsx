@@ -1701,7 +1701,7 @@ export function AddAccountDialog({
                         : value === "codex_auth"
                           ? "The contents of ~/.codex/auth.json"
                           : value === "morph"
-                            ? "Morph models for Claude Code, Codex and OpenCode"
+                            ? connectionPreset(value)?.hint
                             : "Billed per token"}
                     </span>
                   </span>
