@@ -10,7 +10,6 @@ import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
 import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import { createRuntimeHistory } from "../src/runtime-history.ts";
 import { createRuntimeResume } from "../src/runtime-resume.ts";
-import { createRuntimeServing } from "../src/runtime-serving.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { runtimeFixture } from "./runtime-fixture.ts";
@@ -212,30 +211,23 @@ test("activation uncertainty never dispatches again under another key or on retr
   }
 });
 
-test("an unenrolled cloud resume returns to a confirmed retained stop before another request can resume", async () => {
-  const f = await stopped("codex", "modal");
+test("an unenrolled Boat resume returns to a confirmed retained stop before another request can resume", async () => {
+  const f = await stopped();
   try {
     let state = "running";
     let retainedStops = 0;
     const host = {
-      id: "modal",
-      get: async () => ({ id: "physical", state, physicalGeneration: "2" }),
-      stop: async () => {
-        throw Error("Compute-only stop would discard the checkpoint");
-      },
-      async stopRuntime(proof: { epoch: string; watermark: number; physicalGeneration: string }) {
-        expect(proof).toMatchObject({
-          epoch: f.cp.runtime.epoch,
-          watermark: f.cp.checkpoint.watermark,
-          physicalGeneration: "2",
-        });
+      id: "boat",
+      get: async () => ({ id: "physical", state }),
+      async stop() {
         retainedStops++;
       },
     } as unknown as Provider;
     const callerStore = createSqlData(f.sql)(f.caller).sandboxes;
-    const target = (await callerStore.get(f.row.id))!;
     let starts = 0;
     let refusedTicket = "";
+    let refusalStatus: number | undefined;
+    let requestSideStops = 0;
     const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => ({
       async start(_signal, restore) {
         starts++;
@@ -253,27 +245,30 @@ test("an unenrolled cloud resume returns to a confirmed retained stop before ano
             headers: { authorization: `Bearer ${refusedTicket}`, "x-armada-runtime-protocol": "0" },
           }),
         );
-        expect(response?.status).toBe(409);
+        refusalStatus = response?.status;
         throw Error("runtime_protocol_unsupported");
       },
       async stop() {
-        throw Error("No request-side provider stop");
+        requestSideStops++;
       },
     }));
     const first = input(f.row.id);
     await expect(resume(f.caller, first)).rejects.toMatchObject({ code: "conflict" });
+    expect(refusalStatus).toBe(409);
+    expect(requestSideStops).toBe(0);
     expect((await callerStore.get(f.row.id))?.status).toBe("stopping");
     await expect(f.authority.enrol(refusedTicket)).rejects.toThrow("runtime_enrolment_denied");
     await expect(resume(f.caller, input(f.row.id))).rejects.toMatchObject({ code: "conflict" });
 
-    const resolve = createRuntimeServing(f.sql, ENCRYPTION_KEY);
-    const worker = createSandboxLifecycle(f.sql, () => resolve(host, target, f.caller));
+    const legacyDue = await f.db.query("select id from sandboxes where id=$1 and reconcile_after<=now()", [f.row.id]);
+    expect(legacyDue.rows).toHaveLength(0);
+    const worker = createSandboxLifecycle(f.sql, async () => host);
     expect(await worker.reconcileOne()).toBe(true);
     expect(retainedStops).toBe(1);
     expect((await callerStore.get(f.row.id))?.status).toBe("stopping");
 
     state = "stopped";
-    await f.db.query("update sandboxes set reconcile_after=now() where id=$1", [f.row.id]);
+    await f.db.query("update sandboxes set reconcile_lease_until=now()-interval '1 second' where id=$1", [f.row.id]);
     expect(await worker.reconcileOne()).toBe(true);
     expect((await callerStore.get(f.row.id))?.status).toBe("stopped");
     await expect(resume(f.caller, first)).rejects.toMatchObject({ code: "conflict" });

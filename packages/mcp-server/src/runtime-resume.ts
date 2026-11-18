@@ -352,7 +352,12 @@ export function createRuntimeResume(
           if (runtime?.live && runtime.epoch === admitted.op.target_epoch) return;
           // Issuance occurs after provider activation. Without a pending ticket we cannot
           // tell a failed activation from a late provider create/resume.
-          const retained = Boolean(runtime?.pending && !runtime.live && runtime.epoch === admitted.op.source_epoch);
+          const retained = Boolean(
+            found.provider === "boat" &&
+              runtime?.pending &&
+              !runtime.live &&
+              runtime.epoch === admitted.op.source_epoch,
+          );
           const changed = await tx.query<{ status: "stopping" | "failed" }>(
             `update public.sandboxes set
           status=case when $4 and not application_secret_tainted then 'stopping'::public.sandbox_status else 'failed'::public.sandbox_status end,
@@ -361,9 +366,11 @@ export function createRuntimeResume(
           status_reason=case when $4 and not application_secret_tainted then null
             else 'Runtime resume failed before a restored worker was confirmed; cleanup requested.' end,
           stop_requested_at=now(),stop_generation=stop_generation+1,
-          activity_lease_id=null,activity_until=null,lifecycle_generation=lifecycle_generation+1,reconcile_after=now()
+          activity_lease_id=null,activity_until=null,lifecycle_generation=lifecycle_generation+1,
+          reconcile_after=case when $4 and not application_secret_tainted then 'infinity'::timestamptz else now() end
           where id=$1 and activity_lease_id=$2 and lifecycle_generation=$3
-            and stop_requested_at is null and deleted_at is null returning status`,
+            and stop_requested_at is null and deleted_at is null
+            and (reconcile_lease_until is null or reconcile_lease_until<now()) returning status`,
             [found.id, requestId, admitted.current.lifecycleGeneration, retained, UNENROLLED_RESUME_STOP],
           );
           const status = changed.rows[0]?.status;

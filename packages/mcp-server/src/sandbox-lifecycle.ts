@@ -14,6 +14,7 @@ import { INTERRUPTED_LAUNCH_REASON } from "./turns.ts";
 import { preserveBeforeStop, recordStopDispatch } from "./work-preservation.ts";
 
 export const UNENROLLED_RESUME_STOP = "runtime_resume_unenrolled";
+const OPERATOR_CLEANUP_PREFIX = "Operator cleanup required:";
 
 /** One bounded batch in the existing server loop. SQL leases serialize replicas; generation
  * fencing prevents an old observation from publishing over a newly admitted resume. */
@@ -75,22 +76,28 @@ export function createSandboxLifecycle(
         }>(
           `update public.sandboxes s set reconcile_lease=$1::uuid,
           reconcile_lease_until=now()+interval '2 minutes'
-        where s.id=(select candidate.id from public.sandboxes candidate
+        from (
+          select candidate.id,recovery.retained_resume from public.sandboxes candidate
+          cross join lateral (select candidate.provider='boat' and candidate.status='stopping' and exists(
+            select 1 from public.sandbox_transitions t where t.sandbox_id=candidate.id and t.generation=candidate.lifecycle_generation
+            and t.actor='runtime_resume' and t.code=$3 and t.to_status='stopping'
+          ) as retained_resume) recovery
           where candidate.provider = $2 and candidate.status not in ('stopped','deleted')
           and not exists(select 1 from public.orchestrators parent where parent.sandbox_id=candidate.id)
           and not (candidate.status='failed' and candidate.stopped_at is not null)
-          and candidate.reconcile_after<=now()
+          -- Only this worker understands the retained-resume handoff. Old
+          -- replicas see an infinite schedule and cannot claim it.
+          and (candidate.reconcile_after<=now()
+            or (recovery.retained_resume and coalesce(candidate.lifecycle_error,'') not like $4))
           and (candidate.activity_until is null or candidate.activity_until<now())
           and (candidate.reconcile_lease_until is null or candidate.reconcile_lease_until<now())
-          order by candidate.reconcile_after limit 1 for update of candidate skip locked)
+          order by candidate.reconcile_after limit 1 for update of candidate skip locked
+        ) due
+        where s.id=due.id
         returning s.id,s.provider_sandbox_id,s.runtime_transport,s.boat_runtime,s.lifecycle_generation,s.expires_at,s.status::text as status,s.status_reason,s.task_prompt_id,s.activity_lease_id,s.application_secret_tainted,s.credential_id,s.credential_version,s.stop_requested_at,s.preservation_note,
-          ${mergedWorkProof("s")} as work_merged,
-          (s.status='stopping' and exists(
-            select 1 from public.sandbox_transitions t where t.sandbox_id=s.id and t.generation=s.lifecycle_generation
-            and t.actor='runtime_resume' and t.code=$3 and t.to_status='stopping'
-          )) as retained_resume,
+          ${mergedWorkProof("s")} as work_merged,due.retained_resume,
           exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id) as owner_is_member`,
-          [token, providerId, UNENROLLED_RESUME_STOP],
+          [token, providerId, UNENROLLED_RESUME_STOP, `${OPERATOR_CLEANUP_PREFIX}%`],
         )
       ).rows[0];
       if (!row) return false;
@@ -109,7 +116,7 @@ export function createSandboxLifecycle(
             row.id,
             token,
             row.lifecycle_generation,
-            `Operator cleanup required: ${reason} Physical outcome unknown; retained identity unchanged. Follow docs/stopping-authority-loss.md.`,
+            `${OPERATOR_CLEANUP_PREFIX} ${reason} Physical outcome unknown; retained identity unchanged. Follow docs/stopping-authority-loss.md.`,
           ],
         );
       };
@@ -365,9 +372,11 @@ export function createSandboxLifecycle(
         last_observed_at=case when $5::text is null then now() else last_observed_at end,
         activity_lease_id=case when $11 and not $4 then activity_lease_id else null end,
         activity_until=case when $11 and not $4 then activity_until else null end,
-        lifecycle_error=$5::text,reconcile_after=now()+interval '1 minute',
+        lifecycle_error=$5::text,
+        reconcile_after=case when $12 and not $4 then 'infinity'::timestamptz else now()+interval '1 minute' end,
         reconcile_lease=case when $6 then reconcile_lease else null end,
-        reconcile_lease_until=case when $6 then reconcile_lease_until else null end
+        reconcile_lease_until=case when $6 then reconcile_lease_until
+          when $12 and not $4 then now()+interval '1 minute' else null end
         where id=$1::uuid and reconcile_lease=$2::uuid and lifecycle_generation=$3
           and reconcile_lease_until>clock_timestamp()
           and (activity_until is null or activity_until<now())`,
@@ -383,6 +392,7 @@ export function createSandboxLifecycle(
           stoppedAt?.toISOString() ?? null,
           expired,
           retainUnknownActivity,
+          retainedResume,
         ],
       );
       return true;
