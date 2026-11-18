@@ -102,7 +102,15 @@ export async function dispatchSandboxRestControl(
   async function run() {
     switch (route) {
       case "sandbox/delete": {
-        const args = parse(SANDBOX_REST_CONTRACTS[route].input);
+        const input = SANDBOX_REST_CONTRACTS[route].input.safeParse(body);
+        if (!input.success) {
+          const details = input.error.issues.map((issue) => `${issue.message} at ${issue.path.join(".")}`).join("\n");
+          throw new ToolApiError(
+            "internal",
+            `MCP error -32602: Input validation error: Invalid arguments for tool delete: ${details}`,
+          );
+        }
+        const args = input.data;
         const routed = await options.dockerControls?.invoke(caller, "delete", args);
         if (routed?.handled) return routed.result;
         if (!data.sandboxes.assertDeletionAllowed)

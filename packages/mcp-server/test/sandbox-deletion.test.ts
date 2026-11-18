@@ -92,6 +92,22 @@ test("sandbox deletion authorizes live owners/admins, fences activity, and prese
       new Uint8Array([1]),
     ]);
     await db.query("update sandboxes set preservation_note='preserved' where id=$1", [id]);
+    const malformed = await handleControlRequest(
+      new Request(`${PUBLIC_URL}/api/v1/sandbox/delete`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${ownerToken}`, "content-type": "application/json" },
+        body: JSON.stringify({ id, request_id: "invalid" }),
+      }),
+      options,
+    );
+    expect(malformed?.status).toBe(503);
+    expect(await malformed?.json()).toEqual({
+      error: {
+        code: "internal",
+        message:
+          "MCP error -32602: Input validation error: Invalid arguments for tool delete: Invalid UUID at request_id",
+      },
+    });
     expect((await request(id, memberToken)).status).toBe(404);
     expect((await request(id, ownerToken, "POST")).status).toBe(405);
     for (const status of ["starting", "ready", "running", "stopping"]) {
