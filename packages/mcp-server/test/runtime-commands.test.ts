@@ -749,7 +749,14 @@ test("runtime startup privately issues configuration, awaits enrolment and fence
     let now = 0;
     const configuration = { selectedHarness: "codex", privateMarker: "startup-private-configuration" };
     const start = createRuntimeStartup(
-      f.authority,
+      {
+        ...f.authority,
+        async issue(input) {
+          const ticket = await f.authority.issue(input);
+          now += 10;
+          return ticket;
+        },
+      },
       {
         async bootstrap(input) {
           token = input.enrolmentToken;
@@ -837,7 +844,7 @@ test("runtime startup privately issues configuration, awaits enrolment and fence
         sandboxId: f.id,
         epoch: "2",
         stages: [
-          { stage: "issue_ticket", ms: 0 },
+          { stage: "issue_ticket", ms: 10 },
           { stage: "bootstrap", ms: 40 },
           { stage: "enrolment_wait", ms: 250 },
           { stage: "health", ms: 30 },
