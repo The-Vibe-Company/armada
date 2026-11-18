@@ -35,10 +35,12 @@ export function CreateDialog({
   onCloseAutoFocus,
   dismissible = true,
   triggerVariant = "default",
+  showPlus = true,
   fixedActions = false,
 }: {
   /** The header button's text, beside a plus. */
   triggerVariant?: "default" | "outline";
+  showPlus?: boolean;
   /** Keep the header and actions visible while CreateDialogBody scrolls inside a form. */
   fixedActions?: boolean;
   label: string;
@@ -61,7 +63,7 @@ export function CreateDialog({
     <Dialog {...(open === undefined ? {} : { open })} {...(onOpenChange ? { onOpenChange } : {})}>
       <DialogTrigger asChild>
         <Button variant={triggerVariant} {...triggerAttrs}>
-          <PlusIcon /> {label}
+          {showPlus && <PlusIcon />} {label}
         </Button>
       </DialogTrigger>
       <DialogContent
