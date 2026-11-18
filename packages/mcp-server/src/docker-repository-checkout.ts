@@ -26,7 +26,10 @@ export function dockerRepositoryCheckout(repos: readonly GoldenRepo[], root: str
   default_tracking="refs/remotes/origin/\${default_ref#refs/heads/}"
   launch_tracking="refs/remotes/origin/$branch"
   for depth in 3 32 128 512; do
-    git fetch --no-tags --depth="$depth" origin "+$default_ref:$default_tracking" "+$launch_ref:$launch_tracking"
+    filters=()
+    # Both tips are already available after the first round. Fetch commit history cheaply.
+    if [ "$depth" -gt 3 ]; then filters=(--filter=tree:0); fi
+    git fetch --no-tags --depth="$depth" "\${filters[@]}" origin "+$default_ref:$default_tracking" "+$launch_ref:$launch_tracking"
     if git merge-base "$default_tracking" "$launch_tracking" >/dev/null; then
       git config --add remote.origin.fetch "+$launch_ref:$launch_tracking"
       git switch --track -c "$branch" "$launch_tracking"

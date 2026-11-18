@@ -26,12 +26,19 @@ test("Docker checkout leaves the requested branch reviewable against a diverged 
     };
     const git = (...args: string[]) => run("git", "-C", source, ...args);
     run("git", "init", "--initial-branch=trunk", source);
-    git("commit", "--allow-empty", "-m", "common");
+    git("config", "uploadpack.allowFilter", "true");
+    writeFileSync(join(source, "legacy.txt"), "legacy\n");
+    git("add", "legacy.txt");
+    git("commit", "-m", "common");
     const common = git("rev-parse", "HEAD");
     git("branch", "feature/review");
+    git("rm", "legacy.txt");
+    git("commit", "-m", "remove legacy on trunk");
     for (let n = 0; n < 4; n++) git("commit", "--allow-empty", "-m", `trunk ${n}`);
     const defaultTip = git("rev-parse", "HEAD");
     git("switch", "feature/review");
+    git("rm", "legacy.txt");
+    for (let n = 0; n < 3; n++) git("commit", "--allow-empty", "-m", `feature ${n}`);
     writeFileSync(join(source, "feature.txt"), "feature\n");
     git("add", "feature.txt");
     git("commit", "-m", "feature");
@@ -47,6 +54,7 @@ test("Docker checkout leaves the requested branch reviewable against a diverged 
     expect(checkout("merge-base", "HEAD", "origin/trunk")).toBe(common);
     expect(checkout("rev-parse", "origin/trunk")).toBe(defaultTip);
     expect(checkout("rev-parse", "HEAD", "@{upstream}").split("\n")).toEqual([launchTip, launchTip]);
+    expect(checkout("diff", "--name-status", "origin/trunk...HEAD")).toBe("A\tfeature.txt\nD\tlegacy.txt");
     expect(checkout("status", "--porcelain", "--branch")).toBe("## feature/review...origin/feature/review");
   } finally {
     rmSync(root, { recursive: true, force: true });

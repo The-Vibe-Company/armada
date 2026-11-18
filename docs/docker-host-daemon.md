@@ -158,9 +158,11 @@ branch checked out and tracking its remote branch. Git can find a merge base
 between `HEAD` and the remote default branch at `origin/<default>`, even when
 the default is named something other than `main`. The default branch checkout
 fetches up to three commits in one clone. For other branches, Armada fetches
-both branches, trying depths of 3, 32, 128 and 512 commits. If no merge base is
-available within those bounds, checkout fails before the first prompt. The
-existing checkout timeout also applies.
+both branches, trying depths of 3, 32, 128 and 512 commits. Deeper fetches ask
+for commit history only. Git can fetch missing historical trees and blobs from
+the same origin when a command needs them. If no merge base is available within
+those bounds, checkout fails before the first prompt. The existing checkout
+timeout also applies.
 
 Snapshot repository history is governed by the
 [snapshot recipe](docker-snapshots.md#repository-history-and-secret-scanning).
