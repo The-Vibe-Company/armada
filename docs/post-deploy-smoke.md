@@ -1914,8 +1914,7 @@ The authenticated control audit also repaired missing `creds/accounts/models`,
 `creds/defaults/set` and `skillpack/connection` forwarding, plus `golden/adopt`,
 `github/runtime-status`, `sandbox/resume` and the authenticated `sandbox/delete`
 control alias. Retired
-`launch/resolve` stays blocked. Explicit experimental runtime launch/preflight
-routes (`sandbox/launch-runtime-v1`, `sandbox/launch-modal-runtime-v1`,
-`sandbox/mcp-preflight-v1`, `sandbox/github-preflight-v1`) remain server-only;
+`launch/resolve` stays blocked. Experimental preflight routes (`sandbox/mcp-preflight-v1` and
+`sandbox/github-preflight-v1`) remain server-only;
 `sandbox/checkpoint-runtime-v1` and `sandbox/resume-runtime-v1` also remain
 experimental server-only routes; normal launch uses `sandbox/launch`. Runner secret callbacks remain excluded.

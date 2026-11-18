@@ -8,7 +8,6 @@ They do not apply retroactively on send/resume or modify the golden snapshot.
 ## Management API
 
 Authenticated POST under `/api/v1/skills/defaults/get` or `set`.
-MCP equivalents: `skill_defaults_get`, `skill_defaults_set`.
 Bodies are strict JSON; query parameters are rejected.
 
 ```json

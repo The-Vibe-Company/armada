@@ -10,7 +10,7 @@
   ],
   "scripts": {
     "armada": "bun packages/cli/src/main.ts",
-    "lint": "biome check .",
+    "lint": "biome check . && bun scripts/ci/docs-guard.ts",
     "format": "biome check --write .",
     "typecheck": "node --max-old-space-size=1536 node_modules/typescript/bin/tsc --noEmit && node --max-old-space-size=1536 node_modules/typescript/bin/tsc --noEmit -p apps/dashboard",
     "test": "bun test",

@@ -1,5 +1,5 @@
 /**
- * The integration REST contract inventory. `docs/openapi.json` publishes exactly
+ * The integration REST contract inventory. `packages/mcp-server/openapi.json` publishes exactly
  * `PUBLISHED_REST_ROUTES` and `PUBLISHED_REST_GET_ROUTES`. Every other route that the public dashboard endpoint
  * (`/api/v1/*`) forwards must have a reason in `UNPUBLISHED_REST_ROUTES`. The
  * dashboard proxy test checks both directions, so a new forwarded route cannot
@@ -82,8 +82,6 @@ export const UNPUBLISHED_REST_ROUTES: Readonly<Record<string, string>> = {
   "golden/visibility": "Golden administration.",
   "golden/retirement/dry-run": "Golden snapshot retirement administration.",
   "golden/retirement/reconcile": "Golden snapshot retirement administration.",
-  "sandbox/launch-sized-v1": "Versioned first-party launch extension.",
-  "sandbox/launch-access-v1": "Versioned first-party launch extension.",
   "sandbox/bind-credential": "Dashboard credential repair.",
   "sandbox/test-model-connection": "Dashboard credential check.",
   "sandboxes/{id}": "Dashboard sandbox deletion (DELETE).",

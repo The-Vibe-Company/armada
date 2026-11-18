@@ -279,7 +279,7 @@ for (const entry of ["explicit", "default"] as const)
       expectedVersion: 1,
       value: "changed-source",
     });
-    const replay = await f.api(request, entry === "explicit" ? "sandbox/launch-modal-runtime-v1" : undefined);
+    const replay = await f.api(request);
     expect(replay.status).toBe(200);
     expect(await replay.json()).toEqual(launched);
     await f.templates.command(f.caller, "delete", { org: f.people.org, id: template.id, expectedRevision: 1 });

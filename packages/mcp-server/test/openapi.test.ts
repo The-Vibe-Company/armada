@@ -1,13 +1,17 @@
 import { expect, test } from "bun:test";
 import { CONTROL_BODY_MAX_BYTES, TEMPLATE_LAUNCH_FIELDS, VAULT_CONTROL_BODY_MAX_BYTES } from "@armada/core/server";
-import published from "../../../docs/openapi.json";
 import releasePlease from "../../../release-please-config.json";
+import published from "../openapi.json";
 import { generateOpenApi, REST_FIELD_NAMES } from "../src/openapi.ts";
 
 test("release version bumps update the published OpenAPI version with core", () => {
   const extraFiles = releasePlease.packages["."]["extra-files"];
   expect(extraFiles).toContainEqual({ type: "json", path: "packages/core/package.json", jsonpath: "$.version" });
-  expect(extraFiles).toContainEqual({ type: "json", path: "docs/openapi.json", jsonpath: "$.info.version" });
+  expect(extraFiles).toContainEqual({
+    type: "json",
+    path: "packages/mcp-server/openapi.json",
+    jsonpath: "$.info.version",
+  });
 });
 
 test("published OpenAPI matches current server contracts and preserves REST field names", async () => {
@@ -62,7 +66,7 @@ test("every published operation states the body limit both public boundaries enf
 
 test("published OpenAPI keeps the plain JSON layout that release version bumps write", async () => {
   // Release Please rewrites extra JSON files with JSON.stringify(_, null, 2); any other layout breaks the release PR's checks.
-  const text = await Bun.file(new URL("../../../docs/openapi.json", import.meta.url)).text();
+  const text = await Bun.file(new URL("../openapi.json", import.meta.url)).text();
   expect(text).toBe(`${JSON.stringify(JSON.parse(text), null, 2)}\n`);
 });
 

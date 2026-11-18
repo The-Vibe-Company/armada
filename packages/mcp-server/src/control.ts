@@ -109,7 +109,7 @@ import type { RuntimeFollowup } from "./runtime-followup.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
 import type { RuntimeResume } from "./runtime-resume.ts";
-import { type createSandboxArmadaAccess, parseSandboxArmadaAccess } from "./sandbox-armada-access.ts";
+import type { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 import { tokenCreateRoute, tokenListRoute, tokenRevokeRoute } from "./token-control.ts";
 import { callSharedTool, ToolApiError } from "./tool-api.ts";
 import { sandboxListInput } from "./tools.ts";
@@ -372,7 +372,6 @@ export async function dispatchControlCommand(
       ),
       modalRuntime: {
         defaultPath: options.launch?.modalRuntimeDefault ? "runtime" : "native",
-        version: 1,
         enabled: Boolean(options.modalRuntimeLaunch),
         followupVersion: options.runtimeSend ? 1 : 0,
         idleLaunchVersion: options.modalRuntimeLaunch && options.runtimeSend ? 1 : 0,
@@ -404,7 +403,6 @@ export async function dispatchControlCommand(
       },
       boatRuntime: {
         defaultPath: options.launch?.boatRuntimeDefault ? "runtime" : "native",
-        version: 1,
         diagnosticsVersion: 1,
         followupVersion: options.runtimeSend ? 1 : 0,
         checkpointVersion: options.runtimeCheckpoint ? 1 : 0,
@@ -657,34 +655,7 @@ export async function dispatchControlCommand(
   if (route === "org/provider/disconnect")
     return disconnectOrgProvider(store, caller, optional(body, "org"), required(body, "provider"));
   const org = scopedOrg(caller, optional(body, "org"));
-  // Canonical runtime requests use the same admission checks as the compatibility routes.
-  let operation = route;
-  if (route === "sandbox/launch") {
-    if (body.provider === "docker") {
-      if (!DOCKER_LAUNCH_REQUEST.safeParse(body).success)
-        throw new ProviderError({
-          provider: "docker",
-          code: "invalid_request",
-          retryable: false,
-          message: Object.hasOwn(body, "image")
-            ? "Remove the image field and retry. Armada chooses the Docker environment automatically."
-            : "Invalid Docker launch request.",
-        });
-    } else if (body.id !== undefined) {
-      if (!PINNED_MODAL_LAUNCH_REQUEST.safeParse(body).success)
-        throw new VaultError(
-          "invalid",
-          "Modal runtime templates require a pinned revision, organization UUID and unambiguous template fields.",
-        );
-      operation = "sandbox/launch-modal-runtime-v1";
-    } else {
-      if (!GOLDEN_LAUNCH_REQUEST.safeParse(body).success)
-        throw new VaultError("invalid", "Invalid golden launch request. See the sandbox/launch request schema.");
-      if (body.runtimeTransport !== undefined) operation = "sandbox/launch-modal-runtime-v1";
-      else if (body.boatRuntime !== undefined) operation = "sandbox/launch-runtime-v1";
-    }
-  }
-  switch (operation) {
+  switch (route) {
     case "skillpack/catalog":
     case "skillpack/versions": {
       const versions = route === "skillpack/versions";
@@ -907,105 +878,17 @@ export async function dispatchControlCommand(
         golden: required(body, "golden"),
         repository: required(body, "repository"),
       });
-    case "sandbox/launch-modal-runtime-v1":
-      if (
-        body.runtimeVersion !== 1 ||
-        body.runtimeTransport !== "dialout" ||
-        body.provider !== "modal" ||
-        (body.harness !== "codex" && body.harness !== "claude" && body.harness !== "opencode") ||
-        body.boatRuntime !== undefined ||
-        body.armadaAccess ||
-        (body.connections !== undefined && !Array.isArray(body.connections)) ||
-        (body.helperCapabilities !== undefined &&
-          (!Array.isArray(body.helperCapabilities) || body.helperCapabilities.length))
-      )
-        throw new VaultError(
-          "invalid",
-          "Modal runtime v1 requires explicit Codex, Claude or OpenCode launch; helpers are unavailable.",
-        );
-      if (!options.modalRuntimeLaunch || !options.modalRuntimeHostFor)
-        throw new VaultError("unavailable", "Modal runtime staging opt-in is disabled.");
-      if (body.prompt !== undefined) required(body, "prompt");
-      if (body.prompt === undefined && !options.runtimeSend)
-        throw new VaultError("unavailable", "Modal runtime idle first send is unavailable.");
-      if (body.id !== undefined) {
-        if (
-          Object.keys(body).some(
-            (key) =>
-              ![...PINNED_MODAL_TEMPLATE_FIELDS, "runtimeVersion", "runtimeTransport", "provider", "harness"].includes(
-                key,
-              ),
-          ) ||
-          typeof body.id !== "string" ||
-          !UUID.test(body.id) ||
-          typeof body.org !== "string" ||
-          !UUID.test(body.org) ||
-          !Number.isSafeInteger(body.revision) ||
-          Number(body.revision) < 1
-        )
-          throw new VaultError(
-            "invalid",
-            "Modal runtime templates require a pinned revision, organization UUID and unambiguous template fields.",
-          );
-        if (!options.templates) throw new VaultError("unavailable", "Templates unavailable.");
-        const base = templateRuntime(options, caller);
-        if (!base) throw new VaultError("unavailable", "Template launching unavailable.");
-        const input = Object.fromEntries(
-          PINNED_MODAL_TEMPLATE_FIELDS.filter((key) => body[key] !== undefined).map((key) => [key, body[key]]),
-        );
-        return options.templates.command(caller, "launch", input, {
-          validateDefinition: (definition) => {
-            if (definition.provider !== "modal" || definition.harness !== body.harness || definition.secrets?.length)
-              throw new VaultError(
-                "invalid",
-                "Modal runtime templates require the selected Modal harness without application-secret bindings.",
-              );
-          },
-          stores: {
-            goldens: base.stores.goldens,
-            sandboxes: base.stores.sandboxes,
-            credentials: launchCredentials(
-              options.store,
-              options.encryptionKey,
-              undefined,
-              options.modelAuth,
-              options.github ? { ...options.github, store: options.store } : undefined,
-            ),
-            ...(options.runtimeMcp ? { connections: options.runtimeMcp.connections } : {}),
-          },
-          provider: (golden) => options.modalRuntimeHostFor!({ ...golden, runtimeTransport: "dialout" }, caller),
-          options: { ...base.options, runtime: options.modalRuntimeLaunch },
-        });
-      }
-      return launchRoute(options, caller, body, "modal").then((result) =>
-        route === "sandbox/launch" ? canonicalLaunchResponse(result) : result,
-      );
-    case "sandbox/launch-runtime-v1":
-      if (
-        body.runtimeVersion !== 1 ||
-        body.boatRuntime !== true ||
-        (body.harness !== "codex" && body.harness !== "claude" && body.harness !== "opencode") ||
-        (body.provider !== undefined && body.provider !== "boat") ||
-        body.armadaAccess ||
-        (body.helperCapabilities !== undefined &&
-          (!Array.isArray(body.helperCapabilities) || body.helperCapabilities.length))
-      )
-        throw new VaultError("invalid", "Runtime v1 requires explicit Boat Codex, Claude or OpenCode snapshot launch.");
-      if (!options.boatRuntimeLaunch || !options.runtimeHostFor)
-        throw new VaultError("unavailable", "Experimental Boat runtime launch is not configured.");
-      return launchRoute(options, caller, body, true).then((result) =>
-        route === "sandbox/launch" ? canonicalLaunchResponse(result) : result,
-      );
-    case "sandbox/launch-access-v1":
-      if (body.armadaAccessVersion !== 1 || !parseSandboxArmadaAccess(body.armadaAccess))
-        throw new VaultError("invalid", "The access launch route requires armadaAccessVersion 1 and armadaAccess.");
-      return launchRoute(options, caller, body);
-    case "sandbox/launch-sized-v1":
-      if (body.sizePolicyVersion !== 1)
-        throw new VaultError("invalid", "The sized launch route requires sizePolicyVersion 1.");
-      return launchRoute(options, caller, body);
     case "sandbox/launch":
       if (body.provider === "docker") {
+        if (!DOCKER_LAUNCH_REQUEST.safeParse(body).success)
+          throw new ProviderError({
+            provider: "docker",
+            code: "invalid_request",
+            retryable: false,
+            message: Object.hasOwn(body, "image")
+              ? "Remove the image field and retry. Armada chooses the Docker environment automatically."
+              : "Invalid Docker launch request.",
+          });
         if (!options.dockerLaunch) throw new VaultError("unavailable", "Normal Docker launch is not configured.");
         const organization = await resolveOrg(store, userId, org);
         const selected = { ...caller, orgs: caller.orgs.filter((item) => item.orgId === organization.id) };
@@ -1017,6 +900,60 @@ export async function dispatchControlCommand(
         return canonicalLaunchResponse(
           await options.dockerLaunch.launch(selected, { ...request, org: organization.id }),
         );
+      }
+      if (body.id !== undefined) {
+        if (!PINNED_MODAL_LAUNCH_REQUEST.safeParse(body).success)
+          throw new VaultError(
+            "invalid",
+            "Modal runtime templates require a pinned revision, organization UUID and unambiguous template fields.",
+          );
+      } else if (!GOLDEN_LAUNCH_REQUEST.safeParse(body).success) {
+        throw new VaultError("invalid", "Invalid golden launch request. See the sandbox/launch request schema.");
+      }
+
+      if (body.runtimeTransport === "dialout") {
+        if (!options.modalRuntimeLaunch || !options.modalRuntimeHostFor)
+          throw new VaultError("unavailable", "Modal runtime staging opt-in is disabled.");
+        if (body.prompt !== undefined) required(body, "prompt");
+        if (body.prompt === undefined && !options.runtimeSend)
+          throw new VaultError("unavailable", "Modal runtime idle first send is unavailable.");
+        if (body.id !== undefined) {
+          if (!options.templates) throw new VaultError("unavailable", "Templates unavailable.");
+          const base = templateRuntime(options, caller);
+          if (!base) throw new VaultError("unavailable", "Template launching unavailable.");
+          const input = Object.fromEntries(
+            PINNED_MODAL_TEMPLATE_FIELDS.filter((key) => body[key] !== undefined).map((key) => [key, body[key]]),
+          );
+          return options.templates.command(caller, "launch", input, {
+            validateDefinition: (definition) => {
+              if (definition.provider !== "modal" || definition.harness !== body.harness || definition.secrets?.length)
+                throw new VaultError(
+                  "invalid",
+                  "Modal runtime templates require the selected Modal harness without application-secret bindings.",
+                );
+            },
+            stores: {
+              goldens: base.stores.goldens,
+              sandboxes: base.stores.sandboxes,
+              credentials: launchCredentials(
+                options.store,
+                options.encryptionKey,
+                undefined,
+                options.modelAuth,
+                options.github ? { ...options.github, store: options.store } : undefined,
+              ),
+              ...(options.runtimeMcp ? { connections: options.runtimeMcp.connections } : {}),
+            },
+            provider: (golden) => options.modalRuntimeHostFor!({ ...golden, runtimeTransport: "dialout" }, caller),
+            options: { ...base.options, runtime: options.modalRuntimeLaunch },
+          });
+        }
+        return canonicalLaunchResponse(await launchRoute(options, caller, body, "modal"));
+      }
+      if (body.boatRuntime === true) {
+        if (!options.boatRuntimeLaunch || !options.runtimeHostFor)
+          throw new VaultError("unavailable", "Experimental Boat runtime launch is not configured.");
+        return canonicalLaunchResponse(await launchRoute(options, caller, body, true));
       }
       return canonicalLaunchResponse(await launchRoute(options, caller, body));
     case "launch/resolve":

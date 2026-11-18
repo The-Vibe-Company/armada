@@ -1,5 +1,5 @@
 import { z } from "zod";
-import published from "../../../docs/openapi.json";
+import published from "../openapi.json";
 
 type Operation = { post: { responses: { "200": { content: { "application/json": { schema: unknown } } } } } };
 
