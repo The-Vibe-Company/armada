@@ -201,6 +201,7 @@ test("ACP refuses a steer after its turn stopped with a replayable refusal", asy
   }
 });
 
+// Preflight validation runs before the ACP child spawns, so the refusal is definite.
 test("ACP refuses an unsupported reasoning effort before spawning the child", async () => {
   const driver = new AcpDriver({
     executable: process.execPath,
