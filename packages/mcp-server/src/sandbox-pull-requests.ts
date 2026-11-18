@@ -76,14 +76,21 @@ const maxPushesPerBranch = 16;
 // gap (a push to a URL or another remote, or an origin update without a
 // reflog entry) or a reflog push the ledger lacks prints `!untracked`. A
 // missing hook (a tool such as husky can move core.hooksPath) prints
-// `!unproven` and is reinstalled when the path is free. Either way pushes may
-// have escaped the ledger, so the worker never proves coverage again.
+// `!unproven`, leaves a ledger gap for later reads and is reinstalled when the
+// path is free. Either way pushes may have escaped the ledger, so the worker
+// never proves coverage again.
 export const readPushEvidence = `hooks="$(git rev-parse --git-path hooks)" || exit 1
 ledger="$(git rev-parse --git-common-dir)/${PUSH_LEDGER_FILE}" || exit 1
 for name in ${PUSH_LEDGER_HOOKS.join(" ")}; do
   if [ ! -x "$hooks/$name" ] || [ "$(sed -n 2p "$hooks/$name")" != '${PUSH_LEDGER_MARKER}' ]; then missing=1; fi
 done
-if [ -n "$missing" ]; then echo '!unproven'; ${pushLedgerInstall}; fi
+if [ -n "$missing" ]; then
+  echo '!unproven'
+  # Record the loss in the ledger before restoring the hooks: if this scan is
+  # abandoned, the next read still reports it.
+  printf '%s\\t!gap\\n' "$(date +%s)" >>"$ledger" || exit 1
+  ${pushLedgerInstall}
+fi
 entries=$(if [ -f "$ledger" ]; then cat "$ledger"; fi) || exit 1
 logs=$(git reflog show --all --date=unix --format='%gD%x09%gs%x09%H') || exit 1
 { printf '%s\\n' "$logs"; if [ -n "$entries" ]; then printf '%s\\n' "$entries" | awk '{ print "L\\t" $0 }'; fi; } |

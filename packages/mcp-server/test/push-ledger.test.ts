@@ -49,24 +49,30 @@ function launch() {
   return { root, work, push, read, prune };
 }
 
-test("push evidence survives a pruned tracking ref and proves coverage only through its hooks", () => {
-  const { root, work, push, read, prune } = launch();
+test("push evidence survives a pruned tracking ref and reports pushes that escaped the ledger", () => {
+  const { root, push, read, prune } = launch();
   const first = push("first");
   const second = push("second");
   // Someone else's branch arrives by fetch: not this sandbox's push.
   sh(root, "git -C remote.git branch other second");
   prune("first");
   expect(read()).toBe(`second\t${second}\nfirst\t${first}\n`);
-  // A tool such as husky replaced a hook: no proof now, and the hook comes back.
-  for (const hook of ["reference-transaction", "pre-push"]) {
-    sh(work, `rm .git/hooks/${hook}`);
-    expect(read()).toBe(`!unproven\nsecond\t${second}\nfirst\t${first}\n`);
-    expect(read()).toBe(`second\t${second}\nfirst\t${first}\n`);
-  }
   // A push that escaped the ledger makes coverage unprovable.
   push("third", "-c core.hooksPath=/nonexistent");
   expect(read().split("\n")).toContain("!untracked");
 });
+
+test.each(["reference-transaction", "pre-push"])(
+  "a missing %s hook is reported, kept in the ledger and restored",
+  (hook) => {
+    const { work, push, read } = launch();
+    const first = push("first");
+    sh(work, `rm .git/hooks/${hook}`);
+    expect(read()).toBe(`!unproven\n!untracked\nfirst\t${first}\n`);
+    // The hook is back, but the interval it missed stays unproven.
+    expect(read()).toBe(`!untracked\nfirst\t${first}\n`);
+  },
+);
 
 test("a push the ledger cannot attribute leaves a gap even after its tracking ref is pruned", () => {
   for (const path of ["url", "remote", "no reflog", "narrow refspec"] as const) {
@@ -90,8 +96,17 @@ test("a push while the hooks were displaced is reported before the reader restor
   sh(work, "mkdir .husky && git config --local core.hooksPath .husky");
   push("closed");
   prune("closed");
-  // The first read reports the gap (the worker keeps it for good) and
-  // reinstalls the hooks in the new path; the next read is clean again.
-  expect(read()).toBe(`!unproven\nmerged\t${merged}\n`);
-  expect(read()).toBe(`merged\t${merged}\n`);
+  // The first read reports the loss and reinstalls the hooks in the new path.
+  // A later read (say the first scan was abandoned) still reports it.
+  expect(read()).toBe(`!unproven\n!untracked\nmerged\t${merged}\n`);
+  expect(read()).toBe(`!untracked\nmerged\t${merged}\n`);
+  // Fetches and maintenance after the reinstall add no false gap of their own.
+  const fresh = launch();
+  fresh.push("merged");
+  sh(fresh.root, "git -C remote.git branch other merged");
+  sh(
+    fresh.work,
+    "git push -q origin HEAD:refs/heads/main && git fetch -q origin && git pull -q --rebase origin main && git remote set-head origin -a >/dev/null && git gc -q",
+  );
+  expect(fresh.read().split("\n")).not.toContain("!untracked");
 });

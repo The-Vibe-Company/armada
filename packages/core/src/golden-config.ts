@@ -271,8 +271,8 @@ ${PUSH_LEDGER_MARKER}
 test "$1" = committed || exit 0
 ledger="$(git rev-parse --git-common-dir)/${PUSH_LEDGER_FILE}" || exit 0
 while read -r old new ref; do
-  case "$ref" in refs/remotes/origin/*) ;; *) continue ;; esac
-  case "$new" in *[!0]*) ;; *) continue ;; esac
+  case "$ref" in refs/remotes/origin/HEAD) continue ;; refs/remotes/origin/*) ;; *) continue ;; esac
+  case "$new" in ref:*) continue ;; *[!0]*) ;; *) continue ;; esac
   entry="$(git reflog show --format='%H %gs' -n 1 "$ref" -- 2>/dev/null)"
   if [ "$entry" = "$new update by push" ]; then
     printf '%s\\t%s\\t%s\\n' "$(date +%s)" "\${ref#refs/remotes/origin/}" "$new" >>"$ledger"
