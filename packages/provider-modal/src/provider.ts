@@ -1972,7 +1972,11 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         // After cleanup claims the request, a missing exact-key row proves pre-create absence.
         const reservation = await store.findByRequestKey(modalLaunchId);
         if (!reservation) return { status: "deleted" };
-        if (reservation.info.id !== sandboxId)
+        if (
+          reservation.info.id !== sandboxId ||
+          reservation.launchUserId !== options.scope.userId ||
+          reservation.golden
+        )
           throw refusal("conflict", "Modal cleanup key belongs to another launch.");
         assertMachineSource(reservation);
       }
@@ -2004,7 +2008,8 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
             try {
               const sb = await client.sandboxes.fromId(row.physicalId);
               await beforeDispatch?.();
-              await sb.terminate({ wait: true });
+              if (beforeDispatch) await sb.terminate();
+              else await sb.terminate({ wait: true });
               if ((await sb.poll()) === null)
                 throw refusal("unavailable", "Owned machine termination is not complete; delete remains pending.");
             } catch (error) {

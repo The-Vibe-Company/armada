@@ -184,7 +184,7 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
               `update public.modal_machines set record=$4::jsonb,
                  lease_until=case when $6::boolean then lease_until else clock_timestamp()+$5::integer*interval '1 second' end
                where scope=$1 and id=$2 and lease_id=$3 and lease_until>clock_timestamp()
-                 and (not $6 or (record->>'phase'='creating' and record->>'physicalId' is null))
+                 and (not $6 or (record->>'phase'='creating' and record->>'physicalId' is null and $4::jsonb->>'phase'='reserved'))
                returning id`,
               [key, id, token, JSON.stringify(row), duration, rollback],
             );

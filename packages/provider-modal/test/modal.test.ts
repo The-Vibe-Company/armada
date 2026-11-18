@@ -1069,6 +1069,13 @@ test("durable Modal dispatch checks authority after the reservation and lookup",
   ).rejects.toThrow();
   expect(phaseAtDeleteDispatch).toBe("deleting");
   expect(f.log.filter((op) => op === "terminate")).toHaveLength(terminations);
+
+  const timedOut = new AbortController();
+  f.onTerminate(async () => timedOut.abort());
+  const expiredAttempt = Object.assign(async () => {}, { signal: timedOut.signal });
+  await expect(f.provider.delete({ sandboxId: child.id }, expiredAttempt)).rejects.toThrow();
+  expect(await f.store.get(child.id)).toMatchObject({ phase: "deleting" });
+  expect(await f.provider.delete({ sandboxId: child.id }, async () => {})).toEqual({ status: "deleted" });
 });
 
 test("enrolled Modal host forks never start or call the tunnel and stop without a recovery claim", async () => {
