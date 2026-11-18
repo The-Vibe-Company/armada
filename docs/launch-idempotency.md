@@ -121,3 +121,23 @@ never re-dispatched.
 
 Signed [outbound webhooks](outbound-webhooks.md) include `externalRef` in
 each payload, with null when the sandbox has no reference.
+
+## Launch route compatibility
+
+For explicit runtime launches from a golden, send the selectors to `POST /api/v1/sandbox/launch`.
+Use `runtimeVersion: 1` and `boatRuntime: true` for Boat. Use `runtimeVersion: 1`,
+`provider: "modal"` and `runtimeTransport: "dialout"` for Modal. The existing
+runtime admission checks and server opt-ins apply on both the canonical and
+compatibility routes. Pinned Modal runtime templates still use
+`sandbox/launch-modal-runtime-v1`.
+
+| Compatibility route | Known callers to migrate |
+| --- | --- |
+| `sandbox/launch-sized-v1` | CLI size and repository flags via the SDK, dashboard, iOS |
+| `sandbox/launch-access-v1` | CLI scoped access via the SDK, dashboard, post-deploy smoke and scoped-access staging probe |
+| `sandbox/launch-runtime-v1` | Boat runtime probe and direct API integrations following the runtime guide |
+| `sandbox/launch-modal-runtime-v1` | Modal runtime probe and direct API integrations following the runtime guide |
+
+The aliases remain available throughout client migration and for at least 90
+days after the first release that migrates all first-party callers. Review
+remaining released-client usage before scheduling removal.
