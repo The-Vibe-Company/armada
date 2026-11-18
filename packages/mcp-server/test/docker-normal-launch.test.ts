@@ -1702,7 +1702,7 @@ for (const checkoutExitCode of [0, 1])
     );
     expect(replay.state).toBe("admitted");
 
-    expect(native[2]?.input?.command).toContain("--branch 'feature/work'");
+    expect(native[2]?.input?.command).toContain("'https://github.com/example/project.git' 'feature/work'");
     expect(native[2]?.input?.command).toContain("'/home/user/project'");
     expect(JSON.stringify(native)).not.toContain("offline-github-token");
     expect(JSON.stringify(f.jobs)).not.toContain("offline-github-token");
