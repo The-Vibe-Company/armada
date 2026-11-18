@@ -21,7 +21,6 @@ export function requireLaunchAccountBinding(
   return binding;
 }
 
-/** Prepare the request's account before opening a provider. Reuse the selection during core launch. */
 export async function prepareGoldenLaunchAccount(
   actor: GoldenActor,
   golden: GoldenRecord,
@@ -39,8 +38,6 @@ export async function prepareGoldenLaunchAccount(
       : (options.boatRuntimeDefault ?? (harness === "opencode" ? endpoint : undefined));
   if (!explicit && !runtimeDefault && !endpoint) return { credentials, options };
 
-  // A failure to resolve is still handled at the existing launch boundary. In
-  // particular, a revoked account must not mask replay of a completed receipt.
   const probe = async (
     resolver: GoldenLaunchCredentials,
     requestedId = credentialId,
@@ -63,16 +60,11 @@ export async function prepareGoldenLaunchAccount(
       return undefined;
     }
   };
-  const pin = (
-    resolver: LaunchCredentialResolver,
-    account: NonNullable<Awaited<ReturnType<typeof probe>>>,
-  ): LaunchCredentialResolver => {
+  const pin = (resolver: LaunchCredentialResolver, account: NonNullable<Awaited<ReturnType<typeof probe>>>) => {
     const binding = requireLaunchAccountBinding(account.binding);
     return {
       ...resolver,
       defaults: async () => account.preference,
-      // Provider setup may take time. Reauthorize the exact selection rather
-      // than carrying decrypted credentials across the provider await.
       resolve: (launchActor, launchHarness) =>
         resolver.resolve(launchActor, launchHarness, binding.credentialId, binding.credentialVersion),
     };
