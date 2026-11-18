@@ -136,7 +136,6 @@ interface ExportJob {
   waiting_for_history: boolean;
   config_enc: Uint8Array<ArrayBuffer> | null;
   content_mode: string | null;
-  usage_turns: TurnTokenUsage[] | null;
 }
 
 export function createLangfuse(
@@ -204,7 +203,13 @@ export function createLangfuse(
       status: outcome && outcome.state !== "running" ? outcome.state : job.terminal_status,
       ...(outcome?.state === "failed" && job.terminal_status === "finished" ? { reason: outcome.reason } : {}),
     });
-    const persisted = job.usage_turns?.filter((turn) => turn.promptId === job.prompt_id) ?? [];
+    const snapshot = await sql.query<{ turns: TurnTokenUsage[] | null }>(
+      "select usage_turns->'turns' as turns from public.sandboxes where id=$1 and org_id=$2",
+      [job.sandbox_id, job.org_id],
+    );
+    const sandbox = snapshot.rows[0];
+    if (!sandbox) return "dropped";
+    const persisted = sandbox.turns?.filter((turn) => turn.promptId === job.prompt_id) ?? [];
     const usage = persisted.some((turn) => turn.model !== null || turn.inputTokens != null || turn.outputTokens != null)
       ? persisted
       : reportedTurnUsage(events).turns;
@@ -249,7 +254,7 @@ export function createLangfuse(
         )
         select j.*,extract(epoch from j.observed_at)::double precision*1000 as observed_ms,
           j.observed_at>clock_timestamp()-interval '60 seconds' as waiting_for_history,
-          c.config_enc,c.content_mode,s.usage_turns->'turns' as usage_turns
+          c.config_enc,c.content_mode
         from claimed j join public.sandboxes s on s.id=j.sandbox_id
         left join public.org_langfuse c on c.org_id=j.org_id and c.enabled and s.org_id=j.org_id`,
         [lease],

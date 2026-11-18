@@ -244,7 +244,20 @@ test("native Modal export waits for the terminal journal event after a live rece
   const provider = {
     id: "modal",
     getPrompt: async () => ({ promptId: "turn", status: "failed", done: true }),
-    events: async () => ({ events: history, cursor: "native", hasMore: false }),
+    events: async () => {
+      if (history === events) {
+        await db.query("update sandboxes set usage_turns=$2::jsonb where id=$1", [
+          id,
+          JSON.stringify({
+            turnCount: 1,
+            turns: [
+              { promptId: "turn", model: "codex_fixture", inputTokens: 4, outputTokens: 2, pricing: { usd: 0.12 } },
+            ],
+          }),
+        ]);
+      }
+      return { events: history, cursor: "native", hasMore: false };
+    },
   } satisfies Pick<Provider, "id" | "getPrompt" | "events">;
   const signal = new AbortController().signal;
   await createNativeWebhookPrompts(db, async () => provider).reconcileOne(signal);
@@ -265,6 +278,7 @@ test("native Modal export waits for the terminal journal event after a live rece
   expect(await exporter.reconcileOne(signal)).toBe(true);
   expect(payloads).toHaveLength(1);
   expect(payloads[0]).toContain("customer_reply");
+  expect(payloads[0]).toContain("langfuse.observation.cost_details");
 });
 
 test("worker exports the persisted usage envelope and reconstructed archive through OTLP", async () => {
