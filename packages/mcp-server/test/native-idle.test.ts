@@ -428,6 +428,7 @@ test.each([
   "opted out",
   "running-turn",
   "scan during turn",
+  "unsettled turn after scan",
   "corrected report",
   "out-of-grant report",
   "rejected recreation",
@@ -601,6 +602,9 @@ test.each([
   );
   if (state === "revoked") await f.db.query("update github_connections set revoked_at=now() where user_id=$1", [owner]);
   if (state === "opted out") await f.db.query("update sandboxes set stop_when_work_merged=false where id=$1", [f.id]);
+  // A turn the proof did not see is in flight: stop admission rechecks settlement.
+  if (state === "unsettled turn after scan")
+    await f.db.query("insert into runtime_idle_turns(sandbox_id,prompt_id,settled) values($1,'later',false)", [f.id]);
   await f.tick();
   // The read above preceded the turn's settlement (the tick that just settled
   // it), so the turn could still have pushed after it: no stop on a later tick.
