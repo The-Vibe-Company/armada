@@ -97,7 +97,6 @@ export const TEMPLATE_LAUNCH_RESPONSE = z
   .union([TEMPLATE_LAUNCH_RECEIPT, TEMPLATE_LAUNCH_REFUSAL])
   .describe("A receipt has requestId; a pre-admission refusal has none.");
 
-/** `golden/list`: the MCP golden record plus the build warnings the REST handler adds. */
 const GOLDEN_OUTPUT = z.object({
   id: z.string(),
   name: z.string(),
