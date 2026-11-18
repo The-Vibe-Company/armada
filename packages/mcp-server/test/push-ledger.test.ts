@@ -187,7 +187,7 @@ test("local work no confirmed push carries withholds coverage, even after a push
   // one in another worktree, are both still local work.
   sh(work, "git branch -q -f topic " + topic);
   const left = sh(work, "git checkout -q --detach && git commit -q --allow-empty -m left && git rev-parse HEAD").trim();
-  sh(work, `git push -q --no-verify ${join(root, "remote.git")} HEAD:refs/heads/left && git checkout -q main`);
+  sh(work, `git push -q --no-verify file://${join(root, "remote.git")} HEAD:refs/heads/left && git checkout -q main`);
   const away = sh(
     work,
     "git worktree add -q --detach ../wt && git -C ../wt commit -q --allow-empty -m away && git -C ../wt rev-parse HEAD",
