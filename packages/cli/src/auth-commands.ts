@@ -1,5 +1,6 @@
 import { createInterface } from "node:readline";
 import { AuthError, type AuthFetch, assertEmail, type Provider } from "@armada/auth";
+import { authClient } from "@armada/sdk/auth";
 import { createArmadaApiClient, DEFAULT_ARMADA_API_URL } from "./armada-api.ts";
 import { browserLogin } from "./browser-login.ts";
 import { emailLogin } from "./email-login.ts";
@@ -98,10 +99,7 @@ export async function loginCommand(
   if (how.email === undefined) {
     let methods: string[];
     try {
-      const response = await io.fetch(new URL("/api/v1/auth/methods", origin), {
-        method: "GET",
-        signal: AbortSignal.timeout(10_000),
-      });
+      const response = await authClient(origin, (input, init) => io.fetch(input, init)).methods();
       const value = (await response.json()) as { methods?: unknown };
       if (
         !response.ok ||

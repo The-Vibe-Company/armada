@@ -10,6 +10,7 @@ import {
   launchFailureHelp,
   TEMPLATE_REFUSAL_HELP,
 } from "@armada/core";
+import { authClient } from "@armada/sdk/auth";
 import { jsonPost, requestApi, apiUrl as sdkApiUrl } from "@armada/sdk/request";
 import { sandboxClient } from "@armada/sdk/sandboxes";
 import { validApiReceipt } from "./api-receipts.ts";
@@ -418,14 +419,10 @@ async function refreshLocked(
   timeoutMs: number,
   signal?: AbortSignal,
 ): Promise<NonNullable<Awaited<ReturnType<SessionStore["read"]>>>> {
-  const result = await requestApi(
-    apiUrl(origin, "/api/v1/auth/refresh"),
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ refreshToken: saved.refreshToken }),
-    },
-    { fetch: (input, init) => io.fetch(input, init), timeoutMs, signal, combineSignal: true },
+  const result = await authClient(origin, (input, init) => io.fetch(input, init)).refresh(
+    saved.refreshToken,
+    timeoutMs,
+    signal,
   );
   if (result.kind === "transport") throw new AuthError("Armada could not reach the server.", "unavailable");
   const { response, payload } = result;

@@ -1,4 +1,5 @@
 import { AuthError, createPkce } from "@armada/auth";
+import { authClient } from "@armada/sdk/auth";
 import { armadaApiUrl } from "./armada-api.ts";
 
 export interface SessionDto {
@@ -54,12 +55,15 @@ export async function browserLogin(options: {
   });
   try {
     const callback = `http://127.0.0.1:${server.port}/callback`;
-    const authorize = new URL("/api/v1/auth/authorize", origin);
-    authorize.searchParams.set("provider", options.provider);
-    authorize.searchParams.set("redirect_uri", callback);
-    authorize.searchParams.set("code_challenge", pkce.challenge);
-    authorize.searchParams.set("state", state);
-    options.open(authorize.toString());
+    const client = authClient(origin, options.fetch);
+    options.open(
+      client.authorize({
+        provider: options.provider,
+        redirect_uri: callback,
+        code_challenge: pkce.challenge,
+        state,
+      }),
+    );
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_, reject) => {
       timeoutId = setTimeout(
@@ -76,11 +80,7 @@ export async function browserLogin(options: {
     const value = await Promise.race([code, timeout]).finally(() => {
       if (timeoutId !== undefined) clearTimeout(timeoutId);
     });
-    const response = await options.fetch(new URL("/api/v1/auth/exchange", origin), {
-      method: "POST",
-      headers: { "content-type": "application/json", accept: "application/json" },
-      body: JSON.stringify({ code: value, verifier: pkce.verifier }),
-    });
+    const response = await client.exchange({ code: value, verifier: pkce.verifier });
     let dto: Partial<SessionDto> & { error?: { code?: string; message?: string } };
     try {
       dto = (await response.json()) as typeof dto;
