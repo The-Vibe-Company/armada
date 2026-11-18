@@ -55,8 +55,17 @@ if [[ "$1" == up ]]; then
   fi
   echo '{"deploymentId":"selected"}'
 else
-  if [[ "$RELEASE_ENVIRONMENT" == production ]]; then
+  if [[ "$RELEASE_ENVIRONMENT" == production && ! -e "$HOME/build-seen" ]]; then
     read -r -u 3
+    : > "$HOME/build-seen"
+  fi
+  # A transient provider or decode failure on the first poll only.
+  if [[ "$FAILURE" == list-* && ! -e "$HOME/list-failed" ]]; then
+    : > "$HOME/list-failed"
+    echo 'Failed to fetch: error decoding response body' >&2
+    if [[ "$FAILURE" == list-failed ]]; then exit 1; fi
+    echo 'not json'
+    exit 0
   fi
   # Another deployment being healthy must not let this release continue.
   if [[ "$FAILURE" == server ]]; then status=FAILED; else status=SUCCESS; fi
@@ -124,6 +133,7 @@ fi
       calls,
       output: readFileSync(join(dir, "outputs"), "utf8"),
       error: result.stderr.toString(),
+      stdout: result.stdout.toString(),
     };
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -165,6 +175,18 @@ test("production builds while Railway is pending and publishes only after exact 
   expect(failed.code).not.toBe(0);
   expect(failed.calls).toContain("vercel build --prod");
   expect(failed.calls).not.toContain("vercel deploy");
+});
+
+test.each([
+  ["staging", "list-failed"],
+  ["production", "list-failed"],
+  ["staging", "list-unparseable"],
+] as const)("%s retries a transient %s Railway deployment list and completes", (environment, failure) => {
+  const result = deploy(failure, "", undefined, "", environment === "production");
+  expect(result.code).toBe(0);
+  expect(result.calls.match(/railway deployment list/g)).toHaveLength(2);
+  expect(result.calls).toContain("vercel deploy --prebuilt");
+  expect(result.stdout).toContain("Railway deployment list failed or was unparseable; retrying until the deadline.");
 });
 
 test.each(["migrations", "server", "health", "wrong-commit", "dashboard-pull", "dashboard-build", "dashboard-deploy"])(

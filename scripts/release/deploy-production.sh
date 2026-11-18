@@ -89,9 +89,17 @@ wait_for_server() {
   echo "Waiting for Railway deployment $deployment_id"
   deadline=$((SECONDS + 900))
   while (( SECONDS < deadline )); do
-    deployments=$(railway deployment list --json --project "$RAILWAY_PROJECT_ID" \
-      --environment "$RAILWAY_ENVIRONMENT_ID" --service "$RAILWAY_SERVICE_ID")
-    status=$(jq -r --arg id "$deployment_id" '.[] | select(.id == $id) | .status' <<< "$deployments")
+    # A transient list/decode failure is retried within the same deadline; only a
+    # terminal status or the deadline fails the release.
+    status=
+    if ! deployments=$(railway deployment list --json --project "$RAILWAY_PROJECT_ID" \
+        --environment "$RAILWAY_ENVIRONMENT_ID" --service "$RAILWAY_SERVICE_ID") \
+      || ! status=$(jq -r --arg id "$deployment_id" '.[] | select(.id == $id) | .status' <<< "$deployments"); then
+      status=
+      echo "Railway deployment list failed or was unparseable; retrying until the deadline."
+      sleep 10
+      continue
+    fi
     case "$status" in
       SUCCESS) break ;;
       FAILED|CRASHED|REMOVED|SKIPPED) fail "Railway deployment $deployment_id ended in $status; dashboard/npm not released." ;;
