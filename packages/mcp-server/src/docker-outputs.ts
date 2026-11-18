@@ -25,6 +25,8 @@ export function createDockerOutputReader(sql: Sql, key: string, clock?: Clock) {
         )
       ).rows[0];
       if (!row) return null;
+      // A cancelled read (deadline or worker shutdown) never cleans up or enqueues after this.
+      request.signal?.throwIfAborted();
       // The deadline is part of the request id: once it passes, the read is never dispatched and
       // never counts as pending (`expiredOutputRead`), even if this process never returns here.
       const deadline = now() + READ_TIMEOUT_MS;

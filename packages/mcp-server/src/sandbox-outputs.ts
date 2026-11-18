@@ -46,7 +46,7 @@ async function collect(
   signal?: AbortSignal,
   writes?: Set<Promise<unknown>>,
 ) {
-  // A cancelled read never touches the database again (the worker's drain relies on it).
+  // A cancelled read never writes again (the worker's drain relies on it); readers stop at their next check.
   signal?.throwIfAborted();
   // Taint can commit after the scan claim (e.g. while the provider resolves): admit the read only
   // against current taint, immediately before dispatch (the same check-then-act fence exec uses).
@@ -216,10 +216,10 @@ export function createSandboxOutputs(
       void work.then(() => pending.delete(work));
       return true;
     },
-    /** Shutdown aborts every sample's deadline first. A cancelled sample never starts another query
-     * or write (`collect` checks its deadline before each), so drain waits for samples that settle
+    /** Shutdown aborts every sample's deadline first. A cancelled sample never starts a write
+     * (`collect` and the Docker reader check its deadline before each), so drain waits for samples that settle
      * and for snapshot writes already in progress, never for a provider call that ignores
-     * cancellation (it can only fail once the pool closes; its result is discarded). */
+     * cancellation (a read still in flight can only fail once the pool closes; its result is discarded). */
     async drain() {
       await Promise.allSettled([...pending].map(([work, deadline]) => untilAborted(work, deadline)));
       await Promise.allSettled([...writes]);

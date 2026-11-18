@@ -503,8 +503,19 @@ test("worker shutdown finishes while a cancelled sample's provider read is still
   workers.stop();
   // Resolves although the provider promise is still pending: the cancelled read is fenced.
   await workers.done;
-  release();
-  await Promise.resolve();
+  // Once the provider finally answers, the background sample settles without persisting.
+  const warn = console.warn;
+  const settled = new Promise<void>((resolve) => {
+    console.warn = (line: string) => {
+      if (line.includes("sandbox_output_collection_failed") && line.includes(id)) resolve();
+    };
+  });
+  try {
+    release();
+    await settled;
+  } finally {
+    console.warn = warn;
+  }
   expect((await db.query(`select 1 from sandbox_outputs where sandbox_id=$1`, [id])).rows).toHaveLength(0);
   expect(state.reads).toBe(1);
 });
