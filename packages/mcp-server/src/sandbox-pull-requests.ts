@@ -136,11 +136,14 @@ export function createSandboxPullRequests(
       const configured = repos.parse(row.repositories);
       const scan = row.pull_request_scan ?? { pushes: {}, discovered: [] };
       const branches = new Map<string, Map<string, string[]>>();
+      // GitHub's head filter receives the owner as configured, not lowercased.
+      const owners = new Map<string, string>();
       for (const repo of configured) {
         signal.throwIfAborted();
         const remote = repoUrl.exec(repo.url)?.[1];
         const repository = remote?.toLowerCase();
         if (
+          !remote ||
           !repository ||
           !repoName.test(repository) ||
           !/^[a-zA-Z0-9._-]+$/.test(repo.dir) ||
@@ -152,6 +155,7 @@ export function createSandboxPullRequests(
         if (!Number.isSafeInteger(since)) return;
         const names = branches.get(repository) ?? new Map(scan.pushes[repository] ?? []);
         branches.set(repository, names);
+        owners.set(repository, remote.slice(0, remote.indexOf("/")));
         if (!row.active) continue;
         const result = await exec(row, {
           sandboxId: row.provider_sandbox_id,
@@ -286,7 +290,7 @@ export function createSandboxPullRequests(
           for (const [ref, shas] of refs) {
             const params = new URLSearchParams({
               state: "all",
-              head: `${headRepository.split("/")[0]}:${ref}`,
+              head: `${owners.get(headRepository)}:${ref}`,
               per_page: "100",
             });
             let named = false;
