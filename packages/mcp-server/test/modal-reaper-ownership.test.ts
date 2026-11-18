@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import type { ProviderInventoryMachine } from "@armada/core";
 import { PGlite } from "@electric-sql/pglite";
+import { createModalReaper } from "../src/modal-reaper.ts";
 import { createModalReaperOwnership } from "../src/modal-reaper-ownership.ts";
 
 const machine = {
@@ -17,6 +18,12 @@ const lookup = createModalReaperOwnership({ query: (statement, params) => db.que
 
 beforeAll(async () => {
   await db.exec(`
+    create table modal_server_apps (
+      app_id text, app_name text, environment text, authority_scope text, authority_owner_id uuid, org_id uuid
+    );
+    insert into modal_server_apps values
+      ('ap-bound','bound-app','env','org',
+       '30000000-0000-0000-0000-000000000001','30000000-0000-0000-0000-000000000001');
     create table goldens (id uuid primary key, modal_workspace text, modal_environment text, modal_app_id text);
     create table sandboxes (
       id uuid primary key, provider text, provider_sandbox_id text, status text,
@@ -87,4 +94,28 @@ test("a Modal ownership query failure propagates for the next sweep to retry", a
   );
 
   await expect(failingLookup(machine, signal)).rejects.toBe(failure);
+});
+
+test("the live Modal reaper excludes conflicting logical ownership from the overdue count", async () => {
+  const logs: unknown[] = [];
+  const lane = createModalReaper(
+    { query: (statement, params) => db.query(statement, params) },
+    "https://armada.test",
+    async (_registration, _binding, deploymentId) => ({
+      async *listInventory() {
+        yield { ...machine, deploymentId, sandboxId: "modal_wrong_app", machineId: "sb-unmapped" };
+        yield { ...machine, deploymentId, sandboxId: "modal_orphan", machineId: "sb-orphan" };
+      },
+    }),
+    { log: (line) => logs.push(JSON.parse(line)), now: () => 16 * 60_000 },
+  );
+  await lane.reconcileOne(signal);
+  expect(logs).toContainEqual({
+    metric: "reaper_unknown_machines",
+    provider: "modal",
+    source: binding.appId,
+    count: 1,
+    overdue: 1,
+    complete: true,
+  });
 });

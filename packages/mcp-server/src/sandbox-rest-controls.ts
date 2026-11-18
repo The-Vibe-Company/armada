@@ -1,19 +1,26 @@
 import { providerRateLimitDetails } from "@armada/core";
-import { GoldenError, ProviderError } from "@armada/core/server";
+import { GoldenError, isNonMutatingProviderRefusal, ProviderError } from "@armada/core/server";
 import { z } from "zod";
 import { validateProviderResourceObservation } from "../../core/src/resource-validation.ts";
 import type { Caller } from "./caller.ts";
 import type { ControlOptions } from "./control.ts";
 import { measureRequestPhase } from "./request-timing.ts";
 import { summarizeResourceHistory } from "./resource-advice.ts";
+import { sandboxActivity } from "./sandbox-activity.ts";
 import { ToolApiError } from "./tool-api.ts";
-import { describeToolFailure } from "./tools.ts";
+import { describeToolFailure, ToolError } from "./tools.ts";
 
 const id = z.string().describe("Armada's sandbox id (a uuid, as returned by launch and list).");
 const runtimeRequest = z.object({ id, request_id: z.string().uuid(), runtimeVersion: z.literal(1) });
 const runtime = z.object({ kind: z.literal("armada"), epoch: z.string() });
 
 export const SANDBOX_REST_CONTRACTS = {
+  "sandbox/delete": {
+    description:
+      "Owner/admin only. Permanently removes provider resources and recovery archives. Stop first. Legacy orchestrator parents and children are refused; ordinary delegated children require a deleted parent.",
+    input: z.object({ id, request_id: z.string().uuid().optional() }),
+    output: z.object({ id: z.string(), status: z.literal("deleted") }),
+  },
   "sandbox/advice": {
     description:
       "Collects one bounded read-only VM observation and reports the last ten comparable repository sessions. Missing evidence causes abstention; never resizes or changes defaults.",
@@ -94,6 +101,62 @@ export async function dispatchSandboxRestControl(
 
   async function run() {
     switch (route) {
+      case "sandbox/delete": {
+        const input = SANDBOX_REST_CONTRACTS[route].input.safeParse(body);
+        if (!input.success) {
+          const details = input.error.issues.map((issue) => `${issue.message} at ${issue.path.join(".")}`).join("\n");
+          throw new ToolApiError(
+            "internal",
+            `MCP error -32602: Input validation error: Invalid arguments for tool delete: ${details}`,
+          );
+        }
+        const args = input.data;
+        const routed = await options.dockerControls?.invoke(caller, "delete", args);
+        if (routed?.handled) return routed.result;
+        if (!data.sandboxes.assertDeletionAllowed)
+          throw new ToolError("unavailable", "Sandbox deletion is not configured.");
+        await data.sandboxes.assertDeletionAllowed(args.id);
+        const found = await data.sandboxes.get(args.id);
+        if (!found) throw new ToolError("not_found", `No sandbox with id '${args.id}' that you can see.`);
+        if (found.status === "deleted") return { id: found.id, status: "deleted" as const };
+        const provider = found.providerSandboxId
+          ? await options.providers.resolve(found, { userId: found.ownerId })
+          : null;
+        const now = options.now ?? (() => new Date());
+        const failurePatch = (error: unknown) => {
+          if (found.provider === "modal" || isNonMutatingProviderRefusal(error)) return {};
+          throw error;
+        };
+        return sandboxActivity(
+          data.sandboxes,
+          found,
+          { deleteRequested: true },
+          async (signal) => {
+            signal.throwIfAborted();
+            if (provider) {
+              try {
+                const receipt = await provider.delete({ sandboxId: found.providerSandboxId });
+                if (!["deleted", "completed"].includes(receipt.status))
+                  throw new ToolError(
+                    "conflict",
+                    "Provider deletion is pending. Retry deletion to confirm completion; do not resume this sandbox.",
+                  );
+              } catch (error) {
+                if (!(error instanceof ProviderError && error.code === "not_found")) throw error;
+              }
+            }
+            return {
+              result: { id: found.id, status: "deleted" as const },
+              patch: {
+                status: "deleted",
+                deletedAt: now().toISOString(),
+                ...(found.stoppedAt === null ? { usageRuntimeUnknown: true } : {}),
+              },
+            };
+          },
+          { failurePatch },
+        );
+      }
       case "sandbox/checkpoint-runtime-v1": {
         const args = parse(SANDBOX_REST_CONTRACTS[route].input);
         if (!options.runtimeCheckpoint) throw new ToolApiError("unsupported", "Runtime checkpoint is unavailable.");

@@ -39,7 +39,7 @@ With ARMADA_DOCKER_HOSTS=1, current owner/admin interior authorization:
   filter private model diagnostics after raw paging, and preserve forward progress
   through empty filtered pages. The shared SQL ordering is qualified numeric
   sequence order, not lexicographic ordering of its text output alias.
-- POST /api/v1/sandbox/stop and /sandbox/delete {id,org?,request_id?}; MCP stop/delete.
+- POST /api/v1/sandbox/stop and /sandbox/delete {id,org?,request_id?}; MCP also exposes stop.
   DELETE /api/v1/sandboxes/:id?org=... is the same normal delete path. No completed
   result precedes a genuine bound host ACK. Waiting releases SQL locks and has a
   45-second budget; timeout is pending/conflict, never fictional completion.
