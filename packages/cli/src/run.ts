@@ -1105,20 +1105,18 @@ async function logs(argv: readonly string[], io: Io, deps: Deps): Promise<number
   let cursor: string | null = single(args, "--since") ?? null;
 
   while (!settled) {
-    const result: LogsWireResult = await client.request<LogsWireResult>("/api/v1/logs/read", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
+    const result = await client.sandboxes.logs<LogsWireResult>(
+      {
         id,
         all,
         follow,
         ...(org === undefined ? {} : { org }),
         ...(firstTail ? { direction: "backward", limit } : {}),
         ...(cursor === null ? {} : { cursor }),
-      }),
+      },
       // A server-side follow/read may wait for provider events; keep a bounded, endpoint-specific limit.
-      signal: AbortSignal.timeout(10 * 60_000),
-    });
+      { signal: AbortSignal.timeout(10 * 60_000) },
+    );
     if (flag(args, "--json")) io.out(`${JSON.stringify(result, null, 2)}\n`);
     else for (const event of result.events) io.out(`${eventText(event)}\n`);
     if (firstTail) {

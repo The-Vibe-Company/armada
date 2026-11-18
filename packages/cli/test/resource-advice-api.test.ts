@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import type { ResourceAdvice } from "@armada/core";
+import { createArmadaApiClient } from "../src/armada-api.ts";
 import { printOptionalResourceAdvice, resourceAdviceText } from "../src/resource-advice.ts";
 import { run } from "../src/run.ts";
 import { memorySessionStore } from "../src/session.ts";
@@ -63,41 +64,38 @@ test("human recommendation explains measured resources and comparable window wit
 test("optional launch guidance uses actual advice route and fails open silently on missing or malformed telemetry", async () => {
   let err = "";
   const request = { id: "sandbox", org: "org" };
-  await printOptionalResourceAdvice(
-    {
-      request: async <T>(path: string, init?: RequestInit) => {
-        expect(path).toBe("/api/v1/sandbox/advice");
-        expect(JSON.parse(String(init?.body))).toEqual(request);
-        expect(init?.signal).toBeInstanceOf(AbortSignal);
-        return { advice: evidence } as T;
-      },
+  const calls: { request: Request; signal: RequestInit["signal"] }[] = [];
+  const cases = [
+    { advice: evidence },
+    null,
+    { advice: { ...evidence, reason: "collection_unavailable", recommendedSize: null } },
+    new Error("offline"),
+  ];
+  const client = await createArmadaApiClient({
+    env: { ARMADA_TOKEN: "test_token" },
+    session: memorySessionStore(),
+    fetch: async (input, init) => {
+      calls.push({ request: new Request(String(input), init), signal: init?.signal });
+      const response = cases[calls.length - 1];
+      if (response instanceof Error) throw response;
+      return Response.json(response);
     },
-    request.id,
-    request.org,
-    (text) => {
-      err += text;
-    },
-  );
-  expect(err).toContain("Resource recommendation");
-  for (const response of [null, { advice: { ...evidence, reason: "collection_unavailable", recommendedSize: null } }]) {
+  });
+  for (const [index] of cases.entries()) {
     err = "";
-    await printOptionalResourceAdvice({ request: async <T>() => response as T }, "sandbox", undefined, (text) => {
+    await printOptionalResourceAdvice(client, request.id, index === 0 ? request.org : undefined, (text) => {
       err += text;
     });
-    expect(err).toBe("");
+    if (index === 0) expect(err).toContain("Resource recommendation");
+    else expect(err).toBe("");
   }
-  await printOptionalResourceAdvice(
-    {
-      request: async () => {
-        throw new Error("offline");
-      },
-    },
-    "sandbox",
-    undefined,
-    () => {
-      throw new Error("must stay silent");
-    },
-  );
+  expect(calls).toHaveLength(cases.length);
+  for (const [index, { request: call, signal }] of calls.entries()) {
+    expect(new URL(call.url).pathname).toBe("/api/v1/sandbox/advice");
+    expect(call.method).toBe("POST");
+    expect(await call.json()).toEqual(index === 0 ? request : { id: request.id });
+    expect(signal).toBeInstanceOf(AbortSignal);
+  }
 });
 
 test("explicit advice JSON preserves the actual versioned producer response with no prose", async () => {

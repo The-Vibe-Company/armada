@@ -322,32 +322,30 @@ export class Armada {
     return this.request("templates/launch", input, false, options);
   }
   send(input: SendInput | DockerSendInput, options?: RequestOptions): Promise<SendResult> {
-    return this.request("sandbox/send", input, false, options);
+    return this.#sandboxes.send(input, options);
   }
   status(input: StatusInput, options?: RequestOptions): Promise<SandboxStatus> {
     return this.#sandboxes.status(input, options);
   }
   wait(input: WaitInput, options?: RequestOptions): Promise<SandboxStatus & { timedOut: boolean }> {
     // Precedence: per-call timeout, then the client timeout, then the server wait plus a margin.
-    return this.request("sandbox/wait", input, true, options, ((input.timeout_seconds ?? 60) + 30) * 1000);
+    return this.#sandboxes.wait(input, options, ((input.timeout_seconds ?? 60) + 30) * 1000);
   }
   logs(input: LogsInput, options?: RequestOptions): Promise<LogsResult> {
-    return this.request("logs/read", input, true, options);
+    return this.#sandboxes.logs(input, options);
   }
   stop(
     input: SandboxRef & { request_id?: string; only_if_idle?: boolean },
     options?: RequestOptions,
   ): Promise<{ id: string; status: string; preservationNote?: string }> {
-    return this.request("sandbox/stop", input, false, options);
+    return this.#sandboxes.stop(input, options);
   }
 
   /** UTF-8 file helpers over authorized exec. Requires guest `base64`; not a binary transfer API. */
   readonly files = {
     read: async (input: SandboxRef & { path: string }, options?: RequestOptions): Promise<string> => {
-      const result = await this.request<ExecResult>(
-        "sandbox/exec",
+      const result = await this.#sandboxes.exec<ExecResult>(
         { id: input.id, ...(input.org ? { org: input.org } : {}), command: `cat < ${shellPath(input.path)}` },
-        false,
         options,
       );
       checkExec(result);
@@ -358,14 +356,12 @@ export class Armada {
       if (bytes.length > 32768) throw new RangeError("File writes are limited to 32 KiB.");
       let binary = "";
       for (const byte of bytes) binary += String.fromCharCode(byte);
-      const result = await this.request<ExecResult>(
-        "sandbox/exec",
+      const result = await this.#sandboxes.exec<ExecResult>(
         {
           id: input.id,
           ...(input.org ? { org: input.org } : {}),
           command: `printf '%s' '${btoa(binary)}' | base64 -d > ${shellPath(input.path)}`,
         },
-        false,
         options,
       );
       checkExec(result);
