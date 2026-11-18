@@ -462,6 +462,13 @@ async function main(dialout = false) {
     },
     {
       configureGitHub,
+      ...(channel
+        ? {
+            reportHarnessFailure: (stage, knownHarnessError) => {
+              void channel.reportHarnessFailure(stage, knownHarnessError).catch(() => {});
+            },
+          }
+        : {}),
       prepareWorkspace: async () => {
         if (!githubSocket) await ensureGitHubTools();
       },

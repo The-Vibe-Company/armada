@@ -289,12 +289,14 @@ export function createRuntimeCommands(
     knownProvider?: RuntimeOwnerScope["provider"],
   ): Promise<RuntimeCommandReply> {
     let provider = knownProvider;
+    let sandboxId: string | undefined;
     let acceptReply: (reply: RuntimeCommandReply) => boolean = () => false;
     return observeProviderCall(
       () => provider,
       `runtime.${operation}`,
       async () => {
         const { request, options } = await prepare();
+        sandboxId = request.sandboxId;
         acceptReply = (reply) =>
           reply.status === 200 &&
           reply.body.version === 1 &&
@@ -330,7 +332,7 @@ export function createRuntimeCommands(
       },
       (reply) => acceptReply(reply),
       // A retried request ID whose reply is already stored is answered from the database.
-      { replayable: true },
+      { replayable: true, sandboxId: () => sandboxId },
     );
   }
   const route: Route = async (request) => {

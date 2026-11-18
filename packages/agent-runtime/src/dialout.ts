@@ -1,4 +1,4 @@
-import type { RuntimeStartupFailure } from "../../core/src/runtime-startup-failure.ts";
+import type { RuntimeHarnessFailureStage, RuntimeStartupFailure } from "../../core/src/runtime-startup-failure.ts";
 import type { IngestClient, RunnerRequest } from "./protocol.ts";
 
 const MAX_FRAME = 1048576;
@@ -155,6 +155,9 @@ export class RuntimeDialout implements IngestClient {
       undefined,
       3000,
     );
+  }
+  async reportHarnessFailure(stage: RuntimeHarnessFailureStage, knownHarnessError: boolean): Promise<void> {
+    await this.post("progress", { stage, errorClass: knownHarnessError ? "HarnessError" : "Error" }, undefined, 3000);
   }
   async publishNativeAuth(nativeAuth: { authJson: string; expectedRevision: number }) {
     return (await this.post("events", {

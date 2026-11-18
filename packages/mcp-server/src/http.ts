@@ -18,23 +18,16 @@ import {
   type Sql,
   VERSION,
 } from "@armada/core/server";
-import {
-  AuthUnavailable,
-  authenticateCaller,
-  type CallerResult,
-  describeFailure,
-  type SupabaseProject,
-} from "./caller.ts";
+import { AuthUnavailable, authenticateCaller, type CallerResult, type SupabaseProject } from "./caller.ts";
 import type { DataSource } from "./data.ts";
 import { exposedSecrets, type GitHubLaunchOptions, launchCredentials } from "./launch-credentials.ts";
 import { observeNativeFirstToken } from "./launch-stage-record.ts";
-import { redactForLog } from "./log.ts";
 import type { ModelAuthOwnership } from "./model-auth.ts";
 import { createObservedMcpTransport } from "./observed-mcp-transport.ts";
 import type { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import type { ProviderMetadataFor } from "./provider-metadata.ts";
 import { REQUEST_BODY_LIMIT_BYTES, withRequestBodyCeiling } from "./request-body-ceiling.ts";
-import { currentRequestId, observeRequest } from "./request-observability.ts";
+import { observeRequest, recordOperatorFailure } from "./request-observability.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
@@ -142,8 +135,6 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const log = options.log ?? ((line: string) => console.error(line));
 
-  const logDiagnostic = (line: string) => log(`[request ${currentRequestId()}] ${line}`);
-
   const routeRequest = async (request: Request) => {
     const url = new URL(request.url);
     if (url.pathname === CLIENT_CONFIG_PATH) {
@@ -194,7 +185,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
       });
     } catch (error) {
       if (!(error instanceof AuthUnavailable)) throw error;
-      logDiagnostic(redactForLog(`armada serve: /mcp authentication unavailable: ${describeFailure(error)}`));
+      recordOperatorFailure("mcp.authentication", error);
       return Response.json({ error: "temporarily_unavailable" }, { status: 503, headers: { "retry-after": "5" } });
     }
     if (!auth.ok) return oauthChallenge(options.publicUrl);
@@ -235,7 +226,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
         deletionProvider: (sandbox) => providerRegistry(options).resolve(sandbox, { userId: sandbox.ownerId }),
         now,
         sleep,
-        logError: logDiagnostic,
+        logError: log,
         ...(options.ordinaryLaunchReceipts ? { ordinaryLaunchReceipts: options.ordinaryLaunchReceipts } : {}),
         ...(options.launch ? { launch: options.launch } : {}),
         ...(options.goldenAdoption ? { goldenAdoption: options.goldenAdoption } : {}),

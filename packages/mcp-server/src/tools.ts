@@ -61,14 +61,13 @@ import * as z from "zod";
 import { validateProviderResourceObservation } from "../../core/src/resource-validation.ts";
 import { apiFailureCode } from "./api-failure.ts";
 import type { Caller } from "./caller.ts";
-import { describeFailure } from "./caller.ts";
 import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
 import { DataError, type SandboxView, type ScopedData } from "./data.ts";
 import { MAX_LOG_PAGES, readEventPages } from "./event-pagination.ts";
-import { redactForLog } from "./log.ts";
 import { publicLogEvents } from "./model-usage.ts";
 import type { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import type { GoldenProviderMetadata } from "./provider-metadata.ts";
+import { recordOperatorFailure } from "./request-observability.ts";
 import { summarizeResourceHistory } from "./resource-advice.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
@@ -2514,7 +2513,10 @@ function errorResult(error: unknown, tool: string, logError: (line: string) => v
       "start_failed",
     ].includes(code)
   ) {
-    logError(redactForLog(`armada serve: tool ${tool} failed (${code}): ${describeFailure(error)}`));
+    recordOperatorFailure(`tool.${tool}`, error, {
+      sandboxId: error instanceof LaunchError ? error.sandboxId : undefined,
+      log: logError,
+    });
   }
   return {
     isError: true,

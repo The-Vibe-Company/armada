@@ -1,4 +1,5 @@
 import { ProviderError, type ProviderErrorCode } from "@armada/core";
+import { retainFailureDiagnostic } from "@armada/core/server";
 export function refusal(
   code: ProviderErrorCode,
   message: string,
@@ -44,15 +45,18 @@ export function modalError(error: unknown): ProviderError {
     16: "unauthorized",
   };
   const code = (status === undefined ? codes[name] : grpcCodes[status]) ?? "unknown";
-  return new ProviderError({
-    provider: "modal",
-    code,
-    // Transport retryability is not permission to replay a mutating lifecycle step.
-    retryable: code === "unavailable",
-    message: "Modal operation failed; consult the durable lifecycle phase before retrying.",
-    ...(status === undefined ? {} : { status }),
-    details: { modalFailure: Object.hasOwn(codes, name) ? name : status === undefined ? "unknown" : "grpc" },
-  });
+  return retainFailureDiagnostic(
+    new ProviderError({
+      provider: "modal",
+      code,
+      // Transport retryability is not permission to replay a mutating lifecycle step.
+      retryable: code === "unavailable",
+      message: "Modal operation failed; consult the durable lifecycle phase before retrying.",
+      ...(status === undefined ? {} : { status }),
+      details: { modalFailure: Object.hasOwn(codes, name) ? name : status === undefined ? "unknown" : "grpc" },
+    }),
+    error,
+  );
 }
 
 /** Keep public build diagnostics and discard the rest of the upstream payload, including shell commands. */
@@ -72,13 +76,16 @@ export function modalBuilderImageError(error: unknown): ProviderError {
           : safe.status === undefined
             ? "Modal returned no recognized build diagnostic."
             : `Modal returned gRPC status ${safe.status}.`;
-  return new ProviderError({
-    provider: "modal",
-    code: "unavailable",
-    providerCode: "modal_builder_image_failed",
-    message: `Modal builder image failed. ${reason}`,
-    retryable: false,
-  });
+  return retainFailureDiagnostic(
+    new ProviderError({
+      provider: "modal",
+      code: "unavailable",
+      providerCode: "modal_builder_image_failed",
+      message: `Modal builder image failed. ${reason}`,
+      retryable: false,
+    }),
+    safe,
+  );
 }
 
 /** Retains only sanitized operation metadata and explicit resource provenance, never an upstream cause. */
@@ -96,6 +103,7 @@ export class ModalOperationError extends ProviderError {
       details: { ...safe.details, resourceReceipt: receipt },
     });
     this.receipt = receipt;
+    retainFailureDiagnostic(this, safe);
   }
 }
 export function modalFailureReceipt(error: unknown): import("./ports.ts").ModalResourceReceipt | undefined {
@@ -156,14 +164,17 @@ export async function lifecycleStep<T>(
           : {}),
       }),
     );
-    throw new ProviderError({
-      provider: "modal",
-      code: safe.code,
-      message: "Modal lifecycle step failed; source retained for reconciliation.",
-      retryable: safe.retryable,
-      ...(safe.details ? { details: safe.details } : {}),
-      ...(safe.status === undefined ? {} : { status: safe.status }),
-      providerCode: code,
-    });
+    throw retainFailureDiagnostic(
+      new ProviderError({
+        provider: "modal",
+        code: safe.code,
+        message: "Modal lifecycle step failed; source retained for reconciliation.",
+        retryable: safe.retryable,
+        ...(safe.details ? { details: safe.details } : {}),
+        ...(safe.status === undefined ? {} : { status: safe.status }),
+        providerCode: code,
+      }),
+      safe,
+    );
   }
 }

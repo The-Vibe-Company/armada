@@ -1,5 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
 import type { Sql } from "@armada/core/server";
+import { observeRequest } from "../src/request-observability.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeProgress } from "../src/runtime-progress.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
@@ -24,6 +25,8 @@ test("malformed progress refuses extra fields, unknown stages and oversized bodi
       { stage: "private_config_canary" },
       { stage: 1 },
       { stage: "runtime_failed", reason: "private_config_canary" },
+      { stage: "harness_turn_failed", errorClass: "private_config_canary" },
+      { stage: "harness_start_failed", errorClass: "HarnessError", stack: "private_config_canary" },
       { stage: "enrolled", reason: "artifact_preparation" },
     ].map((value) => JSON.stringify(value));
     bodies.push(`${" ".repeat(1024)}{"stage":"bootstrap_started"}`);
@@ -47,7 +50,7 @@ test("malformed progress refuses extra fields, unknown stages and oversized bodi
 
 test("authenticated startup sub-reason is persisted and logged without exception text", async () => {
   const writes: unknown[][] = [];
-  const scope = { sandboxId: "logical", epoch: "1" };
+  const scope = { sandboxId: crypto.randomUUID(), epoch: "1" };
   const authority = {
     async withSession(
       _token: string,
@@ -68,16 +71,43 @@ test("authenticated startup sub-reason is persisted and logged without exception
   const log = spyOn(console, "info").mockImplementation(() => {});
   try {
     const route = createRuntimeProgress(authority);
-    const response = await route(
-      new Request("https://armada.test/api/runtime/progress", {
-        method: "POST",
-        body: JSON.stringify({ stage: "runtime_failed", reason: "artifact_preparation" }),
-      }),
+    const records: unknown[] = [];
+    const report = (body: Record<string, string>) =>
+      observeRequest(
+        async () =>
+          (await route(
+            new Request("https://armada.test/api/runtime/progress", {
+              method: "POST",
+              body: JSON.stringify(body),
+            }),
+          )) ?? undefined,
+        (line) => records.push(JSON.parse(line)),
+      );
+    const response = await report({ stage: "runtime_failed", reason: "artifact_preparation" });
+    const harness = await report({ stage: "harness_turn_failed", errorClass: "HarnessError" });
+    expect(harness?.status).toBe(200);
+    expect(records).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: "operator_failure",
+          phase: "runtime.boot",
+          message: "artifact_preparation",
+          requestId: response?.headers.get("x-request-id"),
+          sandboxId: scope.sandboxId,
+        }),
+        expect.objectContaining({
+          event: "operator_failure",
+          phase: "runtime.harness_turn_failed",
+          errorClass: "HarnessError",
+          requestId: harness?.headers.get("x-request-id"),
+          sandboxId: scope.sandboxId,
+        }),
+      ]),
     );
     expect(response?.status).toBe(200);
     expect(writes).toEqual([
       [
-        "logical",
+        scope.sandboxId,
         "Runtime artifact preparation failed. Ask the server operator to check published harness artifacts and container filesystem access before launching again.",
       ],
     ]);

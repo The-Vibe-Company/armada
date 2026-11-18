@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { type FailureDiagnostic, failureDiagnostic } from "@armada/core/server";
 import { redactForLog } from "./log.ts";
 
 export const REQUEST_ID_HEADER = "x-request-id";
@@ -30,8 +31,9 @@ export function observeRequest<T extends Response | undefined>(work: () => T | P
     try {
       response = await work();
     } catch (error) {
-      // Keep the cause's class (a code identifier), never its message: messages may carry caller data.
-      errorClass = errorClassOf(error);
+      const diagnostic = failureDiagnostic(error);
+      recordOperatorDiagnostic("http.handler", diagnostic);
+      errorClass = diagnostic.errorClass;
       response = Response.json({ error: "internal" }, { status: 500 });
     }
     log(
@@ -50,9 +52,36 @@ export function observeRequest<T extends Response | undefined>(work: () => T | P
   });
 }
 
-function errorClassOf(error: unknown): string {
-  const name = error instanceof Error ? error.constructor.name : typeof error;
-  return /^[A-Za-z_$][\w$]{0,63}$/.test(name) ? name : "Error";
+/** Server log sink only. Never attach diagnostics to an HTTP/tool response or sandbox event. */
+export function recordOperatorFailure(
+  phase: string,
+  error: unknown,
+  options?: { sandboxId?: string | undefined; log?: Log },
+): void {
+  recordOperatorDiagnostic(phase, failureDiagnostic(error), options);
+}
+
+/** Callers construct these fields from a closed vocabulary or failureDiagnostic. */
+export function recordOperatorDiagnostic(
+  phase: string,
+  diagnostic: FailureDiagnostic,
+  options: { sandboxId?: string | undefined; log?: Log } = {},
+): void {
+  const request = current.getStore();
+  const log = options.log ?? request?.log ?? stderr;
+  try {
+    log(
+      JSON.stringify({
+        event: "operator_failure",
+        phase: redactForLog(phase),
+        requestId: request?.id,
+        sandboxId: options.sandboxId && serverId.test(options.sandboxId) ? options.sandboxId : undefined,
+        ...diagnostic,
+      }),
+    );
+  } catch {
+    // A diagnostic sink failure cannot change the operation result.
+  }
 }
 
 type Provider = "boat" | "modal" | "docker";
@@ -83,7 +112,7 @@ export async function observeProviderCall<T>(
   operation: string | (() => string),
   work: () => Promise<T>,
   accepted: (result: T) => boolean | null = () => true,
-  options: { replayable?: boolean } = {},
+  options: { replayable?: boolean; sandboxId?: () => string | undefined } = {},
 ): Promise<T> {
   const request = current.getStore();
   if (!request) return work();
@@ -95,6 +124,10 @@ export async function observeProviderCall<T>(
     const verdict = options.replayable && !slot.admitted ? null : accepted(result);
     outcome = verdict === null ? null : verdict ? "ok" : "error";
     return result;
+  } catch (error) {
+    const phase = typeof operation === "function" ? operation() : operation;
+    recordOperatorFailure(phase, error, { sandboxId: options.sandboxId?.() });
+    throw error;
   } finally {
     if (outcome !== null) {
       const name = typeof provider === "function" ? provider() : provider;

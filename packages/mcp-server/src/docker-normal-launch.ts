@@ -58,7 +58,13 @@ import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import { DOCKER_PROMPT } from "./docker-send-request-schema.ts";
 import { resolveDockerSnapshot } from "./docker-snapshot-data.ts";
 import { recordLaunchStageQuietly } from "./launch-stage-record.ts";
-import { continueRequest, currentRequestId, noteAdmission, observeProviderCall } from "./request-observability.ts";
+import {
+  continueRequest,
+  currentRequestId,
+  noteAdmission,
+  observeProviderCall,
+  recordOperatorFailure,
+} from "./request-observability.ts";
 import { createRuntimeAgent } from "./runtime-agent.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
@@ -893,6 +899,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           return envelope(saved.row, saved.receipt);
         });
       } catch (error) {
+        recordOperatorFailure(`docker.launch.${reason}`, error, { sandboxId: request.requestId });
         if (error instanceof RuntimeGitHubConnectionError) phase = DOCKER_LAUNCH_FAILURE_MESSAGES.githubNotConnected;
         else if (error instanceof RuntimeGitHubDeliveryError) phase = DOCKER_LAUNCH_FAILURE_MESSAGES.githubDelivery;
         else if (
