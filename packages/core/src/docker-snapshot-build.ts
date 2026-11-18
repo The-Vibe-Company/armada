@@ -86,7 +86,9 @@ export async function buildDockerSnapshot(
       if (githubBuildToken !== undefined) {
         for (const line of (result.stderr ?? "").split("\n")) {
           const marker = /^#\d+ \d+(?:\.\d+)? ARMADA_GIT_FAILURE ([1-9]|1[0-6]) branch_missing$/.exec(line.trim());
-          if (marker) throw new DockerSnapshotMissingRefError(Number(marker[1]));
+          if (!marker) continue;
+          const index = Number(marker[1]);
+          if (index <= job.build.config.repos.length) throw new DockerSnapshotMissingRefError(index);
         }
       }
       throw Error("Snapshot build failed.");
