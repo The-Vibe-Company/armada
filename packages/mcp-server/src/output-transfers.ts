@@ -60,7 +60,7 @@ export async function collectOutputTransfers(
   const planned = await update(async (tx, orgId) => {
     await tx.query(
       `delete from public.sandbox_output_transfers t where t.sandbox_id=$1 and t.scan<$2::timestamptz
-        and not exists(select 1 from public.sandbox_outputs o where o.transfer_id=t.id)
+        and not exists(select 1 from public.sandbox_outputs o where o.sandbox_id=t.sandbox_id and o.transfer_id=t.id)
         and not exists(select 1 from jsonb_to_recordset($3::jsonb) as e(name text,revision text,size bigint)
           where (e.name,e.revision,e.size)=(t.name,t.revision,t.size))`,
       [id, scan, JSON.stringify(entries)],
@@ -188,7 +188,7 @@ export async function collectOutputTransfers(
     );
     await tx.query(
       `delete from public.sandbox_output_transfers t where t.sandbox_id=$1 and t.scan<=$2::timestamptz
-        and not exists(select 1 from public.sandbox_outputs o where o.transfer_id=t.id)`,
+        and not exists(select 1 from public.sandbox_outputs o where o.sandbox_id=t.sandbox_id and o.transfer_id=t.id)`,
       [id, scan],
     );
     await tx.query("update public.sandboxes set outputs_published_scan=$2::timestamptz where id=$1", [id, scan]);

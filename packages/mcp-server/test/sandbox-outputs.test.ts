@@ -705,3 +705,29 @@ test("a failed chunk read resumes from durable progress and publishes a ranged d
   expect((await route(new Request(`${url}/document.pdf`)))?.status).toBe(404);
   expect((await db.query("select 1 from sandbox_output_chunks")).rows).toHaveLength(0);
 });
+
+test("other sandboxes' in-progress reservations count toward the organization limit", async () => {
+  const { db, people, id, sql } = await fixture();
+  await db.query(
+    `with occupied as (
+        insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status)
+        select gen_random_uuid(),golden_id,org_id,owner_id,'quota_fixture_' || n,harness,'ready'
+        from sandboxes cross join generate_series(1,16) n where id=$1 returning id
+      )
+      insert into sandbox_output_transfers(sandbox_id,name,revision,size,scan)
+      select id, 'reserved-' || n, '1:2:3:4', 33554432, now()
+      from occupied cross join generate_series(1,2) n`,
+    [id],
+  );
+  const reader = {
+    listOutputEntries: async () => [{ name: "report.pdf", size: 1, revision: "1:2:3:4" }],
+    readOutputChunk: async () => {
+      throw Error("quota must be reserved before transferring bytes");
+    },
+  };
+  await captureFinalOutputs(sql, reader, id, { key: KEY });
+  const service = createSandboxOutputs(sql, KEY, async () => reader);
+  const route = routeFor(service, people.owner, people.org);
+  const list = await route(new Request(`https://armada.example/api/v1/sandboxes/${id}/outputs`));
+  expect(await list?.json()).toMatchObject({ files: [{ name: "report.pdf", size: 1, skipped: "org_limit" }] });
+});
