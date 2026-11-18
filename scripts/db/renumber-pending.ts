@@ -188,7 +188,15 @@ async function main(args: string[]) {
 
   const generated = await generatePlannedTypes(head, plan, references);
   const lock = git("rev-parse", "--git-path", "armada-renumber-pending.lock").trimEnd();
-  mkdirSync(lock);
+  try {
+    mkdirSync(lock);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    throw new Error(
+      `Renumbering is locked at ${lock}. If a previous run was interrupted, check the working tree and remove the lock directory only after confirming no renumber command is running.`,
+      { cause: error },
+    );
+  }
   try {
     assertCleanCheckout();
     if (git("rev-parse", "HEAD").trim() !== headCommit) {
