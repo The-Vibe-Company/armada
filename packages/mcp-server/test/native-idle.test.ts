@@ -407,6 +407,7 @@ test.each(["boat", "modal"])("%s owner stop refuses old receipts but a fresh own
 test.each([
   "merged",
   "merged with scratch push",
+  "merged with later push",
   "open",
   "closed",
   "no push",
@@ -447,6 +448,8 @@ test.each([
     head: { ref: "topic", sha: state === "other commit" ? "b".repeat(40) : sha, repo: { full_name: repository } },
     base: { repo: { full_name: repository } },
   };
+  // A merged PR at an older head: the later push to its branch has no PR yet.
+  const laterPull = { ...pull, number: 13, head: { ...pull.head, ref: "scratch", sha: "d".repeat(40) } };
   const fetchGitHub = Object.assign(
     async (url: Parameters<typeof fetch>[0]) => {
       if (String(url) === "https://api.github.com/user")
@@ -456,7 +459,8 @@ test.each([
         return Response.json(pull);
       }
       expect(String(url)).toContain(`/repos/${repository}/pulls?`);
-      if (new URL(String(url)).searchParams.get("head") === "example:scratch") return Response.json([]);
+      const head = new URL(String(url)).searchParams.get("head");
+      if (head === "example:scratch") return Response.json(state === "merged with later push" ? [laterPull] : []);
       return Response.json([pull]);
     },
     { preconnect: fetch.preconnect },
@@ -475,7 +479,7 @@ test.each([
       stdout:
         state === "no push" || state === "corrected report"
           ? ""
-          : `topic\t${sha}\n${state === "merged with scratch push" ? `scratch\t${"c".repeat(40)}\n` : ""}`,
+          : `topic\t${sha}\n${state.startsWith("merged with") ? `scratch\t${"c".repeat(40)}\n` : ""}`,
       stderr: "",
       timedOut: false,
       truncated: false,
