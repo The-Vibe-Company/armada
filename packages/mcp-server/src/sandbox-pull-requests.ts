@@ -393,18 +393,18 @@ export function createSandboxPullRequests(
         }
       }
       const branchCount = [...lookups.values()].reduce((sum, refs) => sum + refs.size, 0);
-      // Dropping an older push could hide its closed PR, so too many is incomplete.
-      if (
-        branchCount > maxBranches ||
-        numbers.size > maxKnownPulls ||
-        unresolved.size > maxPushesPerBranch ||
-        [...lookups.values()].some((refs) =>
-          [...refs.values()].some(
-            ({ shas, attempts }) => shas.length > maxPushesPerBranch || attempts.length > maxPushesPerBranch,
-          ),
-        )
-      )
-        return;
+      if (branchCount > maxBranches || numbers.size > maxKnownPulls) return;
+      // Dropping an older push could hide its closed PR, so too many is
+      // incomplete. The newest pushes are still looked up: retained evidence
+      // only grows, and returning here would freeze the listed states for good.
+      if (unresolved.size > maxPushesPerBranch) complete = false;
+      for (const refs of lookups.values())
+        for (const entry of refs.values())
+          if (entry.shas.length > maxPushesPerBranch || entry.attempts.length > maxPushesPerBranch) {
+            complete = false;
+            entry.shas = entry.shas.slice(0, maxPushesPerBranch);
+            entry.attempts = entry.attempts.slice(0, maxPushesPerBranch);
+          }
       const found = new Map<string, SandboxPullRequest>();
       const checkedAt = new Date().toISOString();
       const launchedAt = Date.parse(row.created_at);

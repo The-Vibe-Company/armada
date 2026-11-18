@@ -416,6 +416,7 @@ test.each([
   "merged with later push",
   "merged with scratch PR closed before launch",
   "merged after closed",
+  "merged after many pushes",
   "merged after closed at moved head",
   "merged after closed before launch",
   "merged before launch at pushed commit",
@@ -649,7 +650,13 @@ test.each([
       ? git.stdout
       : state === "no push" || state === "corrected report"
         ? ""
-        : `${state === "ledger gap" ? "!untracked\n" : state === "ledger hook missing" ? "!unproven\n" : state === "pending attempt" ? "!pending\n" : ""}topic\t${sha}\n${state.startsWith("merged after closed") ? `topic\t${"e".repeat(40)}\n` : ""}${state.startsWith("merged with") ? `scratch\t${"c".repeat(40)}\n` : ""}${state === "unmerged PR at attempt" ? `~\tother\t${"f".repeat(40)}\n` : ""}${state === "rejected attempt" ? `?\tmain\t${"9".repeat(40)}\n` : ""}`,
+        : `${state === "ledger gap" ? "!untracked\n" : state === "ledger hook missing" ? "!unproven\n" : state === "pending attempt" ? "!pending\n" : ""}topic\t${sha}\n${state.startsWith("merged after closed") ? `topic\t${"e".repeat(40)}\n` : ""}${
+            // More older pushes to the branch than one scan looks up: the newest
+            // ones are still observed, but the observation is incomplete.
+            state === "merged after many pushes"
+              ? Array.from({ length: 16 }, (_, i) => `topic\t${i.toString(16).padStart(40, "1")}\n`).join("")
+              : ""
+          }${state.startsWith("merged with") ? `scratch\t${"c".repeat(40)}\n` : ""}${state === "unmerged PR at attempt" ? `~\tother\t${"f".repeat(40)}\n` : ""}${state === "rejected attempt" ? `?\tmain\t${"9".repeat(40)}\n` : ""}`,
   );
   if (state === "revoked") await f.db.query("update github_connections set revoked_at=now() where user_id=$1", [owner]);
   if (state === "opted out") await f.db.query("update sandboxes set stop_when_work_merged=false where id=$1", [f.id]);
