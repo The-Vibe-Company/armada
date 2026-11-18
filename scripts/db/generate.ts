@@ -41,6 +41,7 @@ const ROW_ALIASES: Record<string, string> = {
   account_turn_queue: "AccountTurnQueueRow",
   account_agent_reservations: "AccountAgentReservationRow",
   ordinary_launch_receipts: "OrdinaryLaunchReceiptRow",
+  provider_launch_requests: "ProviderLaunchRequestRow",
   sandbox_account_usage_pricing: "SandboxAccountUsagePricingRow",
   runtime_github_capabilities: "RuntimeGitHubCapabilityRow",
   runtime_resumes: "RuntimeResumeRow",
