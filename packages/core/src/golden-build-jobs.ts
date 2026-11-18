@@ -101,6 +101,7 @@ export class GoldenBuildJobs {
     actor: GoldenActor,
     input: Input,
     idempotencyKey: string,
+    additions?: readonly string[],
   ): Promise<GoldenBuildStatus> {
     if (!/^[A-Za-z0-9_-]{16,128}$/.test(idempotencyKey))
       throw new GoldenError(
@@ -136,22 +137,31 @@ export class GoldenBuildJobs {
       provider: providerId,
       modal: target.modal,
     });
-    // ExistingGolden is re-read by routes; retries after success must still match the submitted config,
-    // not the new snapshot pointer. The target ID is immutable; expected revision lives only in payload.
-    const hash = createHash("sha256")
-      .update(
-        JSON.stringify({
-          name: input.name,
-          visibility: input.visibility,
-          repos: input.repos,
-          config: input.config ?? null,
-          setup: input.setup ?? null,
-          goldenId: input.existingGolden?.id ?? null,
-          // Preserve pre-migration Boat request hashes for durable idempotent retries.
-          ...(providerId === "boat" ? {} : { provider: providerId, modal: target.modal }),
-        }),
-      )
-      .digest("hex");
+    // An additive retry can see the resolved branches published by its first run.
+    // Bind new requests to their original input, independent of the new snapshot revision.
+    const request = {
+      name: input.name,
+      visibility: input.visibility,
+      repos: input.repos,
+      config: input.config ?? null,
+      setup: input.setup ?? null,
+      goldenId: input.existingGolden?.id ?? null,
+      ...(providerId === "boat" ? {} : { provider: providerId, modal: target.modal }),
+    };
+    const hashRequest = (payload: object) => createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+    const hash = additions
+      ? hashRequest({ ...request, config: null, additions })
+      : hashRequest({ ...request, ...(input.config ? { resolveDefaultBranch: true } : {}) });
+    // Old clients and servers normalized omission to main before hashing.
+    const legacyHash = input.config
+      ? hashRequest({
+          ...request,
+          config: {
+            ...input.config,
+            repos: input.config.repos.map((repo) => ({ ...repo, branch: repo.branch ?? "main" })),
+          },
+        })
+      : hash;
     // Recover an existing admission before asking GitHub again. Authorization can rotate
     // OAuth credentials, so it must run outside the reservation transaction: rollback
     // must never restore a refresh token already consumed upstream.
@@ -170,7 +180,10 @@ export class GoldenBuildJobs {
       ).rows[0];
     });
     if (priorAdmission) {
-      if (priorAdmission.request_hash !== hash || priorAdmission.provider !== providerId)
+      if (
+        (priorAdmission.request_hash !== hash && priorAdmission.request_hash !== legacyHash) ||
+        priorAdmission.provider !== providerId
+      )
         throw new GoldenError("conflict", "Idempotency key was used for a different build.");
       return this.dto(priorAdmission, input.name);
     }
@@ -199,7 +212,7 @@ export class GoldenBuildJobs {
         )
       ).rows[0];
       if (prior) {
-        if (prior.request_hash !== hash || prior.provider !== providerId)
+        if ((prior.request_hash !== hash && prior.request_hash !== legacyHash) || prior.provider !== providerId)
           throw new GoldenError("conflict", "Idempotency key was used for a different build.");
         return prior;
       }

@@ -10,7 +10,8 @@ import {
   launchFailureHelp,
   TEMPLATE_REFUSAL_HELP,
 } from "@armada/core";
-import { requestApi, apiUrl as sdkApiUrl } from "@armada/sdk/request";
+import { jsonPost, requestApi, apiUrl as sdkApiUrl } from "@armada/sdk/request";
+import { sandboxClient } from "@armada/sdk/sandboxes";
 import { validApiReceipt } from "./api-receipts.ts";
 import { sandboxFailure } from "./sandbox-errors.ts";
 import type { Session, SessionStore } from "./session.ts";
@@ -67,13 +68,20 @@ export interface ArmadaApiClient {
   request<T>(path: string, init?: RequestInit): Promise<T>;
 }
 
+interface ArmadaCommandClient extends ArmadaApiClient {
+  sandboxes: ReturnType<typeof sandboxClient>;
+}
+
 /**
  * Create an authenticated client for Armada's own API.
  *
  * ARMADA_TOKEN is intentionally checked before the saved session, allowing automation with a
  * clean HOME. A saved login is the fallback. The token is never retained in thrown errors.
  */
-export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiOptions = {}): Promise<ArmadaApiClient> {
+export async function createArmadaApiClient(
+  io: ArmadaApiIo,
+  options: ArmadaApiOptions = {},
+): Promise<ArmadaCommandClient> {
   // An explicit environment token needs no HOME/session read and never inherits a stale session origin.
   const environmentToken = io.env.ARMADA_TOKEN;
   let saved = environmentToken ? null : await io.session.read();
@@ -88,7 +96,13 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
     token = saved.accessToken;
   }
 
-  return {
+  const client: ArmadaCommandClient = {
+    sandboxes: sandboxClient((route, body, _readOnly, requestOptions) =>
+      client.request(`/api/v1/${route}`, {
+        ...jsonPost(body),
+        ...(requestOptions?.signal ? { signal: requestOptions.signal } : {}),
+      }),
+    ),
     async request<T>(path: string, init: RequestInit = {}): Promise<T> {
       const url = apiUrl(origin, path);
       const result = await requestApi(url, init, {
@@ -365,6 +379,7 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
       throw new AuthError(apiMessage(payload, `Armada server request failed (${response.status}).`), "unavailable");
     },
   };
+  return client;
 }
 
 async function refresh(

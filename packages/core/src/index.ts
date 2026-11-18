@@ -212,6 +212,7 @@ export {
   PUSH_LEDGER_MARKER,
   parseGoldenConfig,
   parseGoldenName,
+  parseSnapshotConfig,
   pullCommand,
   pushLedgerInstall,
   secretKeyPath,

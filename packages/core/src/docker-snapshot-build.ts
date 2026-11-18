@@ -30,6 +30,12 @@ export class DockerSnapshotBaselineError extends Error {
   }
 }
 
+export class DockerSnapshotMissingRefError extends Error {
+  constructor(readonly index: number) {
+    super("Snapshot checkout ref was not found.");
+  }
+}
+
 const baselineLabel = "dev.armada.environment.baseline-version";
 
 /** BuildKit secret mount and shared golden checkout/init/scan. No credential file or model account. */
@@ -77,6 +83,14 @@ export async function buildDockerSnapshot(
     if (result.exitCode !== 0) {
       const diagnostic = githubBuildToken === undefined ? undefined : snapshotBaselineFailure(result.stderr ?? "");
       if (diagnostic) throw new DockerSnapshotBaselineError(diagnostic);
+      if (githubBuildToken !== undefined) {
+        for (const line of (result.stderr ?? "").split("\n")) {
+          const marker = /^#\d+ \d+(?:\.\d+)? ARMADA_GIT_FAILURE ([1-9]|1[0-6]) branch_missing$/.exec(line.trim());
+          if (!marker) continue;
+          const index = Number(marker[1]);
+          if (index <= job.build.config.repos.length) throw new DockerSnapshotMissingRefError(index);
+        }
+      }
       throw Error("Snapshot build failed.");
     }
     return result.stdout;
@@ -147,7 +161,7 @@ export async function buildDockerSnapshot(
     );
     await writeFile(join(directory, "public", "supervise.py"), SNAPSHOT_INIT_SUPERVISOR, { mode: 0o600, flag: "wx" });
     const initCommands = config.init
-      .map((_, index) => `python3 /opt/armada-build/supervise.py /opt/armada-build/init-${index}.sh`)
+      .map((_, index) => `python3 /opt/armada-build/supervise.py /opt/armada-build/init-${index}.sh >/dev/null 2>&1`)
       .join(" && ");
     const directories = config.repos.map((repo) => `'/home/user/${repo.dir}'`).join(" ");
     const dockerfile = `# syntax=docker/dockerfile:1
@@ -211,7 +225,7 @@ RUN ${snapshotBaselineVerify}
     );
     return await verify(true);
   } catch (error) {
-    if (error instanceof DockerSnapshotBaselineError) throw error;
+    if (error instanceof DockerSnapshotBaselineError || error instanceof DockerSnapshotMissingRefError) throw error;
     throw Error("Docker snapshot build failed or outcome unknown.");
   } finally {
     // Removal is scoped to this request's disposable builder, never the shared Docker builder.

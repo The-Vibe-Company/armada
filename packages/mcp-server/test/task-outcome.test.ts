@@ -211,7 +211,7 @@ test("a restart steer registers its replacement run so settlement exports it", a
   }
 });
 
-test("consecutive restart steers keep the marker and export every replacement turn", async () => {
+test("a new restart steer preserves an older unresolved replacement across downtime", async () => {
   const server = await harness({}, await sharedDatabase());
   try {
     const { client, token, people, boat, db } = server;
@@ -234,13 +234,15 @@ test("consecutive restart steers keep the marker and export every replacement tu
     expect(await taskPromptId()).toBe("");
     // The first replacement appears late, then a second steer interrupts it.
     await boat.provider.prompt({ sandboxId: "bx_1", harness: "codex", text: "change course" });
+    await db.query("update native_steer_cursors set pending_since=now()-interval '2 hours' where sandbox_id=$1", [id]);
     interrupting = "prompt_2";
     expect((await call(mcp, "steer", { id, text: "again" })).isError).toBe(false);
     expect(await taskPromptId()).toBe("");
     const native = createNativeWebhookPrompts(db, async () => boat.provider);
-    // A receipt-worker drain, with the cursor's retry spacing elapsed.
+    // Run recovery and settlement, with the cursor's retry spacing elapsed.
     const reconcile = async () => {
       await db.query("update native_steer_cursors set lease_until=null where sandbox_id=$1", [id]);
+      await native.steerRecovery.reconcileOne(new AbortController().signal);
       while (await native.reconcileOne(new AbortController().signal));
     };
     // prompt_2 answers the first steer only; the second steer is still unresolved.
@@ -267,33 +269,6 @@ test("consecutive restart steers keep the marker and export every replacement tu
     expect(
       (await db.query("select pending_since,pending_steers from native_steer_cursors where sandbox_id=$1", [id])).rows,
     ).toEqual([{ pending_since: null, pending_steers: 0 }]);
-  } finally {
-    await server.close();
-  }
-});
-
-test("a restart steer restarts an expired cursor from its own prior run", async () => {
-  const server = await harness({}, await sharedDatabase());
-  try {
-    const { client, token, people, boat, db } = server;
-    const mcp = await client(await token(people.member));
-    const id = (await call(mcp, "launch", { golden: "shared", harness: "codex", prompt: "first" })).data.id;
-    boat.finish("bx_1", "prompt_1", "finished");
-    expect((await call(mcp, "send", { id, prompt: "second" })).isError).toBe(false);
-    // An unresolved cursor from hours ago is outside reconciliation's window.
-    await db.query(
-      "insert into native_steer_cursors(sandbox_id,after_prompt_id,steer_id,pending_since,pending_steers) values($1,'prompt_1',gen_random_uuid(),now()-interval '2 hours',3)",
-      [id],
-    );
-    boat.provider.steer = async (input) => {
-      boat.finish(input.sandboxId, "prompt_2", "interrupted");
-      return { conversationId: "conv_1", promptId: "unpollable-steer-record", mode: "restart" };
-    };
-    expect((await call(mcp, "steer", { id, text: "change course" })).isError).toBe(false);
-    expect(
-      (await db.query("select after_prompt_id,pending_steers from native_steer_cursors where sandbox_id=$1", [id]))
-        .rows,
-    ).toEqual([{ after_prompt_id: "prompt_2", pending_steers: 1 }]);
   } finally {
     await server.close();
   }
@@ -335,7 +310,13 @@ for (const stopFirst of [false, true])
           status: "stopped",
         });
       }
+      if (stopFirst) {
+        await db.query("update native_steer_cursors set pending_since=now()-interval '2 hours' where sandbox_id=$1", [
+          id,
+        ]);
+      }
       const native = createNativeWebhookPrompts(db, async () => boat.provider);
+      await native.steerRecovery.reconcileOne(new AbortController().signal);
       while (await native.reconcileOne(new AbortController().signal));
       expect(
         (
