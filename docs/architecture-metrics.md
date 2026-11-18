@@ -86,9 +86,9 @@ separately to show work outside that boundary. Per-launch SQL counts are pending
 
 ### Enrolled runtime timing
 
-Join the successful `armada.runtime.startup_timing` sample to the Modal launch
-by `sandboxId`, and use the sample's `epoch` to select the matching
-`armada.runtime.stage` records. The monotonic startup intervals cover ticket
+For a fresh enrolled Modal launch, join `modal_launch_timing` by `sandboxId`
+to the successful `armada.runtime.startup_timing` sample for epoch `1`.
+Select `armada.runtime.stage` records from that same epoch. The monotonic startup intervals cover ticket
 issuance, host bootstrap, the remaining enrolment wait after bootstrap returns,
 and health including the final owner/epoch fence. A runtime that enrols during
 host bootstrap can have little or no remaining enrolment wait.
@@ -100,8 +100,8 @@ cache check, any download, and artifact verification together. Use
 missing, and the difference includes reporting latency. A negative difference
 must be treated as unavailable because the observations use server wall clocks.
 
-The first `first_event` observation for the epoch is timestamped after its
-archive transaction commits. Its interval from the persisted `accepted` stage
-includes any time waiting for a prompt and is a separate metric from
-accepted-to-ready launch time. Select fresh launches when gathering the launch
-baseline because runtime progress also covers resumes.
+The `first_event` observation records the first committed archive batch for
+the sandbox across all epochs. Use it only when it belongs to epoch `1`,
+and measure from the persisted `accepted` stage for activation `1`. If the
+observation is absent, mark the interval unavailable. The interval includes
+any time waiting for a prompt and is separate from accepted-to-ready launch time.
