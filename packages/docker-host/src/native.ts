@@ -168,6 +168,13 @@ export function httpApi(
   unregister(state: State): Promise<boolean>;
   reuseRegistration(state: State, token: string): Promise<{ hostId: string; name: string | null }>;
 } {
+  async function sampleTelemetry(state: State) {
+    const disk = diskFreeBytes ? { diskFreeBytes: await diskFreeBytes() } : {};
+    const stopped = stoppedBytes ? { stoppedSandboxBytes: await stoppedBytes(state) } : {};
+    const sampledResources = resources ? await resources(state) : dockerHostResources();
+    return { disk, stopped, sampledResources };
+  }
+  let lastTelemetry: Awaited<ReturnType<typeof sampleTelemetry>> | undefined;
   async function post(
     server: string,
     endpoint: string,
@@ -285,9 +292,12 @@ export function httpApi(
         retentionSeconds: retention.retentionSeconds,
         nextCleanupAt: retention.nextCleanupAt,
       };
-      const disk = diskFreeBytes ? { diskFreeBytes: await diskFreeBytes() } : {};
-      const stopped = stoppedBytes ? { stoppedSandboxBytes: await stoppedBytes(state) } : {};
-      const sampledResources = resources ? await resources(state) : dockerHostResources();
+      if (!options?.reuseTelemetry) lastTelemetry = await sampleTelemetry(state);
+      const { disk, stopped, sampledResources } = lastTelemetry ?? {
+        disk: {},
+        stopped: {},
+        sampledResources: dockerHostResources(),
+      };
       if (options?.waitSeconds !== undefined) {
         // Held poll (#2561): the server answers as soon as work exists. Servers
         // without it refuse the additive fields before claiming, and the

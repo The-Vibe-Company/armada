@@ -989,6 +989,35 @@ test("compaction preserves cleanup capacity, TTL facts and stored replay fences"
   expect(effects).toBe(1);
 });
 
+test("update heartbeats reuse telemetry without waiting for fresh Docker inspections", async () => {
+  const f = fixture();
+  let inspecting = true;
+  const inspect =
+    <T>(value: T) =>
+    async () => {
+      if (!inspecting) throw new Error("Docker inspection unavailable");
+      return value;
+    };
+  const resources = { cpus: 8, memoryBytes: 32 * 1024 ** 3, availableCpus: 3, availableMemoryBytes: 12 * 1024 ** 3 };
+  const api = httpApi(
+    (async (_url, init) => {
+      expect(JSON.parse(String(init?.body))).toMatchObject({
+        diskFreeBytes: 27 * 1024 ** 3,
+        stoppedSandboxBytes: 5 * 1024 ** 3,
+        resources,
+      });
+      return Response.json({ job: null, targetVersion: "9.0.0" });
+    }) as typeof fetch,
+    inspect(resources),
+    inspect(27 * 1024 ** 3),
+    inspect(5 * 1024 ** 3),
+  );
+  const state = await f.store.load();
+  await api.poll(state);
+  inspecting = false;
+  expect(await api.poll(state, { reuseTelemetry: true })).toEqual({ job: null, targetVersion: "9.0.0" });
+});
+
 test("native poll retains sampled availability when an older server rejects retention telemetry", async () => {
   let calls = 0;
   const f = fixture();
@@ -2299,6 +2328,35 @@ test.each([
   expect(first.state().receipts.map(({ requestId, outcome }) => [requestId, outcome])).toEqual([
     [first.job.requestId, "completed"],
   ]);
+});
+
+test("a failed update preparation discards a job from before an intervening poll denial", async () => {
+  const f = fixture();
+  const denied = Promise.withResolvers<void>();
+  let polls = 0;
+  await runJobs(
+    f.store,
+    {
+      ...f.api,
+      async poll() {
+        if (++polls === 1) return { job: f.job, targetVersion: "9.0.0", held: true };
+        denied.resolve();
+        throw new Error("Host no longer authorized");
+      },
+    },
+    f.executor,
+    {
+      stopping: () => polls >= 3,
+      async beforeAdmission() {
+        await denied.promise;
+        return false;
+      },
+      async sleep() {},
+    },
+  );
+  expect(polls).toBe(3);
+  expect(f.executed).toEqual([]);
+  expect(f.state().receipts).toEqual([]);
 });
 
 test("completion retry persists an already compacted outcome after a directory sync failure", async () => {

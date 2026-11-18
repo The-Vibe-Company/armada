@@ -250,8 +250,8 @@ through the usual ledger. The update uses no sudo and opens no listening port.
 A daemon resuming a staged update after startup checks that the server still
 offers that version before draining. During the drain, authenticated polling
 continues to refresh the server and local status heartbeats. Any newly offered
-jobs stay unacknowledged.
-In-flight jobs save their receipts and submit results on the original binary.
+jobs stay unacknowledged. These short polls reuse the latest resource measurements
+so Docker inspection cannot delay them. In-flight jobs save their receipts and submit results on the original binary.
 Once admitted work finishes, the daemon checks the offer again while admission
 is still fenced. A changed or unavailable
 offer cancels the staged attempt and returns the daemon to ordinary polling.
@@ -272,7 +272,7 @@ failure or deferred offer preserves the cutoff.
 | State | Event and allowed transition | Durable state and recovery |
 | --- | --- | --- |
 | Idle, preparing, cancelled, failed or updated | An eligible newer offer starts preparing after backoff. Eligibility also requires a managed service, no uninstall intent, and an absent or inactive supervisor from the preceding attempt. | The running executable stays in place. The preparing journal preserves the highest attempted version and the next retry time. It uses the existing cancelled phase with a preparation flag so older recovery binaries can read it. A manifest fetch that fails before the journal write backs off in memory. |
-| Preparing | Continue authenticated heartbeat polls while release verification and backup are in progress. Admitted operations can finish and report results. Verified download and backup finish → staged. Download, disk failure or reboot before the staged write → preparing or the preceding state. | The candidate is stored privately. Before rotating `.previous`, the journal accepts both the old and intended backup digests. A restart on either side of the backup rename keeps the old daemon serving and can prepare the same release again. |
+| Preparing | Continue authenticated heartbeat polls while release verification and backup are in progress. Admitted operations can finish and report results. If preparation fails after an interim heartbeat, ordinary admission requires a new poll. Verified download and backup finish → staged. Download, disk failure or reboot before the staged write → preparing or the preceding state. | The candidate is stored privately. Before rotating `.previous`, the journal accepts both the old and intended backup digests. A restart on either side of the backup rename keeps the old daemon serving and can prepare the same release again. |
 | Staged | Check the current offer, fence admission and drain admitted jobs. | Candidate and backup digests are durable. After a reboot the old binary runs and checks the offer again before a supervisor can start. |
 | Staged, jobs draining | Continue authenticated polls on the idle interval while long-running builds or launches finish. Ignore newly offered jobs and wait for admitted operations to save receipts and attempt to report results. | In-flight work continues on the old binary. Poll failures during the drain leave admission fenced and the next poll retries the heartbeat. Unacknowledged results can be replayed from durable receipts. |
 | Staged, drain complete | Start a fresh authenticated poll with admission fenced. A matching offer dispatches the supervisor. | A poll started during the drain cannot authorize the restart. |

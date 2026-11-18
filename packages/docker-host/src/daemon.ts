@@ -97,6 +97,8 @@ export interface Api {
     state: State,
     options?: {
       skipSnapshots?: boolean;
+      /** Keep update heartbeats independent of potentially slow Docker inspections. */
+      reuseTelemetry?: boolean;
       /** Ask the server to hold the poll until work exists, at most this long (#2561). */
       waitSeconds?: number;
       /** Request IDs still executing here; the server hands out other sandboxes' jobs. */
@@ -306,7 +308,7 @@ export type TickOptions = {
    * again, so work that completed during the hold no longer blocks anything.
    */
   running?: ReadonlySet<string>;
-  beforeAdmission?(target: string | undefined): Promise<boolean>;
+  beforeAdmission?(target: string | undefined): Promise<boolean | "repoll">;
   persistCompletion?(save: () => Promise<void>): Promise<void>;
   /** Sandboxes whose machine operation is still executing in this process. */
   sandboxes?: ReadonlySet<string>;
@@ -425,7 +427,7 @@ export async function runJobs(
   // or holding the ledger needed by an admitted operation's completion.
   async function pollWithoutAdmission(skipSnapshots: boolean) {
     try {
-      const { targetVersion } = await api.poll(await store.load(), { skipSnapshots });
+      const { targetVersion } = await api.poll(await store.load(), { skipSnapshots, reuseTelemetry: true });
       await exclusive(store, async () => {
         const latest = await store.load();
         recordPoll(latest, targetVersion, loop.now);
@@ -441,14 +443,21 @@ export async function runJobs(
   async function beforeAdmission(target: string | undefined) {
     if (!prepareUpdate) return false;
     let pending = true;
+    let repolled = false;
     const preparation = prepareUpdate(target).finally(() => {
       pending = false;
     });
     while (pending && !loop.stopping()) {
       await Promise.race([preparation, loop.sleep(DOCKER_HOST_IDLE_MS)]);
-      if (pending && !loop.stopping()) await pollWithoutAdmission(true);
+      if (pending && !loop.stopping()) {
+        repolled = true;
+        await pollWithoutAdmission(true);
+      }
     }
-    return preparation;
+    // A heartbeat may have seen a new offer or revoked authorization while
+    // preparation ran. Only an ordinary fresh poll can provide the next job.
+    const fenced = await preparation;
+    return repolled ? ("repoll" as const) : fenced || loop.stopping();
   }
   async function persistCompletion(save: () => Promise<void>) {
     for (;;) {
@@ -653,7 +662,9 @@ async function admitLocked(
         : { waitSeconds: options.waitSeconds, running: [...(options.running ?? [])] }),
     });
     // Release downloads must not hold up durable completion of admitted jobs.
-    upgradeFenced = (await options.beforeAdmission?.(polled.targetVersion)) ?? false;
+    const admission = await options.beforeAdmission?.(polled.targetVersion);
+    if (admission === "repoll") return "held";
+    upgradeFenced = admission ?? false;
   } catch (error) {
     pollError = error;
   } finally {
