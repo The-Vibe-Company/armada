@@ -2,6 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import type { AgentEvent, Sql } from "@armada/core";
 import { createSqlVaultStore, encryptSecret } from "@armada/core/server";
+import { createSqlData } from "../src/data.ts";
 import { createDockerBootstrapService } from "../src/docker-bootstrap-service.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
 import { createDockerRuntimeLifecycle, DockerRuntimeDenied } from "../src/docker-runtime-lifecycle.ts";
@@ -329,6 +330,42 @@ test("one durable conversation survives lost responses and admits only exact ret
     receipt: finalReceipt,
   });
   expect((await commands.next(session.runtimeToken, session.epoch)).command).toBeNull();
+});
+
+test("a reported outcome clears with its turn at the next prompt and keeps the report history", async () => {
+  const db = database();
+  const f = await fixture(),
+    session = await ready(f),
+    input = { requestId: randomUUID(), text: "Open a pull request" };
+  await service.prompt(f.actor, f.sandbox.id, input);
+  const receipt = { promptId: randomUUID(), conversationId: randomUUID(), status: "queued" as const };
+  await complete(session, receipt);
+  await service.prompt(f.actor, f.sandbox.id, input);
+  const outcome = { state: "ready" as const, prNumber: 42 };
+  // The turn finished: the report route's own writer persists the outcome and its history.
+  await db.query("update public.sandboxes set status='ready' where id=$1", [f.sandbox.id]);
+  const generation = (
+    await db.query<{ g: string }>("select lifecycle_generation::text as g from public.sandboxes where id=$1", [
+      f.sandbox.id,
+    ])
+  ).rows[0]?.g;
+  await createSqlData(sql)({
+    userId: f.actor.userId,
+    orgs: [{ orgId: f.actor.orgId, role: "member" }],
+    via: "mcp",
+  }).sandboxes.reportTaskOutcome!(f.sandbox.id, receipt.promptId, outcome, Number(generation));
+  const reportKey = `${generation}:${receipt.promptId}`;
+  const next = { requestId: randomUUID(), text: "Address review", conversationId: receipt.conversationId };
+  expect(await service.prompt(f.actor, f.sandbox.id, next)).toEqual({ state: "pending" });
+  const row = await db.query<{ task_outcome: unknown; task_prompt_id: string | null; pull_request_reports: unknown }>(
+    "select task_outcome,task_prompt_id,pull_request_reports from public.sandboxes where id=$1",
+    [f.sandbox.id],
+  );
+  expect(row.rows[0]).toEqual({
+    task_outcome: null,
+    task_prompt_id: null,
+    pull_request_reports: { [reportKey]: outcome },
+  });
 });
 
 test("prompt receipts cannot replace the allocation conversation and invalid replies remain redacted", async () => {

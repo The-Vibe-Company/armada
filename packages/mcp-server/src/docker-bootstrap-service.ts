@@ -72,7 +72,7 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
     ).rows[0];
     if (!row) deny();
     if (row.watermark === null) {
-      if (row.status_reason === "idle_paused") deny();
+      if (row.status_reason === "idle_paused" || row.status_reason === "work_merged") deny();
       return undefined;
     }
     if (row.tainted) deny();

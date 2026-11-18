@@ -206,9 +206,14 @@ export {
   type GoldenErrorCode,
   type GoldenRepo,
   normalizeGitHubGoldenConfig,
+  PUSH_LEDGER_FILE,
+  PUSH_LEDGER_HOOKS,
+  PUSH_LEDGER_HOOKS_DIR,
+  PUSH_LEDGER_MARKER,
   parseGoldenConfig,
   parseGoldenName,
   pullCommand,
+  pushLedgerInstall,
   secretKeyPath,
   splitRepoArg,
 } from "./golden-config.ts";
@@ -458,7 +463,7 @@ export type { SkillCatalogItem, SkillCatalogPage, SkillCatalogSource } from "./s
 export { skillRefusalMessage } from "./skill-diagnostics.ts";
 export { SKILL_PIN_PATTERN, validateSkillPins } from "./skill-pins.ts";
 export { snapshotUpdateAvailable } from "./snapshot-update.ts";
-export type { TaskOutcome } from "./task-outcome.ts";
+export type { SandboxPullRequest, TaskOutcome } from "./task-outcome.ts";
 export {
   type LaunchTemplate,
   TEMPLATE_REFUSAL_HELP,

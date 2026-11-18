@@ -680,7 +680,7 @@ for (const [caller, options] of [
       },
     };
     const started = Promise.withResolvers<void>(),
-      finish = Promise.withResolvers<string>();
+      finish = Promise.withResolvers<{ imageId: string; baselineVersion: number }>();
     let building = false,
       physicalExpiryDuringBuild = false,
       stops = 0,
@@ -724,12 +724,13 @@ for (const [caller, options] of [
       await pump();
       expect(physicalExpiryDuringBuild).toBe(true);
       expect(stops).toBe(1);
-      finish.resolve(`sha256:${"b".repeat(64)}`);
+      finish.resolve({ imageId: `sha256:${"b".repeat(64)}`, baselineVersion: 1 });
       await running;
       expect(state.receipts.find((r) => r.requestId === snapshotId)).toMatchObject({
         operation: "buildSnapshot",
         outcome: "completed",
         imageId: `sha256:${"b".repeat(64)}`,
+        baselineVersion: 1,
       });
       expect(state.receipts.find((r) => r.requestId === stopId)?.outcome).toBe("completed");
       expect(state.receipts.find((r) => r.requestId === priorId)?.expired).toBe(true);
@@ -737,7 +738,7 @@ for (const [caller, options] of [
       await tick(store, api, executor);
       expect(builds).toBe(1);
     } finally {
-      finish.resolve(`sha256:${"b".repeat(64)}`);
+      finish.resolve({ imageId: `sha256:${"b".repeat(64)}`, baselineVersion: 1 });
       await running?.catch(() => {});
       globalThis.setInterval = interval;
       globalThis.clearInterval = clear;

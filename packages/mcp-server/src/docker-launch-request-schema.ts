@@ -28,6 +28,10 @@ const dockerLaunchFields = {
   visibility: z.literal("private").optional(),
   skills: z.array(z.string().regex(SKILL_PIN_PATTERN)).max(20).optional(),
   skipSkillDefaults: z.boolean().optional(),
+  stopWhenWorkMerged: z
+    .boolean()
+    .optional()
+    .describe("Default true: stop the sandbox once every pull request it opened is merged and the agent is idle."),
   connections: z.array(uuid).max(MAX_MCP_CONNECTIONS).optional().describe("MCP connection UUIDs."),
   variables: z.array(binding("variableId")).max(64).optional(),
   secrets: z.array(binding("secretId")).max(64).optional(),

@@ -290,7 +290,10 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
             if (blocked.rows.length) deny();
           }
           if (!previous.rows.length)
-            await tx.query("update public.sandboxes set task_prompt_id=null where id=$1", [sandboxId]);
+            // A reported outcome belongs to the turn it names; the report history stays in pull_request_reports.
+            await tx.query("update public.sandboxes set task_outcome=null,task_prompt_id=null where id=$1", [
+              sandboxId,
+            ]);
           const commands = createRuntimeCommands(authority, key);
           const queued = await commands.enqueue(actor.userId, {
             version: 1,

@@ -42,6 +42,11 @@ import { createRunnerDistribution, MODAL_IMAGE_LOCK, type RunnerDistribution } f
         prepareSnapshot: async () => {},
       });
       await distribution.image(client);
+      expect(commands[0]).toContain("python3-venv");
+      expect(commands[0]).toContain("git-2.52.0.tar.xz");
+      // Bookworm's libcurl4-openssl-dev does not provide the OpenSSL headers Git includes.
+      expect(commands[0]).toMatch(/apt-get install[^;]* 'libssl-dev'(?: |;)/);
+      expect(commands[0]).toContain("/opt/armada/runtime-bun/bun");
       const root = await mkdtemp(join(tmpdir(), "armada-image-replay-"));
       try {
         // Skip the three OS/tool/user installation steps; replay all captured artifact steps verbatim

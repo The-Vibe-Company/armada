@@ -21,11 +21,13 @@ export function sandboxControlRefusal(
     sandbox.preservationNote !== "checkpoint_failed_disk_not_retained"
   )
     return null;
-  // Idle suspension is an intentional retained-compute wake path, not a finished sandbox.
+  // Idle suspension is an intentional retained-compute wake path, not a finished
+  // sandbox. A merge stop is admitted through the same idle checkpoint.
+  const retained = sandbox.statusReason === "idle_paused" || sandbox.statusReason === "work_merged";
   if (
     operation === "send" &&
     sandbox.status === "stopped" &&
-    sandbox.statusReason === "idle_paused" &&
+    retained &&
     !expired &&
     sandbox.preservationNote !== "checkpoint_failed_disk_not_retained"
   )
@@ -36,7 +38,7 @@ export function sandboxControlRefusal(
   if (
     sandbox.provider === "docker" &&
     sandbox.status === "stopped" &&
-    sandbox.statusReason === "idle_paused" &&
+    retained &&
     !expired &&
     sandbox.preservationNote !== "checkpoint_failed_disk_not_retained"
   )

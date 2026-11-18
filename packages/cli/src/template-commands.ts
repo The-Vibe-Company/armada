@@ -20,7 +20,7 @@ const HELP = `Launch templates (readable variables and secret references):
   armada template get NAME|ID [--revision N] [--org NAME|UUID] [--json]
   armada template publish NAME|ID --expected-revision N --file definition.json [--org NAME|UUID] [--json]
   armada template delete NAME|ID --expected-revision N [--org NAME|UUID] [--json]
-  armada template launch NAME|ID --request-key KEY [--revision N] [--prompt TEXT] [--ttl 30m] [--size SIZE] [--repo REPO] [--model-account UUID --model-account-version N] [--org NAME|UUID] [--json]
+  armada template launch NAME|ID --request-key KEY [--revision N] [--prompt TEXT] [--ttl 30m] [--size SIZE] [--repo REPO] [--model-account UUID --model-account-version N] [--keep-after-merge] [--org NAME|UUID] [--json]
 
 Create/publish accept either a JSON definition file (the definition object, not an API envelope)
 or --golden UUID --provider boat|modal --agent claude|codex,
@@ -67,15 +67,11 @@ export async function templateCommand(argv: readonly string[], io: VaultIo): Pro
   }
   const [action, ...rest] = argv;
   if (!ACTIONS.includes(action ?? "")) throw usage();
-  const args = parseArgs(rest, [
-    "--scope",
-    "--revision",
-    "--expected-revision",
-    "--request-key",
-    "--prompt",
-    "--size",
-    ...DEFINITION_FLAGS,
-  ]);
+  const args = parseArgs(
+    rest,
+    ["--scope", "--revision", "--expected-revision", "--request-key", "--prompt", "--size", ...DEFINITION_FLAGS],
+    ["--keep-after-merge"],
+  );
   const defining = action === "create" || action === "publish";
   const allowed = new Set([
     "--org",
@@ -85,7 +81,16 @@ export async function templateCommand(argv: readonly string[], io: VaultIo): Pro
     ...(["get", "launch"].includes(action ?? "") ? ["--revision"] : []),
     ...(["publish", "delete"].includes(action ?? "") ? ["--expected-revision"] : []),
     ...(action === "launch"
-      ? ["--request-key", "--prompt", "--ttl", "--size", "--repo", "--model-account", "--model-account-version"]
+      ? [
+          "--request-key",
+          "--prompt",
+          "--ttl",
+          "--size",
+          "--repo",
+          "--model-account",
+          "--model-account-version",
+          "--keep-after-merge",
+        ]
       : []),
   ]);
   for (const key of args.options.keys()) {
@@ -99,6 +104,7 @@ export async function templateCommand(argv: readonly string[], io: VaultIo): Pro
     throw usage("Create with --org requires explicit --scope personal|org.");
   if (scope !== "personal" && scope !== "org") throw usage();
   const body: Record<string, unknown> = {};
+  if (flag(args, "--keep-after-merge")) body.stopWhenWorkMerged = false;
   if (action === "create") Object.assign(body, { name: args.positionals[0], scope });
   if (args.options.has("--revision")) body.revision = positive(single(args, "--revision"));
   if (action === "publish" || action === "delete")

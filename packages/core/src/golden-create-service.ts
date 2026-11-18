@@ -1,6 +1,6 @@
 import type { Visibility } from "./contract.ts";
 import type { GoldenActor, GoldenLimits, GoldenRecord } from "./golden.ts";
-import { assertGoldenMutation, waitSnapshot } from "./golden.ts";
+import { assertGoldenMutation, waitReady, waitSnapshot } from "./golden.ts";
 import type { GoldenBuildWarning } from "./golden-build-warning.ts";
 import {
   assignDirs,
@@ -87,6 +87,8 @@ export interface GoldenCreateDeps {
     sandboxId: string,
     context?: { buildId: string; repositories?: readonly string[] },
   ): Promise<void>;
+  installBaseline?(provider: Provider, sandboxId: string): Promise<void>;
+  verifyBaseline?(provider: Provider, sandboxId: string): Promise<void>;
   verifyHelper?(provider: Provider, sandboxId: string): Promise<Omit<HelperReceipt, "snapshotId">>;
   /** Reserve capacity before any builder starts. Returns an opaque server-only reservation. */
   reserve?(provider: Provider, actor: GoldenActor, existingGolden?: GoldenRecord): Promise<string | undefined>;
@@ -212,6 +214,13 @@ export class GoldenCreateService {
         ...(this.deps.execution ? { idempotencyKey: this.deps.execution.id } : {}),
       });
       await this.deps.execution?.builder(builder.id);
+      if (providerId === "boat" && this.deps.installBaseline) {
+        if (builder.state !== "ready") await waitReady(provider, builder.id, limits);
+        await this.deps.installBaseline(provider, builder.id);
+      }
+      // Check the provisioned image before checkout needs Git or init tooling.
+      // A second pass below verifies what will actually be saved after init.
+      await this.deps.verifyBaseline?.(provider, builder.id);
       // Each installation token is scoped to exactly the authorized repositories
       // from that installation. Public/no-App checkouts retain the caller path.
       await enter("checkout_credentials");
@@ -276,6 +285,7 @@ export class GoldenCreateService {
       await enter("secret_scan");
       await this.deps.scan(provider, builder.id, { buildId, repositories: prepared.map((repo) => repo.dir) });
       const helperReceipt = await this.deps.verifyHelper?.(provider, builder.id);
+      await this.deps.verifyBaseline?.(provider, builder.id);
       requestedSnapshot = input.existingGolden
         ? `golden-r-${crypto.randomUUID()}`
         : `golden-${builder.id.replaceAll("_", "-")}`;
@@ -381,7 +391,18 @@ export class GoldenCreateService {
       ) {
         snapshotAttempted = false;
       }
-      refusedBuilder = !builder && phase === "builder" && isNonMutatingProviderRefusal(error);
+      const imageFailure =
+        !builder &&
+        phase === "builder" &&
+        error instanceof ProviderError &&
+        error.provider === "modal" &&
+        error.providerCode === "modal_builder_image_failed" &&
+        !error.details?.resourceReceipt &&
+        !error.details?.keepSource
+          ? error.message
+          : undefined;
+      refusedBuilder =
+        !builder && phase === "builder" && (imageFailure !== undefined || isNonMutatingProviderRefusal(error));
       console.error(
         JSON.stringify({
           event: "golden_build_failed",
@@ -392,7 +413,9 @@ export class GoldenCreateService {
             ? {
                 provider: error.provider,
                 status: error.status,
-                detail: error.code === "invalid_request" ? snapshotRejectionClass(error.message) : "provider_failure",
+                detail:
+                  imageFailure ??
+                  (error.code === "invalid_request" ? snapshotRejectionClass(error.message) : "provider_failure"),
               }
             : {}),
           elapsedMs: Date.now() - startedAt,
@@ -425,6 +448,8 @@ export class GoldenCreateService {
             sourceSandboxId: builder.id,
           },
         });
+      if (imageFailure !== undefined)
+        throw new GoldenError("build_failed", imageFailure, { safeMessage: imageFailure });
       if (error instanceof GoldenError || error instanceof ProviderError) throw error;
       throw new GoldenError(
         "build_failed",
@@ -693,7 +718,8 @@ export function goldenCheckoutScript(
     GIT_FAILURE_CLASSIFIER,
     ...repos.map(
       (r, index) =>
-        `armada_clone ${index + 1} git clone ${r.history === "shallow" || (r.history === undefined && options.shallow) ? "--depth=1 " : ""}--branch ${shellQuote(r.branch ?? "main")} --single-branch https://github.com/${safe(r.owner)}/${safe(r.repo)}.git ${GOLDEN_ROOT}/${safe(r.dir)}`,
+        `armada_clone ${index + 1} git clone ${r.history === "shallow" || (r.history === undefined && options.shallow) ? "--depth=1 " : ""}--branch ${shellQuote(r.branch ?? "main")} --single-branch https://github.com/${safe(r.owner)}/${safe(r.repo)}.git ${GOLDEN_ROOT}/${safe(r.dir)}
+ git -C ${GOLDEN_ROOT}/${safe(r.dir)} config --local --replace-all remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*' >/dev/null 2>&1 || :`,
     ),
     "unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_NOSYSTEM GIT_CONFIG_GLOBAL GIT_TERMINAL_PROMPT GIT_ASKPASS",
     "unset ARMADA_GIT_TOKEN",

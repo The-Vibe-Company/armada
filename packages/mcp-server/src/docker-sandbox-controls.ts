@@ -19,6 +19,7 @@ import {
   promptFailureReason,
   type SandboxRecord,
   type SandboxUsage,
+  type TaskOutcome,
   withUsageTotals,
 } from "@armada/core";
 import { decryptSecret, type Sql } from "@armada/core/server";
@@ -56,6 +57,7 @@ type Row = {
   harness: Harness;
   status: SandboxRecord["status"];
   status_reason: string | null;
+  pull_requests: NonNullable<SandboxRecord["pullRequests"]>;
   stopped_at: string | Date | null;
   model: string | null;
   reasoning_effort: string | null;
@@ -63,6 +65,8 @@ type Row = {
   expires_at: string | Date | null;
   usage_turns: unknown;
   prompt_sequence: string;
+  task_prompt_id: string | null;
+  lifecycle_generation: number | string;
   journal_sequence: string;
   prompt_projection_sequence: string | null;
   latest_prompt_enc: Uint8Array<ArrayBuffer> | null;
@@ -84,7 +88,7 @@ function reason(row: Row) {
   if (row.status === "deleted" && dockerWorkspaceReclaimedMessage(row.status_reason)) return row.status_reason;
   if (row.status_reason === "expired") return "expired";
   if (
-    ["idle_paused", "agent_finished"].includes(row.status_reason ?? "") &&
+    ["idle_paused", "agent_finished", "work_merged"].includes(row.status_reason ?? "") &&
     ["stopping", "stopped"].includes(row.status)
   )
     return row.status_reason;
@@ -132,7 +136,7 @@ export function createDockerSandboxControls(
     if (!UUID.test(id) || !UUID.test(caller.userId) || caller.orgs.some((org) => !UUID.test(org.orgId))) throw denied();
     const row = (
       await sql.query<Row>(
-        `select s.id,s.org_id,s.owner_id,s.provider,s.docker_host_id,s.docker_image,s.docker_snapshot_id,s.harness,s.status,s.status_reason,
+        `select s.id,s.org_id,s.owner_id,s.provider,s.docker_host_id,s.docker_image,s.docker_snapshot_id,s.harness,s.status,s.status_reason,s.pull_requests,s.task_prompt_id,s.lifecycle_generation,
         s.stopped_at,s.model,s.reasoning_effort,s.conversation_ids,s.expires_at,s.usage_turns,m.role,e.prompt_projection_sequence::text,e.latest_prompt_enc,
        (select coalesce(max(c.sequence),0)::text from public.runtime_commands c where c.sandbox_id=s.id and starts_with(c.request_id,'docker_prompt_')) as prompt_sequence,
        (select coalesce(max(e.sequence),0)::text from public.runtime_events e where e.sandbox_id=s.id) as journal_sequence
@@ -455,6 +459,7 @@ export function createDockerSandboxControls(
       reasoningEffort: row.reasoning_effort,
       status: row.status,
       statusReason: reason(row),
+      pullRequests: row.pull_requests ?? [],
       statusMessage:
         dockerWorkspaceReclaimedMessage(row.status_reason) ??
         idlePauseMessage(
@@ -833,6 +838,7 @@ export function createDockerSandboxControls(
           "interrupt",
           "exec",
           "github_refresh",
+          "report",
         ].includes(name)
       )
         return { handled: false };
@@ -848,6 +854,21 @@ export function createDockerSandboxControls(
         const row = await visible(caller, args.id);
         if (row.provider !== "docker") return { handled: false };
         const dispatch = async () => {
+          if (name === "report") {
+            if (!row.task_prompt_id || args.prompt_id !== row.task_prompt_id)
+              throw failure("conflict", "Report only the latest finished turn, using its prompt id.");
+            const summary = await status(caller, row, row.task_prompt_id, false, false);
+            if (summary.prompt?.state !== "finished" || !summary.settled)
+              throw failure("conflict", "Report only the latest finished turn, using its prompt id.");
+            const outcome = args.outcome as TaskOutcome;
+            await createSqlData(sql)(caller).sandboxes.reportTaskOutcome!(
+              row.id,
+              row.task_prompt_id,
+              outcome,
+              Number(row.lifecycle_generation),
+            );
+            return { handled: true as const, result: { id: row.id, taskOutcome: outcome } };
+          }
           if (name === "github_refresh") {
             if (!options.github) throw failure("unavailable", "Docker GitHub refresh is unavailable.");
             return { handled: true as const, result: await options.github.prepare(caller, row.id) };

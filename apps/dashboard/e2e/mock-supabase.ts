@@ -436,6 +436,19 @@ function seedLarge(target: State): void {
             ? { state: "ready", prNumber: 100 + i, prUrl: `https://github.com/example/fixture/pull/${100 + i}` }
             : { state: "blocked", reason: "The fixture needs an owner decision about the integration contract." }
           : null,
+      pull_requests:
+        variant === 3 && i % 20 === 3
+          ? [
+              {
+                repository: "example/fixture",
+                number: 100 + i,
+                url: `https://github.com/example/fixture/pull/${100 + i}`,
+                headBranch: `fixture-${i}`,
+                state: "open",
+                checkedAt: now,
+              },
+            ]
+          : [],
       visibility: i % 5 === 0 ? "private" : "org",
       credential_id: id(12000 + (i % 12)),
       credential_version: 1,
@@ -783,6 +796,7 @@ function sandboxListMetadata(userId: string): Row[] {
         machineSize: size,
         // As in the #745/#747 migrations: the outcome is interior (owner and admins), the receipt is metadata.
         taskOutcome: open ? (row.task_outcome ?? null) : null,
+        pullRequests: open ? (row.pull_requests ?? []) : null,
         preservationNote: row.preservation_note ?? null,
         displayLabel: `Sandbox ${row.id}`,
         canOpen: open,

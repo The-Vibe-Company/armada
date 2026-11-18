@@ -198,6 +198,7 @@ Boat/Modal options:
   --skill org/slug@version|slug@version   Repeat for multiple skills.
   --connections <id,...>                 Explicit MCP connections.
   --no-connections                       Opt out; omission uses server defaults.
+  --keep-after-merge                     Disable automatic stopping after merged work.
   --armada-access                        Enable scoped Armada child access.
   --max-active-children <1..100>          Requires --armada-access.
   --org <org> --json                     Organization selector and machine output.

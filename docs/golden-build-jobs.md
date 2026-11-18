@@ -50,6 +50,10 @@ Boat snapshot save exposes the closed `provider_snapshot_rejected` reason with
 owner retry guidance; local validation errors do not claim a provider rejection.
 Accepted saves with unreadable provenance retain capacity as recovery_required.
 Modal snapshot failures retain their conservative uncertain-outcome handling.
+Modal builds the golden builder image before requesting a sandbox. If that
+image build fails and the unused builder reservation is closed, the job records
+a bounded build diagnostic and releases its capacity. A lost sandbox-create
+response still requires reconciliation.
 See [Boat snapshot rejection](diagnostics/boat-snapshot-rejection.md).
 
 Confirmed builder stop (or denial before

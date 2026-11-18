@@ -11,6 +11,7 @@ import {
   reportedTurnUsage,
   type SandboxInfo,
   type SandboxPatch,
+  type SandboxPullRequest,
   type SandboxStatus,
   type SandboxUsage,
   type TaskOutcome,
@@ -65,6 +66,7 @@ export interface StatusReport {
   usage?: SandboxUsage | null;
   preservationNote?: string | null;
   taskOutcome?: TaskOutcome | null;
+  pullRequests?: SandboxPullRequest[];
   credentialId?: string | null;
   credentialVersion?: number | null;
   id: string;
@@ -250,7 +252,7 @@ export async function readStatus(
     next === "failed"
       ? (failureReason(info) ?? sandbox.statusReason)
       : (next === "stopped" || next === "stopping") &&
-          ["expired", "idle_paused", "agent_finished"].includes(sandbox.statusReason ?? "")
+          ["expired", "idle_paused", "agent_finished", "work_merged"].includes(sandbox.statusReason ?? "")
         ? sandbox.statusReason
         : null;
   // Stored projections never acquire activity/lifecycle leases or publish over a
@@ -342,6 +344,7 @@ function report(
           }
         : (sandbox.usage ?? null),
     taskOutcome: sandbox.taskOutcome ?? null,
+    pullRequests: sandbox.pullRequests ?? [],
     id: sandbox.id,
     ...(sandbox.externalRef ? { externalRef: sandbox.externalRef } : {}),
     golden: sandbox.golden,

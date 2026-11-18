@@ -900,6 +900,7 @@ export async function dispatchControlCommand(
           "skills",
           "skipSkillDefaults",
           "externalRef",
+          "stopWhenWorkMerged",
         ];
         if (
           Object.keys(body).some(

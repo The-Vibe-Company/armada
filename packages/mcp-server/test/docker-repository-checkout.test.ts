@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -56,6 +56,8 @@ test("Docker checkout leaves the requested branch reviewable against a diverged 
     expect(checkout("rev-parse", "HEAD", "@{upstream}").split("\n")).toEqual([launchTip, launchTip]);
     expect(checkout("diff", "--name-status", "origin/trunk...HEAD")).toBe("A\tfeature.txt\nD\tlegacy.txt");
     expect(checkout("status", "--porcelain", "--branch")).toBe("## feature/review...origin/feature/review");
+    expect(checkout("config", "--get-all", "remote.origin.fetch")).toBe("+refs/heads/*:refs/remotes/origin/*");
+    expect(checkout("config", "--get", "core.hooksPath")).toBe(join(realpathSync(destination), ".git", "armada-hooks"));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

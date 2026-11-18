@@ -8,7 +8,13 @@ import {
   type DockerJobFailureReason,
   type Sql,
 } from "@armada/core";
-import { decryptSecret, encryptSecret, VaultError } from "@armada/core/server";
+import {
+  decryptSecret,
+  encryptSecret,
+  isSnapshotBaselineTool,
+  type SnapshotBaselineTool,
+  VaultError,
+} from "@armada/core/server";
 import {
   type BootstrapDescriptor,
   canonicalDockerHostJob,
@@ -25,7 +31,6 @@ import {
   type DockerPolicyRow,
   hostResourcePolicy,
 } from "./docker-capacity.ts";
-
 import { hostDrainingSql } from "./docker-host-drain.ts";
 import { authorizeSnapshotBuild, resolveDockerSnapshot } from "./docker-snapshot-data.ts";
 import { recordLaunchStage, recordLaunchStageForActivation } from "./launch-stage-record.ts";
@@ -973,10 +978,11 @@ export function createDockerHostStore(sql: Sql, key: string) {
           if (draining.rows.length) throw new DockerHostDraining();
         }
         if (!known) await state(tx, row, selection.operation);
+        let workMerged = false;
         if (!known && selection.operation === "stop" && selection.idleCheckpointRequest !== undefined) {
           id(selection.idleCheckpointRequest);
-          const proof = await tx.query(
-            `select 1 from public.sandboxes s join public.runtime_enrolments r on r.sandbox_id=s.id
+          const proof = await tx.query<{ work_merged: boolean }>(
+            `select p.merge_stop as work_merged from public.sandboxes s join public.runtime_enrolments r on r.sandbox_id=s.id
              join public.runtime_checkpoints p on p.sandbox_id=s.id and p.epoch=r.epoch
              where s.id=$1 and p.request_id=$2 and p.watermark is not null
              and p.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=s.id)
@@ -985,6 +991,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
             [sandboxId, selection.idleCheckpointRequest],
           );
           if (!proof.rows.length) deny();
+          workMerged = proof.rows[0]?.work_merged === true;
         }
         const request = await machine(tx, row, selection.operation);
         const job: Job =
@@ -1027,9 +1034,12 @@ export function createDockerHostStore(sql: Sql, key: string) {
         }
         if (selection.operation === "stop")
           await tx.query(
-            `update public.sandboxes set status='stopping',status_reason=case when $2::boolean then 'idle_paused' else status_reason end,stop_requested_at=coalesce(stop_requested_at,now()),
+            `update public.sandboxes set status='stopping',status_reason=coalesce($2::text,status_reason),stop_requested_at=coalesce(stop_requested_at,now()),
            lifecycle_generation=lifecycle_generation+1 where id=$1 and status in ('starting','ready','running')`,
-            [sandboxId, selection.operation === "stop" && selection.idleCheckpointRequest !== undefined],
+            [
+              sandboxId,
+              selection.idleCheckpointRequest === undefined ? null : workMerged ? "work_merged" : "idle_paused",
+            ],
           );
         return enqueue();
       });
@@ -1331,7 +1341,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         await tx.query(
           `update public.sandboxes set
            status=case when status='failed' then status else 'stopped' end,
-           status_reason=case when status='failed' or status_reason='agent_finished' then status_reason else 'expired' end,
+           status_reason=case when status='failed' or status_reason in ('agent_finished','work_merged') then status_reason else 'expired' end,
            stopped_at=coalesce(stopped_at,now()),stop_requested_at=coalesce(stop_requested_at,now()),
            lifecycle_generation=lifecycle_generation+case when status in ('starting','ready','running','stopping') then 1 else 0 end
            where id=$1 and status in ('starting','ready','running','stopping','stopped','failed')`,
@@ -1342,7 +1352,14 @@ export function createDockerHostStore(sql: Sql, key: string) {
     complete(
       hostToken: string,
       installationId: string,
-      result: { requestId: string; outcome: "completed" | "failed"; reason?: DockerJobFailureReason; imageId?: string },
+      result: {
+        requestId: string;
+        outcome: "completed" | "failed";
+        reason?: DockerJobFailureReason;
+        imageId?: string;
+        baselineVersion?: number;
+        baselineTool?: SnapshotBaselineTool;
+      },
     ) {
       return transaction(async (tx) => {
         exact(result, [
@@ -1350,6 +1367,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
           "outcome",
           ...(result.reason !== undefined ? ["reason"] : []),
           ...(result.imageId !== undefined ? ["imageId"] : []),
+          ...(result.baselineVersion !== undefined ? ["baselineVersion"] : []),
+          ...(result.baselineTool !== undefined ? ["baselineTool"] : []),
         ]);
         if (
           result.reason !== undefined &&
@@ -1403,6 +1422,20 @@ export function createDockerHostStore(sql: Sql, key: string) {
         )
           deny();
         if (result.reason === "snapshot_build_failed" && !job.snapshot_id) deny();
+        if (
+          result.baselineTool !== undefined &&
+          (result.reason !== "snapshot_build_failed" || !isSnapshotBaselineTool(result.baselineTool))
+        )
+          deny();
+        if (
+          result.baselineVersion !== undefined &&
+          (!job.snapshot_id ||
+            result.outcome !== "completed" ||
+            !Number.isSafeInteger(result.baselineVersion) ||
+            result.baselineVersion < 1 ||
+            result.baselineVersion > 2147483647)
+        )
+          deny();
         if (job.snapshot_id) {
           const parsed = await readJob(job);
           if (
@@ -1425,7 +1458,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
               }
             }
             await tx.query(
-              "update public.docker_snapshots set status=$2,image_id=$3,failure_reason=$4 where id=$1 and status='building'",
+              "update public.docker_snapshots set status=$2,image_id=$3,failure_reason=$4,baseline_version=$5,baseline_failure_tool=$6 where id=$1 and status='building'",
               [
                 job.snapshot_id,
                 eligible ? "ready" : "failed",
@@ -1439,6 +1472,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
                       : result.reason === "disk_full"
                         ? DOCKER_SNAPSHOT_FAILURE_MESSAGES.disk
                         : DOCKER_SNAPSHOT_FAILURE_MESSAGES.build,
+                eligible ? (result.baselineVersion ?? null) : null,
+                result.baselineTool ?? null,
               ],
             );
           }

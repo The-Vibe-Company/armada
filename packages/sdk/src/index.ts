@@ -77,6 +77,8 @@ export interface GoldenLaunchInput {
   credentialId?: string;
   idempotencyKey?: string;
   externalRef?: string;
+  /** Default true: stop the sandbox once every pull request it opened is merged and the agent is idle. */
+  stopWhenWorkMerged?: boolean;
   visibility?: "org" | "private";
   skills?: string[];
   skipSkillDefaults?: boolean;
@@ -99,6 +101,8 @@ interface DockerLaunchFields {
   visibility?: "private";
   skills?: string[];
   skipSkillDefaults?: boolean;
+  /** Default true: stop the sandbox once every pull request it opened is merged and the agent is idle. */
+  stopWhenWorkMerged?: boolean;
   /** MCP connection UUIDs. */
   connections?: string[];
   variables?: { key: string; variableId: string; version: number }[];
@@ -155,6 +159,8 @@ export interface TemplateLaunchInput {
   modelAccount?: { id: string; version: number };
   /** Opaque caller reference recorded on the sandbox; refused for Docker templates. */
   externalRef?: string;
+  /** Default true: stop the sandbox once every pull request it opened is merged and the agent is idle. */
+  stopWhenWorkMerged?: boolean;
 }
 /** A durable launch request: `state` is "succeeded", "failed" or still "reconciling"/"allocating". Replay `requestKey` to read it again. */
 export interface TemplateLaunchReceipt {

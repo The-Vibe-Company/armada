@@ -259,6 +259,7 @@ export async function fetchGitHubUser(
 export interface StoredGitHubConnection {
   userId: string;
   githubId: number;
+  connectionEpoch?: string;
   login: string;
   name: string | null;
   refreshTokenEnc: Uint8Array;
@@ -305,7 +306,7 @@ export type GitHubStatus = "connected" | "not_connected" | "revoked" | "unavaila
 
 /** Caller GitHub access. Public snapshots can launch anonymously; known private repository refresh requires access. */
 export type GitHubAccess =
-  | { status: "connected"; token: string; identity: GitIdentity; expiresAt?: Date }
+  | { status: "connected"; token: string; identity: GitIdentity; expiresAt?: Date; connectionEpoch?: string }
   | { status: Exclude<GitHubStatus, "connected">; message: string };
 
 /** Runtime access belongs to the Armada token's user, even when the caller uses a service bearer. */
@@ -558,7 +559,13 @@ async function connectedFromToken(
     };
   if (user.login !== connection.login || user.name !== connection.name)
     await store.updateGitHubProfile(userId, user).catch(() => {});
-  return { status: "connected", token: accessToken, identity: gitIdentity(user), ...(expiresAt ? { expiresAt } : {}) };
+  return {
+    status: "connected",
+    token: accessToken,
+    identity: gitIdentity(user),
+    ...(expiresAt ? { expiresAt } : {}),
+    ...(current.connectionEpoch ? { connectionEpoch: current.connectionEpoch } : {}),
+  };
 }
 
 /** The environment variables `gh` and most tools read. */

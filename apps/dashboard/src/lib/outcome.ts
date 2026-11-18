@@ -1,4 +1,4 @@
-import type { SandboxStatus, TaskOutcome } from "@armada/core";
+import type { SandboxPullRequest, SandboxStatus, TaskOutcome } from "@armada/core";
 
 /**
  * The structured result of a sandbox's latest finished turn (#742/#745) and the work-preservation receipt of a stop
@@ -48,20 +48,52 @@ export type OutcomeView =
       pr: { label: string; href: string | null } | null;
       /** The first seven characters of the reported head commit. */
       sha: string | null;
+      /** GitHub confirms the reported pull request merged: nothing is left to merge, so it reads "Merged". */
+      merged: boolean;
     }
   | { kind: "blocked"; label: string; reason: string };
 
-export function outcomeView(outcome: TaskOutcome | null | undefined): OutcomeView | null {
+/**
+ * The outcome as shown. A "ready" outcome names a pull request the agent reported; when the sandbox's confirmed pull
+ * requests (#2612) say GitHub merged that same pull request, the view reads "Merged" rather than asking to merge it.
+ */
+export function outcomeView(
+  outcome: TaskOutcome | null | undefined,
+  pullRequests: readonly SandboxPullRequest[] | null | undefined = null,
+): OutcomeView | null {
   if (!outcome) return null;
   if (outcome.state === "blocked") return { kind: "blocked", label: "Blocked", reason: outcome.reason };
   const href = safeHref(outcome.prUrl);
   const label = outcome.prNumber ? `PR #${outcome.prNumber}` : href ? "Pull request" : null;
+  const merged = reportedPullRequest(outcome, pullRequests)?.state === "merged";
   return {
     kind: "ready",
-    label: "Ready to merge",
+    label: merged ? "Merged" : "Ready to merge",
     pr: label ? { label, href } : null,
     sha: outcome.headSha ? outcome.headSha.slice(0, 7).toLowerCase() : null,
+    merged,
   };
+}
+
+const PR_URL = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pull\/([1-9][0-9]*)\/?$/;
+
+/**
+ * The confirmed pull request a "ready" outcome names, matched on the repository and number of its GitHub link. A
+ * number without a link does not say which repository it belongs to, so it matches nothing: the outcome keeps asking
+ * to merge rather than borrowing the state of another repository's pull request. Null as well when the link and the
+ * number disagree.
+ */
+export function reportedPullRequest(
+  outcome: TaskOutcome | null | undefined,
+  pullRequests: readonly SandboxPullRequest[] | null | undefined,
+): SandboxPullRequest | null {
+  if (outcome?.state !== "ready" || !outcome.prUrl || !pullRequests?.length) return null;
+  const link = PR_URL.exec(outcome.prUrl);
+  if (!link?.[1]) return null;
+  const number = Number(link[2]);
+  if (outcome.prNumber !== undefined && outcome.prNumber !== number) return null;
+  const repository = link[1].toLowerCase();
+  return pullRequests.find((pr) => pr.number === number && pr.repository.toLowerCase() === repository) ?? null;
 }
 
 /**
@@ -85,8 +117,14 @@ export function safeHref(value: string | undefined): string | null {
  * retain its reported outcome alongside the failure. The server clears outcomes when a new turn starts.
  * Deleted, starting and stopping sandboxes do not show earlier outcomes.
  */
-export function settledOutcome(status: SandboxStatus, outcome: TaskOutcome | null | undefined): OutcomeView | null {
-  return status === "deleted" || status === "starting" || status === "stopping" ? null : outcomeView(outcome);
+export function settledOutcome(
+  status: SandboxStatus,
+  outcome: TaskOutcome | null | undefined,
+  pullRequests: readonly SandboxPullRequest[] | null | undefined = null,
+): OutcomeView | null {
+  return status === "deleted" || status === "starting" || status === "stopping"
+    ? null
+    : outcomeView(outcome, pullRequests);
 }
 
 /** The command that retrieves the latest recovery archive; its output is sensitive, so it goes to a private file. */

@@ -8,6 +8,7 @@ import { ConnectionStatusBadge, ScopeBadge } from "@/components/connections";
 import { CreatedAt } from "@/components/created-at";
 import { InstalledSkills } from "@/components/installed-skills";
 import { LinkPendingIcon } from "@/components/link-pending";
+import { PullRequestSection } from "@/components/pull-requests";
 import { SandboxAccountChoice } from "@/components/sandbox-account-choice";
 import { SandboxActions, StopButton } from "@/components/sandbox-actions";
 import { SandboxAttention } from "@/components/sandbox-attention";
@@ -47,6 +48,7 @@ import { launchTimingFact } from "@/lib/launch-timing";
 import { formatDuration, lifecycleView, readLifecycle } from "@/lib/lifecycle";
 import { describeEvidence } from "@/lib/machine-size";
 import { parseTaskOutcome, preservationView, settledOutcome } from "@/lib/outcome";
+import { parsePullRequests } from "@/lib/pull-requests";
 import { sandboxRepositoryDir } from "@/lib/repository-context";
 import { machineSizeLabel } from "@/lib/sandbox-access";
 import { costOfRow } from "@/lib/sandbox-cost";
@@ -237,6 +239,7 @@ export default async function SandboxPage({ params }: Props) {
             preservationNote={sandbox.preservation_note}
             pinnedModel={sandbox.boat_runtime || sandbox.runtime_transport === "dialout"}
             initialIdlePaused={sandbox.status_reason === "idle_paused"}
+            statusReason={sandbox.status_reason}
             expiresAt={sandbox.expires_at}
             initialUsageRevision={usageRevision(sandbox.usage_turns)}
             live={isActiveStatus(sandbox.status)}
@@ -334,14 +337,35 @@ export default async function SandboxPage({ params }: Props) {
           {configured && (sandbox.status === "ready" || sandbox.status === "running") && (
             <SandboxCommand sandboxId={sandbox.id} />
           )}
+          <PullRequestSection value={sandbox.pull_requests} />
           <details className="text-sm">
             <summary className="cursor-pointer text-muted-foreground">Technical details</summary>
             <div className="pt-4">
               <Facts facts={facts} />
-              {settledOutcome(sandbox.status, parseTaskOutcome(sandbox.task_outcome)) && (
+              {settledOutcome(
+                sandbox.status,
+                parseTaskOutcome(sandbox.task_outcome),
+                parsePullRequests(sandbox.pull_requests),
+              ) && (
                 <div className="mt-2 space-y-1">
-                  <OutcomeBadge outcome={settledOutcome(sandbox.status, parseTaskOutcome(sandbox.task_outcome))!} />
-                  <OutcomeDetail outcome={settledOutcome(sandbox.status, parseTaskOutcome(sandbox.task_outcome))!} />
+                  <OutcomeBadge
+                    outcome={
+                      settledOutcome(
+                        sandbox.status,
+                        parseTaskOutcome(sandbox.task_outcome),
+                        parsePullRequests(sandbox.pull_requests),
+                      )!
+                    }
+                  />
+                  <OutcomeDetail
+                    outcome={
+                      settledOutcome(
+                        sandbox.status,
+                        parseTaskOutcome(sandbox.task_outcome),
+                        parsePullRequests(sandbox.pull_requests),
+                      )!
+                    }
+                  />
                 </div>
               )}
               {preservationView(sandbox.preservation_note, sandbox.status, sandbox.id, true) && (
@@ -506,6 +530,7 @@ function DockerSandbox({
               provider={sandbox.provider}
               preservationNote={sandbox.preservation_note}
               initialIdlePaused={sandbox.status_reason === "idle_paused"}
+              statusReason={sandbox.status_reason}
               expiresAt={sandbox.expires_at}
               initialUsageRevision={usageRevision(sandbox.usage_turns)}
               live={isActiveStatus(sandbox.status)}
@@ -552,14 +577,35 @@ function DockerSandbox({
             />
             <p className="text-muted-foreground">Sandboxes on your own server do not get tools yet.</p>
           </section>
+          <PullRequestSection value={sandbox.pull_requests} />
           <details className="text-sm">
             <summary className="cursor-pointer text-muted-foreground">Technical details</summary>
             <div className="pt-4">
               <Facts facts={facts} />
-              {settledOutcome(sandbox.status, parseTaskOutcome(sandbox.task_outcome)) && (
+              {settledOutcome(
+                sandbox.status,
+                parseTaskOutcome(sandbox.task_outcome),
+                parsePullRequests(sandbox.pull_requests),
+              ) && (
                 <div className="mt-2 space-y-1">
-                  <OutcomeBadge outcome={settledOutcome(sandbox.status, parseTaskOutcome(sandbox.task_outcome))!} />
-                  <OutcomeDetail outcome={settledOutcome(sandbox.status, parseTaskOutcome(sandbox.task_outcome))!} />
+                  <OutcomeBadge
+                    outcome={
+                      settledOutcome(
+                        sandbox.status,
+                        parseTaskOutcome(sandbox.task_outcome),
+                        parsePullRequests(sandbox.pull_requests),
+                      )!
+                    }
+                  />
+                  <OutcomeDetail
+                    outcome={
+                      settledOutcome(
+                        sandbox.status,
+                        parseTaskOutcome(sandbox.task_outcome),
+                        parsePullRequests(sandbox.pull_requests),
+                      )!
+                    }
+                  />
                 </div>
               )}
               {preservationView(sandbox.preservation_note, sandbox.status, sandbox.id, true) && (

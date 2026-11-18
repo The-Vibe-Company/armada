@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import type { AgentEvent, Provider } from "@armada/core";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
 import { normalizeEvent } from "@armada/provider-boat";
@@ -85,47 +85,152 @@ test("tool results retain the invoked tool identity and input", () => {
   expect(spans[1]).toMatchObject({ name: "exec", status: { code: 2 }, endTimeUnixNano: "1150000000" });
   expect(JSON.stringify(spans[1])).toContain("customer_argument");
 });
-test("only an org admin can store encrypted configuration and keys are never returned", async () => {
-  const calls: unknown[][] = [];
-  const exporter = createLangfuse(
-    {
-      query: async <T>(_sql: string, params: unknown[] = []) => {
-        calls.push(params);
-        return { rows: [] as T[] };
-      },
-    },
-    key,
-    noNativeProvider,
-  );
-  const orgId = "00000000-0000-0000-0000-000000000001";
-  const request = () =>
-    new Request(`https://armada.test/api/v1/orgs/${orgId}/langfuse`, {
-      method: "PUT",
-      body: JSON.stringify({
-        enabled: true,
-        contentMode: "metadata",
-        host: "https://langfuse.test",
-        publicKey: "public_placeholder",
-        secretKey: "secret_placeholder",
-      }),
-    });
-  const denied = exporter.route(async () => ({
+function settingsRequest(orgId: string, method: string, input?: object, suffix = "") {
+  return new Request(`https://armada.test/api/v1/orgs/${orgId}/langfuse${suffix}`, {
+    method,
+    body: input === undefined ? undefined : JSON.stringify(input),
+  });
+}
+
+test("partial Langfuse settings updates preserve encrypted keys and disconnect clears the configuration", async () => {
+  const { db, people } = await database();
+  const route = createLangfuse(db, key, noNativeProvider).route(async () => ({
     ok: true,
-    caller: { userId: "user", via: "service", orgs: [{ orgId, role: "member" }] },
+    caller: { userId: people.admin, via: "service", orgs: [{ orgId: people.org, role: "admin" }] },
   }));
-  expect((await denied(request()))?.status).toBe(403);
-  expect(calls).toHaveLength(0);
-  const allowed = exporter.route(async () => ({
-    ok: true,
-    caller: { userId: "user", via: "service", orgs: [{ orgId, role: "admin" }] },
-  }));
-  const response = await allowed(request());
-  expect(response?.status).toBe(200);
-  expect(await response?.text()).not.toContain("placeholder");
-  expect(JSON.stringify(calls)).not.toContain("placeholder");
-  expect(JSON.parse(await decryptSecret(Buffer.from(calls[0]?.[3] as string, "hex"), key))).toMatchObject({
+  const put = (input: object) => route(settingsRequest(people.org, "PUT", input));
+  const read = async () => (await route(settingsRequest(people.org, "GET")))!.json();
+  expect((await put({ enabled: true }))?.status).toBe(400);
+  const created = await put({ enabled: true, publicKey: "public_placeholder", secretKey: "secret_placeholder" });
+  expect(await created?.json()).toEqual({ enabled: true, contentMode: "metadata" });
+
+  expect((await put({ enabled: false }))?.status).toBe(200);
+  expect((await put({ contentMode: "full", publicKey: "new_public" }))?.status).toBe(200);
+  const config = (
+    await db.query<{ config_enc: Uint8Array<ArrayBuffer> }>("select config_enc from org_langfuse where org_id=$1", [
+      people.org,
+    ])
+  ).rows[0]!;
+  expect(JSON.parse(await decryptSecret(config.config_enc, key))).toEqual({
+    host: "https://cloud.langfuse.com",
+    publicKey: "new_public",
     secretKey: "secret_placeholder",
   });
+  expect(await read()).toEqual({
+    enabled: false,
+    contentMode: "full",
+    content_mode: "full",
+    host: "https://cloud.langfuse.com",
+    publicKey: "new_public",
+    configured: true,
+    counters: { exported: 0, failed: 0, dropped: 0 },
+    lastExportAt: null,
+  });
+  expect((await put({ host: "https://different.test" }))?.status).toBe(400);
+  expect((await route(settingsRequest(people.org, "DELETE")))?.status).toBe(204);
+  expect(await read()).toMatchObject({ enabled: false, contentMode: "metadata", configured: false, publicKey: null });
+});
+
+test("a complete Langfuse replacement can recover unreadable stored credentials", async () => {
+  const { db, people } = await database();
+  await db.query("insert into org_langfuse(org_id,enabled,content_mode,config_enc) values($1,true,'full',$2)", [
+    people.org,
+    new Uint8Array([1]),
+  ]);
+  const route = createLangfuse(db, key, noNativeProvider).route(async () => ({
+    ok: true,
+    caller: { userId: people.admin, via: "service", orgs: [{ orgId: people.org, role: "admin" }] },
+  }));
+  const replaced = await route(
+    settingsRequest(people.org, "PUT", {
+      host: "https://replacement.test",
+      publicKey: "replacement_public",
+      secretKey: "replacement_secret",
+    }),
+  );
+  expect(await replaced?.json()).toEqual({ enabled: true, contentMode: "full" });
+  expect(await (await route(settingsRequest(people.org, "GET")))?.json()).toMatchObject({
+    configured: true,
+    host: "https://replacement.test",
+    publicKey: "replacement_public",
+  });
+});
+
+test("only the organization's admins can change or test settings and members can read status alone", async () => {
+  const { db, people } = await database();
+  await db.query("insert into org_langfuse(org_id,enabled,content_mode,config_enc) values($1,true,'full',$2)", [
+    people.org,
+    await encryptConfig(),
+  ]);
+  const route = createLangfuse(db, key, noNativeProvider).route(async () => ({
+    ok: true,
+    caller: {
+      userId: people.member,
+      via: "service",
+      orgs: [
+        { orgId: people.org, role: "member" },
+        { orgId: people.otherOrg, role: "admin" },
+      ],
+    },
+  }));
+  expect(await (await route(settingsRequest(people.org, "GET")))?.json()).toEqual({
+    enabled: true,
+    contentMode: "full",
+  });
+  expect((await route(settingsRequest(people.org, "PUT", { enabled: false })))?.status).toBe(403);
+  expect((await route(settingsRequest(people.org, "DELETE")))?.status).toBe(403);
+  expect((await route(settingsRequest(people.org, "POST", {}, "/test")))?.status).toBe(403);
+  expect((await route(settingsRequest(crypto.randomUUID(), "GET")))?.status).toBe(403);
+});
+
+test("the Langfuse connection test checks keys without exporting a trace or persisting candidates", async () => {
+  const { db, people } = await database();
+  await db.query("insert into org_langfuse(org_id,enabled,content_mode,config_enc) values($1,false,'metadata',$2)", [
+    people.org,
+    await encryptConfig(),
+  ]);
+  const attempts: { url: string; init: RequestInit | undefined }[] = [];
+  let upstream = 200;
+  const route = createLangfuse(db, key, noNativeProvider, (async (url, init) => {
+    attempts.push({ url: String(url), init });
+    init?.signal?.throwIfAborted();
+    return new Response("upstream_body", { status: upstream });
+  }) as typeof fetch).route(async () => ({
+    ok: true,
+    caller: { userId: people.admin, via: "service", orgs: [{ orgId: people.org, role: "admin" }] },
+  }));
+  const probe = (input?: object) => route(settingsRequest(people.org, "POST", input, "/test"));
+  expect(await (await probe())?.json()).toEqual({ status: "ok" });
+  expect(attempts[0]?.url).toBe("https://langfuse.test/api/public/projects");
+  expect(attempts[0]?.init).toMatchObject({
+    method: "GET",
+    redirect: "error",
+    signal: expect.any(AbortSignal),
+    headers: { authorization: `Basic ${Buffer.from("public_placeholder:secret_placeholder").toString("base64")}` },
+  });
+  expect(attempts[0]?.init?.body).toBeUndefined();
+
+  expect(await (await probe({ secretKey: "candidate_secret" }))?.json()).toEqual({ status: "ok" });
+  expect(new Headers(attempts[1]?.init?.headers).get("authorization")).toBe(
+    `Basic ${Buffer.from("public_placeholder:candidate_secret").toString("base64")}`,
+  );
+  upstream = 401;
+  expect(await (await probe({}))?.json()).toEqual({ status: "rejected" });
+  expect(attempts[2]?.init?.headers).toEqual(attempts[0]?.init?.headers);
+
+  const timeout = spyOn(AbortSignal, "timeout").mockReturnValue(
+    AbortSignal.abort(new DOMException("timeout", "TimeoutError")),
+  );
+  try {
+    expect(await (await probe())?.json()).toEqual({ status: "unreachable" });
+    expect(timeout.mock.calls).toEqual([[5000]]);
+  } finally {
+    timeout.mockRestore();
+  }
+
+  expect((await probe({ host: "http://langfuse.test" }))?.status).toBe(400);
+  expect((await probe({ host: "https://different.test" }))?.status).toBe(400);
+  expect(attempts).toHaveLength(4);
 });
 
 test("native settlement exports once and a new server reads only its organization's durable totals", async () => {
@@ -193,15 +298,15 @@ test("native settlement exports once and a new server reads only its organizatio
     if (!response) throw Error("missing Langfuse response");
     return (await response.json()) as {
       enabled: boolean;
-      content_mode?: string;
+      contentMode: string;
       counters: { exported: number; failed: number; dropped: number };
       lastExportAt: string | null;
     };
   };
   const beforeFailure = await read(people.org);
-  expect(beforeFailure).toEqual({
+  expect(beforeFailure).toMatchObject({
     enabled: true,
-    content_mode: "full",
+    contentMode: "full",
     counters: { exported: 1, failed: 0, dropped: 0 },
     lastExportAt: expect.any(String),
   });
@@ -233,9 +338,9 @@ test("native settlement exports once and a new server reads only its organizatio
   await db.query("update org_langfuse set enabled=false where org_id=$1", [people.org]);
   expect(await exporter.reconcileOne(signal)).toBe(true);
   expect(payload).toBe("");
-  expect(await read(people.org)).toEqual({
+  expect(await read(people.org)).toMatchObject({
     enabled: false,
-    content_mode: "full",
+    contentMode: "full",
     counters: { exported: 2, failed: 1, dropped: 1 },
     lastExportAt: afterMarked.lastExportAt,
   });
@@ -243,7 +348,7 @@ test("native settlement exports once and a new server reads only its organizatio
   await db.query("update org_langfuse set enabled=true where org_id=$1", [people.org]);
   await db.query("select public.enqueue_webhook_turn($1,'settled_while_disabled','finished')", [id]);
   expect(await exporter.reconcileOne(signal)).toBe(false);
-  expect(await read(people.otherOrg)).toEqual({
+  expect(await read(people.otherOrg)).toMatchObject({
     enabled: false,
     counters: { exported: 0, failed: 0, dropped: 0 },
     lastExportAt: null,

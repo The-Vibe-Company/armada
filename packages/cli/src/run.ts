@@ -954,7 +954,7 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
       "--secret",
       "--golden",
     ],
-    ["--sized", "--armada-access"],
+    ["--sized", "--armada-access", "--keep-after-merge"],
   );
   if (single(args, "--provider") === "docker") {
     const auth = authOf(io, deps);
@@ -1022,6 +1022,7 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           ...(flag(args, "--no-connections") ? { connections: [] } : {}),
+          ...(flag(args, "--keep-after-merge") ? { stopWhenWorkMerged: false } : {}),
           ...(values(args, "--skill").length ? { skills: values(args, "--skill") } : {}),
           ...(connections === undefined ? {} : { connections: connections.split(",") }),
           ...(flag(args, "--armada-access")

@@ -131,6 +131,7 @@ export function fakeBoat() {
   const stops: string[] = [];
   let count = 0;
   let execOutput: Partial<ExecResult> = {};
+  let execOutputWhen: ((request: ExecRequest) => boolean) | undefined;
 
   const find = (id: string): FakeSandbox => {
     const found = sandboxes.get(id);
@@ -176,7 +177,7 @@ export function fakeBoat() {
         stderr: "",
         timedOut: false,
         truncated: false,
-        ...execOutput,
+        ...(execOutputWhen && !execOutputWhen(request) ? {} : execOutput),
       } as ExecResult;
     },
     async prompt(request: PromptRequest) {
@@ -256,8 +257,10 @@ export function fakeBoat() {
       sandbox.prompts.set(promptId, status);
       sandbox.info = { ...sandbox.info, state: "ready", providerState: "idle" };
     },
-    setExecOutput(output: Partial<ExecResult>) {
+    /** Inject an exec result, optionally only for commands `when` selects (others succeed). */
+    setExecOutput(output: Partial<ExecResult>, when?: (request: ExecRequest) => boolean) {
       execOutput = output;
+      execOutputWhen = when;
     },
     providerFor(key: string): Provider {
       keys.push(key);

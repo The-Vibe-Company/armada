@@ -87,6 +87,7 @@ test("current org metadata is allowlisted; raw interior and mutation require cur
       "effectiveTtlSeconds",
       "machineSize",
       "displayLabel",
+      "pullRequests",
       "canOpen",
       "canManage",
     ].sort();
@@ -113,6 +114,7 @@ test("current org metadata is allowlisted; raw interior and mutation require cur
         expect(row.boatId).toBe(row.provider === "boat" ? row.providerSandboxId : null);
         expect(row.taskOutcome).toEqual(mayOpen ? { state: "blocked", reason: "interior-only" } : null);
         expect(row.idlePaused).toBe(row.id === ids[0]);
+        expect(row.pullRequests).toEqual(mayOpen ? [] : null);
         expect(row.canOpen).toBe(mayOpen);
         expect(row.canManage).toBe(mayOpen);
         expect(JSON.stringify(row)).not.toMatch(/sensitive-source|conversation-private|failure-private|app-private/);
@@ -136,6 +138,7 @@ test("current org metadata is allowlisted; raw interior and mutation require cur
         for (const row of rpc.rows) {
           expect(Object.keys(row).sort()).toEqual(expectedKeys.filter((key) => key !== "usage"));
           expect(row.taskOutcome).toEqual(mayOpen ? { state: "blocked", reason: "interior-only" } : null);
+          expect(row.pullRequests).toEqual(mayOpen ? [] : null);
           expect(row.idlePaused).toBe(row.id === ids[0]);
           expect(row.canOpen).toBe(mayOpen);
         }
@@ -156,6 +159,7 @@ test("current org metadata is allowlisted; raw interior and mutation require cur
         expect(row.canOpen).toBe(false);
         expect(row.canManage).toBe(false);
         expect(row.taskOutcome).toBeNull();
+        expect(row.pullRequests).toBeNull();
       }
     });
     await db.query("delete from members where org_id=$1 and user_id=$2", [p.org, p.owner]);

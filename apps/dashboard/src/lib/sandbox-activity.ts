@@ -8,6 +8,7 @@ export function sandboxListAttention(row: SandboxListMetadata, now: Date) {
       id: row.id,
       status: row.status,
       task_outcome: row.taskOutcome ?? null,
+      ...(row.pullRequests ? { pull_requests: row.pullRequests } : {}),
       preservation_note: row.preservationNote ?? null,
       ...(row.expiresAt ? { expires_at: row.expiresAt } : {}),
       status_reason: row.statusMessage ?? null,

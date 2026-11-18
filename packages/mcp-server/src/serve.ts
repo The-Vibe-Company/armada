@@ -68,6 +68,7 @@ import { BUN_REQUEST_BODY_BACKSTOP, ingressRequest } from "./request-body-ceilin
 import { currentRequestId, observeRequest, REQUEST_ID_HEADER } from "./request-observability.ts";
 import { pruneServerRetention } from "./retention-maintenance.ts";
 import { startRoutineWorker } from "./routine-worker.ts";
+import { createRuntimeAgent } from "./runtime-agent.ts";
 import { createRuntimeArtifactRoute, createRuntimeArtifactSetRoute } from "./runtime-artifacts.ts";
 import { createRuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
@@ -91,6 +92,7 @@ import { createSandboxBillingAccount } from "./sandbox-billing-account.ts";
 import { createFinishedDockerCleanup } from "./sandbox-finish.ts";
 import { createSandboxLifecycle } from "./sandbox-lifecycle.ts";
 import { createSandboxOutputs } from "./sandbox-outputs.ts";
+import { createSandboxPullRequests } from "./sandbox-pull-requests.ts";
 import { createServerRequestDrain } from "./server-request-drain.ts";
 import { createServerRoutineScheduler } from "./server-routines.ts";
 import { installServerShutdown } from "./server-shutdown.ts";
@@ -741,7 +743,8 @@ export async function startServer(
       { ...unqueuedControl, ...(dockerControls ? { dockerControls: makeDockerControls(true) } : {}) },
     ),
   );
-  const lifecycle = createSandboxLifecycle(sql, createMcpSandboxProviderResolver(sql, providers), {
+  const lifecycleProvider = createMcpSandboxProviderResolver(sql, providers);
+  const lifecycle = createSandboxLifecycle(sql, lifecycleProvider, {
     delayMs: idleDelayMs,
   });
   const workers = startServerWorkers(
@@ -751,6 +754,26 @@ export async function startServer(
     goldenRetirements,
     () => pruneServerRetention(sql, control.applicationVault, new Date()),
     [
+      ...(githubApp
+        ? [
+            createSandboxPullRequests(
+              sql,
+              { store, app: githubApp, encryptionKey: config.encryptionKey },
+              async (target, request) => {
+                if (!target.runtime) return (await lifecycleProvider(target.id)).exec(request);
+                return createRuntimeAgent(runtimeCommands, {
+                  provider: target.provider,
+                  harness: target.harness,
+                  ownerId: target.owner_id,
+                  sandboxId: target.id,
+                  providerSandboxId: target.provider_sandbox_id,
+                  cwd: "/home/user",
+                  defaults: { model: "", reasoningEffort: "" },
+                }).exec(request);
+              },
+            ),
+          ]
+        : []),
       outputs,
       webhooks,
       createNativeWebhookPrompts(sql, createMcpSandboxProviderResolver(sql, providers, { terminalObservation: true })),

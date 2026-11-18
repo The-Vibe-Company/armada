@@ -163,6 +163,7 @@ export const TEMPLATE_LAUNCH_FIELDS = [
   "skipSkillDefaults",
   "modelAccount",
   "externalRef",
+  "stopWhenWorkMerged",
 ] as const;
 
 /** Service-role owner: both transports share validation, reference authorization and admission. */
@@ -522,6 +523,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     if (input.repo !== undefined) text(input.repo);
     if (input.skipSkillDefaults !== undefined && typeof input.skipSkillDefaults !== "boolean") invalid();
     if (input.externalRef !== undefined && !isExternalRef(input.externalRef)) invalid();
+    if (input.stopWhenWorkMerged !== undefined && typeof input.stopWhenWorkMerged !== "boolean") invalid();
     try {
       validateSkillPins(input.skills ?? []);
     } catch {
@@ -693,6 +695,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
         connections: def.connections,
         skills: m.resolvedSkills ?? def.skills,
         skipSkillDefaults: true as const,
+        ...(input.stopWhenWorkMerged === false ? { stopWhenWorkMerged: false } : {}),
         ...(input.prompt === undefined ? {} : { prompt: input.prompt as string }),
         ...(input.ttlSeconds === undefined ? {} : { ttlSeconds: input.ttlSeconds as number }),
       });

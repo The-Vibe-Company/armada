@@ -102,3 +102,30 @@ test("Docker rows filter and count under their own provider value", () => {
   expect(filterSandboxes(rows, filters, BOB).map((item) => item.id)).toEqual(["00000000-0000-4000-8000-000000000042"]);
   expect(sandboxFacetCounts(rows, parseSandboxFilters({}), BOB).provider.get("docker")).toBe(1);
 });
+
+test("listed pull requests reach the page only as validated GitHub links", () => {
+  const pr = {
+    repository: "example/repo",
+    number: 12,
+    url: "https://github.com/example/repo/pull/12",
+    headBranch: "topic",
+    state: "merged" as const,
+    checkedAt: "2026-11-08T10:05:00.000Z",
+  };
+  const {
+    rows: [owner, member],
+  } = parseSandboxListMetadata([
+    {
+      ...row({ canOpen: true, canManage: true }),
+      pullRequests: [
+        pr,
+        { ...pr, number: 13, url: "https://evil.example/example/repo/pull/13" },
+        { ...pr, number: 14, url: "https://github.com/example/repo/pull/15" },
+        { ...pr, number: 16, url: "https://github.com/example/repo/pull/16", state: "draft" },
+      ],
+    },
+    { ...row({ id: "00000000-0000-4000-8000-000000000032" }), pullRequests: null },
+  ]);
+  expect(owner?.pullRequests).toEqual([pr]);
+  expect(member?.pullRequests).toBeNull();
+});

@@ -1628,6 +1628,56 @@
                               }
                             ]
                           },
+                          "pullRequests": {
+                            "anyOf": [
+                              {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "repository": {
+                                      "type": "string"
+                                    },
+                                    "number": {
+                                      "type": "integer",
+                                      "exclusiveMinimum": 0,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "url": {
+                                      "type": "string",
+                                      "format": "uri"
+                                    },
+                                    "headBranch": {
+                                      "type": "string"
+                                    },
+                                    "state": {
+                                      "type": "string",
+                                      "enum": [
+                                        "open",
+                                        "merged",
+                                        "closed"
+                                      ]
+                                    },
+                                    "checkedAt": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "repository",
+                                    "number",
+                                    "url",
+                                    "headBranch",
+                                    "state",
+                                    "checkedAt"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "externalRef": {
                             "description": "Opaque reference given at launch; absent when none.",
                             "type": "string"
@@ -2428,6 +2478,56 @@
                               "additionalProperties": false
                             }
                           ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "pullRequests": {
+                      "anyOf": [
+                        {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "repository": {
+                                "type": "string"
+                              },
+                              "number": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "url": {
+                                "type": "string",
+                                "format": "uri"
+                              },
+                              "headBranch": {
+                                "type": "string"
+                              },
+                              "state": {
+                                "type": "string",
+                                "enum": [
+                                  "open",
+                                  "merged",
+                                  "closed"
+                                ]
+                              },
+                              "checkedAt": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "repository",
+                              "number",
+                              "url",
+                              "headBranch",
+                              "state",
+                              "checkedAt"
+                            ],
+                            "additionalProperties": false
+                          }
                         },
                         {
                           "type": "null"
@@ -3316,6 +3416,56 @@
                               "additionalProperties": false
                             }
                           ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "pullRequests": {
+                      "anyOf": [
+                        {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "repository": {
+                                "type": "string"
+                              },
+                              "number": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "url": {
+                                "type": "string",
+                                "format": "uri"
+                              },
+                              "headBranch": {
+                                "type": "string"
+                              },
+                              "state": {
+                                "type": "string",
+                                "enum": [
+                                  "open",
+                                  "merged",
+                                  "closed"
+                                ]
+                              },
+                              "checkedAt": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "repository",
+                              "number",
+                              "url",
+                              "headBranch",
+                              "state",
+                              "checkedAt"
+                            ],
+                            "additionalProperties": false
+                          }
                         },
                         {
                           "type": "null"
@@ -5380,6 +5530,56 @@
                         }
                       ]
                     },
+                    "pullRequests": {
+                      "anyOf": [
+                        {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "repository": {
+                                "type": "string"
+                              },
+                              "number": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "url": {
+                                "type": "string",
+                                "format": "uri"
+                              },
+                              "headBranch": {
+                                "type": "string"
+                              },
+                              "state": {
+                                "type": "string",
+                                "enum": [
+                                  "open",
+                                  "merged",
+                                  "closed"
+                                ]
+                              },
+                              "checkedAt": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "repository",
+                              "number",
+                              "url",
+                              "headBranch",
+                              "state",
+                              "checkedAt"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "providerState": {
                       "type": [
                         "string",
@@ -6046,6 +6246,9 @@
                         "type": "string",
                         "description": "Opaque caller reference, for example one business object id. Not unique; use idempotencyKey for exactly-once."
                       },
+                      "stopWhenWorkMerged": {
+                        "type": "boolean"
+                      },
                       "visibility": {
                         "type": "string",
                         "enum": [
@@ -6217,6 +6420,10 @@
                       "skipSkillDefaults": {
                         "type": "boolean"
                       },
+                      "stopWhenWorkMerged": {
+                        "description": "Default true: stop the sandbox once every pull request it opened is merged and the agent is idle.",
+                        "type": "boolean"
+                      },
                       "connections": {
                         "description": "MCP connection UUIDs.",
                         "maxItems": 100,
@@ -6383,6 +6590,10 @@
                         }
                       },
                       "skipSkillDefaults": {
+                        "type": "boolean"
+                      },
+                      "stopWhenWorkMerged": {
+                        "description": "Default true: stop the sandbox once every pull request it opened is merged and the agent is idle.",
                         "type": "boolean"
                       },
                       "connections": {
@@ -6717,6 +6928,9 @@
                     }
                   },
                   "skipSkillDefaults": {
+                    "type": "boolean"
+                  },
+                  "stopWhenWorkMerged": {
                     "type": "boolean"
                   },
                   "modelAccount": {

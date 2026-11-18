@@ -218,6 +218,17 @@ const taskOutcome = z.discriminatedUnion("state", [
   z.object({ state: z.literal("blocked"), reason: z.string().trim().min(1).max(1000) }).strict(),
 ]);
 
+const pullRequests = z.array(
+  z.object({
+    repository: z.string(),
+    number: z.number().int().positive(),
+    url: z.url(),
+    headBranch: z.string(),
+    state: z.enum(["open", "merged", "closed"]),
+    checkedAt: z.string(),
+  }),
+);
+
 const sandboxUsage = z
   .object({
     computeSeconds: z.number().nullable(),
@@ -318,6 +329,7 @@ const sandboxListMetadata = z.object({
   machineSize: z.enum(["small", "medium", "large", "xlarge"]).nullable(),
   displayLabel: z.string(),
   taskOutcome: taskOutcome.nullable().optional(),
+  pullRequests: pullRequests.nullable().optional(),
   externalRef: externalRefOutput,
   canOpen: z.boolean(),
   canManage: z.boolean(),
@@ -413,6 +425,7 @@ const status = {
   statusReason: z.string().nullable(),
   statusMessage: z.string().nullable().optional(),
   taskOutcome: taskOutcome.nullable().optional(),
+  pullRequests: pullRequests.nullable().optional(),
   providerState: z.string().nullable(),
   conversationIds: z.array(z.string()),
   expiresAt: z.string().nullable(),
@@ -729,6 +742,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
         repo: z.string().optional(),
         skills: z.array(z.string()).max(20).optional(),
         skipSkillDefaults: z.boolean().optional(),
+        stopWhenWorkMerged: z.boolean().optional(),
       })
       .strict(),
   };
@@ -1280,6 +1294,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
             .optional()
             .describe("Reuse this key for retries; inspect launch_receipt after an unknown outcome."),
           externalRef: externalRefInput.optional(),
+          stopWhenWorkMerged: z.boolean().optional(),
           visibility: z.enum(["private", "org"]).optional(),
           skills: z.array(z.string()).max(20).optional(),
           skipSkillDefaults: z.boolean().optional(),
@@ -1387,6 +1402,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
               ...(args.reasoning_effort === undefined ? {} : { reasoningEffort: args.reasoning_effort }),
               ...(args.prompt === undefined ? {} : { prompt: args.prompt }),
               ...(args.ttl_seconds === undefined ? {} : { ttlSeconds: args.ttl_seconds }),
+              ...(args.stopWhenWorkMerged === undefined ? {} : { stopWhenWorkMerged: args.stopWhenWorkMerged }),
               ...(args.externalRef === undefined ? {} : { externalRef: args.externalRef }),
             },
             { ...context.launch, ...(receiptId ? { newId: () => receiptId } : {}) },
@@ -1791,15 +1807,16 @@ export function createArmadaServer(context: ToolContext, version: string, option
     }
     // One send shape across placements. Native providers do not implement a
     // durable request-key protocol; accepting this field promises no deduplication.
+    // A merge stop runs the same irreversible idle checkpoint as an idle pause.
     if (
-      selected.statusReason === "idle_paused" &&
+      (selected.statusReason === "idle_paused" || selected.statusReason === "work_merged") &&
       (selected.status === "stopping" ||
         !selected.expiresAt ||
         Date.parse(selected.expiresAt) <= context.now().getTime())
     )
       throw new ToolError(
         "conflict",
-        "Idle pause is still finishing or its original deadline has expired; inspect status before sending.",
+        "Idle pause or merge stop is still finishing or its original deadline has expired; inspect status before sending.",
       );
     const { sandbox: found, provider } = await live(args.id, false, selected);
     if (args.prompt.trim() === "") throw new ToolError("invalid_request", "The prompt is empty.");

@@ -5,6 +5,7 @@ import { createMemoryAuthStore } from "../../auth/src/index.ts";
 import { handleControlRequest } from "../../mcp-server/src/control.ts";
 import { providerRegistry } from "../../mcp-server/src/http.ts";
 import helperManifest from "../helper/manifest.json";
+import { goldenResponse } from "../src/provider-response.ts";
 import {
   connectGolden,
   createGoldenCreateService,
@@ -224,6 +225,11 @@ describe("createGoldenCreateService, wired to a real database", () => {
       expect(persistedWarning?.build_warnings).toEqual(
         providerId === "modal" ? ["skillpack_download_unavailable"] : [],
       );
+      const [listed] = await createSqlGoldenStore(db).list(actor.orgId);
+      expect(goldenResponse(listed!)).toMatchObject({ baselineVersion: 1, baselineOutdated: false });
+      await createSqlGoldenStore(db).setSnapshot(listed!.id, listed!.providerSnapshotId!);
+      const [resaved] = await createSqlGoldenStore(db).list(actor.orgId);
+      expect(goldenResponse(resaved!)).toMatchObject({ baselineVersion: null, baselineOutdated: true });
       expect(sshCalls).toHaveLength(1);
       expect(sshCalls[0]?.token).toBe("ghu_caller_access_token");
 
@@ -411,13 +417,14 @@ describe("createGoldenCreateService, wired to a real database", () => {
   });
 });
 
-test("rebuild retains last-good artifacts/config through scan, snapshot and SQL failures, then restores the committed revision", async () => {
+test("rebuild retains last-good artifacts/config through verification, scan, snapshot and SQL failures, then restores the committed revision", async () => {
   const db = await connection();
   const originalTransaction = db.transaction;
   try {
     const { actor, userId } = await fixture(db);
     await connectGitHub(db, userId);
     let failure = "";
+    let checkoutRan = false;
     let generation = 0;
     const artifacts = new Map<
       string,
@@ -435,7 +442,10 @@ test("rebuild retains last-good artifacts/config through scan, snapshot and SQL 
     const provider: Provider = {
       ...readyProvider(),
       managementIdentity: async () => ({ scope: "org", ownerId: actor.orgId }),
-      createGolden: async () => start(++generation),
+      createGolden: async () => {
+        checkoutRan = false;
+        return start(++generation);
+      },
       snapshot: async ({ name, sandboxId }) => {
         artifacts.set(name, {
           source: sandboxId,
@@ -484,9 +494,14 @@ test("rebuild retains last-good artifacts/config through scan, snapshot and SQL 
       },
       exec: async ({ command }) => ({
         detached: false,
-        exitCode: failure === "scan" ? 97 : 0,
+        exitCode:
+          (failure === "scan" && command.includes("ARMADA_SCAN")) ||
+          ((failure === "initial-baseline" || (failure === "baseline" && checkoutRan)) &&
+            command.includes("ARMADA_BASELINE_1_FAILED"))
+            ? 97
+            : 0,
         stdout: command.includes("/helper/0.1.0/armada-helper") ? helperOutput : "",
-        stderr: "",
+        stderr: failure.endsWith("baseline") ? "ARMADA_BASELINE_1_FAILED jq" : "",
         timedOut: false,
         truncated: false,
       }),
@@ -512,7 +527,9 @@ test("rebuild retains last-good artifacts/config through scan, snapshot and SQL 
       github: { store: createSqlVaultStore(db), encryptionKey: KEY, app: APP, fetch: fakeGitHubFetch() },
       installationApp: null,
       fetch: fakeGitHubFetch(),
-      ssh: async () => {},
+      ssh: async () => {
+        checkoutRan = true;
+      },
     });
     const store = createSqlGoldenStore(db);
     const input = { name: "web", visibility: "org" as const, repos: ["acme/web"], setup: "echo old" };
@@ -522,11 +539,12 @@ test("rebuild retains last-good artifacts/config through scan, snapshot and SQL 
     expect(machines.get(artifacts.get(first.snapshot)!.source)?.stopped).toBe(true);
     const unchanged = (await db.query("select * from goldens")).rows;
     const binding = (await db.query("select golden_id,backend_id,org_id,owner_id from golden_backend_slots")).rows;
-    for (const stage of ["scan", "snapshot", "request", "persist"]) {
+    for (const stage of ["initial-baseline", "scan", "baseline", "snapshot", "request", "persist"]) {
       failure = stage;
       await expect(
         service.create(provider, actor, { ...input, setup: "echo new", existingGolden: before }),
-      ).rejects.toThrow();
+      ).rejects.toThrow(stage.endsWith("baseline") ? "Snapshot baseline 1 requires a working jq" : undefined);
+      expect(checkoutRan).toBe(stage !== "initial-baseline");
       expect((await db.query("select * from goldens")).rows).toEqual(unchanged);
       expect((await db.query("select golden_id,backend_id,org_id,owner_id from golden_backend_slots")).rows).toEqual(
         binding,

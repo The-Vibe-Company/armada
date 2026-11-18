@@ -203,6 +203,7 @@ export interface DockerLaunchRequest {
   skills?: string[];
   connections?: string[];
   skipSkillDefaults?: boolean;
+  stopWhenWorkMerged?: boolean;
 }
 export interface DockerSandboxRecord extends Omit<SandboxRecord, "provider" | "goldenId" | "harness"> {
   provider: "docker";
@@ -232,6 +233,7 @@ export interface DockerLaunchResult {
   promptId?: string;
 }
 export interface DockerSandboxStatus {
+  pullRequests?: NonNullable<SandboxRecord["pullRequests"]>;
   /** Additive idle-pause wording; canonical status remains stopped. */
   statusMessage?: string | null;
   provider: "docker";
@@ -264,6 +266,9 @@ export const DOCKER_SNAPSHOT_STATUSES = ["building", "ready", "failed"] as const
 export interface DockerSnapshotRecord {
   /** Frozen server release version; null only for snapshots created before version recording. */
   builtOnVersion: string | null;
+  /** Absent from older APIs and null when a verified build receipt is unavailable. */
+  baselineVersion?: number | null;
+  baselineOutdated?: boolean;
   id: string;
   orgId: string;
   ownerId: string;

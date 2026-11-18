@@ -1,4 +1,4 @@
-import type { GoldenRepo } from "@armada/core";
+import { type GoldenRepo, pushLedgerInstall } from "@armada/core";
 
 function quote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
@@ -39,8 +39,18 @@ export function dockerRepositoryCheckout(repos: readonly GoldenRepo[], root: str
   printf '%s\\n' 'Could not establish a merge base with the default branch within 512 commits.' >&2
   exit 1
 )`,
-    ...repos.map(
-      (repo) => `checkout_repository ${quote(repo.url)} ${quote(repo.branch)} ${quote(`${root}/${repo.dir}`)}`,
-    ),
+    // Pushes of new branches must update origin tracking refs for the push ledger.
+    `track_pushes() (
+  cd "$1"
+  git config --local --replace-all remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
+  ${pushLedgerInstall}
+)`,
+    ...repos.flatMap((repo) => {
+      const destination = quote(`${root}/${repo.dir}`);
+      return [
+        `checkout_repository ${quote(repo.url)} ${quote(repo.branch)} ${destination}`,
+        `track_pushes ${destination}`,
+      ];
+    }),
   ].join("\n");
 }

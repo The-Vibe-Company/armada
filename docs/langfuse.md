@@ -14,13 +14,29 @@ with the v4 ingestion header; no legacy ingestion API or SDK is required.
 An organization admin sends an authenticated `PUT` to
 `/api/v1/orgs/<org-id>/langfuse` with JSON fields `enabled` (boolean), `host`
 (HTTPS origin), `publicKey`, `secretKey`, and `contentMode` (`metadata` or `full`).
-Send this body from a protected file or stdin, never keys in command arguments.
-Both keys and host are encrypted together with ARMADA_ENCRYPTION_KEY. RLS and
-explicit privilege revocation deny all user-JWT table access. GET returns only
-enabled/content mode, durable organization counters, and `lastExportAt` (the
-last successful export time, or null). It omits the host and keys.
-DELETE removes configuration and disables future exports. PUT replaces the
-complete configuration, so include keys again when changing the mode.
+Initial configuration requires both keys. The defaults are
+`https://cloud.langfuse.com`, `metadata`, and disabled. Subsequent updates
+retain omitted fields, including when switching export off. A new host requires
+both keys so saved credentials stay bound to their original origin.
+Send the body from a protected file or stdin. Both keys and the host are encrypted
+with ARMADA_ENCRYPTION_KEY. RLS and explicit privilege revocation deny all
+user-JWT table access.
+
+GET returns `enabled` and `contentMode` to organization members. For admins it
+also returns `host`, `publicKey`, `configured` (whether credentials are stored),
+durable organization counters, and `lastExportAt` (the last successful export
+time, or null). The existing `content_mode` field remains available to admins
+with saved settings. The secret key is write-only. DELETE removes configuration
+and disables future exports.
+
+An admin can POST to `/api/v1/orgs/<org-id>/langfuse/test` with candidate `host`,
+`publicKey` or `secretKey` fields. Omitted fields use the saved values when
+available, subject to the same rule for changing origins. The check reads
+[Langfuse project access](https://langfuse.com/docs/api-and-data-platform/features/public-api)
+over HTTPS without sending a trace or saving changes. It refuses redirects and
+times out after five seconds. The response `status` is `ok` for success,
+`rejected` for a 401 or 403, or `unreachable` for transport failures and other
+unsuccessful responses. Outbound destination restrictions are tracked in #2587.
 
 Metadata mode exports timing, model/token usage, persisted estimated cost when
 known, turn status and a generic failure category, plus tool names/status and

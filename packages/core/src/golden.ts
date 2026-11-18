@@ -48,6 +48,7 @@ export interface GoldenRecord {
   providerSandboxId: string | null;
   /** The provider's snapshot reference (a boat saved-snapshot name). Null until snapshot. */
   providerSnapshotId: string | null;
+  baselineVersion?: number | null;
   /** Where a Modal golden's images live. Null on any other provider. */
   modal: ModalBinding | null;
   config: GoldenConfig;
