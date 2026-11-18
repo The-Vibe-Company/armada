@@ -39,6 +39,7 @@ export function LaunchSentence({
   onOpenChange: (open: boolean) => void;
 }) {
   const id = useId();
+  const [modelHarness, setModelHarness] = useState(harness);
   const [model, setModel] = useState(() => initialLaunchSelection(accounts, catalog, harness).model);
   const [effort, setEffort] = useState(catalog[harness].defaultReasoningEffort);
   const [other, setOther] = useState(false);
@@ -61,8 +62,17 @@ export function LaunchSentence({
       ? catalogEntry.defaultReasoningEffort
       : (allowed[0] ?? catalogEntry.defaultReasoningEffort);
   };
+  if (modelHarness !== harness) {
+    const selection = initialLaunchSelection(accounts, catalog, harness);
+    setModelHarness(harness);
+    setModel(selection.model);
+    setEffort(defaultEffort(harness, selection.model));
+    setOther(false);
+    setInvalidOther(false);
+  }
   function changeAgent(next: Harness) {
     onHarness(next);
+    setModelHarness(next);
     const selection = initialLaunchSelection(accounts, catalog, next);
     onAccount(selection.credentialId);
     setModel(selection.model);
@@ -155,6 +165,7 @@ export function LaunchSentence({
                     onSelect={() => {
                       if (reason) return;
                       onHarness(option.harness);
+                      setModelHarness(option.harness);
                       onAccount(group.account.id);
                       setModel(option.id);
                       setEffort(defaultEffort(option.harness, option.id));
@@ -237,6 +248,7 @@ export function LaunchSentence({
           value={model}
           onChange={(event) => setModel(event.target.value)}
           required
+          pattern=".*\S.*"
           onInvalid={(event) => {
             event.preventDefault();
             setInvalidOther(true);
@@ -325,14 +337,16 @@ export function LaunchAccountNotice({
   account,
   accounts,
   onPick,
+  requireNamedAccount = false,
 }: {
   idPrefix?: string;
   harness: Harness;
   account: string;
   accounts: LaunchAccounts;
   onPick: () => void;
+  requireNamedAccount?: boolean;
 }) {
-  if (accounts.state === "legacy") return null;
+  if (accounts.state === "legacy" && !requireNamedAccount) return null;
   if (accounts.state === "unavailable")
     return (
       <p
@@ -344,8 +358,9 @@ export function LaunchAccountNotice({
         {accounts.reason}
       </p>
     );
-  const chosen = accounts.accounts.find((row) => row.id === account);
-  const problem = chosen ? accountProblem(chosen, accounts.now) : null;
+  const entries = accounts.state === "ready" ? accounts.accounts : [];
+  const chosen = entries.find((row) => row.id === account);
+  const problem = chosen && accounts.state === "ready" ? accountProblem(chosen, accounts.now) : null;
   const full = chosen?.maxAgents != null && (chosen.runningAgents ?? 0) >= chosen.maxAgents;
   if (chosen && !problem && !full) return null;
   return (
@@ -365,7 +380,7 @@ export function LaunchAccountNotice({
       <Button asChild variant="outline" size="sm">
         <Link href="/harness">{!chosen ? "Add an account" : full ? "Change account limit" : "Reconnect account"}</Link>
       </Button>
-      {accounts.accounts.length > 0 && (
+      {entries.length > 0 && (
         <Button type="button" variant="ghost" size="sm" onClick={onPick}>
           Pick another account
         </Button>

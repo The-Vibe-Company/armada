@@ -4,7 +4,7 @@ import { RocketIcon } from "lucide-react";
 import Link from "next/link";
 import { type ReactNode, useState } from "react";
 import { readLaunchDialogOptions } from "@/app/actions/sandboxes";
-import { LaunchStart } from "@/components/launch-dialog";
+import { DiscoveredLaunchStart } from "@/components/launch-dialog";
 import { LaunchDialogContent } from "@/components/launch-surface";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -54,34 +54,7 @@ export function SandboxLaunchAction({
             <DialogDescription>Loading starting points…</DialogDescription>
           </DialogHeader>
         ) : options && target ? (
-          target.hostId ? (
-            <LaunchStart
-              initialOptions={options}
-              orgId={options.orgId}
-              hostId={target.hostId}
-              hostName={target.label.replace(/^Empty machine · /, "")}
-              accounts={options.accounts}
-              dockerLimits={dockerLimits}
-              harnesses={target.harnesses ?? []}
-              initialHarness={target.initialHarness ?? "codex"}
-            />
-          ) : (
-            <LaunchStart
-              initialOptions={options}
-              dockerLimits={dockerLimits}
-              orgId={options.orgId}
-              golden={target.golden}
-              provider={target.provider}
-              harnesses={target.harnesses}
-              {...(target.snapshotId ? { snapshotId: target.snapshotId } : {})}
-              repositories={target.repositories}
-              {...(target.sizing ? { sizing: target.sizing } : {})}
-              accounts={options.accounts}
-              catalog={options.catalog}
-              connections={options.connections}
-              boatOpenCodeAvailable={options.boatOpenCodeAvailable}
-            />
-          )
+          <DiscoveredLaunchStart target={target} options={options} dockerLimits={dockerLimits} />
         ) : (
           <DialogHeader className="overflow-y-auto p-6 pr-12 text-left">
             <DialogTitle>Launch a sandbox</DialogTitle>

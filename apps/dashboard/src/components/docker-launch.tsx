@@ -125,6 +125,10 @@ export function DockerLaunchForm({
   const [credential, setCredential] = useState(
     () => initialLaunchSelection(accounts, MODEL_CATALOG, harness).credentialId,
   );
+  if (harness !== chosenHarness) {
+    setHarness(harness);
+    setCredential(initialLaunchSelection(accounts, MODEL_CATALOG, harness).credentialId);
+  }
   const [blocked, setBlocked] = useState(false);
   const usable = hasUsableAccount(harness) && !blocked;
 
@@ -232,6 +236,7 @@ export function DockerLaunchForm({
                     harness={harness}
                     account={credential}
                     accounts={accounts}
+                    requireNamedAccount
                     onPick={() => setModelOpen(true)}
                   />
                   {access.alerts(() => {}, id)}

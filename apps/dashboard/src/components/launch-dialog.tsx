@@ -109,11 +109,58 @@ export type HostLaunchStart = {
   dockerLimits?: ReactNode;
   harnesses: Harness[];
   initialHarness: Harness;
+  launchBlockedReason?: string | undefined;
 };
+
+/** Start with the same discovered source when entering from Sandboxes or removing a direct template. */
+export function DiscoveredLaunchStart({
+  target,
+  options,
+  dockerLimits,
+  initialTask,
+}: {
+  target: LaunchStartTarget;
+  options: Awaited<ReturnType<typeof readLaunchDialogOptions>>;
+  dockerLimits?: ReactNode;
+  initialTask?: string | undefined;
+}) {
+  const common = {
+    initialOptions: options,
+    orgId: options.orgId,
+    accounts: options.accounts,
+    dockerLimits,
+    initialTask,
+    launchBlockedReason: target.reason,
+  };
+  return target.hostId ? (
+    <LaunchStart
+      {...common}
+      hostId={target.hostId}
+      hostName={target.hostName ?? DOCKER_HOST_LABEL}
+      harnesses={target.harnesses ?? []}
+      initialHarness={target.initialHarness ?? "codex"}
+    />
+  ) : (
+    <LaunchStart
+      {...common}
+      golden={target.golden}
+      provider={target.provider}
+      harnesses={target.harnesses}
+      {...(target.snapshotId ? { snapshotId: target.snapshotId } : {})}
+      {...(target.hostName ? { hostName: target.hostName } : {})}
+      repositories={target.repositories}
+      {...(target.sizing ? { sizing: target.sizing } : {})}
+      catalog={options.catalog}
+      connections={options.connections}
+      boatOpenCodeAvailable={options.boatOpenCodeAvailable}
+    />
+  );
+}
 
 export function LaunchStart(
   props: (LaunchProps | HostLaunchStart) & {
     initialOptions?: Awaited<ReturnType<typeof readLaunchDialogOptions>>;
+    initialTask?: string | undefined;
   },
 ) {
   const [options, setOptions] = useState<Awaited<ReturnType<typeof readLaunchDialogOptions>> | null>(null);
@@ -131,6 +178,7 @@ export function LaunchStart(
         repositories: [],
         harnesses: props.harnesses,
         initialHarness: props.initialHarness,
+        ...(props.launchBlockedReason ? { reason: props.launchBlockedReason } : {}),
       }
     : {
         id: props.snapshotId ? `snapshot:${props.snapshotId}` : `${props.provider}:${props.golden}`,
@@ -139,6 +187,7 @@ export function LaunchStart(
         golden: props.golden,
         provider: props.provider,
         repositories: props.repositories,
+        ...(props.launchBlockedReason ? { reason: props.launchBlockedReason } : {}),
         ...(props.snapshotId ? { snapshotId: props.snapshotId } : {}),
         ...(props.hostName ? { hostName: props.hostName } : {}),
         ...(props.harnesses ? { harnesses: [...props.harnesses] } : {}),
@@ -154,7 +203,7 @@ export function LaunchStart(
     startRoot.current?.querySelector<HTMLButtonElement>('[data-launch-chip="From"]')?.focus();
   });
   const [templateId, setTemplateId] = useState("");
-  const [task, setTask] = useState("");
+  const [task, setTask] = useState(props.initialTask ?? "");
   useEffect(() => {
     let active = true;
     (props.initialOptions ? Promise.resolve(props.initialOptions) : readLaunchDialogOptions())
@@ -266,7 +315,7 @@ export function LaunchStart(
         />
       ) : (
         <LaunchForm
-          key={`${target.id}:${target.harnesses?.join(",") ?? ""}`}
+          key={target.id}
           golden={target.golden}
           provider={target.provider}
           hostName={target.hostName ?? DOCKER_HOST_LABEL}
@@ -323,6 +372,11 @@ function LaunchForm({
   );
   const [credential, setCredential] = useState(() => initialLaunchSelection(accounts, catalog, harness).credentialId);
   const [accountBlocked, setAccountBlocked] = useState(false);
+  // Late discovery can rule out the initial snapshot agent. Preserve the form and its retry key.
+  if (harnesses?.[0] && !harnesses.includes(harness)) {
+    setHarness(harnesses[0]);
+    setCredential(initialLaunchSelection(accounts, catalog, harnesses[0]).credentialId);
+  }
   const [armadaAccess, setArmadaAccess] = useState(false);
   const usableCodexAccount = (value: string) =>
     accounts.state === "ready" &&

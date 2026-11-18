@@ -12,7 +12,7 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, Command
 import { DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
+import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
 import { launchSendLabel, launchStopLabel } from "@/lib/launch-composer";
 import type { LaunchStartTarget } from "@/lib/launch-picker";
@@ -44,7 +44,6 @@ export function LaunchChip({
   const [local, setLocal] = useState(false);
   const [phone, setPhone] = useState(false);
   const sheetRef = useLaunchViewport(true);
-  const triggerRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     const media = matchMedia("(width < 640px)");
     const update = () => setPhone(media.matches);
@@ -70,14 +69,10 @@ export function LaunchChip({
       focus.restore.current = null;
       event.preventDefault();
       destination.focus();
-    } else if (phone) {
-      event.preventDefault();
-      triggerRef.current?.focus();
     }
   }
   const trigger = (
     <Button
-      ref={triggerRef}
       type="button"
       variant="outline"
       size="sm"
@@ -89,7 +84,6 @@ export function LaunchChip({
       data-launch-chip={title}
       aria-haspopup="dialog"
       aria-expanded={open}
-      onClick={phone ? () => setOpen(true) : undefined}
     >
       {warning && <CircleAlertIcon aria-hidden="true" className="text-warning" />}
       <span className="truncate">{label}</span>
@@ -98,25 +92,23 @@ export function LaunchChip({
   );
   if (phone)
     return (
-      <>
-        {trigger}
-        <Sheet open={open} onOpenChange={setOpen}>
-          <SheetContent
-            ref={sheetRef}
-            side="bottom"
-            aria-describedby={undefined}
-            className="max-h-[85dvh] overflow-y-auto rounded-t-2xl p-4
+      <Sheet open={open} onOpenChange={setOpen}>
+        <SheetTrigger asChild>{trigger}</SheetTrigger>
+        <SheetContent
+          ref={sheetRef}
+          side="bottom"
+          aria-describedby={undefined}
+          className="max-h-[85dvh] overflow-y-auto rounded-t-2xl p-4
               [&_[cmdk-item]]:min-h-11 [&_button]:pointer-coarse:min-h-11
               [&_[data-slot=sheet-close]]:pointer-coarse:grid [&_[data-slot=sheet-close]]:pointer-coarse:size-11 [&_[data-slot=sheet-close]]:pointer-coarse:place-items-center
               [&_a]:pointer-coarse:inline-flex [&_a]:pointer-coarse:min-h-11 [&_a]:pointer-coarse:items-center [&_input:not([type=radio])]:pointer-coarse:min-h-11
               [&_button]:focus-visible:ring-ring"
-            onCloseAutoFocus={restoreFocus}
-          >
-            <SheetTitle className="pr-14">{title}</SheetTitle>
-            {children}
-          </SheetContent>
-        </Sheet>
-      </>
+          onCloseAutoFocus={restoreFocus}
+        >
+          <SheetTitle className="pr-14">{title}</SheetTitle>
+          {children}
+        </SheetContent>
+      </Sheet>
     );
   return (
     <Popover open={open} onOpenChange={setOpen}>

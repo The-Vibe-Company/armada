@@ -23,6 +23,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { readLaunchDialogOptions } from "@/app/actions/sandboxes";
 import {
   createTemplate,
   deleteTemplate,
@@ -40,6 +41,7 @@ import {
   LaunchChip,
   LaunchComposer,
 } from "@/components/launch-composer";
+import { DiscoveredLaunchStart } from "@/components/launch-dialog";
 import { LaunchChoice, LaunchDialogContent } from "@/components/launch-surface";
 import { MachineSizeField } from "@/components/machine-size-field";
 import type { ModelCatalog } from "@/components/model-fields";
@@ -57,7 +59,6 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
-  DialogClose,
   DialogContent,
   DialogDescription,
   DialogHeader,
@@ -724,9 +725,9 @@ export function TemplateLaunchForm({
   dockerLimits,
 }: {
   target: TemplateLaunchTarget;
-  task?: string;
-  onTask?: (task: string) => void;
-  onRemove?: () => void;
+  task: string;
+  onTask: (task: string) => void;
+  onRemove: () => void;
   loadingError?: string;
   idleDelaySeconds?: number | undefined;
   dockerLimits?: ReactNode;
@@ -742,7 +743,6 @@ export function TemplateLaunchForm({
   const [project, setProject] = useState(target.repositories.length === 1 ? (target.repositories[0] ?? "") : "");
   const root = useRef<HTMLFormElement>(null);
   useKeepOnReset(root);
-  const [localTask, setLocalTask] = useState("");
   const error = useRef<HTMLParagraphElement>(null);
   useEffect(() => {
     if (state && !state.ok) error.current?.focus();
@@ -798,11 +798,11 @@ export function TemplateLaunchForm({
         id={id}
         headline={`What should we build ${chips.docker ? "on" : "in"} ${chips.docker ? (target.hostName ?? name) : project || name}?`}
         template={target.name}
-        templatePill={onRemove ? pill : <DialogClose asChild>{pill}</DialogClose>}
+        templatePill={pill}
         docker={chips.docker}
         loadingError={loadingError}
-        task={task ?? localTask}
-        onTask={onTask ?? setLocalTask}
+        task={task}
+        onTask={onTask}
         holds={holds}
         tools={
           <LaunchChip label={`Tools · ${target.tools.length}`} locked title="Tools">
@@ -916,9 +916,64 @@ export function TemplateLaunchDialog({
         </Button>
       </DialogTrigger>
       <LaunchDialogContent>
-        <TemplateLaunchForm target={target} dockerLimits={dockerLimits} />
+        <DirectTemplateLaunchStart target={target} dockerLimits={dockerLimits} />
       </LaunchDialogContent>
     </Dialog>
+  );
+}
+
+function DirectTemplateLaunchStart({
+  target,
+  dockerLimits,
+}: {
+  target: TemplateLaunchTarget;
+  dockerLimits?: ReactNode;
+}) {
+  const [task, setTask] = useState("");
+  const [options, setOptions] = useState<Awaited<ReturnType<typeof readLaunchDialogOptions>> | null>(null);
+  const [removing, setRemoving] = useState(false);
+  const [error, setError] = useState("");
+  const sourceId =
+    target.definition.provider === "docker"
+      ? (target.definition.snapshotId ?? target.definition.hostId)
+      : target.definition.goldenId;
+  const start = options?.targets.find((item) => item.id === sourceId);
+
+  async function removeTemplate() {
+    if (removing) return;
+    setRemoving(true);
+    setError("");
+    try {
+      const discovered = await readLaunchDialogOptions();
+      if (discovered.orgId !== target.orgId) {
+        setError("Switch to this organization before launching.");
+      } else if (!discovered.targets.some((item) => item.id === sourceId)) {
+        setError("This starting point is no longer available. Pick another snapshot or Docker host.");
+        const alternative = discovered.targets.find((item) => !item.reason);
+        if (alternative) setOptions(discovered);
+      } else {
+        setOptions(discovered);
+      }
+    } catch {
+      setError("Other snapshots and Docker hosts could not be loaded. Close and reopen to try again.");
+    } finally {
+      setRemoving(false);
+    }
+  }
+
+  const next = start ?? options?.targets.find((item) => !item.reason);
+  if (options && next) {
+    return <DiscoveredLaunchStart target={next} options={options} initialTask={task} dockerLimits={dockerLimits} />;
+  }
+  return (
+    <TemplateLaunchForm
+      target={target}
+      task={task}
+      onTask={setTask}
+      onRemove={() => void removeTemplate()}
+      loadingError={error}
+      dockerLimits={dockerLimits}
+    />
   );
 }
 
