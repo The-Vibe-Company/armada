@@ -1,6 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import type { ExecRequest, ExecResult, Harness } from "@armada/core";
-import { HARNESSES } from "@armada/core";
+import { HARNESSES, validOutputChunk } from "@armada/core";
 import { PRIVATE_SKILL_FAILURES } from "../../core/src/private-skill-error.ts";
 import { ChildOwner } from "./children.ts";
 import { validateHarnessCwd } from "./cwd.ts";
@@ -14,7 +14,6 @@ import { recordMcpRevision } from "./mcp-revisions.ts";
 import { withNativeAuthPublication } from "./native-auth-publication.ts";
 import { NativeEpoch } from "./native-epoch.ts";
 import { observeRuntime } from "./observation.ts";
-import { validOutputChunk } from "@armada/core";
 import { readOutputDirectory, readOutputPart } from "./outputs.ts";
 import { groupState, type ProcessIdentity, processIdentity } from "./processes.ts";
 import {

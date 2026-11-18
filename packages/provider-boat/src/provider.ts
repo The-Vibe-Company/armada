@@ -43,10 +43,10 @@ import {
   isNonMutatingProviderRefusal,
   OUTPUT_COLLECTOR,
   OUTPUT_COLLECTOR_PROBE,
-  outputEntryCollector,
-  readCollectorEntries,
-  readCollectorChunk,
   OutputCollectionError,
+  outputEntryCollector,
+  readCollectorChunk,
+  readCollectorEntries,
   readCollectorProbeResult,
   readCollectorResult,
   sshReadableVariables,
@@ -451,8 +451,9 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       return collectOutputs(request, outputEntryCollector(null), readCollectorEntries);
     },
     readOutputChunk(request) {
-      return collectOutputs(request, outputEntryCollector(request.chunk),
-        (status, stdout) => readCollectorChunk(status, stdout, request.chunk));
+      return collectOutputs(request, outputEntryCollector(request.chunk), (status, stdout) =>
+        readCollectorChunk(status, stdout, request.chunk),
+      );
     },
     readOutputs(request) {
       return collectOutputs(request, OUTPUT_COLLECTOR, readCollectorResult);
