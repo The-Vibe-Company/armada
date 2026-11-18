@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { type AgentEvent, ProviderError, type Sql } from "@armada/core";
+import { type AgentEvent, modalLaunchSandboxId, ProviderError, type Sql } from "@armada/core";
 import {
   createSqlVaultStore,
   encryptSecret,
@@ -896,30 +896,101 @@ async function runningFork(f: ReturnType<typeof fixture>) {
   await f.provider.snapshot({ sandboxId: builder.id, name });
   return f.provider.fork({ from: name });
 }
-test("overlapping forks refuse source contention definitively before allocating", async () => {
+test("overlapping forks from a snapshot can boot concurrently", async () => {
   const f = fixture();
   const builder = await f.provider.createGolden({});
   const name = crypto.randomUUID();
   await f.provider.snapshot({ sandboxId: builder.id, name });
   const entered = deferred();
   const release = deferred();
+  let boots = 0;
   f.distribution.start = async () => {
-    entered.resolve();
-    await release.promise;
+    if (++boots === 1) {
+      entered.resolve();
+      await release.promise;
+    }
   };
   const first = f.provider.fork({ from: name });
   await entered.promise;
-  const creates = f.creates;
   try {
-    const error = await f.provider.fork({ from: name }).catch((error: unknown) => error);
-    expect(error).toMatchObject({ code: "conflict", providerCode: "fork_source_busy" });
-    expect(isNonMutatingProviderRefusal(error)).toBe(true);
-    expect(f.creates).toBe(creates);
+    expect(await f.provider.fork({ from: name })).toMatchObject({ state: "ready" });
+    expect(f.creates).toBe(3);
   } finally {
     release.resolve();
     await first;
   }
 });
+
+test("durable Modal fork recovers an accepted create while its source lease survives", async () => {
+  const launchId = crypto.randomUUID();
+  const child = modalLaunchSandboxId(launchId);
+  let crashing = true;
+  const sql: Sql = {
+    transaction: (work) => db.transaction(work),
+    query: (statement, args) => {
+      // Simulate process loss after Modal accepts create, before finally clears the child lease.
+      if (crashing && statement.includes("set lease_id=null") && args?.[1] === child)
+        return Promise.resolve({ rows: [] });
+      return db.query(statement, args);
+    },
+  };
+  const f = fixture(scope, sql);
+  const builder = await f.provider.createGolden({});
+  const name = crypto.randomUUID();
+  await f.provider.snapshot({ sandboxId: builder.id, name });
+  const request = { from: name, modalLaunchId: launchId, idempotencyKey: launchId, labels: { sandbox: launchId } };
+  f.failCreate(true);
+  await expect(f.provider.fork(request)).rejects.toThrow();
+  expect(await f.store.findByRequestKey(launchId)).toMatchObject({ phase: "creating" });
+  const lease = (
+    await db.query<{ seconds: number }>(
+      `select extract(epoch from (lease_until-clock_timestamp()))::float8 as seconds
+     from modal_machines where id=$1`,
+      [child],
+    )
+  ).rows[0];
+  expect(lease?.seconds).toBeGreaterThan(0);
+  expect(lease?.seconds).toBeLessThanOrEqual(45);
+
+  await db.query("update modal_machines set lease_id=$2,lease_until=now()+interval '15 minutes' where id=$1", [
+    builder.id,
+    crypto.randomUUID(),
+  ]);
+  await db.query("update modal_machines set lease_until=now()-interval '1 second' where id=$1", [child]);
+  crashing = false;
+  f.failCreate(false);
+  expect(await f.provider.fork(request)).toMatchObject({ id: child, state: "ready" });
+  expect(f.creates).toBe(2); // Builder and original child only.
+});
+
+test("durable Modal dispatch checks authority after the reservation and lookup", async () => {
+  const f = fixture();
+  const builder = await f.provider.createGolden({});
+  const name = crypto.randomUUID();
+  await f.provider.snapshot({ sandboxId: builder.id, name });
+  const launchId = crypto.randomUUID();
+  const key = modalLaunchSandboxId(launchId);
+  const request = { from: name, modalLaunchId: launchId, idempotencyKey: launchId, labels: { sandbox: launchId } };
+  await expect(
+    f.provider.fork(request, async () => {
+      if ((await f.store.get(key)).phase === "creating") throw Error("Dispatch expired");
+    }),
+  ).rejects.toThrow();
+  expect(f.creates).toBe(1);
+  expect(await f.store.get(key)).toMatchObject({ phase: "reserved" });
+  const child = await f.provider.fork({ from: name });
+  const terminations = f.log.filter((op) => op === "terminate").length;
+  let phaseAtDeleteDispatch: Machine["phase"] | undefined;
+  await expect(
+    f.provider.delete({ sandboxId: child.id }, async () => {
+      phaseAtDeleteDispatch = (await f.store.get(child.id)).phase;
+      throw Error("Dispatch expired");
+    }),
+  ).rejects.toThrow();
+  expect(phaseAtDeleteDispatch).toBe("deleting");
+  expect(f.log.filter((op) => op === "terminate")).toHaveLength(terminations);
+});
+
 test("enrolled Modal host forks never start or call the tunnel and stop without a recovery claim", async () => {
   const f = fixture(scope, db, undefined, undefined, true);
   const row = await runningFork(f);

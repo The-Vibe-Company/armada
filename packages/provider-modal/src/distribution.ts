@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import { snapshotBaselineInstall } from "@armada/core/server";
-import type { ModalClient, Sandbox } from "modal";
+import type { ModalClient } from "modal";
 import { refusal } from "./errors.ts";
 import type { Machine, RunnerDistribution } from "./ports.ts";
 import { prepareRuntimeArtifact } from "./runtime-overlay.ts";
@@ -84,8 +84,9 @@ export function createRunnerDistribution(options: DistributionOptions): RunnerDi
         throw refusal("invalid_request", "Image build instruction exceeds the bounded shell argument budget.");
       return client.images.fromRegistry(options.base).dockerfileCommands(commands);
     },
-    async start(sandbox: Sandbox, machine: Machine, env: Readonly<Record<string, string>>) {
+    async start(sandbox, machine, env, beforeDispatch) {
       const bootstrap = await options.bootstrap(machine, env);
+      await beforeDispatch?.();
       // An empty process env does not inherit caller/management credentials. Bootstrap secrets use stdin.
       const process = await sandbox.exec(
         [
@@ -107,8 +108,12 @@ export function createRunnerDistribution(options: DistributionOptions): RunnerDi
         ],
         { env: {}, secrets: [], stdout: "ignore", stderr: "ignore" },
       );
-      await process.stdin.writeText(JSON.stringify(bootstrap));
-      await process.stdin.close();
+      try {
+        await beforeDispatch?.();
+        await process.stdin.writeText(JSON.stringify(bootstrap));
+      } finally {
+        await process.stdin.close();
+      }
       // Health/readiness is verified by the injected transport before serving user operations.
     },
     restoreEnv: options.restoreEnv,

@@ -36,6 +36,7 @@ type Claim = {
   org_id: string;
   owner_id: string;
   provider_sandbox_id: string;
+  remaining_ms: number;
 };
 const DEADLINE_MS = 15 * 60_000;
 const MAX_CONCURRENT_BOOTS = 4;
@@ -276,7 +277,7 @@ export function createModalBootWorker(
         await settle(claim, { reason: "cancelled_before_boot", cancelled: true }, false);
         return;
       }
-      const cleanup = live?.cancelled && claim.phase === "booting";
+      const cleanup = live?.cancelled === true && claim.phase === "booting";
       if (cleanup && live.expired) {
         await settle(claim, { reason: "cancelled_boot_outcome_unknown" }, true);
         return;
@@ -314,12 +315,40 @@ export function createModalBootWorker(
         await reschedule();
         return;
       }
+      const liveDispatch = async (cancelled: boolean) =>
+        (
+          await sql.query<{ expired: boolean }>(
+            `select r.dispatch_deadline<=clock_timestamp() as expired
+             from public.provider_launch_requests r join public.sandboxes s on s.id=r.sandbox_id
+             join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
+             join public.mcp_actor_epochs e on e.org_id=m.org_id and e.user_id=m.user_id
+             where r.sandbox_id=$1 and r.lease_owner=$2 and r.lease_epoch=$3
+               and r.lease_expires_at>clock_timestamp() and r.phase='booting' and e.epoch=r.actor_epoch
+               and ${cancelled ? "s.status='stopping' and s.stop_requested_at is not null" : BOOT_ALLOWED}`,
+            token,
+          )
+        ).rows[0];
+      const guardDispatch = async () => {
+        const dispatch = await liveDispatch(cleanup);
+        if (!accepting || signal.aborted || !dispatch || dispatch.expired)
+          throw new LaunchError("outcome_unknown", "Modal dispatch authority expired or changed.", { sandboxId: id });
+      };
       if (cleanup) {
+        const dispatch = await liveDispatch(true);
+        if (signal.aborted) return;
+        if (!accepting || !dispatch) {
+          await reschedule();
+          return;
+        }
+        if (dispatch.expired) {
+          await settle(claim, { reason: "cancelled_boot_outcome_unknown" }, true);
+          return;
+        }
         try {
           // The Modal adapter verifies the pinned scope and logical ID, then
           // resumes any deletion by durable machine record. Missing record is
           // still ambiguous because an earlier dispatch might not have reserved it yet.
-          const removed = await provider.delete({ sandboxId: claim.provider_sandbox_id });
+          const removed = await provider.delete({ sandboxId: claim.provider_sandbox_id }, guardDispatch);
           if (signal.aborted) return;
           if (removed.status === "deleted") {
             await settle(claim, { reason: "cancelled_during_boot", cancelled: true }, false);
@@ -357,7 +386,7 @@ export function createModalBootWorker(
       if (signal.aborted) return;
       let machine: Machine;
       try {
-        machine = await provider.fork(pinned.request);
+        machine = await provider.fork(pinned.request, guardDispatch);
       } catch (error) {
         if (signal.aborted) return;
         if (error instanceof ProviderError && isNonMutatingProviderRefusal(error) && claim.phase === "queued") {
@@ -423,14 +452,16 @@ export function createModalBootWorker(
            order by r.next_attempt_at,r.created_at,r.sandbox_id limit 1 for update of r skip locked
          ) update public.provider_launch_requests r set lease_owner=$1,lease_epoch=r.lease_epoch+1,
            lease_expires_at=now()+interval '45 seconds' from due where r.sandbox_id=due.sandbox_id
-           returning r.sandbox_id,r.lease_epoch::text,r.phase,r.request_enc,due.org_id,due.owner_id,due.provider_sandbox_id`,
+           returning r.sandbox_id,r.lease_epoch::text,r.phase,r.request_enc,due.org_id,due.owner_id,due.provider_sandbox_id,
+           greatest(0,ceil(extract(epoch from (r.dispatch_deadline-clock_timestamp()))*1000))::integer as remaining_ms`,
           [owner],
         )
       ).rows[0];
       if (!claim) return false;
       const controller = new AbortController();
-      const deadline = setTimeout(() => controller.abort(), DEADLINE_MS);
-      deadline.unref();
+      // Already expired rows still need a local terminal transition.
+      const deadline = claim.remaining_ms > 0 ? setTimeout(() => controller.abort(), claim.remaining_ms) : undefined;
+      deadline?.unref();
       const elapsed = new Promise<void>((resolve) =>
         controller.signal.addEventListener("abort", () => resolve(), { once: true }),
       );

@@ -166,7 +166,7 @@ export interface Provider {
    * snapshot retirement worker retries "pending" so collection never depends on a user request. */
   collectRetiredSnapshot?(name: string): Promise<"collected" | "pending">;
   /** Starts a sandbox from a snapshot. */
-  fork(request: ForkRequest): Promise<SandboxInfo>;
+  fork(request: ForkRequest, beforeDispatch?: ProviderDispatchGuard): Promise<SandboxInfo>;
 
   get(sandboxId: string, options?: { signal?: AbortSignal }): Promise<SandboxInfo>;
   list(request?: ListRequest): Promise<Page<SandboxInfo>>;
@@ -216,7 +216,7 @@ export interface Provider {
    * retained workspace/conversation state and must refuse a compute-only fallback. */
   stop(request: { sandboxId: string; requireRetention?: boolean }): Promise<void>;
   /** Removes the sandbox and its disk for good. */
-  delete(request: { sandboxId: string }): Promise<DeleteReceipt>;
+  delete(request: { sandboxId: string }, beforeDispatch?: ProviderDispatchGuard): Promise<DeleteReceipt>;
 }
 
 export interface HarnessCapabilities {
@@ -302,6 +302,9 @@ export interface SnapshotRequest {
   sandboxId: string;
   name: string;
 }
+
+/** Server-side guard checked immediately before a provider dispatches a durable launch mutation. */
+export type ProviderDispatchGuard = () => Promise<void>;
 
 export interface ForkRequest {
   /** Server-owned Armada UUID for a row-first Modal allocation. */

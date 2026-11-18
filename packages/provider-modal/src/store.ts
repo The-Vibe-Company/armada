@@ -63,19 +63,43 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
         throw refusal("forbidden", "Stored builder identity does not match its reservation.");
       return revive(row.record);
     },
-    async reserve(requestKey, machine) {
-      await authorize();
-      await sql.query(
+    async reserve(requestKey, machine, tx = sql) {
+      await authorize(tx);
+      await tx.query(
         `insert into public.modal_machines(scope,org_id,owner_id,visibility,id,request_key,record) values($1,$2,$3,$4,$5,$6,$7::jsonb) on conflict(scope,request_key) do nothing`,
         [key, scope.orgId, scope.userId, scope.visibility, machine.info.id, requestKey, JSON.stringify(machine)],
       );
-      const result = await sql.query<{ record: Machine }>(
+      const result = await tx.query<{ record: Machine }>(
         `select record from public.modal_machines where scope=$1 and request_key=$2`,
         [key, requestKey],
       );
       const row = result.rows[0];
       if (!row) throw refusal("conflict", "Launch reservation failed.");
       return revive(row.record);
+    },
+    async withForkSource(id, pin) {
+      if (!sql.transaction)
+        throw refusal("provider_routing_unavailable", "Transactional SQL is required to pin a Modal fork source.");
+      return sql.transaction(async (tx) => {
+        await get(id, tx);
+        // Lifecycle mutations claim this same row before touching its images.
+        // A transactional row lock protects the target reservation even if the
+        // process dies before it can release its claim.
+        const locked = await tx.query(
+          `select id from public.modal_machines where scope=$1 and id=$2
+           and (lease_until is null or lease_until<=clock_timestamp()) for update skip locked`,
+          [key, id],
+        );
+        if (!locked.rows.length)
+          throw new ProviderError({
+            provider: "modal",
+            code: "conflict",
+            providerCode: "fork_source_busy",
+            message: "The Modal snapshot source is busy. No sandbox was created by this attempt.",
+            retryable: true,
+          });
+        return pin(await get(id, tx), tx);
+      });
     },
     get,
     async watermark(id, generation) {
@@ -95,13 +119,15 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
       );
       return result.rows.map((x) => revive(x.record));
     },
-    async lease(id, work) {
+    async lease(id, work, mode) {
       await get(id);
       const token = randomUUID();
-      // 15 minute bound, renewable on every phase commit. A lost lease cannot commit later results.
+      // Durable boot retries need to outlive a crashed adapter lease. Renew
+      // while the process is alive, including during slow Modal calls.
+      const duration = mode === "launch" ? 45 : 900;
       const claim = await sql.query(
-        `update public.modal_machines set lease_id=$3,lease_until=now()+interval '15 minutes' where scope=$1 and id=$2 and (lease_until is null or lease_until<now()) returning id`,
-        [key, id, token],
+        `update public.modal_machines set lease_id=$3,lease_until=clock_timestamp()+$4::integer*interval '1 second' where scope=$1 and id=$2 and (lease_until is null or lease_until<=clock_timestamp()) returning id`,
+        [key, id, token, duration],
       );
       if (!claim.rows.length)
         throw new ProviderError({
@@ -111,25 +137,39 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
           message: "Sandbox lifecycle is leased by another controller.",
           retryable: true,
         });
+      const heartbeat =
+        mode === "launch"
+          ? setInterval(() => {
+              void sql
+                .query(
+                  `update public.modal_machines set lease_until=clock_timestamp()+$4::integer*interval '1 second'
+           where scope=$1 and id=$2 and lease_id=$3 and lease_until>clock_timestamp()`,
+                  [key, id, token, duration],
+                )
+                .catch(() => {});
+            }, 10_000)
+          : undefined;
+      heartbeat?.unref();
       try {
         return await work(await get(id), async (row) => {
           await authorize(sql);
           const result = await sql.query(
-            `update public.modal_machines set record=$4::jsonb,lease_until=now()+interval '15 minutes' where scope=$1 and id=$2 and lease_id=$3 and lease_until>now() returning id`,
-            [key, id, token, JSON.stringify(row)],
+            `update public.modal_machines set record=$4::jsonb,lease_until=clock_timestamp()+$5::integer*interval '1 second' where scope=$1 and id=$2 and lease_id=$3 and lease_until>clock_timestamp() returning id`,
+            [key, id, token, JSON.stringify(row), duration],
           );
           if (!result.rows.length) throw refusal("conflict", "Lifecycle lease expired; result is fenced.");
         });
       } finally {
+        clearInterval(heartbeat);
         await sql.query(
           `update public.modal_machines set lease_id=null,lease_until=null where scope=$1 and id=$2 and lease_id=$3`,
           [key, id, token],
         );
       }
     },
-    async image(name) {
-      await authorize();
-      const result = await sql.query<{ record: SavedImage }>(
+    async image(name, tx = sql) {
+      await authorize(tx);
+      const result = await tx.query<{ record: SavedImage }>(
         `select record from public.modal_images where scope=$1 and name=$2`,
         [key, name],
       );

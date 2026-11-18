@@ -8,6 +8,7 @@ import type {
   ModalBinding,
   SandboxInfo,
   SnapshotInfo,
+  Sql,
 } from "@armada/core";
 import type { Image, ModalClient, Sandbox } from "modal";
 
@@ -142,14 +143,19 @@ export interface SavedImage {
 }
 /** Store instances are bound to the authenticated caller AND immutable Modal binding. No unscoped lookup. */
 export interface ModalStore {
-  reserve(key: string, machine: Machine): Promise<Machine>;
+  reserve(key: string, machine: Machine, tx?: Sql): Promise<Machine>;
+  withForkSource<T>(id: string, pin: (source: Machine, tx: Sql) => Promise<T>): Promise<T>;
   findByRequestKey(key: string): Promise<Machine | null>;
   get(id: string): Promise<Machine>;
   watermark(id: string, generation: number): Promise<number>;
   list(): Promise<Machine[]>;
   /** Atomic, expiring lease; concurrent controllers fail closed. */
-  lease<T>(id: string, work: (row: Machine, save: (row: Machine) => Promise<void>) => Promise<T>): Promise<T>;
-  image(name: string): Promise<SavedImage>;
+  lease<T>(
+    id: string,
+    work: (row: Machine, save: (row: Machine) => Promise<void>) => Promise<T>,
+    mode?: "launch",
+  ): Promise<T>;
+  image(name: string, tx?: Sql): Promise<SavedImage>;
   saveImage(image: SavedImage): Promise<void>;
   removeImage(name: string): Promise<void>;
   /** Deletes a tombstone only while it still records this source and physical image. */
@@ -190,7 +196,12 @@ export interface RunnerDistribution {
   /** Install only the trusted current public runtime on eligible fresh machines,
    * before capturing the control-process baseline. Never touches native history. */
   prepareRuntime?(sandbox: Sandbox, machine: Machine): Promise<void>;
-  start(sandbox: Sandbox, machine: Machine, env: Readonly<Record<string, string>>): Promise<void>;
+  start(
+    sandbox: Sandbox,
+    machine: Machine,
+    env: Readonly<Record<string, string>>,
+    beforeDispatch?: () => Promise<void>,
+  ): Promise<void>;
   restoreEnv(machine: Machine): Promise<Readonly<Record<string, string>>>;
   /** After verified checkpoint ACK: quiesce ALL writers/SSH and remove transient keys/auth.
    * Golden saves must remove managed journal/request/process/native history only after file handles

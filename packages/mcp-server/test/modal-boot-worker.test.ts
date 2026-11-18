@@ -12,6 +12,8 @@ test.each([
   "restart after an uncertain fork",
   "stop before dispatch",
   "fence an expired stop without contacting Modal",
+  "fence a stop that expires during authority resolution",
+  "fence a stop that expires inside the adapter",
 ] as const)("Modal boot from committed storage can %s", async (scenario) => {
   const { db, people } = await database();
   const sql: Sql = {
@@ -124,25 +126,47 @@ test.each([
   await first.drain();
   expect(await persisted()).toMatchObject({ phase: "booting", fenced: true, lease_epoch: "1" });
   first.stopAdmission();
-  if (scenario === "fence an expired stop without contacting Modal") {
+  if (scenario.startsWith("fence ")) {
     const caller = {
       userId: people.owner,
       orgs: [{ orgId: people.org, role: "member" as const }],
       via: "service" as const,
     };
     expect(await createSqlData(sql)(caller).sandboxes.requestPendingModalStop!(id)).toBe(true);
-    await db.query(
-      "update provider_launch_requests set next_attempt_at=now(),dispatch_deadline=now()-interval '1 second' where sandbox_id=$1",
-      [id],
-    );
-    let attemptedResolution = false;
-    const unavailable = createModalBootWorker(sql, ENCRYPTION_KEY, async () => {
-      attemptedResolution = true;
-      throw Error("Original authority unavailable.");
+    const expire = () =>
+      db.query("update provider_launch_requests set dispatch_deadline=now()-interval '1 second' where sandbox_id=$1", [
+        id,
+      ]);
+    await db.query("update provider_launch_requests set next_attempt_at=now() where sandbox_id=$1", [id]);
+    const expiredBeforeClaim = scenario === "fence an expired stop without contacting Modal";
+    const expiredInsideAdapter = scenario === "fence a stop that expires inside the adapter";
+    if (expiredBeforeClaim) await expire();
+    let resolutions = 0;
+    let deletes = 0;
+    const cancelling = createModalBootWorker(sql, ENCRYPTION_KEY, async () => {
+      resolutions++;
+      if (!expiredInsideAdapter) await expire();
+      return {
+        ...provider,
+        async delete(_request, guard) {
+          await expire();
+          await guard?.();
+          deletes++;
+          return { status: "deleted" };
+        },
+      };
     });
-    expect(await unavailable.reconcileOne(signal)).toBe(true);
-    await unavailable.drain();
-    expect(attemptedResolution).toBe(false);
+    expect(await cancelling.reconcileOne(signal)).toBe(true);
+    await cancelling.drain();
+    if (expiredInsideAdapter) {
+      // The first claim rejected adapter dispatch. Let the successor observe
+      // persisted expiry and publish the fenced outcome.
+      await db.query("update provider_launch_requests set next_attempt_at=now() where sandbox_id=$1", [id]);
+      expect(await cancelling.reconcileOne(signal)).toBe(true);
+      await cancelling.drain();
+    }
+    expect(resolutions).toBe(expiredBeforeClaim ? 0 : 1);
+    expect(deletes).toBe(0);
     expect(attempts).toBe(1);
     expect(await persisted()).toMatchObject({ phase: "failed", status: "stopping", fenced: true, sealed: true });
     return;

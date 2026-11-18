@@ -8,6 +8,7 @@ import type {
   Provider,
   SandboxInfo,
   SnapshotInfo,
+  Sql,
 } from "@armada/core";
 import {
   HARNESSES,
@@ -338,6 +339,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     row: Machine,
     save: (row: Machine) => Promise<void>,
     env: Readonly<Record<string, string>>,
+    beforeDispatch?: () => Promise<void>,
   ): Promise<SandboxInfo> {
     const app = await bound();
     let sb: Sandbox;
@@ -361,10 +363,21 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           throw modalBuilderImageError(error);
         }
       }
+      await beforeDispatch?.();
       row.phase = "creating";
       row.grantExpiresAt = Date.now() + row.ttlSeconds * 1000;
       await save(row);
       const capacity = row.size === undefined ? null : machineCapacity("modal", row.size);
+      try {
+        await beforeDispatch?.();
+      } catch (error) {
+        // The SDK call has not happened. A successor can safely retry or
+        // delete a reservation once the still-owned lease publishes that fact.
+        row.phase = "reserved";
+        delete row.grantExpiresAt;
+        await save(row);
+        throw error;
+      }
       sb = await measure("modal_sandbox_create", () =>
         client.sandboxes.create(app, image, {
           ...(row.runtimePolicy === "explicit-vm-v1" ? { runtime: "vm" as const } : {}),
@@ -394,6 +407,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       row.runtimeEvidence = { version: 1, runtime: "vm", physicalId: sb.sandboxId, generation: row.generation };
     row.phase = "booting";
     await bootStage("binding", () => save(row));
+    await beforeDispatch?.();
     if (!row.commonRuntime && distribution.prepareRuntime)
       await bootStage("runtime", () => distribution.prepareRuntime!(sb, row));
     await bootStage("baseline", async () => {
@@ -420,17 +434,20 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       row.freshStatePreparedGeneration !== row.generation
     ) {
       await bootStage("fresh", async () => {
+        await beforeDispatch?.();
         await distribution.prepareFreshMachine!(sb, row);
         row.freshStatePreparedGeneration = row.generation;
         await save(row);
       });
     }
     if (!row.commonRuntime) {
-      await bootStage("start", () => distribution.start(sb, row, env));
+      await beforeDispatch?.();
+      await bootStage("start", () => distribution.start(sb, row, env, beforeDispatch));
       let managedRunnerPid: unknown;
       await bootStage("health", async () => {
         let healthy = false;
         for (let attempt = 0; attempt < 120; attempt++) {
+          await beforeDispatch?.();
           try {
             const health = await runner.call<{ generation?: string; ready?: boolean; pid?: unknown }>(
               row,
@@ -449,8 +466,10 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         }
         if (!healthy) throw refusal("unavailable", "Runner did not become ready.");
       });
+      await beforeDispatch?.();
       await sealBaselineBeforeAdmission(sb, row, save, managedRunnerPid);
     }
+    await beforeDispatch?.();
     row.phase = "active";
     row.info.state = "ready";
     row.info.providerState = "active";
@@ -458,7 +477,11 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     await bootStage("active_publication", () => save(row));
     return sandboxInfo(row);
   }
-  async function launch(request: CreateGoldenRequest | ForkRequest, golden: boolean): Promise<SandboxInfo> {
+  async function launch(
+    request: CreateGoldenRequest | ForkRequest,
+    golden: boolean,
+    beforeDispatch?: () => Promise<void>,
+  ): Promise<SandboxInfo> {
     let size: Machine["size"];
     if ("size" in request && request.size !== undefined) {
       try {
@@ -471,16 +494,6 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     const ttl = request.ttlSeconds ?? 3600;
     if (!Number.isInteger(ttl) || ttl < 1 || ttl > 86400)
       throw refusal("invalid_request", "Modal machine TTL must be 1–86400 seconds (maximum 24 hours).");
-    let imageId: string | undefined;
-    let sourceImage: Machine["sourceImage"];
-    if ("from" in request) {
-      const snapshot = await source.store.image(request.from);
-      assertAuthority(snapshot);
-      if (snapshot.info.status !== "ready" || !snapshot.imageId)
-        throw refusal("sandbox_not_ready", "Snapshot is not ready.");
-      imageId = snapshot.imageId;
-      sourceImage = { scopeKey: scopeKey(source.scope), name: request.from, imageId };
-    }
     const key = request.idempotencyKey ?? randomUUID();
     const launchId = "from" in request ? request.modalLaunchId : undefined;
     if (
@@ -491,49 +504,91 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     )
       throw refusal("invalid_request", "Invalid row-first Modal launch identity.");
     const id = modalLaunchSandboxId(launchId ?? randomUUID());
-    const row = await store.reserve(key, {
-      info: {
-        id,
-        name: request.name ?? id,
-        state: "starting",
-        providerState: "reserved",
-        labels: request.labels ?? {},
-        createdAt: new Date(),
-      },
-      generation: 1,
-      ...(!golden && options.commonRuntime ? { commonRuntime: true as const } : {}),
-      ...(!golden ? { runtimePolicy: "explicit-vm-v1" as const } : {}),
-      launchUserId: options.scope.userId,
-      managementAuthority: { ...managementAuthority },
-      modelDefaults: mapHarnesses((_, harness) => resolveModelChoice(harness, {})),
-      phase: "reserved",
-      golden,
-      ttlSeconds: ttl,
-      ...(size === undefined ? {} : { size }),
-      physicalName: `armada-${createHash("sha256").update(id).digest("hex").slice(0, 32)}-1`,
-      ...(imageId ? { imageId } : {}),
-      ...(sourceImage ? { sourceImage } : {}),
-    });
-    let observed = row;
-    try {
+    const reserve = (sourceImage?: Machine["sourceImage"], tx?: Sql) =>
+      store.reserve(
+        key,
+        {
+          info: {
+            id,
+            name: request.name ?? id,
+            state: "starting",
+            providerState: "reserved",
+            labels: request.labels ?? {},
+            createdAt: new Date(),
+          },
+          generation: 1,
+          ...(!golden && options.commonRuntime ? { commonRuntime: true as const } : {}),
+          ...(!golden ? { runtimePolicy: "explicit-vm-v1" as const } : {}),
+          launchUserId: options.scope.userId,
+          managementAuthority: { ...managementAuthority },
+          modelDefaults: mapHarnesses((_, harness) => resolveModelChoice(harness, {})),
+          phase: "reserved",
+          golden,
+          ttlSeconds: ttl,
+          ...(size === undefined ? {} : { size }),
+          physicalName: `armada-${createHash("sha256").update(id).digest("hex").slice(0, 32)}-1`,
+          ...(sourceImage ? { imageId: sourceImage.imageId } : {}),
+          ...(sourceImage ? { sourceImage } : {}),
+        },
+        tx,
+      );
+    const sourceScope = scopeKey(source.scope);
+    let row = launchId === undefined ? null : await store.findByRequestKey(key);
+    let sourceImage: Machine["sourceImage"];
+    if (!row && "from" in request) {
+      const snapshot = await source.store.image(request.from);
+      assertAuthority(snapshot);
+      row = await source.store.withForkSource(snapshot.sourceId, async (sourceRow, tx) => {
+        if (sourceRow.commonRuntime) throw refusal("invalid_request", "Enrolled Modal forks are not enabled.");
+        const current = await source.store.image(request.from, tx);
+        assertAuthority(current);
+        if (
+          current.sourceId !== snapshot.sourceId ||
+          current.imageId !== snapshot.imageId ||
+          current.info.status !== "ready" ||
+          !current.imageId
+        )
+          throw refusal("sandbox_not_ready", "Snapshot revision is no longer ready.");
+        sourceImage = { scopeKey: sourceScope, name: request.from, imageId: current.imageId };
+        return reserve(sourceImage, tx);
+      });
+    }
+    row ??= await reserve();
+    // Row-first replay trusts the pinned reference, even if the snapshot was
+    // retired or its source is leased. Validate that the key names this launch.
+    const validate = (row: Machine) => {
       if (
-        (launchId !== undefined && row.info.id !== id) ||
+        (launchId !== undefined && (row.info.id !== id || row.launchUserId !== options.scope.userId)) ||
         row.golden !== golden ||
         Boolean(row.commonRuntime) !== Boolean(!golden && options.commonRuntime) ||
         row.size !== size ||
-        row.imageId !== imageId ||
-        row.sourceImage?.scopeKey !== sourceImage?.scopeKey ||
-        row.sourceImage?.name !== sourceImage?.name
+        (sourceImage && row.imageId !== sourceImage.imageId) ||
+        row.sourceImage?.scopeKey !== ("from" in request ? sourceScope : undefined) ||
+        row.sourceImage?.name !== ("from" in request ? request.from : undefined)
       )
         throw refusal("conflict", "Idempotency key belongs to another launch.");
       assertMachineSource(row);
-      if (row.phase === "active" || row.phase === "stopped") return sandboxInfo(row);
+    };
+    const needsBoot = (row: Machine) => {
+      validate(row);
+      if (row.phase === "active" || row.phase === "stopped") return false;
       if (!["reserved", "creating", "booting"].includes(row.phase))
         throw refusal("conflict", "Launch is in a terminal or checkpoint phase.");
-      return await store.lease(row.info.id, (current, save) => {
-        observed = current;
-        return create(current, save, "env" in request ? (request.env ?? {}) : {});
-      });
+      return true;
+    };
+    if (!needsBoot(row)) return sandboxInfo(row);
+    let observed = row;
+    try {
+      return await store.lease(
+        row.info.id,
+        (current, save) => {
+          observed = current;
+          return needsBoot(current)
+            ? create(current, save, "env" in request ? (request.env ?? {}) : {}, beforeDispatch)
+            : Promise.resolve(sandboxInfo(current));
+        },
+        launchId === undefined ? undefined : "launch",
+      );
     } catch (error) {
       if (
         observed.phase === "deleted" &&
@@ -968,37 +1023,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         throw refusal("forbidden", "Split source/target adapter is fork-only for golden creation.");
       return launch(r, true);
     },
-    async fork(r) {
-      if (r.size !== undefined) {
-        try {
-          parseMachineSize(r.size);
-        } catch {
-          throw refusal("invalid_request", "Size must be small, medium, large or xlarge.");
-        }
-      }
-      const snapshot = await source.store.image(r.from);
-      assertAuthority(snapshot);
-      let admitted = false;
-      try {
-        return await source.store.lease(snapshot.sourceId, async (sourceRow) => {
-          admitted = true;
-          if (sourceRow.commonRuntime) throw refusal("invalid_request", "Enrolled Modal forks are not enabled.");
-          return launch(r, false);
-        });
-      } catch (error) {
-        // Only acquisition refusal proves no child was reserved. Once entered,
-        // preserve launch receipts and uncertainty rather than permitting a replay.
-        if (!admitted && modalError(error).providerCode === "lifecycle_lease_busy")
-          throw new ProviderError({
-            provider: "modal",
-            code: "conflict",
-            providerCode: "fork_source_busy",
-            message: "The Modal snapshot source is busy. No sandbox was created; retry after the current operation.",
-            retryable: true,
-          });
-        throw error;
-      }
-    },
+    fork: (r, beforeDispatch) => launch(r, false, beforeDispatch),
     async startRuntime(input) {
       const server = new URL(input.serverUrl);
       if (
@@ -1931,75 +1956,82 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       if (resume) return provider.delete({ sandboxId: request.sandboxId });
       return { status: "deleted" };
     },
-    async delete({ sandboxId }) {
+    async delete({ sandboxId }, beforeDispatch) {
       await boundNotAbsence();
-      await store.lease(sandboxId, async (row, save) => {
-        if (row.phase === "deleted") return;
-        assertMachineSource(row);
-        // Stop confirms exit. A reservation without an ID is pre-create because SQL
-        // commits creating before issuing the remote request. Carry either proof,
-        // scoped to this physical generation, through an interrupted deletion so a
-        // retry never terminates and waits on a machine that has already exited.
-        if (row.phase === "stopped" || (row.phase === "reserved" && !row.physicalId))
-          row.deletePhysicalExitGeneration = row.generation;
-        const exitConfirmed = row.deletePhysicalExitGeneration === row.generation;
-        // Creating/booting/deleting without ID is NOT proof of absence, even if name lookup says 404.
-        if (!exitConfirmed && !row.physicalId) {
-          const reconciled = await namedOwned(row);
-          row.physicalId = reconciled.sandboxId;
-          await save(row);
-        }
-        // Durable before any remote mutation. Every resume path refuses a deleting record, so
-        // this phase and the store lease, not the server's activity lease, fence a failed delete.
-        row.phase = "deleting";
-        await save(row);
-        if (!exitConfirmed && row.physicalId) {
-          // Only the machine's own not_found proves exit; look the App up outside that catch.
-          await boundNotAbsence();
-          try {
-            const sb = await client.sandboxes.fromId(row.physicalId);
-            await sb.terminate({ wait: true });
-            if ((await sb.poll()) === null)
-              throw refusal("unavailable", "Owned machine termination is not complete; delete remains pending.");
-          } catch (error) {
-            if (modalError(error).code !== "not_found") throw error;
+      await store.lease(
+        sandboxId,
+        async (row, save) => {
+          if (row.phase === "deleted") return;
+          assertMachineSource(row);
+          // Stop confirms exit. A reservation without an ID is pre-create because SQL
+          // commits creating before issuing the remote request. Carry either proof,
+          // scoped to this physical generation, through an interrupted deletion so a
+          // retry never terminates and waits on a machine that has already exited.
+          if (row.phase === "stopped" || (row.phase === "reserved" && !row.physicalId))
+            row.deletePhysicalExitGeneration = row.generation;
+          const exitConfirmed = row.deletePhysicalExitGeneration === row.generation;
+          // Creating/booting/deleting without ID is NOT proof of absence, even if name lookup says 404.
+          if (!exitConfirmed && !row.physicalId) {
+            const reconciled = await namedOwned(row);
+            row.physicalId = reconciled.sandboxId;
+            await save(row);
           }
-          row.deletePhysicalExitGeneration = row.generation;
+          // Durable before any remote mutation. Every resume path refuses a deleting record, so
+          // this phase and the store lease, not the server's activity lease, fence a failed delete.
+          row.phase = "deleting";
           await save(row);
-        }
-        for (const imageId of new Set([
-          ...(row.retainedRecoveryIds ?? []),
-          ...(row.recoveryImageId ? [row.recoveryImageId] : []),
-        ])) {
-          await cleanupStep(sandboxId, async () => {
+          if (!exitConfirmed && row.physicalId) {
+            // Only the machine's own not_found proves exit; look the App up outside that catch.
+            await boundNotAbsence();
             try {
-              await client.images.delete(imageId);
+              const sb = await client.sandboxes.fromId(row.physicalId);
+              await beforeDispatch?.();
+              await sb.terminate({ wait: true });
+              if ((await sb.poll()) === null)
+                throw refusal("unavailable", "Owned machine termination is not complete; delete remains pending.");
             } catch (error) {
               if (modalError(error).code !== "not_found") throw error;
             }
-          });
-        }
-        row.phase = "deleted";
-        await save(row);
-      });
+            row.deletePhysicalExitGeneration = row.generation;
+            await save(row);
+          }
+          for (const imageId of new Set([
+            ...(row.retainedRecoveryIds ?? []),
+            ...(row.recoveryImageId ? [row.recoveryImageId] : []),
+          ])) {
+            await cleanupStep(sandboxId, async () => {
+              try {
+                await beforeDispatch?.();
+                await client.images.delete(imageId);
+              } catch (error) {
+                if (modalError(error).code !== "not_found") throw error;
+              }
+            });
+          }
+          row.phase = "deleted";
+          await save(row);
+        },
+        beforeDispatch ? "launch" : undefined,
+      );
       // The target's compute and recovery images are gone and durably recorded, so the receipt
       // is published now. Retired images of other sources are collected detached, once. Each is
       // claimed under its source's lease with the same scope, authority and reference checks. A slow,
       // busy or failing source never holds this receipt or the caller's activity lease; its
       // tombstones stay durable for the next collection in scope.
-      detachCollection(() =>
-        collectImages(true).catch((error) => {
-          const safe = modalError(error);
-          console.warn(
-            JSON.stringify({
-              event: "modal_delete_retired_collection_deferred",
-              sandboxId,
-              code: safe.code,
-              ...(safe.providerCode ? { providerCode: safe.providerCode } : {}),
-            }),
-          );
-        }),
-      );
+      if (!beforeDispatch)
+        detachCollection(() =>
+          collectImages(true).catch((error) => {
+            const safe = modalError(error);
+            console.warn(
+              JSON.stringify({
+                event: "modal_delete_retired_collection_deferred",
+                sandboxId,
+                code: safe.code,
+                ...(safe.providerCode ? { providerCode: safe.providerCode } : {}),
+              }),
+            );
+          }),
+        );
       return { status: "deleted" };
     },
     async resourceReceipts() {

@@ -166,3 +166,50 @@ import { createRunnerDistribution, MODAL_IMAGE_LOCK, type RunnerDistribution } f
     }
   },
 );
+
+test.each(["bootstrap", "exec"] as const)(
+  "durable Modal boot withholds credentials after %s loses authority",
+  async (stage) => {
+    let allowed = true;
+    let executions = 0;
+    let writes = 0;
+    let closes = 0;
+    const bundle = Buffer.from("// fixture");
+    const distribution = createRunnerDistribution({
+      ...MODAL_IMAGE_LOCK,
+      bundle,
+      sha256: createHash("sha256").update(bundle).digest("hex"),
+      capabilities: {},
+      bootstrap: async () => {
+        if (stage === "bootstrap") allowed = false;
+        return { fixture: "private_input" };
+      },
+      restoreEnv: async () => ({}),
+      prepareSnapshot: async () => {},
+    });
+    const sandbox = {
+      async exec() {
+        executions++;
+        allowed = false;
+        return {
+          stdin: {
+            async writeText() {
+              writes++;
+            },
+            async close() {
+              closes++;
+            },
+          },
+        };
+      },
+    } as unknown as import("modal").Sandbox;
+    await expect(
+      distribution.start(sandbox, {} as import("../src/index.ts").Machine, {}, async () => {
+        if (!allowed) throw Error("Dispatch authority expired");
+      }),
+    ).rejects.toThrow("Dispatch authority expired");
+    expect(writes).toBe(0);
+    expect(executions).toBe(stage === "exec" ? 1 : 0);
+    expect(closes).toBe(executions);
+  },
+);

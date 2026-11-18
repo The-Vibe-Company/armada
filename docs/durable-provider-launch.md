@@ -168,6 +168,9 @@ identity to retire the allocation and keeps the golden fence if the outcome
 remains uncertain. Receipt inspection reports the persisted boot phase.
 
 This path depends on the previously added `provider_launch_requests` migration.
+Modal locks the snapshot source row only through the transaction that pins the
+image in the child reservation. A successor can recover that reservation directly
+once the renewable child lease expires. The worker checks its persisted lease,
+deadline and cancellation immediately before adapter allocation and cleanup.
 The next stages cover continued cleanup of unresolved forks beyond the dispatch deadline,
-durable initialization and initial-prompt checkpoints, a shorter Modal source
-lease, versioned async clients, and Boat admission after recovery is proven.
+durable initialization and initial-prompt checkpoints, versioned async clients, and Boat admission after recovery is proven.
