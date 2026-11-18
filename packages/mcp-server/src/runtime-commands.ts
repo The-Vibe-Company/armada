@@ -85,6 +85,13 @@ export function createRuntimeCommands(
     const sealed = await encryptSecret(serialized, key);
     return authority.withOwner(request.sandboxId, ownerId, async (tx, scope) => {
       if (expectedEpoch !== undefined && scope.epoch !== expectedEpoch) throw new RuntimeCommandConflict();
+      // Application-secret taint forbids file egress: never admit an output read (row locked here).
+      if (
+        request.op === "readOutputs" &&
+        (await tx.query("select 1 from public.sandboxes where id=$1 and application_secret_tainted", [scope.sandboxId]))
+          .rows.length
+      )
+        throw new RuntimeCommandConflict();
       // Checkpoint intent fences every mutation entry point, including Docker.
       if (
         !["checkpoint", "events", "health", "getPrompt", "getExec", "observeOrchestrator", "readOutputs"].includes(

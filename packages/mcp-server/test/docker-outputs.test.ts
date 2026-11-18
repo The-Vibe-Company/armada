@@ -332,6 +332,17 @@ test("taint committed after a Docker read was queued stops its dispatch and reda
     await f.db.query(`update sandboxes set application_secret_tainted=true where id=$1`, [f.id]);
     // Once taint committed, no output read is (re)dispatched.
     expect((await f.runtime.next(f.session.runtimeToken, f.session.epoch)).command).toBeNull();
+    // A new read is refused at admission, and skipped reads never hold later commands.
+    await expect(
+      f.runtime.enqueue(f.people.owner, {
+        version: 1,
+        requestId: `outputs_${Date.now() + 25_000}_late`,
+        sandboxId: f.id,
+        op: "readOutputs",
+      }),
+    ).rejects.toThrow("runtime_command_conflict");
+    await f.runtime.enqueue(f.people.owner, { version: 1, requestId: "later", sandboxId: f.id, op: "health" });
+    expect((await f.runtime.next(f.session.runtimeToken, f.session.epoch)).command?.requestId).toBe("later");
     // A reply to a read issued before taint is acknowledged (the runtime's queue advances) without its bytes.
     for (const requestId of [issued, queued])
       await f.runtime.complete(f.session.runtimeToken, f.session.epoch, {
