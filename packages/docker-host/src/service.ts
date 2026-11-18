@@ -3,6 +3,7 @@ import { constants } from "node:fs";
 import { lstat, mkdir, open, readdir, readFile, rename, rm, rmdir, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { machineLabelFilters } from "./container-inventory.ts";
 import { type State, type Store, serverOrigin } from "./daemon.ts";
 import { dockerCli } from "./native.ts";
 
@@ -78,12 +79,7 @@ export async function installService(state: State, instance?: string) {
 }
 
 export async function inventory(state: State) {
-  const filters = [
-    "--filter",
-    `label=dev.armada.machine.installation=${state.installationId}`,
-    "--filter",
-    `label=dev.armada.machine.host=${state.hostId}`,
-  ];
+  const filters = machineLabelFilters(state);
   const running = await dockerCli.run(["container", "ls", ...filters, "--format", "{{.ID}}"]);
   const containers = await dockerCli.run(["container", "ls", "--all", ...filters, "--format", "{{.ID}}"]);
   const volumes = await dockerCli.run(["volume", "ls", ...filters, "--format", "{{.Name}}"]);
