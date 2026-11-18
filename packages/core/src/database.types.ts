@@ -4755,6 +4755,7 @@ export type Database = {
           pull_request_merge_proof: Json | null;
           stop_when_work_merged: boolean;
           transition_context: Json | null;
+          outputs_retained_generation: number | null;
         };
         Insert: {
           id?: string;
@@ -4830,6 +4831,7 @@ export type Database = {
           pull_request_merge_proof?: Json | null;
           stop_when_work_merged?: boolean;
           transition_context?: Json | null;
+          outputs_retained_generation?: number | null;
         };
         Update: {
           id?: string;
@@ -4905,6 +4907,7 @@ export type Database = {
           pull_request_merge_proof?: Json | null;
           stop_when_work_merged?: boolean;
           transition_context?: Json | null;
+          outputs_retained_generation?: number | null;
         };
         Relationships: [
           {

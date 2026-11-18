@@ -37,7 +37,7 @@ async function fixture(options: { boatId: string; boatRuntime?: boolean } = { bo
   return { db, people, id, sql };
 }
 
-/** A provider stand-in: live compute until stopped; a stopped workspace is never read. */
+/** A stand-in for live reads only. */
 function disks() {
   const state = {
     live: [] as OutputFile[],
@@ -97,8 +97,8 @@ test("collected outputs survive stop, deduplicate webhook events and enforce int
       .rows,
   ).toHaveLength(1);
   await db.query(`update sandboxes set status='stopped',stopped_at=now(),outputs_checked_at=null where id=$1`, [id]);
-  // A stopped workspace is never read: the last live snapshot is what stays downloadable.
-  expect(await sample(service)).toBe(false);
+  // A retained reader is unavailable: the last live snapshot stays downloadable.
+  expect(await sample(service)).toBe(true);
   expect(state.reads).toBe(2);
   const url = `https://armada.example/api/v1/sandboxes/${id}/outputs`;
   const route = routeFor(service, people.owner, people.org);
@@ -120,6 +120,32 @@ test("collected outputs survive stop, deduplicate webhook events and enforce int
   // Only a well-formed UUID reaches the uuid-typed query; anything else is not this route.
   const malformed = `https://armada.example/api/v1/sandboxes/${"-".repeat(36)}/outputs`;
   expect(await routeFor(service, people.owner, people.org)(new Request(malformed))).toBeNull();
+});
+
+test("a transient retained read backs off, then publishes a file from the stopped workspace once", async () => {
+  const { db, people, id, sql } = await fixture();
+  await db.query(`update sandboxes set status='stopped',stopped_at=now() where id=$1`, [id]);
+  const bytes = Buffer.from("written after the final live sample");
+  let attempts = 0;
+  const service = createSandboxOutputs(sql, KEY, async () => ({
+    async openRetainedOutputs() {
+      if (++attempts === 1) return null;
+      return {
+        entries: [{ name: "late.txt", size: bytes.length, revision: "1:2:3:4" }],
+        readChunk: () => bytes,
+      };
+    },
+  }));
+  expect(await sample(service)).toBe(true);
+  expect(await sample(service)).toBe(false);
+  await db.query(`update sandboxes set outputs_checked_at=now()-interval '3 minutes' where id=$1`, [id]);
+  expect(await sample(service)).toBe(true);
+  const route = routeFor(service, people.owner, people.org);
+  const response = await route(new Request(`https://armada.example/api/v1/sandboxes/${id}/outputs/late.txt`));
+  expect(await response?.text()).toBe(bytes.toString());
+  await db.query(`update sandboxes set outputs_checked_at=now()-interval '3 minutes' where id=$1`, [id]);
+  expect(await sample(service)).toBe(false);
+  expect(attempts).toBe(2);
 });
 
 test("an unsupported collector is reported once and skipped by both sampling and final capture", async () => {

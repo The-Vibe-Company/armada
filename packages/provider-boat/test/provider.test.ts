@@ -1289,3 +1289,42 @@ test("the capability probe treats a Bun that exits 0 without the probe answer as
     reason: "collector_unsupported",
   });
 });
+test.each([true, false])(
+  "Boat accepts only complete retained output directory archives (complete: %s)",
+  async (complete) => {
+    const report = "a document written after sampling";
+    const archive = await new Bun.Archive(
+      complete ? { "late.pdf": report, "nested/private.txt": "skip" } : { "late.pdf": report },
+    ).bytes();
+    const completedAt = "2026-11-18T10:00:00Z";
+    const boat = fakeBoat(
+      { body: { sandbox: sandbox({ state: "archived", snapshotAvailable: true, snapshotCompletedAt: completedAt }) } },
+      { body: { snapshot: { id: "retained", sandboxId: ID, status: "completed", completedAt } } },
+      new Response(archive, {
+        headers: {
+          "x-snapshot-entry-kind": "dir",
+          "x-snapshot-skipped-base-image-files": "0",
+          "x-snapshot-file-count": "2",
+          "x-snapshot-total-size-bytes": String(report.length + 4),
+        },
+      }),
+    );
+    const read = boat.provider.openRetainedOutputs!({ sandboxId: ID, signal: new AbortController().signal });
+    if (complete) {
+      const snapshot = await read;
+      if (!snapshot || snapshot === "gone") throw Error("missing retained outputs");
+      expect(snapshot.entries.map(({ name, size }) => ({ name, size }))).toEqual([
+        { name: "late.pdf", size: report.length },
+      ]);
+      expect(Buffer.from(snapshot.readChunk({ entry: snapshot.entries[0]!, offset: 0 })!).toString()).toBe(report);
+    } else {
+      await expect(read).rejects.toThrow("output_unavailable");
+    }
+    expect(boat.requests.map(({ path }) => path)).toEqual([
+      `/api/v1/sandboxes/${ID}`,
+      `/api/v1/sandboxes/${ID}/snapshots/latest`,
+      "/api/v1/snapshots/retained/files",
+    ]);
+    expect(boat.requests[2]?.query.get("path")).toBe("home/user/outputs");
+  },
+);

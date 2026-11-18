@@ -4,6 +4,7 @@ import {
   OUTPUT_MAX_FILE_BYTES,
   OUTPUT_MAX_FILES,
   OUTPUT_MAX_ORG_BYTES,
+  OUTPUT_MAX_READ_BYTES,
   OUTPUT_MAX_SANDBOX_BYTES,
   type SandboxPlacementProviderId,
   validOutputName,
@@ -21,7 +22,7 @@ import {
 } from "@armada/core/server";
 import type { CallerResult } from "./caller.ts";
 import type { Route } from "./http.ts";
-import { collectOutputTransfers, remainingOutputOrgBytes } from "./output-transfers.ts";
+import { collectOutputTransfers, RETAINED_OUTPUT_STOP, remainingOutputOrgBytes } from "./output-transfers.ts";
 
 // Native and enrolled-runtime Boat/Modal sandboxes: providers read the declared directory through
 // their own fixed channel (Provider.readOutputs), never caller commands or the agent runtime.
@@ -33,7 +34,13 @@ const ELIGIBLE = `provider in ('boat','modal','docker') and not application_secr
 /** The only provider surface output collection uses. */
 type OutputReader = Pick<
   Provider,
-  "readOutputs" | "probeOutputs" | "listOutputEntries" | "readOutputChunk" | "outputReadBytes" | "outputReadConcurrency"
+  | "readOutputs"
+  | "probeOutputs"
+  | "listOutputEntries"
+  | "readOutputChunk"
+  | "outputReadBytes"
+  | "outputReadConcurrency"
+  | "openRetainedOutputs"
 >;
 
 /** SDKs may ignore cancellation once a request reached the provider. Callers wait at most until
@@ -310,6 +317,49 @@ export async function captureFinalOutputs(
   }
 }
 
+async function collectRetained(
+  sql: Sql,
+  provider: OutputReader,
+  row: { id: string; provider_sandbox_id: string; scan: string },
+  generation: string,
+  key: string,
+  signal: AbortSignal,
+  writes: Set<Promise<unknown>>,
+) {
+  const fence = `id=$1 and outputs_checked_at=$2::timestamptz and lifecycle_generation=$3::bigint
+    and provider_sandbox_id=$4 and not application_secret_tainted and ${RETAINED_OUTPUT_STOP}`;
+  const args = [row.id, row.scan, generation, row.provider_sandbox_id];
+  if (!(await sql.query(`select 1 from public.sandboxes where ${fence}`, args)).rows.length) return;
+  signal.throwIfAborted();
+  const snapshot = await provider.openRetainedOutputs?.({ sandboxId: row.provider_sandbox_id, signal });
+  signal.throwIfAborted();
+  if (snapshot === "gone") {
+    const write = sql.query(`update public.sandboxes set outputs_retained_generation=$3::bigint where ${fence}`, args);
+    writes.add(write);
+    try {
+      await write;
+    } finally {
+      writes.delete(write);
+    }
+    return;
+  }
+  if (!snapshot) throw new OutputCollectionError("output_unavailable");
+  await collectOutputTransfers(
+    sql,
+    {
+      outputReadBytes: OUTPUT_MAX_READ_BYTES,
+      listOutputEntries: async () => snapshot.entries,
+      readOutputChunk: async ({ chunk }) => snapshot.readChunk(chunk),
+    },
+    row.id,
+    { sandboxId: row.provider_sandbox_id, signal },
+    row.scan,
+    key,
+    writes,
+    generation,
+  );
+}
+
 export function createSandboxOutputs(
   sql: Sql,
   key: string | undefined,
@@ -336,12 +386,18 @@ export function createSandboxOutputs(
           provider: SandboxPlacementProviderId;
           provider_sandbox_id: string;
           scan: string;
+          retained_generation: string | null;
         }>(
           `update public.sandboxes set outputs_checked_at=clock_timestamp()
-        where id=(select id from public.sandboxes where ${ELIGIBLE} and provider_sandbox_id is not null
-        and provider::text <> all($1::text[])
-        and status in ('running','ready') and (outputs_checked_at is null or outputs_checked_at<now()-interval '30 seconds')
-        order by outputs_checked_at nulls first for update skip locked limit 1) returning id,provider::text,provider_sandbox_id,outputs_checked_at::text as scan`,
+        where id=(select id from public.sandboxes where not application_secret_tainted and provider_sandbox_id is not null
+        and provider::text <> all($1::text[]) and (
+          (${ELIGIBLE} and status in ('running','ready')
+            and (outputs_checked_at is null or outputs_checked_at<now()-interval '30 seconds'))
+          or (${RETAINED_OUTPUT_STOP} and (outputs_checked_at is null or outputs_checked_at<now()-interval '2 minutes'))
+        )
+        order by outputs_checked_at nulls first for update skip locked limit 1)
+        returning id,provider::text,provider_sandbox_id,outputs_checked_at::text as scan,
+          case when ${RETAINED_OUTPUT_STOP} then lifecycle_generation::text end as retained_generation`,
           [saturated],
         )
       ).rows[0];
@@ -354,7 +410,9 @@ export function createSandboxOutputs(
       const reader = row.provider === "docker" ? Promise.resolve(docker?.(row.id) ?? {}) : providerFor(row.id);
       const work = reader
         .then((provider) =>
-          collect(sql, provider, row.id, row.provider_sandbox_id, row.scan, key, { signal: deadline, writes }),
+          row.retained_generation != null
+            ? collectRetained(sql, provider, row, row.retained_generation, key, deadline, writes)
+            : collect(sql, provider, row.id, row.provider_sandbox_id, row.scan, key, { signal: deadline, writes }),
         )
         .catch((error: unknown) =>
           recordOutputFailure(sql, row.id, "sandbox_output_collection_failed", failureReason(error, deadline)).catch(

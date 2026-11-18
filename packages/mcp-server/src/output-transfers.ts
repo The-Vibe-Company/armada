@@ -11,9 +11,11 @@ import { decryptSecret, encryptSecret, OutputCollectionError, type Provider, typ
 export type ChunkedOutputReader = Required<Pick<Provider, "listOutputEntries" | "readOutputChunk">> &
   Pick<Provider, "outputReadBytes" | "outputReadConcurrency">;
 
-const CAN_WRITE = `not application_secret_tainted
-          and (status in ('ready','running','stopping') or (status='failed' and stop_requested_at is not null and stopped_at is null))
-          and (outputs_published_scan is null or outputs_published_scan<$2::timestamptz)`;
+const CAN_WRITE_LIVE = `status in ('ready','running','stopping')
+          or (status='failed' and stop_requested_at is not null and stopped_at is null)`;
+
+export const RETAINED_OUTPUT_STOP = `provider='boat' and status in ('stopped','failed') and stopped_at is not null
+          and stop_requested_at is null and outputs_retained_generation is distinct from lifecycle_generation`;
 
 type Transfer = { id: string; received: number; digest: string | null };
 type Skipped = "too_large" | "sandbox_limit" | "org_limit";
@@ -27,8 +29,15 @@ export async function collectOutputTransfers(
   scan: string,
   key: string,
   writes?: Set<Promise<unknown>>,
+  retainedGeneration?: string,
 ): Promise<void> {
   const { signal } = request;
+  const canWrite = `not application_secret_tainted and (${
+    retainedGeneration === undefined
+      ? CAN_WRITE_LIVE
+      : `${RETAINED_OUTPUT_STOP} and lifecycle_generation=$3::bigint and outputs_checked_at=$2::timestamptz and provider_sandbox_id=$4`
+  }) and (outputs_published_scan is null or outputs_published_scan<$2::timestamptz)`;
+  const authority = retainedGeneration === undefined ? [id, scan] : [id, scan, retainedGeneration, request.sandboxId];
   if (!sql.transaction) throw Error("output_transaction_unavailable");
   const transaction = sql.transaction.bind(sql);
   // All stage/publish writes share the existing sandbox taint and publication fence.
@@ -37,8 +46,8 @@ export async function collectOutputTransfers(
     const work = transaction(async (tx) => {
       const sandbox = (
         await tx.query<{ org_id: string }>(
-          `select org_id from public.sandboxes where id=$1 and ${CAN_WRITE} for update`,
-          [id, scan],
+          `select org_id from public.sandboxes where id=$1 and ${canWrite} for update`,
+          authority,
         )
       ).rows[0];
       if (!sandbox) throw new OutputCollectionError("output_unavailable");
@@ -137,7 +146,7 @@ export async function collectOutputTransfers(
         Array.from({ length: batchSize }, async (_, index) => {
           const start = offset + index * readBytes;
           // Enforce current authority immediately before each provider call, including concurrent reads.
-          if (!(await sql.query(`select 1 from public.sandboxes where id=$1 and ${CAN_WRITE}`, [id, scan])).rows.length)
+          if (!(await sql.query(`select 1 from public.sandboxes where id=$1 and ${canWrite}`, authority)).rows.length)
             throw new OutputCollectionError("output_unavailable");
           signal?.throwIfAborted();
           const bytes = await provider.readOutputChunk({
@@ -234,7 +243,10 @@ export async function collectOutputTransfers(
         and not exists(select 1 from public.sandbox_outputs o where o.sandbox_id=t.sandbox_id and o.transfer_id=t.id)`,
       [id, scan],
     );
-    await tx.query("update public.sandboxes set outputs_published_scan=$2::timestamptz where id=$1", [id, scan]);
+    await tx.query(
+      `update public.sandboxes set outputs_published_scan=$2::timestamptz${retainedGeneration === undefined ? "" : ", outputs_retained_generation=$3::bigint"} where id=$1`,
+      retainedGeneration === undefined ? [id, scan] : [id, scan, retainedGeneration],
+    );
   });
 }
 
