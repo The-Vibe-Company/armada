@@ -76,7 +76,7 @@ function runCollector(root: string, readers?: { bun?: string; python?: string })
 test.skipIf(process.platform !== "linux")("the Python-free collector bounds admitted files in name order", () => {
   const root = mkdtempSync(join(realpathSync(tmpdir()), "outputs-"));
   try {
-    expect(runCollector(root).exitCode).not.toBe(0);
+    expect(runCollector(root).exitCode).toBe(4);
     const outputs = join(root, "outputs");
     mkdirSync(outputs);
     expect(parseCollectorOutput(runCollector(root).stdout.toString())).toEqual([]);
@@ -166,6 +166,37 @@ test.skipIf(process.platform !== "linux")(
 );
 
 const python = Bun.which("python3", { PATH: "/usr/local/bin:/usr/bin:/bin" });
+
+test.skipIf(process.platform !== "linux" || !python)(
+  "probe and read fall back to Python when Bun cannot access descriptors",
+  () => {
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "outputs-"));
+    try {
+      const outputs = join(root, "outputs");
+      mkdirSync(outputs);
+      writeFileSync(join(outputs, "memo.txt"), "document");
+      const run = (program: string) =>
+        Bun.spawnSync([
+          "/bin/sh",
+          "-c",
+          guest(program, { bun: process.execPath, python: python!, outputs }).replaceAll(
+            "/proc/self/fd/",
+            join(root, "unavailable-fd") + "/",
+          ),
+        ]);
+      const probe = run(OUTPUT_COLLECTOR_PROBE);
+      expect(readCollectorProbeResult(probe.exitCode, probe.stdout.toString())).toBe(true);
+      const read = run(OUTPUT_COLLECTOR);
+      expect(read.exitCode).toBe(0);
+      expect(
+        parseCollectorOutput(read.stdout.toString()).map((file) => [file.name, Buffer.from(file.bytes).toString()]),
+      ).toEqual([["memo.txt", "document"]]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
 /** A repository-pinned Bun from before `--no-env-file`: prints its CLI help and exits 0. */
 function helpPrintingBun(root: string) {
   const bun = join(root, "old-bun");

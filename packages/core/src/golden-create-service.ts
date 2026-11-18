@@ -78,6 +78,7 @@ export interface GoldenCreateDeps {
       token: string;
       script: string;
       repositories?: readonly string[];
+      refs?: readonly string[];
       onWarning?: (warning: GoldenBuildWarning) => void;
     },
   ): Promise<void>;
@@ -135,7 +136,7 @@ export class GoldenCreateService {
       visibility: Visibility;
       repos: string[];
       setup?: string;
-      config?: GitHubGoldenConfig;
+      config?: GitHubGoldenConfig<string | undefined>;
       existingGolden?: GoldenRecord;
       /** Trusted server-resolved binding, never a client-supplied profile name. */
       modal?: ModalBinding;
@@ -268,6 +269,7 @@ export class GoldenCreateService {
           sandboxId: builder.id,
           token: group.token,
           repositories: group.repos.map((repo) => `${repo.owner}/${repo.repo}`),
+          refs: group.repos.map((repo) => repo.branch ?? "main"),
           onWarning,
           script: groups.length === 1 ? goldenScript(prepared, setup) : goldenCheckoutFrame(group.repos),
         });
@@ -546,7 +548,7 @@ export function withGoldenDirs(repos: readonly AuthorizedRepo[]): PreparedRepo[]
 /** Apply validated requested branch/directory metadata only after authorization resolved canonical GitHub repos. */
 function applyRequestedRepos(
   repos: readonly AuthorizedRepo[],
-  requested: readonly GitHubGoldenConfig["repos"][number][],
+  requested: readonly GitHubGoldenConfig<string | undefined>["repos"][number][],
 ): PreparedRepo[] {
   if (repos.length !== requested.length)
     throw new GoldenError("invalid_config", "Authorized repositories did not match the request.");
@@ -557,7 +559,7 @@ function applyRequestedRepos(
     }
     return {
       ...repo,
-      branch: wanted.branch,
+      branch: wanted.branch ?? repo.branch ?? "main",
       dir: wanted.dir,
       ...(wanted.history !== undefined ? { history: wanted.history } : {}),
     };
@@ -695,7 +697,7 @@ const GIT_FAILURE_CLASSIFIER = [
   "  shift",
   '  exec {fd}> >(armada_git_stderr "$index")',
   "  collector=$!",
-  '  if "$@" 2>&"$fd"; then status=0; else status=$?; fi',
+  '  if LC_ALL=C "$@" 2>&"$fd"; then status=0; else status=$?; fi',
   "  exec {fd}>&-",
   '  wait "$collector"',
   '  return "$status"',

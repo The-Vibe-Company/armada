@@ -1,5 +1,11 @@
 "use server";
-import { HARNESSES, type Harness, parseDockerSnapshotRecord, parseGoldenConfig, validateSkillPins } from "@armada/core";
+import {
+  HARNESSES,
+  type Harness,
+  parseDockerSnapshotRecord,
+  parseSnapshotConfig,
+  validateSkillPins,
+} from "@armada/core";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { type ActionResult, fail, formString, isUuid } from "@/lib/action";
@@ -45,9 +51,9 @@ export async function buildDockerSnapshot(
   // A stale form may still name a host that started draining; the shared blocker names the uninstall to finish.
   const blocked = snapshotBuildHostBlocker(hosts.list.hosts, hostId);
   if (blocked) return createFail(blocked);
-  let config: ReturnType<typeof parseGoldenConfig>;
+  let config: ReturnType<typeof parseSnapshotConfig>;
   try {
-    config = parseGoldenConfig(JSON.parse(formString(data, "config")));
+    config = parseSnapshotConfig(JSON.parse(formString(data, "config")));
   } catch {
     return createFail("Choose a snapshot JSON file with repositories and init commands, without credentials.");
   }

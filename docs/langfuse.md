@@ -62,8 +62,9 @@ string: tool observations are named `tool`, and the model name and per-turn
 usage metadata are omitted, leaving token counts and cost. Subscription quotes remain
 estimates, not invoices; unavailable costs are omitted.
 
-Each sandbox has a stable trace ID, each completed turn a stable observation
-ID and each tool a child observation. Terminal failures are exported too.
+Each sandbox has one Langfuse session, identified by the sandbox ID. Each
+completed turn has its own stable trace ID and root observation, with tools as
+child observations. Terminal failures are exported too.
 Coverage and available content vary by placement and harness.
 
 | Placement and path | Harnesses | Available evidence |
@@ -93,11 +94,12 @@ A native steer is exported as the run it leaves in progress: the joined turn
 with a steer record instead of a run ID, Armada resolves the run from the
 newest prompt event, relative to the run it knew before the steer. If no new
 run is visible yet when steer returns, Armada keeps a durable steer cursor at
-the last known run. The native receipt worker (about every ten seconds, for
-one hour after the steer) registers every later run as a native receipt, so the
-replacement settles and exports like any other turn. It reads retained provider
-history under the owner and provider-binding fences, so this also works after the
-sandbox stopped. Later runs are identified
+the last known run. A separate, bounded recovery worker registers later runs
+as native receipts, so replacements settle and export like other turns.
+Unresolved cursors stay eligible across server downtime, with at least ten
+seconds between completed recovery attempts. Recovery reads retained provider
+history under the owner and provider-binding fences, including after the sandbox
+stops. Later runs are identified
 by the provider's event order, not by timestamps, so a replacement whose prompt
 event shares the previous run's timestamp is still found. A steer that follows an
 unresolved steer keeps the older cursor. If the cursor run falls outside the
@@ -114,7 +116,7 @@ as `dropped`. A native receipt that the provider fails to answer five times in
 a row is abandoned before settlement, so its turn also counts as `dropped`. Transport, decryption and export-processing failures count as
 `failed`. Requests time out after five seconds, reject redirects, and failed
 requests are counted without an automatic retry. A restart during delivery
-can replay the same stable observation ID. Disabling may leave an in-flight
+can replay the same stable trace and observation IDs. Disabling may leave an in-flight
 request running. Settings are resolved when the job is claimed.
 
 Deployment requires the Langfuse export migration, the normal encryption key,

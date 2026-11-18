@@ -837,6 +837,7 @@ export type Database = {
           failure_reason: string | null;
           baseline_version: number | null;
           baseline_failure_tool: string | null;
+          missing_ref_index: number | null;
         };
         Insert: {
           id: string;
@@ -860,6 +861,7 @@ export type Database = {
           failure_reason?: string | null;
           baseline_version?: number | null;
           baseline_failure_tool?: string | null;
+          missing_ref_index?: number | null;
         };
         Update: {
           id?: string;
@@ -883,6 +885,7 @@ export type Database = {
           failure_reason?: string | null;
           baseline_version?: number | null;
           baseline_failure_tool?: string | null;
+          missing_ref_index?: number | null;
         };
         Relationships: [
           {

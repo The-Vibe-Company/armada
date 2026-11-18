@@ -384,7 +384,7 @@ test.each(["warning", "integrity", "init", "clone"])("SSH checkout carries close
 test.each([
   ["ARMADA_GIT_FAILURE 2 auth_denied", "Could not clone acme/private: GitHub credentials were rejected."],
   ["ARMADA_GIT_FAILURE 2 repository_not_found", "GitHub could not find or authorize the repository."],
-  ["ARMADA_GIT_FAILURE 2 branch_missing", "The requested branch was not found."],
+  ["ARMADA_GIT_FAILURE 2 branch_missing", "Ref 'feature/missing' was not found in acme/private."],
   ["ARMADA_GIT_FAILURE 2 transport_failed", "The Git transfer failed."],
   ["ARMADA_GIT_FAILURE 2 lfs_failed", "Git LFS checkout failed."],
   ["ARMADA_GIT_FAILURE 2 destination_exists", "The checkout destination already exists."],
@@ -419,6 +419,7 @@ test.each([
         token: "opaque-secret",
         script: "unused",
         repositories: ["acme/public", "acme/private"],
+        refs: ["main", "feature/missing"],
       },
       {
         spawn,

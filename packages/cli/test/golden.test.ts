@@ -99,7 +99,7 @@ describe("golden command", () => {
           "monorepo",
           "--private",
           "--repo",
-          "https://github.com/acme/web.git@main",
+          "https://github.com/acme/web.git",
           "--repo",
           "https://github.com/acme/api.git@dev",
           "--init",
@@ -125,7 +125,7 @@ describe("golden command", () => {
         "select config from goldens where name = 'monorepo'",
       );
       expect(row.rows[0]?.config.repos).toEqual([
-        { url: "https://github.com/acme/web.git", branch: "main", dir: "web" },
+        { url: "https://github.com/acme/web.git", branch: "trunk", dir: "web" },
         { url: "https://github.com/acme/api.git", branch: "dev", dir: "api" },
       ]);
 
@@ -333,7 +333,7 @@ function fakeGitHubFetch(): typeof fetch {
       return Response.json({
         id: repo[1] === "web" ? 7 : 8,
         name: repo[1],
-        default_branch: repo[1] === "api" ? "dev" : "main",
+        default_branch: repo[1] === "api" ? "dev" : "trunk",
         owner: { login: "acme" },
         private: false,
       });

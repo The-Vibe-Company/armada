@@ -747,6 +747,10 @@ export async function startServer(
   const lifecycle = createSandboxLifecycle(sql, lifecycleProvider, {
     delayMs: idleDelayMs,
   });
+  const nativePrompts = createNativeWebhookPrompts(
+    sql,
+    createMcpSandboxProviderResolver(sql, providers, { terminalObservation: true }),
+  );
   const workers = startServerWorkers(
     goldenBuilds,
     lifecycle,
@@ -776,7 +780,7 @@ export async function startServer(
         : []),
       outputs,
       webhooks,
-      createNativeWebhookPrompts(sql, createMcpSandboxProviderResolver(sql, providers, { terminalObservation: true })),
+      nativePrompts,
       delegatedAccess.childWorker,
       createFinishedDockerCleanup(sql, config.encryptionKey),
       accountTurns,
@@ -797,7 +801,7 @@ export async function startServer(
           : {}),
       }),
     ],
-    [langfuse],
+    [langfuse, nativePrompts.steerRecovery],
   );
   const invitationWorker =
     env.ARMADA_INVITATION_MAIL === "supabase" && control.invitations

@@ -152,10 +152,7 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
     ...(args.positionals[0] === undefined ? {} : { prompt: args.positionals[0] }),
   };
   try {
-    const result = await client.request<DockerLaunchResult>("/api/v1/sandbox/launch", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
+    const result = await client.sandboxes.launch<DockerLaunchResult>(body, {
       signal: AbortSignal.timeout(600_000),
     });
     if (

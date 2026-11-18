@@ -220,3 +220,94 @@ test("accepted native receipts survive cancelled task publication and alias only
   ).toEqual([["accepted_receipt", "turn.finished"]]);
   expect(await worker.reconcileOne(new AbortController().signal)).toBe(false);
 });
+
+test("ordinary native settlement proceeds with stalled steer recovery at capacity", async () => {
+  const { db, sql, id, people } = await fixture();
+  const steerSandbox = crypto.randomUUID();
+  await db.query(
+    `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status)
+     select $1,golden_id,org_id,owner_id,'steer_fixture',harness,'ready' from sandboxes where id=$2`,
+    [steerSandbox, id],
+  );
+  await createSqlData(sql)({
+    userId: people.owner,
+    orgs: [{ orgId: people.org, role: "member" }],
+    via: "service",
+  }).sandboxes.recordPendingSteer!(steerSandbox, "steer_fixture", "prior_prompt");
+  await db.query("update sandboxes set task_prompt_id='ordinary_prompt' where id=$1", [id]);
+  await db.query("insert into org_langfuse(org_id,enabled,content_mode,config_enc) values($1,true,'metadata',$2)", [
+    people.org,
+    new Uint8Array([1]),
+  ]);
+
+  type NativeProvider = Pick<Provider, "id" | "events" | "getPrompt">;
+  const provider: NativeProvider = {
+    id: "boat",
+    events: unusedEvents,
+    async getPrompt({ promptId }) {
+      return { promptId, status: "finished", done: true };
+    },
+  };
+  const stalled = Promise.withResolvers<NativeProvider>();
+  let tick: AbortController;
+  let recoveryCalls = 0;
+  const worker = createNativeWebhookPrompts(sql, async (sandboxId) => {
+    if (sandboxId !== steerSandbox) return provider;
+    recoveryCalls++;
+    tick.abort();
+    return stalled.promise;
+  });
+
+  try {
+    for (let i = 0; i < 4; i++) {
+      await db.query("update native_steer_cursors set lease_until=now()-interval '1 second' where sandbox_id=$1", [
+        steerSandbox,
+      ]);
+      tick = new AbortController();
+      await expect(worker.steerRecovery.reconcileOne(tick.signal)).rejects.toThrow();
+    }
+    await db.query("update native_steer_cursors set lease_until=now()-interval '1 second' where sandbox_id=$1", [
+      steerSandbox,
+    ]);
+    tick = new AbortController();
+    expect(await worker.steerRecovery.reconcileOne(tick.signal)).toBe(false);
+    expect(recoveryCalls).toBe(4);
+    expect(await worker.reconcileOne(new AbortController().signal)).toBe(true);
+    expect((await db.query("select prompt_id from langfuse_turn_exports where sandbox_id=$1", [id])).rows).toEqual([
+      { prompt_id: "ordinary_prompt" },
+    ]);
+    expect(
+      (
+        await db.query(
+          "select payload->>'promptId' as prompt_id from outbound_webhook_deliveries where payload->>'type'='turn.finished'",
+        )
+      ).rows,
+    ).toEqual([{ prompt_id: "ordinary_prompt" }]);
+  } finally {
+    stalled.resolve(provider);
+    await worker.steerRecovery.drain();
+  }
+});
+
+test("a newly eligible steer gets a recovery pass ahead of an old cursor's retry", async () => {
+  const { db, sql, id } = await fixture();
+  const oldId = crypto.randomUUID();
+  await db.query(
+    `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status)
+     select $1,golden_id,org_id,owner_id,'old_steer_fixture',harness,'ready' from sandboxes where id=$2`,
+    [oldId, id],
+  );
+  await db.query(
+    `insert into native_steer_cursors(sandbox_id,steer_id,pending_since,pending_steers,lease_until)
+     values ($1,gen_random_uuid(),now()-interval '1 minute',1,null),
+            ($2,gen_random_uuid(),now()-interval '2 hours',1,now()-interval '1 second')`,
+    [id, oldId],
+  );
+  const observed: string[] = [];
+  const worker = createNativeWebhookPrompts(sql, async (sandboxId) => {
+    observed.push(sandboxId);
+    throw Error("history unavailable");
+  });
+  expect(await worker.steerRecovery.reconcileOne(new AbortController().signal)).toBe(true);
+  expect(observed).toEqual([id]);
+});

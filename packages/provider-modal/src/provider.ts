@@ -243,9 +243,10 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       appName: options.appName,
     };
   }
-  async function physical(row: Machine): Promise<Sandbox> {
+  async function physical(row: Machine, signal?: AbortSignal): Promise<Sandbox> {
     assertMachineSource(row);
     await bound();
+    signal?.throwIfAborted();
     if (!row.physicalId) throw refusal("sandbox_not_ready", "No current physical machine.");
     return client.sandboxes.fromId(row.physicalId);
   }
@@ -898,6 +899,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     command: string,
     read: (status: number | null, stdout: string) => T,
   ): Promise<T | null> {
+    signal?.throwIfAborted();
     await bound();
     signal?.throwIfAborted();
     // Observation, not lifecycle: like exec and getPrompt it reads the row without the
@@ -905,11 +907,12 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     // the pre-stop final capture fail with lifecycle_lease_busy. A stop racing this read only
     // makes the exec fail; the caller keeps its previous snapshot.
     const row = await store.get(sandboxId);
+    signal?.throwIfAborted();
     assertMachineSource(row);
     // Live compute only: a stopped Modal workspace is a recovery image, readable only by
     // starting compute, which this read never does. Armada stops capture first instead.
     if (row.golden || row.phase !== "active" || !row.physicalId) return null;
-    const sb = await physical(row);
+    const sb = await physical(row, signal);
     signal?.throwIfAborted();
     // Fixed collector on the physical container, not the runner: it works for native and
     // enrolled (dial-out) runtimes alike and never carries caller input.
@@ -921,11 +924,13 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       workdir: "/",
       stderr: "ignore",
     });
+    signal?.throwIfAborted();
     const output = child.stdout.readText();
     // Awaited below; never an unhandled rejection if closing stdin fails first.
     output.catch(() => {});
     await child.stdin.close();
     // The caller's budget (the shared pre-stop deadline) bounds the wait, not only the exec timeout.
+    signal?.throwIfAborted();
     const [status, stdout] = await abortable(Promise.all([child.wait(), output]), signal);
     return read(status, stdout);
   }

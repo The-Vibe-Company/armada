@@ -394,7 +394,7 @@ function ScopedGoldenForm({
                     required={index === 0}
                   />
                 </div>
-                <span className="text-xs text-muted-foreground">{row.branch || "main"}</span>
+                <span className="text-xs text-muted-foreground">{row.branch || "Default branch"}</span>
                 <details className="contents">
                   <summary className="col-start-3 row-start-1 cursor-pointer py-2 text-sm">Details</summary>
                   <div className="col-span-full row-start-2 grid gap-3 py-2 sm:grid-cols-2">
@@ -405,7 +405,7 @@ function ScopedGoldenForm({
                         name="repo_branch"
                         value={row.branch}
                         onChange={(event) => update(row.key, "branch", event.target.value)}
-                        placeholder="main"
+                        placeholder="Default branch"
                       />
                     </div>
                     <div className="space-y-1">
