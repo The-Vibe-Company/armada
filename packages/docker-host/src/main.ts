@@ -17,12 +17,15 @@ import { cleanupOfficialImages } from "./image-retention.ts";
 import { dockerCli, fileStore, httpApi } from "./native.ts";
 import { dockerRuntimeStarter } from "./runtime-install.ts";
 import {
+  automaticUpdate,
   installService,
   inventory,
+  managedUpdateInstance,
   removeInstallation,
   servicePreflight,
   stateDirectory,
   stopService,
+  superviseUpdate,
   uninstallPreflight,
   upgradeService,
   validateInstallation,
@@ -61,6 +64,13 @@ async function main(args: string[]) {
     return;
   }
   const [command, ...flags] = args;
+  if (command === "supervise-update") {
+    if (flags.length !== 0 && (flags.length !== 2 || flags[0] !== "--instance" || !flags[1]))
+      throw new Error("Invalid update supervisor arguments");
+    const instance = flags[1];
+    await superviseUpdate(await fileStore(stateDirectory(undefined, instance)), instance);
+    return;
+  }
   const options = new Map<string, string>();
   for (let i = 0; i < flags.length; i += 2) {
     const key = flags[i];
@@ -174,13 +184,21 @@ async function main(args: string[]) {
     const sampleDisk = () => dockerDiskFreeBytes(dockerCli);
     let stoppedSampleAt = 0;
     let stoppedSample: number | null = null;
-    const api = httpApi(fetch, createAvailabilitySampler(dockerCli), sampleDisk, async (state) => {
-      if (Date.now() - stoppedSampleAt >= 60_000) {
-        stoppedSampleAt = Date.now();
-        stoppedSample = await stoppedSandboxBytes(dockerCli, state);
-      }
-      return stoppedSample;
-    });
+    const managed = command === "run" ? managedUpdateInstance(directory) : undefined;
+    const update = managed ? automaticUpdate(await store.load(), managed.instance) : undefined;
+    const api = httpApi(
+      fetch,
+      createAvailabilitySampler(dockerCli),
+      sampleDisk,
+      async (state) => {
+        if (Date.now() - stoppedSampleAt >= 60_000) {
+          stoppedSampleAt = Date.now();
+          stoppedSample = await stoppedSandboxBytes(dockerCli, state);
+        }
+        return stoppedSample;
+      },
+      update,
+    );
     if (command === "register" || command === "install") {
       if (await store.exists()) throw new Error("Host already registered");
       const token = (await Bun.stdin.text()).trim();
@@ -260,7 +278,8 @@ async function main(args: string[]) {
     try {
       let nextImageCleanup = 0;
       await runJobs(store, api, runtime, {
-        stopping: () => stopping,
+        stopping: () => stopping || update?.staged === true,
+        ...(update ? { beforeAdmission: update.beforeAdmission } : {}),
         sleep: Bun.sleep,
         async beforeTick() {
           if (Date.now() < nextImageCleanup) return;
@@ -284,6 +303,7 @@ async function main(args: string[]) {
       await Promise.all(scans);
       await expiry.drain();
     }
+    if (update?.staged) await update.restart();
   } finally {
     await release();
   }

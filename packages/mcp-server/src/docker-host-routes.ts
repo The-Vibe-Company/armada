@@ -1,6 +1,7 @@
 import { readBoundedText } from "@armada/auth";
 import { DOCKER_JOB_FAILURE_REASONS, type DockerJobFailureReason } from "@armada/core";
 import { isSnapshotBaselineTool } from "@armada/core/server";
+import { DOCKER_HOST_UPDATE_FAILURE_HEADER, stableDockerHostVersion } from "../../core/src/docker-host-upgrade.ts";
 import { type DockerHostResources, validDockerAvailability } from "../../core/src/docker-resource-policy.ts";
 import { dockerResourceLimits } from "../../core/src/docker-resources.ts";
 import { VERSION } from "../../core/src/version.ts";
@@ -331,6 +332,12 @@ export function createDockerHostRoutes(
           if (!ready) break;
           probed = true;
         }
+        const failedUpdate = request.headers.get(DOCKER_HOST_UPDATE_FAILURE_HEADER);
+        if (stableDockerHostVersion(failedUpdate)) {
+          console.warn(
+            JSON.stringify({ event: "docker_host_update_failed", installationId, targetVersion: failedUpdate }),
+          );
+        }
         return Response.json(
           {
             ...(retentionSeconds === undefined ? {} : { retentionSeconds }),
@@ -342,7 +349,12 @@ export function createDockerHostRoutes(
             pendingStarts: await store.pendingStartsForHost(token, installationId),
             ...(body.resourcePolicyVersion === 1 ? { limits: await store.limitsForHost(token, installationId) } : {}),
           },
-          { headers },
+          {
+            headers: {
+              ...headers,
+              ...(stableDockerHostVersion(failedUpdate) ? { [DOCKER_HOST_UPDATE_FAILURE_HEADER]: failedUpdate } : {}),
+            },
+          },
         );
       }
       if ("claimed" in body) {

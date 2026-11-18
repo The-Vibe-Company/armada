@@ -100,6 +100,7 @@ export interface Api {
       running?: string[];
     },
   ): Promise<{
+    targetVersion?: string;
     job: Job | null;
     /** The server held this poll until work existed or its hold elapsed. */
     held?: true;
@@ -251,6 +252,7 @@ export type TickOptions = {
    * again, so work that completed during the hold no longer blocks anything.
    */
   running?: ReadonlySet<string>;
+  beforeAdmission?(target: string | undefined): Promise<boolean>;
   /** Sandboxes whose machine operation is still executing in this process. */
   sandboxes?: ReadonlySet<string>;
   /** Snapshot builds still executing in this process; when given, it replaces `skipSnapshots` after the poll. */
@@ -338,6 +340,7 @@ export async function runJobs(
     stopping(): boolean;
     sleep(ms: number): Promise<unknown>;
     beforeTick?(): Promise<void>;
+    beforeAdmission?(target: string | undefined): Promise<boolean>;
     failed?(what: "tick" | "job"): void;
     now?: () => number;
   },
@@ -363,6 +366,7 @@ export async function runJobs(
         outcome = await tick(store, api, executor, live.snapshots.size > 0, loop.now ?? Date.now, {
           waitSeconds: DOCKER_HOST_POLL_WAIT_SECONDS,
           ...live,
+          ...(loop.beforeAdmission ? { beforeAdmission: loop.beforeAdmission } : {}),
           dispatch(job, work) {
             const done = work
               .catch(() => loop.failed?.("job"))
@@ -891,8 +895,9 @@ async function admitLocked(
   }
   if (pollError) throw pollError;
   if (!polled) throw pollError ?? new Error("Host poll unavailable");
-  if (!polled.job) {
+  if ((await options.beforeAdmission?.(polled.targetVersion)) || !polled.job) {
     await store.save(state);
+    if (polled.job) return "idle";
     // A claim this host cannot acknowledge would end every held poll at once.
     return polled.held && !unacknowledged ? "held" : "idle";
   }

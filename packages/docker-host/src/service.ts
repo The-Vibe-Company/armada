@@ -3,8 +3,11 @@ import { constants } from "node:fs";
 import { lstat, mkdir, open, readdir, readFile, rename, rm, rmdir, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { stableDockerHostVersion } from "../../core/src/docker-host-upgrade.ts";
+import { VERSION } from "../../core/src/version.ts";
 import { type State, type Store, serverOrigin } from "./daemon.ts";
 import { dockerCli } from "./native.ts";
+import { downloadOfficialHost } from "./official-release.ts";
 
 export function instanceName(instance?: string) {
   if (instance !== undefined && !/^[a-f0-9]{64}$/.test(instance)) throw new Error("Invalid Docker host instance.");
@@ -166,7 +169,9 @@ export async function validateInstallation(
     throw new Error("Installation files changed; inspect them before uninstalling or upgrading.");
   for (const entry of await readdir(directory)) {
     if (
-      !["state.json", "daemon.lock", "managed.json", ...CACHE_DIRECTORIES].includes(entry) &&
+      !["state.json", "daemon.lock", "managed.json", "update.json", "update-candidate", ...CACHE_DIRECTORIES].includes(
+        entry,
+      ) &&
       !/^daemon-[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\.lock$/.test(entry)
     )
       throw new Error("Unknown files in installation directory; preserve and inspect before uninstalling.");
@@ -225,6 +230,7 @@ export async function upgradeService(
   if (origin !== initial.server)
     throw new Error("Upgrade server does not match the registered host; registration preserved.");
   const initialMarker = await validateInstallation(initial, io.home, instance);
+  await refuseActiveUpdate(io.home, instance);
   const bytes = await ownedFile(io.executable, io.home, true);
   const digest = sha256(bytes);
   if (initialMarker.binarySha256 === digest && initialMarker.pendingBinarySha256 === undefined) return;
@@ -239,6 +245,7 @@ export async function upgradeService(
         throw new Error("Installation identity changed; registration preserved.");
       const marker = await validateInstallation(state, io.home, instance);
       const p = paths(io.home, instance);
+      await refuseActiveUpdate(io.home, instance);
       const directory = stateDirectory(io.home, instance);
       const markerFile = join(directory, "managed.json");
       const currentDigest = sha256(await ownedFile(p.binary, io.home, true));
@@ -267,6 +274,7 @@ export async function upgradeService(
 }
 export async function uninstallPreflight(state: State, instance?: string) {
   await validateInstallation(state, homedir(), instance);
+  await refuseActiveUpdate(homedir(), instance);
   if (!(await inventory(state)).empty)
     throw new Error("Host resources remain after drain; preserve registration files and inspect through Armada.");
 }
@@ -277,6 +285,9 @@ export async function removeInstallation(instance?: string) {
   const p = paths(homedir(), instance);
   const directory = stateDirectory(homedir(), instance);
   // Preserve registration/ownership proof until the final binary unlink succeeds.
+  const update = await readUpdate(homedir(), instance);
+  const extra = ["update.json", "update-candidate"].map((name) => join(directory, name));
+  if (update?.previousDigest) extra.push(`${p.binary}.previous`);
   const saved = await Promise.all(
     [p.unit, join(directory, "state.json"), join(directory, "managed.json")].map(async (path) => ({
       path,
@@ -296,6 +307,8 @@ export async function removeInstallation(instance?: string) {
         await unlink(file);
       }
     }
+    if (update?.previousDigest) await verifyBackup(homedir(), instance, update.previousDigest);
+    for (const file of extra) await rm(file, { force: true });
     await unlink(join(directory, "state.json"));
     await unlink(join(directory, "managed.json"));
     await rmdir(directory);
@@ -311,5 +324,257 @@ export async function removeInstallation(instance?: string) {
       }
     }
     throw error;
+  }
+}
+
+type Update = {
+  version: string;
+  phase: "failed" | "staged" | "starting" | "updated";
+  previousDigest?: string;
+  candidateDigest?: string;
+  reported?: true;
+};
+type ManagedStore = Pick<Store, "load"> & { lock(): Promise<() => Promise<void>> };
+
+async function readUpdate(home: string, instance?: string): Promise<Update | undefined> {
+  try {
+    const update: Update = JSON.parse(
+      await ownedFile(join(stateDirectory(home, instance), "update.json"), home).then((bytes) =>
+        bytes.toString("utf8"),
+      ),
+    );
+    if (
+      !stableDockerHostVersion(update.version) ||
+      !["failed", "staged", "starting", "updated"].includes(update.phase) ||
+      (update.previousDigest !== undefined && !digestPattern.test(update.previousDigest)) ||
+      (update.candidateDigest !== undefined && !digestPattern.test(update.candidateDigest))
+    )
+      throw new Error("Invalid Docker host update record");
+    return update;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+}
+
+function saveUpdate(home: string, instance: string | undefined, update: Update) {
+  const directory = stateDirectory(home, instance);
+  return atomicReplace(join(directory, "update.json"), Buffer.from(JSON.stringify(update)), 0o600, dirname(directory));
+}
+
+async function refuseActiveUpdate(home: string, instance?: string) {
+  const phase = (await readUpdate(home, instance))?.phase;
+  if (phase === "starting" || phase === "staged")
+    throw new Error("Automatic Docker host update in progress. Retry after the service has recovered.");
+}
+
+async function verifyBackup(home: string, instance: string | undefined, digest: string) {
+  const bytes = await ownedFile(`${paths(home, instance).binary}.previous`, home, true);
+  if (sha256(bytes) !== digest) throw new Error("Docker host rollback copy changed");
+  return bytes;
+}
+
+function newer(target: string, current: string) {
+  const parts = current.split(".").map(Number);
+  for (const [index, value] of target.split(".").map(Number).entries()) {
+    const previous = parts[index]!;
+    if (value !== previous) return value > previous;
+  }
+  return false;
+}
+
+/** The generated service owns both its executable and its private state directory. */
+export function managedUpdateInstance(directory: string): { instance?: string } | undefined {
+  if (process.platform !== "linux" || !process.env.INVOCATION_ID) return;
+  const match = /\/armada-docker-host(?:@([a-f0-9]{64}))?$/.exec(directory);
+  if (!match) return;
+  const instance = match[1];
+  if (directory === stateDirectory(homedir(), instance) && process.execPath === paths(homedir(), instance).binary)
+    return instance ? { instance } : {};
+}
+
+export function automaticUpdate(state: State, instance?: string) {
+  const home = homedir();
+  const p = paths(home, instance);
+  let staged = false;
+  return {
+    get staged() {
+      return staged;
+    },
+    async beforeAdmission(target: unknown) {
+      const last = await readUpdate(home, instance);
+      // The new service reconciles and polls, but waits for the supervisor's
+      // decision before admitting work. This makes a failing trial reversible.
+      if (last?.phase === "starting") return true;
+      if (last?.phase === "staged") return false;
+      if (
+        process.env.ARMADA_DOCKER_HOST_AUTO_UPDATE === "0" ||
+        !stableDockerHostVersion(VERSION) ||
+        !stableDockerHostVersion(target) ||
+        !newer(target, VERSION) ||
+        (last && !newer(target, last.version))
+      )
+        return false;
+      try {
+        if (
+          (await command(["systemctl", "--user", "show", "-p", "MainPID", "--value", serviceName(instance)])) !==
+          String(process.pid)
+        )
+          return false;
+        await validateInstallation(state, home, instance);
+        const attempt: Update = {
+          version: target,
+          phase: "failed",
+          ...(last?.previousDigest ? { previousDigest: last.previousDigest } : {}),
+        };
+        // Fence the attempt before the first network request. A different, newer
+        // release or a manual upgrade can recover from a failed download.
+        await saveUpdate(home, instance, attempt);
+        const bytes = await downloadOfficialHost(target, process.arch);
+        await atomicReplace(
+          join(stateDirectory(home, instance), "update-candidate"),
+          bytes,
+          0o600,
+          dirname(stateDirectory(home, instance)),
+        );
+        const previous = await ownedFile(p.binary, home, true);
+        const previousDigest = sha256(previous);
+        const backup = `${p.binary}.previous`;
+        try {
+          const existing = sha256(await ownedFile(backup, home, true));
+          if (existing !== last?.previousDigest && existing !== previousDigest)
+            throw new Error("Docker host rollback copy changed");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+        await atomicReplace(backup, previous, 0o700);
+        await saveUpdate(home, instance, {
+          ...attempt,
+          phase: "staged",
+          previousDigest,
+          candidateDigest: sha256(bytes),
+        });
+        staged = true;
+        return true;
+      } catch {
+        console.error("Automatic Docker host update could not be staged.");
+        return false;
+      }
+    },
+    async restart() {
+      try {
+        // Type=exec confirms that systemd exec'd the old daemon's helper before
+        // the original exits. The separate unit survives the service stop.
+        const args = [
+          "systemd-run",
+          "--user",
+          "--collect",
+          "--unit",
+          `${instanceName(instance)}-update`,
+          "--property=Type=exec",
+          "--property=Restart=on-failure",
+          "--property=RestartSec=10s",
+          "--",
+          `${p.binary}.previous`,
+          "supervise-update",
+        ];
+        if (instance) args.push("--instance", instance);
+        await command(args);
+      } catch {
+        const update = await readUpdate(home, instance);
+        if (update?.phase === "staged") await saveUpdate(home, instance, { ...update, phase: "failed" });
+        throw new Error("Docker host update supervisor could not start.");
+      }
+    },
+    async failure() {
+      const update = await readUpdate(home, instance);
+      return update?.phase === "failed" && !update.reported ? update.version : undefined;
+    },
+    async acknowledge(version: string) {
+      const update = await readUpdate(home, instance);
+      if (update?.phase === "failed" && update.version === version)
+        await saveUpdate(home, instance, { ...update, reported: true });
+    },
+  };
+}
+
+export async function superviseUpdate(
+  store: ManagedStore,
+  instance?: string,
+  io: Pick<UpgradeServiceIo, "home" | "service"> = { home: homedir(), service: command },
+) {
+  const { home } = io;
+  const p = paths(home, instance);
+  const directory = stateDirectory(home, instance);
+  const markerFile = join(directory, "managed.json");
+  const candidateFile = join(directory, "update-candidate");
+  const service = (verb: string) => io.service(["systemctl", "--user", verb, serviceName(instance)]);
+  const writeMarker = (marker: ManagedInstallation) =>
+    atomicReplace(markerFile, Buffer.from(JSON.stringify(marker)), 0o600, dirname(directory));
+  let update = await readUpdate(home, instance);
+  if (update?.phase === "failed") {
+    await service("start");
+    return;
+  }
+  if (update?.phase !== "staged" && update?.phase !== "starting") return;
+  const previousHealth = (await store.load()).lastPollAt;
+  try {
+    if (update.phase !== "staged") throw new Error("Interrupted Docker host update");
+    await service("stop");
+    const unlock = await store.lock();
+    try {
+      const marker = await validateInstallation(await store.load(), home, instance);
+      if (marker.pendingBinarySha256) throw new Error("An earlier Docker host upgrade is incomplete");
+      const candidate = await ownedFile(candidateFile, home);
+      if (sha256(candidate) !== update.candidateDigest) throw new Error("Staged Docker host release changed");
+      if (update.previousDigest !== marker.binarySha256) throw new Error("Managed Docker host executable changed");
+      await verifyBackup(home, instance, update.previousDigest);
+      update = { ...update, phase: "starting" };
+      await saveUpdate(home, instance, update);
+      await writeMarker({ ...marker, pendingBinarySha256: sha256(candidate) });
+      await atomicReplace(p.binary, candidate, 0o700);
+    } finally {
+      await unlock();
+    }
+    await service("start");
+    const timeout = Date.now() + 90_000;
+    for (;;) {
+      // Only a fresh successful poll from the trial may confirm health.
+      const polled = (await store.load()).lastPollAt;
+      if (polled !== undefined && polled !== previousHealth) {
+        await service("is-active");
+        break;
+      }
+      if (Date.now() >= timeout) throw new Error("Docker host update did not reconnect");
+      await Bun.sleep(1000);
+    }
+    const marker = await validateInstallation(await store.load(), home, instance);
+    await writeMarker({
+      installationId: marker.installationId,
+      unit: marker.unit,
+      binarySha256: update.candidateDigest!,
+    });
+    await saveUpdate(home, instance, { ...update, phase: "updated" });
+  } catch {
+    await service("stop");
+    const unlock = await store.lock();
+    try {
+      if (update.phase === "starting" && update.previousDigest) {
+        const marker = await validateInstallation(await store.load(), home, instance);
+        const previous = await verifyBackup(home, instance, update.previousDigest);
+        await writeMarker({ ...marker, pendingBinarySha256: update.previousDigest });
+        await atomicReplace(p.binary, previous, 0o700);
+        await writeMarker({
+          installationId: marker.installationId,
+          unit: marker.unit,
+          binarySha256: update.previousDigest,
+        });
+      }
+      await saveUpdate(home, instance, { ...update, phase: "failed" });
+    } finally {
+      await unlock();
+    }
+    // Retry a transient service-manager failure inside the supervisor. The
+    // old release is already restored, so this cannot retry the update.
+    await service("start");
   }
 }

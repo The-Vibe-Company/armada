@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { DOCKER_HOST_UPDATE_FAILURE_HEADER } from "../../core/src/docker-host-upgrade.ts";
 import type { DockerMachineCli } from "../../core/src/docker-machine.ts";
 import { type DockerHostResources, dockerHostResources } from "../../core/src/docker-resources.ts";
 import { VERSION } from "../../core/src/version.ts";
@@ -156,6 +157,7 @@ export function httpApi(
   resources?: (state: State) => Promise<DockerHostResources>,
   diskFreeBytes?: () => Promise<number | null>,
   stoppedBytes?: (state: State) => Promise<number | null>,
+  update?: { failure(): Promise<string | undefined>; acknowledge(version: string): Promise<void> },
 ): Api & {
   unregister(state: State): Promise<boolean>;
   reuseRegistration(state: State, token: string): Promise<{ hostId: string; name: string | null }>;
@@ -167,11 +169,16 @@ export function httpApi(
     body: unknown,
     timeoutMs = 8_000,
   ): Promise<unknown> {
+    const failure = endpoint === "poll" ? await update?.failure() : undefined;
     const response = await request(`${serverOrigin(server)}/api/docker-host/${endpoint}`, {
       method: "POST",
       redirect: "error",
       signal: AbortSignal.timeout(timeoutMs),
-      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        ...(failure ? { [DOCKER_HOST_UPDATE_FAILURE_HEADER]: failure } : {}),
+      },
       body: JSON.stringify(body),
     });
     if (!response.ok) {
@@ -198,7 +205,10 @@ export function httpApi(
     } finally {
       await reader.cancel();
     }
-    return JSON.parse(Buffer.concat(parts).toString("utf8"));
+    const result = JSON.parse(Buffer.concat(parts).toString("utf8"));
+    if (failure && response.headers.get(DOCKER_HOST_UPDATE_FAILURE_HEADER) === failure)
+      await update?.acknowledge(failure).catch(() => {});
+    return result;
   }
   return {
     async reuseRegistration(state, token) {
