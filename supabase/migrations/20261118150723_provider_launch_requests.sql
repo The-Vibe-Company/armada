@@ -6,7 +6,8 @@ create table public.provider_launch_requests (
   sandbox_id uuid primary key references public.sandboxes(id) on delete restrict,
   actor_epoch bigint not null check (actor_epoch >= 0),
   request_enc bytea check (octet_length(request_enc) > 28),
-  fence_id uuid unique references public.golden_operation_fences(id) on delete set null,
+  -- The worker clears this link only after durable child protection or verified absence.
+  fence_id uuid unique references public.golden_operation_fences(id) on delete restrict,
   phase text not null default 'queued' check (phase in (
     'queued', 'resolving_snapshot', 'booting', 'preparing_harness',
     'reconciling', 'cleanup_pending', 'succeeded', 'failed', 'cancelled'
@@ -24,6 +25,10 @@ create table public.provider_launch_requests (
   check ((lease_owner is null) = (lease_expires_at is null)),
   check (request_enc is not null or phase in ('succeeded', 'failed', 'cancelled'))
 );
+
+create index provider_launch_requests_due_idx
+  on public.provider_launch_requests (next_attempt_at, created_at, sandbox_id)
+  where phase not in ('succeeded', 'failed', 'cancelled');
 
 comment on column public.provider_launch_requests.request_enc is
   'Encrypted frozen launch inputs. Clear after execution and recovery finish.';
