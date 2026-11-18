@@ -1,13 +1,17 @@
 /** Declared sandbox outputs (#2570): one fixed directory, bounded snapshot, no caller-supplied path. */
-import { OUTPUT_MAX_BYTES, OUTPUT_MAX_ENTRIES, OUTPUT_MAX_FILES, validOutputName } from "./sandbox-output-limits.ts";
-
-export {
-  DOCKER_OUTPUT_DIRECTORY,
+import {
   OUTPUT_DIRECTORY,
   OUTPUT_MAX_BYTES,
   OUTPUT_MAX_ENTRIES,
   OUTPUT_MAX_FILES,
-  outputDirectory,
+  validOutputName,
+} from "./sandbox-output-limits.ts";
+
+export {
+  OUTPUT_DIRECTORY,
+  OUTPUT_MAX_BYTES,
+  OUTPUT_MAX_ENTRIES,
+  OUTPUT_MAX_FILES,
 } from "./sandbox-output-limits.ts";
 
 /** One declared output file as read by a provider. Callers still validate with `admitOutputs`. */
@@ -25,43 +29,46 @@ export const OUTPUT_COLLECTOR = `cd / && PATH=/usr/local/bin:/usr/bin:/bin exec 
 import os,stat,json,base64,sys
 files=[]
 try:
- root=os.open('/workspace',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
- try: directory=os.open('outputs',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=root)
- finally: os.close(root)
-except FileNotFoundError: directory=None
-if directory is not None:
- try:
-  names=[]
-  for index,entry in enumerate(os.scandir(directory)):
-   if index>=${OUTPUT_MAX_ENTRIES}: sys.exit(3)
-   name=entry.name
-   # Skip names the server would refuse so one bad entry never freezes the snapshot.
-   if len(name)>255 or '\\\\' in name or any(ord(c)<32 or ord(c)==127 for c in name): continue
-   try: name.encode('utf-8')
-   except UnicodeEncodeError: continue
-   names.append(name)
-  names.sort()
-  total=0
-  budget=2
-  for name in names:
-   if len(files)==${OUTPUT_MAX_FILES}: break
-   try: fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=directory)
-   except OSError: continue
-   try:
-    info=os.fstat(fd)
-    if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1 or info.st_size>${OUTPUT_MAX_BYTES}-total: continue
-    data=os.read(fd,${OUTPUT_MAX_BYTES + 1})
-    if len(data)>${OUTPUT_MAX_BYTES}-total: continue
-    item={'name':name,'base64':base64.b64encode(data).decode()}
-    size=len(json.dumps(item))+2
-    # Escaped names count toward the transport budget like bytes: skipped, never truncated output.
-    if budget+size>59000: continue
-    total+=len(data)
-    budget+=size
-    files.append(item)
-   except OSError: continue
-   finally: os.close(fd)
- finally: os.close(directory)
+ flags=os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW
+ directory=os.open('/',flags)
+ for part in ${JSON.stringify(OUTPUT_DIRECTORY)}.strip('/').split('/'):
+  parent=directory
+  try: directory=os.open(part,flags,dir_fd=parent)
+  finally: os.close(parent)
+# A missing directory is unavailable, so a path cutover cannot erase the last snapshot.
+except FileNotFoundError: sys.exit(4)
+try:
+ names=[]
+ for index,entry in enumerate(os.scandir(directory)):
+  if index>=${OUTPUT_MAX_ENTRIES}: sys.exit(3)
+  name=entry.name
+  # Skip names the server would refuse so one bad entry never freezes the snapshot.
+  if len(name)>255 or '\\\\' in name or any(ord(c)<32 or ord(c)==127 for c in name): continue
+  try: name.encode('utf-8')
+  except UnicodeEncodeError: continue
+  names.append(name)
+ names.sort()
+ total=0
+ budget=2
+ for name in names:
+  if len(files)==${OUTPUT_MAX_FILES}: break
+  try: fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=directory)
+  except OSError: continue
+  try:
+   info=os.fstat(fd)
+   if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1 or info.st_size>${OUTPUT_MAX_BYTES}-total: continue
+   data=os.read(fd,${OUTPUT_MAX_BYTES + 1})
+   if len(data)>${OUTPUT_MAX_BYTES}-total: continue
+   item={'name':name,'base64':base64.b64encode(data).decode()}
+   size=len(json.dumps(item))+2
+   # Escaped names count toward the transport budget like bytes: skipped, never truncated output.
+   if budget+size>59000: continue
+   total+=len(data)
+   budget+=size
+   files.append(item)
+  except OSError: continue
+  finally: os.close(fd)
+finally: os.close(directory)
 print(json.dumps(files))
 PY`;
 
