@@ -1061,15 +1061,16 @@ test.each([
         after("physical ownership read");
         return tags;
       },
-    };
+    } as unknown as Sandbox;
   };
   const fromId = f.client.sandboxes.fromId.bind(f.client.sandboxes);
   f.client.sandboxes.fromId = async (...args) => {
     const machine = await fromId(...args);
     return {
       ...machine,
-      async terminate(...options) {
-        await machine.terminate(...options);
+      async terminate(options?: { wait: true }) {
+        if (options) await machine.terminate(options);
+        else await machine.terminate();
         after("termination returned");
       },
       async poll() {
@@ -1077,7 +1078,7 @@ test.each([
         after("exit observed");
         return exit;
       },
-    };
+    } as unknown as Sandbox;
   };
   f.distribution.prepareRuntime = async () => {};
   f.distribution.prepareFreshMachine = async () => after("fresh preparation returned");
