@@ -50,70 +50,75 @@ export function createRuntimeServing(sql: Sql, key: string) {
     const agent = runtimeAgentFor(
       {
         async call(ownerId, request, options) {
-          // This serving adapter uses private health only for connection checks.
-          let admitted = false;
-          if (request.op === "steer" || request.op === "testModelConnection" || request.op === "health") {
-            if (!sql.transaction) throw new VaultError("unavailable", "Transactional runtime control unavailable.");
-            await sql.transaction(async (tx) => {
-              const member = (
-                await tx.query("select user_id from public.members where user_id=$1 and org_id=$2 for update", [
-                  actor.userId,
-                  sandbox.orgId,
-                ])
-              ).rows[0];
-              if (!member || actor.userId !== sandbox.ownerId)
-                throw new ProviderError({
-                  provider: sandbox.provider,
-                  code: "forbidden",
-                  message: "Runtime owner membership required.",
-                  retryable: false,
-                });
-              const account = (
-                await tx.query(
-                  `select id from public.credentials where id=$1 and version=$2 and status='active'
+          return commands.callPrepared(
+            ownerId,
+            request.op,
+            async () => {
+              // This serving adapter uses private health only for connection checks.
+              if (request.op === "steer" || request.op === "testModelConnection" || request.op === "health") {
+                if (!sql.transaction) throw new VaultError("unavailable", "Transactional runtime control unavailable.");
+                await sql.transaction(async (tx) => {
+                  const member = (
+                    await tx.query("select user_id from public.members where user_id=$1 and org_id=$2 for update", [
+                      actor.userId,
+                      sandbox.orgId,
+                    ])
+                  ).rows[0];
+                  if (!member || actor.userId !== sandbox.ownerId)
+                    throw new ProviderError({
+                      provider: sandbox.provider,
+                      code: "forbidden",
+                      message: "Runtime owner membership required.",
+                      retryable: false,
+                    });
+                  const account = (
+                    await tx.query(
+                      `select id from public.credentials where id=$1 and version=$2 and status='active'
                and (expires_at is null or expires_at>now())
                and ((scope='user' and owner_id=$3) or (scope='org' and owner_id=$4))
                for update`,
-                  [sandbox.credentialId, sandbox.credentialVersion, actor.userId, sandbox.orgId],
-                )
-              ).rows[0];
-              if (!account)
-                throw new ProviderError({
-                  provider: sandbox.provider,
-                  code: "forbidden",
-                  message: "Pinned runtime account is no longer authorized.",
-                  retryable: false,
-                });
-              if (request.op === "testModelConnection" || request.op === "health") {
-                const bound = await tx.query(
-                  `select id from public.sandboxes where id=$1 and owner_id=$2 and org_id=$3
+                      [sandbox.credentialId, sandbox.credentialVersion, actor.userId, sandbox.orgId],
+                    )
+                  ).rows[0];
+                  if (!account)
+                    throw new ProviderError({
+                      provider: sandbox.provider,
+                      code: "forbidden",
+                      message: "Pinned runtime account is no longer authorized.",
+                      retryable: false,
+                    });
+                  if (request.op === "testModelConnection" || request.op === "health") {
+                    const bound = await tx.query(
+                      `select id from public.sandboxes where id=$1 and owner_id=$2 and org_id=$3
                    and provider='boat' and boat_runtime and harness=$4
                    and credential_id=$5 and credential_version=$6 and provider_sandbox_id=$7
                    and status in ('ready','running') and stop_requested_at is null
                    and deleted_at is null and expires_at>now() for update`,
-                  [
-                    sandbox.id,
-                    actor.userId,
-                    sandbox.orgId,
-                    sandbox.harness,
-                    sandbox.credentialId,
-                    sandbox.credentialVersion,
-                    sandbox.providerSandboxId,
-                  ],
-                );
-                if (!bound.rows.length)
-                  throw new VaultError("conflict", "Runtime connection binding is no longer current.");
+                      [
+                        sandbox.id,
+                        actor.userId,
+                        sandbox.orgId,
+                        sandbox.harness,
+                        sandbox.credentialId,
+                        sandbox.credentialVersion,
+                        sandbox.providerSandboxId,
+                      ],
+                    );
+                    if (!bound.rows.length)
+                      throw new VaultError("conflict", "Runtime connection binding is no longer current.");
+                  }
+                  const local = runtimeTransaction(tx);
+                  await createRuntimeCommands(createRuntimeEnrolments(local, key), key).enqueue(
+                    ownerId,
+                    request,
+                    options?.expectedEpoch,
+                  );
+                });
               }
-              const local = runtimeTransaction(tx);
-              ({ fresh: admitted } = await createRuntimeCommands(createRuntimeEnrolments(local, key), key).enqueue(
-                ownerId,
-                request,
-                options?.expectedEpoch,
-              ));
-            });
-          }
-          // A reply may land before the first result read; carry this fenced admission to the observer.
-          return commands.call(ownerId, request, { ...options, admitted });
+              return { request, options: options ?? {} };
+            },
+            sandbox.provider,
+          );
         },
       },
       sandbox.ownerId,

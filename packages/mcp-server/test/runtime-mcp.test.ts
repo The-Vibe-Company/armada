@@ -430,13 +430,21 @@ test("configuration preparation commits queue order before waiting; an older ACK
       origin: "https://armada.test",
       commands: {
         ...f.bridge,
-        async call(owner, command, options) {
-          if (command.op === "configureMcp" && !updated) {
-            updated = true;
-            await f.db.query("update mcp_grants set generation=generation+1 where connection_id=$1", [x.c.id]);
-            newer = await x.service.prepare(f.caller, f.row.id);
-          }
-          return f.bridge.call(owner, command, options);
+        callPrepared(owner, operation, prepare, provider) {
+          return f.bridge.callPrepared(
+            owner,
+            operation,
+            async () => {
+              const prepared = await prepare();
+              if (operation === "configureMcp" && !updated) {
+                updated = true;
+                await f.db.query("update mcp_grants set generation=generation+1 where connection_id=$1", [x.c.id]);
+                newer = await x.service.prepare(f.caller, f.row.id);
+              }
+              return prepared;
+            },
+            provider,
+          );
         },
       },
     });

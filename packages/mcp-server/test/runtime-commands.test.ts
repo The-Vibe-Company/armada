@@ -1217,27 +1217,31 @@ test("a command answered before its first result read still records the fenced a
     };
   };
   // Callers admit under their own fenced transaction, then wait outside it. The runner answers in between.
-  const first = await observed(async () => {
-    const { fresh } = await runtime.enqueue(f.people.owner, command);
-    const { command: delivered } = await runtime.next(active.runtimeToken, active.epoch);
-    expect(delivered?.requestId).toBe(command.requestId);
-    await runtime.complete(active.runtimeToken, active.epoch, {
-      epoch: active.epoch,
-      requestId: command.requestId,
-      status: 200,
-      body: { version: 1, requestId: command.requestId, result: {} },
-    });
-    return runtime.call(f.people.owner, command, { admitted: fresh });
-  });
+  const first = await observed(() =>
+    runtime.callPrepared(f.people.owner, command.op, async () => {
+      await runtime.enqueue(f.people.owner, command);
+      const { command: delivered } = await runtime.next(active.runtimeToken, active.epoch);
+      expect(delivered?.requestId).toBe(command.requestId);
+      await runtime.complete(active.runtimeToken, active.epoch, {
+        epoch: active.epoch,
+        requestId: command.requestId,
+        status: 200,
+        body: { version: 1, requestId: command.requestId, result: {} },
+      });
+      return { request: command, options: {} };
+    }),
+  );
   expect(first.records).toEqual([
     expect.objectContaining({ requestId: first.requestId, operation: `runtime.${command.op}`, outcome: "ok" }),
   ]);
   // A later request with the same identity is answered from the database: no provider record.
-  const replay = await observed(async () => {
-    const { fresh } = await runtime.enqueue(f.people.owner, command);
-    expect(fresh).toBe(false);
-    return runtime.call(f.people.owner, command, { admitted: fresh });
-  });
+  const replay = await observed(() =>
+    runtime.callPrepared(f.people.owner, command.op, async () => {
+      const { fresh } = await runtime.enqueue(f.people.owner, command);
+      expect(fresh).toBe(false);
+      return { request: command, options: {} };
+    }),
+  );
   expect(replay.reply).toEqual(first.reply);
   expect(replay.records).toEqual([]);
 });

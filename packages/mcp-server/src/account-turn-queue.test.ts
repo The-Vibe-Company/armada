@@ -457,7 +457,7 @@ test("a proven pre-dispatch rejection requeues without leaking the account reser
       () => {},
     );
   const original = await admit();
-  const correlationId = original?.headers.get("x-request-id");
+  const correlationId = original?.headers.get("x-request-id") ?? undefined;
   expect(correlationId).toBeString();
   let calls = 0;
   const correlations: (string | undefined)[] = [];

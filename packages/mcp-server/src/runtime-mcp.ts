@@ -82,7 +82,7 @@ export function createRuntimeMcp(options: {
         [id, caller.userId, caller.orgs.map((org) => org.orgId)],
       )
     ).rows[0];
-    if (docker) return docker;
+    if (docker) return { ...docker, provider: "docker" as const };
     const s = await createSqlData(sql)(caller).sandboxes.get(id);
     if (!s || s.ownerId !== caller.userId || !runtimeBridgeTarget(s)) return deny();
     return s;
@@ -178,12 +178,10 @@ export function createRuntimeMcp(options: {
     signal: AbortSignal | undefined,
     failure: string,
     accept: (reply: Awaited<ReturnType<typeof options.commands.call>>) => boolean,
-    admitted?: boolean,
   ) => {
     const reply = await options.commands.call(s.ownerId, request, {
       expectedEpoch,
       accept,
-      ...(admitted ? { admitted } : {}),
       ...(signal ? { signal } : {}),
     });
     if (
@@ -240,7 +238,8 @@ export function createRuntimeMcp(options: {
         );
       },
     );
-    const prepared = await authority.withOwner(s.id, s.ownerId, async (tx, live) => {
+    const prepareConfiguration = () => authority.withOwner(s.id, s.ownerId, configure);
+    async function configure(tx: Sql, live: { epoch: string }) {
       if (live.epoch !== initial.epoch) return deny();
       const p = await plan(tx, caller, s, live.epoch, initial.selection),
         leases = createSqlMcpLeasePort(tx);
@@ -287,23 +286,36 @@ export function createRuntimeMcp(options: {
       // grants can never queue an older snapshot behind a newer configuration.
       const local: Sql = { query: tx.query.bind(tx), transaction: async (work) => work(local) };
       signal?.throwIfAborted();
-      const { fresh } = await createRuntimeCommands(createRuntimeEnrolments(local, key), key).enqueue(
-        s.ownerId,
-        wire,
-        live.epoch,
-      );
-      return { ...p, epoch: live.epoch, wire, fresh };
-    });
-    await call(
-      s,
-      prepared.wire,
-      prepared.epoch,
-      signal,
-      "Runtime MCP configuration was not acknowledged.",
-      (acknowledged) =>
-        (acknowledged.body.result as { revision?: unknown } | undefined)?.revision === prepared.configuration.revision,
-      prepared.fresh,
+      await createRuntimeCommands(createRuntimeEnrolments(local, key), key).enqueue(s.ownerId, wire, live.epoch);
+      return { ...p, epoch: live.epoch, wire };
+    }
+    let prepared!: Awaited<ReturnType<typeof prepareConfiguration>>;
+    const reply = await options.commands.callPrepared(
+      s.ownerId,
+      "configureMcp",
+      async () => {
+        prepared = await prepareConfiguration();
+        return {
+          request: prepared.wire,
+          options: {
+            expectedEpoch: prepared.epoch,
+            ...(signal ? { signal } : {}),
+            accept: acknowledgesRevision,
+          },
+        };
+      },
+      s.provider,
     );
+    function acknowledgesRevision(reply: Awaited<ReturnType<typeof options.commands.call>>) {
+      return (reply.body.result as { revision?: unknown } | undefined)?.revision === prepared.configuration.revision;
+    }
+    if (
+      reply.status !== 200 ||
+      reply.body.version !== 1 ||
+      reply.body.requestId !== prepared.wire.requestId ||
+      !acknowledgesRevision(reply)
+    )
+      throw new VaultError("unavailable", "Runtime MCP configuration was not acknowledged.");
     await authority.withOwner(s.id, s.ownerId, async (tx, live) => {
       const p = await plan(tx, caller, s, live.epoch, initial.selection);
       if (live.epoch !== prepared.epoch || JSON.stringify(p.configuration) !== JSON.stringify(prepared.configuration))
