@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import type { AgentEvent, Provider } from "@armada/core";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
+import { normalizeEvent } from "@armada/provider-boat";
 import { createLangfuse, langfuseSpans } from "../src/langfuse.ts";
 import { createNativeWebhookPrompts } from "../src/native-webhook-prompts.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
@@ -240,6 +241,109 @@ test("native settlement exports once and a new server reads only its organizatio
     counters: { exported: 0, failed: 0, dropped: 0 },
     lastExportAt: null,
   });
+});
+
+async function settledBoatTurn(prompt: string) {
+  const { db, people } = await database();
+  const id = crypto.randomUUID();
+  await db.query(
+    `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status,task_prompt_id)
+     select $1,id,org_id,owner_id,'boat_export','codex','ready',$3
+     from goldens where owner_id=$2 and visibility='private' limit 1`,
+    [id, people.owner, prompt],
+  );
+  await db.query("insert into org_langfuse(org_id,enabled,content_mode,config_enc) values($1,true,'full',$2)", [
+    people.org,
+    await encryptConfig(),
+  ]);
+  const receipt = { id: "boat", getPrompt: async () => ({ promptId: prompt, status: "failed", done: true }) } as const;
+  await createNativeWebhookPrompts(db, async () => receipt as Pick<Provider, "id" | "getPrompt">).reconcileOne(
+    new AbortController().signal,
+  );
+  const counters = async () =>
+    (
+      await db.query<{ exported: string; failed: string }>(
+        "select exported::text,failed::text from org_langfuse_export_stats where org_id=$1",
+        [people.org],
+      )
+    ).rows;
+  return { db, counters };
+}
+
+test("full-mode native Boat content is credential-redacted before it is sent", async () => {
+  const { db } = await settledBoatTurn("turn");
+  // Scanner-positive token bytes exist only at runtime, never as a fixture literal.
+  const token = ["ghp", "x".repeat(36)].join("_");
+  const raw = [
+    { id: "p", timestamp: 1000, taskId: "turn", type: "prompt", data: { prompt: `use ${token}`, status: "running" } },
+    {
+      id: "r",
+      timestamp: 1100,
+      taskId: "turn",
+      type: "response",
+      data: {
+        content: `printed ${token}`,
+        tools: [{ use: { id: "t", name: "exec", input: { env: { GH: token } } }, result: { content: [token] } }],
+      },
+    },
+    { id: "f", timestamp: 1200, taskId: "turn", type: "prompt", data: { status: "failed", error: `denied ${token}` } },
+  ];
+  const provider = {
+    id: "boat",
+    events: async () => ({ events: raw.map((e) => normalizeEvent(e as never)), cursor: "native", hasMore: false }),
+  } satisfies Pick<Provider, "id" | "events">;
+  let payload = "";
+  const exporter = createLangfuse(db, key, async () => ({ provider, providerSandboxId: "boat_export" }), (async (
+    _url,
+    init,
+  ) => {
+    payload = String(init?.body);
+    return new Response(null, { status: 200 });
+  }) as typeof fetch);
+  expect(await exporter.reconcileOne(new AbortController().signal)).toBe(true);
+  expect(payload).toContain("printed ***");
+  expect(payload).toContain("denied ***");
+  expect(payload).not.toContain(token);
+});
+
+test("a timed-out native history exports the receipt, and an abandoned job settles as failed", async () => {
+  const { db, counters } = await settledBoatTurn("turn");
+  await db.query("update langfuse_turn_exports set observed_at=observed_at-interval '2 minutes'");
+  let unbounded = false;
+  const provider = {
+    id: "boat",
+    events: async ({ signal }: { signal?: AbortSignal }) => {
+      signal?.throwIfAborted();
+      unbounded = true;
+      throw Error("history read must observe its deadline");
+    },
+  } as unknown as Pick<Provider, "id" | "events">;
+  const payloads: string[] = [];
+  const exporter = createLangfuse(
+    db,
+    key,
+    async () => ({ provider, providerSandboxId: "boat_export" }),
+    (async (_url, init) => {
+      payloads.push(String(init?.body));
+      return new Response(null, { status: 200 });
+    }) as typeof fetch,
+    () => AbortSignal.abort(),
+  );
+  // The worker tick itself is still live: only the history deadline expired.
+  expect(await exporter.reconcileOne(new AbortController().signal)).toBe(true);
+  expect(payloads).toHaveLength(1);
+  expect(payloads[0]).toContain("history_unavailable");
+  expect(unbounded).toBe(false);
+  expect(await counters()).toEqual([{ exported: "1", failed: "0" }]);
+
+  // A job whose previous claims were all abandoned by tick timeouts or shutdown
+  // reaches a durable outcome instead of being reclaimed forever.
+  await db.query("select public.enqueue_webhook_turn(sandbox_id,'abandoned','finished') from langfuse_turn_exports");
+  await db.query("update langfuse_turn_exports set attempts=5 where prompt_id='abandoned'");
+  expect(await exporter.reconcileOne(new AbortController().signal)).toBe(true);
+  expect(payloads).toHaveLength(1);
+  expect(await counters()).toEqual([{ exported: "1", failed: "1" }]);
+  expect(await exporter.reconcileOne(new AbortController().signal)).toBe(false);
 });
 
 test("native Modal export waits for the terminal journal event after a live receipt", async () => {

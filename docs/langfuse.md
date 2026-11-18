@@ -27,7 +27,12 @@ known, turn status and a generic failure category, plus tool names/status and
 IDs. Full mode additionally exports prompt/message text, tool inputs/results
 and failure text, which can contain customer data and secrets. Choose full
 only with the appropriate customer authorization and Langfuse retention policy.
-Raw unknown harness payloads are never exported. Subscription quotes remain
+Raw unknown harness payloads are never exported. Every exported string,
+including nested tool fields and failure text, passes through the server's
+credential redactor (GitHub, Armada gateway and Skillpack tokens, bearer
+values, JWTs, API keys and connection-string passwords) before it is sent,
+because native provider histories are not redacted at storage. Redaction is
+pattern-based; it does not know arbitrary customer secrets. Subscription quotes remain
 estimates, not invoices; unavailable costs are omitted.
 
 Each sandbox has a stable trace ID, each completed turn a stable observation
@@ -48,14 +53,16 @@ missing, Armada uses the recorded settlement status and observation time.
 Boat native uses the settlement observation time because a rewritten prompt
 can still carry its original timestamp. Native Modal waits up to a minute
 for its terminal journal event before exporting the evidence available. If a
-native history read keeps failing for that minute, Armada exports the recorded
+native history read keeps failing for that minute, or does not answer within
+ten seconds, Armada exports the recorded
 status and observation time without transcript content, marked
 `history_unavailable`.
 Turns settled before export was enabled are not backfilled.
 
 Pending export identities survive server restarts. A worker leases each job and
 records the outcome and organization counters together. An unfinished lease
-can be reclaimed after expiry. Runtime history is read per turn, from the
+can be reclaimed after expiry; each claim reserves an attempt, and a job
+abandoned five times by worker timeouts or shutdown settles as `failed`. Runtime history is read per turn, from the
 turn's first archived event to its settlement, and is bounded at 2,000 records
 and 4 MiB of ciphertext, and each outbound payload is bounded at 4 MiB.
 Oversized exports and jobs whose settings were disabled before delivery count

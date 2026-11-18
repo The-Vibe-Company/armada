@@ -12,6 +12,7 @@ import {
 import { decryptSecret, encryptSecret } from "@armada/core/server";
 import type { CallerResult } from "./caller.ts";
 import type { Route } from "./http.ts";
+import { redactCredentials } from "./log.ts";
 
 interface Config {
   host: string;
@@ -19,6 +20,15 @@ interface Config {
   secretKey: string;
 }
 const hash = (text: string, length: number) => createHash("sha256").update(text).digest("hex").slice(0, length);
+/** Native histories are not redacted at storage; mask credentials in every exported string. */
+const scrub = (value: unknown): unknown =>
+  typeof value === "string"
+    ? redactCredentials(value)
+    : Array.isArray(value)
+      ? value.map(scrub)
+      : value && typeof value === "object"
+        ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, scrub(item)]))
+        : value;
 const nano = (at: number) => (BigInt(Math.max(0, Math.trunc(at))) * 1000000n).toString();
 
 /** Complete OTLP observations; content is opt-in and unknown event payloads never leave the server. */
@@ -44,10 +54,10 @@ export function langfuseSpans(
         ...values,
       })
         .filter(([, v]) => v !== undefined)
-        .map(([key, value]) => ({
-          key,
-          value: { stringValue: typeof value === "string" ? value : JSON.stringify(value) },
-        }));
+        .map(([key, raw]) => {
+          const value = scrub(raw);
+          return { key, value: { stringValue: typeof value === "string" ? value : JSON.stringify(value) } };
+        });
     const messages = new Map<string, string>();
     for (const e of history)
       if (e.kind === "message" && !e.retracted && e.responseKind !== "tool_result") {
@@ -115,7 +125,7 @@ export function langfuseSpans(
         traceId,
         spanId: hash(`${sandboxId}/${end.promptId}/${id}`, 16),
         parentSpanId: spanId,
-        name: t.tool.name,
+        name: redactCredentials(t.tool.name),
         kind: 1,
         startTimeUnixNano: nano(t.first),
         endTimeUnixNano: nano(Math.max(t.first, t.last)),
@@ -131,6 +141,8 @@ export function langfuseSpans(
 }
 
 const MAX_EXPORT_BYTES = 4 * 1024 * 1024;
+/** Claims reserve an attempt; a job aborted this many times settles as failed. */
+const MAX_ATTEMPTS = 5;
 type PromptEvent = Extract<AgentEvent, { kind: "prompt" }>;
 interface ExportJob {
   sandbox_id: string;
@@ -140,6 +152,7 @@ interface ExportJob {
   runtime_ack: string | null;
   terminal_status: PromptEvent["status"];
   observed_ms: number;
+  attempts: number;
   waiting_for_history: boolean;
   config_enc: Uint8Array<ArrayBuffer> | null;
   content_mode: string | null;
@@ -150,6 +163,9 @@ export function createLangfuse(
   key: string,
   nativeProviderFor: (id: string) => Promise<{ provider: Pick<Provider, "id" | "events">; providerSandboxId: string }>,
   send: typeof fetch = fetch,
+  // Optional history gets its own deadline inside the 30 s worker tick, leaving
+  // time for the receipt-only export and durable accounting.
+  historyDeadline: () => AbortSignal = () => AbortSignal.timeout(10_000),
 ) {
   async function history(
     job: ExportJob,
@@ -198,9 +214,9 @@ export function createLangfuse(
     let evidence: Awaited<ReturnType<typeof history>>;
     let historyUnavailable = false;
     try {
-      evidence = await history(job, signal);
+      evidence = await history(job, AbortSignal.any([signal, historyDeadline()]));
     } catch (error) {
-      signal.throwIfAborted();
+      signal.throwIfAborted(); // Only the worker tick or shutdown abandons the job to its lease.
       // Native history is optional evidence: the settled receipt already holds
       // the terminal status and observation time. Retry a transient read error
       // while the receipt is fresh, then export a marked observation without
@@ -275,7 +291,8 @@ export function createLangfuse(
           where completed_at is null and (lease_until is null or lease_until<now())
           order by observed_at for update skip locked limit 1
         ), claimed as (
-          update public.langfuse_turn_exports j set lease_id=$1::uuid,lease_until=now()+interval '60 seconds'
+          update public.langfuse_turn_exports j set lease_id=$1::uuid,lease_until=now()+interval '60 seconds',
+            attempts=j.attempts+1
           from candidate c where j.sandbox_id=c.sandbox_id and j.prompt_id=c.prompt_id returning j.*
         )
         select j.*,extract(epoch from j.observed_at)::double precision*1000 as observed_ms,
@@ -287,11 +304,11 @@ export function createLangfuse(
       )
     ).rows[0];
     if (!job) return false;
-    const outcome = await exportTurn(job, signal).catch(() => "failed");
+    const outcome = job.attempts > MAX_ATTEMPTS ? "failed" : await exportTurn(job, signal).catch(() => "failed");
     signal.throwIfAborted(); // On shutdown or tick timeout, let the durable lease expire.
     if (outcome === "pending") {
       await sql.query(
-        "update public.langfuse_turn_exports set lease_id=null,lease_until=now()+interval '2 seconds' where sandbox_id=$1 and prompt_id=$2 and lease_id=$3::uuid",
+        "update public.langfuse_turn_exports set lease_id=null,lease_until=now()+interval '2 seconds',attempts=attempts-1 where sandbox_id=$1 and prompt_id=$2 and lease_id=$3::uuid",
         [job.sandbox_id, job.prompt_id, lease],
       );
       return true;

@@ -9,6 +9,8 @@ create table public.langfuse_turn_exports (
   observed_at timestamptz not null default clock_timestamp(),
   lease_id uuid,
   lease_until timestamptz,
+  -- Claims reserve an attempt so repeated aborted ticks still reach a durable outcome.
+  attempts smallint not null default 0,
   completed_at timestamptz,
   check (terminal_status is not null or completed_at is not null),
   primary key (sandbox_id,prompt_id)

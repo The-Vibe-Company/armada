@@ -1633,6 +1633,7 @@ export type Database = {
           observed_at: string;
           lease_id: string | null;
           lease_until: string | null;
+          attempts: number;
           completed_at: string | null;
         };
         Insert: {
@@ -1645,6 +1646,7 @@ export type Database = {
           observed_at?: string;
           lease_id?: string | null;
           lease_until?: string | null;
+          attempts?: number;
           completed_at?: string | null;
         };
         Update: {
@@ -1657,6 +1659,7 @@ export type Database = {
           observed_at?: string;
           lease_id?: string | null;
           lease_until?: string | null;
+          attempts?: number;
           completed_at?: string | null;
         };
         Relationships: [
