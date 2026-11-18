@@ -177,6 +177,7 @@ export interface ControlOptions {
   data?: DataSource;
   vault?: VaultStore;
   launch?: LaunchOptions;
+  modalBoot?: NonNullable<LaunchOptions["modalBoot"]>;
   /** Durable launch receipts shared with MCP `launch`: `idempotencyKey` on REST launch routes. Absent: a keyed launch is refused. */
   ordinaryLaunchReceipts?: ReturnType<typeof createOrdinaryLaunchReceipts>;
   /** Service-role access: orgs, members and ciphertext. See `createSqlVaultStore`. */

@@ -114,6 +114,7 @@ export interface HandlerOptions {
   now?: () => Date;
   sleep?: (ms: number) => Promise<void>;
   launch?: LaunchOptions;
+  modalBoot?: NonNullable<LaunchOptions["modalBoot"]>;
   ordinaryLaunchReceipts?: ReturnType<typeof createOrdinaryLaunchReceipts>;
   templates?: import("@armada/core/server").TemplateService;
   skillDefaults?: import("@armada/core/server").SkillDefaultsService;
@@ -230,6 +231,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
         logError: log,
         ...(options.ordinaryLaunchReceipts ? { ordinaryLaunchReceipts: options.ordinaryLaunchReceipts } : {}),
         ...(options.launch ? { launch: options.launch } : {}),
+        ...(options.modalBoot ? { modalBoot: options.modalBoot } : {}),
         ...(options.goldenAdoption ? { goldenAdoption: options.goldenAdoption } : {}),
         ...(options.goldenBuilds ? { goldenBuilds: options.goldenBuilds } : {}),
       },

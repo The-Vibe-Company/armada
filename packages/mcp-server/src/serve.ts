@@ -473,10 +473,8 @@ export async function startServer(
       ? modalRuntimeHostFor({ ...target, runtimeTransport: "dialout" }, caller)
       : providers.resolve(target, caller),
   );
-  const ordinaryLaunch: LaunchOptions = {
-    ...launch,
-    modalBoot: async (input) => modalBootWorker.waitForBoot(await modalBootWorker.admit(input)),
-  };
+  const modalBoot: NonNullable<LaunchOptions["modalBoot"]> = async (input) =>
+    modalBootWorker.waitForBoot(await modalBootWorker.admit(input));
   const control: ConfiguredControlOptions = {
     ordinaryLaunchReceipts,
     ...(dockerControls ? { dockerControls } : {}),
@@ -504,7 +502,8 @@ export async function startServer(
     ...(runtimeLaunch
       ? { boatRuntimeLaunch: runtimeLaunch, runtimeHostFor: (apiKey: string) => createObservedBoatProvider({ apiKey }) }
       : {}),
-    launch: ordinaryLaunch,
+    launch,
+    modalBoot,
     publicUrl: config.publicUrl,
     modelAuth,
     sandboxBillingAccount: createSandboxBillingAccount(sql),
@@ -608,7 +607,8 @@ export async function startServer(
     ...(commitSha ? { commitSha } : {}),
     runtimeProviderFor,
     ordinaryLaunchReceipts,
-    launch: ordinaryLaunch,
+    launch,
+    modalBoot,
     modelAuth,
     publicUrl: config.publicUrl,
     loginProviders: (env.ARMADA_AUTH_PROVIDERS ?? "")

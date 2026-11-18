@@ -102,8 +102,15 @@ export function createModalBootWorker(
       ).rows[0]!;
       await tx.query(
         `insert into public.provider_launch_requests(sandbox_id,actor_epoch,request_enc,fence_id,dispatch_deadline,correlation_id)
-         values($1,$2,$3,$4,now()+interval '15 minutes',$1)`,
-        [sandbox.id, member.epoch, sealed, fence.id],
+         values($1,$2,$3,$4,clock_timestamp()+$5::integer*interval '1 millisecond',$1)`,
+        [sandbox.id, member.epoch, sealed, fence.id, DEADLINE_MS],
+      );
+      // Rolling readers also honor the ordinary activity lease. Leave enough
+      // time for the worker to reach its dispatch deadline.
+      await tx.query(
+        `update public.sandboxes s set activity_until=r.dispatch_deadline
+         from public.provider_launch_requests r where s.id=$1 and r.sandbox_id=s.id`,
+        [sandbox.id],
       );
       return saved;
     });
@@ -115,8 +122,8 @@ export function createModalBootWorker(
     const deadline = performance.now() + DEADLINE_MS + 5_000;
     while (accepting && performance.now() < deadline) {
       const result = (
-        await sql.query<{ phase: string; outcome: Outcome | null; expires_at: string | Date }>(
-          `select r.phase,r.outcome,s.expires_at from public.provider_launch_requests r
+        await sql.query<{ outcome: Outcome | null; expires_at: string | Date }>(
+          `select r.outcome,s.expires_at from public.provider_launch_requests r
          join public.sandboxes s on s.id=r.sandbox_id where r.sandbox_id=$1`,
           [record.id],
         )
@@ -151,16 +158,16 @@ export function createModalBootWorker(
     const { sandbox_id: id, lease_epoch: epoch } = claim;
     const bootExpiry = "expiresAt" in outcome ? outcome.expiresAt : undefined;
     const succeeded = bootExpiry !== undefined;
-    await sql.transaction!(async (tx) => {
+    const published = await sql.transaction!(async (tx) => {
       await tx.query("select id from public.sandboxes where id=$1 for update", [id]);
       const row = (
         await tx.query<{ fence_id: string | null }>(
           `select fence_id from public.provider_launch_requests where sandbox_id=$1 and lease_owner=$2
-         and lease_epoch=$3 and lease_expires_at>now() for update`,
+         and lease_epoch=$3 and lease_expires_at>clock_timestamp() for update`,
           [id, owner, epoch],
         )
       ).rows[0];
-      if (!row) return;
+      if (!row) return false;
       const updated = await tx.query(
         `update public.sandboxes set
            expires_at=case when $2 then least(clock_timestamp()+effective_ttl_seconds*interval '1 second',
@@ -187,8 +194,9 @@ export function createModalBootWorker(
       );
       if (!keepFence && row.fence_id)
         await tx.query("delete from public.golden_operation_fences where id=$1", [row.fence_id]);
+      return "expiresAt" in outcome;
     });
-    if ("expiresAt" in outcome) {
+    if (published) {
       await recordLaunchStageSql(sql, id, "provider_claimed").catch(() => {});
       await recordLaunchStageSql(sql, id, "machine_started").catch(() => {});
     }
@@ -200,14 +208,14 @@ export function createModalBootWorker(
     const reschedule = () =>
       sql.query(
         `update public.provider_launch_requests set lease_owner=null,lease_expires_at=null,next_attempt_at=now()+interval '2 seconds'
-       where sandbox_id=$1 and lease_owner=$2 and lease_epoch=$3 and lease_expires_at>now()`,
+       where sandbox_id=$1 and lease_owner=$2 and lease_epoch=$3 and lease_expires_at>clock_timestamp()`,
         token,
       );
     const timer = setInterval(() => {
       void sql
         .query(
           `update public.provider_launch_requests set lease_expires_at=now()+interval '45 seconds'
-         where sandbox_id=$1 and lease_owner=$2 and lease_epoch=$3 and lease_expires_at>now()`,
+         where sandbox_id=$1 and lease_owner=$2 and lease_epoch=$3 and lease_expires_at>clock_timestamp()`,
           token,
         )
         .catch(() => {});
@@ -217,7 +225,7 @@ export function createModalBootWorker(
       const live = (
         await sql.query<{ role: MemberRole | null; allowed: boolean }>(
           `select m.role,(
-           e.epoch=r.actor_epoch and r.dispatch_deadline>now() and ${BOOT_ALLOWED}
+           e.epoch=r.actor_epoch and r.dispatch_deadline>clock_timestamp() and ${BOOT_ALLOWED}
          ) is true as allowed
          from public.provider_launch_requests r join public.sandboxes s on s.id=r.sandbox_id
          left join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
@@ -264,7 +272,7 @@ export function createModalBootWorker(
         if (!allowed.rows.length) return false;
         const updated = await tx.query(
           `update public.provider_launch_requests r set phase='booting' where sandbox_id=$1
-           and lease_owner=$2 and lease_epoch=$3 and lease_expires_at>now() and dispatch_deadline>now()
+           and lease_owner=$2 and lease_epoch=$3 and lease_expires_at>clock_timestamp() and dispatch_deadline>clock_timestamp()
            and exists(select 1 from public.members m join public.mcp_actor_epochs e using(org_id,user_id)
              where m.org_id=$4 and m.user_id=$5 and e.epoch=r.actor_epoch)
            returning sandbox_id`,
@@ -284,7 +292,7 @@ export function createModalBootWorker(
           if (error.providerCode === "fork_source_busy") {
             await sql.query(
               `update public.provider_launch_requests set phase='queued' where sandbox_id=$1
-               and lease_owner=$2 and lease_epoch=$3 and lease_expires_at>now()`,
+               and lease_owner=$2 and lease_epoch=$3 and lease_expires_at>clock_timestamp()`,
               token,
             );
             await reschedule();

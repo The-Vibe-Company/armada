@@ -117,6 +117,7 @@ export interface ToolContext {
   now(): Date;
   sleep(ms: number): Promise<void>;
   launch?: LaunchOptions;
+  modalBoot?: NonNullable<LaunchOptions["modalBoot"]>;
   ordinaryLaunchReceipts?: ReturnType<typeof createOrdinaryLaunchReceipts>;
   connections?: LaunchStores["connections"];
   /** Secure, server-orchestrated multi-repo golden creation. Absent: `golden_create` refuses. */
@@ -1414,7 +1415,11 @@ export function createArmadaServer(context: ToolContext, version: string, option
               ...(args.stopWhenWorkMerged === undefined ? {} : { stopWhenWorkMerged: args.stopWhenWorkMerged }),
               ...(args.externalRef === undefined ? {} : { externalRef: args.externalRef }),
             },
-            { ...context.launch, ...(receiptId ? { newId: () => receiptId } : {}) },
+            {
+              ...context.launch,
+              ...(context.modalBoot ? { modalBoot: context.modalBoot } : {}),
+              ...(receiptId ? { newId: () => receiptId } : {}),
+            },
           );
           return {
             ...launchResponse(result),

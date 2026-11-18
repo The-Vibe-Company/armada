@@ -66,13 +66,14 @@ test("a successor boots the committed Modal sandbox with the same key after an u
         fenced: true,
         sealed: true,
       });
-      if (++attempts === 1) throw new ProviderError({ provider: "modal", code: "unknown", message: "Lost reply." });
+      if (++attempts === 1)
+        throw new ProviderError({ provider: "modal", code: "unknown", message: "Lost reply.", retryable: true });
       return { id: providerSandboxId, name: "fixture", labels: {}, state: "ready", providerState: "active" };
     },
   } satisfies Pick<Provider, "id" | "backendIdentity" | "managementIdentity" | "fork"> as Provider;
   const createWorker = () => createModalBootWorker(sql, ENCRYPTION_KEY, async () => provider);
   const first = createWorker();
-  await first.admit({
+  const admitted = await first.admit({
     golden,
     provider,
     actor: { orgId: people.org, userId: people.owner, role: "member" },
@@ -98,7 +99,12 @@ test("a successor boots the committed Modal sandbox with the same key after an u
   expect(await persisted()).toMatchObject({ phase: "booting", fenced: true, lease_epoch: "1" });
   first.stopAdmission();
   await db.query("update provider_launch_requests set next_attempt_at=now() where sandbox_id=$1", [id]);
-  expect(await createWorker().reconcileOne(signal)).toBe(true);
+  const successor = createWorker();
+  expect(await successor.reconcileOne(signal)).toBe(true);
+  expect(await successor.waitForBoot(admitted)).toMatchObject({
+    id: providerSandboxId,
+    sandbox: { id, status: "starting" },
+  });
   expect(attempts).toBe(2);
   expect(await persisted()).toMatchObject({
     status: "starting",
