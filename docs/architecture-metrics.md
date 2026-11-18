@@ -82,5 +82,26 @@ For successful staging launches, record the deployed SHA, date, path, sample
 count, and workload. Calculate nearest-rank p50 and p95 from `totalMs` and
 compare the summed intervals with an independently measured wall time using the
 same admission and readiness boundary. Report request-to-ready wall time
-separately to show work outside that boundary. Per-launch SQL counts and separate
-download/verification, enrolment wait, and first-event measurements are pending.
+separately to show work outside that boundary. Per-launch SQL counts are pending.
+
+### Enrolled runtime timing
+
+Join the successful `armada.runtime.startup_timing` sample to the Modal launch
+by `sandboxId`, and use the sample's `epoch` to select the matching
+`armada.runtime.stage` records. The monotonic startup intervals cover ticket
+issuance, host bootstrap, the remaining enrolment wait after bootstrap returns,
+and health including the final owner/epoch fence. A runtime that enrols during
+host bootstrap can have little or no remaining enrolment wait.
+
+Subtract the first `bootstrap_started` observation from the first
+`artifact_verified` observation in the same epoch to estimate the bootstrap
+cache check, any download, and artifact verification together. Use
+`observedAtMs` from the authenticated, committed progress logs. Progress can be
+missing, and the difference includes reporting latency. A negative difference
+must be treated as unavailable because the observations use server wall clocks.
+
+The first `first_event` observation for the epoch is timestamped after its
+archive transaction commits. Its interval from the persisted `accepted` stage
+includes any time waiting for a prompt and is a separate metric from
+accepted-to-ready launch time. Select fresh launches when gathering the launch
+baseline because runtime progress also covers resumes.

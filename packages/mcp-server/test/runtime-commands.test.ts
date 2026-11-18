@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import type { RunnerRequest } from "@armada/agent-runtime";
 import type { Sql } from "@armada/core/server";
 import { encryptSecret } from "@armada/core/server";
@@ -731,6 +731,10 @@ test("runtime startup privately issues configuration, awaits enrolment and fence
   const f = await fixture();
   const root = await mkdtemp(join(tmpdir(), "runtime-startup-"));
   const journal = new Journal(join(root, "journal"), (value) => value);
+  const samples: unknown[] = [];
+  const logger = spyOn(console, "info").mockImplementation((line: string) => {
+    if (line.includes('"event":"armada.runtime.startup_timing"')) samples.push(JSON.parse(line));
+  });
   try {
     const previous = await f.enrol();
     const agent = createRuntimeAgent(f.bridge(), {
@@ -749,6 +753,7 @@ test("runtime startup privately issues configuration, awaits enrolment and fence
       {
         async bootstrap(input) {
           token = input.enrolmentToken;
+          now += 40;
           expect(Object.keys(input).sort()).toEqual([
             "artifact",
             "cacheDir",
@@ -767,7 +772,10 @@ test("runtime startup privately issues configuration, awaits enrolment and fence
             false,
           );
         },
-        health: (signal) => agent.health(signal),
+        async health(signal) {
+          now += 30;
+          return agent.health(signal);
+        },
       },
       {
         now: () => now,
@@ -823,8 +831,22 @@ test("runtime startup privately issues configuration, awaits enrolment and fence
         configuration,
       }),
     ).toEqual({ runtime: "armada", epoch: "2" });
+    expect(samples).toEqual([
+      {
+        event: "armada.runtime.startup_timing",
+        sandboxId: f.id,
+        epoch: "2",
+        stages: [
+          { stage: "issue_ticket", ms: 0 },
+          { stage: "bootstrap", ms: 40 },
+          { stage: "enrolment_wait", ms: 250 },
+          { stage: "health", ms: 30 },
+        ],
+      },
+    ]);
     expect(journal.prompts()).toEqual([]);
   } finally {
+    logger.mockRestore();
     journal.close();
     await rm(root, { recursive: true, force: true });
   }

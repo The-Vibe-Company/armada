@@ -22,7 +22,7 @@ interface StartupClock {
   wait(signal: AbortSignal): Promise<void>;
 }
 const clock: StartupClock = {
-  now: () => Date.now(),
+  now: () => performance.now(),
   wait: (signal: AbortSignal) => delay(250, undefined, { signal }),
 };
 
@@ -64,12 +64,14 @@ export function createRuntimeStartup(
     let phase: "bootstrap" | "enrolment" | "readiness" = "bootstrap";
     let diagnosticPhase: "ticket" | "bootstrap" | "enrolment" | "readiness" = "ticket";
     let epoch = "0";
+    const startedAt = time.now();
     try {
       signal?.throwIfAborted();
       const ticket = await authority.issue({ ownerId, sandboxId, configuration: input.configuration });
       epoch = ticket.epoch;
       signal?.throwIfAborted();
       diagnosticPhase = "bootstrap";
+      const bootstrapAt = time.now();
       await ports.bootstrap({
         sandboxId: providerSandboxId,
         serverUrl,
@@ -79,7 +81,8 @@ export function createRuntimeStartup(
       });
       signal?.throwIfAborted();
       diagnosticPhase = phase = "enrolment";
-      const deadline = time.now() + timeout;
+      const bootstrapDoneAt = time.now();
+      const deadline = bootstrapDoneAt + timeout;
       const budget = AbortSignal.timeout(timeout);
       const admission = signal ? AbortSignal.any([signal, budget]) : budget;
       while (true) {
@@ -102,6 +105,7 @@ export function createRuntimeStartup(
         }
         if (epoch !== ticket.epoch) throw Error("runtime_startup_replaced");
         diagnosticPhase = phase = "readiness";
+        const enrolledAt = time.now();
         const ready = await ports.health(admission);
         admission.throwIfAborted();
         if (time.now() >= deadline || ready.runtime !== "armada" || ready.epoch !== ticket.epoch)
@@ -116,7 +120,25 @@ export function createRuntimeStartup(
           ticket.lifecycleGeneration,
         );
         admission.throwIfAborted();
-        if (time.now() >= deadline) throw Error("runtime_startup_deadline");
+        const readyAt = time.now();
+        if (readyAt >= deadline) throw Error("runtime_startup_deadline");
+        try {
+          console.info(
+            JSON.stringify({
+              event: "armada.runtime.startup_timing",
+              sandboxId,
+              epoch: ticket.epoch,
+              stages: [
+                { stage: "issue_ticket", ms: bootstrapAt - startedAt },
+                { stage: "bootstrap", ms: bootstrapDoneAt - bootstrapAt },
+                { stage: "enrolment_wait", ms: enrolledAt - bootstrapDoneAt },
+                { stage: "health", ms: readyAt - enrolledAt },
+              ],
+            }),
+          );
+        } catch {
+          /* Diagnostics cannot change startup. */
+        }
         return { runtime: "armada", epoch: ticket.epoch };
       }
     } catch (error) {
