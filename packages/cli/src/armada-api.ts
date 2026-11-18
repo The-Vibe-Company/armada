@@ -78,8 +78,9 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
   const environmentToken = io.env.ARMADA_TOKEN;
   let saved = environmentToken ? null : await io.session.read();
   const origin = await resolveArmadaOrigin(io, options.url, saved);
-  let token = environmentToken || saved?.accessToken;
-  if (!token) throw new AuthError("Set ARMADA_TOKEN or run armada login.", "unauthorized");
+  const initialToken = environmentToken || saved?.accessToken;
+  if (!initialToken) throw new AuthError("Set ARMADA_TOKEN or run armada login.", "unauthorized");
+  let token = initialToken;
   const timeoutMs = io.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   if (!environmentToken && saved && Date.parse(saved.expiresAt) - Date.now() <= 60_000) {
