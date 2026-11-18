@@ -104,7 +104,7 @@ export async function launchRoute(
     throw new VaultError("unavailable", "Sandbox Armada access is unavailable for this provider/harness.");
   if (runtime && golden.provider !== (modalRuntime ? "modal" : "boat"))
     throw new VaultError("invalid", "Runtime v1 requires a Boat golden.");
-  const credentialId = body.credentialId === undefined ? undefined : required(body, "credentialId");
+  const credentialId = body.credentialId;
   const launchOptions: import("@armada/core").LaunchOptions = {
     ...options.launch,
     ...(runtimePolicy ? (modalRuntime ? { runtime: runtimePolicy } : { boatRuntime: runtimePolicy }) : {}),
@@ -124,13 +124,10 @@ export async function launchRoute(
     runtime && options.github ? { ...options.github, store: options.store } : undefined,
   );
   const prepare = async () => {
-    const account = await prepareGoldenLaunchAccount(
-      actor,
-      golden,
-      { harness, ...(credentialId === undefined ? {} : { credentialId }) },
-      credentials,
-      launchOptions,
-    );
+    const account =
+      credentialId === undefined || typeof credentialId === "string"
+        ? await prepareGoldenLaunchAccount(actor, golden, { harness, credentialId }, credentials, launchOptions)
+        : { credentials, options: launchOptions };
     const provider = modalRuntime
       ? await options.modalRuntimeHostFor!({ ...golden, runtimeTransport: "dialout" }, caller)
       : runtimeHost
@@ -171,7 +168,7 @@ export async function launchRoute(
       },
       actor,
       {
-        ...(credentialId === undefined ? {} : { credentialId }),
+        ...(credentialId === undefined ? {} : { credentialId: required(body, "credentialId") }),
         golden: name,
         ...(body.size === undefined ? {} : { size: parseMachineSize(body.size) }),
         provider: golden.provider,
