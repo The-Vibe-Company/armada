@@ -1522,17 +1522,23 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     // Sixteen sweeps while the claim is live dispatch nothing.
     await Promise.all(Array.from({ length: 16 }, () => f.provider.collectGarbage()));
     expect(calls).toBe(1);
-    // A holder that never returns: its claim expires, and the next sweep takes and completes it.
-    await db.query(
-      `update public.modal_images set record=jsonb_set(record,'{collectUntil}','0') where record->>'imageId'=$1`,
-      [imageId],
-    );
-    await f.provider.collectGarbage();
-    expect(calls).toBe(2);
-    expect(await f.store.tombstoneSources()).not.toContain(builder.id);
-    // The stale holder's late failure releases nothing and erases nothing.
+    const expire = () =>
+      db.query(
+        `update public.modal_images set record=jsonb_set(record,'{collectUntil}','0') where record->>'imageId'=$1`,
+        [imageId],
+      );
+    // The holder outlives its claim and a newer collector takes it; the stale holder's late
+    // failure never releases the newer claim.
+    await expire();
+    expect(await f.store.takeImage(name, builder.id, imageId!, "newer")).toBe(true);
     release.resolve();
     await retiring;
+    const claimed = (await f.store.images(builder.id)).find((x) => x.info.name === name);
+    expect(claimed?.collectToken).toBe("newer");
+    // A crashed newer holder's claim expires too, and the next sweep takes and completes it.
+    await expire();
+    await f.provider.collectGarbage();
+    expect(calls).toBe(2);
     expect(await f.store.tombstoneSources()).not.toContain(builder.id);
   });
   test("a snapshot retired after restore read it never gains a restore reference", async () => {
