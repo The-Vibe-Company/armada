@@ -6,7 +6,8 @@ import {
   type ProviderErrorCode,
   type VaultErrorCode,
 } from "@armada/core";
-import { apiUrl, requestApi } from "./request.ts";
+import { apiUrl, jsonPost, requestApi } from "./request.ts";
+import { sandboxClient } from "./sandboxes.ts";
 
 export type FailureCode =
   | ApiFailureCode
@@ -309,11 +310,13 @@ export class Armada {
     if (!Number.isInteger(this.retries) || this.retries < 0 || this.retries > 3)
       throw new TypeError("readRetries must be between 0 and 3.");
   }
+  readonly #sandboxes = sandboxClient(this.request.bind(this));
+
   launch(input: DockerLaunchInput, options?: RequestOptions): Promise<DockerLaunchResult>;
   launch(input: GoldenLaunchInput, options?: RequestOptions): Promise<GoldenLaunchResult>;
   launch(input: LaunchInput, options?: RequestOptions): Promise<LaunchResult>;
   launch(input: LaunchInput, options?: RequestOptions): Promise<LaunchResult> {
-    return this.request("sandbox/launch", input, false, options);
+    return this.#sandboxes.launch(input, options);
   }
   launchFromTemplate(input: TemplateLaunchInput, options?: RequestOptions): Promise<TemplateLaunchResult> {
     return this.request("templates/launch", input, false, options);
@@ -322,7 +325,7 @@ export class Armada {
     return this.request("sandbox/send", input, false, options);
   }
   status(input: StatusInput, options?: RequestOptions): Promise<SandboxStatus> {
-    return this.request("sandbox/status", input, true, options);
+    return this.#sandboxes.status(input, options);
   }
   wait(input: WaitInput, options?: RequestOptions): Promise<SandboxStatus & { timedOut: boolean }> {
     // Precedence: per-call timeout, then the client timeout, then the server wait plus a margin.
@@ -378,15 +381,8 @@ export class Armada {
   ): Promise<T> {
     const result = await requestApi(
       apiUrl(this.origin, `/api/v1/${route}`),
-      () => {
-        // Serialize each attempt within the shared deadline, as with the original SDK transport.
-        const bodyText = JSON.stringify(body);
-        return {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          ...(bodyText !== undefined ? { body: bodyText } : {}),
-        };
-      },
+      // Serialize each attempt within the shared deadline.
+      () => jsonPost(body),
       {
         fetch: (url, init) => this.fetcher(String(url), init),
         token: this.#token,

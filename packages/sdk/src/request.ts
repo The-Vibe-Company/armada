@@ -97,6 +97,15 @@ export function apiUrl(origin: string, path: string): URL {
   return url;
 }
 
+export function jsonPost(body: unknown): RequestInit {
+  const bodyText = JSON.stringify(body);
+  return {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    ...(bodyText !== undefined ? { body: bodyText } : {}),
+  };
+}
+
 /** Shared JSON transport. Callers validate their own success receipts and choose how to present errors. */
 export async function requestApi(
   url: URL,
