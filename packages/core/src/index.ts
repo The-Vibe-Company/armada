@@ -361,6 +361,7 @@ export {
   ProviderError,
   type ProviderErrorCode,
   type ProviderErrorInit,
+  type ResumeStageObserver,
   SANDBOX_STATES,
   type SandboxInfo,
   type SandboxState,

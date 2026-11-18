@@ -268,6 +268,20 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
               [sandboxId],
             );
             if (!restarted.rows.length) deny();
+            await tx.query(
+              `with claim as (
+                 select c.created_at,c.claimed_at from public.docker_resume_claims c
+                  where c.request_id=$2 and c.sandbox_id=$1 and c.accepted and c.created_at is not null
+               ), activation as (
+                 select max(l.activation) as number from public.sandbox_launch_stages l where l.sandbox_id=$1
+               )
+               insert into public.sandbox_launch_stages(sandbox_id,activation,stage,at)
+               select $1,a.number,t.stage,t.at from claim c cross join activation a
+               cross join lateral (values ('accepted',c.created_at),('provider_claimed',c.claimed_at)) t(stage,at)
+               where a.number is not null and t.at is not null
+               on conflict(sandbox_id,activation,stage) do update set at=least(sandbox_launch_stages.at,excluded.at)`,
+              [sandboxId, requestId],
+            );
           }
           const ticket = await createRuntimeEnrolments(scoped, key, { allowDockerIssue: true }).issue({
             sandboxId,

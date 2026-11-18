@@ -372,8 +372,12 @@ export function createSqlData(
         if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
         await createSqlSandboxStore(sql, { turnModels: true }).recordTurnModelEvidence!(id, promptId, evidence);
       },
-      async recordLaunchStage(id, stage, elapsedMs) {
-        // Server measurement of the caller's own launch: the same owner fence as its skill receipts.
+      async recordLaunchStage(id, stage, elapsedMs, generation) {
+        // An admitted resume can be driven by the owner or an organization admin.
+        if (generation !== undefined) {
+          if (await sandboxes.get(id)) await recordLaunchStageSql(sql, id, stage, elapsedMs, generation);
+          return;
+        }
         const owned = await sql.query("select 1 from public.sandboxes where id=$1::uuid and owner_id=$2::uuid", [
           id,
           caller.userId,
