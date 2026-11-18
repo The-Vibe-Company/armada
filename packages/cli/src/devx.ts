@@ -12,7 +12,7 @@ import { createArmadaApiClient, resolveArmadaOrigin } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
 import { commandWords, optionWords } from "./command-catalog.ts";
 import { control } from "./control.ts";
-import { listHosts } from "./host-commands.ts";
+import { listHosts, resolveHostOrganization } from "./host-commands.ts";
 export function completion(argv: readonly string[], auth: Pick<AuthIo, "out">): number {
   if (argv.length !== 1 || !["bash", "zsh", "fish"].includes(argv[0] ?? ""))
     throw new AuthError("Run armada completion bash|zsh|fish, then source the generated script.", "usage");
@@ -102,7 +102,7 @@ export async function prepareLaunch(argv: readonly string[], auth: AuthIo): Prom
   if (provider === "docker") {
     if (!single(args, "--host") && !single(args, "--golden")) {
       const client = await createArmadaApiClient(auth);
-      const hosts = await listHosts(client, org);
+      const hosts = await listHosts(client, await resolveHostOrganization(client, org));
       const host = await choose(
         `${org}/host`,
         "Host (add one with armada host add)",

@@ -1,15 +1,14 @@
-import { MACHINE_SIZES, MAX_EXTERNAL_REF_LENGTH, MAX_LAUNCH_TTL_SECONDS, SANDBOX_PROVIDERS } from "@armada/core";
+import { MACHINE_SIZES, MAX_LAUNCH_TTL_SECONDS, SANDBOX_PROVIDERS } from "@armada/core";
 import { z } from "zod";
 import {
-  DOCKER_HOST_LAUNCH_REQUEST,
-  DOCKER_SNAPSHOT_LAUNCH_REQUEST,
+  DOCKER_LAUNCH_VARIANTS,
+  launchCorrelationFields,
   sharedRestLaunchFields,
 } from "./docker-launch-request-schema.ts";
 
 const goldenFields = {
   golden: z.string().min(1).describe("The name returned by golden/list."),
   org: z.string().nullish().describe("Organization name or ID. Required for ambiguous golden names."),
-  harness: sharedRestLaunchFields.harness,
   model: z.string().nullish(),
   reasoningEffort: z.string().nullish(),
   ttlSeconds: z.number().int().min(1).max(MAX_LAUNCH_TTL_SECONDS).optional(),
@@ -17,20 +16,9 @@ const goldenFields = {
   size: z.enum(MACHINE_SIZES).optional(),
   sizePolicyVersion: z.literal(1).optional(),
   repo: z.string().min(1).optional().describe("Configured directory or owner/repo from the golden."),
-  credentialId: sharedRestLaunchFields.credentialId,
   visibility: z.enum(["private", "org"]).optional(),
-  skills: sharedRestLaunchFields.skills,
-  skipSkillDefaults: sharedRestLaunchFields.skipSkillDefaults,
-  connections: sharedRestLaunchFields.connections,
-  stopWhenWorkMerged: sharedRestLaunchFields.stopWhenWorkMerged,
-  idempotencyKey: z.string().min(16).max(128).optional(),
-  externalRef: z
-    .string()
-    .min(1)
-    .max(MAX_EXTERNAL_REF_LENGTH)
-    // biome-ignore lint/suspicious/noControlCharactersInRegex: controls are explicitly excluded from external references
-    .regex(/^[^\x00-\x1f\x7f-\x9f]+(?![\s\S])/)
-    .optional(),
+  ...sharedRestLaunchFields,
+  ...launchCorrelationFields,
 };
 
 const goldenLaunch = z
@@ -75,6 +63,5 @@ export const LAUNCH_REQUEST_VARIANTS = [
   goldenLaunch,
   boatRuntimeLaunch,
   modalRuntimeLaunch,
-  DOCKER_HOST_LAUNCH_REQUEST,
-  DOCKER_SNAPSHOT_LAUNCH_REQUEST,
+  ...DOCKER_LAUNCH_VARIANTS,
 ] as const;

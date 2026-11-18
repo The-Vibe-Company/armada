@@ -1,4 +1,4 @@
-import { launchFailureHelp, SIZED_LAUNCH_ROUTE_V1 } from "@armada/core";
+import { launchFailureHelp } from "@armada/core";
 import { isUuid } from "./action.ts";
 import { type ArmadaApiOptions, ControlError, controlPost, LAUNCH_TIMEOUT_MS } from "./control.ts";
 import type { LaunchArgs } from "./model-choice.ts";
@@ -13,7 +13,7 @@ import { launchReason } from "./templates.ts";
  */
 export { LAUNCH_TIMEOUT_MS } from "./control.ts";
 
-/** The legacy launch route of the Armada API: no sizing semantics are promised on it. */
+/** The canonical sandbox launch route. */
 export const LAUNCH_PATH = "/api/v1/sandbox/launch";
 
 /**
@@ -22,10 +22,7 @@ export const LAUNCH_PATH = "/api/v1/sandbox/launch";
  * repository context (`repo`, a golden `repos[].dir`), the optional machine size override (`size`), the model account
  * (`credentialId`) and the optional first prompt. Answers the new sandbox's id.
  *
- * Whenever sizing matters (an explicit size, or a golden whose size defaults the server must resolve) it goes only
- * to #653's fail-closed `SIZED_LAUNCH_ROUTE_V1` with `sizePolicyVersion: 1`. A server that does not know that route
- * answers 404 before allocating anything, and the launch is never retried on the legacy route: a replica that ignores
- * `size` must not start a machine of another size.
+ * Send the sizing and scoped-access selectors in the request body when requested.
  */
 export async function launchSandbox(
   options: ArmadaApiOptions,
@@ -36,7 +33,7 @@ export async function launchSandbox(
   const sized = args.size !== undefined || args.sizePolicy === true;
   const payload = await controlPost(
     { ...options, timeoutMs: options.timeoutMs ?? LAUNCH_TIMEOUT_MS },
-    args.armadaAccess ? "/api/v1/sandbox/launch-access-v1" : sized ? SIZED_LAUNCH_ROUTE_V1 : LAUNCH_PATH,
+    LAUNCH_PATH,
     {
       ...(args.armadaAccess ? { armadaAccessVersion: 1, armadaAccess: { maxActiveChildren: 3 } } : {}),
       golden: args.golden,

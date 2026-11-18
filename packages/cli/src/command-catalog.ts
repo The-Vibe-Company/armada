@@ -41,7 +41,7 @@ Usage:
   armada host limits HOST [--cpus N] [--memory SIZE] [--max-sandboxes N | --auto] [--org UUID]
   armada host retention HOST --retention 24h [--org UUID]
   armada host revoke UUID [--org UUID]
-  armada launch [prompt] --provider docker [--host UUID|NAME | --golden snapshot-UUID] --agent claude|codex|opencode [--credential-id UUID] --org UUID [--repo owner/repo[@branch] ...] [--variable KEY:UUID:VERSION ...] [--secret KEY:UUID:VERSION ...] [--request-id UUID] [--json]
+  armada launch [prompt] --provider docker [--host UUID|NAME | --golden snapshot-UUID] --agent claude|codex|opencode [--credential-id UUID] [--org NAME|UUID] [--repo owner/repo[@branch] ...] [--variable KEY:UUID:VERSION ...] [--secret KEY:UUID:VERSION ...] [--request-id UUID] [--json]
                                            Docker launch through the normal Armada API using the official Armada environment.
   armada doctor [--org UUID] [--json]      Check session, server, GitHub, hosts and model accounts
   armada completion bash|zsh|fish           Print a shell completion script
@@ -88,7 +88,7 @@ Usage:
   armada snapshot list [--provider boat|modal|docker] [--org UUID] [--json]
                                            Snapshots you can see; Docker requires --org.
   armada snapshot get UUID --provider docker --org UUID [--json]
-                                           Read snapshot build state; launch ready snapshots with launch --provider docker --golden UUID.
+                                           Read snapshot build state; launch ready snapshots with launch --provider docker --agent codex --golden UUID.
   armada snapshot rebuild UUID --provider docker --org UUID [--request-id UUID] [--json]
                                            Build a new snapshot from saved repos/setup on its original host; keep the old one.
   armada launch <snapshot> --agent ${HARNESSES.join("|")} ["prompt"] [--model <id>] [--reasoning-effort <level>]

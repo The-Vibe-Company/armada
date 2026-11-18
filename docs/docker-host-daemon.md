@@ -856,7 +856,7 @@ Unreadable existing identity/state refuses installation rather than guessing.
 CLI: `armada host add [--name NAME] [--org UUID]` prints that command and waits
 boundedly for the exact host. `armada host list [--json]` shows safe metadata;
 `armada host revoke UUID` revokes through the admin API. Selected organization is
-reused. `armada launch --provider docker --host UUID_OR_NAME`
+reused. `armada launch --provider docker --agent codex --host UUID_OR_NAME`
 resolves names exactly among nonrevoked hosts in the selected org and refuses
 ambiguous names. Names are optional, nonempty trimmed display strings up to64
 characters, never identity or authority.

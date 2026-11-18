@@ -21,7 +21,7 @@ PRODUCTION = {"armada.thevibecompany.co", "armada.thevibecompany.com"}
 OWNER_ROUTES = {"list": "sandbox/list", "status": "sandbox/status", "send": "sandbox/send",
                 "stop": "sandbox/stop", "exec": "sandbox/exec"}
 API_STEPS = {"golden/list": "golden_list", "sandbox/list": "sandbox_list", "sandbox/status": "sandbox_status",
-             "logs/read": "logs_read", "sandbox/launch-access-v1": "parent_launch", "sandbox/launch": "control_launch",
+             "logs/read": "logs_read", "sandbox/launch": "control_launch",
              "sandbox/send": "parent_resume", "sandbox/stop": "sandbox_stop", "sandbox/exec": "control_probe",
              "orchestrator-tools/read": "old_grant_read"}
 API_CODES = set("invalid invalid_config invalid_request unauthorized forbidden not_found unknown_route conflict unsupported unavailable no_credentials start_failed init_failed prompt_failed payment_required provider_not_configured sandbox_not_ready no_running_turn credential_busy credential_binding_required credential_binding_unsafe credential_refused github_hydration_failed provider_unavailable dependency_unavailable outcome_unknown scoped_authority_denied invalid_epoch_authority".split())
@@ -268,7 +268,8 @@ class Run:
         return remaining
 
     def call(self, route, body, token=None, expected=200, code=None, timeout=30):
-        self.api_step = API_STEPS.get(route, "unknown_step")
+        self.api_step = ("parent_launch" if route == "sandbox/launch" and body.get("armadaAccessVersion") == 1
+                         else API_STEPS.get(route, "unknown_step"))
         trace = {"step": self.api_step, "route": route if route in API_STEPS else "unknown_route",
                  "status": None, "code": None, "reason": None}
         self._api_trace = trace
@@ -463,7 +464,7 @@ class Run:
         self.unknown_allocation = True
         # Even a negative control must be audited before assuming no delegated effect.
         self.delegated_uncertain = True
-        value = self.call("sandbox/launch-access-v1" if access else "sandbox/launch", body, timeout=120)
+        value = self.call("sandbox/launch", body, timeout=120)
         resource = self.record(value["sandbox"]["id"])
         if access:
             self.parent = resource
