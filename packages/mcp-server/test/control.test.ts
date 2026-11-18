@@ -2864,9 +2864,9 @@ test("versioned runtime launch is explicit/default-off and never selects native 
       { ...body, skills: ["not-a-pin"] },
     ])
       expect((await request("sandbox/launch-runtime-v1", bad))?.status).toBe(400);
-    expect((await request("sandbox/launch", body))?.status).toBe(400);
+    expect((await request("sandbox/launch", { ...body, runtimeTransport: "dialout" }))?.status).toBe(400);
     expect(host.forks).toHaveLength(0);
-    const response = await request("sandbox/launch-runtime-v1", { ...body, skills: [skillPin] });
+    const response = await request("sandbox/launch", { ...body, skills: [skillPin] });
     expect(response?.status).toBe(200);
     expect(await response?.json()).toMatchObject({
       runtime: { kind: "armada", epoch: "1" },
@@ -3053,14 +3053,14 @@ test("versioned runtime launch is explicit/default-off and never selects native 
 // and no native agent/configuration fallback on the accepted model-only path.
 test.each([
   { harness: "codex" as const, fromDefaults: false, entry: "explicit" },
-  { harness: "claude" as const, fromDefaults: true, entry: "explicit" },
+  { harness: "claude" as const, fromDefaults: true, entry: "legacy" },
   { harness: "opencode" as const, fromDefaults: true, entry: "explicit" },
   { harness: "codex" as const, fromDefaults: true, entry: "ordinary-api" },
   { harness: "codex" as const, fromDefaults: true, entry: "ordinary-mcp" },
 ])(
   "Modal runtime launch prepares explicit/default MCP and skills before its first prompt ($harness defaults=$fromDefaults entry=$entry)",
   async ({ harness, fromDefaults, entry }) => {
-    const ordinary = entry !== "explicit";
+    const ordinary = entry.startsWith("ordinary");
     await withServer(async ({ db, options }) => {
       const org = await options.store.createOrg("Modal runtime", STAN);
       options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
@@ -3078,9 +3078,10 @@ test.each([
         [org.id, STAN],
       );
       const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`;
+      const route = entry === "legacy" ? "sandbox/launch-modal-runtime-v1" : "sandbox/launch";
       const request = (body: object) =>
         handleControlRequest(
-          new Request(`https://armada.test/api/v1/${ordinary ? "sandbox/launch" : "sandbox/launch-modal-runtime-v1"}`, {
+          new Request(`https://armada.test/api/v1/${route}`, {
             method: "POST",
             headers: { authorization: `Bearer ${bearer}` },
             body: JSON.stringify(body),

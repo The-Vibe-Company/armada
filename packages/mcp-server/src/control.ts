@@ -650,7 +650,14 @@ export async function dispatchControlCommand(
   if (route === "org/provider/disconnect")
     return disconnectOrgProvider(store, caller, optional(body, "org"), required(body, "provider"));
   const org = scopedOrg(caller, optional(body, "org"));
-  switch (route) {
+  // Canonical runtime requests use the same admission checks as the compatibility routes.
+  let operation = route;
+  if (route === "sandbox/launch" && body.provider !== "docker") {
+    if (body.runtimeTransport !== undefined) operation = "sandbox/launch-modal-runtime-v1";
+    else if (body.boatRuntime !== undefined || body.runtimeVersion !== undefined)
+      operation = "sandbox/launch-runtime-v1";
+  }
+  switch (operation) {
     case "skillpack/catalog":
     case "skillpack/versions": {
       const versions = route === "skillpack/versions";
