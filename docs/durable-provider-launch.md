@@ -173,10 +173,12 @@ image in the child reservation. A successor can recover that reservation directl
 once the renewable child lease expires. The worker checks its persisted lease,
 deadline and cancellation immediately before adapter allocation. Once dispatch
 expires, unresolved allocations enter leased, delete-only cleanup under the
-original Modal authority. The worker clears the golden fence once the adapter
-proves the reservation was never committed, confirms removal, or has a durable
-child image reference that protects the snapshot. Cleanup retains its request
-until removal or absence is confirmed, even after golden retirement.
+original Modal authority. Cleanup can settle under the launch claim without
+resolving provider authority when SQL proves there is no reservation, the
+reservation never reached physical create, or the child has a deleted tombstone.
+The worker clears the golden fence after that proof or once the durable child
+reference protects the snapshot. Cleanup retains its request until removal or
+absence is confirmed, even after golden retirement.
 
 A crash after committing create intent can leave a named create with an unknown
 outcome. [Modal guarantees name uniqueness for running sandboxes](https://modal.com/docs/guide/sandboxes#named-sandboxes).
@@ -184,3 +186,11 @@ That guarantee cannot distinguish an undispatched create from a delayed create
 when lookup returns no result. Preserve the reservation and keep cleanup
 delete-only in this case. Durable initialization and initial-prompt checkpoints,
 versioned async clients, and Boat admission remain separate rollout steps.
+
+The boot worker guards create, terminate and image-delete at Modal's SDK RPC
+middleware, disables SDK retries for those guarded operations, and passes its
+deadline signal. The pinned SDK can still await its internal authentication
+after entering middleware. The command-router path that sends bootstrap stdin
+also has its own retry loop with no caller-supplied cancellation signal. These
+boundaries require provider transport support to enforce live authority through
+the final send and retry.

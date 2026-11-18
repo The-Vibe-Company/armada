@@ -154,10 +154,14 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
       heartbeat?.unref();
       try {
         return await work(await get(id), async (row, undoUndispatchedCreate) => {
-          await authorize(sql);
           // The pre-SDK guard can prove that this particular create never
           // dispatched. Preserve that proof under the old lease without renewing it.
-          if (!undoUndispatchedCreate) signal?.throwIfAborted();
+          // Revocation blocks new work, including lease extension, but it
+          // must not erase proof that the SDK call was refused.
+          if (!undoUndispatchedCreate) {
+            await authorize(sql);
+            signal?.throwIfAborted();
+          }
           const result = await sql.query(
             `update public.modal_machines set record=$4::jsonb,
                lease_until=case when $6 then lease_until else clock_timestamp()+$5::integer*interval '1 second' end

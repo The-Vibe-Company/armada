@@ -37,6 +37,7 @@ import {
 } from "../src/index.ts";
 
 let db: Awaited<ReturnType<typeof openMigratedDatabase>>;
+const teammateId = "00000000-0000-0000-0000-000000000004";
 const scope: Scope = {
   orgId: "00000000-0000-0000-0000-000000000001",
   userId: "00000000-0000-0000-0000-000000000002",
@@ -46,13 +47,10 @@ const scope: Scope = {
 beforeAll(async () => {
   db = await openMigratedDatabase();
   await db.query("insert into auth.users(id) values($1)", [scope.userId]);
-  await db.query("insert into auth.users(id) values($1)", ["00000000-0000-0000-0000-000000000004"]);
+  await db.query("insert into auth.users(id) values($1)", [teammateId]);
   await db.query("insert into orgs(id,name) values($1,'modal')", [scope.orgId]);
   await db.query("insert into members(org_id,user_id,role) values($1,$2,'admin')", [scope.orgId, scope.userId]);
-  await db.query("insert into members(org_id,user_id,role) values($1,$2,'member')", [
-    scope.orgId,
-    "00000000-0000-0000-0000-000000000004",
-  ]);
+  await db.query("insert into members(org_id,user_id,role) values($1,$2,'member')", [scope.orgId, teammateId]);
 });
 afterAll(async () => {
   await db.close();
@@ -940,6 +938,7 @@ test.each([
   ["boot intent committed", "stop"],
   ["fork App resolved", "resume"],
   ["image reservation committed", "expire"],
+  ["image reservation committed", "revoke"],
   ["child lease committed", "resume"],
   ["worker lease renewed", "resume"],
   ["child lease renewed", "resume"],
@@ -976,10 +975,13 @@ test.each([
   ["exit observed", "cleanup"],
   ["exit committed", "cleanup"],
   ["deletion committed", "cleanup"],
+  ["deletion committed", "cleanup_revoke"],
   ["worker cleanup committed", "cleanup"],
 ] as const)("durable Modal boot survives process loss after %s (%s)", async (boundary, recovery) => {
   const id = crypto.randomUUID();
   const child = modalLaunchSandboxId(id);
+  const cleanupCase = recovery === "cleanup" || recovery === "cleanup_revoke";
+  const revokeOwner = recovery === "revoke" || recovery === "cleanup_revoke";
   const goldenId = crypto.randomUUID();
   let watching = false;
   let crashed = false;
@@ -999,7 +1001,7 @@ test.each([
   function writeStep(statement: string, args?: unknown[]) {
     if (statement.includes("insert into public.provider_launch_requests")) return "admission committed";
     if (statement.includes("lease_epoch=r.lease_epoch+1"))
-      return recovery === "cleanup" ? "cleanup claim committed" : "worker claim committed";
+      return cleanupCase ? "cleanup claim committed" : "worker claim committed";
     if (statement.includes("set phase='booting'")) return "boot intent committed";
     if (statement.includes("insert into public.modal_machines")) return "image reservation committed";
     if (statement.includes("set lease_id=$3") && args?.[1] === child) return "child lease committed";
@@ -1007,7 +1009,7 @@ test.each([
     if (statement.includes("set lease_expires_at=now()+interval")) return "worker lease renewed";
     if (statement.includes("set lease_id=null") && args?.[1] === child) return "child lease released";
     if (statement.includes("set phase=$2,outcome="))
-      return recovery === "cleanup" ? "worker cleanup committed" : "worker settlement committed";
+      return cleanupCase ? "worker cleanup committed" : "worker settlement committed";
     if (statement.includes("next_attempt_at=now()+interval")) return "retry released";
     if (statement.includes("insert into public.sandbox_launch_stages")) return String(args?.[1]);
     if (statement.includes("set record=$4::jsonb") && args?.[1] === child) {
@@ -1192,14 +1194,14 @@ test.each([
       [id],
     );
     if (boundary === "retry released") f.failBoot(true);
-    if (recovery === "cleanup" || interruptedLookup) {
+    if (cleanupCase || interruptedLookup) {
       // A create accepted by Modal with no returned identity exercises every
       // delete-only checkpoint, including lookup and ownership verification.
       f.failCreate(true);
       expect(await first.reconcileOne(signal)).toBe(true);
       await first.drain();
       f.failCreate(false);
-      if (recovery === "cleanup") {
+      if (cleanupCase) {
         await db.query(
           "update provider_launch_requests set dispatch_deadline=now(),next_attempt_at=now() where sandbox_id=$1",
           [id],
@@ -1247,10 +1249,9 @@ test.each([
   }
 
   const successor = worker();
-  const teammate = "00000000-0000-0000-0000-000000000004";
   try {
-    if (recovery === "revoke") {
-      await db.query("update members set role='admin' where org_id=$1 and user_id=$2", [scope.orgId, teammate]);
+    if (revokeOwner) {
+      await db.query("update members set role='admin' where org_id=$1 and user_id=$2", [scope.orgId, teammateId]);
       await db.query("delete from members where org_id=$1 and user_id=$2", [scope.orgId, scope.userId]);
     }
     for (let claim = 0; claim < 2; claim++) {
@@ -1258,12 +1259,12 @@ test.each([
       await successor.drain();
     }
   } finally {
-    if (recovery === "revoke") {
+    if (revokeOwner) {
       await db.query("insert into members(org_id,user_id,role) values($1,$2,'admin') on conflict do nothing", [
         scope.orgId,
         scope.userId,
       ]);
-      await db.query("update members set role='member' where org_id=$1 and user_id=$2", [scope.orgId, teammate]);
+      await db.query("update members set role='member' where org_id=$1 and user_id=$2", [scope.orgId, teammateId]);
     }
   }
   const persisted = (
@@ -1309,7 +1310,7 @@ test.each([
       expect(persisted).toMatchObject({ stopped_at: expect.any(Date), activity_lease_id: null });
     }
   }
-  const created = recovery === "resume" || recovery === "cleanup" || boundary === "modal_sandbox_create" ? 1 : 0;
+  const created = recovery === "resume" || cleanupCase || boundary === "modal_sandbox_create" ? 1 : 0;
   expect(f.creates - createdBeforeBoot).toBe(created);
   if (boundary === "legacy create accepted") expect(legacyLookups).toBe(1);
   await db.transaction(async (tx) => {
@@ -1412,6 +1413,33 @@ test.each(["SandboxCreate", "SandboxCreateV2", "SandboxTerminate", "SandboxTermi
     expect(attempts.at(-1)).toEqual({});
   },
 );
+
+test("Modal preserves a proved no-create reservation after the owner is removed", async () => {
+  const f = fixture();
+  const builder = await f.provider.createGolden({});
+  const name = crypto.randomUUID();
+  await f.provider.snapshot({ sandboxId: builder.id, name });
+  const id = crypto.randomUUID();
+  const request = { from: name, modalLaunchId: id, idempotencyKey: id, labels: { sandbox: id } };
+  await db.query("update members set role='admin' where org_id=$1 and user_id=$2", [scope.orgId, teammateId]);
+  try {
+    await expect(
+      f.provider.fork(request, async (transaction) => {
+        if (transaction || (await f.store.findByRequestKey(id))?.phase !== "creating") return;
+        await db.query("delete from members where org_id=$1 and user_id=$2", [scope.orgId, scope.userId]);
+        throw new Error("The launch owner is no longer a member.");
+      }),
+    ).rejects.toThrow();
+  } finally {
+    await db.query("insert into members(org_id,user_id,role) values($1,$2,'admin') on conflict do nothing", [
+      scope.orgId,
+      scope.userId,
+    ]);
+    await db.query("update members set role='member' where org_id=$1 and user_id=$2", [scope.orgId, teammateId]);
+  }
+  expect(await f.store.findByRequestKey(id)).toMatchObject({ phase: "reserved" });
+  expect(f.creates).toBe(1);
+});
 
 test("enrolled Modal host forks never start or call the tunnel and stop without a recovery claim", async () => {
   const f = fixture(scope, db, undefined, undefined, true);

@@ -162,7 +162,7 @@ export function createModalBootWorker(
     );
   }
 
-  async function settle(claim: Claim, outcome: Outcome, needsCleanup: boolean, requireNoReservation = false) {
+  async function settle(claim: Claim, outcome: Outcome, needsCleanup: boolean, requireLocalAbsence = false) {
     const { sandbox_id: id, lease_epoch: epoch } = claim;
     const bootExpiry = "expiresAt" in outcome ? outcome.expiresAt : undefined;
     const succeeded = bootExpiry !== undefined;
@@ -189,19 +189,32 @@ export function createModalBootWorker(
         )
       ).rows[0];
       if (!row) return false;
-      if (requireNoReservation) {
-        // The launch row lock serializes this proof with the fork's reservation
-        // guard. No stale claim can register another child behind settlement.
+      if (requireLocalAbsence) {
+        const identity = [claim.org_id, claim.owner_id, claim.provider_sandbox_id, id];
+        // The launch row lock serializes absence with the reservation guard.
+        // A reserved child never reached create. Wait for any child lease to
+        // expire before tombstoning it so a stale save cannot advance it.
+        await tx.query(
+          `update public.modal_machines set record=jsonb_set(record,'{phase}','"deleted"'),
+             lease_id=null,lease_until=null
+           where org_id=$1 and owner_id=$2 and id=$3 and request_key=$4
+             and ((record->>'phase'='reserved' and record->>'physicalId' is null)
+               or (record->>'phase'='deleted' and lease_id is not null))
+             and (lease_until is null or lease_until<=clock_timestamp())`,
+          identity,
+        );
         const reservation = await tx.query(
           `select 1 from public.modal_machines where org_id=$1 and owner_id=$2
-           and (id=$3 or request_key=$4) limit 1`,
-          [claim.org_id, claim.owner_id, claim.provider_sandbox_id, id],
+           and (id=$3 or request_key=$4)
+           and (id<>$3 or request_key<>$4 or record->>'phase' is distinct from 'deleted'
+             or lease_until>clock_timestamp()) limit 1`,
+          identity,
         );
         if (reservation.rows.length) return false;
       }
       const resolvedOutcome: Outcome =
         allocationGone && sandbox?.cancelled && !("reason" in outcome && outcome.cancelled)
-          ? { reason: requireNoReservation ? "cancelled_before_reservation" : "cancelled_during_boot", cancelled: true }
+          ? { reason: "cancelled_during_boot", cancelled: true }
           : outcome;
       const cancelled = "reason" in resolvedOutcome && resolvedOutcome.cancelled === true;
       const updated = await tx.query(
@@ -334,7 +347,7 @@ export function createModalBootWorker(
         return;
       }
       const recovery = claim.phase === "cleanup_pending";
-      if (recovery && (await settle(claim, { reason: "boot_reservation_absent" }, false, true))) return;
+      if (recovery && (await settle(claim, { reason: "boot_allocation_absent" }, false, true))) return;
       if (signal.aborted) return;
       const cleanup = recovery || (live?.cancelled === true && claim.phase === "booting");
       if (!recovery && cleanup && live?.expired) {
