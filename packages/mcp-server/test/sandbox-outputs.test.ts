@@ -994,3 +994,49 @@ test("a member stopping the sandbox discards its incomplete output transfers", a
   await db.exec("commit");
   expect((await db.query(`select 1 from sandbox_output_transfers where sandbox_id=$1`, [id])).rows).toHaveLength(0);
 });
+
+test("a failed Modal manifest read logs its phase even after the sandbox recorded collector_failed", async () => {
+  const id = "modal_output_fixture";
+  const warnings: unknown[] = [];
+  const reasons: unknown[] = [];
+  let claimedId = id;
+  const warn = console.warn;
+  console.warn = (line: string) => warnings.push(JSON.parse(line));
+  const sql: Sql = {
+    query: async <T>(query: string, params?: readonly unknown[]) => {
+      // The historical reason was claimed on an earlier server version.
+      if (query.includes("set outputs_failure_reasons=array_append")) reasons.push(params?.[1]);
+      const rows = query.includes("outputs_attempt_count=outputs_attempt_count+1")
+        ? [{ id: claimedId, provider: "modal", provider_sandbox_id: "modal_fixture", retained_generation: null }]
+        : query.startsWith("select outputs_collector_supported")
+          ? [{ outputs_collector_supported: true }]
+          : [];
+      return { rows: rows as T[] };
+    },
+    transaction: async () => {
+      throw Error("manifest failure must precede writes");
+    },
+  };
+  try {
+    const service = createSandboxOutputs(sql, KEY, async () => ({
+      listOutputEntries: async () => JSON.parse("private collector output"),
+      readOutputChunk: async () => null,
+    }));
+    expect(await sample(service)).toBe(true);
+    claimedId = "other_modal_output_fixture";
+    expect(await sample(service)).toBe(true);
+    expect(reasons).toEqual(["collector_failed", "collector_failed"]);
+    expect(warnings).toEqual([
+      {
+        event: "sandbox_output_collector_diagnostic",
+        sandboxId: id,
+        provider: "modal",
+        path: "live",
+        phase: "list_entries",
+        errorKind: "syntax_error",
+      },
+    ]);
+  } finally {
+    console.warn = warn;
+  }
+});

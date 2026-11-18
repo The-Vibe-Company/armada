@@ -1203,200 +1203,171 @@ export function createArmadaServer(context: ToolContext, version: string, option
     },
   );
 
-  for (const launchTool of ["launch", "launch_sized_v1"] as const) {
-    tool(
-      launchTool,
-      {
-        title: "Launch an agent",
-        description:
-          "Forks a golden into a new sandbox, pulls its repos, runs its init commands, and starts the agent. " +
-          "With `prompt` the agent starts working at once (status running). Without it the sandbox is left ready " +
-          "and the conversation starts at the first `send`. The sandbox gets only your (or your org's) Armada " +
-          "credentials for this agent, never the boat.dev account's. When the caller connected GitHub, git and gh in " +
-          "the sandbox act as that person (8 hour token): see `github` in the answer. Setup can take a few minutes.",
-        input: {
-          ...(launchTool === "launch_sized_v1" ? { size_policy_version: z.literal(1) } : {}),
-          idempotencyKey: z
-            .string()
-            .min(16)
-            .max(128)
-            .optional()
-            .describe("Reuse this key for retries; inspect launch_receipt after an unknown outcome."),
-          externalRef: externalRefInput.optional(),
-          stopWhenWorkMerged: z.boolean().optional(),
-          visibility: z.enum(["private", "org"]).optional(),
-          skills: z.array(z.string()).max(20).optional(),
-          skipSkillDefaults: z.boolean().optional(),
-          helperCapabilities: z.array(z.string().max(64)).max(8).optional(),
-          connections: z.array(z.string().uuid()).max(MAX_MCP_CONNECTIONS).optional(),
-          golden: z.string().min(1).describe("The golden's name, as in golden_list."),
-          org: z
-            .string()
-            .optional()
-            .describe("The golden's orgId, as in golden_list. Needed only when the name is in several of your orgs."),
-          provider: z
-            .enum(SANDBOX_PROVIDERS)
-            .optional()
-            .describe("The golden's provider. Needed only when the name exists on several providers."),
-          harness: z.enum(HARNESSES).describe("claude (Claude Code) or codex."),
-          model: modelInput,
-          reasoning_effort: effortInput,
-          size: z.enum(MACHINE_SIZES).optional(),
-          repo: z
-            .string()
-            .optional()
-            .describe(
-              "Configured directory or owner/repo from the golden. Prepares native agent cwd, including idle launches. Not confinement.",
-            ),
-          credentialId: z.string().uuid().optional(),
-          prompt: z.string().min(1).optional().describe("The first instruction. Leave out for an idle sandbox."),
-          ttl_seconds: z
-            .number()
-            .int()
-            .min(1)
-            .max(MAX_LAUNCH_TTL_SECONDS)
-            .optional()
-            .describe(
-              `Seconds before the machine stops by itself. Default ${DEFAULT_LAUNCH_TTL_SECONDS} (4 hours). At most ` +
-                `${providerLimitsText}; a longer TTL is refused.`,
-            ),
-        },
-        output: {
-          id: z.string(),
-          provider: providerOutput,
-          runtime: z.object({ kind: z.literal("armada"), epoch: z.string() }).optional(),
-          runtimeTransport: z.literal("dialout").optional(),
-          providerSandboxId: z.string(),
-          boatId: compat("providerSandboxId"),
-          golden: z.string(),
-          externalRef: externalRefOutput,
-          visibility: z.enum(["org", "private"]),
-          harness: z.enum(HARNESSES),
-          helper: z.unknown(),
-          skills: skillReceipts,
-          repositoryDir: z
-            .string()
-            .nullable()
-            .describe("Configured directory used to prepare native agent cwd; not confinement."),
-          ...modelOutput,
-          machineSize: z.unknown().nullable(),
-          status: z.enum(SANDBOX_STATUSES),
-          conversationIds: z.array(z.string()),
-          promptId: z.string().nullable(),
-          ttlSeconds: z.number().int(),
-          expiresAt: z.string().nullable(),
-          github: z
-            .object({
-              status: z.enum(["connected", "not_connected", "revoked", "unavailable"]),
-              login: z.string().nullable(),
-              tokenExpiresAt: z.string().nullable(),
-              message: z.string().nullable(),
-            })
-            .describe(
-              "Whether git and gh in the sandbox act as the caller. Anything but connected means they are not signed in; message says how to fix it.",
-            ),
-        },
-      },
-      async (args) => {
-        // Refused before any lookup or allocation.
-        resolveModelChoice(args.harness, { model: args.model, reasoningEffort: args.reasoning_effort });
-        const actor = await launchActor(args.golden, args.org);
-        const chosen: GoldenRecord = await goldenForLaunch(data.goldens, actor, args.golden, args.provider);
-        resolveRepositoryDir(chosen, args.repo);
-        const provider = await context.provider(chosen);
-        const dispatch = async (receiptId?: string) => {
-          const result = await launchSandbox(
-            provider,
-            {
-              ...(context.skillDefaults ? { skillDefaults: context.skillDefaults } : {}),
-              goldens: data.goldens,
-              sandboxes: data.sandboxes,
-              credentials: context.launchCredentials,
-              ...(context.connections ? { connections: context.connections } : {}),
-            },
-            actor,
-            {
-              golden: args.golden,
-              ...(args.size === undefined ? {} : { size: args.size }),
-              provider: chosen.provider,
-              harness: args.harness,
-              ...(args.repo === undefined ? {} : { repo: args.repo }),
-              ...(args.model === undefined ? {} : { model: args.model }),
-              ...(args.visibility === undefined ? {} : { visibility: args.visibility }),
-              ...(args.skipSkillDefaults === undefined ? {} : { skipSkillDefaults: args.skipSkillDefaults }),
-              ...(args.skills === undefined ? {} : { skills: args.skills }),
-              ...(args.helperCapabilities === undefined ? {} : { helperCapabilities: args.helperCapabilities }),
-              ...(args.connections === undefined ? {} : { connections: args.connections }),
-              ...(args.credentialId ? { credentialId: args.credentialId } : {}),
-              ...(args.reasoning_effort === undefined ? {} : { reasoningEffort: args.reasoning_effort }),
-              ...(args.prompt === undefined ? {} : { prompt: args.prompt }),
-              ...(args.ttl_seconds === undefined ? {} : { ttlSeconds: args.ttl_seconds }),
-              ...(args.stopWhenWorkMerged === undefined ? {} : { stopWhenWorkMerged: args.stopWhenWorkMerged }),
-              ...(args.externalRef === undefined ? {} : { externalRef: args.externalRef }),
-            },
-            { ...context.launch, ...(receiptId ? { newId: () => receiptId } : {}) },
-          );
-          return {
-            ...launchResponse(result),
-            helper: result.helper,
-            visibility: result.sandbox.visibility ?? result.golden.visibility,
-          };
-        };
-        if (!context.ordinaryLaunchReceipts) {
-          if (args.idempotencyKey) throw new ToolError("invalid", "Durable launch receipts are not configured.");
-          return dispatch();
-        }
-        return context.ordinaryLaunchReceipts.run(
-          actor,
-          args.idempotencyKey ?? crypto.randomUUID(),
-          { ...args, goldenId: chosen.id },
-          dispatch,
-          {
-            target: {
-              provider: chosen.provider,
-              orgId: chosen.orgId,
-              visibility: chosen.visibility,
-              modal: chosen.modal,
-            },
-            management:
-              (await provider.managementIdentity?.()) ??
-              (() => {
-                throw new ToolError("invalid", "Provider cannot pin management authority.");
-              })(),
-            backendId:
-              (await provider.backendIdentity?.())?.id ??
-              (() => {
-                throw new ToolError("invalid", "Provider cannot pin allocation authority.");
-              })(),
-          },
-        );
-      },
-    );
-  }
-
   tool(
-    "launch_receipt",
+    "launch",
     {
-      title: "Inspect an ordinary launch receipt",
+      title: "Launch an agent",
       description:
-        "Owner-only allocation recovery by durable receipt id. An empty lookup is not proof of no allocation; never refork an unknown receipt. Discovered provider ids can be retired by an operator through provider controls.",
+        "Forks a golden into a new sandbox, pulls its repos, runs its init commands, and starts the agent. " +
+        "With `prompt` the agent starts working at once (status running). Without it the sandbox is left ready " +
+        "and the conversation starts at the first `send`. The sandbox gets only your (or your org's) Armada " +
+        "credentials for this agent, never the boat.dev account's. When the caller connected GitHub, git and gh in " +
+        "the sandbox act as that person (8 hour token): see `github` in the answer. Setup can take a few minutes.",
       input: {
-        id: z.string().uuid(),
-        org: z.string().optional(),
+        idempotencyKey: z
+          .string()
+          .min(16)
+          .max(128)
+          .optional()
+          .describe("Reuse this key with the same inputs if the launch outcome is unknown."),
+        externalRef: externalRefInput.optional(),
+        stopWhenWorkMerged: z.boolean().optional(),
+        visibility: z.enum(["private", "org"]).optional(),
+        skills: z.array(z.string()).max(20).optional(),
+        skipSkillDefaults: z.boolean().optional(),
+        helperCapabilities: z.array(z.string().max(64)).max(8).optional(),
+        connections: z.array(z.string().uuid()).max(MAX_MCP_CONNECTIONS).optional(),
+        golden: z.string().min(1).describe("The golden's name, as in golden_list."),
+        org: z
+          .string()
+          .optional()
+          .describe("The golden's orgId, as in golden_list. Needed only when the name is in several of your orgs."),
+        provider: z
+          .enum(SANDBOX_PROVIDERS)
+          .optional()
+          .describe("The golden's provider. Needed only when the name exists on several providers."),
+        harness: z.enum(HARNESSES).describe("claude (Claude Code) or codex."),
+        model: modelInput,
+        reasoning_effort: effortInput,
+        size: z.enum(MACHINE_SIZES).optional(),
+        repo: z
+          .string()
+          .optional()
+          .describe(
+            "Configured directory or owner/repo from the golden. Prepares native agent cwd, including idle launches. Not confinement.",
+          ),
+        credentialId: z.string().uuid().optional(),
+        prompt: z.string().min(1).optional().describe("The first instruction. Leave out for an idle sandbox."),
+        ttl_seconds: z
+          .number()
+          .int()
+          .min(1)
+          .max(MAX_LAUNCH_TTL_SECONDS)
+          .optional()
+          .describe(
+            `Seconds before the machine stops by itself. Default ${DEFAULT_LAUNCH_TTL_SECONDS} (4 hours). At most ` +
+              `${providerLimitsText}; a longer TTL is refused.`,
+          ),
       },
       output: {
         id: z.string(),
-        response: z.unknown(),
-        allocations: z.array(z.object({ id: z.string(), state: z.string() })),
-        outcome: z.string(),
+        provider: providerOutput,
+        runtime: z.object({ kind: z.literal("armada"), epoch: z.string() }).optional(),
+        runtimeTransport: z.literal("dialout").optional(),
+        providerSandboxId: z.string(),
+        boatId: compat("providerSandboxId"),
+        golden: z.string(),
+        externalRef: externalRefOutput,
+        visibility: z.enum(["org", "private"]),
+        harness: z.enum(HARNESSES),
+        helper: z.unknown(),
+        skills: skillReceipts,
+        repositoryDir: z
+          .string()
+          .nullable()
+          .describe("Configured directory used to prepare native agent cwd; not confinement."),
+        ...modelOutput,
+        machineSize: z.unknown().nullable(),
+        status: z.enum(SANDBOX_STATUSES),
+        conversationIds: z.array(z.string()),
+        promptId: z.string().nullable(),
+        ttlSeconds: z.number().int(),
+        expiresAt: z.string().nullable(),
+        github: z
+          .object({
+            status: z.enum(["connected", "not_connected", "revoked", "unavailable"]),
+            login: z.string().nullable(),
+            tokenExpiresAt: z.string().nullable(),
+            message: z.string().nullable(),
+          })
+          .describe(
+            "Whether git and gh in the sandbox act as the caller. Anything but connected means they are not signed in; message says how to fix it.",
+          ),
       },
     },
     async (args) => {
-      const member = resolveCreateOrg(caller.orgs, args.org);
-      const actor = { orgId: member.orgId, userId: caller.userId };
-      if (!context.ordinaryLaunchReceipts)
-        throw new ToolError("invalid", "Durable launch receipts are not configured.");
-      return context.ordinaryLaunchReceipts.inspect(actor, args.id, context.provider);
+      // Refused before any lookup or allocation.
+      resolveModelChoice(args.harness, { model: args.model, reasoningEffort: args.reasoning_effort });
+      const actor = await launchActor(args.golden, args.org);
+      const chosen: GoldenRecord = await goldenForLaunch(data.goldens, actor, args.golden, args.provider);
+      resolveRepositoryDir(chosen, args.repo);
+      const provider = await context.provider(chosen);
+      const dispatch = async (receiptId?: string) => {
+        const result = await launchSandbox(
+          provider,
+          {
+            ...(context.skillDefaults ? { skillDefaults: context.skillDefaults } : {}),
+            goldens: data.goldens,
+            sandboxes: data.sandboxes,
+            credentials: context.launchCredentials,
+            ...(context.connections ? { connections: context.connections } : {}),
+          },
+          actor,
+          {
+            golden: args.golden,
+            ...(args.size === undefined ? {} : { size: args.size }),
+            provider: chosen.provider,
+            harness: args.harness,
+            ...(args.repo === undefined ? {} : { repo: args.repo }),
+            ...(args.model === undefined ? {} : { model: args.model }),
+            ...(args.visibility === undefined ? {} : { visibility: args.visibility }),
+            ...(args.skipSkillDefaults === undefined ? {} : { skipSkillDefaults: args.skipSkillDefaults }),
+            ...(args.skills === undefined ? {} : { skills: args.skills }),
+            ...(args.helperCapabilities === undefined ? {} : { helperCapabilities: args.helperCapabilities }),
+            ...(args.connections === undefined ? {} : { connections: args.connections }),
+            ...(args.credentialId ? { credentialId: args.credentialId } : {}),
+            ...(args.reasoning_effort === undefined ? {} : { reasoningEffort: args.reasoning_effort }),
+            ...(args.prompt === undefined ? {} : { prompt: args.prompt }),
+            ...(args.ttl_seconds === undefined ? {} : { ttlSeconds: args.ttl_seconds }),
+            ...(args.stopWhenWorkMerged === undefined ? {} : { stopWhenWorkMerged: args.stopWhenWorkMerged }),
+            ...(args.externalRef === undefined ? {} : { externalRef: args.externalRef }),
+          },
+          { ...context.launch, ...(receiptId ? { newId: () => receiptId } : {}) },
+        );
+        return {
+          ...launchResponse(result),
+          helper: result.helper,
+          visibility: result.sandbox.visibility ?? result.golden.visibility,
+        };
+      };
+      if (!context.ordinaryLaunchReceipts) {
+        if (args.idempotencyKey) throw new ToolError("invalid", "Durable launch receipts are not configured.");
+        return dispatch();
+      }
+      return context.ordinaryLaunchReceipts.run(
+        actor,
+        args.idempotencyKey ?? crypto.randomUUID(),
+        { ...args, goldenId: chosen.id },
+        dispatch,
+        {
+          target: {
+            provider: chosen.provider,
+            orgId: chosen.orgId,
+            visibility: chosen.visibility,
+            modal: chosen.modal,
+          },
+          management:
+            (await provider.managementIdentity?.()) ??
+            (() => {
+              throw new ToolError("invalid", "Provider cannot pin management authority.");
+            })(),
+          backendId:
+            (await provider.backendIdentity?.())?.id ??
+            (() => {
+              throw new ToolError("invalid", "Provider cannot pin allocation authority.");
+            })(),
+        },
+      );
     },
   );
 

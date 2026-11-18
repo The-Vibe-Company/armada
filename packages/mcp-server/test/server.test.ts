@@ -1631,8 +1631,6 @@ test("public MCP schemas protect secret boundaries and mutation contracts", asyn
       "golden_update",
       "interrupt",
       "launch",
-      "launch_sized_v1",
-      "launch_receipt",
       "list",
       "logs",
       "template_launch",
