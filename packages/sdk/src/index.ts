@@ -214,14 +214,16 @@ export interface SendInput extends SandboxRef {
   reasoning_effort?: string;
 }
 /**
- * A send to a Docker sandbox. `request_id` (a lowercase UUID) is required: the prompt is queued durably
- * under it, so retry uncertain delivery with the same `request_id` and identical input. Model and effort
+ * A send to a Docker sandbox. The prompt is queued durably under `request_id` (a lowercase UUID), so retry
+ * uncertain delivery with the same `request_id` and identical input. Without one the server generates a key
+ * (the receipt's `requestId`) and a retry queues the prompt again, so supply it to replay. Model and effort
  * stay pinned to launch, so per-turn overrides are refused.
  */
 export interface DockerSendInput extends SandboxRef {
   /** The whole serialized request body is limited to 128 KiB (below Docker's 256 KiB admission limit); a larger one fails with HTTP 413 before dispatch. */
   prompt: string;
-  request_id: string;
+  /** Supply it to make a retry replay instead of queuing the prompt again. */
+  request_id?: string;
   /** A lowercase conversation UUID of the sandbox. Default: the latest. */
   conversation_id?: string;
   model?: never;

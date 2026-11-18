@@ -124,7 +124,7 @@ private func detail(status: String, settled: Bool, prompt: String? = nil) -> Str
     let requests = Array(await transport.requests.dropFirst(2))
     #expect(requests.map { $0.url!.path } == Array(repeating: "/api/v1/sandbox/send", count: 6) + ["/api/v1/sandbox/stop"])
     #expect(requests.allSatisfy { $0.value(forHTTPHeaderField: "Idempotency-Key") == nil })
-    // Docker send admission requires a lowercase UUID request_id: each send carries its pending prompt's UUID.
+    // Each send carries its pending prompt's UUID as a lowercase request_id, so a Docker sandbox can deduplicate it.
     let first = try body(requests[0])
     let firstKey = try #require(first["request_id"])
     #expect(UUID(uuidString: firstKey) != nil && firstKey == firstKey.lowercased())

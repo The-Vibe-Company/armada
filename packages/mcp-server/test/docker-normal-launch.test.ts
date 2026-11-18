@@ -858,12 +858,14 @@ test("SDK sends to a Docker sandbox meet the published Docker variant exactly wh
     outcomeUnknown: false,
   });
   expect(f.native.length).toBe(dispatched);
+  // The account queue keys a keyless Docker send before dispatch (covered below), so the published
+  // variant accepts it.
+  expect(docker.safeParse({ ...ref, prompt: "No request key" }).success).toBe(true);
   const refused: SendInput[] = [
-    { ...ref, prompt: "No request key" },
     { ...ref, prompt: "Per-turn model", request_id: randomUUID(), model: "normal-http-model" },
   ];
   for (const input of refused) {
-    // Both stay valid golden sends, so only the Docker variant can tell the caller in advance.
+    // It stays a valid golden send, so only the Docker variant can tell the caller in advance.
     expect(published.safeParse(input).success).toBe(true);
     expect(docker.safeParse(input).success).toBe(false);
     const error = await sdk.send(input).catch((caught: unknown) => caught);
@@ -883,17 +885,15 @@ test("SDK sends to a Docker sandbox meet the published Docker variant exactly wh
   expect(await raw?.json()).toEqual({
     error: {
       code: "invalid_request",
-      message: expect.stringContaining("Docker send requires a lowercase UUID request_id"),
+      message: expect.stringContaining("model and reasoning_effort are refused"),
     },
   });
-  // @ts-expect-error A Docker send needs its request_id.
-  const unkeyed: DockerSendInput = { ...ref, prompt: "No request key" };
   // @ts-expect-error A Docker sandbox keeps the model chosen at launch.
   const override: DockerSendInput = { ...keyed, model: "normal-http-model" };
-  void [unkeyed, override];
+  void override;
 });
 
-test("Docker sends through the production-wired account queue refuse unkeyed and override input before queuing, and admitted rows still dispatch", async () => {
+test("Docker sends through the production-wired account queue key a legacy body, replay a keyed one, refuse overrides before queuing, and dispatch admitted rows", async () => {
   const f = await fixture();
   await f.service().launch(f.caller, f.body);
   // Wired as serve.ts does: REST sends reach the account queue first, and the queue
@@ -904,7 +904,7 @@ test("Docker sends through the production-wired account queue refuse unkeyed and
       clock: f.clock,
       send: createDockerNormalSend(sql, key, { enabled: true, clock: f.clock, dispatchQueued }),
     });
-  const { options, bearer } = restControl(f, { dockerControls: dockerControls(false), accountTurns });
+  const { options, bearer, post } = restControl(f, { dockerControls: dockerControls(false), accountTurns });
   const { accountTurns: _queue, ...unqueued } = options;
   accountTurns.setDispatch((caller, input) =>
     dispatchControlCommand("sandbox/send", caller, { ...input }, { ...unqueued, dockerControls: dockerControls(true) }),
@@ -927,10 +927,7 @@ test("Docker sends through the production-wired account queue refuse unkeyed and
       )
     ).rows.map((row) => row.request_id);
   const refused: SendInput[] = [
-    { ...ref, prompt: "No request key" },
-    { ...ref, prompt: "No request key" },
     { ...ref, prompt: "Per-turn model", request_id: randomUUID(), model: "normal-http-model" },
-    { ...ref, prompt: "Uppercase key", request_id: randomUUID().toUpperCase() },
     { ...ref, prompt: "   ", request_id: randomUUID() },
   ];
   for (const input of refused)
@@ -940,12 +937,17 @@ test("Docker sends through the production-wired account queue refuse unkeyed and
       outcomeUnknown: false,
     });
   expect(await rows()).toEqual([]);
+  // The body installed iOS builds send (id, org, prompt): queued under a server-generated key.
+  const legacy = { id: ref.id, org: ref.org, prompt: "Legacy keyless follow-up" };
+  expect(await post("sandbox/send", legacy)).toMatchObject({ requestId: expect.any(String), status: "queued" });
+  const generated = await rows();
+  expect(generated).toEqual([expect.stringMatching(/^[0-9a-f-]{36}$/)]);
   const keyed: DockerSendInput = { ...ref, prompt: "Queued keyed follow-up", request_id: randomUUID() };
   const receipt = await sdk.send(keyed);
   expect(receipt).toMatchObject({ requestId: keyed.request_id, status: "queued" });
   // An identical retry returns the same durable receipt instead of queuing again.
   expect(await sdk.send(keyed)).toMatchObject({ requestId: keyed.request_id, promptId: receipt.promptId });
-  expect(await rows()).toEqual([keyed.request_id]);
+  expect((await rows()).sort()).toEqual([...generated, String(keyed.request_id)].sort());
   const dispatched = f.native.length;
   // The launch turn has finished, so the sandbox is free for the queued turn.
   await database().query(
@@ -954,8 +956,13 @@ test("Docker sends through the production-wired account queue refuse unkeyed and
   );
   expect(await accountTurns.reconcileOne(new AbortController().signal)).toBe(true);
   await accountTurns.drain();
+  // The oldest queued row, the legacy send, dispatches under its server-generated key.
   expect(f.native.slice(dispatched)).toEqual([
-    expect.objectContaining({ op: "prompt", input: expect.objectContaining({ text: keyed.prompt }) }),
+    expect.objectContaining({
+      op: "prompt",
+      requestId: `docker_prompt_${generated[0]}`,
+      input: expect.objectContaining({ text: legacy.prompt }),
+    }),
   ]);
 });
 test("the normal HTTP route accepts the dashboard body and returns a launched sandbox readable through normal controls", async () => {

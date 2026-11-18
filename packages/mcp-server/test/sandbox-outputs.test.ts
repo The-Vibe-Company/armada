@@ -102,7 +102,7 @@ test("collected outputs survive stop, deduplicate webhook events and enforce int
   // The list and a refusal parse with the published OpenAPI contract.
   const list = await routeFor(service, people.owner, people.org)(new Request(url));
   expect(publishedGetResponse("sandboxes/{id}/outputs", "200").parse(await list?.json())).toMatchObject({
-    directory: "/workspace/outputs",
+    directory: "/home/user/outputs",
     files: [{ name: "memo.pdf", size: 8 }],
   });
   const refused = await routeFor(service, people.member, people.org)(new Request(url));

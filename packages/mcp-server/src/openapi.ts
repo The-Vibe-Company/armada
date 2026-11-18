@@ -2,7 +2,6 @@ import {
   API_FAILURE_STATUS,
   CONTROL_BODY_MAX_BYTES,
   controlBodyMaxBytes,
-  DOCKER_OUTPUT_DIRECTORY,
   OUTPUT_DIRECTORY,
   OUTPUT_MAX_BYTES,
   OUTPUT_MAX_FILES,
@@ -136,7 +135,7 @@ const OUTPUT_OPERATIONS: Record<(typeof PUBLISHED_REST_GET_ROUTES)[number], obje
   "sandboxes/{id}/outputs": {
     get: {
       operationId: "sandbox_outputs_list",
-      description: `The files of the sandbox's last output snapshot, from its declared outputs directory (${OUTPUT_DIRECTORY} on Boat and Modal, ${DOCKER_OUTPUT_DIRECTORY} on Docker), in name order.${OUTPUT_ACCESS} A sandbox.output.available webhook names a new or changed file.`,
+      description: `The files of the sandbox's last output snapshot, from its declared outputs directory (${OUTPUT_DIRECTORY} on every provider), in name order.${OUTPUT_ACCESS} A sandbox.output.available webhook names a new or changed file.`,
       security: [{ serviceToken: [] }],
       parameters: [SANDBOX_ID_PARAMETER],
       responses: {
@@ -284,7 +283,7 @@ export async function generateOpenApi() {
           ],
         };
         description +=
-          " A Docker sandbox admits only the Docker sandbox send variant: request_id (a lowercase UUID) is required, and model and reasoning_effort are refused because they remain pinned to launch.";
+          " A Docker sandbox admits only the Docker sandbox send variant: model and reasoning_effort are refused because they remain pinned to launch. Supply request_id (a lowercase UUID) to replay uncertain delivery; when it is omitted the server generates one.";
       }
       paths[`/api/v1/${route}`] = {
         post: {

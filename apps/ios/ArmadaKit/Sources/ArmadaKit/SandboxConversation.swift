@@ -201,7 +201,7 @@ extension ArmadaClient {
 
     /// Sends one prompt as a new turn. Sent once: a failure is classified with
     /// `SandboxMutationFailure.classify` and never resent by this client. The pending prompt's
-    /// UUID travels as the lowercase `request_id`, which Docker send admission requires.
+    /// UUID travels as the lowercase `request_id`, the key Docker and runtime sandboxes deduplicate on.
     public func sendSandboxPrompt(id: String, text: String) async throws -> SandboxPromptReceipt {
         struct Send: Encodable, Sendable {
             let id: String; let org: String; let prompt: String; let requestID: String

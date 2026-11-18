@@ -130,9 +130,9 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         new Date(),
       );
       if (refusal) throw new VaultError("conflict", refusal);
-      // Docker admission rules apply before the request key is used or anything is persisted:
-      // a keyless Docker send must be refused, not queued under a fresh UUID.
-      if (target.provider === "docker" && !DOCKER_SEND_REQUEST.safeParse(input).success)
+      // Docker admission rules apply to the normalized request before anything is persisted. A keyless
+      // send keeps its server-generated request_id, as installed clients (earlier iOS builds) rely on.
+      if (target.provider === "docker" && !DOCKER_SEND_REQUEST.safeParse(normalized).success)
         throw new ToolError("invalid_request", DOCKER_SEND_REFUSAL);
       if (!input.prompt.trim()) throw new VaultError("invalid", "The prompt is empty.");
       if (!target.credential_id) return null;

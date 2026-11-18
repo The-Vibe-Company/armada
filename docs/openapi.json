@@ -3753,7 +3753,7 @@
     "/api/v1/sandbox/send": {
       "post": {
         "operationId": "sandbox_send",
-        "description": "Gives the agent its next instruction as a new turn. Without conversation_id the first send of an idle sandbox opens a conversation and later sends continue the latest one. To redirect a turn that is still running, use steer. The turn runs with the model and effort chosen at launch; model and reasoning_effort override them for this turn only. Experimental runtime follow-up requires request_id, an empty ready sandbox, existing conversation, or verified empty checkpoint; retained idle pauses wake automatically before expiry. Preserved stopped Boat/Modal sandboxes resume on send; terminal sandboxes refuse controls with recovery guidance. Model/effort remain pinned to launch. A Docker sandbox admits only the Docker sandbox send variant: request_id (a lowercase UUID) is required, and model and reasoning_effort are refused because they remain pinned to launch.",
+        "description": "Gives the agent its next instruction as a new turn. Without conversation_id the first send of an idle sandbox opens a conversation and later sends continue the latest one. To redirect a turn that is still running, use steer. The turn runs with the model and effort chosen at launch; model and reasoning_effort override them for this turn only. Experimental runtime follow-up requires request_id, an empty ready sandbox, existing conversation, or verified empty checkpoint; retained idle pauses wake automatically before expiry. Preserved stopped Boat/Modal sandboxes resume on send; terminal sandboxes refuse controls with recovery guidance. Model/effort remain pinned to launch. A Docker sandbox admits only the Docker sandbox send variant: model and reasoning_effort are refused because they remain pinned to launch. Supply request_id (a lowercase UUID) to replay uncertain delivery; when it is omitted the server generates one.",
         "security": [
           {
             "serviceToken": []
@@ -3868,9 +3868,9 @@
                             "description": "The instruction: not blank. Over REST the whole serialized JSON request body is limited to 131072 bytes, below Docker's own 256 KiB prompt admission limit, so maxLength is only an upper bound: the other fields, JSON escaping and multibyte UTF-8 count against the same limit."
                           },
                           "request_id": {
+                            "description": "A lowercase UUID. The prompt is queued durably under it: retry uncertain delivery with the same request_id and identical input, and use a new one for a new turn. Required to replay safely: when omitted, the server generates one (the receipt's requestId) and a retry without it queues the prompt again.",
                             "type": "string",
-                            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                            "description": "Required lowercase UUID. The prompt is queued durably under it; retry uncertain delivery with the same request_id and identical input, and use a new one for a new turn."
+                            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
                           },
                           "conversation_id": {
                             "description": "A lowercase conversation UUID of the sandbox. Default: the latest.",
@@ -3887,10 +3887,9 @@
                           }
                         },
                         "required": [
-                          "prompt",
-                          "request_id"
+                          "prompt"
                         ],
-                        "description": "Docker admission rules: request_id is required, and model and reasoning_effort are refused because they remain pinned to launch."
+                        "description": "Docker admission rules: model and reasoning_effort are refused because they remain pinned to launch; a caller-supplied request_id is what makes a retry replay instead of queuing again."
                       }
                     ]
                   }
@@ -7189,7 +7188,7 @@
     "/api/v1/sandboxes/{id}/outputs": {
       "get": {
         "operationId": "sandbox_outputs_list",
-        "description": "The files of the sandbox's last output snapshot, from its declared outputs directory (/workspace/outputs on Boat and Modal, /home/user/outputs on Docker), in name order. Only the sandbox owner or an org admin can read it, the sandbox must not be deleted or application-secret tainted, and stopped compute is never read: the last snapshot taken while compute was live is served. See docs/sandbox-outputs.md. A sandbox.output.available webhook names a new or changed file.",
+        "description": "The files of the sandbox's last output snapshot, from its declared outputs directory (/home/user/outputs on every provider), in name order. Only the sandbox owner or an org admin can read it, the sandbox must not be deleted or application-secret tainted, and stopped compute is never read: the last snapshot taken while compute was live is served. See docs/sandbox-outputs.md. A sandbox.output.available webhook names a new or changed file.",
         "security": [
           {
             "serviceToken": []

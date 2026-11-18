@@ -4,7 +4,7 @@ import type { Caller } from "./caller.ts";
 import { createDockerLaunchEnvironment } from "./docker-launch-environment.ts";
 import { createDockerQueuedPrompts } from "./docker-queued-prompts.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
-import { DOCKER_SEND_REFUSAL, DOCKER_SEND_REQUEST } from "./docker-send-request-schema.ts";
+import { DOCKER_DISPATCH_REQUEST, DOCKER_SEND_REFUSAL } from "./docker-send-request-schema.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
 import { ToolError } from "./tools.ts";
@@ -47,8 +47,8 @@ export function createDockerNormalSend(
     ) {
       if (!options.enabled) throw failure("unavailable", "Docker send is not enabled.");
       if (row.owner_id !== caller.userId) throw failure("conflict", "Only the Docker sandbox owner can send prompts.");
-      // The published Docker sandbox/send variant includes this same schema.
-      const parsed = DOCKER_SEND_REQUEST.safeParse(args);
+      // The published Docker sandbox/send variant, plus the key the account queue always supplies.
+      const parsed = DOCKER_DISPATCH_REQUEST.safeParse(args);
       // Armada's own request validation, not a provider diagnostic: its message is the public
       // guidance (a ProviderError invalid_request would be replaced by generic launch help).
       if (!parsed.success) throw new ToolError("invalid_request", DOCKER_SEND_REFUSAL);
