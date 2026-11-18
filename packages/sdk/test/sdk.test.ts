@@ -64,7 +64,7 @@ test("service-token methods use the REST routes and preserve wire field names", 
 });
 
 test("a logged or serialized client never exposes its service token, yet still authenticates", async () => {
-  let authorization: string | null = null;
+  let authorization = null as string | null;
   const client = new Armada({
     token: "service_secret_placeholder",
     fetch: (async (_url, init) => {
