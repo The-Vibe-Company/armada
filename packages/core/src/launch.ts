@@ -426,13 +426,15 @@ async function resolveGoldenLaunch(
     throw new VaultError("credential_binding_required", LAUNCH_CREDENTIAL_BINDING_GUIDANCE);
   if (credentials.morphModels) {
     const models = credentials.morphModels;
-    choice.model = request.model ?? models[0]!;
-    const selected =
-      harness === "opencode" && choice.model.startsWith(`${OPENCODE_CONNECTION_PROVIDER}/`)
-        ? choice.model.slice(OPENCODE_CONNECTION_PROVIDER.length + 1)
-        : choice.model;
-    if (!models.includes(choice.model) && !models.includes(selected))
+    const prefix = `${OPENCODE_CONNECTION_PROVIDER}/`;
+    let selected = request.model ?? models[0]!;
+    if (harness === "opencode" && request.model?.startsWith(prefix)) {
+      const upstream = request.model.slice(prefix.length);
+      if (models.includes(upstream)) selected = upstream;
+    }
+    if (!models.includes(selected))
       throw new LaunchError("invalid_request", "Choose a Morph plan model configured on this account.");
+    choice.model = harness === "opencode" ? `${prefix}${selected}` : selected;
   }
   const endpointRuntime = launchPlacement.endpointRuntime?.(options);
   if (!runtime && (credentials.env[CLAUDE_ENDPOINT_ENV] || credentials.env[CODEX_ENDPOINT_ENV]) && endpointRuntime) {
@@ -465,7 +467,8 @@ async function resolveGoldenLaunch(
     if (configured) {
       const endpoint = parseOpenCodeEndpoint(JSON.parse(configured));
       // Shared accounts advertise provider model IDs; native OpenCode needs its connection namespace.
-      if (endpoint.models.includes(choice.model)) choice.model = `${OPENCODE_CONNECTION_PROVIDER}/${choice.model}`;
+      if (!credentials.morphModels && endpoint.models.includes(choice.model))
+        choice.model = `${OPENCODE_CONNECTION_PROVIDER}/${choice.model}`;
       const wanted = choice.model;
       if (!endpoint.models.some((id) => wanted === `${OPENCODE_CONNECTION_PROVIDER}/${id}`))
         throw new LaunchError(
