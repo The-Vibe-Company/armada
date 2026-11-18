@@ -413,17 +413,19 @@ export function automaticUpdate(state: State, instance?: string) {
       if (last?.phase === "starting") {
         // A supervisor stopped while the trial is alive still needs to be
         // replaced. The replacement sees "starting" and can only roll back.
+        // list-units succeeds with empty output once --collect unloads the
+        // helper. A manager/transport error still cannot confirm abandonment.
         const supervisor = await command([
           "systemctl",
           "--user",
-          "show",
-          "-p",
-          "ActiveState",
-          "--value",
+          "list-units",
+          "--no-legend",
+          "--plain",
+          "--no-pager",
+          "--state=active,activating,reloading,deactivating",
           updateUnit(instance),
         ]).catch(() => undefined);
-        if (supervisor === "inactive" || supervisor === "failed")
-          staged = (await readUpdate(home, instance))?.phase === "starting";
+        if (supervisor === "") staged = (await readUpdate(home, instance))?.phase === "starting";
         return true;
       }
       if (last?.phase === "staged") {
