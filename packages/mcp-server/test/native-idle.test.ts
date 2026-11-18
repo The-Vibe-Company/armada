@@ -417,6 +417,7 @@ test.each([
   "merged after closed",
   "merged after closed at moved head",
   "merged after closed before launch",
+  "merged before launch at pushed commit",
   "ledger gap",
   "ledger hook missing",
   "ledger hook restored",
@@ -514,6 +515,11 @@ test.each([
       sha: state === "other commit" || state.includes("after head advanced") ? "b".repeat(40) : sha,
       repo: { full_name: repository },
     },
+    // A PR merged a day before launch whose branch the sandbox recreated at its
+    // head commit: an exact match that is not this sandbox's work.
+    ...(state === "merged before launch at pushed commit"
+      ? { merged_at: new Date(f.at - 86_400_000).toISOString(), closed_at: new Date(f.at - 86_400_000).toISOString() }
+      : {}),
     base: { repo: { full_name: repository } },
   };
   // A merged PR at an older head: the later push to its branch has no PR yet.
@@ -645,6 +651,7 @@ test.each([
   expect(sandbox?.pullRequests?.map((pr) => pr.state)).toEqual(
     state === "no push" ||
       state === "other commit" ||
+      state === "merged before launch at pushed commit" ||
       state === "merged after head advanced past an unknown push" ||
       state === "rejected recreation"
       ? []

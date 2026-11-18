@@ -508,7 +508,11 @@ export function createSandboxPullRequests(
               for (const pull of pulls) {
                 if (pull.head.repo?.full_name.toLowerCase() !== headRepository || pull.head.ref !== ref) continue;
                 named = true;
-                if (shas.includes(pull.head.sha)) {
+                // A pull request closed before launch froze its head before any
+                // push from here, even when a recreated branch reaches that same
+                // commit again: it is never this sandbox's work.
+                const closedBeforeLaunch = pull.state !== "open" && Date.parse(pull.closed_at ?? "") < launchedAt;
+                if (!closedBeforeLaunch && shas.includes(pull.head.sha)) {
                   // A PR at any pushed commit is this sandbox's work, so an
                   // earlier closed-unmerged PR still vetoes the stop.
                   const identity = { repository, number: pull.number };
@@ -520,9 +524,8 @@ export function createSandboxPullRequests(
                 // Someone may have advanced the head past this sandbox's push
                 // before the first scan (a reviewer's commit, then the merge).
                 // A pull request that was still open at launch and whose head
-                // history holds a push is this sandbox's work. A pull request
-                // closed before launch froze its head before any push from here.
-                if (pull.state === "open" || !(Date.parse(pull.closed_at ?? "") < launchedAt)) {
+                // history holds a push is this sandbox's work.
+                if (!closedBeforeLaunch) {
                   let associated = false;
                   // Latest pushes first: one inside the head is merged with it.
                   for (const pushed of new Set([...latest, ...shas])) {
@@ -545,8 +548,7 @@ export function createSandboxPullRequests(
                 }
                 if (
                   pull.state === "open" ||
-                  (!pull.merged_at &&
-                    (attempts.includes(pull.head.sha) || !(Date.parse(pull.closed_at ?? "") < launchedAt)))
+                  (!pull.merged_at && (attempts.includes(pull.head.sha) || !closedBeforeLaunch))
                 ) {
                   // A moved open head blocks stopping without becoming work of
                   // this sandbox. So does an unmerged PR at an unconfirmed
