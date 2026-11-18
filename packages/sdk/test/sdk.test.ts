@@ -1,7 +1,19 @@
 import { expect, test } from "bun:test";
+import type { DockerLaunchRequest } from "@armada/core";
+import { DOCKER_LAUNCH_REQUEST } from "../../mcp-server/src/docker-launch-request-schema.ts";
+import { REST_LAUNCH_RESPONSE } from "../../mcp-server/src/launch-response-schemas.ts";
 import { webhookSignature } from "../../mcp-server/src/outbound-webhooks.ts";
 import { createServerRequestDrain } from "../../mcp-server/src/server-request-drain.ts";
-import { Armada, ArmadaError, verifyWebhookSignature } from "../src/index.ts";
+import { Armada, ArmadaError, type DockerLaunchInput, verifyWebhookSignature } from "../src/index.ts";
+
+/** The SDK Docker launch input has exactly the fields of the server's Docker launch request. */
+const dockerInputMatchesCore: [
+  Exclude<keyof DockerLaunchRequest, keyof DockerLaunchInput>,
+  Exclude<keyof DockerLaunchInput, keyof DockerLaunchRequest>,
+] extends [never, never]
+  ? true
+  : never = true;
+void dockerInputMatchesCore;
 
 test("service-token methods use the REST routes and preserve wire field names", async () => {
   const requests: { path: string; body: unknown }[] = [];
@@ -39,6 +51,50 @@ test("service-token methods use the REST routes and preserve wire field names", 
   expect(requests[0]?.body).toEqual({ golden: "worker", harness: "codex", ttlSeconds: 60 });
   expect(requests[2]?.body).toEqual({ id: "sandbox_placeholder", prompt: "Work", request_id: "request_placeholder" });
   expect(requests[5]?.body).toEqual({ id: "sandbox_placeholder", cursor: "cursor_placeholder" });
+});
+
+test("launch sends a Docker request and returns the Docker receipt without a golden", async () => {
+  const org = "00000000-0000-4000-8000-000000000001";
+  const input = {
+    org,
+    provider: "docker",
+    hostId: "00000000-0000-4000-8000-000000000002",
+    harness: "codex",
+    requestId: "00000000-0000-4000-8000-000000000003",
+    prompt: "Work",
+    repos: [{ url: "https://github.com/acme/app", history: "shallow" }],
+  } satisfies DockerLaunchInput;
+  expect(DOCKER_LAUNCH_REQUEST.safeParse(input).success).toBe(true);
+  const receipt = {
+    sandbox: {
+      id: "sandbox_placeholder",
+      provider: "docker",
+      providerSandboxId: "c1",
+      status: "running",
+      hostId: input.hostId,
+    },
+    golden: null,
+    helper: null,
+    github: { status: "none" },
+    runtime: null,
+    ttlSeconds: 3600,
+    expiresAt: "2026-11-18T00:00:00.000Z",
+  };
+  expect(REST_LAUNCH_RESPONSE.safeParse(receipt).success).toBe(true);
+  let sent: unknown;
+  const client = new Armada({
+    token: "service_placeholder",
+    fetch: (async (_url, init) => {
+      sent = JSON.parse(String(init?.body));
+      return Response.json(receipt);
+    }) as import("../src/index.ts").Fetch,
+  });
+  const launched = await client.launch(input);
+  const golden: null = launched.golden;
+  expect(golden).toBeNull();
+  expect(launched.sandbox.hostId).toBe(input.hostId);
+  expect(launched.promptId).toBeUndefined();
+  expect(sent).toEqual(input);
 });
 
 test("retry policy replays only eligible reads and retains typed safe failures", async () => {

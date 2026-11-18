@@ -78,6 +78,16 @@ const headers = { "armada-webhook-id": id, "armada-webhook-timestamp": timestamp
 if (!(await verifyWebhookSignature({ secret: "secret", body, headers: new Headers(headers) }))) {
   throw new Error("webhook signature rejected");
 }
+const docker = { org: "o", provider: "docker", hostId: "h", harness: "codex", requestId: "r" };
+let launchBody;
+const receipt = await new Armada({ token: "smoke", url: "https://armada.invalid", fetch: async (_url, init) => {
+  launchBody = init.body;
+  return Response.json({ sandbox: { id: "s", provider: "docker", status: "running", hostId: "h" }, golden: null,
+    ttlSeconds: 60, expiresAt: "2026-01-01T00:00:00.000Z" });
+} }).launch(docker);
+if (launchBody !== JSON.stringify(docker) || receipt.golden !== null || receipt.sandbox.id !== "s") {
+  throw new Error(`unexpected Docker launch ${launchBody} -> ${JSON.stringify(receipt)}`);
+}
 EOF
 node smoke.mjs
 echo "SDK install: node import passed."
@@ -87,6 +97,12 @@ cat > smoke.ts <<'EOF'
 import { Armada, type FailureCode } from "@the-vibe-company/armada-sdk";
 const code: FailureCode = "outcome_unknown";
 export const launched = new Armada({ token: code }).launch({ golden: "worker", harness: "codex" });
+export async function docker(): Promise<{ golden: null; host: string; prompt: string | undefined }> {
+  const receipt = await new Armada({ token: code }).launch({
+    org: "o", provider: "docker", hostId: "h", harness: "codex", requestId: "r",
+  });
+  return { golden: receipt.golden, host: receipt.sandbox.hostId, prompt: receipt.promptId };
+}
 EOF
 # No ambient types: the declarations must resolve on their own, with the standard DOM fetch types.
 cat > tsconfig.json <<'EOF'

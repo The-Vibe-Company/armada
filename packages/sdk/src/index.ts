@@ -62,7 +62,8 @@ export interface SandboxRef {
   id: string;
   org?: string;
 }
-export interface LaunchInput {
+/** Launch from a golden on Boat or Modal. */
+export interface GoldenLaunchInput {
   golden: string;
   harness: "claude" | "codex" | "opencode";
   org?: string;
@@ -81,7 +82,35 @@ export interface LaunchInput {
   skipSkillDefaults?: boolean;
   connections?: string[];
 }
-export interface LaunchResult {
+/** Launch on a registered Docker host from the official Armada environment. There is no golden. */
+export interface DockerLaunchInput {
+  org: string;
+  provider: "docker";
+  /** Required unless `snapshotId` selects the host. */
+  hostId?: string;
+  /** Cannot be combined with `repos`. */
+  snapshotId?: string;
+  harness: "claude" | "codex" | "opencode";
+  /** Omit to use the caller's compatible personal default, frozen at admission. */
+  credentialId?: string;
+  credentialVersion?: number;
+  /** Caller-chosen UUID; replaying it returns the same launch. */
+  requestId: string;
+  prompt?: string;
+  model?: string;
+  reasoningEffort?: string;
+  ttlSeconds?: number;
+  visibility?: "private";
+  skills?: string[];
+  skipSkillDefaults?: boolean;
+  /** MCP connection UUIDs. */
+  connections?: string[];
+  repos?: { url: string; branch?: string; dir?: string; history?: "full" | "shallow" }[];
+  variables?: { key: string; variableId: string; version: number }[];
+  secrets?: { key: string; secretId: string; version: number }[];
+}
+export type LaunchInput = GoldenLaunchInput | DockerLaunchInput;
+export interface GoldenLaunchResult {
   sandbox: { id: string; provider: string; status: string; [key: string]: unknown };
   golden: { id: string; [key: string]: unknown };
   promptId: string | null;
@@ -90,6 +119,17 @@ export interface LaunchResult {
   expiresAt: string | null;
   [key: string]: unknown;
 }
+/** A Docker launch has no golden; the prompt and conversation IDs are present only when a first prompt was sent. */
+export interface DockerLaunchResult {
+  sandbox: { id: string; provider: "docker"; status: string; hostId: string; [key: string]: unknown };
+  golden: null;
+  promptId?: string;
+  conversationId?: string;
+  ttlSeconds: number;
+  expiresAt: string;
+  [key: string]: unknown;
+}
+export type LaunchResult = GoldenLaunchResult | DockerLaunchResult;
 export interface TemplateLaunchInput {
   org: string;
   id: string;
@@ -263,6 +303,9 @@ export class Armada {
     if (!Number.isInteger(this.retries) || this.retries < 0 || this.retries > 3)
       throw new TypeError("readRetries must be between 0 and 3.");
   }
+  launch(input: DockerLaunchInput, options?: RequestOptions): Promise<DockerLaunchResult>;
+  launch(input: GoldenLaunchInput, options?: RequestOptions): Promise<GoldenLaunchResult>;
+  launch(input: LaunchInput, options?: RequestOptions): Promise<LaunchResult>;
   launch(input: LaunchInput, options?: RequestOptions): Promise<LaunchResult> {
     return this.request("sandbox/launch", input, false, options);
   }
