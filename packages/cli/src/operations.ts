@@ -152,17 +152,21 @@ export async function operation(
         : undefined;
   if (command === "send" && !flag(args, "--json"))
     auth.err("Sending message… Waking the sandbox if paused; waiting for acceptance.\n");
-  const result = await control(
-    auth,
-    route,
-    body,
-    // Match the control proxy ceiling: send may restore paused compute before admitting the turn.
-    command === "stop" || command === "bind-credential" || command === "send"
-      ? AbortSignal.timeout(660_000)
-      : seconds === undefined
-        ? undefined
-        : AbortSignal.timeout((seconds + 15) * 1_000),
-  ).catch((error: unknown) => {
+  const request =
+    command === "status" || command === "list"
+      ? (await createArmadaApiClient(auth)).sandboxes[command](body)
+      : control(
+          auth,
+          route,
+          body,
+          // Match the control proxy ceiling: send may restore paused compute before admitting the turn.
+          command === "stop" || command === "bind-credential" || command === "send"
+            ? AbortSignal.timeout(660_000)
+            : seconds === undefined
+              ? undefined
+              : AbortSignal.timeout((seconds + 15) * 1_000),
+        );
+  const result = await request.catch((error: unknown) => {
     // Stop previously collapsed these versioned reasons into an AuthError.
     if (
       command === "stop" &&

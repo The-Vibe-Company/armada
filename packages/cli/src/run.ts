@@ -20,7 +20,6 @@ import {
   parseMachineSize,
   resolveModelChoice,
   type SandboxProviderId,
-  SIZED_LAUNCH_ROUTE_V1,
   VaultError,
   VERSION,
 } from "@armada/core";
@@ -1011,45 +1010,37 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
   });
   const sized = size !== undefined || repo !== undefined || flag(args, "--sized");
   const result = decodeLaunchResult(
-    await client.request<LaunchWireResult>(
-      flag(args, "--armada-access")
-        ? "/api/v1/sandbox/launch-access-v1"
-        : sized
-          ? SIZED_LAUNCH_ROUTE_V1
-          : "/api/v1/sandbox/launch",
+    await client.sandboxes.launch<LaunchWireResult>(
       {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          ...(flag(args, "--no-connections") ? { connections: [] } : {}),
-          ...(flag(args, "--keep-after-merge") ? { stopWhenWorkMerged: false } : {}),
-          ...(values(args, "--skill").length ? { skills: values(args, "--skill") } : {}),
-          ...(connections === undefined ? {} : { connections: connections.split(",") }),
-          ...(flag(args, "--armada-access")
-            ? {
-                armadaAccessVersion: 1,
-                armadaAccess: {
-                  ...(maxActiveChildren === undefined ? {} : { maxActiveChildren: Number(maxActiveChildren) }),
-                },
-              }
-            : {}),
-          credentialId: single(args, "--credential-id"),
-          golden: name,
-          ...(sized ? { sizePolicyVersion: 1 } : {}),
-          ...(size === undefined ? {} : { size }),
-          ...(repo === undefined ? {} : { repo }),
-          ...(providerFlag(args) ? { provider: providerFlag(args) } : {}),
-          harness,
-          ...(single(args, "--model") === undefined ? {} : { model: single(args, "--model") }),
-          ...(single(args, "--reasoning-effort") === undefined
-            ? {}
-            : { reasoningEffort: single(args, "--reasoning-effort") }),
-          ...(prompt === undefined ? {} : { prompt }),
-          ...(ttlSeconds === undefined ? {} : { ttlSeconds }),
-          ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
-        }),
-        signal: AbortSignal.timeout(10 * 60_000),
+        ...(flag(args, "--no-connections") ? { connections: [] } : {}),
+        ...(flag(args, "--keep-after-merge") ? { stopWhenWorkMerged: false } : {}),
+        ...(values(args, "--skill").length ? { skills: values(args, "--skill") } : {}),
+        ...(connections === undefined ? {} : { connections: connections.split(",") }),
+        ...(flag(args, "--armada-access")
+          ? {
+              armadaAccessVersion: 1,
+              armadaAccess: {
+                ...(maxActiveChildren === undefined ? {} : { maxActiveChildren: Number(maxActiveChildren) }),
+              },
+            }
+          : {}),
+        credentialId: single(args, "--credential-id"),
+        golden: name,
+        ...(sized ? { sizePolicyVersion: 1 } : {}),
+        ...(size === undefined ? {} : { size }),
+        ...(repo === undefined ? {} : { repo }),
+        ...(providerFlag(args) ? { provider: providerFlag(args) } : {}),
+        harness,
+        ...(single(args, "--model") === undefined ? {} : { model: single(args, "--model") }),
+        ...(single(args, "--reasoning-effort") === undefined
+          ? {}
+          : { reasoningEffort: single(args, "--reasoning-effort") }),
+        ...(prompt === undefined ? {} : { prompt }),
+        ...(ttlSeconds === undefined ? {} : { ttlSeconds }),
+        ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
       },
+      { signal: AbortSignal.timeout(10 * 60_000) },
+      flag(args, "--armada-access") ? "access" : sized ? "sized" : undefined,
     ),
   );
   io.out(

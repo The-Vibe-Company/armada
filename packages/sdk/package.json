@@ -5,7 +5,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./request": "./src/request.ts"
+    "./request": "./src/request.ts",
+    "./sandboxes": "./src/sandboxes.ts"
   },
   "dependencies": {
     "@armada/core": "workspace:*"
