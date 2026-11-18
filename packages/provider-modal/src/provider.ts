@@ -738,13 +738,19 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       // The source lease is released before any remote call: a slow or failing image deletion
       // never refuses the source's own lifecycle (delete, snapshot, fork). A claim survives a
       // failure or crash and is retried by the next collection in scope, again without the lease.
+      // Only the holder of the exclusive dispatch claim issues the RPC: a concurrent sweep skips a
+      // live claim instead of multiplying deletions of the same physical image.
       for (const image of await retired()) {
         if (!image.collecting || (await imagesStore.imageReferenced(image.imageId))) continue;
+        const token = randomUUID();
+        if (!(await imagesStore.takeImage(image.info.name, image.sourceId, image.imageId, token))) continue;
         try {
           await client.images.delete(image.imageId);
         } catch (error) {
           if (modalError(error).code !== "not_found") {
             failure ??= { error };
+            // Best-effort: an unreleased claim expires, and must not stop the remaining images.
+            await imagesStore.releaseImage(image.info.name, image.sourceId, image.imageId, token).catch(() => {});
             continue;
           }
         }
@@ -836,15 +842,27 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       throw refusal("forbidden", "Golden builder reservation authority does not match.");
     assertMachineSource(row);
   }
-  async function retainBuilder(row: Machine): Promise<boolean> {
+  async function retainBuilder(row: Machine, collected?: string): Promise<boolean> {
+    // Images still recorded with it as source (published, saving or tombstoned) always retain it.
+    if ((await store.images(row.info.id)).length > 0) return true;
+    // A deleting or deleted machine's deletion is already committed: its compute is going or gone
+    // and the delete itself removes its recovery images. Its snapshot history alone must not strand
+    // a job whose rolled-back artifact was collected, nor an interrupted delete.
+    if (row.phase === "deleting" || row.phase === "deleted") return false;
+    // The job confirmed this builder's only snapshot was never published and is now collected: a
+    // builder parked after that snapshot (`checkpoint`) has no other reason to be retained.
+    const onlyCollected =
+      !!collected &&
+      row.phase === "checkpoint" &&
+      !!row.snapshotImages?.length &&
+      row.snapshotImages.every((image) => image.name === collected);
     return (
       row.generation !== 1 ||
       !!row.goldenRestore ||
-      ["checkpoint", "snapshot", "stopped", "terminate"].includes(row.phase) ||
+      (!onlyCollected && ["checkpoint", "snapshot", "stopped", "terminate"].includes(row.phase)) ||
       !!row.recoveryImageId ||
       !!row.retainedRecoveryIds?.length ||
-      !!row.snapshotImages?.length ||
-      (await store.images(row.info.id)).length > 0
+      (!onlyCollected && !!row.snapshotImages?.length)
     );
   }
   const provider: ModalProvider = {
@@ -1766,7 +1784,10 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       const row = await store.findByRequestKey(request.requestKey);
       if (!row) return null;
       assertRecoveryBuilder(row, request.ownerId);
-      return { sandboxId: row.info.id, disposition: (await retainBuilder(row)) ? "retained" : "disposable" };
+      return {
+        sandboxId: row.info.id,
+        disposition: (await retainBuilder(row, request.collected)) ? "retained" : "disposable",
+      };
     },
     async disposeGoldenBuilder(request) {
       assertRecoveryTarget(request);
@@ -1774,21 +1795,31 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       if (!found || found.info.id !== request.sandboxId)
         throw refusal("conflict", "Builder reservation changed; source retained.");
       await bound();
+      let resume = false;
       await store.lease(request.sandboxId, async (row, save) => {
         assertRecoveryBuilder(row, request.ownerId);
-        if (await retainBuilder(row))
+        if (await retainBuilder(row, request.collected))
           throw refusal("conflict", "Builder has retained snapshot or recovery proof; source retained.");
         if (row.phase === "deleted") return;
+        // An interrupted deletion (the builder's own cleanup or an earlier disposal) is resumed
+        // through the same delete path, which also removes any recovery images. Every resume
+        // path refuses a deleting record, so its retention cannot change after this lease.
+        if (row.phase === "deleting") {
+          resume = true;
+          return;
+        }
         if (row.physicalId || row.phase !== "reserved") {
           const reconciled = await namedOwned(row);
           if (row.physicalId && row.physicalId !== reconciled.sandboxId)
             throw refusal("conflict", "Named builder differs from recorded physical identity; source retained.");
           // Recheck after remote observation, before any destructive operation.
-          if (await retainBuilder(row)) throw refusal("conflict", "Builder retention changed; source retained.");
+          if (await retainBuilder(row, request.collected))
+            throw refusal("conflict", "Builder retention changed; source retained.");
           row.physicalId = reconciled.sandboxId;
           await save(row);
         }
-        if (await retainBuilder(row)) throw refusal("conflict", "Builder retention changed; source retained.");
+        if (await retainBuilder(row, request.collected))
+          throw refusal("conflict", "Builder retention changed; source retained.");
         row.phase = "deleting";
         await save(row);
         if (row.physicalId) {
@@ -1801,6 +1832,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         row.phase = "deleted";
         await save(row);
       });
+      if (resume) return provider.delete({ sandboxId: request.sandboxId });
       return { status: "deleted" };
     },
     async delete({ sandboxId }) {

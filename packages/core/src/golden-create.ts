@@ -39,6 +39,7 @@ export interface GoldenCreateOptions {
     id: string;
     reservationId?: string | null;
     cleaned(safe: boolean): void;
+    candidate?(snapshot: string): Promise<void>;
     phase(phase: string): Promise<void>;
     builder(id: string): Promise<void>;
     lock(sql: Sql): Promise<void>;
@@ -469,6 +470,7 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
       phase: options.job.phase,
       builder: options.job.builder,
       cleaned: options.job.cleaned,
+      ...(options.job.candidate ? { candidate: options.job.candidate } : {}),
     };
   if (adapter.mint) deps.mint = adapter.mint;
   return new GoldenCreateService(deps);
