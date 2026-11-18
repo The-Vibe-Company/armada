@@ -423,7 +423,7 @@ async function main(dialout = false) {
         root: `${config.root}/opencode`,
         cwd: config.cwd,
         env: opencodeEnv,
-        redact,
+        redact: journal.redact,
       }),
       claude: new ClaudeDriver({ cwd: config.cwd, executable: config.claudeExecutable, env: config.claudeEnv }),
       codex: new CodexDriver({

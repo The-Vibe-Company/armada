@@ -30,7 +30,9 @@ export const DOCKER_SEND_REQUEST = z
       .describe(
         "A lowercase UUID. The prompt is queued durably under it: retry uncertain delivery with the same request_id and identical input, and use a new one for a new turn. Required to replay safely: when omitted, the server generates one (the receipt's requestId) and a retry without it queues the prompt again.",
       ),
-    conversation_id: uuid.optional().describe("A lowercase conversation UUID of the sandbox. Default: the latest."),
+    conversation_id: uuid
+      .optional()
+      .describe("The sandbox's current conversation UUID, in lowercase. Omit to target it automatically."),
     model: z.never().optional().describe("Refused: a Docker sandbox keeps the model chosen at launch."),
     reasoning_effort: z.never().optional().describe("Refused: a Docker sandbox keeps the effort chosen at launch."),
   })

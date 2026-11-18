@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { type DialoutIo, enrolRuntime, RuntimeChannelRevoked, RuntimeDialout } from "../src/dialout.ts";
 import { type Driver, Journal, Runner } from "../src/index.ts";
-import type { RunnerRequest } from "../src/protocol.ts";
+import { PROTOCOL_VERSION, type RunnerRequest } from "../src/protocol.ts";
 
 const session = { sandboxId: "logical", epoch: "1", runtimeToken: `armada_runtime_${"a".repeat(64)}` };
 function clock() {
@@ -62,6 +62,7 @@ test("enrolment consumes one HTTPS ticket exchange and refuses invalid/lost repl
       expect(options.redirect).toBe("error");
       expect(options.credentials).toBe("omit");
       expect(new Headers(options.headers).get("authorization")).toBe(`Bearer ${token}`);
+      expect(new Headers(options.headers).get("x-armada-runtime-protocol")).toBe(String(PROTOCOL_VERSION));
       return Response.json({ ...session, configuration: { marker: "private-bootstrap" } });
     },
   };
@@ -90,6 +91,12 @@ test("enrolment consumes one HTTPS ticket exchange and refuses invalid/lost repl
     ).rejects.toThrow();
     expect(attempts).toBe(1);
   }
+  await expect(
+    enrolRuntime(
+      { serverUrl: "https://armada.example", enrolmentToken: token },
+      { ...io, fetch: async () => Response.json({ error: "runtime_protocol_unsupported" }, { status: 409 }) },
+    ),
+  ).rejects.toThrow("runtime_protocol_unsupported");
   let attempts = 0;
   await expect(
     enrolRuntime(
