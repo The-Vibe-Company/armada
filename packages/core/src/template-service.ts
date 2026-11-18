@@ -545,7 +545,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
         )
       ).rows[0];
     });
-    if (existing) return replay(existing, bodyDigest);
+    if (existing) return replay(existing, bodyDigest, runtime);
     const selection = await transaction(async (tx) => {
       const a = await member(tx, actor, org);
       const h = await header(tx, a, id(input.id));
@@ -662,7 +662,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       claimed = true;
       return result;
     });
-    if (!claimed) return replay(request, bodyDigest);
+    if (!claimed) return replay(request, bodyDigest, runtime);
     const m = request.manifest;
     let allocating = false;
     let fenceConsumed = false;
@@ -882,9 +882,16 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       return output;
     }
   }
-  async function replay(row: RequestRow, bodyDigest: string): Promise<Record<string, unknown>> {
+  async function replay(
+    row: RequestRow,
+    bodyDigest: string,
+    runtime: TemplateRuntime,
+  ): Promise<Record<string, unknown>> {
     if (row.digest !== bodyDigest)
       throw new VaultError("conflict", "Request key already used with a different request.");
+    // Validate explicit selectors against the frozen definition without reading a live template
+    // or changing historical request digests.
+    await runtime.validateDefinition?.(row.manifest.definition);
     const output = row.result ?? {
       requestId: row.id,
       state: row.state,

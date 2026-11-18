@@ -283,6 +283,10 @@ for (const entry of ["explicit", "default"] as const)
     expect(replay.status).toBe(200);
     expect(await replay.json()).toEqual(launched);
     await f.templates.command(f.caller, "delete", { org: f.people.org, id: template.id, expectedRevision: 1 });
+    if (entry === "explicit") {
+      const mismatched = await f.api({ ...request, harness: "codex" });
+      expect(mismatched.status).toBe(400);
+    }
     const tombstoneReplay = await f.api(request);
     expect(tombstoneReplay.status).toBe(200);
     expect(await tombstoneReplay.json()).toEqual(launched);

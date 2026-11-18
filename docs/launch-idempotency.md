@@ -137,11 +137,12 @@ each payload, with null when the sandbox has no reference.
 
 The [OpenAPI contract](openapi.json) describes the validated request variants for
 `POST /api/v1/sandbox/launch`: golden, explicit Boat runtime, explicit Modal
-runtime, Docker host and Docker snapshot, each with its supported replay fields. Unknown fields are rejected. Use
+runtime from a golden or pinned template, Docker host and Docker snapshot, each
+with its supported replay fields. Unknown fields are rejected. Use
 `ttlSeconds` and `reasoningEffort` for REST launch requests. Provider-specific
 settings and server opt-ins still apply.
 
-All three providers return the same envelope. Read the placement and Armada ID
+Golden and Docker launches share an envelope. Read the placement and Armada ID
 at `sandbox.provider` and `sandbox.id`. The `golden` record is null for Docker.
 `promptId`, `conversationId`, `runtime` and `helper` are null when unavailable.
 CLI JSON includes `sandbox.id` and the top-level `id` alias on all three
@@ -157,7 +158,8 @@ compatibility routes. For a pinned Modal template, send the same Modal selectors
 with `org` (UUID), `id`, `revision`, `requestKey` and the template's `harness` to
 `sandbox/launch`. This returns the durable template launch receipt, including
 the frozen manifest on success. Replay the same body and request key to recover
-that receipt. Ordinary template launches continue to use `templates/launch`.
+that receipt, and use its top-level `id` for sandbox operations. Ordinary
+template launches continue to use `templates/launch`.
 
 For REST extensions, use `ttlSeconds` on `POST /api/v1/sandbox/extend`
 as well. The server accepts the older `ttl_seconds` spelling for existing
