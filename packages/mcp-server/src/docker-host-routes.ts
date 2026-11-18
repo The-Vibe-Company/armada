@@ -1,5 +1,9 @@
 import { readBoundedText } from "@armada/auth";
-import { DOCKER_JOB_FAILURE_REASONS, type DockerJobFailureReason } from "@armada/core";
+import {
+  DOCKER_HOST_SNAPSHOT_BASELINE_HEADER,
+  DOCKER_JOB_FAILURE_REASONS,
+  type DockerJobFailureReason,
+} from "@armada/core";
 import { isSnapshotBaselineTool } from "@armada/core/server";
 import { type DockerHostResources, validDockerAvailability } from "../../core/src/docker-resource-policy.ts";
 import { dockerResourceLimits } from "../../core/src/docker-resources.ts";
@@ -7,6 +11,7 @@ import { VERSION } from "../../core/src/version.ts";
 import type { CallerResult } from "./caller.ts";
 import { DockerHostDraining, DockerLimitsRefused } from "./docker-capacity.ts";
 import { type createDockerHostStore, DockerHostDenied } from "./docker-host-store.ts";
+import { dockerHostVersions } from "./docker-host-version.ts";
 import { DockerSnapshotHostUpgradeRequired, type DockerSnapshots } from "./docker-snapshots.ts";
 import type { Route } from "./http.ts";
 
@@ -38,6 +43,13 @@ function fields(value: Record<string, unknown>, names: readonly string[]) {
 function string(value: unknown): string {
   if (typeof value !== "string") throw new InvalidInput();
   return value;
+}
+function snapshotBaselineHeader(request: Request): number | undefined {
+  const header = request.headers.get(DOCKER_HOST_SNAPSHOT_BASELINE_HEADER);
+  if (header === null) return undefined;
+  const version = Number(header);
+  if (!/^[1-9][0-9]{0,9}$/.test(header) || version > 2147483647) throw new InvalidInput();
+  return version;
 }
 function deadlinesOf(value: unknown): { sandboxId: string; generation: string; deadline: string }[] {
   if (!Array.isArray(value) || value.length > 4096) throw new InvalidInput();
@@ -139,7 +151,12 @@ export function createDockerHostRoutes(
         }
         if (listing)
           return Response.json(
-            { serverVersion: VERSION, placement: options.placement === true, hosts: await store.list(actor) },
+            {
+              ...dockerHostVersions,
+              serverVersion: VERSION,
+              placement: options.placement === true,
+              hosts: await store.list(actor),
+            },
             { headers },
           );
         if (path.endsWith("/register-token")) {
@@ -226,6 +243,7 @@ export function createDockerHostRoutes(
           }
         }
         if (body.resourcePolicyVersion !== undefined && body.resourcePolicyVersion !== 1) throw new InvalidInput();
+        const baseline = snapshotBaselineHeader(request);
         const version = body.version === undefined ? undefined : string(body.version);
         if (version !== undefined && !/^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/.test(version)) throw new InvalidInput();
         if (body.skipSnapshots !== undefined && body.skipSnapshots !== true) throw new InvalidInput();
@@ -301,6 +319,7 @@ export function createDockerHostRoutes(
             body.diskFreeBytes as number | null | undefined,
             body.stoppedSandboxBytes as number | null | undefined,
             runningIds,
+            baseline,
           );
           if (job || resumeClaims.length) break;
           // The probe is broader than the poll (admission refusals, job order). A
@@ -335,6 +354,7 @@ export function createDockerHostRoutes(
           {
             ...(retentionSeconds === undefined ? {} : { retentionSeconds }),
             ...(wait === undefined ? {} : { held: true }),
+            ...dockerHostVersions,
             resumeClaims,
             job,
             // Every generation with a queued resume/bootstrap, so the daemon
@@ -396,14 +416,16 @@ export function createDockerHostRoutes(
           missingRefIndex > 16)
       )
         throw new InvalidInput();
-      const baselineVersion = body.baselineVersion;
+      const baselineHeader = snapshotBaselineHeader(request);
+      const baselineVersion = "baselineVersion" in body ? body.baselineVersion : baselineHeader;
       if (
-        "baselineVersion" in body &&
+        baselineVersion !== undefined &&
         (outcome !== "completed" ||
           typeof baselineVersion !== "number" ||
           !Number.isSafeInteger(baselineVersion) ||
           baselineVersion < 1 ||
-          baselineVersion > 2147483647)
+          baselineVersion > 2147483647 ||
+          (baselineHeader !== undefined && baselineHeader !== baselineVersion))
       )
         throw new InvalidInput();
       await store.complete(token, installationId, {
@@ -417,18 +439,13 @@ export function createDockerHostRoutes(
       });
       return Response.json({ requestId }, { headers });
     } catch (error) {
-      if (error instanceof DockerSnapshotHostUpgradeRequired)
-        return Response.json(
-          { error: { code: "docker_host_upgrade_required", message: error.message } },
-          { status: 409, headers },
-        );
       if (error instanceof DockerLimitsRefused)
         return Response.json(
           { error: { code: error.code, message: error.message } },
           { status: error.code === "invalid_request" ? 400 : 409, headers },
         );
       // A drain is a typed state refusal so the dashboard can show the uninstall reason, not a generic conflict.
-      if (error instanceof DockerHostDraining)
+      if (error instanceof DockerHostDraining || error instanceof DockerSnapshotHostUpgradeRequired)
         return Response.json({ error: { code: error.code, message: error.message } }, { status: 409, headers });
       return Response.json(
         {

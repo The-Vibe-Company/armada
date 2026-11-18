@@ -32,6 +32,7 @@ import {
   hostResourcePolicy,
 } from "./docker-capacity.ts";
 import { hostDrainingSql } from "./docker-host-drain.ts";
+import { dockerHostSupportsSnapshotBaseline } from "./docker-host-version.ts";
 import { authorizeSnapshotBuild, resolveDockerSnapshot } from "./docker-snapshot-data.ts";
 import { recordLaunchStage, recordLaunchStageForActivation } from "./launch-stage-record.ts";
 import { noteAdmission } from "./request-observability.ts";
@@ -453,6 +454,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           machine_memory_bytes: number | string | null;
           running: number;
           daemon_version: string | null;
+          snapshot_baseline_version: number | null;
           name: string | null;
           retention_seconds: number | null;
           reported_retention_seconds: number | null;
@@ -468,7 +470,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
                 and exists(select 1 from public.members m where m.org_id=h.org_id and m.user_id=h.owner_id)
                 and h.last_seen_at>=now()-interval '60 seconds' then 'online'
               else 'offline' end as state,
-            h.retention_seconds,h.reported_retention_seconds,h.next_cleanup_at,h.disk_free_bytes,h.stopped_sandbox_bytes,h.created_at,h.last_seen_at,h.revoked_at,h.daemon_version,h.name,h.owner_id,h.resource_policy_version,h.machine_cpus,h.machine_memory_bytes,h.available_cpus,h.available_memory_bytes,h.sandbox_cpus,h.sandbox_memory_bytes,h.max_sandboxes,
+            h.retention_seconds,h.reported_retention_seconds,h.next_cleanup_at,h.disk_free_bytes,h.stopped_sandbox_bytes,h.created_at,h.last_seen_at,h.revoked_at,h.daemon_version,h.snapshot_baseline_version,h.name,h.owner_id,h.resource_policy_version,h.machine_cpus,h.machine_memory_bytes,h.available_cpus,h.available_memory_bytes,h.sandbox_cpus,h.sandbox_memory_bytes,h.max_sandboxes,
             (${DOCKER_CAPACITY_USAGE_SQL})::integer as running,
             (select count(*)::integer from public.sandboxes s
               where s.org_id=h.org_id and s.docker_host_id=h.id
@@ -503,6 +505,14 @@ export function createDockerHostStore(sql: Sql, key: string) {
           limitsSupported: host.resource_policy_version === 1,
           sandboxes: host.sandboxes,
           version: host.daemon_version,
+          ...(host.daemon_version === null && host.snapshot_baseline_version === null
+            ? {}
+            : {
+                snapshotBuildSupported: dockerHostSupportsSnapshotBaseline(
+                  host.daemon_version,
+                  host.snapshot_baseline_version,
+                ),
+              }),
         }));
       });
     },
@@ -1110,6 +1120,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
       stoppedSandboxBytes?: number | null,
       /** Request IDs the daemon reports as still executing (#2561). */
       running: readonly string[] = [],
+      snapshotBaselineVersion?: number,
     ): Promise<Job | null> {
       // A revoked host or a removed owner can never authenticate again. Retire its
       // undispatchable work in its own committed transaction before the normal
@@ -1157,8 +1168,15 @@ export function createDockerHostStore(sql: Sql, key: string) {
             ? await reconcileHost(tx, hostToken, installationId, hint.bound_actor_id ?? undefined)
             : await authenticate(tx, hostToken, installationId, hint?.bound_actor_id ?? undefined);
         await tx.query(
-          `update public.docker_hosts set last_seen_at=now(),daemon_version=$2,resource_policy_version=$3,available_cpus=null,available_memory_bytes=null,disk_free_bytes=$4,stopped_sandbox_bytes=$5 where id=$1`,
-          [host.id, version ?? null, resourcePolicyVersion ?? null, diskFreeBytes ?? null, stoppedSandboxBytes ?? null],
+          `update public.docker_hosts set last_seen_at=now(),daemon_version=$2,resource_policy_version=$3,available_cpus=null,available_memory_bytes=null,disk_free_bytes=$4,stopped_sandbox_bytes=$5,snapshot_baseline_version=$6 where id=$1`,
+          [
+            host.id,
+            version ?? null,
+            resourcePolicyVersion ?? null,
+            diskFreeBytes ?? null,
+            stoppedSandboxBytes ?? null,
+            snapshotBaselineVersion ?? null,
+          ],
         );
         if (resources) {
           await tx.query(
@@ -1459,11 +1477,13 @@ export function createDockerHostStore(sql: Sql, key: string) {
           if (result.missingRefIndex !== undefined && result.missingRefIndex > parsed.build.config.repos.length) deny();
           if (job.outcome === null) {
             let eligible = false,
-              draining = false;
+              draining = false,
+              baselineMissing = false;
             if (result.outcome === "completed") {
               try {
-                await authorizeSnapshotBuild(tx, host.id, installationId, parsed);
-                eligible = true;
+                const snapshot = await authorizeSnapshotBuild(tx, host.id, installationId, parsed);
+                baselineMissing = (result.baselineVersion ?? 0) < (snapshot.required_baseline_version ?? 0);
+                eligible = !baselineMissing;
               } catch (error) {
                 if (error instanceof DockerHostDraining) draining = true;
                 else if (!(error instanceof VaultError && error.code === "forbidden")) throw error;
@@ -1479,11 +1499,13 @@ export function createDockerHostStore(sql: Sql, key: string) {
                   ? null
                   : draining
                     ? DOCKER_SNAPSHOT_FAILURE_MESSAGES.draining
-                    : result.outcome === "completed"
-                      ? DOCKER_SNAPSHOT_FAILURE_MESSAGES.authorization
-                      : result.reason === "disk_full"
-                        ? DOCKER_SNAPSHOT_FAILURE_MESSAGES.disk
-                        : DOCKER_SNAPSHOT_FAILURE_MESSAGES.build,
+                    : baselineMissing
+                      ? DOCKER_SNAPSHOT_FAILURE_MESSAGES.baseline
+                      : result.outcome === "completed"
+                        ? DOCKER_SNAPSHOT_FAILURE_MESSAGES.authorization
+                        : result.reason === "disk_full"
+                          ? DOCKER_SNAPSHOT_FAILURE_MESSAGES.disk
+                          : DOCKER_SNAPSHOT_FAILURE_MESSAGES.build,
                 eligible ? (result.baselineVersion ?? null) : null,
                 result.baselineTool ?? null,
                 result.missingRefIndex ?? null,

@@ -28,6 +28,8 @@ export function snapshotActionFailure(
       ["Unknown route.", "not_found"].includes(error.message));
   if ((error.status === 404 || error.status === 405) && absent)
     return `This Armada server does not offer ${FEATURES[action]} yet. Ask an Armada administrator to finish setup, then reload Snapshots.`;
+  if (error.code === "host_update_required")
+    return "Update the Docker host daemon using the instructions in Providers, then wait for it to check in before building this snapshot.";
   if (action === "build" && error.code === "docker_host_upgrade_required") return error.message;
   if (error.code === "host_draining")
     return "This host is draining for uninstall. Finish or retry the uninstall on the machine; it takes new work again only after the uninstall completes.";
