@@ -1012,3 +1012,74 @@ test("a superseded unfinished queued command cannot hold stop or later turn webh
   ]);
   await f.db.query("delete from outbound_webhook_deliveries");
 });
+
+test.each(["accepted", "rejected"] as const)(
+  "a %s well-formed runtime reply is recorded under the request ID with the caller's own validation",
+  async (kind) => {
+    const { createRuntimeAgent } = await import("../src/runtime-agent.ts");
+    const { observeRequest } = await import("../src/request-observability.ts");
+    const f = await fixture();
+    const session = await f.enrol();
+    const runtime = f.bridge();
+    const answer = (result: unknown) =>
+      f.onWait(async () => {
+        const { command } = await runtime.next(session.runtimeToken, session.epoch);
+        if (!command) throw Error("missing_command");
+        await runtime.complete(session.runtimeToken, session.epoch, {
+          epoch: session.epoch,
+          requestId: command.requestId,
+          status: 200,
+          body: { version: 1, requestId: command.requestId, result },
+        });
+      });
+    const agent = createRuntimeAgent(runtime, {
+      provider: "boat",
+      harness: "codex",
+      ownerId: f.people.owner,
+      sandboxId: f.id,
+      providerSandboxId: "command-native",
+      cwd: "/home/user",
+      defaults: { model: "gpt-5.4", reasoningEffort: "high" },
+    });
+    const health = { ready: true, generation: session.epoch, ...(kind === "accepted" ? { workspaceVersion: 1 } : {}) };
+    const exec = kind === "accepted" ? { detached: false, exitCode: 0, stdout: "", stderr: "" } : { detached: false };
+    const failures: unknown[] = [];
+    const lines: string[] = [];
+    const response = await observeRequest(
+      async () => {
+        answer(health);
+        await agent.workspaceHealth(session.epoch).catch((error) => failures.push(error));
+        answer(exec);
+        await agent
+          .workspaceExec(
+            { sandboxId: "command-native", command: "true" },
+            { phase: "init", index: 0, attempt: 0 },
+            session.epoch,
+          )
+          .catch((error) => failures.push(error));
+        return new Response(null, { status: 204 });
+      },
+      (line) => lines.push(line),
+    );
+    // The public errors are unchanged; only the trace now agrees with them.
+    if (kind === "rejected")
+      expect(failures).toEqual([
+        Error("Runtime workspace setup requires updated runtime artifacts; no native fallback."),
+        expect.objectContaining({ code: "unavailable" }),
+      ]);
+    else expect(failures).toEqual([]);
+    const outcome = kind === "accepted" ? "ok" : "error";
+    expect(lines.map((line) => JSON.parse(line)).filter((event) => event.event === "provider_call")).toEqual([
+      expect.objectContaining({
+        requestId: response?.headers.get("x-request-id"),
+        operation: "runtime.health",
+        outcome,
+      }),
+      expect.objectContaining({
+        requestId: response?.headers.get("x-request-id"),
+        operation: "runtime.workspaceExec",
+        outcome,
+      }),
+    ]);
+  },
+);
