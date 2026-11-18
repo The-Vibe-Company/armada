@@ -34,7 +34,8 @@ The Boat cwd sentinel in the unit JUnit report uses a synthetic Codex
 protocol peer. It verifies that the wrapper rewrites explicit thread and turn
 cwd parameters and starts the peer inside the selected repository. The
 pinned Codex credential-rotation contract runs once in the explicit release
-runner and fails if the native binary is missing.
+runner, verifies that the pinned Codex process holds its managed writer lock,
+and fails if the native binary is missing.
 
 ## Local process conformance
 
@@ -47,6 +48,11 @@ These Linux guest-process checks run only when explicitly invoked with
   refresh acknowledgement and session continuity with a stream-JSON peer.
 - `packages/provider-boat/test/native-install-race.conformance.ts` checks
   concurrent native installation with real lock and rename primitives.
+- `packages/provider-boat/test/native-writer.conformance.ts` checks
+  managed writer serialization, guest admission and orphan recovery.
+- `packages/provider-boat/test/runtime-bootstrap.conformance.ts` checks
+  artifact verification and detached boot in a local Linux mount namespace
+  (requires sudo and mount namespace support).
 - `packages/provider-modal/test/snapshot.conformance.ts` checks the guest
   snapshot command against a real open journal descriptor.
 
@@ -57,7 +63,7 @@ Repository-wide search includes `skipIf`, `test.skip`, conditional test aliases,
 
 - Linux platform skips remain in core `docker-snapshot-init`, `golden-helper`,
   `golden-scan`, `golden-script-shell`; provider-modal `distribution`;
-  provider-boat `runtime-bootstrap`, `native-cwd`;
+  provider-boat `native-cwd`;
   mcp-server `templates`, `managed-inspection`, `runtime-native-auth`;
   agent-runtime `skills`, `runtime`, `readable-variables`, `exec-env`,
   `enrolled-harness`, `messages`, `cwd`, `codex`, `claude`.

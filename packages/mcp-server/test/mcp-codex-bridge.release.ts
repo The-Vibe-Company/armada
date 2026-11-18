@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, rm, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { type McpBootstrap, nativeMcpInstallScript } from "../src/mcp-native.ts";
@@ -89,6 +89,8 @@ test("real Codex SAME process and thread resumes with rotated MCP credentials wi
   try {
     const path = join(home, "codex");
     await symlink(resolve(binary), path);
+    await mkdir(join(home, ".codex"), { mode: 0o700 });
+    await writeFile(join(home, ".codex/.armada-managed-native"), "active", { mode: 0o600 });
     const install = async (script: string, configuration?: McpBootstrap) => {
       const p = Bun.spawn(["bash"], {
         stdin: new Blob([script]),
@@ -184,6 +186,19 @@ try:
         assert receipt["inspectionComplete"] and receipt["nativeAppServerFound"]
         assert receipt["nativeExecutableMatchesInstalledBinary"]
         if phase==0:
+            native_home=os.path.join(sys.argv[2],".codex")
+            with open(os.path.join(native_home,".armada-native-writer.json")) as source:
+                writer=json.load(source)
+            assert writer["pid"] in current_pids
+            lock=os.stat(os.path.join(native_home,".armada-native-writer.lock"))
+            inherited=False
+            for fd in os.listdir("/proc/%d/fd"%writer["pid"]):
+                try:
+                    info=os.stat("/proc/%d/fd/%s"%(writer["pid"],fd))
+                    inherited=inherited or (info.st_dev,info.st_ino)==(lock.st_dev,lock.st_ino)
+                except FileNotFoundError:
+                    pass
+            assert inherited, "Pinned native Codex must retain the managed OS writer lock"
             wrong=json.loads(subprocess.check_output(inspection[:-1]+["/usr/bin/python3"],text=True))
             assert wrong["inspectionComplete"] and wrong["nativeAppServerFound"]
             assert not wrong["nativeExecutableMatchesInstalledBinary"]

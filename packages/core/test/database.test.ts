@@ -21,6 +21,34 @@ type Fixture = {
 };
 
 describe("database", () => {
+  test("sandbox repository context must name a configured repo and stays immutable", async () => {
+    await withDb(async (db) => {
+      const people = await fixture(db);
+      const golden = await insertGolden(db, people, { name: "repositories", visibility: "org", owner: people.owner });
+      await db.query("update goldens set config = $1::jsonb where id = $2", [
+        JSON.stringify({
+          repos: [
+            { ...PLAIN_CONFIG.repos[0], dir: "web" },
+            { url: "https://example.com/api.git", branch: "main", dir: "api" },
+          ],
+          init: [],
+        }),
+        golden,
+      ]);
+      const insert = (repositoryDir: string) =>
+        db.query<{ id: string }>(
+          `insert into sandboxes (boat_id, golden_id, org_id, owner_id, harness, status, repository_dir)
+           values ($1, $2, $3, $4, 'claude', 'ready', $5) returning id`,
+          [`bx_${crypto.randomUUID()}`, golden, people.org, people.owner, repositoryDir],
+        );
+      await expect(insert("../web")).rejects.toThrow("configured golden repository");
+      const sandbox = (await insert("web")).rows[0]!;
+      await expect(db.query("update sandboxes set repository_dir = 'api' where id = $1", [sandbox.id])).rejects.toThrow(
+        "repository context is immutable",
+      );
+    });
+  });
+
   test("anon holds nothing, and a user JWT has only the intended grants and never reads a secret", async () => {
     await withDb(async (db) => {
       const anon = await db.query<{ object: string }>(`
