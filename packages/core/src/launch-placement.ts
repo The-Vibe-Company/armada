@@ -12,6 +12,7 @@ type GoldenAdmission = {
   actor: GoldenActor;
   id: string;
   forkEnv(): HarnessCredentials["env"];
+  beforeAllocation(): void;
   allocationRisk(risk: boolean): void;
 };
 
@@ -58,7 +59,10 @@ export const goldenLaunchPlacements: Readonly<Record<SandboxProviderId, GoldenLa
   },
 };
 
-async function admitGoldenLaunch(plan: LaunchPlan, { actor, id, forkEnv, allocationRisk }: GoldenAdmission) {
+async function admitGoldenLaunch(
+  plan: LaunchPlan,
+  { actor, id, forkEnv, beforeAllocation, allocationRisk }: GoldenAdmission,
+) {
   const {
     provider,
     stores,
@@ -76,6 +80,7 @@ async function admitGoldenLaunch(plan: LaunchPlan, { actor, id, forkEnv, allocat
     () => stores.credentials.admit?.(actor, credentials, id, choice.model),
     () => options.beforeFork?.(id),
   );
+  beforeAllocation();
   allocationRisk(true);
   return provider
     .fork({
