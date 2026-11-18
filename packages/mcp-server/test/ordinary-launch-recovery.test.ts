@@ -13,7 +13,7 @@ afterAll(async () => {
   await fixture.db.close();
 });
 
-test("MCP allocation before failed registration returns a recoverable handle and fences replay", async () => {
+test("MCP allocation before failed registration returns a receipt ID and fences replay", async () => {
   const { db, people } = fixture;
   const sql = bunLikeSql(db);
   const caller = {
@@ -27,7 +27,6 @@ test("MCP allocation before failed registration returns a recoverable handle and
   boat.provider.managementIdentity = async () => ({ scope: "org", ownerId: people.org });
   let allocations = 0;
   let logical = "";
-  boat.provider.list = async () => ({ items: [boat.sandbox("bx_1").info], cursor: null });
   const fork = boat.provider.fork.bind(boat.provider);
   boat.provider.fork = async (request) => {
     allocations++;
@@ -53,12 +52,6 @@ test("MCP allocation before failed registration returns a recoverable handle and
   expect(allocations).toBe(1);
   await expect(callSharedTool(context, "launch", { ...input, prompt: "conflict" })).rejects.toMatchObject({
     code: "conflict",
-  });
-  const receipt = await callSharedTool(context, "launch_receipt", { id: logical });
-  expect(receipt).toMatchObject({
-    id: logical,
-    outcome: "unknown",
-    allocations: [{ id: expect.any(String), state: expect.any(String) }],
   });
   boat.provider.fork = async (request) => {
     allocations++;

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import type { ProviderTarget, Sql } from "@armada/core";
-import { GoldenError, LaunchError, type Provider, ProviderError, VaultError } from "@armada/core/server";
+import { GoldenError, LaunchError, ProviderError, VaultError } from "@armada/core/server";
 import { PGlite } from "@electric-sql/pglite";
 import { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 
@@ -13,7 +13,7 @@ afterAll(async () => {
 });
 
 // Real unique constraint/JSON persistence; no provider network or launch retry mock.
-test("ordinary receipts fence uncertain dispatch, recover labels and replay a lost successful response", async () => {
+test("ordinary receipts fence uncertain dispatch and replay a lost successful response", async () => {
   await db.exec(`CREATE TABLE ordinary_launch_receipts (
       id uuid PRIMARY KEY, org_id text, owner_id text, request_key text,
       fingerprint text, response jsonb, failure jsonb, authority jsonb, UNIQUE(org_id,owner_id,request_key));`);
@@ -40,53 +40,6 @@ test("ordinary receipts fence uncertain dispatch, recover labels and replay a lo
   await expect(receipts.run(actor, key, { golden: "g" }, dispatch, authority)).rejects.toThrow(handle);
   expect(allocations).toBe(1);
   await expect(receipts.run(actor, key, { golden: "different" }, dispatch, authority)).rejects.toThrow("conflicts");
-  const provider = {
-    backendIdentity: async () => ({ id: "original" }),
-    managementIdentity: async () => ({ scope: "org", ownerId: "org" }),
-    list: async () => ({
-      items: [{ id: "physical", state: "running", labels: { sandbox: handle, org: "org", owner: "owner" } }],
-      cursor: null,
-    }),
-  } as unknown as Provider;
-  expect((await receipts.inspect(actor, handle, async () => provider)).allocations).toEqual([
-    { id: "physical", state: "running" },
-  ]);
-  await expect(receipts.inspect({ ...actor, userId: "other" }, handle, async () => provider)).rejects.toThrow(
-    "not found",
-  );
-  // Replace the caller's current golden binding after admission. Inspection must
-  // deserialize its own original target, not retain or accept this mutable object.
-  authority.target.provider = "modal";
-  authority.target.visibility = "private";
-  const seen: unknown[] = [];
-  expect(
-    (
-      await receipts.inspect(actor, handle, async (target) => {
-        seen.push(target);
-        return provider;
-      })
-    ).allocations,
-  ).toEqual([{ id: "physical", state: "running" }]);
-  expect(seen).toEqual([{ provider: "boat", orgId: "org", visibility: "org", modal: null }]);
-  let queriedReplacement = false;
-  const replacement = {
-    backendIdentity: async () => ({ id: "replacement" }),
-    list: async () => {
-      queriedReplacement = true;
-      return { items: [], cursor: null };
-    },
-  } as unknown as Provider;
-  expect((await receipts.inspect(actor, handle, async () => replacement)).outcome).toBe("authority_blocked");
-  expect(queriedReplacement).toBe(false);
-  expect(
-    (
-      await receipts.inspect(actor, handle, async () => {
-        throw new Error("revoked");
-      })
-    ).outcome,
-  ).toBe("authority_blocked");
-  const fallback = { ...provider, managementIdentity: async () => ({ scope: "user", ownerId: "owner" }) } as Provider;
-  expect((await receipts.inspect(actor, handle, async () => fallback)).outcome).toBe("authority_blocked");
   const complete = async (id: string) => {
     allocations++;
     return { id, status: "running" };
@@ -107,7 +60,7 @@ test("ordinary receipts fence uncertain dispatch, recover labels and replay a lo
   ).rejects.toMatchObject({ code: "unsupported", message: "Rebuild the golden." });
 });
 
-test("known terminal refusals replay typed failures without redispatch or provider inspection", async () => {
+test("known terminal refusals replay typed failures without redispatch", async () => {
   const receipts = createOrdinaryLaunchReceipts(db as unknown as Sql);
   const actor = { orgId: "org", userId: "owner" };
   const authority = {
@@ -128,10 +81,8 @@ test("known terminal refusals replay typed failures without redispatch or provid
   ];
   for (const [index, error] of errors.entries()) {
     let calls = 0;
-    let id = "";
-    const dispatch = async (receiptId: string) => {
+    const dispatch = async () => {
       calls++;
-      id = receiptId;
       throw error;
     };
     const key = `terminal-refusal-key-${index}`;
@@ -139,16 +90,16 @@ test("known terminal refusals replay typed failures without redispatch or provid
     await expect(receipts.run(actor, key, {}, dispatch, authority)).rejects.toBeInstanceOf(error.constructor);
     await expect(receipts.run(actor, key, {}, dispatch, authority)).rejects.toMatchObject({ code: error.code });
     expect(calls).toBe(1);
-    const inspection = await receipts.inspect(actor, id, async () => {
-      throw new Error("must not resolve");
-    });
-    expect(inspection.outcome).toBe("failed");
-    expect(JSON.stringify(inspection)).not.toContain("unsafe upstream body");
+    if (error instanceof ProviderError) {
+      const { rows } = await db.query("SELECT failure FROM ordinary_launch_receipts WHERE request_key=$1", [key]);
+      expect(rows).toHaveLength(1);
+      expect(JSON.stringify(rows[0])).not.toContain(error.message);
+    }
     await expect(receipts.run(actor, key, { changed: true }, dispatch, authority)).rejects.toThrow("conflicts");
   }
 });
 
-test("post-allocation launch failures remain uncertain and inspectable", async () => {
+test("post-allocation launch failures remain uncertain", async () => {
   const receipts = createOrdinaryLaunchReceipts(db as unknown as Sql);
   const actor = { orgId: "org", userId: "owner" };
   const authority = {

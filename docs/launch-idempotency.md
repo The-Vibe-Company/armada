@@ -8,7 +8,7 @@ fields serve that. Docker has its own [receipt lifecycle](#docker-launches).
 | --- | --- | --- |
 | `POST /api/v1/sandbox/launch` for Boat and Modal | `idempotencyKey`, 16–128 characters | `externalRef` |
 | `POST /api/v1/sandbox/launch` for Docker | `idempotencyKey` or legacy `requestId` | `externalRef` |
-| MCP `launch` / `launch_sized_v1` | `idempotencyKey`, 16–128 characters | `externalRef` |
+| MCP `launch` | `idempotencyKey`, 16–128 characters | `externalRef` |
 | `POST /api/v1/templates/launch` | `requestKey` (required, see [templates](templates-cli.md)) | `externalRef` |
 
 `externalRef` is opaque: 1–200 characters without control characters. Armada
@@ -104,19 +104,9 @@ or may not exist. Never retry with a new key: that is how duplicates happen.
 2. Look the sandbox up by reference: `sandbox/list` with `externalRef` returns
    every sandbox you own or administer carrying it, including a launch whose
    answer was lost after the sandbox was recorded.
-3. If neither shows it and an `outcome_unknown` or `conflict` answer named a
-   receipt id, inspect it as the launching user with MCP `launch_receipt`
-   (`{"id":"<receipt UUID>"}`, plus `org` set to the organization UUID when
-   you belong to several). It lists
-   provider allocations labelled with that id, using the provider binding
-   recorded on the receipt, so a removed snapshot does not prevent the lookup.
-   An empty lookup is not proof of no allocation; keep the key and ask an
-   operator rather than relaunching.
-4. If you never received a receipt id (the first answer was lost and the replay
-   fails preflight, for example with `not_found`, or the receipt itself could
-   not be read), there is no self-service
-   lookup. Keep the original key, do not relaunch, and escalate to an operator
-   with the organization, the key and the `externalRef`.
+3. If the sandbox is still missing, escalate to an operator with the
+   organization, original key, `externalRef` and receipt UUID when available.
+   An unregistered allocation can exist even when the sandbox list is empty.
 
 Template launches follow the same rule with `requestKey`: a replay answers the
 recorded state (`succeeded`, `failed`, `reconciling`), and `reconciling` is

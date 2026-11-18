@@ -45,7 +45,7 @@ slugs; the final merged list must also have at most 20. Surviving slugs install
 in first-seen order, with the winning pin substituted in place. Over-limit
 merges fail before allocation; they are never silently truncated.
 
-Set `skipSkillDefaults: true` on HTTP launch or MCP `launch`/`launch_sized_v1`
+Set `skipSkillDefaults: true` on HTTP launch or MCP `launch`
 or `template_launch` to exclude layers 1–3 for this launch only. Template and
 explicit pins still install. This is a boolean, not a string.
 Example template launch:
