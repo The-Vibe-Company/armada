@@ -4,7 +4,7 @@ import {
   decryptSecret,
   encryptionKey,
   encryptSecret,
-  outputDirectory,
+  OUTPUT_DIRECTORY,
   type Provider,
   type Sql,
 } from "@armada/core/server";
@@ -240,8 +240,8 @@ export function createSandboxOutputs(
         // is read (and decrypted), so access revoked meanwhile never receives metadata or bytes.
         const authorize = async () =>
           (
-            await sql.query<{ id: string; provider: string }>(
-              `select s.id,s.provider::text from public.sandboxes s join public.members m on m.org_id=s.org_id
+            await sql.query<{ id: string }>(
+              `select s.id from public.sandboxes s join public.members m on m.org_id=s.org_id
           where s.id=$1 and s.status<>'deleted' and not s.application_secret_tainted and m.user_id=$2 and s.org_id=any($3::uuid[])
           and (s.owner_id=$2 or m.role='admin') and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)`,
               [match[1], caller.userId, caller.orgs.map((o) => o.orgId)],
@@ -263,7 +263,7 @@ export function createSandboxOutputs(
           );
           if (!(await authorize())) return notFound();
           return Response.json(
-            { directory: outputDirectory(row.provider), files: files.rows },
+            { directory: OUTPUT_DIRECTORY, files: files.rows },
             { headers: { "cache-control": "private, no-store" } },
           );
         }

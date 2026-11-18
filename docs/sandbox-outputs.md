@@ -1,6 +1,14 @@
 # Sandbox outputs
 
-Write deliverables as regular files directly inside the declared directory (create it if absent): `/workspace/outputs` on Boat and Modal, `/home/user/outputs` on Docker. Docker sandboxes run as uid 1000 without privilege escalation and cannot create `/workspace`, so their directory sits in the retained home volume. This fixed directory is the declaration; no API accepts arbitrary filesystem paths. Subdirectories, symlinks, hard links and special files are excluded. Use short filenames without control characters.
+Write deliverables as regular files directly inside `/home/user/outputs` on Boat, Modal and Docker. Create the directory as the agent if it is absent. The same path applies after resume because it sits in the agent's home. This fixed directory is the declaration. The API accepts filenames for downloads and has no caller-supplied directory. Subdirectories, symlinks, hard links and special files are excluded. Use short filenames without control characters.
+
+The previous Boat and Modal declaration, `/workspace/outputs`, assumed agents could create `/workspace` at the filesystem root. On the Modal staging golden, Claude Code received permission denied when it tried to create that parent. Use the new path in prompts and scripts. If a live Boat or Modal sandbox has deliverables under the previous path, move them to the new path for subsequent captures. While the new directory is absent, Boat and Modal retain any previous snapshot. Create an empty directory at the new path to publish an empty snapshot.
+
+- **Modal** runs Claude Code, Codex and OpenCode on the native path through the image's runner as the Linux `user` account. The enrolled runtime starts as the owner of `/home/user` (also `user` in the Armada image), and its Claude Code, Codex and OpenCode drivers inherit that identity. The image creates `/home/user` and assigns ownership to that account. The filesystem root is root-owned, and the golden image recipe does not provision `/workspace` or grant ownership of it to the agent.
+- **Boat** launches native Claude Code and Codex through Boat's prompt API, which manages their process identity. Armada's native setup uses Boat's `user` home at `/home/user`. Native OpenCode is unsupported. On the enrolled path, the Claude Code, Codex and OpenCode drivers run as the owner of `/home/user`, normally `user`. Boat supplies the golden filesystem, and Armada's builder does not provision `/workspace` or make the filesystem root agent-writable. The native effective UID and the ownership of `/workspace` on individual Boat goldens require live provider evidence.
+- **Docker** runs agents as UID and GID 1000 without privilege escalation, with a retained volume at `/home/user`.
+
+Using the writable home lets agents create the same directory on demand across providers and avoids changing ownership or adding launch and resume steps.
 
 Each snapshot has at most 32 files, 32 KiB per file and 32 KiB total (below the provider transport budget, including base64 and metadata). The bounds count admitted files only, in name order: excluded entries never take a file's place, and a file that does not fit is skipped. A directory with more than 4096 entries is not read at all. A failed or out-of-bounds read keeps the previous snapshot; it never blocks a stop or the shared worker. Periodic samples run in the background with a 25-second deadline, at most four at a time, so the shared worker loop never waits for a provider read. The final pre-stop capture waits only until the shared pre-stop budget, from its scan claim on (a claim held by a row lock or a pool connection counts, and a claim that returns late never reaches the provider), even when the provider SDK ignores cancellation; a capture that outlives it stays tracked, and new final captures are skipped while four such late captures are outstanding. No read persists after its deadline: the deadline is checked again under the row lock and after the write, before commit, so time spent waiting for the database counts and an expired write rolls back with its webhook events.
 
@@ -15,7 +23,9 @@ Docker sandboxes have no provider exec: the host daemon only manages the machine
 - **Armada Docker stops** (user, idle and agent-finished) take the final snapshot, bounded to 12 seconds, before the stop job is queued: once a stop is requested the runtime refuses commands. Docker stops queued by a host uninstall or the host-bound preview API rely on the last sample.
 - **Stopped sandboxes are never read**, on any provider. Their downloads serve the last snapshot taken while compute was live.
 
-### Known limit
+### Known limits
+
+The 32-file and 32 KiB total snapshot cap is too small for some deliverables, such as a tender response document. Raising the cap is follow-up work.
 
 Files written or changed after the last capture are not collected. This covers files written between the last 30-second sample and a stop Armada did not initiate (Boat TTL, Docker host expiry or uninstall, or a provider-initiated stop), and a background writer that finishes after the final pre-stop capture. Armada does not reread a stopped sandbox's retained workspace (Boat disk snapshots, Modal recovery images); that is tracked in #2609. Until then, finish writing deliverables before the agent's turn ends.
 
