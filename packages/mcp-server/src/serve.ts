@@ -497,9 +497,7 @@ export async function startServer(
           modalRuntimeHostFor,
         }
       : {}),
-    ...(runtimeLaunch
-      ? { boatRuntimeLaunch: runtimeLaunch, runtimeHostFor }
-      : {}),
+    ...(runtimeLaunch ? { boatRuntimeLaunch: runtimeLaunch, runtimeHostFor } : {}),
     launch,
     publicUrl: config.publicUrl,
     modelAuth,
