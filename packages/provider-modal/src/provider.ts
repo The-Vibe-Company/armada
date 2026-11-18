@@ -5,6 +5,7 @@ import type {
   ExecResult,
   ForkRequest,
   Harness,
+  ModalBinding,
   Provider,
   ProviderInventoryMachine,
   ResumeStageObserver,
@@ -31,7 +32,7 @@ import {
   readCollectorResult,
   runtimeBootstrapScript,
 } from "@armada/core/server";
-import type { App, Sandbox } from "modal";
+import type { App, ModalClient, Sandbox } from "modal";
 import { chooseManagementAuthority, matchesManagementAuthority } from "./authority.ts";
 import { type ModalConnection, modalConnection } from "./client.ts";
 import { lifecycleStep, ModalOperationError, modalBuilderImageError, modalError, refusal } from "./errors.ts";
@@ -180,19 +181,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
   const ssh = options.ssh ?? createSshPreparation();
   const client = modalConnection(options);
   const deploymentId = options.deploymentId?.trim();
-  async function bound(): Promise<App> {
-    const app = await measure("modal_app_lookup", () =>
-      client.apps.fromName(options.appName, {
-        environment: options.scope.binding.environment,
-        createIfMissing: false,
-      }),
-    );
-    if (app.appId !== options.scope.binding.appId)
-      throw refusal("forbidden", "Modal App does not match the immutable binding.");
-    // Public SDK exposes App ID/environment, not authenticated workspace identity. Globally unique
-    // App ID reached by an explicit token is authoritative; workspace label is never authentication.
-    return app;
-  }
+  const bound = () => measure("modal_app_lookup", () => boundModalApp(client, options.appName, options.scope.binding));
   async function snapshotBackend() {
     try {
       await bound();
@@ -265,54 +254,8 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       armada_generation: String(row.generation),
     };
   }
-  async function* listInventory(signal?: AbortSignal): AsyncGenerator<ProviderInventoryMachine> {
-    if (!deploymentId) throw refusal("provider_routing_unavailable", "Modal inventory requires a deployment identity.");
-    signal?.throwIfAborted();
-    try {
-      const { appId } = await abortable(bound(), signal);
-      const tags = [{ tagName: DEPLOYMENT_TAG, tagValue: deploymentId }];
-      let beforeTimestamp: number | undefined;
-      // The SDK iterator discards creation times. Use its listing RPC, which covers both
-      // Modal sandbox backends and scopes the query by the verified environment's App ID.
-      while (true) {
-        signal?.throwIfAborted();
-        const { sandboxes } = await client.cpClient.sandboxListV2(
-          { appId, tags, includeFinished: false, ...(beforeTimestamp === undefined ? {} : { beforeTimestamp }) },
-          signal ? { signal } : undefined,
-        );
-        if (sandboxes.length === 0) return;
-        for (const sandbox of sandboxes) {
-          signal?.throwIfAborted();
-          const ownership = new Map(sandbox.tags.map(({ tagName, tagValue }) => [tagName, tagValue]));
-          if (ownership.get(DEPLOYMENT_TAG) !== deploymentId || sandbox.appId !== appId) continue;
-          const createdAt = new Date(sandbox.createdAt * 1000);
-          if (sandbox.createdAt <= 0 || !Number.isFinite(createdAt.getTime()))
-            throw refusal("unavailable", "Modal inventory returned an invalid creation time.");
-          const sandboxId = ownership.get("armada_sandbox");
-          const generation = ownership.get("armada_generation");
-          yield {
-            machineId: sandbox.id,
-            deploymentId,
-            createdAt,
-            ...(sandboxId ? { sandboxId } : {}),
-            ...(generation ? { generation } : {}),
-          };
-        }
-        const nextTimestamp = sandboxes.at(-1)?.createdAt;
-        if (
-          nextTimestamp === undefined ||
-          !Number.isFinite(nextTimestamp) ||
-          nextTimestamp <= 0 ||
-          (beforeTimestamp !== undefined && nextTimestamp >= beforeTimestamp)
-        )
-          throw refusal("unavailable", "Modal inventory pagination did not advance.");
-        beforeTimestamp = nextTimestamp;
-      }
-    } catch (error) {
-      signal?.throwIfAborted();
-      throw modalError(error);
-    }
-  }
+  const listInventory: ModalProvider["listInventory"] = (signal) =>
+    listModalInventory(client, bound, deploymentId, signal);
   async function namedOwned(row: Machine): Promise<Sandbox> {
     assertMachineSource(row);
     // Name reconciliation exists because the create outcome is unknown: a missing App must
@@ -2127,8 +2070,88 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
   ) as unknown as ModalProvider;
 }
 
+async function boundModalApp(client: ModalClient, appName: string, binding: ModalBinding): Promise<App> {
+  const app = await client.apps.fromName(appName, { environment: binding.environment, createIfMissing: false });
+  // The globally unique App ID reached by the explicit credential verifies the binding.
+  if (app.appId !== binding.appId) throw refusal("forbidden", "Modal App does not match the immutable binding.");
+  return app;
+}
+
+export function modalDeploymentId(environment: string, publicUrl: string): string {
+  return createHash("sha256")
+    .update(JSON.stringify([environment, new URL(publicUrl).origin]))
+    .digest("hex");
+}
+
+/** Inventory-only connection for the server reaper, independent of runner and store authority. */
+export function createModalInventory(
+  client: ModalClient,
+  appName: string,
+  binding: ModalBinding,
+  deploymentId: string,
+) {
+  return {
+    listInventory: (signal?: AbortSignal) =>
+      listModalInventory(client, () => boundModalApp(client, appName, binding), deploymentId, signal),
+  };
+}
+
+async function* listModalInventory(
+  client: ModalClient,
+  bound: () => Promise<App>,
+  deploymentId: string | undefined,
+  signal?: AbortSignal,
+): AsyncGenerator<ProviderInventoryMachine> {
+  if (!deploymentId) throw refusal("provider_routing_unavailable", "Modal inventory requires a deployment identity.");
+  signal?.throwIfAborted();
+  try {
+    const { appId } = await abortable(bound(), signal);
+    const tags = [{ tagName: DEPLOYMENT_TAG, tagValue: deploymentId }];
+    let beforeTimestamp: number | undefined;
+    // The SDK iterator discards creation times. Use its listing RPC, which covers both
+    // Modal sandbox backends and scopes the query by the verified environment's App ID.
+    while (true) {
+      signal?.throwIfAborted();
+      const { sandboxes } = await client.cpClient.sandboxListV2(
+        { appId, tags, includeFinished: false, ...(beforeTimestamp === undefined ? {} : { beforeTimestamp }) },
+        signal ? { signal } : undefined,
+      );
+      if (sandboxes.length === 0) return;
+      for (const sandbox of sandboxes) {
+        signal?.throwIfAborted();
+        const ownership = new Map(sandbox.tags.map(({ tagName, tagValue }) => [tagName, tagValue]));
+        if (ownership.get(DEPLOYMENT_TAG) !== deploymentId || sandbox.appId !== appId) continue;
+        const createdAt = new Date(sandbox.createdAt * 1000);
+        if (sandbox.createdAt <= 0 || !Number.isFinite(createdAt.getTime()))
+          throw refusal("unavailable", "Modal inventory returned an invalid creation time.");
+        const sandboxId = ownership.get("armada_sandbox");
+        const generation = ownership.get("armada_generation");
+        yield {
+          machineId: sandbox.id,
+          deploymentId,
+          createdAt,
+          ...(sandboxId ? { sandboxId } : {}),
+          ...(generation ? { generation } : {}),
+        };
+      }
+      const nextTimestamp = sandboxes.at(-1)?.createdAt;
+      if (
+        nextTimestamp === undefined ||
+        !Number.isFinite(nextTimestamp) ||
+        nextTimestamp <= 0 ||
+        (beforeTimestamp !== undefined && nextTimestamp >= beforeTimestamp)
+      )
+        throw refusal("unavailable", "Modal inventory pagination did not advance.");
+      beforeTimestamp = nextTimestamp;
+    }
+  } catch (error) {
+    signal?.throwIfAborted();
+    throw modalError(error);
+  }
+}
+
 /** Settles with `work`, or rejects with the signal's reason as soon as the caller aborts. */
-function abortable<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+function abortable<T>(work: Promise<T>, signal: AbortSignal | undefined) {
   if (!signal) return work;
   signal.throwIfAborted();
   return new Promise<T>((resolve, reject) => {
