@@ -25,6 +25,7 @@ const packages = [
   "xz-utils",
   "perl",
   "libcurl4-openssl-dev",
+  "libssl-dev",
   "libexpat1-dev",
   "zlib1g-dev",
 ] as const;
