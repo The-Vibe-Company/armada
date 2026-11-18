@@ -1,6 +1,7 @@
 import { ProviderError, type Sql, sandboxActivity, VaultError } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import { createSqlData } from "./data.ts";
+import { createModalRuntimeEnvironment } from "./modal-runtime-environment.ts";
 import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 import { lockRuntimeAccount } from "./runtime-account-admission.ts";
 import { runtimeAgentFor } from "./runtime-agent.ts";
@@ -33,6 +34,7 @@ export function createRuntimeFollowup(
   resume?: RuntimeResume,
 ) {
   const authority = createRuntimeEnrolments(sql, key);
+  const modalEnvironment = createModalRuntimeEnvironment(sql, key);
   return async (caller: Caller, input: RuntimeFollowupInput) => {
     const requestId = input.request_id?.toLowerCase();
     if (!requestId || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(requestId) || !input.prompt.trim())
@@ -103,6 +105,11 @@ export function createRuntimeFollowup(
       const last = await agent.getPrompt({ sandboxId: found.providerSandboxId, promptId: found.taskPromptId });
       if (!last.done) throw new VaultError("conflict", "Wait for the current runtime prompt to finish.");
     }
+    // Definite refusals must not claim the activity lease. A saved prompt can reconcile after revocation.
+    const configuredEpoch =
+      previous.state === "missing" && found.provider === "modal"
+        ? await modalEnvironment.deliver({ userId: caller.userId, orgId: found.orgId }, found.id)
+        : undefined;
     if (!sql.transaction) throw new VaultError("unavailable", "Runtime send requires transactional admission.");
     const admitted = await sql.transaction(async (tx) => {
       await lockRuntimeAccount(tx, caller, found, "The pinned runtime account is no longer authorized.");
@@ -160,6 +167,8 @@ export function createRuntimeFollowup(
           );
         if (saved && saved.epoch !== scope.epoch)
           throw new VaultError("conflict", "Runtime command belongs to an older epoch.");
+        if (!saved && configuredEpoch !== undefined && configuredEpoch !== scope.epoch)
+          throw new VaultError("conflict", "Runtime environment epoch changed; retry the same request.");
         if (saved?.finished && lease.activity_lease_id !== requestId)
           return { current, epoch: scope.epoch, replay: true };
         if (lease.activity_lease_id === requestId) {

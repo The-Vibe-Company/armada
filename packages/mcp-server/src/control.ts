@@ -926,11 +926,8 @@ export async function dispatchControlCommand(
           );
           return options.templates.command(caller, "launch", input, {
             validateDefinition: (definition) => {
-              if (definition.provider !== "modal" || definition.harness !== body.harness || definition.secrets?.length)
-                throw new VaultError(
-                  "invalid",
-                  "Modal runtime templates require the selected Modal harness without application-secret bindings.",
-                );
+              if (definition.provider !== "modal" || definition.harness !== body.harness)
+                throw new VaultError("invalid", "Modal runtime templates require the selected Modal harness.");
             },
             stores: {
               goldens: base.stores.goldens,
