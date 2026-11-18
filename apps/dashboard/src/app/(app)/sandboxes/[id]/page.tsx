@@ -478,9 +478,7 @@ function DockerSandbox({
       )}
       <SandboxAttention sandbox={sandbox} viewer={viewer} />
 
-      <p className="text-sm text-muted-foreground">
-        {life.remaining} · Docker host sandboxes have a fixed time limit.
-      </p>
+      <p className="text-sm text-muted-foreground">{life.remaining} · Docker host sandboxes have a fixed time limit.</p>
       <div
         data-fit="body"
         className="grid items-start gap-2 md:gap-6 lg:grid-cols-[minmax(0,1fr)_19.5rem] lg:has-[[data-details-open=false]]:grid-cols-1"
