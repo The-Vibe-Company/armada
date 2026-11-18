@@ -1,7 +1,8 @@
 import { test } from "@e2e-dev/web";
 import { expect } from "e2e";
+import { e2eFixture, fixtureOrigin } from "../../scripts/fixture-ports.ts";
 
-const mock = "http://127.0.0.1:54399";
+const mock = fixtureOrigin(e2eFixture.mockPort);
 async function configure(path: string, body: object) {
   const response = await fetch(`${mock}/__test/${path}`, { method: "POST", body: JSON.stringify(body) });
   if (!response.ok) throw new Error(`Fixture configuration failed: ${path} (${response.status})`);

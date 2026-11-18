@@ -1,7 +1,8 @@
 import { test } from "@e2e-dev/web";
 import { expect } from "e2e";
+import { e2eFixture, fixtureOrigin } from "../../scripts/fixture-ports.ts";
 
-const mock = "http://127.0.0.1:54399";
+const mock = fixtureOrigin(e2eFixture.mockPort);
 const running = "00000000-0000-4000-8000-000000000030";
 
 async function reset() {

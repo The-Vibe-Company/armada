@@ -1,5 +1,8 @@
 import { test } from "@e2e-dev/web";
 import { expect } from "e2e";
+import { e2eFixture, fixtureOrigin } from "../../scripts/fixture-ports.ts";
+
+const mock = fixtureOrigin(e2eFixture.mockPort);
 
 type Screen = Parameters<Parameters<typeof test>[1]>[0]["screen"];
 
@@ -42,7 +45,7 @@ for (const organization of [
     await screen.getByRole("button", "Launch", { exact: true }).tap();
     await expect(browser).toHaveURL(/\/sandboxes\/[0-9a-f-]+$/);
     await expect(browser.locator('[role="log"][aria-label="Messages"]')).toBeVisible();
-    const response = await fetch("http://127.0.0.1:54399/__test/state");
+    const response = await fetch(`${mock}/__test/state`);
     if (!response.ok) throw new Error("Could not read fixture launch receipt");
     const state = await response.json();
     expect(state.launches.at(-1)).toMatchObject({
@@ -95,7 +98,7 @@ test("Large: launch on the online Docker host", { session: "large" }, async ({ a
   await screen.getByRole("button", "Launch", { exact: true }).tap();
   await expect(browser).toHaveURL(/\/sandboxes\/[0-9a-f-]+$/);
   await expect(browser.locator('[role="log"][aria-label="Messages"]')).toBeVisible();
-  const response = await fetch("http://127.0.0.1:54399/__test/state");
+  const response = await fetch(`${mock}/__test/state`);
   if (!response.ok) throw new Error("Could not read fixture launch receipt");
   const state = await response.json();
   expect(state.launches.at(-1)).toMatchObject({
