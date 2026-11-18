@@ -19,7 +19,6 @@ import {
   type GoldenRecord,
   goldenForLaunch,
   HARNESSES,
-  isNonMutatingProviderRefusal,
   type LaunchCredentialResolver,
   LaunchError,
   type LaunchOptions,
@@ -1601,67 +1600,6 @@ export function createArmadaServer(context: ToolContext, version: string, option
         },
         { deadlineMs: ((args.timeout_seconds ?? 120) + 60) * 1000 },
       ).catch((error) => publicationFailure(error, acknowledged));
-    },
-  );
-
-  tool(
-    "delete",
-    {
-      title: "Delete a stopped sandbox",
-      description:
-        "Owner/admin only. Permanently removes provider resources and recovery archives. Stop first. Legacy orchestrator parents and children are refused; ordinary delegated children require a deleted parent.",
-      input: { id, request_id: z.string().uuid().optional() },
-      output: { id: z.string(), status: z.literal("deleted") },
-      destructive: true,
-    },
-    async (args) => {
-      if (!data.sandboxes.assertDeletionAllowed)
-        throw new ToolError("unavailable", "Sandbox deletion is not configured.");
-      await data.sandboxes.assertDeletionAllowed(args.id);
-      const found = await visible(args.id);
-      if (found.status === "deleted") return { id: found.id, status: "deleted" as const };
-      const deletionProvider = context.deletionProvider;
-      if (found.providerSandboxId && !deletionProvider)
-        throw new ToolError("unavailable", "Sandbox deletion provider is not configured.");
-      const provider = found.providerSandboxId && deletionProvider ? await deletionProvider(found) : null;
-      // A failed delete must not refuse the caller's immediate retry for the two-minute lease.
-      // A definite refusal deleted nothing. Modal fences any failure itself: the adapter records
-      // the generation's exit proof and a deleting phase that every resume path refuses before
-      // any remote mutation, and its store lease serializes concurrent deletes. Other unknown
-      // outcomes and pending receipts retain the bounded activity lease.
-      const failurePatch = (error: unknown) => {
-        if (found.provider === "modal" || isNonMutatingProviderRefusal(error)) return {};
-        throw error;
-      };
-      return sandboxActivity(
-        data.sandboxes,
-        found,
-        { deleteRequested: true },
-        async (signal) => {
-          signal.throwIfAborted();
-          if (provider) {
-            try {
-              const receipt = await provider.delete({ sandboxId: found.providerSandboxId });
-              if (!["deleted", "completed"].includes(receipt.status))
-                throw new ToolError(
-                  "conflict",
-                  "Provider deletion is pending. Retry deletion to confirm completion; do not resume this sandbox.",
-                );
-            } catch (error) {
-              if (!(error instanceof ProviderError && error.code === "not_found")) throw error;
-            }
-          }
-          return {
-            result: { id: found.id, status: "deleted" as const },
-            patch: {
-              status: "deleted",
-              deletedAt: context.now().toISOString(),
-              ...(found.stoppedAt === null ? { usageRuntimeUnknown: true } : {}),
-            },
-          };
-        },
-        { failurePatch },
-      );
     },
   );
 

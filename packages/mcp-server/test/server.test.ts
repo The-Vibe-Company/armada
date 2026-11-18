@@ -1544,7 +1544,6 @@ test("public MCP inventory and schemas expose operation contracts", async () => 
   const { tools } = await mcp.listTools();
   expect(tools.map((tool) => tool.name).sort()).toEqual(
     [
-      "delete",
       "extend",
       "exec",
       "github_refresh",

@@ -165,8 +165,6 @@ test("sandbox deletion authorizes live owners/admins, fences activity, and prese
     expect((await request(failed, adminToken)).status).toBe(200);
     expect(await usage(failed)).toBeNull();
 
-    const mcpId = await insert();
-    expect((await call(owner, "delete", { id: mcpId })).data).toEqual({ id: mcpId, status: "deleted" });
     const parent = await insert();
     const orchestrator = crypto.randomUUID();
     await db.query("insert into orchestrators(id,org_id,owner_id,sandbox_id) values($1,$2,$3,$4)", [
@@ -372,8 +370,15 @@ test("admin extension and deletion resolve private-source resources through thei
         );
         expect(result?.status).toBe(200);
       } else {
-        const result = await call(mcp, "delete", { id });
-        expect(result.isError).toBe(false);
+        const result = await handleControlRequest(
+          new Request(`${PUBLIC_URL}/api/v1/sandbox/delete`, {
+            method: "POST",
+            headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+            body: JSON.stringify({ id }),
+          }),
+          options,
+        );
+        expect(result?.status).toBe(200);
       }
       expect(retained.has(providerId)).toBe(false);
       expect((await db.query("select status::text from sandboxes where id=$1", [id])).rows).toEqual([
