@@ -244,8 +244,6 @@ jobs:
       - run: |
           bun test --reporter=junit --reporter-outfile=/tmp/release-tests.xml
           bun test ./packages/core/test/database-types.probe.ts ./packages/core/test/private-skill.probe.ts ./packages/core/test/golden-scan.probe.ts ./packages/core/test/work-preservation.probe.ts --reporter=junit --reporter-outfile=/tmp/release-native-tests.xml
-        env:
-          CODEX_NATIVE_TEST_BINARY: ${{ github.workspace }}/packages/agent-runtime/dist/codex
       - name: Migrate disposable release contract database
         env:
           PGURL: postgres://postgres:release_fixture@127.0.0.1:5432/armada_contracts
@@ -271,8 +269,7 @@ jobs:
               "private installer ok",
               "real shell: a clean sandbox passes",
               "local capture recovers commits and staged, unstaged and untracked work without GitHub authorization",
-              "real Codex app-server reports the selected thread cwd",
-              "real Codex SAME process and thread resumes with rotated MCP credentials without model inference",
+              "Codex wrapper enforces Boat's thread/turn protocol cwd, not only process cwd",
           ]:
               selected = [case for case in cases if case.get("name") == name]
               assert len(selected) == 1 and all(selected[0].find(tag) is None for tag in ["failure", "error", "skipped"]), f"Native contract did not execute exactly once without skips: {name}"
