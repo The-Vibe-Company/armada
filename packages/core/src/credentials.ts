@@ -1,6 +1,5 @@
 import { CLAUDE_ENDPOINT_ENV, parseClaudeEndpoint } from "./claude-endpoint.ts";
 import { CODEX_ENDPOINT_ENV, parseCodexEndpoint } from "./codex-endpoint.ts";
-import { COMPATIBLE_MODEL_PROVIDERS } from "./compatible-providers.ts";
 import type { Harness, Visibility } from "./contract.ts";
 import { decryptSecret, EncryptionKeyError } from "./crypto.ts";
 import type { CredentialKind, CredentialScope } from "./database.types.ts";
@@ -14,6 +13,7 @@ import {
   parseConnectionModels,
   parseOpenCodeEndpoint,
 } from "./opencode-endpoint.ts";
+import { MORPH_ENDPOINTS, MORPH_MODEL_IDS } from "./pricing/model-options.generated.ts";
 import { SKILLPACK_TOKEN_PATTERN } from "./skillpack-token.ts";
 import { redactKnownTokens } from "./token-redaction.ts";
 import type { UsagePricingContext } from "./usage-pricing.ts";
@@ -506,7 +506,7 @@ export interface ConnectionModelInfo {
 export function connectionModels(kind: CredentialKind, plaintext: string): ConnectionModelInfo[] {
   if (kind === "morph") {
     parseCredentialValue(kind, plaintext);
-    return COMPATIBLE_MODEL_PROVIDERS.morph.models.map((model) => ({ model, input: null, output: null }));
+    return MORPH_MODEL_IDS.map((model) => ({ model, input: null, output: null }));
   }
   if ((kind !== "opencode" && kind !== "openai") || !plaintext.trimStart().startsWith("{")) return [];
   let parsed: { endpoint?: { models?: string[] }; models?: string[]; prices?: ModelPriceOverrides };
@@ -574,15 +574,14 @@ function open(sealed: Uint8Array, encryptionKey: string | undefined): Promise<st
 function deliver(kind: CredentialKind, scope: CredentialScope, value: string, harness: Harness): ResolvedCredentials {
   const source = { kind, scope };
   if (kind === "morph") {
-    const provider = COMPATIBLE_MODEL_PROVIDERS[kind];
     if (harness === "opencode") {
       return {
         env: {
           OPENCODE_API_KEY: parseCredentialValue(kind, value),
           [OPENCODE_ENDPOINT_ENV]: JSON.stringify({
             version: 1,
-            baseUrl: provider.codex.baseUrl,
-            models: provider.models,
+            baseUrl: MORPH_ENDPOINTS.codex.baseUrl,
+            models: MORPH_MODEL_IDS,
           }),
         },
         files: [],
@@ -593,7 +592,9 @@ function deliver(kind: CredentialKind, scope: CredentialScope, value: string, ha
     return {
       env: {
         [claude ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY"]: parseCredentialValue(kind, value),
-        [claude ? CLAUDE_ENDPOINT_ENV : CODEX_ENDPOINT_ENV]: JSON.stringify(claude ? provider.claude : provider.codex),
+        [claude ? CLAUDE_ENDPOINT_ENV : CODEX_ENDPOINT_ENV]: JSON.stringify(
+          claude ? MORPH_ENDPOINTS.claude : MORPH_ENDPOINTS.codex,
+        ),
       },
       files: [],
       sources: [source],

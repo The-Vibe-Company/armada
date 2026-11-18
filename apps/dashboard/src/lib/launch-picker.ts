@@ -1,4 +1,4 @@
-import { COMPATIBLE_MODEL_PROVIDERS, type Harness, harnessesForCredential } from "@armada/core";
+import { type Harness, harnessesForCredential, MORPH_MODEL_IDS } from "@armada/core";
 import type { ModelCatalog } from "@/components/model-fields";
 import { accountProblem, type LaunchAccounts, type ModelAccount } from "@/lib/model-accounts";
 import { modelsPageDefault } from "@/lib/models-page";
@@ -27,7 +27,7 @@ export function launchPickerGroups(
     const options = account.models?.length
       ? account.models.map((row) => ({ id: row.model, label: row.model, harness, isDefault: false }))
       : account.kind === "morph"
-        ? COMPATIBLE_MODEL_PROVIDERS.morph.models.map((id) => ({ id, label: id, harness, isDefault: false }))
+        ? MORPH_MODEL_IDS.map((id) => ({ id, label: id, harness, isDefault: false }))
         : entry.models.map((row) => ({ ...row, harness, isDefault: row.id === entry.defaultModel }));
     return { account, reason, options };
   });
@@ -46,7 +46,7 @@ export function initialLaunchSelection(accounts: LaunchAccounts, catalog: ModelC
     model:
       savedModel ??
       account?.models?.[0]?.model ??
-      (account?.kind === "morph" ? COMPATIBLE_MODEL_PROVIDERS.morph.models[0]! : catalog[harness].defaultModel),
+      (account?.kind === "morph" ? MORPH_MODEL_IDS[0] : catalog[harness].defaultModel),
   };
 }
 

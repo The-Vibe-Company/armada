@@ -72,23 +72,21 @@ export const GENERATED_HARNESS_MODELS = {
     ],
   },
 } as const;
-export const GENERATED_COMPATIBLE_MODEL_PROVIDERS = {
-  morph: {
-    models: ["morph-kimik31", "morph-dsv41flash", "morph-dsv41flash-1017"],
-    claude: {
-      version: 1,
-      baseUrl: "https://api.morphllm.com",
-      auth: "api-key",
-      aliases: {
-        opus: "morph-kimik31",
-        sonnet: "morph-kimik31",
-        haiku: "morph-dsv41flash",
-      },
+export const MORPH_MODEL_IDS = ["morph-kimik31", "morph-dsv41flash", "morph-dsv41flash-1017"] as const;
+export const MORPH_ENDPOINTS = {
+  claude: {
+    version: 1,
+    baseUrl: "https://api.morphllm.com",
+    auth: "api-key",
+    aliases: {
+      opus: "morph-kimik31",
+      sonnet: "morph-kimik31",
+      haiku: "morph-dsv41flash",
     },
-    codex: {
-      version: 1,
-      baseUrl: "https://api.morphllm.com/v1",
-    },
+  },
+  codex: {
+    version: 1,
+    baseUrl: "https://api.morphllm.com/v1",
   },
 } as const;
 export const CONNECTION_MODELS = {

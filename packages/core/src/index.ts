@@ -18,7 +18,6 @@ export {
 export { CLAUDE_ENDPOINT_ENV, type ClaudeEndpoint, parseClaudeEndpoint } from "./claude-endpoint.ts";
 export { CLIENT_CONFIG_PATH, type ClientConfig } from "./client-config.ts";
 export { CODEX_ENDPOINT_ENV, type CodexEndpoint, parseCodexEndpoint } from "./codex-endpoint.ts";
-export { COMPATIBLE_MODEL_PROVIDERS } from "./compatible-providers.ts";
 export {
   type CatalogModel,
   CONNECTION_PRESETS,
@@ -331,6 +330,7 @@ export {
   turnInterruptionReason,
 } from "./outcome.ts";
 export { codexPlanLimit, type PlanLimit, planLimitData, planLimitFromMessage, planLimitMessage } from "./plan-limit.ts";
+export { MORPH_MODEL_IDS } from "./pricing/model-options.generated.ts";
 export {
   type AgentEvent,
   type CreateGoldenRequest,
