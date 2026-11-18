@@ -78,9 +78,14 @@ export function readLangfuseForm(form: FormData, baseline?: LangfuseEditable): L
     (contentMode !== "metadata" && contentMode !== "full")
   )
     return null;
-  const hostChanged = host.trim() !== baseline?.host;
+  const hostValue = host.trim();
+  const url = URL.canParse(hostValue) ? new URL(hostValue) : null;
+  const origin = url && url.href === `${url.origin}/` ? url.origin : hostValue;
+  const hostChanged = origin !== baseline?.host;
+  // The API binds stored secrets to their origin. A host move always needs an explicit replacement.
+  if (baseline && hostChanged && secretKey === null) return null;
   return {
-    ...(hostChanged ? { host: host.trim() } : {}),
+    ...(hostChanged ? { host: hostValue } : {}),
     ...(hostChanged || publicKey.trim() !== baseline?.publicKey ? { publicKey: publicKey.trim() } : {}),
     ...(secretKey === null ? {} : { secretKey: secretKey.trim() }),
     ...(contentMode === baseline?.contentMode ? {} : { contentMode }),

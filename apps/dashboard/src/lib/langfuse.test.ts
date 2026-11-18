@@ -15,9 +15,9 @@ test("member status strips admin details even if the upstream response contains 
   ).toEqual({ scope: "member", enabled: true, contentMode: "full" });
 });
 
-test("a mode-only edit omits the stored credentials and untouched host", () => {
+test("a mode-only edit omits stored credentials and an equivalent host", () => {
   const form = new FormData();
-  form.set("host", " https://cloud.langfuse.com ");
+  form.set("host", " https://cloud.langfuse.com/ ");
   form.set("publicKey", " fixture_public ");
   form.set("contentMode", "full");
   expect(
@@ -46,4 +46,18 @@ test("moving to a new host sends both keys required by the API", () => {
     publicKey: "fixture_public",
     secretKey: "fixture_replacement",
   });
+});
+
+test("moving to a new host requires an explicitly entered secret", () => {
+  const form = new FormData();
+  form.set("host", "https://us.cloud.langfuse.com");
+  form.set("publicKey", "fixture_public");
+  form.set("contentMode", "metadata");
+  expect(
+    readLangfuseForm(form, {
+      host: "https://cloud.langfuse.com",
+      publicKey: "fixture_public",
+      contentMode: "metadata",
+    }),
+  ).toBeNull();
 });
