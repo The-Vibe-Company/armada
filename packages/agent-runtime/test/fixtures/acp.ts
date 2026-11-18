@@ -17,6 +17,7 @@ function checkPinnedMcp(servers: unknown) {
 }
 
 let active: number | undefined;
+let sessionId = "session-1";
 const send = (value: object) => process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", ...value })}\n`);
 const lines = createInterface({ input: process.stdin });
 for await (const line of lines) {
@@ -36,7 +37,8 @@ for await (const line of lines) {
       break;
     case "session/new":
       checkPinnedMcp(m.params.mcpServers);
-      reply({ sessionId: "session-1" });
+      if (process.env.EXPECT_PINNED_MCP) sessionId = "new-session";
+      reply({ sessionId });
       break;
     case "session/load":
       checkPinnedMcp(m.params.mcpServers);
@@ -53,7 +55,7 @@ for await (const line of lines) {
       reply({});
       break;
     case "session/prompt": {
-      if (m.params.sessionId !== "session-1") throw Error("wrong_session");
+      if (m.params.sessionId !== sessionId) throw Error("wrong_session");
       const text = m.params.prompt[0].text;
       if (process.env.OPENCODE_THROTTLE_STATE) {
         const state = process.env.OPENCODE_THROTTLE_STATE;
@@ -83,7 +85,7 @@ for await (const line of lines) {
         send({
           method: "session/update",
           params: {
-            sessionId: "session-1",
+            sessionId,
             update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: fragment } },
           },
         });

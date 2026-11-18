@@ -51,8 +51,12 @@ for (const action of ["finish", "steer", "interrupt", "unknown"] as const) {
     try {
       await driver.resumeSession({ ...context, sessionId: "session-1" });
       expect(events).toEqual([]);
-      const turn = driver.start(checkPinnedMcp ? context : { ...context, sessionId: "session-1" });
-      await emitted;
+      const turn = driver.start(
+        checkPinnedMcp
+          ? { ...context, session: (id) => expect(id).toBe("new-session") }
+          : { ...context, sessionId: "session-1" },
+      );
+      if (action === "steer" || action === "interrupt") await Promise.race([emitted, turn.done]);
       if (action === "steer") await turn.steer("next");
       if (action === "interrupt") await turn.interrupt();
       expect(await turn.done).toBe(action === "interrupt" ? "interrupted" : "finished");
