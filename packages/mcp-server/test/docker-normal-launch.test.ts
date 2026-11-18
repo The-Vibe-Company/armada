@@ -352,13 +352,15 @@ async function fixture(
     target = sql,
     enabled = true,
     timeoutMs = 10_000,
-    releaseImage: string | null = officialImage,
+    releaseImage: string | (() => never) | null = officialImage,
     deferLaunch = false,
   ) {
     return createDockerNormalLaunch(target, key, {
       enabled,
       deferLaunch,
-      ...(releaseImage === null ? {} : { officialImage: releaseImage }),
+      get officialImage() {
+        return typeof releaseImage === "function" ? releaseImage() : (releaseImage ?? officialSandboxImage());
+      },
       credentials: resolver,
       bootstrap,
       clock,
@@ -534,7 +536,11 @@ test("normal launch drives create, bootstrap, health and one first prompt, seals
   const afterStop = await commands();
   expect(afterStop.map((id) => id.startsWith("outputs_"))).toEqual([false, false, false, false, true]);
   await db.query(`update public.credentials set status='revoked' where id=$1`, [f.body.credentialId]);
-  const replay = await f.service(sql, false).launch(f.caller, f.body);
+  const replay = await f
+    .service(sql, false, 10_000, () => {
+      throw new Error("The new release image pin is unavailable");
+    })
+    .launch(f.caller, f.body);
   expect(replay.sandbox.status).toBe("deleted");
   expect(replay.promptId).toBe(f.receipt.promptId);
   expect(replay.runtime).toEqual(result.runtime);

@@ -1,4 +1,5 @@
 import { isRecord, VERSION } from "@armada/core";
+import { controlFallback } from "./control.ts";
 import { describeFailure } from "./failure.ts";
 import type { SendArgs } from "./model-choice.ts";
 
@@ -52,7 +53,7 @@ export function createGateway(options: Options): Gateway {
     if (response.status === 401 || response.status === 403) {
       throw new GatewayError("The Armada server refused this session. Sign in again.", response.status);
     }
-    if (!response.ok) throw new GatewayError(`The Armada server answered ${response.status}.`, response.status);
+    if (!response.ok) throw new GatewayError(controlFallback(response.status), response.status);
     return response;
   }
 

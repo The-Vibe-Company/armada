@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   DOCKER_LAUNCH_VARIANTS,
   launchCorrelationFields,
+  launchUuid,
   sharedRestLaunchFields,
 } from "./docker-launch-request-schema.ts";
 
@@ -57,11 +58,42 @@ const modalRuntimeLaunch = z
   })
   .describe("Explicit Modal runtime launch from a golden.");
 
+const pinnedTemplateFields = {
+  org: launchUuid,
+  id: launchUuid,
+  revision: z.number().int().positive(),
+  requestKey: z
+    .string()
+    .regex(/^[A-Za-z0-9._:-]+$/)
+    .max(128),
+  prompt: z.string().min(1).max(100000).optional(),
+  ttlSeconds: z.number().int().positive().optional(),
+  size: goldenFields.size,
+  repo: z.string().min(1).max(200).optional(),
+  skills: sharedRestLaunchFields.skills.nullable(),
+  skipSkillDefaults: sharedRestLaunchFields.skipSkillDefaults,
+  externalRef: launchCorrelationFields.externalRef,
+  stopWhenWorkMerged: sharedRestLaunchFields.stopWhenWorkMerged,
+};
+
+export const PINNED_MODAL_TEMPLATE_FIELDS = Object.keys(pinnedTemplateFields);
+
+export const PINNED_MODAL_LAUNCH_REQUEST = z
+  .strictObject({
+    ...pinnedTemplateFields,
+    provider: z.literal("modal"),
+    harness: z.enum(["codex", "claude", "opencode"]),
+    runtimeVersion: z.literal(1),
+    runtimeTransport: z.literal("dialout"),
+  })
+  .describe("Launch a pinned Modal template revision with the template's model account and explicit dial-out.");
+
 export const GOLDEN_LAUNCH_REQUEST = z.union([goldenLaunch, boatRuntimeLaunch, modalRuntimeLaunch]);
 
 export const LAUNCH_REQUEST_VARIANTS = [
   goldenLaunch,
   boatRuntimeLaunch,
   modalRuntimeLaunch,
+  PINNED_MODAL_LAUNCH_REQUEST,
   ...DOCKER_LAUNCH_VARIANTS,
 ] as const;

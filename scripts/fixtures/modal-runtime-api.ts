@@ -395,18 +395,14 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
       credentialRequests: defects.includes("github-no-acquisition") ? 0 : 1,
     });
   }
-  if (
-    path === "/api/v1/sandbox/launch" ||
-    path === "/api/v1/templates/launch" ||
-    path === "/api/v1/sandbox/launch-modal-runtime-v1"
-  ) {
+  if (path === "/api/v1/sandbox/launch" || path === "/api/v1/templates/launch") {
     if (
       path === "/api/v1/templates/launch" &&
       ["runtimeVersion", "runtimeTransport"].some((key) => Object.hasOwn(body, key))
     )
       throw Error("templates/launch rejects explicit runtime selection");
     if (variables) {
-      if (path !== (ordinary ? "/api/v1/templates/launch" : "/api/v1/sandbox/launch-modal-runtime-v1"))
+      if (path !== (ordinary ? "/api/v1/templates/launch" : "/api/v1/sandbox/launch"))
         throw Error("wrong pinned template launch route");
     } else if (path !== "/api/v1/sandbox/launch") throw Error("direct golden launch must use the canonical route");
     if (ordinary && ["runtimeVersion", "runtimeTransport", "boatRuntime"].some((key) => Object.hasOwn(body, key)))

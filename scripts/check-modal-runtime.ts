@@ -608,9 +608,7 @@ try {
     mcpMode || variablesMode
       ? `Remember token ${memory}. ${[...(variablesMode ? [variableInstruction] : []), ...(mcpMode ? [mcpInstruction] : [])].join(" ")} After it succeeds, reply exactly ${answer}. Do not change files.`
       : `Remember token ${memory}. Reply exactly ${answer}. Do not use tools or change files.`;
-  // Explicit pinned templates have their own admission and manifest receipt.
-  let route = "sandbox/launch";
-  if (templateSource) route = ordinaryMode ? "templates/launch" : "sandbox/launch-modal-runtime-v1";
+  const route = templateSource && ordinaryMode ? "templates/launch" : "sandbox/launch";
   const raw = await api(route, {
     ...(!ordinaryMode
       ? { runtimeVersion: 1, runtimeTransport: "dialout", provider: "modal", harness }

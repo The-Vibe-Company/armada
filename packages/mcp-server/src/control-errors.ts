@@ -14,7 +14,7 @@ import { GatewayError } from "../../mcp-gateway/src/network.ts";
 import { apiFailureCode, providerFailureResponse } from "./api-failure.ts";
 import { AuthUnavailable } from "./caller.ts";
 import { Unauthorized } from "./control-caller.ts";
-import { fail, VAULT_STATUS as STATUS } from "./control-response.ts";
+import { fail, INTERNAL_FAILURE_MESSAGE, VAULT_STATUS as STATUS } from "./control-response.ts";
 import { InvitationError } from "./invitations.ts";
 import { ToolApiError } from "./tool-api.ts";
 
@@ -93,5 +93,5 @@ export function controlFailureResponse(error: unknown): Response {
       `Credential encryption is not configured on the server (${ENCRYPTION_KEY_ENV}).`,
     );
   }
-  return fail(500, "internal", "The server could not complete the request.");
+  return fail(500, "internal", INTERNAL_FAILURE_MESSAGE);
 }

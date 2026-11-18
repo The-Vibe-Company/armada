@@ -61,6 +61,7 @@ import * as z from "zod";
 import { validateProviderResourceObservation } from "../../core/src/resource-validation.ts";
 import { apiFailureCode } from "./api-failure.ts";
 import type { Caller } from "./caller.ts";
+import { INTERNAL_FAILURE_MESSAGE } from "./control-response.ts";
 import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
 import { DataError, type SandboxView, type ScopedData } from "./data.ts";
 import { MAX_LOG_PAGES, readEventPages } from "./event-pagination.ts";
@@ -2484,7 +2485,7 @@ const providerLimitsText = SANDBOX_PROVIDERS.map((provider) => {
 }).join(", ");
 
 function fail(): never {
-  throw new ToolError("internal", "Armada could not complete the call.");
+  throw new ToolError("internal", INTERNAL_FAILURE_MESSAGE);
 }
 
 /** The org `golden_create` acts in: the given one, else the caller's only org. There is no existing golden to disambiguate by. */
@@ -2628,7 +2629,7 @@ function describe(error: unknown): { code: string; message: string } {
   if (error instanceof EncryptionKeyError) return { code: "dependency_unavailable", message: error.message };
   if (error instanceof DataError)
     return { code: error.code === "unavailable" ? "dependency_unavailable" : error.code, message: error.message };
-  return { code: "internal", message: "Armada could not complete the call." };
+  return { code: "internal", message: INTERNAL_FAILURE_MESSAGE };
 }
 
 /** This catch belongs on the dispatch itself, never on preparation or provider reads. */
