@@ -15,6 +15,12 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { z } from "zod";
 import { CONTROL_TOOL_ROUTES } from "./control-tool-routes.ts";
 import { DOCKER_SEND_REQUEST } from "./docker-send-request-schema.ts";
+import {
+  GOLDEN_ADOPTION_REQUEST,
+  GOLDEN_ADOPTION_RESPONSE,
+  GOLDEN_CAPABILITIES_REQUEST,
+  GOLDEN_CAPABILITIES_RESPONSE,
+} from "./golden-rest-schemas.ts";
 import { LAUNCH_REQUEST_VARIANTS } from "./launch-request-schema.ts";
 import {
   GOLDEN_LIST_RESPONSE,
@@ -26,6 +32,7 @@ import {
   TEMPLATE_LAUNCH_RESPONSE,
 } from "./launch-response-schemas.ts";
 import { PUBLISHED_REST_GET_ROUTES, PUBLISHED_REST_ROUTES } from "./public-rest-routes.ts";
+import { SANDBOX_REST_CONTRACTS } from "./sandbox-rest-controls.ts";
 import { DRAIN_REFUSAL } from "./server-request-drain.ts";
 import { createArmadaServer, type ToolContext } from "./tools.ts";
 
@@ -38,7 +45,6 @@ export const REST_FIELD_NAMES: Readonly<Record<string, Readonly<Record<string, s
 /** REST routes whose contract is the named MCP tool, beyond the dispatcher's shared-tool table. */
 const REST_TOOL_ROUTES: Readonly<Record<string, string>> = {
   ...CONTROL_TOOL_ROUTES,
-  "golden/list": "golden_list",
   "sandbox/launch": "launch",
   "templates/launch": "template_launch",
   "logs/read": "logs",
@@ -47,14 +53,41 @@ const REST_TOOL_ROUTES: Readonly<Record<string, string>> = {
 const REST_RESPONSES: Readonly<Record<string, z.ZodType>> = {
   "launch/options": LAUNCH_OPTIONS_RESPONSE,
   "golden/list": GOLDEN_LIST_RESPONSE,
+  "sandbox/advice": SANDBOX_REST_CONTRACTS["sandbox/advice"].output,
+  "sandbox/recovery": SANDBOX_REST_CONTRACTS["sandbox/recovery"].output,
+  "golden/adopt": GOLDEN_ADOPTION_RESPONSE,
+  "golden/capabilities": GOLDEN_CAPABILITIES_RESPONSE,
   "sandbox/launch": z.union([REST_LAUNCH_RESPONSE, TEMPLATE_LAUNCH_RESPONSE]),
   "templates/launch": TEMPLATE_LAUNCH_RESPONSE,
   "logs/read": REST_LOGS_RESPONSE,
 };
 /** Handled directly by the REST dispatcher, not through an MCP tool. */
 const REST_ONLY: Readonly<
-  Record<string, { description: string; input: { type: "object"; properties: Record<string, object> } }>
+  Record<string, { description: string; input: { properties?: Record<string, unknown>; [key: string]: unknown } }>
 > = {
+  "sandbox/advice": {
+    description: SANDBOX_REST_CONTRACTS["sandbox/advice"].description,
+    input: requestJsonSchema(SANDBOX_REST_CONTRACTS["sandbox/advice"].input.extend({ org: z.string().optional() })),
+  },
+  "sandbox/recovery": {
+    description: SANDBOX_REST_CONTRACTS["sandbox/recovery"].description,
+    input: requestJsonSchema(SANDBOX_REST_CONTRACTS["sandbox/recovery"].input.extend({ org: z.string().optional() })),
+  },
+  "golden/list": {
+    description:
+      "The goldens you can launch from: your orgs', and your own private ones. A golden without a providerSnapshotId cannot be launched yet. The same name may exist on several providers.",
+    input: requestJsonSchema(z.object({ org: z.string().optional() })),
+  },
+  "golden/adopt": {
+    description:
+      "Dry-run first: select an existing visible golden by id. Confirm with the returned receipt within ten minutes. Preserves all rows and ACLs.",
+    input: requestJsonSchema(GOLDEN_ADOPTION_REQUEST),
+  },
+  "golden/capabilities": {
+    description:
+      "Reads the selected provider adapter's golden capacity without creating an App or resource. Null is unknown/unbounded, not a workspace quota.",
+    input: requestJsonSchema(GOLDEN_CAPABILITIES_REQUEST),
+  },
   "launch/options": {
     description:
       "What a launch can ask for on this server: harnesses with their models and credential kinds, machine sizes, TTL limits, and each provider's launch sources and capabilities. Read it before offering launch choices.",
@@ -94,8 +127,6 @@ function boundByBody(schema: Record<string, unknown>, field: string, maxBytes: n
   property.maxLength = Math.min(typeof property.maxLength === "number" ? property.maxLength : maxBytes, maxBytes);
   if (description) property.description = description;
 }
-/** MCP tool names in shared prose, as the REST routes that serve them. */
-const REST_PROSE_NAMES: Readonly<Record<string, string>> = { golden_list: "golden/list" };
 /** Rewrites every string (prose and `required` entries); object keys are renamed by the caller. */
 function restNames<T>(value: T, rename: Readonly<Record<string, string>>): T {
   if (typeof value === "string")
@@ -277,7 +308,7 @@ export async function generateOpenApi() {
       const restOnly = REST_ONLY[route];
       const tool = tools.find((tool) => tool.name === REST_TOOL_ROUTES[route]);
       if (!tool && !restOnly) throw new Error(`No registered contract for ${route}`);
-      const rename = { ...REST_PROSE_NAMES, ...REST_FIELD_NAMES[route] };
+      const rename = REST_FIELD_NAMES[route] ?? {};
       // REST handlers read their own field names (an unknown name is ignored, not
       // refused), so schema keys, required lists and prose must all use them.
       const input = restNames(structuredClone(tool?.inputSchema ?? restOnly!.input), rename);

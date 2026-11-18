@@ -1,10 +1,8 @@
 import type { CredentialKind } from "./database.types.ts";
-import type { HarnessModels } from "./models.ts";
-import { GENERATED_HARNESS_MODELS } from "./pricing/model-options.generated.ts";
 import type { HarnessCapabilities } from "./provider.ts";
 
 /** Browser-safe harness metadata. Driver implementations and SQL enums remain at their native boundaries. */
-interface HarnessDescriptor extends HarnessModels {
+interface HarnessDescriptor {
   credentialKinds: readonly CredentialKind[];
   label: string;
   boatProvider: string | null;
@@ -30,7 +28,6 @@ export const HARNESS_CATALOG = {
     credentialKinds: ["claude_oauth", "anthropic", "morph"],
     boatProvider: "claude-code",
     capabilities: { ...COMMON_CAPABILITIES, steer: "native" },
-    ...GENERATED_HARNESS_MODELS.claude,
   },
   codex: {
     label: "Codex",
@@ -38,7 +35,6 @@ export const HARNESS_CATALOG = {
     credentialKinds: ["openai", "codex_auth", "morph"],
     boatProvider: "codex",
     capabilities: { ...COMMON_CAPABILITIES, steer: "restart" },
-    ...GENERATED_HARNESS_MODELS.codex,
   },
   opencode: {
     label: "OpenCode",
@@ -46,7 +42,6 @@ export const HARNESS_CATALOG = {
     credentialKinds: ["opencode", "morph"],
     boatProvider: null,
     capabilities: { ...COMMON_CAPABILITIES, steer: "restart", fast: false },
-    ...GENERATED_HARNESS_MODELS.opencode,
   },
 } as const satisfies Record<string, HarnessDescriptor>;
 

@@ -43,7 +43,7 @@ Both modes include the static counters and a trailing seven-day fix share. The G
 
 Use a read-only PostgreSQL role with access to the metric columns on staging. The script accepts the URL through the environment and opens an explicit read-only transaction. It prints aggregates and suppresses driver diagnostics that could contain connection details. The launch query reports sample counts and total cumulative milliseconds since acceptance by provider and stage for initial launches with a recorded acceptance. Missing stages contribute no samples.
 
-When both runtime timestamps are available, the latency query measures to the first recorded event in the same sandbox and epoch before the next command. This time-window proxy can include unrelated events and cannot isolate poll wait from execution. A visible-text latency baseline needs durable command and event timestamps and a way to identify the matching text event. Until then, the script emits a null latency and an explanation.
+The runtime journal tables record database insertion time for new commands and events. Rows written before the timestamp migration remain undated and contribute no samples. On a schema with both timestamp columns, the latency query measures to the first recorded event in the same sandbox and epoch before the next command. This time-window estimate can include unrelated events. Measuring visible-text latency requires matching the text event to its command. Isolating polling overhead also requires observing when the client receives the text.
 
 ## Modal launch timing (#2767)
 

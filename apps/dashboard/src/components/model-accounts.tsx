@@ -6,8 +6,8 @@ import {
   type ConnectionPreset,
   type ConnectionPresetId,
   connectionPreset,
-  HARNESS_CATALOG,
   type Harness,
+  MODEL_CATALOG,
   shellQuote,
 } from "@armada/core";
 import {
@@ -1701,7 +1701,7 @@ export function AddAccountDialog({
                         : value === "codex_auth"
                           ? "The contents of ~/.codex/auth.json"
                           : value === "morph"
-                            ? "Morph models for Claude Code, Codex and OpenCode"
+                            ? connectionPreset(value)?.hint
                             : "Billed per token"}
                     </span>
                   </span>
@@ -2086,7 +2086,7 @@ function PersonalDefaultSentence({
                 type="button"
                 className={cn(
                   word,
-                  !HARNESS_CATALOG[harness].models.some(
+                  !MODEL_CATALOG[harness].models.some(
                     (model) => model.id === (current.model ?? modelsPageModel(account, harness)),
                   ) && "font-mono",
                   "text-[13px]",
@@ -2097,7 +2097,7 @@ function PersonalDefaultSentence({
                 }}
                 aria-label={`Change default model for ${HARNESS_LABELS[harness]}`}
               >
-                {HARNESS_CATALOG[harness].models.find(
+                {MODEL_CATALOG[harness].models.find(
                   (model) => model.id === (current.model ?? modelsPageModel(account, harness)),
                 )?.label ??
                   current.model ??

@@ -18,10 +18,12 @@ export { createModalIngestHandler } from "./ingest.ts";
 export type * from "./ports.ts";
 export { captureProcessBaseline, quiesceSandboxProcesses } from "./process-scope.ts";
 export {
+  createModalInventory,
   createModalProvider,
   type ModalPromptPhase,
   type ModalProvider,
   type ModalProviderOptions,
+  modalDeploymentId,
   settleDetachedModalCollections,
 } from "./provider.ts";
 export { mergeModalResourceReceipts } from "./receipts.ts";

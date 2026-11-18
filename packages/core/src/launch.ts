@@ -1,7 +1,6 @@
 import { LAUNCH_CREDENTIAL_BINDING_GUIDANCE } from "./api-failure.ts";
 import { CLAUDE_ENDPOINT_ENV } from "./claude-endpoint.ts";
 import { CODEX_ENDPOINT_ENV } from "./codex-endpoint.ts";
-import { COMPATIBLE_MODEL_PROVIDERS } from "./compatible-providers.ts";
 import { HARNESSES, type Harness } from "./contract.ts";
 import { type HarnessCredentials, redact } from "./credentials.ts";
 import { GITHUB_NOT_CONNECTED, type GitHubAccess, type GitHubStatus, githubEnv } from "./github.ts";
@@ -425,19 +424,17 @@ async function resolveGoldenLaunch(
   if (golden.provider === "modal") timing.mark("credential_resolution");
   if (runtime && !credentials.binding)
     throw new VaultError("credential_binding_required", LAUNCH_CREDENTIAL_BINDING_GUIDANCE);
-  if (
-    [CLAUDE_ENDPOINT_ENV, CODEX_ENDPOINT_ENV].some((name) => {
-      const raw = credentials.env[name];
-      return (
-        raw &&
-        JSON.parse(raw).baseUrl === COMPATIBLE_MODEL_PROVIDERS.morph[harness === "claude" ? "claude" : "codex"].baseUrl
-      );
-    })
-  ) {
-    const models: readonly string[] = COMPATIBLE_MODEL_PROVIDERS.morph.models;
-    choice.model = request.model ?? models[0]!;
-    if (!models.includes(choice.model))
-      throw new LaunchError("invalid_request", "Choose a Morph plan model for this account.");
+  if (credentials.morphModels) {
+    const models = credentials.morphModels;
+    const prefix = `${OPENCODE_CONNECTION_PROVIDER}/`;
+    let selected = request.model ?? models[0]!;
+    if (harness === "opencode" && request.model?.startsWith(prefix)) {
+      const upstream = request.model.slice(prefix.length);
+      if (models.includes(upstream)) selected = upstream;
+    }
+    if (!models.includes(selected))
+      throw new LaunchError("invalid_request", "Choose a Morph plan model configured on this account.");
+    choice.model = harness === "opencode" ? `${prefix}${selected}` : selected;
   }
   const endpointRuntime = launchPlacement.endpointRuntime?.(options);
   if (!runtime && (credentials.env[CLAUDE_ENDPOINT_ENV] || credentials.env[CODEX_ENDPOINT_ENV]) && endpointRuntime) {
@@ -470,7 +467,8 @@ async function resolveGoldenLaunch(
     if (configured) {
       const endpoint = parseOpenCodeEndpoint(JSON.parse(configured));
       // Shared accounts advertise provider model IDs; native OpenCode needs its connection namespace.
-      if (endpoint.models.includes(choice.model)) choice.model = `${OPENCODE_CONNECTION_PROVIDER}/${choice.model}`;
+      if (!credentials.morphModels && endpoint.models.includes(choice.model))
+        choice.model = `${OPENCODE_CONNECTION_PROVIDER}/${choice.model}`;
       const wanted = choice.model;
       if (!endpoint.models.some((id) => wanted === `${OPENCODE_CONNECTION_PROVIDER}/${id}`))
         throw new LaunchError(
