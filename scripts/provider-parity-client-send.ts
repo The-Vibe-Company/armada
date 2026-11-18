@@ -26,8 +26,7 @@ export async function probeClientSend(
       const prompt = `Reply with exactly ${marker} and nothing else. Do not use tools or change files.`;
       const requestId = crypto.randomUUID();
       let receipt: unknown;
-      if (client === "dashboard")
-        receipt = await session.dashboard.send(input.id, prompt, {}, input.conversationId, requestId);
+      if (client === "dashboard") receipt = await session.dashboard.send(input.id, prompt, {}, requestId);
       else {
         receipt = await session.command([
           input.id,
