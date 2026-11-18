@@ -127,4 +127,16 @@ describe("chat projection", () => {
       fix: { href: "/harness" },
     });
   });
+
+  test("historical prompts stay visible without marking the current conversation as running", () => {
+    const chat = projectChat(
+      [
+        prompt("old", "running", { text: "Historical prompt" }),
+        prompt("current", "finished", { conversationId: "c2", promptId: "p2", text: "Current prompt" }),
+      ],
+      "c2",
+    );
+    expect(view(chat.items)).toEqual(["user:Historical prompt", "user:Current prompt"]);
+    expect(chat.running).toBe(false);
+  });
 });

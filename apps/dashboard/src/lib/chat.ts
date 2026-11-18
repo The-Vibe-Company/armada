@@ -52,7 +52,7 @@ const RESULT_PLACEHOLDER = "tool_result";
  *   event failed, with that event's type as the reason.
  * The journal id stays the replay identity: the same events always give the same items and keys.
  */
-export function projectChat(events: readonly ChatEvent[]): Chat {
+export function projectChat(events: readonly ChatEvent[], currentConversation?: string): Chat {
   const items: ChatItem[] = [];
   const technical: ChatEvent[] = [];
   const prompts = new Map<string, Extract<ChatItem, { kind: "user" }>>();
@@ -214,7 +214,11 @@ export function projectChat(events: readonly ChatEvent[]): Chat {
     withOutcomes.push(...(outcomes.get(index) ?? []));
   });
 
-  const running = [...prompts.values()].some((prompt) => prompt.status === "queued" || prompt.status === "running");
+  const running = [...prompts.values()].some(
+    (prompt) =>
+      (!currentConversation || !prompt.conversationId || prompt.conversationId === currentConversation) &&
+      (prompt.status === "queued" || prompt.status === "running"),
+  );
   return { items: withOutcomes, technical, running };
 }
 

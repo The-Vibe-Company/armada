@@ -234,6 +234,7 @@ export default async function SandboxPage({ params }: Props) {
         <div data-fit="column" className="min-w-0 space-y-2 md:space-y-6">
           <SandboxChat
             sandboxId={sandbox.id}
+            currentConversation={sandbox.conversation_ids.at(-1)}
             initialStatus={sandbox.status}
             provider={sandbox.provider}
             preservationNote={sandbox.preservation_note}
@@ -523,6 +524,7 @@ function DockerSandbox({
           ) : (
             <SandboxChat
               sandboxId={sandbox.id}
+              currentConversation={sandbox.conversation_ids.at(-1)}
               initialStatus={sandbox.status}
               provider={sandbox.provider}
               preservationNote={sandbox.preservation_note}

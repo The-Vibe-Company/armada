@@ -86,6 +86,8 @@ type Props = {
   harness: Harness;
   catalog: ModelCatalog;
   launchedModel: string | null;
+  /** The recorded current conversation scopes turn state when status metadata is unavailable. */
+  currentConversation?: string | undefined;
   /** The Armada server is configured: messages can be sent. */
   configured: boolean;
   /** Why this sandbox takes no messages from here whatever its status (a Docker sandbox, for now): shown instead. */
@@ -436,7 +438,8 @@ export function SandboxChat(props: Props) {
     };
   }, [tick]);
 
-  const chat = useMemo(() => projectChat(events), [events]);
+  const { currentConversation } = props;
+  const chat = useMemo(() => projectChat(events, currentConversation), [events, currentConversation]);
   // A stopped or failed machine runs no turn, whatever its last prompt event said before it stopped.
   const turnRunning =
     (turnModel?.state ? ["queued", "running"].includes(turnModel.state) : chat.running) && LIVE.includes(status);
