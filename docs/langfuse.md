@@ -32,8 +32,8 @@ including nested tool fields, their object keys and failure text, passes through
 credential redactor (GitHub, Armada gateway and Skillpack tokens, bearer
 values, JWTs, API keys and connection-string passwords) before it is sent,
 because native provider histories are not redacted at storage. Redaction is
-pattern-based; it does not know arbitrary customer secrets. A sandbox launched
-from a template that binds application secrets receives their raw values, which
+pattern-based; it does not know arbitrary customer secrets. A sandbox whose
+template (Boat, Modal) or Docker launch binds application secrets receives their raw values, which
 no pattern matches and which the export cannot recover to mask exactly. Its
 turns are therefore always exported in metadata mode, marked
 `content_withheld: application_secret_bindings`, even when the organization

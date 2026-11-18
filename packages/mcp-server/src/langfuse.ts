@@ -160,6 +160,7 @@ interface ExportJob {
   config_enc: Uint8Array<ArrayBuffer> | null;
   content_mode: string | null;
   application_secrets: boolean;
+  docker_request_enc: Uint8Array<ArrayBuffer> | null;
 }
 
 export function createLangfuse(
@@ -234,6 +235,21 @@ export function createLangfuse(
     return { events };
   }
 
+  /** Docker keeps its secret references only in the sealed launch request; an unreadable one withholds content. */
+  async function bindsApplicationSecrets(job: ExportJob): Promise<boolean> {
+    if (job.application_secrets) return true;
+    if (!job.docker_request_enc) return false;
+    try {
+      const request = JSON.parse(await decryptSecret(job.docker_request_enc, key)) as {
+        request?: { secrets?: unknown };
+      };
+      const secrets = request.request?.secrets;
+      return secrets !== undefined && secrets !== null && (!Array.isArray(secrets) || secrets.length > 0);
+    } catch {
+      return true;
+    }
+  }
+
   async function exportTurn(
     job: ExportJob,
     signal: AbortSignal,
@@ -281,10 +297,11 @@ export function createLangfuse(
     const usage = persisted.some((turn) => turn.model !== null || turn.inputTokens != null || turn.outputTokens != null)
       ? persisted
       : reportedTurnUsage(events).turns;
-    // Template application secrets reach the sandbox as raw values that no
-    // pattern matches, and the export cannot recover them to mask exactly, so
-    // such a sandbox exports metadata only, whatever the organization mode.
-    const withheld = job.content_mode === "full" && job.application_secrets;
+    // Application secrets bound by a template (Boat, Modal) or a Docker launch
+    // reach the sandbox as raw values that no pattern matches, and the export
+    // cannot recover them to mask exactly, so such a sandbox exports metadata
+    // only, whatever the organization mode.
+    const withheld = job.content_mode === "full" && (await bindsApplicationSecrets(job));
     const spans = langfuseSpans(job.sandbox_id, turnEvents, usage, job.content_mode === "full" && !withheld, {
       historyUnavailable,
       ...(withheld ? { contentWithheld: "application_secret_bindings" } : {}),
@@ -333,7 +350,8 @@ export function createLangfuse(
           c.config_enc,c.content_mode,exists(select 1 from public.template_launch_requests r
             where r.sandbox_id=j.sandbox_id
               and coalesce(r.manifest->'definition'->'secrets','[]'::jsonb) not in ('[]'::jsonb,'null'::jsonb)
-          ) as application_secrets
+          ) as application_secrets,
+          (select d.request_enc from public.docker_launch_requests d where d.sandbox_id=j.sandbox_id) as docker_request_enc
         from claimed j join public.sandboxes s on s.id=j.sandbox_id
         left join public.org_langfuse c on c.org_id=j.org_id and c.enabled and s.org_id=j.org_id`,
         [lease],
