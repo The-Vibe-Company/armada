@@ -26,7 +26,7 @@ including waiting, coordinating other agents and deciding when to launch more wo
 
 | Module | Files and directories |
 |---|---|
-| Sandbox lifecycle | The lifecycle scope in [server agent rules](../packages/mcp-server/AGENTS.md#sandbox-lifecycle) lists the sandbox operations, worker registration, runtime launch and resume, and Docker lifecycle entry points. Reconciliation includes `packages/mcp-server/src/provider-reaper.ts`. |
+| Sandbox lifecycle | `packages/mcp-server/src/sandbox-lifecycle.ts`, `packages/mcp-server/src/sandbox-activity.ts`, `packages/mcp-server/src/sandbox-finish.ts`, `packages/mcp-server/src/sandbox-extend.ts`, `packages/mcp-server/src/sandbox-outputs.ts`, `packages/mcp-server/src/sandbox-pull-requests.ts`, `packages/mcp-server/src/sandbox-account-change.ts`, `packages/mcp-server/src/server-workers.ts`, `packages/mcp-server/src/runtime-launch.ts`, `packages/mcp-server/src/runtime-resume.ts`, `packages/mcp-server/src/runtime-resume-placement.ts`, `packages/mcp-server/src/boat-runtime-resume.ts`, `packages/mcp-server/src/modal-runtime-resume.ts`, `packages/mcp-server/src/docker-runtime-lifecycle.ts`, `packages/mcp-server/src/docker-normal-launch.ts`, `packages/mcp-server/src/provider-reaper.ts` |
 | Runtime | `packages/agent-runtime/src/main.ts`, `packages/agent-runtime/src/journal.ts`, `packages/agent-runtime/src/claude.ts`, `packages/agent-runtime/src/codex.ts`, `packages/agent-runtime/src/acp.ts` |
 | Providers | `packages/core/src/sandbox-provider.ts`, `packages/provider-boat`, `packages/provider-modal` |
 | Docker host | `packages/docker-host/src/daemon.ts`, `packages/docker-host/src/service.ts`, `packages/docker-host/src/container-inventory.ts` |
@@ -41,8 +41,9 @@ execution, while the server owns access and persistence.
 
 Delete replaced public surfaces and update their callers in the same ticket.
 Three contracts retain an N/N−1 overlap: database objects, the runtime protocol
-and the Docker host daemon protocol. Ship a schema drop one deploy after the last
-code that uses the object. See [deployment draining](deployment-draining.md) and
+and the Docker host daemon protocol. First deploy code that no longer uses the
+database object and confirm older processes have exited. Ship the drop in a
+later deploy. See [deployment draining](deployment-draining.md) and
 the [migration checklist](database-migrations.md).
 
 ## Status by step

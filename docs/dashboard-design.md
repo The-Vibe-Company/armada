@@ -6,7 +6,8 @@ connections, keys and members. These notes keep later changes consistent with th
 
 Resource create and add flows use `CreateDialog` through
 `ResourceBrowser.actions`. Use one short, centered form and keep the resource
-list on the page.
+list on the page. The dashboard uses the caller’s Supabase JWT. Use a
+dashboard SQL function for writes that row-level security cannot express.
 
 For fixture UI development, `bun run dev` runs the dashboard and
 `e2e/mock-supabase.ts` on ports 3100 and 54399. Sign in as
