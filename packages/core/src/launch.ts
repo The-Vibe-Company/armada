@@ -191,8 +191,8 @@ export interface LaunchOptions extends GoldenLimits {
   modalRuntimeDefault?: NonNullable<LaunchOptions["boatRuntimeDefault"]>;
   /** Frozen template account version, not a public launch override. */
   credentialVersion?: number;
-  /** Templates requiring native-only application-secret delivery. */
-  nativeSecretBindings?: boolean;
+  /** Whether the template declares application-secret bindings. */
+  templateHasSecretBindings?: boolean;
 
   /** Trusted per-launch opt-in for common-runtime routes; private bootstrap, never a native-agent fallback. */
   runtime?: LaunchOptions["boatRuntime"];
@@ -321,15 +321,6 @@ async function resolveGoldenLaunch(
   const defaultRuntime =
     !options.runtime && !options.boatRuntime ? launchPlacement.runtimeDefault(options, request.harness) : undefined;
   if (defaultRuntime) {
-    const providerName = placement.SANDBOX_PLACEMENT_LABELS[golden.provider];
-    const rollback = `ARMADA_${golden.provider.toUpperCase()}_AGENT_PATH`;
-    const refuse = (feature: string): never => {
-      throw new LaunchError(
-        "invalid_request",
-        `${providerName} runtime default cannot launch ${feature}; no native fallback. Set ${rollback}=native for rollback.`,
-      );
-    };
-    if (options.nativeSecretBindings) refuse("template application-secret bindings");
     provider = await defaultRuntime.provider(actor, golden);
     if (provider.id !== golden.provider)
       throw new LaunchError("invalid_request", "Runtime default must retain the golden provider; no native fallback.");
