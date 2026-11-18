@@ -80,7 +80,7 @@ export function SnapshotCreateChoice({
       const reason = hostBuildBlocker(host);
       return {
         value: host.id,
-        label: `your server ${host.name ?? host.id}`,
+        label: `Docker host ${host.name ?? host.id}`,
         ...(reason === null ? {} : { reason }),
       };
     }),
@@ -235,7 +235,7 @@ function DockerSnapshotForm({
                   const reason = hostBuildBlocker(host);
                   return {
                     value: host.id,
-                    label: `your server ${host.name ?? host.id}`,
+                    label: `Docker host ${host.name ?? host.id}`,
                     ...(reason === null ? {} : { reason }),
                   };
                 })}

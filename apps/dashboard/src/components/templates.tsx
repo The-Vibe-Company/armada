@@ -343,7 +343,7 @@ function TemplateForm({
               </option>
             ))}
             {(lookups.hosts ?? []).map((host) => (
-              <optgroup key={host.id} label={`Your server ${host.name ?? "Unnamed server"}`}>
+              <optgroup key={host.id} label={`Docker host ${host.name ?? "Unnamed host"}`}>
                 <option value={`${host.id}:`}>Official Armada image · {host.name ?? "Unnamed server"}</option>
                 {(lookups.snapshots ?? [])
                   .filter(
