@@ -21,12 +21,6 @@ tarball_for() {
   echo "dist/tarballs/$(echo "${1#@}" | tr / -)-$VERSION.tgz"
 }
 
-# Publishing success does not mean the registry can serve the binary yet.
-for dir in dist/npm/armada-*/; do
-  name=$(jq -r .name "$dir/package.json")
-  publish_package "$name" "$(tarball_for "$name")"
-done
-
 if [ "$PUBLISH" = true ]; then
   wait_seconds=${NPM_PUBLISH_WAIT_SECONDS:-900}
   poll_seconds=${NPM_PUBLISH_POLL_SECONDS:-5}
@@ -77,10 +71,16 @@ if [ "$PUBLISH" = true ]; then
       waited=$((elapsed + delay))
     done
   }
+  # Independent uploads can overlap each other and their registry propagation.
+  publish_platform() {
+    local name=$1 tarball=$2 destination=$3
+    publish_package "$name" "$tarball"
+    wait_for_package "$name" "$tarball" "$destination"
+  }
   pids=()
   for dir in dist/npm/armada-*/; do
     name=$(jq -r .name "$dir/package.json")
-    wait_for_package "$name" "$(tarball_for "$name")" "$registry_dir/$(basename "$dir")" &
+    publish_platform "$name" "$(tarball_for "$name")" "$registry_dir/$(basename "$dir")" &
     pids+=("$!")
   done
   failed=false
@@ -88,6 +88,11 @@ if [ "$PUBLISH" = true ]; then
     if ! wait "$pid"; then failed=true; fi
   done
   if [ "$failed" = true ]; then exit 1; fi
+else
+  for dir in dist/npm/armada-*/; do
+    name=$(jq -r .name "$dir/package.json")
+    publish_package "$name" "$(tarball_for "$name")"
+  done
 fi
 
 name=$(jq -r .name dist/npm/armada/package.json)
