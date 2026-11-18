@@ -2029,6 +2029,90 @@ test("host_full fork refusal remains definite and does not publish or clean up a
   expect(world.deleted).toEqual([]);
 });
 
+test("Modal launch attributes readiness intervals in order and excludes the prompt", async () => {
+  const world = setup({
+    golden: {
+      ...golden("org"),
+      provider: "modal",
+      providerSandboxId: "modal-builder",
+      providerSnapshotId: "modal-image",
+      modal: { workspace: "ws", environment: "main", appId: "app" },
+    },
+  });
+  let time = 100;
+  const clock = spyOn(performance, "now").mockImplementation(() => time);
+  const logs: unknown[] = [];
+  const logger = spyOn(console, "error").mockImplementation((line) => logs.push(JSON.parse(line)));
+  const resolve = world.stores.credentials.resolve;
+  world.stores.credentials.resolve = async (...args) => {
+    time += 11;
+    return resolve(...args);
+  };
+  world.stores.credentials.admit = async () => {
+    time += 17;
+  };
+  const provider: Provider = {
+    ...world.provider,
+    id: "modal",
+    async fork(request) {
+      time += 23;
+      return { ...(await world.provider.fork(request)), id: "modal-child" };
+    },
+    async get(id, options) {
+      time += 4;
+      return { ...(await world.provider.get(id, options)), id: "modal-child" };
+    },
+  };
+  try {
+    const result = await launchSandbox(
+      provider,
+      world.stores,
+      owner,
+      { golden: "web", harness: "codex", prompt: "go" },
+      {
+        runtime: {
+          async start() {
+            time += 31;
+            return {
+              epoch: "1",
+              async prepareWorkspace() {
+                time += 13;
+                return { status: "not_connected" };
+              },
+              async prompt() {
+                time += 1000;
+                return { promptId: "p", conversationId: "c", status: "queued" };
+              },
+            };
+          },
+        },
+      },
+    );
+    expect(logs).toContainEqual({
+      event: "modal_launch_timing",
+      sandboxId: result.sandbox.id,
+      path: "enrolled",
+      totalMs: 99,
+      stages: [
+        { stage: "launch_plan", ms: 0 },
+        { stage: "credential_resolution", ms: 11 },
+        { stage: "preallocation_admission", ms: 17 },
+        { stage: "provider_allocation", ms: 23 },
+        { stage: "registration_and_binding", ms: 0 },
+        { stage: "machine_readiness", ms: 4 },
+        { stage: "runtime_startup", ms: 31 },
+        { stage: "workspace_preparation", ms: 13 },
+        { stage: "finish_initialization", ms: 0 },
+        { stage: "ready_stage_record", ms: 0 },
+      ],
+    });
+    expect(result.promptId).toBe("p");
+  } finally {
+    logger.mockRestore();
+    clock.mockRestore();
+  }
+});
+
 // #2560: the launch itself records its stages; readiness precedes the launch prompt for every harness and path.
 test.each([
   ["native", "claude"],

@@ -171,25 +171,35 @@ export async function runtimeFixture(
         }
         if (checkpointFault === "ack") responseBody.result.acknowledgedSequence--;
       }
-      await bridge.complete(active.runtimeToken, active.epoch, {
+      // Inject faults after the real SQL commit and before this process can publish
+      // a wake. This models a lost notification or a competing caller that sees
+      // the committed result first, even with the local wake path enabled.
+      const replyAuthority: typeof authority = {
+        ...authority,
+        async withSession(token, epoch, work, source) {
+          const receipt = await authority.withSession(token, epoch, work, source);
+          if (afterProbe && command.op === "getPrompt") {
+            const competing = afterProbe;
+            afterProbe = undefined;
+            await competing();
+          }
+          if (
+            lost &&
+            command.op === "prompt" &&
+            (command.requestId.startsWith("follow_") || command.requestId.startsWith("resume_"))
+          ) {
+            lost = false;
+            throw Error("lost_wait_after_commit");
+          }
+          return receipt;
+        },
+      };
+      await createRuntimeCommands(replyAuthority, ENCRYPTION_KEY).complete(active.runtimeToken, active.epoch, {
         epoch: active.epoch,
         requestId: command.requestId,
         status: refused.has(command.op) ? 503 : reply.status,
         body: responseBody,
       });
-      if (afterProbe && command.op === "getPrompt") {
-        const competing = afterProbe;
-        afterProbe = undefined;
-        await competing();
-      }
-      if (
-        lost &&
-        command.op === "prompt" &&
-        (command.requestId.startsWith("follow_") || command.requestId.startsWith("resume_"))
-      ) {
-        lost = false;
-        throw Error("lost_wait_after_commit");
-      }
     },
   });
   const agent = createRuntimeAgent(bridge, {
