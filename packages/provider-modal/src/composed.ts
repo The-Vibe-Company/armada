@@ -50,6 +50,7 @@ export interface ComposedModalOptions
     | "beforeResume"
     | "beforePrompt"
     | "measure"
+    | "detachCollection"
   > {
   storedReads?: boolean;
   /** Immutable golden visibility/binding, with userId set to the authenticated caller. */

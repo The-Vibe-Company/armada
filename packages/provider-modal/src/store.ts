@@ -152,12 +152,21 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
         [key, name],
       );
     },
-    async purgeImage(name) {
+    async purgeImage(name, sourceId, imageId) {
       await authorize();
-      await sql.query(`delete from public.modal_images where scope=$1 and name=$2 and record->>'deleted'='true'`, [
-        key,
-        name,
-      ]);
+      // Conditional on the exact claimed artifact: a stale collector finishing late never erases
+      // a later tombstone that reused the name for another source or image.
+      await sql.query(
+        `delete from public.modal_images where scope=$1 and name=$2 and source_id=$3 and record->>'imageId'=$4 and record->>'deleted'='true'`,
+        [key, name, sourceId, imageId],
+      );
+    },
+    async claimImage(name, sourceId, imageId) {
+      await authorize();
+      await sql.query(
+        `update public.modal_images set record=jsonb_set(record,'{collecting}','true') where scope=$1 and name=$2 and source_id=$3 and record->>'imageId'=$4 and record->>'deleted'='true'`,
+        [key, name, sourceId, imageId],
+      );
     },
     async images(sourceId) {
       await get(sourceId);
@@ -166,6 +175,15 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
         [key, sourceId],
       );
       return result.rows.map((x) => x.record);
+    },
+    async tombstoneSources() {
+      await authorize();
+      const result = await sql.query<{ id: string }>(
+        `select distinct m.id from public.modal_images i join public.modal_machines m on m.scope=i.scope and m.id=i.source_id
+         where i.scope=$1 and i.record->>'deleted'='true' and m.org_id=$2 and (m.visibility='org' or m.owner_id=$3)`,
+        [key, scope.orgId, scope.userId],
+      );
+      return result.rows.map((x) => x.id);
     },
     async imageReferenced(imageId) {
       await authorize();

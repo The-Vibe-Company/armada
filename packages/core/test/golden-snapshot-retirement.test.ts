@@ -75,6 +75,7 @@ async function fixture(sql: Sql, placement: "boat" | "modal" = "boat", visibilit
   let deleteGate: (() => Promise<void>) | undefined;
   let account = backend;
   let sourceActive = false;
+  let artifactPending: boolean | Error = false;
   let vmActions = 0;
   const forbiddenVMAction = async () => {
     vmActions++;
@@ -109,6 +110,15 @@ async function fixture(sql: Sql, placement: "boat" | "modal" = "boat", visibilit
       await deleteGate?.();
       snapshots.delete(name);
     },
+    // Only Modal collects a deleted snapshot's artifact afterwards; Boat has no such hook.
+    ...(placement === "modal"
+      ? {
+          collectRetiredSnapshot: async () => {
+            if (artifactPending instanceof Error) throw artifactPending;
+            return artifactPending ? ("pending" as const) : ("collected" as const);
+          },
+        }
+      : {}),
     fork: async () => {
       throw Error("A stale revision reached fork");
     },
@@ -159,6 +169,9 @@ async function fixture(sql: Sql, placement: "boat" | "modal" = "boat", visibilit
     },
     active: () => {
       sourceActive = true;
+    },
+    artifactPending: (pending: boolean | Error) => {
+      artifactPending = pending;
     },
   };
 }
@@ -290,7 +303,7 @@ test.each([
   }
 });
 
-test.each(["success", "absent", "refusal", "unknown"])(
+test.each(["success", "absent", "refusal", "busy", "unknown"])(
   "retirement %s outcome is idempotent and never deletes a raw artifact",
   async (mode) => {
     const db = database();
@@ -299,10 +312,21 @@ test.each(["success", "absent", "refusal", "unknown"])(
     if (mode === "absent") f.snapshots.delete(f.old);
     if (mode === "refusal")
       f.fail(new ProviderError({ provider: "boat", code: "forbidden", message: "refused", retryable: false }));
+    // A Modal snapshot source leased by another controller refuses before writing any tombstone.
+    if (mode === "busy")
+      f.fail(
+        new ProviderError({
+          provider: "modal",
+          code: "conflict",
+          providerCode: "snapshot_source_busy",
+          message: "busy",
+          retryable: true,
+        }),
+      );
     if (mode === "unknown") f.fail(Error("lost response"));
     await f.retirement.runOne();
     expect(f.snapshots.has(f.next)).toBe(true);
-    if (mode === "refusal") {
+    if (mode === "refusal" || mode === "busy") {
       f.fail(undefined);
       await f.due();
       await f.retirement.runOne();
@@ -326,6 +350,66 @@ test.each(["success", "absent", "refusal", "unknown"])(
     await expect(f.store.setSnapshot(f.golden.id, f.old)).rejects.toThrow("unavailable");
   },
 );
+
+test("a deleted snapshot whose artifact awaits collection is retried by the worker, never re-deleted", async () => {
+  const db = database();
+  const f = await fixture(db, "modal");
+  await f.publish();
+  // Modal keeps the image as a tombstone while a fork references it or its source is leased.
+  f.artifactPending(true);
+  await f.retirement.runOne();
+  expect(f.snapshots.has(f.old)).toBe(false);
+  const row = async () =>
+    (
+      await db.query<{ state: string; reason: string; due: boolean }>(
+        "select state,reason,next_attempt_at<=now() as due from golden_snapshot_retirements",
+      )
+    ).rows[0]!;
+  expect(await row()).toEqual({ state: "deferred", reason: "artifact_collection_pending", due: false });
+  // A failed collection stays a collection retry; it is never read as an unknown delete outcome.
+  f.artifactPending(Error("image service unavailable"));
+  await f.due();
+  await f.retirement.runOne();
+  expect((await row()).reason).toBe("artifact_collection_pending");
+  // The deletion-safety checks on the golden's current revision no longer gate collection.
+  f.snapshots.delete(f.next);
+  // Once the source lease clears, the next worker pass collects the artifact and retires the row.
+  f.artifactPending(false);
+  await f.due();
+  await f.retirement.runOne();
+  expect(await row()).toMatchObject({ state: "retired", reason: "already_absent" });
+  expect(f.deleted).toEqual([f.old]);
+  expect(f.vmActions()).toBe(0);
+});
+
+test("a tombstoned snapshot is collected even after a transient failure overwrote the row's diagnostic", async () => {
+  const db = database();
+  const f = await fixture(db, "modal");
+  await f.publish();
+  const row = async () =>
+    (await db.query<{ state: string; reason: string }>("select state,reason from golden_snapshot_retirements"))
+      .rows[0]!;
+  // The tombstone is committed, then the call fails before the worker records collection pending.
+  f.pause(async () => {
+    f.snapshots.delete(f.old);
+    throw Error("connection reset after the tombstone");
+  });
+  await f.retirement.runOne();
+  expect(await row()).toEqual({ state: "uncertain", reason: "delete_outcome_unknown" });
+  // A transient backend identity failure overwrites the diagnostic reason.
+  f.account("transient-backend");
+  await f.due();
+  await f.retirement.runOne();
+  expect((await row()).reason).toBe("authority_changed");
+  // Access returns, but the replacement artifact is now unavailable. The collection phase comes
+  // from the provider's tombstone, not from the reason, so the row is still collected.
+  f.account(f.backend);
+  f.snapshots.delete(f.next);
+  await f.due();
+  await f.retirement.runOne();
+  expect(await row()).toEqual({ state: "retired", reason: "already_absent" });
+  expect(f.deleted).toEqual([f.old]);
+});
 
 test("historical dry-run follows proven succeeded chains, mutates nothing, and never enqueues the current handle", async () => {
   const db = database();

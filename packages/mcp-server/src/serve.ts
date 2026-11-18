@@ -15,6 +15,7 @@ import {
   VaultError,
 } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
+import { settleDetachedModalCollections } from "@armada/provider-modal";
 import { repairHistoricalTurnModels } from "./account-model-upgrade.ts";
 import { createAccountTurnQueue } from "./account-turn-queue.ts";
 import { boatRuntimeLaunch } from "./boat-runtime-launch.ts";
@@ -758,7 +759,8 @@ export async function startServer(
     closeDocker: () => dockerLaunch?.close(),
     requests,
     closeMcp: () => mcp.close(),
-    closePools: () => sql.close(),
+    // Let detached Modal image collection finish its claims and purges before SQL closes.
+    closePools: () => settleDetachedModalCollections().then(() => sql.close()),
   });
   // Expose the tracked task for hosts that gracefully drain before process termination.
   Object.assign(server, { goldenWorker: workers.goldenWorker, lifecycleWorker: workers.lifecycleWorker });
