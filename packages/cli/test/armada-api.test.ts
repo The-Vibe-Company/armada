@@ -60,7 +60,7 @@ describe("Armada API client", () => {
 describe("API client origin and session safety", () => {
   test("uses ARMADA_TOKEN without reading the saved session", async () => {
     let reads = 0;
-    let authorization: string | null = null;
+    let authorization = "";
     const client = await createArmadaApiClient({
       env: { ARMADA_TOKEN: token },
       session: {
@@ -72,7 +72,7 @@ describe("API client origin and session safety", () => {
         clear: async () => undefined,
       },
       fetch: async (_input, init) => {
-        authorization = new Headers(init?.headers).get("authorization");
+        authorization = new Headers(init?.headers).get("authorization") ?? "";
         return Response.json({ goldens: [] });
       },
     });
