@@ -39,6 +39,14 @@ instead requeue the same fenced row by setting reconcile_after to now and cleari
 the hold diagnostic under the same transaction/preconditions. Normal reconciliation
 must still observe the provider; requeueing alone never proves physical exit.
 
+A Boat recovery stop is identified by a `runtime_resume_unenrolled` transition
+into `stopping` for the current lifecycle generation. Definitive absence is
+insufficient to publish a resumable stop for this transition. When requeuing
+one of these stops, leave `reconcile_after` at infinity and clear the hold
+diagnostic under the same transaction and preconditions. The current worker
+recognizes the journal entry. Keeping the infinite schedule prevents an older
+worker from claiming it during deployment overlap.
+
 Docker-host reservations use their separate authenticated host mailbox/TTL cleanup
 path and are never claimed by this Boat/Modal worker. This change neither grants
 removed-user access on Docker nor substitutes a different host identity.
