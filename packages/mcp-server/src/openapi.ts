@@ -32,6 +32,7 @@ import {
   TEMPLATE_LAUNCH_RESPONSE,
 } from "./launch-response-schemas.ts";
 import { PUBLISHED_REST_GET_ROUTES, PUBLISHED_REST_ROUTES } from "./public-rest-routes.ts";
+import { SANDBOX_REST_CONTRACTS } from "./sandbox-rest-controls.ts";
 import { DRAIN_REFUSAL } from "./server-request-drain.ts";
 import { createArmadaServer, type ToolContext } from "./tools.ts";
 
@@ -52,6 +53,8 @@ const REST_TOOL_ROUTES: Readonly<Record<string, string>> = {
 const REST_RESPONSES: Readonly<Record<string, z.ZodType>> = {
   "launch/options": LAUNCH_OPTIONS_RESPONSE,
   "golden/list": GOLDEN_LIST_RESPONSE,
+  "sandbox/advice": SANDBOX_REST_CONTRACTS["sandbox/advice"].output,
+  "sandbox/recovery": SANDBOX_REST_CONTRACTS["sandbox/recovery"].output,
   "golden/adopt": GOLDEN_ADOPTION_RESPONSE,
   "golden/capabilities": GOLDEN_CAPABILITIES_RESPONSE,
   "sandbox/launch": z.union([REST_LAUNCH_RESPONSE, TEMPLATE_LAUNCH_RESPONSE]),
@@ -62,6 +65,14 @@ const REST_RESPONSES: Readonly<Record<string, z.ZodType>> = {
 const REST_ONLY: Readonly<
   Record<string, { description: string; input: { properties?: Record<string, unknown>; [key: string]: unknown } }>
 > = {
+  "sandbox/advice": {
+    description: SANDBOX_REST_CONTRACTS["sandbox/advice"].description,
+    input: requestJsonSchema(SANDBOX_REST_CONTRACTS["sandbox/advice"].input.extend({ org: z.string().optional() })),
+  },
+  "sandbox/recovery": {
+    description: SANDBOX_REST_CONTRACTS["sandbox/recovery"].description,
+    input: requestJsonSchema(SANDBOX_REST_CONTRACTS["sandbox/recovery"].input.extend({ org: z.string().optional() })),
+  },
   "golden/list": {
     description:
       "The goldens you can launch from: your orgs', and your own private ones. A golden without a providerSnapshotId cannot be launched yet. The same name may exist on several providers.",

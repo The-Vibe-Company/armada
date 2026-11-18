@@ -52,8 +52,7 @@ must cause abstention, not fabricated zeroes or a synthetic recommendation.
 ## Implemented API and storage
 
 `POST /api/v1/sandbox/advice` accepts `ResourceAdviceRequest` (`{id, org?}`)
-and returns `ResourceAdviceResponse` (`{advice: ResourceAdvice}`). The MCP
-`resource_advice` tool accepts `{id}` and returns the identical envelope. The
+and returns `ResourceAdviceResponse` (`{advice: ResourceAdvice}`). The
 selector is an authorized Armada sandbox ID. Requests collect at most one sample,
 with a ten-second cooldown; there is no background workload or model invocation.
 

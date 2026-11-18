@@ -1376,8 +1376,9 @@ describe("tools", () => {
     const oldKey = process.env.ARMADA_ENCRYPTION_KEY;
     process.env.ARMADA_ENCRYPTION_KEY = ENCRYPTION_KEY;
     try {
-      const { token, client, people, boat, db } = await start();
-      const mcp = await client(await token(people.member));
+      const { token, client, people, boat, db, auth, clock } = await start();
+      const bearer = await token(people.member);
+      const mcp = await client(bearer);
       const launched = await call(mcp, "launch", { golden: "shared", harness: "claude" });
       const id = launched.data.id;
       const archive = Buffer.from("private local-only commit recovery fixture").toString("base64");
@@ -1438,7 +1439,24 @@ describe("tools", () => {
       expect((await db.query("select id from sandbox_work_recovery where sandbox_id=$1", [id])).rows).toHaveLength(
         result === "preserved" ? 1 : 0,
       );
-      expect((await call(mcp, "work_recovery", { id })).data.archive).toBe(result === "preserved" ? archive : null);
+      const recovery = await handleControlRequest(
+        new Request(`${PUBLIC_URL}/api/v1/sandbox/recovery`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${bearer}` },
+          body: JSON.stringify({ id }),
+        }),
+        {
+          authStore: auth,
+          supabase: { supabaseUrl: "https://unused.test", anonKey: "fixture" },
+          store: createSqlVaultStore(db),
+          encryptionKey: ENCRYPTION_KEY,
+          data: createSqlData(db),
+          providers: { resolve: async () => boat.provider },
+          now: () => clock.now,
+        },
+      );
+      expect(recovery?.status).toBe(200);
+      expect(await recovery?.json()).toEqual({ archive: result === "preserved" ? archive : null });
     } finally {
       if (oldKey === undefined) delete process.env.ARMADA_ENCRYPTION_KEY;
       else process.env.ARMADA_ENCRYPTION_KEY = oldKey;
@@ -1529,7 +1547,6 @@ test("public MCP inventory and schemas expose operation contracts", async () => 
       "delete",
       "extend",
       "exec",
-      "work_recovery",
       "github_refresh",
       "interrupt",
       "launch",
@@ -1537,11 +1554,8 @@ test("public MCP inventory and schemas expose operation contracts", async () => 
       "logs",
       "template_launch",
       "report",
-      "resource_advice",
       "resume",
       "send",
-      "runtime_checkpoint",
-      "runtime_resume",
       "runtime_github_status",
       "status",
       "steer",
