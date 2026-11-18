@@ -419,7 +419,7 @@ export class GoldenBuildJobs {
   async reconcileOne(): Promise<void> {
     const row = (
       await this.options.sql.query<Job>(
-        "select * from public.golden_build_jobs where state='recovery_required' and (builder_id is not null or (provider=any($1::public.sandbox_provider[]) and phase='builder') or (phase='authorization' and fence is not null and builder_id is null and snapshot is null)) order by updated_at limit 1",
+        "select * from public.golden_build_jobs where state='recovery_required' and (builder_id is not null or snapshot is not null or (provider=any($1::public.sandbox_provider[]) and phase='builder') or (phase='authorization' and fence is not null and builder_id is null and snapshot is null)) order by updated_at limit 1",
         [
           // Encode the fixed provider IDs as a PostgreSQL array, not a driver-native JS array.
           "{" +
@@ -468,8 +468,11 @@ export class GoldenBuildJobs {
       });
       return;
     }
+    // A recovery row carries a snapshot only when the worker confirmed its publication rolled back and
+    // its artifact's deletion committed, leaving deferred collection pending (see runOne).
+    const rolledBack = row.snapshot;
     // Never dispose a source whose snapshot/publication outcome may still depend on it.
-    if (reservationRecovery && (row.phase === "snapshot" || row.phase === "persist")) return;
+    if (reservationRecovery && !rolledBack && (row.phase === "snapshot" || row.phase === "persist")) return;
     try {
       const actor = await this.transaction((sql) => this.actor(sql, row));
       const input = await this.context(row);
@@ -481,6 +484,13 @@ export class GoldenBuildJobs {
         return;
       const provider = await this.resolve(row, actor, input);
       if (reservationRecovery && (!provider.findGoldenBuilder || !provider.disposeGoldenBuilder)) return;
+      // The unpublished artifact must be gone before the builder or the capacity is released; a
+      // pending collection is retried on a later tick with the job's original authority.
+      if (
+        rolledBack &&
+        (!provider.collectRetiredSnapshot || (await provider.collectRetiredSnapshot(rolledBack)) !== "collected")
+      )
+        return;
       let builderId = row.builder_id;
       let retained = false;
       if (reservationRecovery && provider.findGoldenBuilder) {
@@ -502,6 +512,7 @@ export class GoldenBuildJobs {
           current.state !== "recovery_required" ||
           current.fence !== row.fence ||
           current.phase !== row.phase ||
+          current.snapshot !== row.snapshot ||
           current.request_hash !== row.request_hash ||
           current.provider !== row.provider ||
           current.owner_id !== row.owner_id ||
@@ -593,6 +604,7 @@ export class GoldenBuildJobs {
     if (!job) return false;
     if (job.state !== "running") return true;
     let safeToRelease = true;
+    let collecting: string | undefined;
     let heartbeat: ReturnType<typeof setInterval> | undefined;
     try {
       const actor = await this.transaction((sql) => this.actor(sql, job));
@@ -620,8 +632,9 @@ export class GoldenBuildJobs {
           id: job.id,
           ...(job.reservation_id ? { reservationId: job.reservation_id } : {}),
           phase,
-          cleaned: (safe) => {
+          cleaned: (safe, pending) => {
             safeToRelease = safe;
+            collecting = pending;
           },
           builder: async (id) =>
             this.transaction(async (sql) => {
@@ -656,7 +669,9 @@ export class GoldenBuildJobs {
         if (current?.state !== "running" || current.fence !== job.fence) return;
         if (safeToRelease && job.reservation_id) await sqlGoldenBackendSlots(sql).release(job.reservation_id);
         await sql.query(
-          "update public.golden_build_jobs set state=$2,error_code='build_failed',failure_reason=$3,phase=$4,lease_until=null,updated_at=now() where id=$1",
+          // A confirmed-rolled-back artifact awaiting deferred collection is durable cleanup work:
+          // its name lets reconcileOne collect it and then finish builder and capacity recovery.
+          "update public.golden_build_jobs set state=$2,error_code='build_failed',failure_reason=$3,phase=$4,snapshot=$5,lease_until=null,updated_at=now() where id=$1",
           [
             job.id,
             safeToRelease ? "failed" : "recovery_required",
@@ -672,6 +687,7 @@ export class GoldenBuildJobs {
                   ? "provider_snapshot_rejected"
                   : null,
             error instanceof GoldenError ? (error.safePhase ?? current.phase) : current.phase,
+            safeToRelease ? null : (collecting ?? null),
           ],
         );
       });

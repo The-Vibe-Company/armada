@@ -39,6 +39,8 @@ async function fixture() {
   let repositoryDenied = false;
   let checkout: (() => Promise<void>) | undefined;
   let snapshot: (() => Promise<void>) | undefined;
+  let collect: (name: string) => Promise<"collected" | "pending"> = async () => "collected";
+  const collections: string[] = [];
   const contexts: ProviderTarget[] = [],
     allocatedWith: number[] = [],
     deleted: string[] = [];
@@ -64,6 +66,10 @@ async function fixture() {
       },
       getSnapshot: async (name) => ({ name, status: "ready" }),
       deleteSnapshot: async () => {},
+      collectRetiredSnapshot: async (name) => {
+        collections.push(name);
+        return collect(name);
+      },
       exec: async ({ command }) => ({
         detached: false,
         exitCode: 0,
@@ -96,6 +102,7 @@ async function fixture() {
       | "snapshot"
       | "getSnapshot"
       | "deleteSnapshot"
+      | "collectRetiredSnapshot"
       | "exec"
       | "delete"
       | "stop"
@@ -146,6 +153,7 @@ async function fixture() {
     contexts,
     allocatedWith,
     deleted,
+    collections,
     provider: provider(0),
     allocations: () => allocations,
     denyRepository: () => {
@@ -159,6 +167,9 @@ async function fixture() {
     },
     snapshot: (fn: () => Promise<void>) => {
       snapshot = fn;
+    },
+    collect: (fn: (name: string) => Promise<"collected" | "pending">) => {
+      collect = fn;
     },
   };
 }
@@ -384,4 +395,45 @@ test("a repository revoked after admission preserves only its safe diagnostic an
   );
   expect(status.failureReason).toEqual(stored.rows[0]?.failure_reason);
   expect(f.allocations()).toBe(0);
+});
+
+test("a rolled-back build whose image collection is pending is recovered by the reconciler once collection succeeds", async () => {
+  const f = await fixture();
+  try {
+    await f.db.exec(
+      "create function reject_modal_success() returns trigger language plpgsql as $$ begin if new.state='succeeded' then raise exception 'fixture publication failure'; end if; return new; end $$; create trigger reject_modal_success before update on golden_build_jobs for each row execute function reject_modal_success();",
+    );
+    let available = false;
+    f.collect(async () => (available ? "collected" : "pending"));
+    const job = await f.jobs.admit(f.provider, f.actor, f.input, crypto.randomUUID());
+    await f.jobs.runOne();
+    const row = async () =>
+      (
+        await f.db.query<{ state: string; phase: string; snapshot: string | null }>(
+          "select state,phase,snapshot from golden_build_jobs where id=$1",
+          [job.jobId],
+        )
+      ).rows[0]!;
+    const pending = await row();
+    expect(pending).toMatchObject({ state: "recovery_required", phase: "persist" });
+    expect(pending.snapshot).toBeTruthy();
+    expect(f.collections).toEqual([pending.snapshot!]);
+    expect(f.deleted).toEqual(["modal-builder-1"]);
+    // Image service still unavailable: the job retries collection and retains its recovery state.
+    await f.jobs.reconcileOne();
+    expect(f.collections).toEqual([pending.snapshot!, pending.snapshot!]);
+    expect((await row()).state).toBe("recovery_required");
+    expect(f.deleted).toEqual(["modal-builder-1"]);
+    // Image service restored: the next tick collects the image and finishes recovery, no user operation.
+    available = true;
+    await f.jobs.reconcileOne();
+    expect(f.collections).toEqual(Array(3).fill(pending.snapshot!));
+    expect(f.deleted).toEqual(["modal-builder-1", "modal-builder-1"]);
+    expect((await f.jobs.status(f.actor.userId, job.jobId)).state).toBe("failed");
+    expect((await f.db.query("select 1 from goldens where name=$1", [f.input.name])).rows).toEqual([]);
+  } finally {
+    await f.db.exec(
+      "drop trigger if exists reject_modal_success on golden_build_jobs; drop function if exists reject_modal_success()",
+    );
+  }
 });

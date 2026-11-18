@@ -38,7 +38,7 @@ export interface GoldenCreateOptions {
   job?: {
     id: string;
     reservationId?: string | null;
-    cleaned(safe: boolean): void;
+    cleaned(safe: boolean, collecting?: string): void;
     phase(phase: string): Promise<void>;
     builder(id: string): Promise<void>;
     lock(sql: Sql): Promise<void>;

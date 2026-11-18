@@ -45,7 +45,9 @@ export interface GoldenCreateDeps {
   /** Durable queue phase/fence hooks, never client-controlled. */
   execution?: {
     id: string;
-    cleaned(safe: boolean): void;
+    /** `collecting` names a confirmed-unpublished artifact whose deletion committed but whose
+     * deferred collection (Modal) is still pending: durable cleanup work for the job's reconciler. */
+    cleaned(safe: boolean, collecting?: string): void;
     phase(phase: string): Promise<void>;
     builder(id: string): Promise<void>;
   };
@@ -407,6 +409,7 @@ export class GoldenCreateService {
       );
     } finally {
       let cleanupSafe = !uncertainSnapshot && !uncertainPublication;
+      let collecting: string | undefined;
       if (!uncertainSnapshot && !persisted && requestedSnapshot && builder && snapshotAttempted) {
         // A timed-out request may have created an artifact. Only reclaim a settled artifact
         // with matching source provenance; an in-flight/unknown save is left for reconciliation.
@@ -430,15 +433,20 @@ export class GoldenCreateService {
         if (ownedSnapshot && artifactSettled && (!persistAttempted || knownUnpublished)) {
           // An unpublished artifact has no retirement row to retry its collection, so cleanup is
           // safe only once a deferred-collection provider confirms the artifact itself is gone.
+          // Once its deletion has committed, a pending collection is reported as durable cleanup
+          // work: the job's reconciler retries it under the original authority.
           const owned = ownedSnapshot;
+          let deleted = false;
           await provider
             .deleteSnapshot(owned)
             .then(async () => {
+              deleted = true;
               if (provider.collectRetiredSnapshot && (await provider.collectRetiredSnapshot(owned)) !== "collected")
-                cleanupSafe = false;
+                throw new Error("collection pending");
             })
             .catch(() => {
               cleanupSafe = false;
+              if (deleted && provider.collectRetiredSnapshot) collecting = owned;
             });
         }
       }
@@ -469,6 +477,7 @@ export class GoldenCreateService {
       }
       this.deps.execution?.cleaned(
         cleanupSafe && (stopped || (!builder && (phase === "authorization" || refusedBuilder))),
+        collecting,
       );
     }
   }
