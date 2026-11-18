@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { VERSION } from "@armada/core";
 import { createHandler, type HandlerOptions } from "../src/http.ts";
 
+import { BUN_REQUEST_BODY_BACKSTOP } from "../src/request-body-ceiling.ts";
 import { observeProvider } from "../src/request-observability.ts";
 
 const PUBLIC_URL = "https://armada.example.test";
@@ -153,3 +154,56 @@ test("overlapping requests correlate provider outcomes, response headers and saf
   ]);
   expect(lines.join("\n")).not.toContain(privateValue);
 });
+
+test.each(["declared", "chunked"] as const)(
+  "a %s body above the ingress ceiling answers 413 with the request ID and one record",
+  async (framing) => {
+    const lines: string[] = [];
+    const reads: number[] = [];
+    const server = Bun.serve({
+      port: 0,
+      // The same configuration as production, at a reduced ceiling.
+      maxRequestBodySize: BUN_REQUEST_BODY_BACKSTOP,
+      fetch: handler({
+        log: (line) => lines.push(line),
+        maxRequestBodyBytes: 1024,
+        routes: [
+          async (request) => {
+            reads.push((await request.text()).length);
+            return Response.json({ ok: true });
+          },
+        ],
+      }),
+    });
+    try {
+      const chunks = (count: number) =>
+        framing === "declared"
+          ? "x".repeat(count * 600)
+          : new ReadableStream<Uint8Array>({
+              start(controller) {
+                for (let i = 0; i < count; i++) controller.enqueue(new TextEncoder().encode("x".repeat(600)));
+                controller.close();
+              },
+            });
+      const post = (count: number) =>
+        fetch(`http://127.0.0.1:${server.port}/bounded`, {
+          method: "POST",
+          body: chunks(count),
+          duplex: "half",
+        } as RequestInit);
+      const refused = await post(4);
+      expect(refused.status).toBe(413);
+      expect(await refused.json()).toEqual({ error: { code: "invalid", message: "The request is too large." } });
+      const requestId = refused.headers.get("x-request-id");
+      expect(requestId).toBeTruthy();
+      expect(lines.map((line) => JSON.parse(line))).toEqual([
+        { event: "http_request", requestId, status: 413, durationMs: expect.any(Number) },
+      ]);
+      const accepted = await post(1);
+      expect(accepted.status).toBe(200);
+      expect(reads.at(-1)).toBe(600);
+    } finally {
+      server.stop(true);
+    }
+  },
+);

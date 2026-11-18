@@ -64,6 +64,7 @@ import { createObservedBoatProvider } from "./observed-boat.ts";
 import { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import { createOutboundWebhooks } from "./outbound-webhooks.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
+import { BUN_REQUEST_BODY_BACKSTOP, ingressRequest } from "./request-body-ceiling.ts";
 import { currentRequestId, observeRequest, REQUEST_ID_HEADER } from "./request-observability.ts";
 import { pruneServerRetention } from "./retention-maintenance.ts";
 import { startRoutineWorker } from "./routine-worker.ts";
@@ -703,9 +704,10 @@ export async function startServer(
     Bun.serve<RuntimeSocketData>({
       port: config.port,
       hostname: "0.0.0.0",
-      // Keep Bun's 128 MiB ingress budget explicit: MCP prompts/tool arguments have no
-      // smaller aggregate cap. Control JSON (128 KiB) and broker (1 KiB) are bounded per route.
-      maxRequestBodySize: 128 * 1024 * 1024,
+      // The 128 MiB ingress ceiling is enforced by the observed handler, so its 413 carries the
+      // request ID and record; Bun's own limit is only a backstop. Control JSON (128 KiB) and
+      // broker (1 KiB) stay bounded per route.
+      maxRequestBodySize: BUN_REQUEST_BODY_BACKSTOP,
       fetch: (request, instance) =>
         new URL(request.url).pathname === "/api/runtime/channel"
           ? observeRequest(
@@ -732,7 +734,7 @@ export async function startServer(
   // Cold image pulls/bootstrap can exceed Bun's default ten-second idle window.
   // Only authenticated normal Docker launches opt out; their service deadline
   // remains bounded, and other providers/routes keep their existing timeouts.
-  control.configureDockerLaunchRequest = (request) => server.timeout(request, 0);
+  control.configureDockerLaunchRequest = (request) => server.timeout(ingressRequest(request), 0);
   const { accountTurns: _queue, ...unqueuedControl } = control;
   accountTurns.setDispatch((caller, input) =>
     dispatchControlCommand(

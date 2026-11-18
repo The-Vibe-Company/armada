@@ -33,6 +33,7 @@ import type { ModelAuthOwnership } from "./model-auth.ts";
 import { createObservedMcpTransport } from "./observed-mcp-transport.ts";
 import type { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import type { ProviderMetadataFor } from "./provider-metadata.ts";
+import { REQUEST_BODY_LIMIT_BYTES, withRequestBodyCeiling } from "./request-body-ceiling.ts";
 import { currentRequestId, observeRequest } from "./request-observability.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
@@ -126,6 +127,8 @@ export interface HandlerOptions {
   connections?: LaunchStores["connections"];
   /** Where the real cause of a 503 goes. Defaults to stderr. Never given a token or a key. */
   log?: (line: string) => void;
+  /** Ingress body ceiling; defaults to {@link REQUEST_BODY_LIMIT_BYTES}. Tests lower it. */
+  maxRequestBodyBytes?: number;
 }
 
 /**
@@ -248,7 +251,8 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
       await server.close();
     }
   };
-  return (request) => observeRequest(() => routeRequest(request), log);
+  const bodyLimit = options.maxRequestBodyBytes ?? REQUEST_BODY_LIMIT_BYTES;
+  return (request) => observeRequest(() => withRequestBodyCeiling(request, bodyLimit, routeRequest), log);
 }
 
 /**
