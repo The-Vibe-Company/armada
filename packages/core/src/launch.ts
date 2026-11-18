@@ -726,7 +726,6 @@ export async function launchSandbox(
       // Every harness and path is ready for a prompt here; a launch prompt's dispatch is not launch time.
       await mark("harness_ready");
       timing.mark("ready_stage_record");
-      timing.report(record.id, strategy.kind);
       if (prompt === undefined) {
         signal.throwIfAborted();
         return {
@@ -792,26 +791,35 @@ export async function launchSandbox(
         ),
       };
     };
+    const reportTiming = (result: LaunchResult) => {
+      timing.report(record.id, strategy.kind);
+      return result;
+    };
     try {
       await options.onRegistered?.(record);
       if (activityLeaseId)
-        return await sandboxActivity(stores.sandboxes, record, {}, start, {
-          initialLeaseId: activityLeaseId,
-          // Preserve each sequential pull/init command's existing timeout, plus bounded
-          // physical readiness, native preparation, credential setup and prompt overhead.
-          deadlineMs:
-            15 * 60_000 +
-            (request.skills?.length ?? 0) * 300_000 +
-            1000 *
-              (golden.config.repos.reduce((sum, repo) => sum + pullCommand(repo).timeoutSeconds, 0) +
-                golden.config.init.reduce((sum, command) => sum + initCommand(command).timeoutSeconds, 0)),
-          failurePatch: (error) => ({ status: "failed", statusReason: withSandbox(error, record.id, secrets).message }),
-        });
+        return reportTiming(
+          await sandboxActivity(stores.sandboxes, record, {}, start, {
+            initialLeaseId: activityLeaseId,
+            // Preserve each sequential pull/init command's existing timeout, plus bounded
+            // physical readiness, native preparation, credential setup and prompt overhead.
+            deadlineMs:
+              15 * 60_000 +
+              (request.skills?.length ?? 0) * 300_000 +
+              1000 *
+                (golden.config.repos.reduce((sum, repo) => sum + pullCommand(repo).timeoutSeconds, 0) +
+                  golden.config.init.reduce((sum, command) => sum + initCommand(command).timeoutSeconds, 0)),
+            failurePatch: (error) => ({
+              status: "failed",
+              statusReason: withSandbox(error, record.id, secrets).message,
+            }),
+          }),
+        );
       // Caller-role legacy stores cannot mutate server coordination columns. Keep their
       // original RLS-only flow; the deployed server always uses the owned scoped store.
       const completed = await start(new AbortController().signal);
       await stores.sandboxes.update(record.id, completed.patch);
-      return completed.result;
+      return reportTiming(completed.result);
     } catch (error) {
       const failure = withSandbox(error, record.id, secrets);
       if (!activityLeaseId)

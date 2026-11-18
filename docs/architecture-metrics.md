@@ -1,7 +1,7 @@
 # Modal launch timing (#2767)
 
-The server emits one `modal_launch_timing` JSON record when the shared golden
-launcher reaches harness readiness. Use the logical `sandboxId` to join the
+The server emits one `modal_launch_timing` JSON record after the shared golden
+launcher publishes a successful launch. The measured intervals end at harness readiness. Use the logical `sandboxId` to join the
 record with the existing launch stages and runtime events. The `path` field
 distinguishes the enrolled and native runtime paths.
 
@@ -16,7 +16,7 @@ and cleanup. For idle launches, the first event can occur long after readiness.
 | `launch_plan` | Golden lookup, placement and launch defaults, skill and connection validation |
 | `credential_resolution` | Main credential resolver |
 | `preallocation_admission` | Credential validation, repository authorization, golden fence, account admission and pre-fork checks |
-| `provider_allocation` | Provider fork |
+| `provider_allocation` | Provider fork, including native runner installation, startup, and health on the native Modal path |
 | `registration_and_binding` | Sandbox row and stage writes, lease handoff and connection binding |
 | `machine_readiness` | Provider readiness wait and its stage write |
 | `runtime_startup` (enrolled) | Runtime configuration, bootstrap, enrolment and runtime health |
