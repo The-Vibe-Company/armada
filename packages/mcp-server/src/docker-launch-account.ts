@@ -1,5 +1,6 @@
 import type { GoldenActor, Harness, LaunchCredentialResolver } from "@armada/core";
 import { VaultError } from "@armada/core/server";
+import { requireLaunchAccountBinding } from "./launch-account-admission.ts";
 
 /** Resolve once before allocation. Omitting an ID delegates to the shared personal-first default policy. */
 export async function resolveDockerLaunchAccount(
@@ -15,9 +16,8 @@ export async function resolveDockerLaunchAccount(
     request.credentialId ?? undefined,
     request.credentialVersion ?? undefined,
   );
-  const binding = resolved.binding;
+  const binding = requireLaunchAccountBinding(resolved.binding);
   if (
-    !binding ||
     (request.credentialId !== null && binding.credentialId !== request.credentialId) ||
     !Number.isSafeInteger(binding.credentialVersion) ||
     binding.credentialVersion < 1 ||
