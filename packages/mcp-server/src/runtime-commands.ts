@@ -1,7 +1,7 @@
 import type { RunnerRequest } from "@armada/agent-runtime";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
 import type { Route } from "./http.ts";
-import { noteAdmission, observeProviderCall } from "./request-observability.ts";
+import { noteAdmission, observeProviderCall, recordOperatorDiagnostic } from "./request-observability.ts";
 import { type createRuntimeEnrolments, RuntimeEnrolmentDenied, type RuntimeOwnerScope } from "./runtime-enrolment.ts";
 import { runtimeHttpFailure } from "./runtime-http-failure.ts";
 
@@ -330,7 +330,19 @@ export function createRuntimeCommands(
           await time.wait(Math.min(interval, remaining), signal);
         }
       },
-      (reply) => acceptReply(reply),
+      (reply) => {
+        if (acceptReply(reply)) return true;
+        recordOperatorDiagnostic(
+          `runtime.${operation}`,
+          {
+            errorClass: "RuntimeCommandReply",
+            message: `Runtime reply rejected (HTTP ${reply.status})`,
+            stack: [],
+          },
+          { sandboxId },
+        );
+        return false;
+      },
       // A retried request ID whose reply is already stored is answered from the database.
       { replayable: true, sandboxId: () => sandboxId },
     );

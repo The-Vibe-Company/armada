@@ -307,6 +307,16 @@ test.each(["boat", "modal"] as const)(
           expect.objectContaining({ requestId, provider, operation: "runtime.configureMcp", outcome: "error" }),
         ]),
       );
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          event: "operator_failure",
+          requestId,
+          sandboxId: f.row.id,
+          phase: "runtime.configureMcp",
+          errorClass: "RuntimeCommandReply",
+          message: "Runtime reply rejected (HTTP 503)",
+        }),
+      );
       expect(events.at(-1)).toMatchObject({ event: "http_request", requestId, status: 503 });
     } finally {
       await f.close();
