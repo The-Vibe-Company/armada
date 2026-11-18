@@ -241,11 +241,9 @@ jobs:
       - run: bun packages/agent-runtime/build.ts
       - run: bun scripts/validate-runtime-native.ts
       - run: bun run typecheck
-      - name: Run release unit tests and retained probes
-        run: |
-          # The broker fixture rewrites a shared runtime artifact. Run it outside the worker pool.
-          bun test --parallel=2 --path-ignore-patterns=packages/mcp-server/test/github-boat.test.ts --reporter=junit --reporter-outfile=/tmp/release-tests.xml
-          bun test ./packages/mcp-server/test/github-boat.test.ts ./packages/core/test/database-types.probe.ts ./packages/core/test/private-skill.probe.ts ./packages/core/test/golden-scan.probe.ts ./packages/core/test/work-preservation.probe.ts --reporter=junit --reporter-outfile=/tmp/release-native-tests.xml
+      - run: |
+          bun test --reporter=junit --reporter-outfile=/tmp/release-tests.xml
+          bun test ./packages/core/test/database-types.probe.ts ./packages/core/test/private-skill.probe.ts ./packages/core/test/golden-scan.probe.ts ./packages/core/test/work-preservation.probe.ts --reporter=junit --reporter-outfile=/tmp/release-native-tests.xml
         env:
           CODEX_NATIVE_TEST_BINARY: ${{ github.workspace }}/packages/agent-runtime/dist/codex
       - name: Migrate disposable release contract database
