@@ -3922,7 +3922,7 @@
     "/api/v1/sandbox/send": {
       "post": {
         "operationId": "sandbox_send",
-        "description": "Gives the agent its next instruction as a new turn. Without conversation_id the first send of an idle sandbox opens a conversation and later sends continue the latest one. To redirect a turn that is still running, use steer. The turn runs with the model and effort chosen at launch; model and reasoning_effort override them for this turn only. Experimental runtime follow-up requires request_id, an empty ready sandbox, existing conversation, or verified empty checkpoint; retained idle pauses wake automatically before expiry. Preserved stopped Boat/Modal sandboxes resume on send; terminal sandboxes refuse controls with recovery guidance. Model/effort remain pinned to launch. A Docker sandbox admits only the Docker sandbox send variant: model and reasoning_effort are refused because they remain pinned to launch. Supply request_id (a lowercase UUID) to replay uncertain delivery; when it is omitted the server generates one.",
+        "description": "Gives the agent its next instruction as a new turn. The first send of an idle sandbox opens its conversation and later sends continue it. Launch another sandbox for a separate conversation. To redirect a turn that is still running, use steer. The turn runs with the model and effort chosen at launch; model and reasoning_effort override them for this turn only. Experimental runtime follow-up requires request_id, an empty ready sandbox, existing conversation, or verified empty checkpoint; retained idle pauses wake automatically before expiry. Preserved stopped Boat/Modal sandboxes resume on send; terminal sandboxes refuse controls with recovery guidance. Model/effort remain pinned to launch. A Docker sandbox admits only the Docker sandbox send variant: model and reasoning_effort are refused because they remain pinned to launch. Supply request_id (a lowercase UUID) to replay uncertain delivery; when it is omitted the server generates one.",
         "security": [
           {
             "serviceToken": []
@@ -3958,7 +3958,7 @@
                         "maxLength": 131072
                       },
                       "conversation_id": {
-                        "description": "A conversation of the sandbox. Default: the latest.",
+                        "description": "The sandbox's current conversation ID. Omit to target it automatically.",
                         "type": "string",
                         "minLength": 1
                       },
@@ -4004,7 +4004,7 @@
                             "maxLength": 131072
                           },
                           "conversation_id": {
-                            "description": "A conversation of the sandbox. Default: the latest.",
+                            "description": "The sandbox's current conversation ID. Omit to target it automatically.",
                             "type": "string",
                             "minLength": 1
                           },
@@ -4042,7 +4042,7 @@
                             "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
                           },
                           "conversation_id": {
-                            "description": "A lowercase conversation UUID of the sandbox. Default: the latest.",
+                            "description": "The sandbox's current conversation UUID, in lowercase. Omit to target it automatically.",
                             "type": "string",
                             "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
                           },

@@ -4,7 +4,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { callSharedTool, ToolApiError } from "../src/tool-api.ts";
 import type { ToolContext } from "../src/tools.ts";
 
-function context(error: Error, conversationIds: string[] = []): ToolContext {
+function context(error: Error, conversationIds: readonly string[] = []): ToolContext {
   return {
     caller: { userId: "owner", orgs: [{ orgId: "org", role: "member" }], via: "service" },
     data: {
@@ -16,7 +16,7 @@ function context(error: Error, conversationIds: string[] = []): ToolContext {
           provider: "boat",
           providerSandboxId: "bx",
           status: "running",
-          conversationIds,
+          conversationIds: [...conversationIds],
         }),
       },
     },
