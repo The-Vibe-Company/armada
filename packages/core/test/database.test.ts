@@ -130,6 +130,7 @@ describe("database", () => {
         "routine_runs SELECT(configuration_version,created_at,id,launch_refusal,missed_count_capped,missed_intervals,org_id,owner_id,reason,request_key,routine_id,scheduled_due_at,state,task_checked_at,task_state,template_request_id,updated_at)",
         "routines SELECT",
         "sandbox_launch_stages SELECT(activation,at,sandbox_id,stage)",
+        "sandbox_transitions SELECT",
         "sandboxes SELECT",
         "sandboxes UPDATE(conversation_ids,deleted_at,status,status_reason,stopped_at)",
         "service_tokens DELETE",
