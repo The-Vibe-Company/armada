@@ -704,6 +704,44 @@ stop/resume and a third same-conversation recall, then confirmed stop/delete. Ke
 real-host run.
 
 
+## Daemon update design (#2647)
+
+The daemon reports its installed version on each poll. The server reports
+the target release and the minimum supported daemon version on that same
+connection. Target follows the server release. The minimum changes when
+server functionality requires a newer daemon. Old daemons can still poll
+and run existing workloads. New snapshot builds require a daemon that
+verifies and reports the developer baseline.
+
+The self-update follow-up will use these states: idle, draining, staged,
+health check, and applied or rolled back. The daemon will stop claiming
+work, wait for active builds and launches to finish and report their
+results, then restart and reconcile. Running containers and their volumes
+stay in Docker. A daemon restart only replaces the daemon process.
+
+A Linux systemd user service will supervise the update independently of
+the candidate daemon so a binary that fails before its first poll can
+still be rolled back. The previous executable will be kept next to the
+managed binary, with the candidate version and outcome recorded in the
+instance's private state. The updater will verify a fresh authenticated
+poll from the candidate before discarding the previous binary, restore
+it atomically on failure, and persist the failed target so a restart
+cannot retry it in a loop. Each named instance owns its own files and
+lock. The design uses the existing unprivileged account and Docker
+access. Managed installation currently supports Linux systemd user
+services. macOS launchd is outside this rollout.
+
+The intended update channel is the same HTTPS release manifest and
+SHA-256-addressed Linux artifact used by the installer. The poll supplies
+version numbers. The updater will use fixed installer endpoints, require
+an exact manifest version and verify the artifact before execution.
+The updater can execute release code as the Docker service account.
+Detached signing and staged rollout are follow-ups.
+
+This change delivers version reporting and the snapshot compatibility
+check. Continue using the managed installer to update manually.
+Automatic updates, rollback, and per-host policy will ship separately.
+
 ## Managed owner installation (#1453)
 
 The server image publishes Linux x64/arm64 host executables by SHA-256 alongside
