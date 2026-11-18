@@ -54,7 +54,7 @@ async function fixture() {
   const runtime = createRuntimeCommands(createRuntimeEnrolments(sql, ENCRYPTION_KEY), ENCRYPTION_KEY);
   const ops: string[] = [];
   // When set, the runtime holds its queue until the gate opens (a slow in-flight read).
-  const hold: { gate: Promise<void> | null } = { gate: null };
+  const hold: { gate: Promise<void> | null; onWait?: () => void } = { gate: null };
   // When set, the runtime answers HTTP 200 with this result instead of its directory read.
   const forced: { result?: unknown } = {};
   let loop = Promise.resolve();
@@ -63,7 +63,10 @@ async function fixture() {
   const clock = {
     now: () => Date.now(),
     async wait() {
-      if (hold.gate) await hold.gate;
+      if (hold.gate) {
+        hold.onWait?.();
+        await hold.gate;
+      }
       // A real runtime runs one command loop: concurrent readers share it, never race it.
       const turn = loop.then(answer);
       loop = turn.catch(() => {});
@@ -268,25 +271,26 @@ test("a Docker stop during an in-flight sample queues its final read behind it b
         [f.id],
       )
     ).rows.length;
-  const until = async (count: number) => {
-    for (let i = 0; i < 200 && (await queued()) < count; i++) await Bun.sleep(10);
-    expect(await queued()).toBe(count);
-  };
+  const gate = Promise.withResolvers<void>();
+  const sampleQueued = Promise.withResolvers<void>();
+  const captureQueued = Promise.withResolvers<void>();
+  f.hold.gate = gate.promise;
+  f.hold.onWait = sampleQueued.resolve;
+  let capture: Promise<void> | undefined;
   try {
     mkdirSync(f.outputs);
     writeFileSync(join(f.outputs, "memo.txt"), "draft");
-    let release = () => {};
-    f.hold.gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
     // The periodic sample is queued and awaits its reply.
     expect(await f.service.reconcileOne(new AbortController().signal)).toBe(true);
-    await until(1);
+    await sampleQueued.promise;
+    expect(await queued()).toBe(1);
     writeFileSync(join(f.outputs, "memo.txt"), "final");
     // The pre-stop capture queues its own read behind the sample's instead of skipping.
-    const capture = captureDockerStopOutputs(f.sql, ENCRYPTION_KEY, f.id, { reader: f.reader });
-    await until(2);
-    release();
+    f.hold.onWait = captureQueued.resolve;
+    capture = captureDockerStopOutputs(f.sql, ENCRYPTION_KEY, f.id, { reader: f.reader });
+    await captureQueued.promise;
+    expect(await queued()).toBe(2);
+    gate.resolve();
     await capture;
     // The capture's own (latest) scan is the one published, not a skip.
     const fence = await f.db.query<{ published: boolean }>(
@@ -304,6 +308,9 @@ test("a Docker stop during an in-flight sample queues its final read behind it b
     expect(await response?.text()).toBe("final");
   } finally {
     f.hold.gate = null;
+    gate.resolve();
+    await capture;
+    await f.service.drain();
     f.cleanup();
   }
 });
