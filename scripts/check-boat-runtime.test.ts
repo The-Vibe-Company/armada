@@ -117,7 +117,7 @@ globalThis.fetch=async(url,options)=>{
  if(path.endsWith('/mcp/list'))return Response.json({connections:[{id:'${mcpId}',defaultForLaunch:${mode !== "mcp-no-default"}}]});
  if(path.endsWith('/github/refresh')){githubConfigurations++;if(phase>=3 && ${mode === "github-resume-lost-refresh"})throw Error('lost new epoch configuration');return Response.json({status:'connected',revision:phase>=3?'4':'3',runtime:{kind:'armada',epoch:phase>=3?'2':'1'}});}
  if(path.endsWith('/github/runtime-status'))return Response.json({configured:phase===3 ? ${mode !== "github-resume-stale-status"} : true,revision:phase>=3?'4':'3',credentialRequests:${mode === "github-no-audit" ? 0 : 1}*(phase>=3 && ${mode === "github-resume-no-audit"} ? 0 : 1),runtime:{kind:'armada',epoch:phase>=3?'2':'1'}});
- if(path.endsWith(${JSON.stringify(ordinary ? "/sandbox/launch" : "/sandbox/launch-runtime-v1")})){if(++launches!==1)throw Error('allocation repeated');if(${mcp}){if(Object.hasOwn(body,'connections'))throw Error('MCP defaults were bypassed');mcpConfigurations=1;}
+ if(path.endsWith("/sandbox/launch")){if(++launches!==1)throw Error('allocation repeated');if(${mcp}){if(Object.hasOwn(body,'connections'))throw Error('MCP defaults were bypassed');mcpConfigurations=1;}
   if(${ordinary} ? (Object.hasOwn(body,'runtimeVersion')||Object.hasOwn(body,'boatRuntime')) : (body.runtimeVersion!==1||body.boatRuntime!==true))throw Error('wrong launch selection');
   if(body.provider!=='boat'||body.harness!==${JSON.stringify(claude ? "claude" : "codex")})throw Error('wrong launch harness');
   if(${skills}&&(defaultReads!==3||Object.hasOwn(body,'skills')||Object.hasOwn(body,'skipSkillDefaults')))throw Error('defaults bypassed');

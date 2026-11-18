@@ -405,11 +405,11 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
   ) {
     if (
       path !==
-      (ordinary
-        ? variables
+      (variables
+        ? ordinary
           ? "/api/v1/templates/launch"
-          : "/api/v1/sandbox/launch"
-        : "/api/v1/sandbox/launch-modal-runtime-v1")
+          : "/api/v1/sandbox/launch-modal-runtime-v1"
+        : "/api/v1/sandbox/launch")
     )
       throw Error("wrong default launch route");
     if (ordinary && ["runtimeVersion", "runtimeTransport", "boatRuntime"].some((key) => Object.hasOwn(body, key)))

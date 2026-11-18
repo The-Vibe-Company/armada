@@ -46,7 +46,7 @@ ARMADA_RUNTIME_SMOKE=one_real_modal_launch bun scripts/check-modal-runtime.ts --
 The script preflights `launch/options.modalRuntime {version:1,enabled:true,followupVersion:1}`
 before allocating. With `--resume`, it also requires `resumeVersion:1`; an old
 server refuses before any allocation. Omit `--resume` only to run the original
-first-answer/follow-up/checkpoint/stop subset. It sends one `sandbox/launch-modal-runtime-v1` request with
+first-answer/follow-up/checkpoint/stop subset. For a golden, it sends one `sandbox/launch` request with
 `runtimeVersion:1`, `runtimeTransport:"dialout"`, `provider:"modal"`,
 `harness:"codex"` and a 900-second TTL. Without `--skills`, skills are empty
 and defaults are skipped. With `--skills`, both fields are omitted so the normal

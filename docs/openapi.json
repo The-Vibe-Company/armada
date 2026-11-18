@@ -4659,7 +4659,7 @@
                     "type": "string",
                     "description": "Armada's sandbox id (a uuid, as returned by launch and list)."
                   },
-                  "ttl_seconds": {
+                  "ttlSeconds": {
                     "type": "integer",
                     "exclusiveMinimum": 0,
                     "maximum": 2591700
@@ -4670,7 +4670,7 @@
                 },
                 "required": [
                   "id",
-                  "ttl_seconds"
+                  "ttlSeconds"
                 ],
                 "$schema": "http://json-schema.org/draft-07/schema#"
               }
@@ -6267,14 +6267,6 @@
                           "null"
                         ]
                       },
-                      "harness": {
-                        "type": "string",
-                        "enum": [
-                          "claude",
-                          "codex",
-                          "opencode"
-                        ]
-                      },
                       "model": {
                         "type": [
                           "string",
@@ -6318,16 +6310,24 @@
                         "type": "string",
                         "minLength": 1
                       },
-                      "credentialId": {
-                        "type": "string",
-                        "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$"
-                      },
                       "visibility": {
                         "type": "string",
                         "enum": [
                           "private",
                           "org"
                         ]
+                      },
+                      "harness": {
+                        "type": "string",
+                        "enum": [
+                          "claude",
+                          "codex",
+                          "opencode"
+                        ]
+                      },
+                      "credentialId": {
+                        "type": "string",
+                        "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$"
                       },
                       "skills": {
                         "maxItems": 20,
@@ -6429,14 +6429,6 @@
                           "null"
                         ]
                       },
-                      "harness": {
-                        "type": "string",
-                        "enum": [
-                          "claude",
-                          "codex",
-                          "opencode"
-                        ]
-                      },
                       "model": {
                         "type": [
                           "string",
@@ -6476,16 +6468,24 @@
                         "type": "string",
                         "minLength": 1
                       },
-                      "credentialId": {
-                        "type": "string",
-                        "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$"
-                      },
                       "visibility": {
                         "type": "string",
                         "enum": [
                           "private",
                           "org"
                         ]
+                      },
+                      "harness": {
+                        "type": "string",
+                        "enum": [
+                          "claude",
+                          "codex",
+                          "opencode"
+                        ]
+                      },
+                      "credentialId": {
+                        "type": "string",
+                        "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$"
                       },
                       "skills": {
                         "maxItems": 20,
@@ -6568,14 +6568,6 @@
                           "null"
                         ]
                       },
-                      "harness": {
-                        "type": "string",
-                        "enum": [
-                          "claude",
-                          "codex",
-                          "opencode"
-                        ]
-                      },
                       "model": {
                         "type": [
                           "string",
@@ -6615,16 +6607,24 @@
                         "type": "string",
                         "minLength": 1
                       },
-                      "credentialId": {
-                        "type": "string",
-                        "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$"
-                      },
                       "visibility": {
                         "type": "string",
                         "enum": [
                           "private",
                           "org"
                         ]
+                      },
+                      "harness": {
+                        "type": "string",
+                        "enum": [
+                          "claude",
+                          "codex",
+                          "opencode"
+                        ]
+                      },
+                      "credentialId": {
+                        "type": "string",
+                        "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$"
                       },
                       "skills": {
                         "maxItems": 20,

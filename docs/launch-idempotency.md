@@ -87,9 +87,7 @@ sent, or after the worker sent it but before the receipt was recorded, in which
 case the agent may already have acted on it. Inspect the original sandbox's
 status and logs before you repeat the work. Do not launch with a new
 key until you know that the first launch failed or ended.
-See
-[Docker hosts](docker-host-daemon.md) for an example body.
-
+See [Docker hosts](docker-host-daemon.md) for an example body.
 
 ## Retry contract for an uncertain Boat or Modal launch
 
@@ -156,13 +154,22 @@ runtime admission checks and server opt-ins apply on both the canonical and
 compatibility routes. Pinned Modal runtime templates still use
 `sandbox/launch-modal-runtime-v1`.
 
-| Compatibility route | Known callers to migrate |
+| Compatibility route | Known callers |
 | --- | --- |
-| `sandbox/launch-sized-v1` | CLI size and repository flags via the SDK, dashboard, iOS |
-| `sandbox/launch-access-v1` | CLI scoped access via the SDK, dashboard, post-deploy smoke and scoped-access staging probe |
-| `sandbox/launch-runtime-v1` | Boat runtime probe and direct API integrations following the runtime guide |
-| `sandbox/launch-modal-runtime-v1` | Modal runtime probe and direct API integrations following the runtime guide |
+| `sandbox/launch-sized-v1` | CLI size and repository flags via the SDK transport, dashboard and iOS |
+| `sandbox/launch-access-v1` | CLI scoped access via the SDK transport, dashboard, post-deploy smoke and scoped-access staging probe |
+| `sandbox/launch-runtime-v1` | Older Boat runtime probes and direct integrations following the earlier runtime guide |
+| `sandbox/launch-modal-runtime-v1` | Older Modal golden runtime probes, direct integrations and the pinned Modal runtime template probe |
 
-The aliases remain available throughout client migration and for at least 90
-days after the first release that migrates all first-party callers. Review
-remaining released-client usage before scheduling removal.
+Golden runtime probes send feature selectors to `sandbox/launch`. Sizing and
+scoped-access callers retain the versioned routes for a mixed-version rollout.
+A replica that predates the feature rejects the versioned route before it can
+allocate a sandbox with ordinary launch defaults. Migrate these callers after
+all supported servers can enforce the canonical selectors. Keep the aliases for
+at least 90 days after the first release that migrates all first-party callers.
+Before removal, review released-client usage and migrate the pinned Modal
+runtime template receipt to the template API.
+
+REST lifetime extension uses `ttlSeconds` in `POST /api/v1/sandbox/extend`.
+The server accepts `ttl_seconds` from released clients. Send only one spelling.
+The MCP `extend` tool continues to use `ttl_seconds`.

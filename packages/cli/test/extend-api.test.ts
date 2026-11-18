@@ -37,7 +37,7 @@ test("extend posts the parsed lifetime and preserves JSON output, rejecting inva
   expect(calls[0]?.url).toBe("https://armada.test/api/v1/sandbox/extend");
   expect(calls[0]?.method).toBe("POST");
   expect(calls[0]?.headers.get("authorization")).toBe("Bearer fixture-token");
-  expect(await calls[0]?.json()).toEqual({ id, org, ttl_seconds: 14_400 });
+  expect(await calls[0]?.json()).toEqual({ id, org, ttlSeconds: 14_400 });
 
   out = "";
   err = "";

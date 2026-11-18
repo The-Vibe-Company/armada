@@ -349,7 +349,7 @@ test("admin extension and deletion resolve private-source resources through thei
           new Request(`${PUBLIC_URL}/api/v1/sandbox/extend`, {
             method: "POST",
             headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-            body: JSON.stringify({ id, ttl_seconds: 600 }),
+            body: JSON.stringify({ id, ttlSeconds: 600 }),
           }),
           options,
         );

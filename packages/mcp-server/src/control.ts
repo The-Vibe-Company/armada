@@ -540,22 +540,18 @@ export async function dispatchControlCommand(
   }
   const toolName = CONTROL_TOOL_ROUTES[route];
   if (toolName) {
-    if (
-      route === "sandbox/extend" &&
-      Number.isSafeInteger(body.ttl_seconds) &&
-      Number(body.ttl_seconds) > MAX_SANDBOX_EXTENSION_TTL_SECONDS
-    )
-      throw new ToolApiError("extension_maximum", "Requested lifetime exceeds the server maximum.");
-    if (
-      route === "sandbox/extend" &&
-      (!Number.isSafeInteger(body.ttl_seconds) ||
-        Number(body.ttl_seconds) < 1 ||
-        Number(body.ttl_seconds) > MAX_SANDBOX_EXTENSION_TTL_SECONDS)
-    )
-      throw new VaultError(
-        "invalid",
-        "ttl_seconds must be a positive whole number of seconds within the server maximum.",
-      );
+    let toolBody = body;
+    if (route === "sandbox/extend") {
+      const { ttlSeconds, ttl_seconds: legacyTtl, ...input } = body;
+      if (ttlSeconds !== undefined && legacyTtl !== undefined)
+        throw new VaultError("invalid", "Supply only ttlSeconds.");
+      const ttl = ttlSeconds === undefined ? legacyTtl : ttlSeconds;
+      if (typeof ttl !== "number" || !Number.isSafeInteger(ttl) || ttl < 1)
+        throw new VaultError("invalid", "ttlSeconds must be a positive whole number of seconds.");
+      if (ttl > MAX_SANDBOX_EXTENSION_TTL_SECONDS)
+        throw new ToolApiError("extension_maximum", "Requested lifetime exceeds the server maximum.");
+      toolBody = { ...input, ttl_seconds: ttl };
+    }
     if (
       route === "golden/capabilities" &&
       optional(body, "provider") !== undefined &&
@@ -635,7 +631,7 @@ export async function dispatchControlCommand(
         sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
       },
       toolName,
-      body,
+      toolBody,
     );
     return result;
   }
