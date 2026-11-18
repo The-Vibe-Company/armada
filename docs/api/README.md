@@ -236,10 +236,16 @@ this order:
    instead when check 2 or 3 fails first.
    Send with a service token created by the sandbox owner.
 
+Admission for a new send returns HTTP 409 `conflict` when `conversation_id`
+names anything other than the sandbox's current conversation. Omit the field
+to open or continue the sandbox's conversation. Launch another sandbox for a
+separate conversation. An identical retry of an admitted account-queued send
+can still retrieve its original receipt after the current conversation changes.
+
 Sends that pass these checks to a sandbox with a pinned model account, which
 includes every Docker sandbox, then pass through the account turn queue. For runtime and Docker
-sandboxes, the queue returns HTTP 400 `invalid` for a refused override or a
-`conversation_id` that names no recorded conversation. It returns HTTP 409
+sandboxes, the queue returns HTTP 400 `invalid` for a refused override. It
+returns HTTP 409
 `conflict` when the sandbox cannot accept a prompt now, for example while a
 Docker launch is still `starting`. It also returns 409 `conflict` for a reused
 `request_id` with different input, or for one whose queued send has failed.
