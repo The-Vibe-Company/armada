@@ -1,4 +1,11 @@
-import { apiUrl, jsonPost, type RequestPolicy, type RequestResult, requestApi } from "./request.ts";
+import {
+  apiUrl,
+  jsonPost,
+  type RequestPolicy,
+  type RequestResult,
+  requestApi,
+  TEMPLATE_LAUNCH_ROUTE,
+} from "./request.ts";
 import { sandboxClient } from "./sandboxes.ts";
 
 interface CommandPolicy extends Pick<RequestPolicy, "fetch" | "timeoutMs"> {
@@ -40,6 +47,9 @@ export function commandClient(
     request,
     control,
     sandboxes: sandboxClient((route, body, _readOnly, options) => control(route, body, options?.signal)),
+    launchFromTemplate<T>(body: unknown, signal: AbortSignal): Promise<T> {
+      return control(TEMPLATE_LAUNCH_ROUTE, body, signal);
+    },
     deleteSandbox<T>(id: string, org?: string): Promise<T> {
       return request(`/api/v1/sandboxes/${id}${org ? `?org=${encodeURIComponent(org)}` : ""}`, { method: "DELETE" });
     },

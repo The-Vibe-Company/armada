@@ -58,6 +58,8 @@ const commonCodes = {
   boolean
 > &
   Partial<Record<ApiFailureCode, boolean>>;
+export const TEMPLATE_LAUNCH_ROUTE = "templates/launch";
+
 const retryStatuses = new Set([429, 502, 503, 504]);
 
 export interface RequestPolicy {
