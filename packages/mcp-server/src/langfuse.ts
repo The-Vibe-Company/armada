@@ -22,7 +22,13 @@ const hash = (text: string, length: number) => createHash("sha256").update(text)
 const nano = (at: number) => (BigInt(Math.max(0, Math.trunc(at))) * 1000000n).toString();
 
 /** Complete OTLP observations; content is opt-in and unknown event payloads never leave the server. */
-export function langfuseSpans(sandboxId: string, events: AgentEvent[], turns: TurnTokenUsage[], full: boolean) {
+export function langfuseSpans(
+  sandboxId: string,
+  events: AgentEvent[],
+  turns: TurnTokenUsage[],
+  full: boolean,
+  marks: { historyUnavailable?: boolean } = {},
+) {
   const spans = [];
   for (const end of events) {
     if (end.kind !== "prompt" || end.status === "running" || end.status === "queued" || !end.promptId) continue;
@@ -78,6 +84,7 @@ export function langfuseSpans(sandboxId: string, events: AgentEvent[], turns: Tu
           cost.length && cost.every((c) => c != null) ? { total: cost.reduce((n, c) => n + Number(c), 0) } : undefined,
         "langfuse.observation.metadata.status": end.status,
         "langfuse.observation.metadata.timing_incomplete": start?.at && end.at > startAt ? undefined : true,
+        "langfuse.observation.metadata.history_unavailable": marks.historyUnavailable || undefined,
         "langfuse.observation.metadata.failure_reason": full
           ? end.reason
           : end.status === "failed"
@@ -185,7 +192,21 @@ export function createLangfuse(
     signal: AbortSignal,
   ): Promise<"exported" | "failed" | "dropped" | "pending"> {
     if (!job.config_enc) return "dropped";
-    const evidence = await history(job, signal);
+    let evidence: Awaited<ReturnType<typeof history>>;
+    let historyUnavailable = false;
+    try {
+      evidence = await history(job, signal);
+    } catch (error) {
+      signal.throwIfAborted();
+      // Native history is optional evidence: the settled receipt already holds
+      // the terminal status and observation time. Retry a transient read error
+      // while the receipt is fresh, then export a marked observation without
+      // transcript content rather than discarding the turn.
+      if (job.runtime_ack !== null) throw error;
+      if (job.waiting_for_history) return "pending";
+      evidence = { events: [] };
+      historyUnavailable = true;
+    }
     if (!evidence) return "dropped";
     const { events, nativeProvider } = evidence;
     const terminal = events.findLast((e): e is PromptEvent => e.kind === "prompt" && isFinalPromptStatus(e.status));
@@ -213,7 +234,9 @@ export function createLangfuse(
     const usage = persisted.some((turn) => turn.model !== null || turn.inputTokens != null || turn.outputTokens != null)
       ? persisted
       : reportedTurnUsage(events).turns;
-    const spans = langfuseSpans(job.sandbox_id, turnEvents, usage, job.content_mode === "full");
+    const spans = langfuseSpans(job.sandbox_id, turnEvents, usage, job.content_mode === "full", {
+      historyUnavailable,
+    });
     const body = JSON.stringify({
       resourceSpans: [
         {

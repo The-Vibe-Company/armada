@@ -152,12 +152,13 @@ test("native settlement exports once and a new server reads only its organizatio
   expect(await native.reconcileOne(signal)).toBe(true);
 
   let payload = "";
+  let responseStatus = 200;
   const exporter = createLangfuse(db, key, async () => ({ provider, providerSandboxId: "native_export" }), (async (
     _url,
     init,
   ) => {
     payload = String(init?.body);
-    return new Response(null, { status: 200 });
+    return new Response(null, { status: responseStatus });
   }) as typeof fetch);
   expect(await exporter.reconcileOne(signal)).toBe(true);
   expect(payload).toContain("customer_reply");
@@ -196,10 +197,30 @@ test("native settlement exports once and a new server reads only its organizatio
     counters: { exported: 1, failed: 0, dropped: 0 },
     lastExportAt: expect.any(String),
   });
+  // A history read error on a fresh receipt is retried; once the receipt is no
+  // longer fresh, the saved terminal evidence is exported as a marked observation.
   payload = "";
   historyAvailable = false;
   await db.query("select public.enqueue_webhook_turn($1,'unavailable','finished')", [id]);
   expect(await exporter.reconcileOne(signal)).toBe(true);
+  expect(payload).toBe("");
+  await db.query(
+    "update langfuse_turn_exports set observed_at=observed_at-interval '2 minutes',lease_until=null where prompt_id='unavailable'",
+  );
+  expect(await exporter.reconcileOne(signal)).toBe(true);
+  const marked = JSON.parse(payload).resourceSpans[0].scopeSpans[0].spans;
+  expect(marked).toHaveLength(1);
+  expect(marked[0].status).toEqual({ code: 1 });
+  expect(JSON.stringify(marked)).toContain("history_unavailable");
+  expect(JSON.stringify(marked)).not.toContain("customer_");
+  const afterMarked = await read(people.org);
+  expect(afterMarked.counters).toEqual({ exported: 2, failed: 0, dropped: 0 });
+
+  historyAvailable = true;
+  responseStatus = 503;
+  await db.query("select public.enqueue_webhook_turn($1,'rejected','finished')", [id]);
+  expect(await exporter.reconcileOne(signal)).toBe(true);
+  payload = "";
   await db.query("select public.enqueue_webhook_turn($1,'disabled','finished')", [id]);
   await db.query("update org_langfuse set enabled=false where org_id=$1", [people.org]);
   expect(await exporter.reconcileOne(signal)).toBe(true);
@@ -207,8 +228,8 @@ test("native settlement exports once and a new server reads only its organizatio
   expect(await read(people.org)).toEqual({
     enabled: false,
     content_mode: "full",
-    counters: { exported: 1, failed: 1, dropped: 1 },
-    lastExportAt: beforeFailure.lastExportAt,
+    counters: { exported: 2, failed: 1, dropped: 1 },
+    lastExportAt: afterMarked.lastExportAt,
   });
   await db.query("select public.enqueue_webhook_turn($1,'settled_while_disabled','finished')", [id]);
   await db.query("update org_langfuse set enabled=true where org_id=$1", [people.org]);

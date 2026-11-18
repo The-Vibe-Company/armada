@@ -142,6 +142,9 @@ export function createSandboxAccessServices(input: {
           ...(saved.reasoningEffort ? { reasoningEffort: saved.reasoningEffort } : {}),
           ...(saved.conversationIds.at(-1) ? { conversationId: saved.conversationIds.at(-1)! } : {}),
         });
+        // Register the accepted identity exactly like ordinary send, so the native
+        // receipt worker and lifecycle reconciliation settle (and export) this turn.
+        await scoped.recordNativePrompt?.(saved.id, saved.providerSandboxId, receipt.promptId);
         try {
           await stores.sandboxes.recordTurnModel?.(saved.id, receipt.promptId, saved.model);
         } catch {
@@ -155,6 +158,7 @@ export function createSandboxAccessServices(input: {
           result: undefined,
           patch: {
             status: "running",
+            taskPromptId: receipt.promptId,
             rearmDeadline: true,
             conversationIds: [...new Set([...saved.conversationIds, receipt.conversationId])],
           },

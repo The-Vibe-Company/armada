@@ -10,6 +10,7 @@ import {
 } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
+import { createNativeWebhookPrompts } from "../src/native-webhook-prompts.ts";
 import { launchSandboxChild } from "../src/sandbox-access-child-launch.ts";
 import { createSandboxChildren, type SandboxChildExecutor } from "../src/sandbox-access-children.ts";
 import { createSandboxAccessServices } from "../src/sandbox-access-services.ts";
@@ -959,6 +960,61 @@ test("managed child stop clears its epoch only after physical confirmation", asy
       const report = await readStatus(provider, store, saved!, { now: new Date() });
       expect(report.providerState).toBe(pending ? null : "archived");
     }
+  } finally {
+    await close();
+  }
+});
+
+// Scoped child messages share ordinary send's native receipt registration, so the
+// shared settlement boundary admits the turn to Langfuse export.
+test("scoped child message settles through the native receipt worker into Langfuse export", async () => {
+  const { close, db, sql, p, id, token, golden } = await fixture();
+  try {
+    const fake = fakeBoat();
+    const services = createSandboxAccessServices({
+      sql,
+      providers: { resolve: async () => fake.provider },
+      credentials: launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY),
+      connections: undefined,
+      encryptionKey: ENCRYPTION_KEY,
+      scopedMcpUrl: "https://armada.example/mcp",
+    });
+    const physical = await fake.provider.fork({ from: "test", name: "child", ttlSeconds: 3600, env: {}, noEnv: true });
+    const child = await createSqlSandboxStore(sql).insert({
+      id: crypto.randomUUID(),
+      provider: "boat",
+      providerSandboxId: physical.id,
+      goldenId: golden.id,
+      orgId: p.org,
+      ownerId: p.owner,
+      harness: "codex",
+      status: "ready",
+      model: "m",
+      reasoningEffort: "high",
+    });
+    await db.query("insert into orchestrator_children values($1,$2,$3,$4)", [child.id, id, p.org, p.owner]);
+    await db.query("insert into org_langfuse(org_id,enabled,content_mode,config_enc) values($1,true,'metadata',$2)", [
+      p.org,
+      await encryptSecret("{}", ENCRYPTION_KEY),
+    ]);
+    expect((await services.childWorker.message(token, "idle-child", child.id, "follow up")).state).toBe("succeeded");
+    expect(fake.prompts).toHaveLength(1);
+    const promptId = "prompt_1";
+    expect(
+      (await db.query<{ task_prompt_id: string }>("select task_prompt_id from sandboxes where id=$1", [child.id]))
+        .rows[0]?.task_prompt_id,
+    ).toBe(promptId);
+    fake.finish(physical.id, promptId, "finished");
+    const native = createNativeWebhookPrompts(sql, async () => fake.provider);
+    expect(await native.reconcileOne(new AbortController().signal)).toBe(true);
+    expect(
+      (
+        await db.query<{ terminal_status: string }>(
+          "select terminal_status from langfuse_turn_exports where sandbox_id=$1 and prompt_id=$2",
+          [child.id, promptId],
+        )
+      ).rows,
+    ).toEqual([{ terminal_status: "finished" }]);
   } finally {
     await close();
   }

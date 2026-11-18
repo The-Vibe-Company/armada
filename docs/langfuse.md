@@ -47,7 +47,10 @@ instant observation marked `timing_incomplete`. If the terminal event is
 missing, Armada uses the recorded settlement status and observation time.
 Boat native uses the settlement observation time because a rewritten prompt
 can still carry its original timestamp. Native Modal waits up to a minute
-for its terminal journal event before exporting the evidence available.
+for its terminal journal event before exporting the evidence available. If a
+native history read keeps failing for that minute, Armada exports the recorded
+status and observation time without transcript content, marked
+`history_unavailable`.
 Turns settled before export was enabled are not backfilled.
 
 Pending export identities survive server restarts. A worker leases each job and
