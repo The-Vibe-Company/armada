@@ -2,8 +2,8 @@ import { test } from "@e2e-dev/web";
 import { expect } from "e2e";
 
 for (const organization of [
-  { session: "alice", name: "Acme", source: "shared-golden", folder: "web" },
-  { session: "large", name: "Large", source: "snapshot-002", folder: "fixture" },
+  { session: "alice", name: "Acme", source: "shared-golden", folder: "web", repository: "acme/web" },
+  { session: "large", name: "Large", source: "snapshot-002", folder: "fixture", repository: "example/fixture" },
 ]) {
   test(`${organization.name}: launch a task from the single dialog`, { session: organization.session }, async ({
     app,
@@ -13,18 +13,23 @@ for (const organization of [
     await app.open("/sandboxes");
     await screen.getByRole("button", "Launch a sandbox").tap();
     await screen.getByLabel("Task").fill(`Inspect the ${organization.name} fixture`);
+    await screen.getByRole("button", "No repository", { exact: true }).tap();
+    await screen.getByPlaceholder("Search or type owner/repo").fill(organization.repository);
+    await screen.getByRole("option", new RegExp(organization.repository)).tap();
     await screen.getByRole("button", /^From ·/).tap();
     await screen.getByPlaceholder("Search from").fill(organization.source);
     await screen.getByRole("option", new RegExp(organization.source)).tap();
     await screen.getByRole("button", /^Claude Code ·/).tap();
-    // Account and model are one picker; an enabled model pins both together.
+    if (organization.session === "large") {
+      await screen.getByRole("button", /^(as |Choose an account)/).tap();
+      await screen.getByRole("option", /^model-account-006/).tap();
+    }
     await screen
       .getByRole("option", /Claude Opus/, { disabled: false })
       .first()
       .tap();
     await expect(screen.getByRole("button", /^Claude Code ·/)).toContainText(/opus/i);
-    await screen.getByRole("button", /^Folder ·/).tap();
-    await screen.getByRole("option", new RegExp(`^${organization.folder || "default"}(?: Selected)?$`)).tap();
+
     await screen.getByRole("button", /^Stops in /).tap();
     await screen.getByRole("option", "1 hour").tap();
     await screen.getByRole("button", "Launch", { exact: true }).tap();
@@ -55,12 +60,13 @@ test("Acme: an agent without an account cannot launch", { session: "alice" }, as
   await expect(screen.getByRole("link", "Add an account")).toBeVisible();
 });
 
-test("Large: a full account cannot be selected", { session: "large" }, async ({ app, screen, browser }) => {
+test("Large: a full account cannot be selected", { session: "large" }, async ({ app, screen }) => {
   await app.open("/sandboxes");
   await screen.getByRole("button", "Launch a sandbox").tap();
   await screen.getByRole("button", /^(Claude Code|Codex|OpenCode) ·/).tap();
-  const limited = browser.locator("[cmdk-group]").filter({ hasText: "model-account-0-international" });
-  await expect(limited.getByRole("option").first()).toHaveAttribute("aria-disabled", "true");
+  await screen.getByRole("button", /^(as |Choose an account)/).tap();
+  const limited = screen.getByRole("option", /model-account-0-international/);
+  await expect(limited).toHaveAttribute("aria-disabled", "true");
   await expect(limited).toContainText("4 agents running");
 });
 
@@ -75,6 +81,9 @@ test("Large: launch on the online Docker host", { session: "large" }, async ({ a
   await expect(screen.getByRole("button", /^From · Empty machine · Large platform/)).toBeVisible();
   await screen.getByLabel("Task").fill("Inspect the Docker fixture");
   await screen.getByRole("button", /^(Claude Code|Codex|OpenCode) ·/).tap();
+  await screen.getByRole("radio", "Claude Code", { exact: true }).tap();
+  await screen.getByRole("button", /^(as |Choose an account)/).tap();
+  await screen.getByRole("option", /^model-account-006/).tap();
   await screen
     .getByRole("option", /Claude Opus/, { disabled: false })
     .first()
@@ -97,5 +106,7 @@ test("Acme: a disconnected tool cannot be selected", { session: "alice" }, async
   await app.open("/sandboxes");
   await screen.getByRole("button", "Launch a sandbox").tap();
   await screen.getByRole("button", /^Tools ·/).tap();
-  await expect(screen.getByRole("checkbox", "Acme Sentry")).toBeDisabled();
+  const attention = screen.getByRole("region", "Needs attention");
+  await expect(attention.getByText("Acme Sentry", { exact: true })).toBeVisible();
+  await expect(screen.getByRole("switch", "Acme Sentry")).toHaveCount(0);
 });

@@ -7,13 +7,17 @@ import { GoldenError, parseGoldenConfig } from "@armada/core";
  */
 
 /** The repository directories a launch may name: exactly the golden config's `repos[].dir`, in order. */
-export function goldenRepositoryDirs(config: unknown): string[] {
+export function goldenRepositories(config: unknown): { url: string; dir: string }[] {
   try {
-    return parseGoldenConfig(config).repos.map((repo) => repo.dir);
+    return parseGoldenConfig(config).repos.map(({ url, dir }) => ({ url, dir }));
   } catch (error) {
     if (error instanceof GoldenError) return [];
     throw error;
   }
+}
+
+export function goldenRepositoryDirs(config: unknown): string[] {
+  return goldenRepositories(config).map((repo) => repo.dir);
 }
 
 /**

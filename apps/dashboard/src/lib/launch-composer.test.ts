@@ -6,6 +6,7 @@ import {
   launchSendLabel,
   launchStopLabel,
   launchToolsSummary,
+  prioritizeRepositoryHold,
   templateStartAfterRemoval,
 } from "./launch-composer";
 
@@ -35,6 +36,11 @@ test("describes every active hold in its display and focus order", () => {
   ]);
   expect(launchHoldIds("launch", { template: true })).toEqual(["launch-blocked"]);
   expect(launchHoldIds("launch", {})).toEqual([]);
+  expect(prioritizeRepositoryHold("missing-snapshot", ["account", "tools"])).toEqual([
+    "missing-snapshot",
+    "account",
+    "tools",
+  ]);
 });
 
 test("summarizes the agent with the account only when it needs to be identified", () => {

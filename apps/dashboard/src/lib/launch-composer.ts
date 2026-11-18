@@ -69,10 +69,14 @@ export function templateStartAfterRemoval(
     group,
     provider: definition.provider,
     reason: MISSING_LAUNCH_START,
-    repositories: template.repositories,
+    repositories: [],
     ...(template.sizing ? { sizing: template.sizing } : {}),
     ...(template.hostName ? { hostName: template.hostName } : {}),
     ...(docker && definition.snapshotId ? { snapshotId: definition.snapshotId } : {}),
     ...(docker && !definition.snapshotId && definition.hostId ? { hostId: definition.hostId } : {}),
   };
+}
+
+export function prioritizeRepositoryHold(repositoryHold: string | undefined, holds: readonly string[]) {
+  return repositoryHold ? [repositoryHold, ...holds] : holds;
 }

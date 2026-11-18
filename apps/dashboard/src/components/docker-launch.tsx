@@ -7,16 +7,17 @@ import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from 
 import { launchOnDockerHost } from "@/app/actions/docker-hosts";
 import { ActionForm } from "@/components/action-form";
 import { ComposerLocation, ComposerStop, DockerLimits, LaunchChip, LaunchComposer } from "@/components/launch-composer";
-import { type LaunchConnections, LaunchStart, useLaunchAccess } from "@/components/launch-dialog";
+import { type LaunchConnections, LaunchStart } from "@/components/launch-dialog";
 import { LaunchAccountNotice, LaunchSentence } from "@/components/launch-sentence";
 import { LaunchDialogContent } from "@/components/launch-surface";
+import { LaunchTools, useLaunchAccess } from "@/components/launch-tools";
 import { SkillPicker } from "@/components/skill-picker";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogTrigger } from "@/components/ui/dialog";
 import type { ActionResult } from "@/lib/action";
 import { CONNECTION_CHOICE_FIELD } from "@/lib/connections";
 import { dockerLaunchKeyStorage, preferredHarness, UNKNOWN_DOCKER_LAUNCH } from "@/lib/docker-launch";
-import { launchHoldIds, launchToolsSummary } from "@/lib/launch-composer";
+import { launchHoldIds } from "@/lib/launch-composer";
 import { LAUNCH_KEY_FIELD, type LaunchKey, launchKeyFor } from "@/lib/launch-key";
 import { initialLaunchSelection, type LaunchStartTarget } from "@/lib/launch-picker";
 import { accountProblem, accountsFor, type LaunchAccounts } from "@/lib/model-accounts";
@@ -85,6 +86,7 @@ export function DockerLaunchForm({
   onTask,
   launchBlockedReason,
   loadingError,
+  templateChooser,
 }: {
   connections: LaunchConnections;
   orgId: string;
@@ -101,6 +103,7 @@ export function DockerLaunchForm({
   idleDelaySeconds?: number | undefined;
   launchBlockedReason?: string | undefined;
   loadingError?: string;
+  templateChooser?: ReactNode;
   task?: string;
   onTask?: (value: string) => void;
 }) {
@@ -195,15 +198,8 @@ export function DockerLaunchForm({
               task={task ?? localTask}
               onTask={onTask ?? setLocalTask}
               holds={holds}
-              tools={
-                <LaunchChip
-                  title="Tools"
-                  label={`Tools · ${launchToolsSummary(access)}`}
-                  warning={access.held || access.unavailable}
-                >
-                  {access.fields(id)}
-                </LaunchChip>
-              }
+              chooser={templateChooser}
+              tools={<LaunchTools access={access} idPrefix={id} />}
               skills={
                 <LaunchChip title="Skills" label={`Skills · ${skills.length}`}>
                   <SkillPicker inline orgId={orgId} value={skills} onChange={setSkills} />

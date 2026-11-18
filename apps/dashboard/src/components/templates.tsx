@@ -723,6 +723,7 @@ export function TemplateLaunchForm({
   loadingError,
   idleDelaySeconds,
   dockerLimits,
+  repositoryFolder,
 }: {
   target: TemplateLaunchTarget;
   task: string;
@@ -731,6 +732,7 @@ export function TemplateLaunchForm({
   loadingError?: string;
   idleDelaySeconds?: number | undefined;
   dockerLimits?: ReactNode;
+  repositoryFolder?: string | undefined;
 }) {
   const id = useId();
   const [requestKey, setRequestKey] = useState(newRequestKey);
@@ -740,7 +742,8 @@ export function TemplateLaunchForm({
     return result;
   }, []);
   const [state, formAction] = useMutationState(run);
-  const [project, setProject] = useState(target.repositories.length === 1 ? (target.repositories[0] ?? "") : "");
+  const [manualProject, setProject] = useState(target.repositories.length === 1 ? (target.repositories[0] ?? "") : "");
+  const project = repositoryFolder ?? manualProject;
   const root = useRef<HTMLFormElement>(null);
   useKeepOnReset(root);
   const error = useRef<HTMLParagraphElement>(null);
@@ -931,25 +934,26 @@ function DirectTemplateLaunchStart({
 }) {
   const [task, setTask] = useState("");
   const [options, setOptions] = useState<Awaited<ReturnType<typeof readLaunchDialogOptions>> | null>(null);
-  const [removing, setRemoving] = useState(false);
+  const [remove, setRemove] = useState(false);
   const [error, setError] = useState("");
-  async function removeTemplate() {
-    if (removing) return;
-    setRemoving(true);
-    setError("");
-    try {
-      const discovered = await readLaunchDialogOptions();
-      if (discovered.orgId !== target.orgId) {
-        setError("Switch to this organization before launching.");
-      } else {
-        setOptions(discovered);
-      }
-    } catch {
-      setError("Other snapshots and Docker hosts could not be loaded. Close and reopen to try again.");
-    } finally {
-      setRemoving(false);
-    }
-  }
+  useEffect(() => {
+    let active = true;
+    void readLaunchDialogOptions()
+      .then((next) => {
+        if (!active) return;
+        if (next.orgId !== target.orgId) {
+          setError("Switch to this organization before launching.");
+        } else {
+          setOptions(next);
+        }
+      })
+      .catch(() => {
+        if (active) setError("Other snapshots and Docker hosts could not be loaded. Close and reopen to try again.");
+      });
+    return () => {
+      active = false;
+    };
+  }, [target.orgId]);
 
   if (options) {
     const start = templateStartAfterRemoval(target, options.targets);
@@ -959,6 +963,7 @@ function DirectTemplateLaunchStart({
         target={start}
         options={{ ...options, targets: starts }}
         initialTask={task}
+        initialTemplate={remove ? undefined : target}
         dockerLimits={dockerLimits}
       />
     );
@@ -968,7 +973,7 @@ function DirectTemplateLaunchStart({
       target={target}
       task={task}
       onTask={setTask}
-      onRemove={() => void removeTemplate()}
+      onRemove={() => setRemove(true)}
       loadingError={error}
       dockerLimits={dockerLimits}
     />

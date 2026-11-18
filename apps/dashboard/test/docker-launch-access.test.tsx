@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { useLaunchAccess } from "../src/components/launch-dialog";
+import { useLaunchAccess } from "../src/components/launch-tools";
 import { CONNECTION_CHOICE_FIELD, launchSelection, type McpConnection } from "../src/lib/connections";
 import { launchToolsSummary } from "../src/lib/launch-composer";
 
@@ -32,17 +32,17 @@ test("Docker launch tools show the default and removing it produces an explicit 
   await act(async () => {
     renderer = create(createElement(Form));
   });
-  const checkbox = () =>
-    renderer.root.findAll(
-      (node) => node.props.id === "launch-connection-tool_one" && typeof node.props.onCheckedChange === "function",
-    )[0]!;
-  expect(checkbox().props.checked).toBe(true);
+  const toolSwitch = () => renderer.root.findAll((node) => node.type === "button" && node.props.role === "switch")[0]!;
+  expect(toolSwitch().props["aria-checked"]).toBe(true);
   expect(renderer.root.findByProps({ name: "connections" }).props.value).toBe(connection.id);
   expect(JSON.stringify(renderer.toJSON())).toContain("Example tool connected");
   await act(async () => {
-    checkbox().props.onCheckedChange(false);
+    toolSwitch().props.onClick();
   });
-  expect(checkbox().props.checked).toBe(false);
+  expect(toolSwitch().props["aria-checked"]).toBe(false);
+  expect(renderer.root.findByProps({ "aria-label": "On for this launch" }).findByType("button").props.id).toBe(
+    "launch-connection-tool_one",
+  );
   expect(renderer.root.findByProps({ name: CONNECTION_CHOICE_FIELD }).props.value).toBe("explicit");
   expect(
     launchSelection({

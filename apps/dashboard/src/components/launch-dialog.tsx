@@ -2,17 +2,19 @@
 
 import type { Harness, MachineSizePolicy, SandboxPlacementProviderId } from "@armada/core";
 import { MODEL_CATALOG, SANDBOX_PLACEMENT_LABELS as PROVIDER_LABELS } from "@armada/core";
-import { CircleAlertIcon, RocketIcon } from "lucide-react";
+import { RocketIcon } from "lucide-react";
 import Link from "next/link";
-import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { launchFromDockerSnapshot } from "@/app/actions/docker-snapshots";
 import { launchFromGolden, readLaunchDialogOptions } from "@/app/actions/sandboxes";
 import { ActionForm } from "@/components/action-form";
-import { ConnectionStatusBadge } from "@/components/connections";
 import { DockerLaunchForm } from "@/components/docker-launch";
 import { ComposerLocation, ComposerStop, DockerLimits, LaunchChip, LaunchComposer } from "@/components/launch-composer";
+import { LaunchRepositoryContext, RepositoryPicker, WithoutRepository } from "@/components/launch-repositories";
 import { LaunchAccountNotice, LaunchSentence } from "@/components/launch-sentence";
+import { LaunchSnapshotBuild } from "@/components/launch-snapshot-build";
 import { LaunchDialogContent } from "@/components/launch-surface";
+import { LaunchTools, useLaunchAccess } from "@/components/launch-tools";
 import { MachineSizeField } from "@/components/machine-size-field";
 import type { ModelCatalog } from "@/components/model-fields";
 import { SkillPicker } from "@/components/skill-picker";
@@ -21,20 +23,19 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogTrigger } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
-import {
-  CONNECTION_CHOICE_FIELD,
-  launchBlocker,
-  launchDefaults,
-  type McpConnection,
-  unreadyDefaults,
-} from "@/lib/connections";
+import { CONNECTION_CHOICE_FIELD, type McpConnection } from "@/lib/connections";
 import { DOCKER_HOST_LABEL, dockerHostGroup } from "@/lib/labels";
-import { composerChips, launchHoldIds, launchToolsSummary, MISSING_LAUNCH_START } from "@/lib/launch-composer";
+import { composerChips, launchHoldIds, MISSING_LAUNCH_START } from "@/lib/launch-composer";
 import { LAUNCH_KEY_FIELD, type LaunchKey, launchKeyFor } from "@/lib/launch-key";
 import { initialLaunchSelection, type LaunchStartTarget } from "@/lib/launch-picker";
+import {
+  launchRepositoryChoices,
+  launchRepositoryFolder,
+  launchRepositoryStarts,
+  launchRepositoryTemplates,
+} from "@/lib/launch-repositories";
 import { accountProblem, accountsFor, type LaunchAccounts } from "@/lib/model-accounts";
 import type { TemplateLaunchTarget } from "@/lib/template-launch";
-import { cn } from "@/lib/utils";
 
 /** The selected org's connections for the launch dialog, or why they are not listed. */
 export type LaunchConnections = { connections: McpConnection[] } | { unavailable: string };
@@ -61,6 +62,9 @@ export type LaunchProps = {
   accounts: LaunchAccounts;
   /** The golden config's `repos[].dir`, in order. */
   repositories: readonly string[];
+  repositoryFolder?: string | undefined;
+  repositoryFirst?: boolean;
+  snapshotRepositories?: LaunchStartTarget["repositories"] | undefined;
   sizing?: LaunchSizing;
   /** The templates that start from this environment: choosing one preselects everything but the run (#949). */
   templates?: readonly TemplateLaunchTarget[];
@@ -118,11 +122,13 @@ export function DiscoveredLaunchStart({
   options,
   dockerLimits,
   initialTask,
+  initialTemplate,
 }: {
   target: LaunchStartTarget;
   options: Awaited<ReturnType<typeof readLaunchDialogOptions>>;
   dockerLimits?: ReactNode;
   initialTask?: string | undefined;
+  initialTemplate?: TemplateLaunchTarget | undefined;
 }) {
   const common = {
     initialOptions: options,
@@ -131,6 +137,7 @@ export function DiscoveredLaunchStart({
     accounts: options.accounts,
     dockerLimits,
     initialTask,
+    initialTemplate,
     launchBlockedReason: target.reason,
   };
   return target.hostId ? (
@@ -149,7 +156,8 @@ export function DiscoveredLaunchStart({
       harnesses={target.harnesses}
       {...(target.snapshotId ? { snapshotId: target.snapshotId } : {})}
       {...(target.hostName ? { hostName: target.hostName } : {})}
-      repositories={target.repositories}
+      repositories={target.repositories.map((repo) => repo.dir)}
+      snapshotRepositories={target.repositories}
       {...(target.sizing ? { sizing: target.sizing } : {})}
       catalog={options.catalog}
       connections={options.connections}
@@ -163,6 +171,7 @@ export function LaunchStart(
     initialOptions?: Awaited<ReturnType<typeof readLaunchDialogOptions>>;
     initialTargetId?: string;
     initialTask?: string | undefined;
+    initialTemplate?: TemplateLaunchTarget | undefined;
   },
 ) {
   const [options, setOptions] = useState<Awaited<ReturnType<typeof readLaunchDialogOptions>> | null>(null);
@@ -190,7 +199,7 @@ export function LaunchStart(
         group: props.provider === "docker" ? DOCKER_HOST_LABEL : `${PROVIDER_LABELS[props.provider]} cloud`,
         golden: props.golden,
         provider: props.provider,
-        repositories: props.repositories,
+        repositories: props.snapshotRepositories ?? [],
         ...(props.launchBlockedReason ? { reason: props.launchBlockedReason } : {}),
         ...(props.snapshotId ? { snapshotId: props.snapshotId } : {}),
         ...(props.hostName ? { hostName: props.hostName } : {}),
@@ -207,7 +216,24 @@ export function LaunchStart(
     focusStart.current = false;
     startRoot.current?.querySelector<HTMLButtonElement>('[data-launch-chip="From"]')?.focus();
   });
-  const [templateId, setTemplateId] = useState("");
+  const [templateId, setTemplateId] = useState(props.initialTemplate?.id ?? "");
+  const [repository, setRepository] = useState("");
+  const [fromOpen, setFromOpen] = useState(false);
+  const [othersOpen, setOthersOpen] = useState(false);
+  const [showBuild, setShowBuild] = useState(false);
+  const [building, setBuilding] = useState("");
+  const [announcement, setAnnouncement] = useState("");
+  const onSaved = useCallback(
+    (source: LaunchStartTarget, next: Awaited<ReturnType<typeof readLaunchDialogOptions>>) => {
+      setOptions(next);
+      selectedTarget.current = source;
+      setSelected(source.id);
+      setBuilding("");
+      setShowBuild(false);
+      setAnnouncement(`${source.golden} is ready and selected.`);
+    },
+    [],
+  );
   const [task, setTask] = useState(props.initialTask ?? "");
   useEffect(() => {
     let active = true;
@@ -231,7 +257,9 @@ export function LaunchStart(
         const initialId = fallbackId;
         setOptions({
           ...next,
-          targets: next.targets.map((item) => (item.id === initial?.id ? { ...item, id: initialId } : item)),
+          targets: next.targets.map((item) =>
+            item.id === initial?.id ? { ...item, id: initialId, sourceId: item.id } : item,
+          ),
         });
       })
       .catch(() => {
@@ -248,10 +276,40 @@ export function LaunchStart(
     reason: MISSING_LAUNCH_START,
   };
   const starts = options ? (freshSelection ? options.targets : [missing, ...options.targets]) : [fallback];
-  const target = starts.find((item) => item.id === selected) ?? (options ? missing : fallback);
+  const pinnedTarget = freshSelection ?? (options ? missing : fallback);
+  const { matches, others, preferred } = launchRepositoryStarts(starts, repository);
+  const target = preferred && !matches.includes(pinnedTarget) ? preferred : pinnedTarget;
+  const noSnapshot = Boolean(repository && !preferred);
+  function chooseRepository(value: string) {
+    if (value === repository) return;
+    setRepository(value);
+    setTemplateId("");
+    setShowBuild(false);
+    setOthersOpen(false);
+    const next = launchRepositoryStarts(starts, value).preferred;
+    if (next) {
+      selectedTarget.current = next;
+      setSelected(next.id);
+    }
+  }
+  const discoveredTemplates = options?.templates ?? (!host ? (props.templates ?? []) : []);
+  const launchableTemplates = options
+    ? launchRepositoryTemplates(discoveredTemplates, starts, repository, target)
+    : discoveredTemplates;
   const templates =
-    !host && target.provider === props.provider && target.golden === props.golden ? (props.templates ?? []) : [];
+    props.initialTemplate &&
+    templateId === props.initialTemplate.id &&
+    !launchableTemplates.some((item) => item.id === props.initialTemplate?.id)
+      ? [...launchableTemplates, props.initialTemplate]
+      : launchableTemplates;
   const template = templates.find((item) => item.id === templateId);
+  const templateSource =
+    template &&
+    starts.find((source) =>
+      template.definition.provider === "docker"
+        ? template.definition.snapshotId === source.snapshotId && Boolean(source.snapshotId)
+        : (source.sourceId ?? source.id) === template.definition.goldenId,
+    );
   const chooser = templates.length > 0 && (
     <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground" data-launch-start>
       <span>Or start from a template</span>
@@ -271,75 +329,144 @@ export function LaunchStart(
     </div>
   );
   const common = {
-    starts,
+    starts: matches,
     selectedStart: target.id,
     onStart: (id: string) => {
       const next = starts.find((item) => item.id === id);
-      if (!next || id === selected) return;
+      if (!next || building || (id === target.id && !noSnapshot)) return;
+      if (repository && launchRepositoryFolder(next, repository) === undefined) setRepository("");
+      setShowBuild(false);
+      setOthersOpen(false);
       selectedTarget.current = next;
       focusStart.current = true;
       setSelected(id);
       setTemplateId("");
     },
     idleDelaySeconds: options?.idleDelaySeconds,
-    launchBlockedReason: target.reason,
+    launchBlockedReason: noSnapshot ? undefined : target.reason,
     loadingError,
     task,
     onTask: setTask,
   };
+  const repositoryContext = {
+    headline: (
+      <span className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        What should we build in
+        <RepositoryPicker
+          current={repository}
+          choices={launchRepositoryChoices(starts)}
+          onChange={chooseRepository}
+          disabled={Boolean(building)}
+        />
+        <span className="-ml-1">?</span>
+      </span>
+    ),
+    withoutRepository: repository && !building ? <WithoutRepository onClick={() => chooseRepository("")} /> : null,
+    repository,
+    building: Boolean(building),
+    fromOpen,
+    setFromOpen: (open: boolean) => {
+      setFromOpen(open);
+      if (!open) setOthersOpen(false);
+    },
+    otherStarts: building ? [] : others,
+    othersOpen,
+    setOthersOpen,
+    fromLabel: building ? `Building ${building}…` : noSnapshot ? "From · No snapshot" : undefined,
+    hold: building ? (
+      <p>Building {building}…</p>
+    ) : noSnapshot ? (
+      <div className="space-y-2 text-sm">
+        <p>No snapshot has {repository} yet.</p>
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" variant="outline" disabled={!options} onClick={() => setShowBuild(true)}>
+            Create a snapshot
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => {
+              setOthersOpen(true);
+              setFromOpen(true);
+            }}
+          >
+            Use another starting point
+          </Button>
+        </div>
+      </div>
+    ) : null,
+  };
   return (
-    <div ref={startRoot} className="flex min-h-0 flex-1 flex-col">
-      {template ? (
-        <TemplateLaunchForm
-          key={template.id}
-          target={template}
-          task={task}
-          onTask={setTask}
-          loadingError={loadingError}
-          idleDelaySeconds={options?.idleDelaySeconds}
-          dockerLimits={props.dockerLimits}
-          onRemove={() => setTemplateId("")}
-        />
-      ) : target.hostId ? (
-        <DockerLaunchForm
-          key={target.id}
-          orgId={props.orgId}
-          hostId={target.hostId}
-          hostName={target.hostName ?? DOCKER_HOST_LABEL}
-          accounts={options?.accounts ?? props.accounts}
-          connections={
-            options?.connections ?? (!host ? props.connections : { unavailable: "Still loading connections." })
-          }
-          unavailable={props.unavailable}
-          dockerLimits={props.dockerLimits}
-          harnesses={target.harnesses ?? ["codex"]}
-          initialHarness={target.initialHarness ?? "codex"}
-          {...common}
-        />
-      ) : (
-        <LaunchForm
-          key={target.id}
-          golden={target.golden}
-          provider={target.provider}
-          hostName={target.hostName ?? DOCKER_HOST_LABEL}
-          unavailable={props.unavailable}
-          dockerLimits={props.dockerLimits}
-          harnesses={target.harnesses}
-          orgId={props.orgId}
-          {...(target.snapshotId ? { snapshotId: target.snapshotId } : {})}
-          repositories={target.repositories}
-          {...(target.sizing ? { sizing: target.sizing } : {})}
-          accounts={options?.accounts ?? props.accounts}
-          catalog={options?.catalog ?? (!host ? props.catalog : MODEL_CATALOG)}
-          connections={
-            options?.connections ?? (!host ? props.connections : { unavailable: "Still loading connections." })
-          }
-          boatOpenCodeAvailable={options?.boatOpenCodeAvailable ?? (!host && props.boatOpenCodeAvailable === true)}
-          templateChooser={chooser}
-          {...common}
-        />
-      )}
-    </div>
+    <LaunchRepositoryContext.Provider value={repositoryContext}>
+      <div ref={startRoot} className="flex min-h-0 flex-1 flex-col">
+        {template ? (
+          <TemplateLaunchForm
+            key={template.id}
+            target={template}
+            task={task}
+            onTask={setTask}
+            repositoryFolder={templateSource && launchRepositoryFolder(templateSource, repository)}
+            loadingError={loadingError}
+            idleDelaySeconds={options?.idleDelaySeconds}
+            dockerLimits={props.dockerLimits}
+            onRemove={() => setTemplateId("")}
+          />
+        ) : target.hostId ? (
+          <DockerLaunchForm
+            key={target.id}
+            orgId={props.orgId}
+            hostId={target.hostId}
+            hostName={target.hostName ?? DOCKER_HOST_LABEL}
+            accounts={options?.accounts ?? props.accounts}
+            connections={
+              options?.connections ?? (!host ? props.connections : { unavailable: "Still loading connections." })
+            }
+            unavailable={props.unavailable}
+            dockerLimits={props.dockerLimits}
+            harnesses={target.harnesses ?? ["codex"]}
+            initialHarness={target.initialHarness ?? "codex"}
+            templateChooser={chooser}
+            {...common}
+          />
+        ) : (
+          <LaunchForm
+            key={target.id}
+            golden={target.golden}
+            provider={target.provider}
+            hostName={target.hostName ?? DOCKER_HOST_LABEL}
+            unavailable={props.unavailable}
+            dockerLimits={props.dockerLimits}
+            harnesses={target.harnesses}
+            orgId={props.orgId}
+            {...(target.snapshotId ? { snapshotId: target.snapshotId } : {})}
+            repositories={
+              target.repositories.length
+                ? target.repositories.map((repo) => repo.dir)
+                : !options && !host
+                  ? props.repositories
+                  : []
+            }
+            repositoryFolder={launchRepositoryFolder(target, repository)}
+            repositoryFirst
+            {...(target.sizing ? { sizing: target.sizing } : {})}
+            accounts={options?.accounts ?? props.accounts}
+            catalog={options?.catalog ?? (!host ? props.catalog : MODEL_CATALOG)}
+            connections={
+              options?.connections ?? (!host ? props.connections : { unavailable: "Still loading connections." })
+            }
+            boatOpenCodeAvailable={options?.boatOpenCodeAvailable ?? (!host && props.boatOpenCodeAvailable === true)}
+            templateChooser={chooser}
+            {...common}
+          />
+        )}
+        <p role="status" className="sr-only">
+          {announcement}
+        </p>
+        {showBuild && options && (
+          <LaunchSnapshotBuild repository={repository} options={options} onBuilding={setBuilding} onSaved={onSaved} />
+        )}
+      </div>
+    </LaunchRepositoryContext.Provider>
   );
 }
 
@@ -358,6 +485,8 @@ function LaunchForm({
   connections,
   accounts,
   repositories,
+  repositoryFolder,
+  repositoryFirst = false,
   sizing,
   starts,
   selectedStart,
@@ -427,8 +556,15 @@ function LaunchForm({
   }, [access.held]);
 
   // The selected project: the machine size default follows it, and a single repository's choice is summarized.
-  const [project, setProject] = useState(repositories.length === 1 ? (repositories[0] ?? "") : "");
-  const chips = composerChips(provider, repositories.length, Boolean(sizing));
+  const [manualProject, setProject] = useState(
+    !repositoryFirst && repositories.length === 1 ? (repositories[0] ?? "") : "",
+  );
+  const project = repositoryFolder ?? manualProject;
+  const chips = composerChips(
+    provider,
+    repositoryFirst && repositories.length < 2 ? 0 : repositories.length,
+    Boolean(sizing),
+  );
   const holds = launchHoldIds(id, {
     source: Boolean(launchBlockedReason),
     account: accountBlocked || accounts.state === "unavailable",
@@ -466,15 +602,7 @@ function LaunchForm({
               onTask={onTask ?? setLocalTask}
               chooser={templateChooser}
               holds={holds}
-              tools={
-                <LaunchChip
-                  title="Tools"
-                  label={`Tools · ${launchToolsSummary(access)}`}
-                  warning={access.held || access.unavailable}
-                >
-                  {access.fields(id)}
-                </LaunchChip>
-              }
+              tools={<LaunchTools idPrefix={id} access={access} />}
               skills={
                 <LaunchChip title="Skills" label={`Skills · ${skills.length}`}>
                   <SkillPicker inline orgId={orgId} value={skills} onChange={setSkills} />
@@ -572,197 +700,5 @@ function LaunchForm({
         )}
       />
     </div>
-  );
-}
-
-/**
- * Connections, by the #681 selection. It starts with every enabled include-by-default connection, personal and org,
- * whatever the golden; from the person's first change it is exactly what they ticked, and an empty selection launches
- * with none. A default that is not connected is never dropped silently: it holds the launch until it is reconnected
- * or the person chooses to continue without it, as the server does.
- *
- * The alerts render outside the collapsed Advanced area, so nothing that holds or limits a launch is hidden.
- */
-export function useLaunchAccess(connections: LaunchConnections) {
-  // Null until the person changes the selection: the defaults apply until then.
-  const [picked, setPicked] = useState<string[] | null>(null);
-  // A requested default that is not connected holds the launch until the person reconnects it or explicitly goes
-  // on without it. Ticking other connections does not count: it would drop the default without saying so.
-  const [waived, setWaived] = useState<readonly string[]>([]);
-  const list = "connections" in connections ? connections.connections : [];
-  const blocked = unreadyDefaults(list);
-  // A default that is not connected cannot be ticked: it is held rather than submitted or dropped unseen.
-  const chosen = picked ?? launchDefaults(list).filter((item) => !blocked.some((connection) => connection.id === item));
-  const unready = blocked.filter((connection) => !waived.includes(connection.id));
-
-  function toggle(connectionId: string, on: boolean) {
-    setPicked(on ? [...chosen, connectionId] : chosen.filter((item) => item !== connectionId));
-  }
-
-  const selected = list.filter(
-    (connection) => chosen.includes(connection.id) && launchBlocker(connection) === null,
-  ).length;
-
-  const alerts = (onContinue: () => void, idPrefix: string): ReactNode => (
-    <>
-      {unready.length > 0 && (
-        <div data-unready-defaults className="contents">
-          <p
-            id={`${idPrefix}-held`}
-            role="alert"
-            tabIndex={-1}
-            className="flex basis-full items-center gap-2 text-xs text-warning"
-          >
-            <CircleAlertIcon className="size-4 shrink-0" />
-            {unready.map((connection) => connection.name).join(", ")}{" "}
-            {unready.length === 1
-              ? "is on by default but is not connected."
-              : "are on by default but are not connected."}
-          </p>
-          <Button asChild type="button" variant="outline" size="sm">
-            <Link href="/tools">Reconnect</Link>
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={() => {
-              setWaived([...waived, ...unready.map((connection) => connection.id)]);
-              setPicked(chosen);
-              onContinue();
-            }}
-          >
-            Launch without {unready.length === 1 ? "it" : "them"}
-          </Button>
-        </div>
-      )}
-      {"unavailable" in connections && (
-        <p role="alert" className="rounded-md border border-destructive/40 p-3 text-sm text-destructive">
-          Connections could not be loaded: {connections.unavailable} A launch uses your default connections, and is
-          refused if one of them is not connected.
-        </p>
-      )}
-    </>
-  );
-
-  const fields = (idPrefix: string): ReactNode => {
-    const personal = list.filter((item) => item.scope === "personal");
-    const shared = list.filter((item) => item.scope === "org");
-    return (
-      <>
-        {"connections" in connections && (
-          <fieldset className="min-w-0 space-y-2">
-            <legend className="text-sm leading-none font-medium">Tools the agent can call</legend>
-            {list.length === 0 ? (
-              <p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">
-                No connections.{" "}
-                <Link href="/tools" className="underline">
-                  Add one
-                </Link>
-              </p>
-            ) : (
-              <div className="space-y-3">
-                {(
-                  [
-                    ["Personal", personal],
-                    ["Org", shared],
-                  ] as const
-                ).map(([title, items]) =>
-                  items.length === 0 ? null : (
-                    <div key={title} className="space-y-1">
-                      <p className="text-xs font-medium text-muted-foreground">{title}</p>
-                      <ul className="divide-y rounded-md border">
-                        {items.map((connection) => (
-                          <ConnectionOption
-                            key={connection.id}
-                            idPrefix={idPrefix}
-                            connection={connection}
-                            blocker={launchBlocker(connection)}
-                            checked={chosen.includes(connection.id)}
-                            onChange={(on) => toggle(connection.id, on)}
-                          />
-                        ))}
-                      </ul>
-                    </div>
-                  ),
-                )}
-              </div>
-            )}
-          </fieldset>
-        )}
-      </>
-    );
-  };
-
-  return {
-    // Only a listed selection the person changed is sent; otherwise the server snapshots the defaults.
-    explicit: picked !== null && "connections" in connections,
-    selected,
-    inputs: list
-      .filter((connection) => chosen.includes(connection.id) && !launchBlocker(connection))
-      .map((connection) => <input key={connection.id} type="hidden" name="connections" value={connection.id} />),
-    selectedName: list.find((connection) => chosen.includes(connection.id) && launchBlocker(connection) === null)?.name,
-    held: unready.length > 0,
-    unavailable: "unavailable" in connections,
-    alerts,
-    fields,
-  };
-}
-
-function ConnectionOption({
-  idPrefix,
-  connection,
-  blocker,
-  checked,
-  onChange,
-}: {
-  idPrefix: string;
-  connection: McpConnection;
-  blocker: string | null;
-  checked: boolean;
-  onChange: (on: boolean) => void;
-}) {
-  const inputId = `${idPrefix}-connection-${connection.id}`;
-  const hint =
-    blocker ??
-    [
-      connection.accountLabel ? `As ${connection.accountLabel}` : null,
-      connection.transport === "stdio"
-        ? "Starts inside the sandbox"
-        : connection.toolCount !== undefined
-          ? `${connection.toolCount} ${connection.toolCount === 1 ? "tool" : "tools"}`
-          : null,
-    ]
-      .filter(Boolean)
-      .join(" · ");
-  return (
-    <li className={cn("flex items-start gap-3 px-3 py-2.5", blocker && "opacity-70")}>
-      <Checkbox
-        id={inputId}
-        checked={checked && !blocker}
-        disabled={blocker !== null}
-        onCheckedChange={(value) => onChange(value === true)}
-        aria-describedby={hint ? `${inputId}-hint` : undefined}
-        className="mt-0.5"
-      />
-      <div className="min-w-0 flex-1 space-y-0.5">
-        <div className="flex flex-wrap items-center gap-2">
-          <Label htmlFor={inputId} className="font-medium">
-            {connection.name}
-          </Label>
-          <ConnectionStatusBadge connection={connection} />
-          {connection.defaultForLaunch && (
-            <span className="text-xs text-muted-foreground" data-default-for-launch>
-              Default
-            </span>
-          )}
-        </div>
-        {hint && (
-          <p id={`${inputId}-hint`} className="text-xs text-muted-foreground">
-            {hint}
-          </p>
-        )}
-      </div>
-    </li>
   );
 }

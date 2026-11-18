@@ -31,6 +31,91 @@ function Visibility({ source }: { source: SkillCatalogSource }) {
   );
 }
 
+function AddedSkill({
+  exact,
+  orgId,
+  name,
+  disabled,
+  onVersion,
+  onRemove,
+}: {
+  exact: string;
+  orgId: string;
+  name: string;
+  disabled: boolean;
+  onVersion: (next: string) => void;
+  onRemove: () => void;
+}) {
+  const separator = exact.lastIndexOf("@");
+  const reference = exact.slice(0, separator);
+  const version = exact.slice(separator + 1);
+  const [versions, setVersions] = useState<string[] | null>(null);
+  const [error, setError] = useState("");
+  const inFlight = useRef(false);
+
+  async function loadVersions() {
+    if (versions || inFlight.current) return;
+    inFlight.current = true;
+    setError("");
+    try {
+      const result = await listSkillVersions({
+        org: orgId,
+        source: reference.includes("/") ? "public" : "private",
+        reference,
+      });
+      if (result.ok) setVersions(result.versions);
+      else setError(result.error);
+    } catch {
+      setError("Versions could not be loaded. You can enter an exact pin instead.");
+    } finally {
+      inFlight.current = false;
+    }
+  }
+
+  return (
+    <li className="rounded-xl border bg-muted/30 px-2 py-1">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="min-w-0 flex-1 truncate text-sm font-medium" title={reference}>
+          {name}
+        </span>
+        <div className="w-auto min-w-24">
+          <NativeSelect
+            aria-label={`Version of ${name}`}
+            value={version}
+            onFocus={() => void loadVersions()}
+            onPointerEnter={() => void loadVersions()}
+            onChange={(event) => onVersion(`${reference}@${event.target.value}`)}
+            disabled={disabled}
+            className="h-8 px-2 pr-8 text-xs focus-visible:ring-ring pointer-coarse:h-11"
+          >
+            {[...new Set([version, ...(versions ?? [])])].map((entry) => (
+              <option key={entry} value={entry}>
+                {entry}
+              </option>
+            ))}
+          </NativeSelect>
+        </div>
+        <Button
+          type="button"
+          size="icon"
+          variant="ghost"
+          className="size-8 shrink-0 pointer-coarse:size-11"
+          disabled={disabled}
+          aria-label={`Remove ${name}`}
+          onClick={onRemove}
+        >
+          <XIcon className="size-3.5" />
+        </Button>
+      </div>
+      {error && (
+        <p role="status" className="text-xs text-muted-foreground">
+          {error}
+        </p>
+      )}
+    </li>
+  );
+}
+
 /** Lazy, metadata-only browsing. Exact pins remain usable when catalog discovery is unavailable. */
 export function SkillPicker({ orgId, value, onChange, disabled = false, inline = false }: Props) {
   const id = useId();
@@ -151,7 +236,7 @@ export function SkillPicker({ orgId, value, onChange, disabled = false, inline =
       setPinError(problem);
       return;
     }
-    if (item) setNames((previous) => ({ ...previous, [exact]: item }));
+    if (item) setNames((previous) => ({ ...previous, [item.reference]: item }));
     onChange([...value, exact]);
     setPin("");
     setPinError(null);
@@ -193,7 +278,7 @@ export function SkillPicker({ orgId, value, onChange, disabled = false, inline =
       </fieldset>
       {!manual && !chosen && (
         <>
-          <Command>
+          <Command label="Search skills">
             <CommandInput
               ref={searchInput}
               placeholder="Search skills"
@@ -201,32 +286,51 @@ export function SkillPicker({ orgId, value, onChange, disabled = false, inline =
               onValueChange={setQuery}
               disabled={locked}
             />
-            <CommandList className="max-h-60 overscroll-contain">
+            <CommandList label="Skills" className="max-h-60 overscroll-contain">
               {!loading && !error && <CommandEmpty>No matching skills in the loaded results.</CommandEmpty>}
-              {items.map((item) => (
-                <CommandItem
-                  key={item.reference}
-                  value={item.reference}
-                  keywords={[item.name, item.description]}
-                  disabled={locked}
-                  onSelect={() => void choose(item)}
-                  className="items-start gap-2 px-3 py-3"
-                >
-                  <div className="min-w-0 flex-1 space-y-1">
-                    <div className="flex items-center gap-2">
-                      <span className="min-w-0 break-words font-medium">{item.name}</span>
-                      <Visibility source={item.visibility} />
+              {items.map((item) => {
+                const added = value.find((exact) => exact.split("@")[0] === item.reference);
+                function selectSkill() {
+                  if (!inline) {
+                    void choose(item);
+                  } else if (added) {
+                    setPinError(null);
+                    onChange(value.filter((entry) => entry !== added));
+                  } else if (item.versions[0]) {
+                    add(`${item.reference}@${item.versions[0]}`, item);
+                  }
+                }
+                return (
+                  <CommandItem
+                    key={item.reference}
+                    value={item.reference}
+                    keywords={[item.name, item.description]}
+                    disabled={locked}
+                    aria-label={inline ? `${added ? "Remove" : "Add"} ${item.name}` : undefined}
+                    onSelect={selectSkill}
+                    className="items-start gap-2 px-3 py-3"
+                  >
+                    <div className="min-w-0 flex-1 space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="min-w-0 break-words font-medium">{item.name}</span>
+                        <Visibility source={item.visibility} />
+                      </div>
+                      <p className="line-clamp-2 text-xs leading-4 text-muted-foreground">{item.description}</p>
+                      <p className="break-all font-mono text-[11px] text-muted-foreground">
+                        {item.reference}@{item.versions[0]}
+                      </p>
                     </div>
-                    <p className="line-clamp-2 text-xs leading-4 text-muted-foreground">{item.description}</p>
-                    <p className="break-all font-mono text-[11px] text-muted-foreground">
-                      {item.reference}@{item.versions[0]}
-                    </p>
-                  </div>
-                  {value.includes(`${item.reference}@${item.versions[0]}`) && (
-                    <CheckIcon className="mt-0.5 size-3.5 shrink-0" />
-                  )}
-                </CommandItem>
-              ))}
+                    {inline ? (
+                      <span className="flex shrink-0 items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium">
+                        {added ? <CheckIcon aria-hidden="true" /> : <PlusIcon aria-hidden="true" />}
+                        {added ? "Added" : "Add"}
+                      </span>
+                    ) : added ? (
+                      <CheckIcon className="mt-0.5 size-3.5 shrink-0" />
+                    ) : null}
+                  </CommandItem>
+                );
+              })}
             </CommandList>
           </Command>
           <div className="space-y-2 border-t px-3 py-2.5">
@@ -269,6 +373,11 @@ export function SkillPicker({ orgId, value, onChange, disabled = false, inline =
               >
                 Load more
               </Button>
+            )}
+            {inline && pinError && (
+              <p role="alert" className="text-xs text-destructive">
+                {pinError}
+              </p>
             )}
             <p className="text-[11px] text-muted-foreground">Search covers loaded results only.</p>
           </div>
@@ -407,7 +516,7 @@ export function SkillPicker({ orgId, value, onChange, disabled = false, inline =
               setPinError(null);
             }}
           >
-            Enter exact pin
+            {inline ? "Enter an exact version…" : "Enter exact pin"}
           </Button>
         </div>
       )}
@@ -418,7 +527,41 @@ export function SkillPicker({ orgId, value, onChange, disabled = false, inline =
     <div className="space-y-2" data-launch-skills>
       {!inline && value.map((exact) => <input key={exact} type="hidden" name="skills" value={exact} />)}
       {inline ? (
-        picker
+        <>
+          {value.length > 0 && (
+            <ul aria-label="Added skills" className="space-y-1">
+              {value.map((exact) => {
+                const reference = exact.split("@")[0] ?? exact;
+                const item = names[reference] ?? items.find((entry) => entry.reference === reference);
+                return (
+                  <AddedSkill
+                    key={reference}
+                    exact={exact}
+                    orgId={orgId}
+                    name={item?.name ?? reference}
+                    disabled={locked}
+                    onVersion={(next) => {
+                      const updated = value.map((entry) => (entry === exact ? next : entry));
+                      const problem = skillPinProblem(updated);
+                      setPinError(problem);
+                      if (!problem) onChange(updated);
+                    }}
+                    onRemove={() => onChange(value.filter((entry) => entry !== exact))}
+                  />
+                );
+              })}
+            </ul>
+          )}
+          {picker}
+          {!credentialIssue && (
+            <Link
+              href="/skills"
+              className="inline-flex px-3 py-2 text-xs text-muted-foreground underline underline-offset-4"
+            >
+              Manage your Skillpack key
+            </Link>
+          )}
+        </>
       ) : (
         <div className="flex items-center justify-between gap-3">
           <div className="space-y-1">
@@ -445,10 +588,10 @@ export function SkillPicker({ orgId, value, onChange, disabled = false, inline =
           </Popover>
         </div>
       )}
-      {value.length > 0 && (
+      {!inline && value.length > 0 && (
         <ul aria-label="Additional skills" className="divide-y rounded-md border">
           {value.map((exact) => {
-            const item = names[exact];
+            const item = names[exact.split("@")[0] ?? exact];
             return (
               <li key={exact} className="flex items-center gap-2 px-3 py-2">
                 <div className="min-w-0 flex-1 space-y-0.5">

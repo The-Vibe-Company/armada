@@ -73,6 +73,11 @@ type Props = {
    * it cannot submit a new one; the server refuses it as well.
    */
   canStart?: boolean;
+  embedded?: {
+    name: string;
+    onBuilding: (name: string) => void;
+    onSaved: (result: NonNullable<GoldenBuildStatus["result"]>, provider: SandboxProviderId) => Promise<void>;
+  };
 };
 
 type KeyedRow = RepoRow & { key: number };
@@ -94,6 +99,27 @@ function buildScope(props: { mode: Props["mode"]; orgId: string; goldenId?: stri
  * Keyed by its build scope, so switching organization in place (the page re-renders with another org) mounts a new
  * form: the previous org's job, lock, polling and saved key are left behind with the old one, never carried over.
  */
+export function SnapshotDetails({ openInComposer, children }: { openInComposer: boolean; children: React.ReactNode }) {
+  if (!openInComposer) return children;
+  return (
+    <details className="space-y-3">
+      <summary className="cursor-pointer text-sm font-medium">More options</summary>
+      {children}
+    </details>
+  );
+}
+
+function RepositoryDetails({ embedded, children }: { embedded: boolean; children: React.ReactNode }) {
+  return embedded ? (
+    children
+  ) : (
+    <details className="contents">
+      <summary className="col-start-3 row-start-1 cursor-pointer py-2 text-sm">Details</summary>
+      {children}
+    </details>
+  );
+}
+
 export function GoldenForm(props: Props) {
   return <ScopedGoldenForm key={buildScope(props)} {...props} />;
 }
@@ -114,15 +140,17 @@ function ScopedGoldenForm({
   visibility,
   defaults,
   canStart = true,
+  embedded,
 }: Props) {
   const placement = useSnapshotPlacement();
   const id = useId();
   const router = useRouter();
   useEffect(() => {
+    if (embedded) return;
     const refresh = () => router.refresh();
     window.addEventListener("focus", refresh);
     return () => window.removeEventListener("focus", refresh);
-  }, [router]);
+  }, [router, embedded]);
   // Each form tracks its own build in the page URL: this org's create form, or the rebuild of this one golden.
   // Another org's form or another golden's never reads, polls or resubmits it.
   const scope = buildScope({ mode, orgId, goldenId });
@@ -227,6 +255,7 @@ function ScopedGoldenForm({
 
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(async (previous, data) => {
     setSubmitted(true);
+    embedded?.onBuilding(String(data.get("name") ?? ""));
     let result: ActionResult;
     const replacement = data.get("replacement");
     if (typeof replacement === "string" && replacements.some((item) => item.id === replacement)) {
@@ -244,6 +273,7 @@ function ScopedGoldenForm({
     } catch {
       // The action's function ended without an answer (its time budget, a deploy, the network): the server may
       // still be building. Say so, and send nothing again.
+      embedded?.onBuilding("");
       return { ok: false, error: BUILD_OUTCOME_UNKNOWN };
     }
     if (result.ok && result.build) {
@@ -251,6 +281,7 @@ function ScopedGoldenForm({
       setObserved(result.build);
       rememberJob(jobParam, result.build.jobId);
     }
+    if (!result.ok) embedded?.onBuilding("");
     return result;
   }, null);
   const nextKey = useRef(0);
@@ -266,7 +297,7 @@ function ScopedGoldenForm({
     contextProvider ?? (choice !== null && providers.includes(choice) ? choice : (providers[0] ?? null));
   // Controlled, so a refused build keeps what was typed (React resets a form after its action).
   const formRef = usePreservedActionForm();
-  const [goldenName, setGoldenName] = useState("");
+  const [goldenName, setGoldenName] = useState(embedded?.name ?? "");
   const [init, setInit] = useState(defaults?.init ?? "");
 
   const update = (key: number, field: keyof RepoRow, value: string) =>
@@ -298,10 +329,34 @@ function ScopedGoldenForm({
       )}
     </>
   );
+  const reported = useRef("");
+  const [completionError, setCompletionError] = useState("");
+  useEffect(() => {
+    if (!embedded || !observed || reported.current === observed.jobId) return;
+    if (observed.state === "failed" || observed.state === "recovery_required") {
+      reported.current = observed.jobId;
+      embedded.onBuilding("");
+    } else if (observed.state === "succeeded" && observed.result) {
+      const actualProvider = observed.provider ?? admittedProvider ?? chosenProvider;
+      if (!actualProvider) return;
+      reported.current = observed.jobId;
+      const url = new URL(window.location.href);
+      for (const param of [keyParam, jobParam, providerParam]) url.searchParams.delete(param);
+      replaceResourceUrl(url);
+      void embedded.onSaved(observed.result, actualProvider).catch(() => {
+        setCompletionError("The snapshot was saved. Open Snapshots to locate it.");
+        embedded.onBuilding("");
+      });
+    } else {
+      embedded.onBuilding(goldenName);
+    }
+  }, [embedded, observed, admittedProvider, chosenProvider, goldenName, keyParam, jobParam, providerParam]);
+
   if (observed?.state === "succeeded" && observed.result) {
     return (
       <div className="space-y-4" role="status">
         <p className="font-medium">{observed.result.name} is ready</p>
+        {completionError && <p role="alert">{completionError}</p>}
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <Button variant="ghost" asChild>
             <a href="/snapshots">View snapshots</a>
@@ -371,133 +426,143 @@ function ScopedGoldenForm({
           </>
         )}
 
-        <fieldset className="relative space-y-3">
-          <legend className="text-sm font-medium">Repositories</legend>
-          <ol className="space-y-3">
-            {rows.map((row, index) => (
-              <li
-                key={row.key}
-                className="grid grid-cols-[minmax(0,1fr)_auto_auto_auto] items-center gap-2 border-b py-2"
-              >
-                <div className="min-w-0 space-y-1">
-                  <Label className="sr-only" htmlFor={`${id}-url-${row.key}`}>
-                    Repository {index + 1}
-                  </Label>
-                  <Input
-                    id={`${id}-url-${row.key}`}
-                    name="repo_url"
-                    value={row.url}
-                    onChange={(event) => update(row.key, "url", event.target.value)}
-                    placeholder="owner/repo"
-                    autoComplete="off"
-                    spellCheck={false}
-                    required={index === 0}
-                  />
-                </div>
-                <span className="text-xs text-muted-foreground">{row.branch || "Default branch"}</span>
-                <details className="contents">
-                  <summary className="col-start-3 row-start-1 cursor-pointer py-2 text-sm">Details</summary>
-                  <div className="col-span-full row-start-2 grid gap-3 py-2 sm:grid-cols-2">
-                    <div className="space-y-1">
-                      <Label htmlFor={`${id}-branch-${row.key}`}>Branch</Label>
-                      <Input
-                        id={`${id}-branch-${row.key}`}
-                        name="repo_branch"
-                        value={row.branch}
-                        onChange={(event) => update(row.key, "branch", event.target.value)}
-                        placeholder="Default branch"
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <Label htmlFor={`${id}-dir-${row.key}`}>Folder on the machine</Label>
-                      <div className="flex items-center gap-1">
-                        <span className="text-xs text-muted-foreground">/home/user/</span>
-                        <Input
-                          id={`${id}-dir-${row.key}`}
-                          name="repo_dir"
-                          value={row.dir}
-                          onChange={(event) => update(row.key, "dir", event.target.value)}
-                          pattern="[^/\\\\]+"
-                          placeholder={
-                            row.url
-                              .replace(/\.git$/, "")
-                              .split("/")
-                              .pop() || "repo"
-                          }
-                        />
-                      </div>
-                    </div>
-                    <div className="space-y-1 sm:col-span-2">
-                      <Label htmlFor={`${id}-history-${row.key}`}>History to download</Label>
-                      <NativeSelect
-                        id={`${id}-history-${row.key}`}
-                        name="repo_history"
-                        value={row.history || "full"}
-                        onChange={(event) => update(row.key, "history", event.target.value)}
-                      >
-                        <option value="full">Everything</option>
-                        <option value="shallow">Latest commit only</option>
-                      </NativeSelect>
-                      <p className="text-xs text-muted-foreground">
-                        Armada checks what it downloads for leaked GitHub, Skillpack and Armada tokens before saving.
-                        Latest commit only is faster on large repositories.
-                      </p>
-                    </div>
-                  </div>
-                </details>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="col-start-4 row-start-1"
-                  aria-label={`Remove repository ${index + 1}`}
-                  disabled={rows.length === 1}
-                  onClick={() => setRows((current) => current.filter((item) => item.key !== row.key))}
-                >
-                  <Trash2Icon />
-                </Button>
-              </li>
-            ))}
-          </ol>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            // After the rows for the keyboard. In the create view, which is wide, it sits beside the legend and costs
-            // no line; the rebuild form lives in the narrow row panel and keeps it below.
-            className={cn(mode === "create" && "sm:absolute sm:-top-8 sm:right-0")}
-            disabled={rows.length >= MAX_GOLDEN_REPOS}
-            onClick={() => setRows((current) => [...current, keyed({ url: "", branch: "", dir: "" })])}
-          >
-            <PlusIcon /> Add repository
-          </Button>
-        </fieldset>
-
-        {mode === "create" && (
-          <div className="space-y-2">
-            {" "}
-            <div className="pt-2 text-sm font-medium">Machine</div>
+        {embedded && (
+          <div className="space-y-1">
+            <p className="text-sm font-medium">Where to build</p>
             {providerChoice}
-            <div className="pt-2 text-sm font-medium">Visible to</div>
-            <LaunchChoice
-              inline
-              label="Who sees it"
-              presentation="chips"
-              value={chosenVisibility}
-              onChange={(value) => setChosenVisibility(value as "org" | "private")}
-              options={[
-                {
-                  value: "org",
-                  label: `everyone in ${orgName}`,
-                  ...(!isAdmin ? { reason: "Only an organization admin can create a snapshot for everyone." } : {}),
-                },
-                { value: "private", label: "only you" },
-              ]}
-            />
-            <input type="hidden" name="visibility" value={chosenVisibility} />
           </div>
         )}
+        <SnapshotDetails openInComposer={Boolean(embedded)}>
+          <fieldset className="relative space-y-3">
+            <legend className="text-sm font-medium">Repositories</legend>
+            <ol className="space-y-3">
+              {rows.map((row, index) => (
+                <li
+                  key={row.key}
+                  className="grid grid-cols-[minmax(0,1fr)_auto_auto_auto] items-center gap-2 border-b py-2"
+                >
+                  <div className="min-w-0 space-y-1">
+                    <Label className="sr-only" htmlFor={`${id}-url-${row.key}`}>
+                      Repository {index + 1}
+                    </Label>
+                    <Input
+                      id={`${id}-url-${row.key}`}
+                      name="repo_url"
+                      value={row.url}
+                      onChange={(event) => update(row.key, "url", event.target.value)}
+                      placeholder="owner/repo"
+                      autoComplete="off"
+                      spellCheck={false}
+                      required={index === 0}
+                    />
+                  </div>
+                  <span className="text-xs text-muted-foreground">{row.branch || "Default branch"}</span>
+                  <RepositoryDetails embedded={Boolean(embedded)}>
+                    <div className="col-span-full row-start-2 grid gap-3 py-2 sm:grid-cols-2">
+                      <div className="space-y-1">
+                        <Label htmlFor={`${id}-branch-${row.key}`}>Branch</Label>
+                        <Input
+                          id={`${id}-branch-${row.key}`}
+                          name="repo_branch"
+                          value={row.branch}
+                          onChange={(event) => update(row.key, "branch", event.target.value)}
+                          placeholder="Default branch"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label htmlFor={`${id}-dir-${row.key}`}>Folder on the machine</Label>
+                        <div className="flex items-center gap-1">
+                          <span className="text-xs text-muted-foreground">/home/user/</span>
+                          <Input
+                            id={`${id}-dir-${row.key}`}
+                            name="repo_dir"
+                            value={row.dir}
+                            onChange={(event) => update(row.key, "dir", event.target.value)}
+                            pattern="[^/\\\\]+"
+                            placeholder={
+                              row.url
+                                .replace(/\.git$/, "")
+                                .split("/")
+                                .pop() || "repo"
+                            }
+                          />
+                        </div>
+                      </div>
+                      <div className="space-y-1 sm:col-span-2">
+                        <Label htmlFor={`${id}-history-${row.key}`}>History to download</Label>
+                        <NativeSelect
+                          id={`${id}-history-${row.key}`}
+                          name="repo_history"
+                          value={row.history || "full"}
+                          onChange={(event) => update(row.key, "history", event.target.value)}
+                        >
+                          <option value="full">Everything</option>
+                          <option value="shallow">Latest commit only</option>
+                        </NativeSelect>
+                        <p className="text-xs text-muted-foreground">
+                          Armada checks what it downloads for leaked GitHub, Skillpack and Armada tokens before saving.
+                          Latest commit only is faster on large repositories.
+                        </p>
+                      </div>
+                    </div>
+                  </RepositoryDetails>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="col-start-4 row-start-1"
+                    aria-label={`Remove repository ${index + 1}`}
+                    disabled={rows.length === 1}
+                    onClick={() => setRows((current) => current.filter((item) => item.key !== row.key))}
+                  >
+                    <Trash2Icon />
+                  </Button>
+                </li>
+              ))}
+            </ol>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              // After the rows for the keyboard. In the create view, which is wide, it sits beside the legend and costs
+              // no line; the rebuild form lives in the narrow row panel and keeps it below.
+              className={cn(mode === "create" && "sm:absolute sm:-top-8 sm:right-0")}
+              disabled={rows.length >= MAX_GOLDEN_REPOS}
+              onClick={() => setRows((current) => [...current, keyed({ url: "", branch: "", dir: "" })])}
+            >
+              <PlusIcon /> Add repository
+            </Button>
+          </fieldset>
 
+          {mode === "create" && (
+            <div className="space-y-2">
+              {" "}
+              {!embedded && (
+                <>
+                  <div className="pt-2 text-sm font-medium">Machine</div>
+                  {providerChoice}
+                </>
+              )}
+              <div className="pt-2 text-sm font-medium">Visible to</div>
+              <LaunchChoice
+                inline
+                label="Who sees it"
+                presentation="chips"
+                value={chosenVisibility}
+                onChange={(value) => setChosenVisibility(value as "org" | "private")}
+                options={[
+                  {
+                    value: "org",
+                    label: `everyone in ${orgName}`,
+                    ...(!isAdmin ? { reason: "Only an organization admin can create a snapshot for everyone." } : {}),
+                  },
+                  { value: "private", label: "only you" },
+                ]}
+              />
+              <input type="hidden" name="visibility" value={chosenVisibility} />
+            </div>
+          )}
+        </SnapshotDetails>
         <div className="space-y-2">
           <Label htmlFor={`${id}-init`}>
             Setup script <span className="font-normal text-muted-foreground">optional</span>

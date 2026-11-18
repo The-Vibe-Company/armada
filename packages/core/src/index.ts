@@ -271,7 +271,12 @@ export {
   recordLaunchStageSql,
   summarizeLaunch,
 } from "./launch-stages.ts";
-export { type LaunchWorkdir, resolveLaunchWorkdir, resolveLaunchWorkdirAt } from "./launch-workdir.ts";
+export {
+  type LaunchWorkdir,
+  repositoryIdentity,
+  resolveLaunchWorkdir,
+  resolveLaunchWorkdirAt,
+} from "./launch-workdir.ts";
 export * from "./machine-size.ts";
 export { MCP_CATALOG, type McpCatalogId } from "./mcp-catalog.ts";
 export * from "./mcp-launch-selection.ts";
