@@ -334,6 +334,93 @@ test("concurrent stops within their deadline all take their final capture", asyn
   ]);
 });
 
+/** Four more live sandboxes on Modal whose provider calls hang (e.g. an app lookup that ignores
+ * cancellation) until released, sampled before the healthy fixture sandbox. */
+async function stalledModal(db: Awaited<ReturnType<typeof fixture>>["db"], id: string) {
+  const ids = Array.from({ length: 4 }, () => crypto.randomUUID());
+  const golden = (
+    await db.query<{ id: string }>(
+      `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
+      select org_id,owner_id,'stalled-modal','private','modal','master','image','workspace','main','app','{"repos":[],"init":[]}'
+      from sandboxes where id=$1 returning id`,
+      [id],
+    )
+  ).rows[0]!;
+  for (const [index, other] of ids.entries())
+    await db.query(
+      `insert into sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status)
+      select $1,'modal',$2,$4,org_id,owner_id,harness,status from sandboxes where id=$3`,
+      [other, `modal_stalled_${index}`, id, golden.id],
+    );
+  await db.query(`update sandboxes set outputs_checked_at=now()-interval '1 hour' where id=$1`, [id]);
+  let release = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const stalled = { readOutputs: () => held.then(() => null) } as unknown as Provider;
+  return { ids, release, stalled };
+}
+
+test("samples stalled in one provider's SDK past their deadline never stop a healthy provider's sample", async () => {
+  const { db, id, sql } = await fixture({ boatId: "healthy_sample_fixture" });
+  const { state, provider } = disks();
+  state.live = [file("memo.txt", "healthy")];
+  const modal = await stalledModal(db, id);
+  let lookups = 0;
+  // The Modal lookup itself never settles, as when the SDK ignores the sample's deadline.
+  const service = createSandboxOutputs(sql, KEY, async (sandboxId) => {
+    if (sandboxId === id) return provider;
+    lookups++;
+    await new Promise<void>(() => {});
+    return modal.stalled;
+  });
+  for (let index = 0; index < 4; index++) {
+    // Each sample's 25 s deadline elapses while its Modal lookup is still unresolved.
+    const deadline = new AbortController();
+    expect(await service.reconcileOne(deadline.signal)).toBe(true);
+    deadline.abort();
+  }
+  expect(lookups).toBe(4);
+  // Modal's four outstanding samples saturate Modal only: the healthy Boat sandbox is still claimed.
+  expect(await service.reconcileOne(signal())).toBe(true);
+  await service.drain();
+  expect(state.reads).toBe(1);
+  expect((await sql.query(`select name from sandbox_outputs where sandbox_id=$1`, [id])).rows).toEqual([
+    { name: "memo.txt" },
+  ]);
+  modal.release();
+});
+
+test("final captures stalled in one provider's SDK past their deadline never refuse a healthy provider's capture", async () => {
+  const { db, id, sql } = await fixture({ boatId: "healthy_final_fixture" });
+  const { state, provider } = disks();
+  state.live = [file("memo.txt", "final")];
+  const modal = await stalledModal(db, id);
+  // Four Modal stops pass their capture deadline while the provider read is still unresolved.
+  for (const other of modal.ids) {
+    const stop = new AbortController();
+    const capture = captureFinalOutputs(sql, modal.stalled, other, { key: KEY, signal: stop.signal });
+    await new Promise((resolve) => setImmediate(resolve));
+    stop.abort();
+    await expect(capture).rejects.toBeDefined();
+  }
+  try {
+    // Modal stays bounded: a fifth late Modal capture is skipped before its reader runs.
+    await expect(
+      captureFinalOutputs(sql, modal.stalled, modal.ids[0] as string, { key: KEY, signal: signal() }),
+    ).rejects.toThrow("output_collection_busy");
+    // The healthy Boat stop still takes its final capture.
+    await captureFinalOutputs(sql, provider, id, { key: KEY, signal: signal() });
+    expect(state.reads).toBe(1);
+    expect((await sql.query(`select name from sandbox_outputs where sandbox_id=$1`, [id])).rows).toEqual([
+      { name: "memo.txt" },
+    ]);
+  } finally {
+    modal.release();
+    await drainFinalOutputs();
+  }
+});
+
 test("a final capture whose deadline passes while its scan claim waits never holds stop or reads", async () => {
   const { id, sql } = await fixture({ boatId: "claim_fixture" });
   const { state, provider } = disks();

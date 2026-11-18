@@ -20,8 +20,10 @@ const ELIGIBLE = `provider in ('boat','modal','docker') and not application_secr
 /** The only provider surface output collection uses. */
 type OutputReader = Pick<Provider, "readOutputs">;
 
-/** SDKs may ignore cancellation once a request reached the provider. Callers wait at most until
- * their signal aborts; the outstanding read stays tracked, bounded and fenced from persisting. */
+/** SDKs may ignore cancellation once a request reached the provider (Modal's app lookup, sandbox
+ * lookup and exec creation take no signal). Callers wait at most until their signal aborts; the
+ * outstanding read stays tracked, bounded and fenced from persisting. The bound is per provider
+ * kind, so reads stalled in one provider's SDK never take capacity from healthy providers. */
 const OUTSTANDING_MAX = 4;
 /** Deadline of one background periodic sample (the shared worker loop never waits for it). */
 const SAMPLE_DEADLINE_MS = 25_000;
@@ -117,12 +119,12 @@ async function collect(
   await write;
 }
 
-/** Final captures that outlived their stop deadline and still hang in the provider SDK. */
-const finalLate = new Set<Promise<void>>();
+/** Final captures that outlived their stop deadline and still hang in the provider SDK, per provider kind. */
+const finalLate = new Map<string, Set<Promise<void>>>();
 
 /** Settle final captures that outlived their stop deadline (tests); late ones never persist. */
 export async function drainFinalOutputs(): Promise<void> {
-  await Promise.allSettled(finalLate);
+  await Promise.allSettled([...finalLate.values()].flatMap((late) => [...late]));
 }
 
 /** Final capture on Armada's stop path: after quiesce, before provider stop revokes compute.
@@ -137,10 +139,8 @@ export async function captureFinalOutputs(
 ): Promise<void> {
   const key = options.key ?? encryptionKey();
   if (!key) return;
-  // Earlier captures outlived their deadline and still hang in the provider SDK: skip rather than
-  // pile up; the snapshot stays. Concurrent stops that are still within their deadline never count.
-  if (finalLate.size >= OUTSTANDING_MAX) throw Error("output_collection_busy");
   const { signal } = options;
+  let kind: string | undefined;
   // The whole capture is bounded, from the scan claim on: a claim that waits on a row lock or a
   // pool connection must not hold stop dispatch either, and a claim that returns after the
   // deadline never reaches the provider.
@@ -149,15 +149,20 @@ export async function captureFinalOutputs(
     signal?.throwIfAborted();
     // Live compute only: an admitted stop keeps 'failed' rows failed while compute may still run.
     const row = (
-      await sql.query<{ provider_sandbox_id: string; scan: string }>(
+      await sql.query<{ provider: string; provider_sandbox_id: string; scan: string }>(
         `update public.sandboxes set outputs_checked_at=clock_timestamp()
         where id=$1 and (status in ('ready','running','stopping') or (status='failed' and stop_requested_at is not null and stopped_at is null))
         and provider_sandbox_id is not null and ${ELIGIBLE}
-        returning provider_sandbox_id,outputs_checked_at::text as scan`,
+        returning provider::text,provider_sandbox_id,outputs_checked_at::text as scan`,
         [id],
       )
     ).rows[0];
     if (!row) return;
+    kind = row.provider;
+    // Earlier captures of this provider kind outlived their deadline and still hang in its SDK:
+    // skip rather than pile up; the snapshot stays. Concurrent stops still within their deadline
+    // never count, and late captures of another provider kind never block this one.
+    if ((finalLate.get(kind)?.size ?? 0) >= OUTSTANDING_MAX) throw Error("output_collection_busy");
     signal?.throwIfAborted();
     await collect(sql, provider, id, row.provider_sandbox_id, row.scan, key, signal);
   })();
@@ -166,9 +171,12 @@ export async function captureFinalOutputs(
   try {
     await untilAborted(work, signal);
   } catch (error) {
-    if (signal?.aborted) {
-      finalLate.add(work);
-      void work.catch(() => {}).finally(() => finalLate.delete(work));
+    // A capture that expired before its claim returned never reached a provider: nothing to track.
+    if (signal?.aborted && kind) {
+      const late = finalLate.get(kind) ?? new Set<Promise<void>>();
+      finalLate.set(kind, late);
+      late.add(work);
+      void work.catch(() => {}).finally(() => late.delete(work));
     }
     throw error;
   }
@@ -180,28 +188,37 @@ export function createSandboxOutputs(
   providerFor: (id: string) => Promise<OutputReader>,
   docker?: (id: string) => OutputReader,
 ) {
-  /** In-flight samples with their deadline: provider SDK work may outlive cancellation. */
-  const pending = new Map<Promise<boolean>, AbortSignal>();
+  /** In-flight samples with their deadline and provider kind: provider SDK work may outlive cancellation. */
+  const pending = new Map<Promise<boolean>, { deadline: AbortSignal; kind: string }>();
   /** Snapshot transactions in progress (never started once a sample's deadline aborted). */
   const writes = new Set<Promise<unknown>>();
   return {
     async reconcileOne(signal: AbortSignal): Promise<boolean> {
-      if (!key || signal.aborted || pending.size >= OUTSTANDING_MAX) return false;
+      if (!key || signal.aborted) return false;
+      // Capacity is per provider kind: samples stalled in one provider's SDK (even past their
+      // deadline) only stop that kind from being claimed; healthy providers keep sampling.
+      const inFlight = new Map<string, number>();
+      for (const { kind } of pending.values()) inFlight.set(kind, (inFlight.get(kind) ?? 0) + 1);
+      const saturated = [...inFlight].filter(([, count]) => count >= OUTSTANDING_MAX).map(([kind]) => kind);
       const row = (
         await sql.query<{
           id: string;
           provider: string;
           provider_sandbox_id: string;
           scan: string;
-        }>(`update public.sandboxes set outputs_checked_at=clock_timestamp()
+        }>(
+          `update public.sandboxes set outputs_checked_at=clock_timestamp()
         where id=(select id from public.sandboxes where ${ELIGIBLE} and provider_sandbox_id is not null
         and status in ('running','ready') and (outputs_checked_at is null or outputs_checked_at<now()-interval '30 seconds')
-        order by outputs_checked_at nulls first for update skip locked limit 1) returning id,provider::text,provider_sandbox_id,outputs_checked_at::text as scan`)
+        and provider::text<>all($1::text[])
+        order by outputs_checked_at nulls first for update skip locked limit 1) returning id,provider::text,provider_sandbox_id,outputs_checked_at::text as scan`,
+          [saturated],
+        )
       ).rows[0];
       if (!row) return false;
       // The sample runs in the background under its own deadline (and the worker's shutdown), so
       // stop reconciliation, webhooks and other lanes never wait for a provider read. At most
-      // OUTSTANDING_MAX samples are in flight; drain() settles them; a late one never persists.
+      // OUTSTANDING_MAX samples per provider kind are in flight; drain() settles them; a late one never persists.
       // A per-sandbox failure (no python3, provider refusal, compute stopping) is that sandbox's
       // problem: keep the previous snapshot and retry after the 30 s fence.
       const deadline = AbortSignal.any([signal, AbortSignal.timeout(SAMPLE_DEADLINE_MS)]);
@@ -212,7 +229,7 @@ export function createSandboxOutputs(
           console.warn(JSON.stringify({ event: "sandbox_output_collection_failed", sandboxId: row.id }));
         })
         .then(() => true);
-      pending.set(work, deadline);
+      pending.set(work, { deadline, kind: row.provider });
       void work.then(() => pending.delete(work));
       return true;
     },
@@ -221,7 +238,7 @@ export function createSandboxOutputs(
      * and for snapshot writes already in progress, never for a provider call that ignores
      * cancellation (a read still in flight can only fail once the pool closes; its result is discarded). */
     async drain() {
-      await Promise.allSettled([...pending].map(([work, deadline]) => untilAborted(work, deadline)));
+      await Promise.allSettled([...pending].map(([work, { deadline }]) => untilAborted(work, deadline)));
       await Promise.allSettled([...writes]);
     },
     route(authenticate: (request: Request) => Promise<CallerResult>): Route {
