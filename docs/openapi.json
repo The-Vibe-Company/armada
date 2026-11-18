@@ -364,6 +364,23 @@
                               "null"
                             ]
                           },
+                          "baselineVersion": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "The developer baseline version the golden's snapshot was verified against; null when not recorded."
+                          },
+                          "baselineOutdated": {
+                            "type": "boolean",
+                            "description": "True when the golden has a snapshot built against an older developer baseline than this server's."
+                          },
                           "providerSandboxId": {
                             "type": [
                               "string",
@@ -472,6 +489,8 @@
                           "ownerId",
                           "provider",
                           "providerSnapshotId",
+                          "baselineVersion",
+                          "baselineOutdated",
                           "providerSandboxId",
                           "modal",
                           "boatSnapshotId",

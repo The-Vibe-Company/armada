@@ -186,6 +186,15 @@ const golden = z.object({
   ownerId: z.string(),
   provider: providerOutput,
   providerSnapshotId: z.string().nullable(),
+  baselineVersion: z
+    .number()
+    .int()
+    .positive()
+    .nullable()
+    .describe("The developer baseline version the golden's snapshot was verified against; null when not recorded."),
+  baselineOutdated: z
+    .boolean()
+    .describe("True when the golden has a snapshot built against an older developer baseline than this server's."),
   providerSandboxId: z.string().nullable(),
   modal: z
     .object({ workspace: z.string(), environment: z.string(), appId: z.string() })
