@@ -273,6 +273,33 @@ test("consecutive restart steers keep the marker and export every replacement tu
   }
 });
 
+test("a restart steer restarts an expired cursor from its own prior run", async () => {
+  const server = await harness({}, await sharedDatabase());
+  try {
+    const { client, token, people, boat, db } = server;
+    const mcp = await client(await token(people.member));
+    const id = (await call(mcp, "launch", { golden: "shared", harness: "codex", prompt: "first" })).data.id;
+    boat.finish("bx_1", "prompt_1", "finished");
+    expect((await call(mcp, "send", { id, prompt: "second" })).isError).toBe(false);
+    // An unresolved cursor from hours ago is outside reconciliation's window.
+    await db.query(
+      "insert into native_steer_cursors(sandbox_id,after_prompt_id,steer_id,pending_since,pending_steers) values($1,'prompt_1',gen_random_uuid(),now()-interval '2 hours',3)",
+      [id],
+    );
+    boat.provider.steer = async (input) => {
+      boat.finish(input.sandboxId, "prompt_2", "interrupted");
+      return { conversationId: "conv_1", promptId: "unpollable-steer-record", mode: "restart" };
+    };
+    expect((await call(mcp, "steer", { id, text: "change course" })).isError).toBe(false);
+    expect(
+      (await db.query("select after_prompt_id,pending_steers from native_steer_cursors where sandbox_id=$1", [id]))
+        .rows,
+    ).toEqual([{ after_prompt_id: "prompt_2", pending_steers: 1 }]);
+  } finally {
+    await server.close();
+  }
+});
+
 test("a restart steer whose replacement appears after the response still reaches export", async () => {
   const server = await harness({}, await sharedDatabase());
   try {
