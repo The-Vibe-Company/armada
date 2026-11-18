@@ -700,7 +700,7 @@ test("normal API and MCP accept Docker list/status/logs rows and acknowledge cle
     resume: false,
   });
   expect(await post("sandbox/stop", { id: f.sandbox.id })).toEqual({ id: f.sandbox.id, status: "stopped" });
-  expect(await callSharedTool(context, "delete", { id: f.sandbox.id })).toEqual({
+  expect(await post("sandbox/delete", { id: f.sandbox.id })).toEqual({
     id: f.sandbox.id,
     status: "deleted",
   });
