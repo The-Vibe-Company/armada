@@ -5,7 +5,7 @@ import {
   OUTPUT_MAX_FILES,
   OUTPUT_MAX_ORG_BYTES,
   OUTPUT_MAX_SANDBOX_BYTES,
-  type SandboxProviderId,
+  type SandboxPlacementProviderId,
   validOutputName,
 } from "@armada/core";
 import {
@@ -241,7 +241,7 @@ async function collect(
 }
 
 /** Final captures that outlived their stop deadline and still hang in the provider SDK. */
-const finalLate = new Map<Promise<void>, SandboxProviderId | undefined>();
+const finalLate = new Map<Promise<void>, SandboxPlacementProviderId | undefined>();
 
 /** Settle final captures that outlived their stop deadline (tests); late ones never persist. */
 export async function drainFinalOutputs(): Promise<void> {
@@ -261,7 +261,7 @@ export async function captureFinalOutputs(
   const key = options.key ?? encryptionKey();
   if (!key) return;
   const { signal } = options;
-  let providerKind: SandboxProviderId | undefined;
+  let providerKind: SandboxPlacementProviderId | undefined;
   // The whole capture is bounded, from the scan claim on: a claim that waits on a row lock or a
   // pool connection must not hold stop dispatch either, and a claim that returns after the
   // deadline never reaches the provider.
@@ -270,7 +270,7 @@ export async function captureFinalOutputs(
     signal?.throwIfAborted();
     // Live compute only: an admitted stop keeps 'failed' rows failed while compute may still run.
     const row = (
-      await sql.query<{ provider: SandboxProviderId; provider_sandbox_id: string; scan: string }>(
+      await sql.query<{ provider: SandboxPlacementProviderId; provider_sandbox_id: string; scan: string }>(
         `update public.sandboxes set outputs_checked_at=clock_timestamp()
         where id=$1 and (status in ('ready','running','stopping') or (status='failed' and stop_requested_at is not null and stopped_at is null))
         and provider_sandbox_id is not null and ${ELIGIBLE}
@@ -317,7 +317,7 @@ export function createSandboxOutputs(
   docker?: (id: string) => OutputReader,
 ) {
   /** In-flight samples with their deadline: provider SDK work may outlive cancellation. */
-  const pending = new Map<Promise<boolean>, { deadline: AbortSignal; provider: SandboxProviderId }>();
+  const pending = new Map<Promise<boolean>, { deadline: AbortSignal; provider: SandboxPlacementProviderId }>();
   /** Snapshot transactions in progress (never started once a sample's deadline aborted). */
   const writes = new Set<Promise<unknown>>();
   return {
@@ -333,7 +333,7 @@ export function createSandboxOutputs(
       const row = (
         await sql.query<{
           id: string;
-          provider: SandboxProviderId;
+          provider: SandboxPlacementProviderId;
           provider_sandbox_id: string;
           scan: string;
         }>(
