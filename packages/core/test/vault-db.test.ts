@@ -7,6 +7,7 @@ import { resolveGitHubAccess } from "../src/github.ts";
 import {
   addMember,
   createOrg,
+  listConnectionModels,
   listCredentials,
   listMembers,
   listOrgs,
@@ -469,21 +470,42 @@ describe("named model accounts", () => {
     });
   });
 
-  test("Morph model limits preserve exact native and OpenCode launch identities", async () => {
+  test("sealed Morph model lists survive key rotation and govern model limits", async () => {
     await withVault(async ({ store, people }) => {
+      const org = await createOrg(store, people.stan, "Morph account org");
       const account = await mutateCredentialAccount(store, KEY, people.stan, {
         action: "set",
         scope: "user",
         kind: "morph",
-        value: "morph_account_placeholder",
-        model: "morph-kimik31",
+        value: JSON.stringify({ apiKey: "morph_account_placeholder", models: ["morph-custom"] }),
+        model: "morph-custom",
         maxAgents: 1,
       });
+      const rotated = await mutateCredentialAccount(store, KEY, people.stan, {
+        action: "set",
+        scope: "user",
+        id: account.id!,
+        kind: "morph",
+        expectedVersion: account.version!,
+        value: "morph_rotated_placeholder",
+      });
+      const models = await listConnectionModels(store, KEY, { userId: people.stan, orgId: org.id });
+      expect(models).toEqual([
+        { id: account.id, scope: "user", models: [{ model: "morph-custom", input: null, output: null }] },
+      ]);
+      const resolved = await resolveCredentials(store, KEY, {
+        userId: people.stan,
+        orgId: org.id,
+        harness: "opencode",
+        credentialId: rotated.id!,
+      });
+      expect(resolved.env.OPENCODE_API_KEY).toBe("morph_rotated_placeholder");
+      expect(JSON.parse(resolved.env.ARMADA_OPENCODE_ENDPOINT!)).toMatchObject({ models: ["morph-custom"] });
       expect(account.maxAgents).toBe(2);
-      expect(account.modelLimits).toEqual({ "morph-kimik31": 1 });
+      expect(account.modelLimits).toEqual({ "morph-custom": 1 });
       for (const [model, maxAgents] of [
-        ["morph-kimik31", 2],
-        ["armada/morph-kimik31", 1],
+        ["morph-custom", 2],
+        ["armada/morph-custom", 1],
       ] as const) {
         const saved = await mutateCredentialAccount(store, KEY, people.stan, {
           action: "limits",
@@ -495,7 +517,7 @@ describe("named model accounts", () => {
         expect(saved.modelLimits?.[model]).toBe(maxAgents);
       }
       const saved = (await store.listCredentials("user", people.stan)).find((row) => row.id === account.id)!;
-      expect(saved.modelLimits).toEqual({ "morph-kimik31": 2, "armada/morph-kimik31": 1 });
+      expect(saved.modelLimits).toEqual({ "morph-custom": 2, "armada/morph-custom": 1 });
       await expect(
         mutateCredentialAccount(store, KEY, people.stan, {
           action: "limits",

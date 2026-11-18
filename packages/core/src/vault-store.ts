@@ -1,13 +1,12 @@
 import { createHash } from "node:crypto";
 import { accountModelCountsSql, accountWaitingCountSql, accountWorkingCountSql } from "./account-work-sql.ts";
-import { type AgentDefault, HARNESS_KINDS } from "./credentials.ts";
-import { decryptSecret } from "./crypto.ts";
+import { type AgentDefault, connectionModels, HARNESS_KINDS, parseCredentialValue } from "./credentials.ts";
+import { decryptSecret, encryptSecret } from "./crypto.ts";
 import type { CredentialKind, CredentialScope, MemberRole } from "./database.types.ts";
 import type { GitHubConnectionStore, GitHubUser, StoredGitHubConnection } from "./github.ts";
 import type { Sql } from "./golden-store.ts";
 import { harnessesForCredential, harnessForCredential, MODEL_CREDENTIAL_KINDS } from "./harnesses.ts";
 import { MODEL_CATALOG } from "./models.ts";
-import { MORPH_MODEL_IDS } from "./pricing/model-options.generated.ts";
 import type { CredentialInfo, MemberInfo, OrgSummary, VaultStore } from "./vault.ts";
 import { VaultError } from "./vault-error.ts";
 
@@ -90,11 +89,23 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
         let id = input.id;
         if (input.action === "set" && input.id && existing.rows[0]?.version !== input.expectedVersion)
           throw new VaultError("conflict", "The account revision changed. Restart login; no secret was overwritten.");
+        let sealed = valueEnc;
+        if (kind === "morph" && sealed && input.value !== undefined && !input.value.trimStart().startsWith("{")) {
+          const previous = existing.rows[0]?.value_enc;
+          if (previous) {
+            const raw = await decryptSecret(new Uint8Array(previous), encryptionKey);
+            if (raw.trimStart().startsWith("{")) {
+              const models = connectionModels(kind, raw).map(({ model }) => model);
+              const value = parseCredentialValue(kind, JSON.stringify({ apiKey: input.value, models }));
+              sealed = await encryptSecret(value, encryptionKey);
+            }
+          }
+        }
         if (input.action === "set") {
           if (id)
             await tx.query(
               "update public.credentials set value_enc=$2::bytea, status='active', expires_at=$3::timestamptz where id=$1",
-              [id, valueEnc, input.expiresAt ?? null],
+              [id, sealed, input.expiresAt ?? null],
             );
           else {
             const created = await tx.query<{ id: string }>(
@@ -103,7 +114,7 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
                 input.scope,
                 owner,
                 kind,
-                valueEnc,
+                sealed,
                 input.name?.trim() ?? "Default",
                 input.expiresAt ?? null,
                 input.model === undefined && input.maxAgents !== undefined
@@ -115,13 +126,15 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
           }
         }
         if (input.model !== undefined) {
-          let models: readonly string[] =
-            kind === "morph"
-              ? MORPH_MODEL_IDS.flatMap((model) => [model, `armada/${model}`])
-              : harnessesForCredential(kind).flatMap((harness) =>
-                  MODEL_CATALOG[harness].models.map((model) => model.id),
-                );
+          let models: readonly string[] = harnessesForCredential(kind).flatMap((harness) =>
+            MODEL_CATALOG[harness].models.map((model) => model.id),
+          );
           const encrypted = existing.rows[0]?.value_enc;
+          const morphValue = kind === "morph" ? (input.action === "set" ? sealed : encrypted) : undefined;
+          if (morphValue) {
+            const raw = await decryptSecret(new Uint8Array(morphValue), encryptionKey);
+            models = connectionModels(kind, raw).flatMap(({ model }) => [model, `armada/${model}`]);
+          }
           if (encrypted && (kind === "openai" || kind === "anthropic" || kind === "opencode")) {
             const raw = await decryptSecret(new Uint8Array(encrypted), encryptionKey);
             if (raw.startsWith("{")) {
