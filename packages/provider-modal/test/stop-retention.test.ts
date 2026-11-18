@@ -63,6 +63,17 @@ function fixture(stage: "scrub" | "snapshot", { productionDetach = false } = {})
           : x,
       );
     },
+    takeImage: async (name: string, sourceId: string, imageId: string, token: string) => {
+      const found = images.find(
+        (x) => x.info.name === name && x.collecting && x.sourceId === sourceId && x.imageId === imageId,
+      );
+      if (!found || found.collectToken) return false;
+      found.collectToken = token;
+      return true;
+    },
+    releaseImage: async (name: string, _sourceId: string, _imageId: string, token: string) => {
+      for (const x of images) if (x.info.name === name && x.collectToken === token) delete x.collectToken;
+    },
     imageReferenced: async () => false,
     tombstoneSources: async () => (images.some((x) => x.deleted) ? [stored.info.id] : []),
     watermark: async () => 1,
