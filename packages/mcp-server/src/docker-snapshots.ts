@@ -13,6 +13,7 @@ import { DockerHostDraining } from "./docker-capacity.ts";
 import { hostDrainingSql } from "./docker-host-drain.ts";
 import { createDockerHostStore } from "./docker-host-store.ts";
 import { SNAPSHOT_COLUMNS, type SnapshotRow, snapshotRecord } from "./docker-snapshot-data.ts";
+import { observeProviderCall } from "./request-observability.ts";
 import { scopedRuntimeSql as scopedSql } from "./runtime-enrolment.ts";
 
 const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/;
@@ -157,84 +158,97 @@ export function createDockerSnapshots(
         )
       ).token;
     if (!sql.transaction) throw new VaultError("unavailable", "Snapshot admission unavailable.");
-    await sql.transaction(async (tx) => {
-      await tx.query("select pg_advisory_xact_lock(hashtextextended($1,0))", [`docker-snapshot:${id}`]);
-      const hint = (
-        await tx.query<{ owner_id: string }>("select owner_id from public.docker_hosts where id=$1 and org_id=$2", [
-          hostId,
-          org,
-        ])
-      ).rows[0];
-      if (!hint) throw new VaultError("not_found", "Host not found.");
-      const members = await tx.query<{ user_id: string; role: string }>(
-        "select user_id,role from public.members where org_id=$1 and user_id in ($2,$3) order by user_id for update",
-        [org, caller.userId, hint.owner_id],
-      );
-      if (
-        !members.rows.some((m) => m.user_id === hint.owner_id) ||
-        !members.rows.some((m) => m.user_id === caller.userId && (visibility === "private" || m.role === "admin"))
-      )
-        throw new VaultError("forbidden", "Snapshot admission denied.");
-      const host = (
-        await tx.query<{ installation_id: string; draining: boolean }>(
-          `select installation_id,${hostDrainingSql("docker_hosts")} as draining from public.docker_hosts where id=$1 and org_id=$2 and owner_id=$3 and hash is not null and revoked_at is null for update`,
-          [hostId, org, hint.owner_id],
-        )
-      ).rows[0];
-      if (!host) throw new VaultError("not_found", "Host unavailable.");
-      if (host.draining) throw new DockerHostDraining();
-      const previous = (await tx.query<SnapshotRow>("select * from public.docker_snapshots where id=$1", [id])).rows[0];
-      if (previous) {
-        if (previous.owner_id !== caller.userId || previous.org_id !== org || previous.request_hash !== digest)
-          throw new VaultError("conflict", "Snapshot request changed.");
-        return;
-      }
-      if (
-        (
-          await tx.query(
-            "select id from public.docker_snapshots where host_id=$1 and status='building' and build_expires_at>now() limit 1",
-            [hostId],
+    // Host work is admitted only here: list, get and replays of a known request read the database.
+    await observeProviderCall(
+      "docker",
+      `snapshot.${rebuildOf ? "rebuild" : "create"}`,
+      () =>
+        sql.transaction!(async (tx) => {
+          await tx.query("select pg_advisory_xact_lock(hashtextextended($1,0))", [`docker-snapshot:${id}`]);
+          const hint = (
+            await tx.query<{ owner_id: string }>("select owner_id from public.docker_hosts where id=$1 and org_id=$2", [
+              hostId,
+              org,
+            ])
+          ).rows[0];
+          if (!hint) throw new VaultError("not_found", "Host not found.");
+          const members = await tx.query<{ user_id: string; role: string }>(
+            "select user_id,role from public.members where org_id=$1 and user_id in ($2,$3) order by user_id for update",
+            [org, caller.userId, hint.owner_id],
+          );
+          if (
+            !members.rows.some((m) => m.user_id === hint.owner_id) ||
+            !members.rows.some((m) => m.user_id === caller.userId && (visibility === "private" || m.role === "admin"))
           )
-        ).rows.length
-      )
-        throw new VaultError("conflict", "This host is already building a snapshot. Retry after that build finishes.");
-      const epochs = (
-        await tx.query<{ actor: string; issuer: string }>(
-          "select a.epoch::text as actor,i.epoch::text as issuer from public.mcp_actor_epochs a join public.mcp_actor_epochs i on i.org_id=a.org_id and i.user_id=$3 where a.org_id=$1 and a.user_id=$2",
-          [org, caller.userId, hint.owner_id],
-        )
-      ).rows[0];
-      if (!epochs) throw new VaultError("forbidden", "Snapshot authority unavailable.");
-      const generation = randomUUID(),
-        end = Date.now() + 3600000;
-      await tx.query(
-        `insert into public.docker_snapshots(id,org_id,owner_id,host_id,installation_id,name,visibility,config,request_hash,actor_epoch,issuer_epoch,generation,base_image,build_expires_at,built_on_version)
+            throw new VaultError("forbidden", "Snapshot admission denied.");
+          const host = (
+            await tx.query<{ installation_id: string; draining: boolean }>(
+              `select installation_id,${hostDrainingSql("docker_hosts")} as draining from public.docker_hosts where id=$1 and org_id=$2 and owner_id=$3 and hash is not null and revoked_at is null for update`,
+              [hostId, org, hint.owner_id],
+            )
+          ).rows[0];
+          if (!host) throw new VaultError("not_found", "Host unavailable.");
+          if (host.draining) throw new DockerHostDraining();
+          const previous = (await tx.query<SnapshotRow>("select * from public.docker_snapshots where id=$1", [id]))
+            .rows[0];
+          if (previous) {
+            if (previous.owner_id !== caller.userId || previous.org_id !== org || previous.request_hash !== digest)
+              throw new VaultError("conflict", "Snapshot request changed.");
+            return false;
+          }
+          if (
+            (
+              await tx.query(
+                "select id from public.docker_snapshots where host_id=$1 and status='building' and build_expires_at>now() limit 1",
+                [hostId],
+              )
+            ).rows.length
+          )
+            throw new VaultError(
+              "conflict",
+              "This host is already building a snapshot. Retry after that build finishes.",
+            );
+          const epochs = (
+            await tx.query<{ actor: string; issuer: string }>(
+              "select a.epoch::text as actor,i.epoch::text as issuer from public.mcp_actor_epochs a join public.mcp_actor_epochs i on i.org_id=a.org_id and i.user_id=$3 where a.org_id=$1 and a.user_id=$2",
+              [org, caller.userId, hint.owner_id],
+            )
+          ).rows[0];
+          if (!epochs) throw new VaultError("forbidden", "Snapshot authority unavailable.");
+          const generation = randomUUID(),
+            end = Date.now() + 3600000;
+          await tx.query(
+            `insert into public.docker_snapshots(id,org_id,owner_id,host_id,installation_id,name,visibility,config,request_hash,actor_epoch,issuer_epoch,generation,base_image,build_expires_at,built_on_version)
         values($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,$14,$15)`,
-        [
-          id,
-          org,
-          caller.userId,
-          hostId,
-          host.installation_id,
-          name,
-          visibility,
-          JSON.stringify(config),
-          digest,
-          epochs.actor,
-          epochs.issuer,
-          generation,
-          baseImage,
-          new Date(end),
-          VERSION,
-        ],
-      );
-      await createDockerHostStore(scopedSql(tx), key).enqueueSnapshot(actor, hostId, {
-        requestId: id,
-        operation: "buildSnapshot",
-        request: { sandboxId: id, generation, image: baseImage, ttlSeconds: 3600, expiresAt: end },
-        build: { id, ownerId: caller.userId, visibility, config, token, armadaVersion: VERSION },
-      });
-    });
+            [
+              id,
+              org,
+              caller.userId,
+              hostId,
+              host.installation_id,
+              name,
+              visibility,
+              JSON.stringify(config),
+              digest,
+              epochs.actor,
+              epochs.issuer,
+              generation,
+              baseImage,
+              new Date(end),
+              VERSION,
+            ],
+          );
+          await createDockerHostStore(scopedSql(tx), key).enqueueSnapshot(actor, hostId, {
+            requestId: id,
+            operation: "buildSnapshot",
+            request: { sandboxId: id, generation, image: baseImage, ttlSeconds: 3600, expiresAt: end },
+            build: { id, ownerId: caller.userId, visibility, config, token, armadaVersion: VERSION },
+          });
+          return true;
+        }),
+      // A replay found in the database queues nothing, so it is not a provider call.
+      (queued) => (queued ? true : null),
+    );
     const row = (await read(id))[0];
     if (!row) throw new VaultError("unavailable", "Snapshot outcome unknown; retry the same request ID.");
     return { snapshot: snapshotRecord(row), currentVersion: VERSION };

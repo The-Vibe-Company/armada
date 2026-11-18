@@ -61,34 +61,38 @@ type Provider = "boat" | "modal" | "docker";
 /**
  * One `provider_call` record per call made inside an HTTP request. `provider` may be resolved
  * late (the enrolled-runtime boundary learns it under its lock), and so may `operation`; `accepted` classifies a
- * returned value, so a refusal reply that does not throw still records `outcome: "error"`.
+ * returned value, so a refusal reply that does not throw still records `outcome: "error"`. `null` means no
+ * provider was reached after all (a replay answered from Armada's database), so nothing is recorded.
  */
 export async function observeProviderCall<T>(
   provider: Provider | (() => Provider | undefined),
   operation: string | (() => string),
   work: () => Promise<T>,
-  accepted: (result: T) => boolean = () => true,
+  accepted: (result: T) => boolean | null = () => true,
 ): Promise<T> {
   const request = current.getStore();
   if (!request) return work();
   const started = performance.now();
-  let outcome = "error";
+  let outcome: "ok" | "error" | null = "error";
   try {
     const result = await work();
-    if (accepted(result)) outcome = "ok";
+    const verdict = accepted(result);
+    outcome = verdict === null ? null : verdict ? "ok" : "error";
     return result;
   } finally {
-    const name = typeof provider === "function" ? provider() : provider;
-    request.log(
-      JSON.stringify({
-        event: "provider_call",
-        requestId: request.id,
-        ...(name ? { provider: name } : {}),
-        operation: redactForLog(typeof operation === "function" ? operation() : operation),
-        outcome,
-        durationMs: Math.round(performance.now() - started),
-      }),
-    );
+    if (outcome !== null) {
+      const name = typeof provider === "function" ? provider() : provider;
+      request.log(
+        JSON.stringify({
+          event: "provider_call",
+          requestId: request.id,
+          ...(name ? { provider: name } : {}),
+          operation: redactForLog(typeof operation === "function" ? operation() : operation),
+          outcome,
+          durationMs: Math.round(performance.now() - started),
+        }),
+      );
+    }
   }
 }
 

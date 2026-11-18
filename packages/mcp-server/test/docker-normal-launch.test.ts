@@ -3118,6 +3118,58 @@ test("failed snapshot machine facts persist a safe reason in get and list respon
   });
 });
 
+test("a failed snapshot build retried with the same request records host work only once", async () => {
+  const f = await snapshotFixture(),
+    id = randomUUID();
+  const input = {
+    org: f.actor.orgId,
+    hostId: f.hostId,
+    requestId: id,
+    name: "retried-build",
+    visibility: "private",
+    config: f.config,
+  };
+  const observed = async (work: () => Promise<unknown>) => {
+    const records: Record<string, unknown>[] = [];
+    let result: unknown;
+    const response = (await observeRequest(
+      async () => {
+        result = await work();
+        return Response.json({});
+      },
+      (line) => records.push(JSON.parse(line)),
+    )) as Response;
+    const requestId = response.headers.get("x-request-id");
+    return { result, providerCalls: records.filter((r) => r.event === "provider_call"), requestId };
+  };
+  const created = await observed(() => f.snapshots.command(f.caller, "create", input));
+  expect(created.providerCalls).toEqual([
+    {
+      event: "provider_call",
+      requestId: created.requestId,
+      provider: "docker",
+      operation: "snapshot.create",
+      outcome: "ok",
+      durationMs: expect.any(Number),
+    },
+  ]);
+  expect((await hosts.poll(f.hostToken, f.installationId))?.operation).toBe("buildSnapshot");
+  await hosts.complete(f.hostToken, f.installationId, {
+    requestId: id,
+    outcome: "failed",
+    reason: "snapshot_build_failed",
+  });
+  const retried = await observed(() => f.snapshots.command(f.caller, "create", input));
+  expect(retried.result).toMatchObject({ snapshot: { id, status: "failed" } });
+  expect(retried.providerCalls).toEqual([]);
+  for (const read of [
+    () => f.snapshots.command(f.caller, "get", { org: f.actor.orgId, id }),
+    () => f.snapshots.command(f.caller, "list", { org: f.actor.orgId }),
+  ])
+    expect((await observed(read)).providerCalls).toEqual([]);
+  expect(await hosts.poll(f.hostToken, f.installationId)).toBeNull();
+});
+
 test("a snapshot build that fails on the disk floor persists the disk reason the constraint admits", async () => {
   const db = database();
   const f = await snapshotFixture(),

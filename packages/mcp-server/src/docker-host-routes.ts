@@ -8,7 +8,6 @@ import { DockerHostDraining, DockerLimitsRefused } from "./docker-capacity.ts";
 import { type createDockerHostStore, DockerHostDenied } from "./docker-host-store.ts";
 import type { DockerSnapshots } from "./docker-snapshots.ts";
 import type { Route } from "./http.ts";
-import { observeProviderCall } from "./request-observability.ts";
 
 const machinePaths = [
   "/api/docker-host/register",
@@ -17,7 +16,6 @@ const machinePaths = [
   "/api/docker-host/unregister",
 ];
 const reusePath = "/api/docker-host/reuse-registration";
-const SNAPSHOT_HOST_WORK = new Set(["create", "rebuild"]);
 const ownerPaths = [
   "/api/v1/docker/snapshots/list",
   "/api/v1/docker/snapshots/get",
@@ -101,15 +99,10 @@ export function createDockerHostRoutes(
         const body: unknown = JSON.parse(await readBoundedText(request, path.includes("/snapshots/") ? 1048576 : 4096));
         if (!object(body)) throw new InvalidInput();
         if (path.includes("/snapshots/")) {
-          const snapshots = options.snapshots;
-          if (!snapshots) throw new InvalidInput();
-          const operation = path.split("/").at(-1) ?? "";
-          const command = () => snapshots.command(result.caller, operation, body);
-          // Only create and rebuild queue host work; list and get read Armada's database alone.
-          const snapshot = SNAPSHOT_HOST_WORK.has(operation)
-            ? await observeProviderCall("docker", `snapshot.${operation}`, command)
-            : await command();
-          return Response.json(snapshot, { headers });
+          if (!options.snapshots) throw new InvalidInput();
+          return Response.json(await options.snapshots.command(result.caller, path.split("/").at(-1) ?? "", body), {
+            headers,
+          });
         }
         fields(
           body,

@@ -76,7 +76,7 @@ test("a draining snapshot refusal is a typed conflict the dashboard can show, no
   });
 });
 
-test("snapshot list and get read only the database, so only create and rebuild record a provider call", async () => {
+test("snapshot routes record no provider call themselves; the service records host-work admission", async () => {
   const f = await fixture();
   const route = createDockerHostRoutes(f.store, f.authenticate, {
     publicUrl: "https://public.example",
@@ -90,21 +90,7 @@ test("snapshot list and get read only the database, so only create and rebuild r
     )) as Response;
     expect(response.status).toBe(200);
     const requestId = response.headers.get("x-request-id");
-    expect(records).toEqual([
-      ...(["create", "rebuild"].includes(operation)
-        ? [
-            {
-              event: "provider_call",
-              requestId,
-              provider: "docker",
-              operation: `snapshot.${operation}`,
-              outcome: "ok",
-              durationMs: expect.any(Number),
-            },
-          ]
-        : []),
-      expect.objectContaining({ event: "http_request", requestId, status: 200 }),
-    ]);
+    expect(records).toEqual([expect.objectContaining({ event: "http_request", requestId, status: 200 })]);
   }
 });
 
