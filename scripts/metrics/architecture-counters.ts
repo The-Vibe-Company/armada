@@ -12,8 +12,9 @@ const migrationPath = /^supabase\/migrations\/[^/]+\.sql$/;
 const sqlSources = /\.(?:sql|tsx?)$/;
 const statusInsert = /\binsert\s+into\s+(?:public\.)?sandboxes\s*\([^)]*\bstatus\b[^)]*\)/i;
 const statusUpsert = /\.from\(["']sandboxes["']\)\s*\.(?:insert|update|upsert)\s*\(\s*\{[^}]*\bstatus\s*:/s;
+// Skip SQL string literals and simple subqueries before looking for the outer WHERE.
 const updateSet =
-  /(?:\bupdate\s+(?:public\.)?([a-z_][a-z_0-9]*)(?:\s+(?:as\s+)?[a-z_][a-z_0-9]*)?|\binsert\s+into\s+(?:public\.)?([a-z_][a-z_0-9]*)\b[^;`]*?\bon\s+conflict\b[^;`]*?\bdo\s+update)\s+set\s+([\s\S]*?)(?=\bwhere\b|\breturning\b|[;`]|$)/gi;
+  /(?:\bupdate\s+(?:public\.)?([a-z_][a-z_0-9]*)(?:\s+(?:as\s+)?[a-z_][a-z_0-9]*)?|\binsert\s+into\s+(?:public\.)?([a-z_][a-z_0-9]*)\b[^;`]*?\bon\s+conflict\b[^;`]*?\bdo\s+update)\s+set\s+((?:'(?:''|[^'`])*'|\([^();`]*\)|(?!(?:\bwhere\b|\breturning\b|[;`]))[\s\S])*)/gi;
 const statusAssignment = /(?:^|,)\s*status\s*=/i;
 const leaseAssignment =
   /(?:^|,)\s*(?:[a-z_]*lease_until|lease_expires_at|worker_expires_at|claim_until|dispatch_until)\s*=\s*(?!null\b)\S/i;
