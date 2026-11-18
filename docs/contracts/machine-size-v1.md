@@ -10,9 +10,8 @@ Source of truth: browser-safe `@armada/core` exports from
   Clear with `{version:1,golden:null,repositories:{}}`.
 - MCP `golden_size_policy` uses the same fields and result.
 - HTTP launch accepts optional `size` and `repo` on `POST /api/v1/sandbox/launch`.
-- Keep using the MCP `launch_sized_v1` tool (`SIZED_LAUNCH_TOOL_V1`) with
-  `size_policy_version: 1` when sizing matters. The MCP versioned tool rejects
-  unsupported servers before allocation. Send each launch once.
+- For MCP, use `launch` with optional `size`. The launch response records
+  the applied policy in `machineSize`.
 - The supported sizes are `small | medium | large | xlarge`. Boat's native
   `default` is canonical `medium`.
 - Evidence: HTTP launch `sandbox.machineSize`; MCP launch/list/status/wait

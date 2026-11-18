@@ -4,8 +4,58 @@
 and assigns every file exactly once to six nonempty shards. Stage new files
 before checking locally. Run a shard with `bun scripts/ci/unit-shards.ts 1`
 (through `6`). Shard 1 also runs static checks, sharing checkout/Bun/dependencies;
-the planner reserves 24 seconds for their measured work and extra full-history setup before placing tests.
+the planner starts each shard with its measured static reserve from
+`test-durations.json` before placing tests. An omitted shard has zero reserve.
 The required aggregate remains exactly `Lint, typecheck and test`.
+
+## Refresh timing data
+
+Refresh `test-durations.json` manually from green CI runs. Update `files` and
+`workers` from the worker completion logs described below. Update `static` from
+Actions step timestamps with the following command. Static steps belong between
+dependency installation and runtime preparation in the unit matrix.
+
+```sh
+python3 - <<'PYTHON'
+from datetime import datetime
+from json import dumps, loads
+from statistics import median
+from subprocess import check_output
+
+def api(path):
+    return loads(check_output(["gh", "api", path]))
+
+repo = "repos/The-Vibe-Company/armada/actions"
+runs = api(f"{repo}/workflows/ci.yml/runs?event=merge_group&status=success&per_page=6")["workflow_runs"]
+assert len(runs) == 6, "Expected six green queue runs"
+samples = {}
+for run in runs:
+    jobs = api(f"{repo}/runs/{run['id']}/attempts/{run['run_attempt']}/jobs?per_page=100")["jobs"]
+    for job in jobs:
+        if not job["name"].startswith("Unit tests ("):
+            continue
+        shard = int(job["name"].split("(")[1].split("/")[0])
+        steps = job["steps"]
+        names = [step["name"] for step in steps]
+        first = names.index("Run bun install --frozen-lockfile") + 1
+        last = names.index("Run bun scripts/prepare-runtime.ts")
+        assert first <= last, "Expected static steps before runtime preparation"
+        seconds = sum(
+            (datetime.fromisoformat(step["completed_at"].replace("Z", "+00:00"))
+             - datetime.fromisoformat(step["started_at"].replace("Z", "+00:00"))).total_seconds()
+            for step in steps[first:last] if step["conclusion"] == "success"
+        )
+        print(run["id"], shard, seconds)
+        samples.setdefault(shard, []).append(seconds)
+
+assert all(len(samples[shard]) == 6 for shard in range(1, 7))
+print("static =", dumps({shard: median(values) for shard, values in sorted(samples.items()) if any(values)}))
+PYTHON
+```
+
+A PR that adds a static step to a shard measures it on its own CI run and raises
+that shard's reserve in the same PR. Use the same jobs endpoint with the PR's
+green run ID and attempt and measure the added step from its timestamps.
 
 ## Worker isolation
 

@@ -12,7 +12,7 @@
     "armada": "bun packages/cli/src/main.ts",
     "lint": "biome check . && bun scripts/ci/docs-guard.ts && bun scripts/ci/table-owners.ts",
     "format": "biome check --write .",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p apps/dashboard",
+    "typecheck": "node --max-old-space-size=1536 node_modules/typescript/bin/tsc --noEmit && node --max-old-space-size=1536 node_modules/typescript/bin/tsc --noEmit -p apps/dashboard",
     "test": "bun test",
     "build": "bun scripts/build.ts",
     "build:all": "bun scripts/build.ts --all",

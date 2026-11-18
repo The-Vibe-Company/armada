@@ -28,6 +28,12 @@ selecting model accounts, creating goldens/templates, or configuring variables.
 Manage templates and default skill pins through the dashboard or the authenticated
 REST API. MCP `template_launch` launches an existing template.
 
+For MCP coordinator launches, call `launch` with optional `size`, a stable
+`idempotencyKey` and an `externalRef`. After an uncertain response, repeat the
+same call with the same key, then use `list` with the reference to find any
+registered sandbox. Escalate unresolved allocations with the original key and
+any receipt UUID returned.
+
 ## 2. Choose before launching
 
 - Inspect `armada snapshot list --json` and `armada template list --json`.
