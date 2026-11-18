@@ -1517,6 +1517,59 @@ test("lifecycle records readiness and confirms extend/list, closed idle steer re
   expect(fake.lines.join("")).not.toContain("secret");
 });
 
+test("resume wait reports only the redacted shape of an invalid response", async () => {
+  const invalidResponses = [
+    {
+      response: json({ status: "starting", providerState: null, prompt: null, settled: false, timedOut: true }),
+      shape: {
+        body: "object",
+        status: "starting",
+        providerState: "null",
+        prompt: "null",
+        promptId: "missing",
+        promptIdMatches: false,
+        state: "missing",
+        settled: false,
+        timedOut: true,
+      },
+    },
+    {
+      response: json({
+        status: "secret sandbox status",
+        prompt: { promptId: "secret prompt id", state: "secret state", reason: "secret reason" },
+        "secret key": "secret value",
+      }),
+      shape: {
+        body: "object",
+        status: "string",
+        providerState: "missing",
+        prompt: "object",
+        promptId: "string",
+        promptIdMatches: false,
+        state: "string",
+        settled: "missing",
+        timedOut: "missing",
+      },
+    },
+    {
+      response: new Response("secret non-JSON body", { status: 200 }),
+      shape: { body: "unparseable", httpStatus: 200 },
+    },
+  ];
+  for (const { response, shape } of invalidResponses) {
+    const fake = lifecycleFixture("none", (call) =>
+      call.path === "sandbox/wait" && call.body.prompt_id === "turn-2" ? response : undefined,
+    );
+    expect(await fake.run()).toBe(false);
+    expect(fake.receipts().find((line) => line.step === "resume_wait")).toMatchObject({
+      pass: false,
+      code: "invalid_response",
+      waitResponse: shape,
+    });
+    expect(fake.lines.join("")).not.toContain("secret");
+  }
+});
+
 test("lifecycle failures reject false receipts and report unknown launches or leftover IDs without replaying resume", async () => {
   for (const fault of [
     "steer_admitted",
