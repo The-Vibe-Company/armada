@@ -278,7 +278,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         signal?.throwIfAborted();
         const { sandboxes } = await client.cpClient.sandboxListV2(
           { appId, tags, includeFinished: false, ...(beforeTimestamp === undefined ? {} : { beforeTimestamp }) },
-          { signal },
+          signal ? { signal } : undefined,
         );
         if (sandboxes.length === 0) return;
         for (const sandbox of sandboxes) {
