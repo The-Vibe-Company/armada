@@ -143,6 +143,14 @@ export class ToolError extends Error {
   }
 }
 
+export function assertSendConversation(requested: unknown, current: string | undefined): void {
+  if (requested !== undefined && requested !== current)
+    throw new ToolError(
+      "conflict",
+      "A sandbox has one conversation. Launch another sandbox for a separate conversation.",
+    );
+}
+
 export const serverInfo = { name: "armada" } as const;
 
 const buildOutput = {
@@ -539,15 +547,8 @@ export function createArmadaServer(context: ToolContext, version: string, option
               throw new VaultError("credential_binding_required", CREDENTIAL_BINDING_GUIDANCE);
             const refusal = sandboxControlRefusal(found, context.now(), name);
             if (refusal) throw new ToolError("sandbox_terminal", refusal);
-            if (
-              name === "send" &&
-              input.conversation_id !== undefined &&
-              input.conversation_id !== found.conversationIds.at(-1)
-            )
-              throw new ToolError(
-                "conflict",
-                "A sandbox has one conversation. Launch another sandbox for a separate conversation.",
-              );
+            if (name === "send" && !context.accountTurns && input.conversation_id !== undefined)
+              assertSendConversation(input.conversation_id, found.conversationIds.at(-1));
           }
           if (
             name === "stop" &&

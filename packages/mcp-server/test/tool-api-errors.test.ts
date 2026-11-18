@@ -1,4 +1,4 @@
-import { expect, mock, spyOn, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { LaunchError, ProviderError } from "@armada/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { callSharedTool, ToolApiError } from "../src/tool-api.ts";
@@ -174,15 +174,9 @@ test.each([
   { conversationIds: [], requested: "new" },
   { conversationIds: ["current"], requested: "different" },
   { conversationIds: ["previous", "current"], requested: "previous" },
-])("send refuses $requested before queue admission", async ({ conversationIds, requested }) => {
+])("send refuses $requested before direct dispatch", async ({ conversationIds, requested }) => {
   const ctx = context(new Error(), conversationIds);
-  const accept = mock(async () => ({
-    id: "sandbox",
-    promptId: "queued_prompt",
-    conversationId: "current",
-    status: "queued" as const,
-  }));
-  ctx.accountTurns = { ...ctx.accountTurns!, accept };
+  const provider = spyOn(ctx, "provider");
 
   await expect(
     callSharedTool(ctx, "send", { id: "sandbox", prompt: "Continue", conversation_id: requested }),
@@ -191,5 +185,5 @@ test.each([
     status: 409,
     message: "A sandbox has one conversation. Launch another sandbox for a separate conversation.",
   });
-  expect(accept).not.toHaveBeenCalled();
+  expect(provider).not.toHaveBeenCalled();
 });
