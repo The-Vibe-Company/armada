@@ -119,15 +119,32 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
       );
       return result.rows.map((x) => revive(x.record));
     },
-    async lease(id, work, mode) {
+    async lease(id, work, guard) {
+      const signal = guard?.signal;
+      async function withAuthority<T>(work: (tx: Sql) => Promise<T>): Promise<T> {
+        if (!guard) return work(sql);
+        if (!sql.transaction)
+          throw refusal("provider_routing_unavailable", "Transactional SQL is required for a guarded Modal lease.");
+        signal?.throwIfAborted();
+        return sql.transaction(async (tx) => {
+          await guard(tx);
+          signal?.throwIfAborted();
+          const result = await work(tx);
+          signal?.throwIfAborted();
+          return result;
+        });
+      }
       await get(id);
+      signal?.throwIfAborted();
       const token = randomUUID();
       // Durable boot retries need to outlive a crashed adapter lease. Renew
       // while the process is alive, including during slow Modal calls.
-      const duration = mode === "launch" ? 45 : 900;
-      const claim = await sql.query(
-        `update public.modal_machines set lease_id=$3,lease_until=clock_timestamp()+$4::integer*interval '1 second' where scope=$1 and id=$2 and (lease_until is null or lease_until<=clock_timestamp()) returning id`,
-        [key, id, token, duration],
+      const duration = guard ? 45 : 900;
+      const claim = await withAuthority((tx) =>
+        tx.query(
+          `update public.modal_machines set lease_id=$3,lease_until=clock_timestamp()+$4::integer*interval '1 second' where scope=$1 and id=$2 and (lease_until is null or lease_until<=clock_timestamp()) returning id`,
+          [key, id, token, duration],
+        ),
       );
       if (!claim.rows.length)
         throw new ProviderError({
@@ -137,30 +154,48 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
           message: "Sandbox lifecycle is leased by another controller.",
           retryable: true,
         });
-      const heartbeat =
-        mode === "launch"
-          ? setInterval(() => {
-              void sql
-                .query(
+      const heartbeat = guard
+        ? setInterval(async () => {
+            try {
+              await withAuthority((tx) =>
+                tx.query(
                   `update public.modal_machines set lease_until=clock_timestamp()+$4::integer*interval '1 second'
-           where scope=$1 and id=$2 and lease_id=$3 and lease_until>clock_timestamp()`,
+                   where scope=$1 and id=$2 and lease_id=$3 and lease_until>clock_timestamp()`,
                   [key, id, token, duration],
-                )
-                .catch(() => {});
-            }, 10_000)
-          : undefined;
+                ),
+              );
+            } catch {
+              // Without live authority the last lease expires, even if the SDK call never returns.
+            }
+          }, 10_000)
+        : undefined;
       heartbeat?.unref();
+      const stopHeartbeat = () => clearInterval(heartbeat);
+      signal?.addEventListener("abort", stopHeartbeat, { once: true });
       try {
-        return await work(await get(id), async (row) => {
-          await authorize(sql);
-          const result = await sql.query(
-            `update public.modal_machines set record=$4::jsonb,lease_until=clock_timestamp()+$5::integer*interval '1 second' where scope=$1 and id=$2 and lease_id=$3 and lease_until>clock_timestamp() returning id`,
-            [key, id, token, JSON.stringify(row), duration],
-          );
-          if (!result.rows.length) throw refusal("conflict", "Lifecycle lease expired; result is fenced.");
+        const row = await get(id);
+        signal?.throwIfAborted();
+        return await work(row, async (row, mode) => {
+          const rollback = mode === "undispatched_create";
+          const update = async (tx: Sql) => {
+            await authorize(tx);
+            if (!rollback) signal?.throwIfAborted();
+            const result = await tx.query(
+              `update public.modal_machines set record=$4::jsonb,
+                 lease_until=case when $6::boolean then lease_until else clock_timestamp()+$5::integer*interval '1 second' end
+               where scope=$1 and id=$2 and lease_id=$3 and lease_until>clock_timestamp()
+                 and (not $6 or (record->>'phase'='creating' and record->>'physicalId' is null))
+               returning id`,
+              [key, id, token, JSON.stringify(row), duration, rollback],
+            );
+            if (!result.rows.length) throw refusal("conflict", "Lifecycle lease expired; result is fenced.");
+          };
+          if (rollback) await update(sql);
+          else await withAuthority(update);
         });
       } finally {
-        clearInterval(heartbeat);
+        stopHeartbeat();
+        signal?.removeEventListener("abort", stopHeartbeat);
         await sql.query(
           `update public.modal_machines set lease_id=null,lease_until=null where scope=$1 and id=$2 and lease_id=$3`,
           [key, id, token],

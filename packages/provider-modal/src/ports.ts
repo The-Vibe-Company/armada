@@ -6,6 +6,7 @@ import type {
   HarnessCapabilities,
   MachineSize,
   ModalBinding,
+  ProviderDispatchGuard,
   SandboxInfo,
   SnapshotInfo,
   Sql,
@@ -141,6 +142,9 @@ export interface SavedImage {
   collectToken?: string;
   collectUntil?: number;
 }
+/** A refused dispatch can restore a reservation under its unexpired lease without renewing it. */
+export type SaveMachine = (row: Machine, mode?: "undispatched_create") => Promise<void>;
+
 /** Store instances are bound to the authenticated caller AND immutable Modal binding. No unscoped lookup. */
 export interface ModalStore {
   reserve(key: string, machine: Machine, tx?: Sql): Promise<Machine>;
@@ -152,8 +156,8 @@ export interface ModalStore {
   /** Atomic, expiring lease; concurrent controllers fail closed. */
   lease<T>(
     id: string,
-    work: (row: Machine, save: (row: Machine) => Promise<void>) => Promise<T>,
-    mode?: "launch",
+    work: (row: Machine, save: SaveMachine) => Promise<T>,
+    launchGuard?: ProviderDispatchGuard,
   ): Promise<T>;
   image(name: string, tx?: Sql): Promise<SavedImage>;
   saveImage(image: SavedImage): Promise<void>;

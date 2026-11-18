@@ -6,6 +6,7 @@ import type {
   ForkRequest,
   Harness,
   Provider,
+  ProviderDispatchGuard,
   SandboxInfo,
   SnapshotInfo,
   Sql,
@@ -45,6 +46,7 @@ import type {
   RunnerDistribution,
   RunnerTransport,
   SavedImage,
+  SaveMachine,
   Scope,
   SshPreparation,
 } from "./ports.ts";
@@ -337,9 +339,9 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
   }
   async function create(
     row: Machine,
-    save: (row: Machine) => Promise<void>,
+    save: SaveMachine,
     env: Readonly<Record<string, string>>,
-    beforeDispatch?: () => Promise<void>,
+    beforeDispatch?: ProviderDispatchGuard,
   ): Promise<SandboxInfo> {
     const app = await bound();
     let sb: Sandbox;
@@ -375,7 +377,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         // delete a reservation once the still-owned lease publishes that fact.
         row.phase = "reserved";
         delete row.grantExpiresAt;
-        await save(row);
+        await save(row, "undispatched_create");
         throw error;
       }
       sb = await measure("modal_sandbox_create", () =>
@@ -480,7 +482,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
   async function launch(
     request: CreateGoldenRequest | ForkRequest,
     golden: boolean,
-    beforeDispatch?: () => Promise<void>,
+    beforeDispatch?: ProviderDispatchGuard,
   ): Promise<SandboxInfo> {
     let size: Machine["size"];
     if ("size" in request && request.size !== undefined) {
@@ -498,7 +500,8 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     const launchId = "from" in request ? request.modalLaunchId : undefined;
     if (
       launchId !== undefined &&
-      (key !== launchId ||
+      (!beforeDispatch ||
+        key !== launchId ||
         request.labels?.sandbox !== launchId ||
         !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(launchId))
     )
@@ -550,6 +553,9 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         )
           throw refusal("sandbox_not_ready", "Snapshot revision is no longer ready.");
         sourceImage = { scopeKey: sourceScope, name: request.from, imageId: current.imageId };
+        // The request row stays locked until the child reservation commits.
+        // A successor cannot claim cleanup and prove absence while this write can still land.
+        if (launchId !== undefined) await beforeDispatch!(tx);
         return reserve(sourceImage, tx);
       });
     }
@@ -587,7 +593,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
             ? create(current, save, "env" in request ? (request.env ?? {}) : {}, beforeDispatch)
             : Promise.resolve(sandboxInfo(current));
         },
-        launchId === undefined ? undefined : "launch",
+        launchId === undefined ? undefined : beforeDispatch,
       );
     } catch (error) {
       if (
@@ -1956,8 +1962,20 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       if (resume) return provider.delete({ sandboxId: request.sandboxId });
       return { status: "deleted" };
     },
-    async delete({ sandboxId }, beforeDispatch) {
+    async delete({ sandboxId, modalLaunchId }, beforeDispatch) {
       await boundNotAbsence();
+      if (modalLaunchId !== undefined) {
+        if (!beforeDispatch || modalLaunchSandboxId(modalLaunchId) !== sandboxId)
+          throw refusal("invalid_request", "Invalid row-first Modal cleanup identity.");
+        await beforeDispatch();
+        // Dispatch requires a reservation committed under the live boot claim.
+        // After cleanup claims the request, a missing exact-key row proves pre-create absence.
+        const reservation = await store.findByRequestKey(modalLaunchId);
+        if (!reservation) return { status: "deleted" };
+        if (reservation.info.id !== sandboxId)
+          throw refusal("conflict", "Modal cleanup key belongs to another launch.");
+        assertMachineSource(reservation);
+      }
       await store.lease(
         sandboxId,
         async (row, save) => {
@@ -2011,7 +2029,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           row.phase = "deleted";
           await save(row);
         },
-        beforeDispatch ? "launch" : undefined,
+        beforeDispatch,
       );
       // The target's compute and recovery images are gone and durably recorded, so the receipt
       // is published now. Retired images of other sources are collected detached, once. Each is

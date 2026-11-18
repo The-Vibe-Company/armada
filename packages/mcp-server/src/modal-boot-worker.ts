@@ -319,9 +319,11 @@ export function createModalBootWorker(
         await reschedule();
         return;
       }
-      const liveDispatch = async () =>
-        (
-          await sql.query<{ expired: boolean }>(
+      const liveDispatch = async (tx?: Sql) => {
+        // Match settlement's lock order and serialize with stop before guarding provider writes.
+        if (tx) await tx.query("select id from public.sandboxes where id=$1 for update", [id]);
+        return (
+          await (tx ?? sql).query<{ expired: boolean }>(
             `select r.dispatch_deadline<=clock_timestamp() as expired
              from public.provider_launch_requests r join public.sandboxes s on s.id=r.sandbox_id
              join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
@@ -332,15 +334,21 @@ export function createModalBootWorker(
                  recovery
                    ? "r.phase='cleanup_pending' and r.fence_id is not null"
                    : `r.phase='booting' and ${cleanup ? "s.status='stopping' and s.stop_requested_at is not null" : BOOT_ALLOWED}`
-               }`,
+               }
+             ${tx ? "for update of r" : ""}`,
             token,
           )
         ).rows[0];
-      const guardDispatch = async () => {
-        const dispatch = await liveDispatch();
-        if (!accepting || signal.aborted || !dispatch || (!recovery && dispatch.expired))
-          throw new LaunchError("outcome_unknown", "Modal dispatch authority expired or changed.", { sandboxId: id });
       };
+      const guardDispatch = Object.assign(
+        async (tx?: Sql) => {
+          signal.throwIfAborted();
+          const dispatch = await liveDispatch(tx);
+          if (!accepting || signal.aborted || !dispatch || (!recovery && dispatch.expired))
+            throw new LaunchError("outcome_unknown", "Modal dispatch authority expired or changed.", { sandboxId: id });
+        },
+        { signal },
+      );
       if (cleanup) {
         const dispatch = await liveDispatch();
         if (signal.aborted) return;
@@ -353,10 +361,10 @@ export function createModalBootWorker(
           return;
         }
         try {
-          // The Modal adapter verifies the pinned scope and logical ID, then
-          // resumes any deletion by durable machine record. Missing record is
-          // still ambiguous because an earlier dispatch might not have reserved it yet.
-          const removed = await provider.delete({ sandboxId: claim.provider_sandbox_id }, guardDispatch);
+          const removed = await provider.delete(
+            { sandboxId: claim.provider_sandbox_id, modalLaunchId: id },
+            guardDispatch,
+          );
           if (signal.aborted) return;
           if (removed.status === "deleted") {
             await settle(

@@ -353,6 +353,7 @@ export {
   type PromptState,
   type PromptStatus,
   type Provider,
+  type ProviderDispatchGuard,
   ProviderError,
   type ProviderErrorCode,
   type ProviderErrorInit,

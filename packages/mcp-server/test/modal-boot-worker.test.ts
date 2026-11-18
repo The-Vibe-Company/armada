@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
 import { type GoldenRecord, modalLaunchSandboxId, type Provider, ProviderError, type Sql } from "@armada/core";
+import { createModalProvider, createSqlModalStore, type RunnerDistribution } from "@armada/provider-modal";
+import type { ModalClient } from "modal";
 import { createSqlData } from "../src/data.ts";
 import { createModalBootWorker } from "../src/modal-boot-worker.ts";
 import { createOrdinaryLaunchReceipts } from "../src/ordinary-launch-receipts.ts";
@@ -11,6 +13,7 @@ const database = rowOnlyDatabase();
 test.each([
   "restart after an uncertain fork",
   "stop before dispatch",
+  "release a fence after a crash before reservation",
   "fence an expired stop without contacting Modal",
   "fence a stop that expires during authority resolution",
   "fence a stop that expires inside the adapter",
@@ -126,6 +129,41 @@ test.each([
   await first.drain();
   expect(await persisted()).toMatchObject({ phase: "booting", fenced: true, lease_epoch: "1" });
   first.stopAdmission();
+  if (scenario === "release a fence after a crash before reservation") {
+    // The first claim persisted boot intent but exited without a Modal reservation.
+    await db.query(
+      "update provider_launch_requests set next_attempt_at=now(),dispatch_deadline=now()-interval '1 second' where sandbox_id=$1",
+      [id],
+    );
+    const scope = { orgId: people.org, userId: people.owner, visibility: "private" as const, binding: golden.modal! };
+    const adapter = createModalProvider({
+      scope,
+      store: createSqlModalStore(sql, scope),
+      appName: "fixture",
+      client: { apps: { fromName: async () => ({ appId: scope.binding.appId }) } } as unknown as ModalClient,
+      distribution: {} as RunnerDistribution,
+      runner: {
+        call: async () => {
+          throw new Error("No runner exists.");
+        },
+      },
+    });
+    const recovery = createModalBootWorker(sql, ENCRYPTION_KEY, async () => ({
+      ...adapter,
+      backendIdentity: provider.backendIdentity!,
+    }));
+    for (const phase of ["cleanup_pending", "failed"]) {
+      expect(await recovery.reconcileOne(signal)).toBe(true);
+      await recovery.drain();
+      expect(await persisted()).toMatchObject({ phase });
+    }
+    expect(await persisted()).toMatchObject({ status: "failed", fenced: false, sealed: false });
+    await db.query("select set_config('request.jwt.claim.sub',$1,false)", [people.owner]);
+    expect((await db.query("select remove_golden($1) as removed_at", [golden.id])).rows[0]).toMatchObject({
+      removed_at: expect.any(Date),
+    });
+    return;
+  }
   if (scenario.startsWith("fence ")) {
     const caller = {
       userId: people.owner,
