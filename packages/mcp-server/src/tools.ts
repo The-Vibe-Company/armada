@@ -204,7 +204,17 @@ const golden = z.object({
   boatSandboxId: compat("providerSandboxId"),
   repos: z.number().int(),
   config: z.object({
-    repos: z.array(z.object({ url: z.string(), branch: z.string(), dir: z.string() })),
+    repos: z.array(
+      z.object({
+        url: z.string(),
+        branch: z.string(),
+        dir: z.string(),
+        history: z
+          .enum(["full", "shallow"])
+          .optional()
+          .describe("Explicit checkout history; absent keeps the provider's default."),
+      }),
+    ),
     init: z.array(z.string()),
   }),
 });
@@ -270,6 +280,16 @@ const sandboxUsage = z
         outputTokens: z.number().nullable(),
         cachedTokens: z.number().nullable(),
         cacheWriteTokens: z.number().nullable().optional(),
+        cacheWriteTokensByTtl: z
+          .object({
+            fiveMinute: z.number().nullable(),
+            oneHour: z.number().nullable(),
+            conflicted: z.literal(true).optional(),
+          })
+          .optional()
+          .describe(
+            "Claude cache-write subsets by lifetime, not additional input; absent when not reported. Their sum may be less than cacheWriteTokens.",
+          ),
         reasoningTokens: z.number().nullable().optional(),
         // Versioned service-owned pricing metadata; native decoders never populate it.
         pricing: z
@@ -356,6 +376,10 @@ const prompt = z.object({
     })
     .nullable()
     .optional(),
+  limit: z
+    .object({ code: z.enum(["usage_limit_exceeded", "rate_limited"]), resetsAt: z.string().optional() })
+    .optional()
+    .describe("The plan limit a failed turn hit; present only on such failures."),
   promptId: z.string(),
   conversationId: z.string().nullable(),
   state: z.enum(["queued", "running", "finished", "interrupted", "failed"]),
@@ -369,6 +393,10 @@ const prompt = z.object({
 const skillReceipts = z
   .array(
     z.object({
+      workspaceId: z
+        .string()
+        .optional()
+        .describe("Authenticated Skillpack workspace; absent for public catalog skills."),
       reference: z.string(),
       version: z.string(),
       skillId: z.string(),

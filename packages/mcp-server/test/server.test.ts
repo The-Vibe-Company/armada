@@ -10,6 +10,7 @@ import { createProviderMetadata } from "../src/provider-metadata.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { readStatus } from "../src/turns.ts";
 import { encryptedRecoveryExec } from "./fixtures/recovery-exec.ts";
+import { publishedResponse } from "./published-response.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import {
   bunLikeSql,
@@ -726,6 +727,7 @@ describe("tools", () => {
       },
     });
     expect(JSON.stringify(exhausted.data)).not.toContain("private-vendor-body");
+    publishedResponse("sandbox/status").parse(exhausted.data);
   });
 
   test("a session in several orgs sees each org's goldens, and launch takes the org that has the golden", async () => {

@@ -450,6 +450,14 @@
                                     },
                                     "dir": {
                                       "type": "string"
+                                    },
+                                    "history": {
+                                      "description": "Explicit checkout history; absent keeps the provider's default.",
+                                      "type": "string",
+                                      "enum": [
+                                        "full",
+                                        "shallow"
+                                      ]
                                     }
                                   },
                                   "required": [
@@ -1410,6 +1418,33 @@
                                             "null"
                                           ]
                                         },
+                                        "cacheWriteTokensByTtl": {
+                                          "description": "Claude cache-write subsets by lifetime, not additional input; absent when not reported. Their sum may be less than cacheWriteTokens.",
+                                          "type": "object",
+                                          "properties": {
+                                            "fiveMinute": {
+                                              "type": [
+                                                "number",
+                                                "null"
+                                              ]
+                                            },
+                                            "oneHour": {
+                                              "type": [
+                                                "number",
+                                                "null"
+                                              ]
+                                            },
+                                            "conflicted": {
+                                              "type": "boolean",
+                                              "const": true
+                                            }
+                                          },
+                                          "required": [
+                                            "fiveMinute",
+                                            "oneHour"
+                                          ],
+                                          "additionalProperties": false
+                                        },
                                         "reasoningTokens": {
                                           "type": [
                                             "number",
@@ -2054,6 +2089,10 @@
                       "items": {
                         "type": "object",
                         "properties": {
+                          "workspaceId": {
+                            "description": "Authenticated Skillpack workspace; absent for public catalog skills.",
+                            "type": "string"
+                          },
                           "reference": {
                             "type": "string"
                           },
@@ -2255,6 +2294,33 @@
                                       "number",
                                       "null"
                                     ]
+                                  },
+                                  "cacheWriteTokensByTtl": {
+                                    "description": "Claude cache-write subsets by lifetime, not additional input; absent when not reported. Their sum may be less than cacheWriteTokens.",
+                                    "type": "object",
+                                    "properties": {
+                                      "fiveMinute": {
+                                        "type": [
+                                          "number",
+                                          "null"
+                                        ]
+                                      },
+                                      "oneHour": {
+                                        "type": [
+                                          "number",
+                                          "null"
+                                        ]
+                                      },
+                                      "conflicted": {
+                                        "type": "boolean",
+                                        "const": true
+                                      }
+                                    },
+                                    "required": [
+                                      "fiveMinute",
+                                      "oneHour"
+                                    ],
+                                    "additionalProperties": false
                                   },
                                   "reasoningTokens": {
                                     "type": [
@@ -2614,6 +2680,26 @@
                                   "type": "null"
                                 }
                               ]
+                            },
+                            "limit": {
+                              "description": "The plan limit a failed turn hit; present only on such failures.",
+                              "type": "object",
+                              "properties": {
+                                "code": {
+                                  "type": "string",
+                                  "enum": [
+                                    "usage_limit_exceeded",
+                                    "rate_limited"
+                                  ]
+                                },
+                                "resetsAt": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "code"
+                              ],
+                              "additionalProperties": false
                             },
                             "promptId": {
                               "type": "string"
@@ -2992,6 +3078,10 @@
                       "items": {
                         "type": "object",
                         "properties": {
+                          "workspaceId": {
+                            "description": "Authenticated Skillpack workspace; absent for public catalog skills.",
+                            "type": "string"
+                          },
                           "reference": {
                             "type": "string"
                           },
@@ -3193,6 +3283,33 @@
                                       "number",
                                       "null"
                                     ]
+                                  },
+                                  "cacheWriteTokensByTtl": {
+                                    "description": "Claude cache-write subsets by lifetime, not additional input; absent when not reported. Their sum may be less than cacheWriteTokens.",
+                                    "type": "object",
+                                    "properties": {
+                                      "fiveMinute": {
+                                        "type": [
+                                          "number",
+                                          "null"
+                                        ]
+                                      },
+                                      "oneHour": {
+                                        "type": [
+                                          "number",
+                                          "null"
+                                        ]
+                                      },
+                                      "conflicted": {
+                                        "type": "boolean",
+                                        "const": true
+                                      }
+                                    },
+                                    "required": [
+                                      "fiveMinute",
+                                      "oneHour"
+                                    ],
+                                    "additionalProperties": false
                                   },
                                   "reasoningTokens": {
                                     "type": [
@@ -3552,6 +3669,26 @@
                                   "type": "null"
                                 }
                               ]
+                            },
+                            "limit": {
+                              "description": "The plan limit a failed turn hit; present only on such failures.",
+                              "type": "object",
+                              "properties": {
+                                "code": {
+                                  "type": "string",
+                                  "enum": [
+                                    "usage_limit_exceeded",
+                                    "rate_limited"
+                                  ]
+                                },
+                                "resetsAt": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "code"
+                              ],
+                              "additionalProperties": false
                             },
                             "promptId": {
                               "type": "string"
@@ -5100,6 +5237,10 @@
                       "items": {
                         "type": "object",
                         "properties": {
+                          "workspaceId": {
+                            "description": "Authenticated Skillpack workspace; absent for public catalog skills.",
+                            "type": "string"
+                          },
                           "reference": {
                             "type": "string"
                           },
@@ -5301,6 +5442,33 @@
                                       "number",
                                       "null"
                                     ]
+                                  },
+                                  "cacheWriteTokensByTtl": {
+                                    "description": "Claude cache-write subsets by lifetime, not additional input; absent when not reported. Their sum may be less than cacheWriteTokens.",
+                                    "type": "object",
+                                    "properties": {
+                                      "fiveMinute": {
+                                        "type": [
+                                          "number",
+                                          "null"
+                                        ]
+                                      },
+                                      "oneHour": {
+                                        "type": [
+                                          "number",
+                                          "null"
+                                        ]
+                                      },
+                                      "conflicted": {
+                                        "type": "boolean",
+                                        "const": true
+                                      }
+                                    },
+                                    "required": [
+                                      "fiveMinute",
+                                      "oneHour"
+                                    ],
+                                    "additionalProperties": false
                                   },
                                   "reasoningTokens": {
                                     "type": [
@@ -5660,6 +5828,26 @@
                                   "type": "null"
                                 }
                               ]
+                            },
+                            "limit": {
+                              "description": "The plan limit a failed turn hit; present only on such failures.",
+                              "type": "object",
+                              "properties": {
+                                "code": {
+                                  "type": "string",
+                                  "enum": [
+                                    "usage_limit_exceeded",
+                                    "rate_limited"
+                                  ]
+                                },
+                                "resetsAt": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "code"
+                              ],
+                              "additionalProperties": false
                             },
                             "promptId": {
                               "type": "string"

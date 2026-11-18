@@ -1386,7 +1386,8 @@ describe("control API", () => {
       await db.query("insert into members (org_id, user_id, role) values ($1, $2, 'member')", [orgA, ADA]);
       options.authStore.addMembership(ADA, { orgId: orgA, name: "A", role: "member" });
       const config = JSON.stringify({
-        repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }],
+        // An explicit checkout history is part of the published golden record.
+        repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web", history: "shallow" }],
         init: [],
       });
       await db.query(

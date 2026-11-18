@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
+import type { SkillReceipt, TurnTokenUsage } from "@armada/core";
 import { CONTROL_BODY_MAX_BYTES, TEMPLATE_LAUNCH_FIELDS, VAULT_CONTROL_BODY_MAX_BYTES } from "@armada/core/server";
+import { z } from "zod";
 import published from "../../../docs/openapi.json";
 import releasePlease from "../../../release-please-config.json";
 import { generateOpenApi, REST_FIELD_NAMES } from "../src/openapi.ts";
@@ -135,4 +137,32 @@ test("published template launch request lists exactly the fields the template se
   // The CLI's `templates launch --model-account` body.
   const cli = { org: id, id, requestKey: "k", modelAccount: { id, version: 1 }, externalRef: "tender:1" };
   expect(publishedRequest("templates/launch").safeParse(cli).success).toBe(true);
+});
+
+test("published sandbox status accepts Claude cache-write lifetimes and private skill receipts", () => {
+  type Schema = { properties: Record<string, { items: Schema; anyOf: Schema[] }> };
+  const status = published.paths["/api/v1/sandbox/status"].post.responses["200"].content["application/json"]
+    .schema as unknown as Schema;
+  const validator = (schema: Schema) => z.fromJSONSchema(schema as Parameters<typeof z.fromJSONSchema>[0]);
+  const turn = validator(status.properties.usage!.anyOf[0]!.properties.turns!.items);
+  const reported: TurnTokenUsage = {
+    promptId: "p",
+    model: "claude-opus-5-5",
+    inputTokens: 1,
+    outputTokens: 2,
+    cachedTokens: 0,
+    cacheWriteTokens: 3,
+    cacheWriteTokensByTtl: { fiveMinute: 2, oneHour: 1 },
+  };
+  turn.parse(reported);
+  turn.parse({ ...reported, cacheWriteTokensByTtl: { fiveMinute: null, oneHour: null, conflicted: true } });
+  const receipt: SkillReceipt = {
+    workspaceId: "11111111-1111-4111-8111-111111111111",
+    reference: "notes@1.2.3",
+    version: "1.2.3",
+    skillId: "skill",
+    checksum: "sha256:checksum",
+    origin: "https://skillpack.app/v1",
+  };
+  validator(status.properties.skills!.items).parse(receipt);
 });
