@@ -2,7 +2,14 @@ import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { admitOutputs, OUTPUT_COLLECTOR, OUTPUT_MAX_ENTRIES, parseCollectorOutput } from "../src/sandbox-outputs.ts";
+import {
+  admitOutputs,
+  OUTPUT_COLLECTOR,
+  OUTPUT_COLLECTOR_PROBE,
+  OUTPUT_MAX_ENTRIES,
+  parseCollectorOutput,
+  readCollectorProbeResult,
+} from "../src/sandbox-outputs.ts";
 import { shellQuote } from "../src/shell-quote.ts";
 
 const bytes = (n: number) => new Uint8Array(n);
@@ -114,6 +121,29 @@ test.skipIf(process.platform !== "linux")(
       const linkedHome = join(root, "linked-home");
       symlinkSync(home, linkedHome);
       expect(runCollector(linkedHome).exitCode).not.toBe(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test.skipIf(process.platform !== "linux")(
+  "the capability probe refuses a Bun that exits 0 without running the collector",
+  () => {
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "outputs-"));
+    try {
+      // An old Bun ignores `-e` after unknown flags, prints its CLI help and exits 0.
+      const incompatible = join(root, "bun");
+      writeFileSync(incompatible, "#!/bin/sh\necho 'Bun is a fast JavaScript runtime'\nexit 0\n", { mode: 0o755 });
+      const probe = (bun: string) => {
+        const script = OUTPUT_COLLECTOR_PROBE.replaceAll("/opt/armada/runtime-bun/bun", "/armada-test-missing-bun")
+          .replaceAll("/usr/local/bin/bun", shellQuote(bun))
+          .replace("/usr/bin/id -u", "printf 1001");
+        const run = Bun.spawnSync(["/bin/sh", "-c", script], { env: { PATH: "/usr/bin:/bin" } });
+        return () => readCollectorProbeResult(run.exitCode, run.stdout.toString());
+      };
+      expect(probe(incompatible)).toThrow("collector_unsupported");
+      expect(probe(process.execPath)()).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -78,6 +78,14 @@ try {
 }
 `;
 
+/** The only probe answer that proves the collector program ran. An incompatible Bun can exit 0
+ * without evaluating it (for example by printing CLI help), so the exit status alone is not proof. */
+export const OUTPUT_COLLECTOR_PROBE_MARKER = "armada-output-collector-ready";
+
+/** Armada's managed runtime Bun. Golden builds provision it at the protected path independently of
+ * any repository Bun pin. */
+export const OUTPUT_COLLECTOR_BUN_VERSION = "1.4.2";
+
 export const OUTPUT_COLLECTOR_PROBE = collectorShell(
   collectorSetup +
     String.raw`
@@ -93,7 +101,7 @@ try {
 } catch {
   process.exit(86);
 }
-console.log("[]");
+console.log(${JSON.stringify(OUTPUT_COLLECTOR_PROBE_MARKER)});
 `,
 );
 export const OUTPUT_COLLECTOR = collectorShell(
@@ -203,6 +211,16 @@ export function readCollectorResult(status: number | null, stdout: string): Outp
     default:
       throw new OutputCollectionError("collector_failed");
   }
+}
+
+/** Interpret the capability probe: only the exact marker proves support. */
+export function readCollectorProbeResult(status: number | null, stdout: string): true {
+  if (status !== 0) {
+    readCollectorResult(status, "");
+    throw new OutputCollectionError("collector_failed");
+  }
+  if (stdout.trim() !== OUTPUT_COLLECTOR_PROBE_MARKER) throw new OutputCollectionError("collector_unsupported");
+  return true;
 }
 
 /** Parse the fixed collector's stdout. Throws on anything the collector cannot have produced. */

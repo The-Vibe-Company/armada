@@ -44,6 +44,7 @@ import {
   OUTPUT_COLLECTOR,
   OUTPUT_COLLECTOR_PROBE,
   OutputCollectionError,
+  readCollectorProbeResult,
   readCollectorResult,
   sshReadableVariables,
 } from "@armada/core/server";
@@ -310,10 +311,11 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
     throw invalidRequest("Sandbox archival remains unconfirmed.");
   }
 
-  async function collectOutputs(
+  async function collectOutputs<T>(
     { sandboxId, signal }: Parameters<NonNullable<Provider["readOutputs"]>>[0],
     command: string,
-  ) {
+    read: (status: number | null, stdout: string) => T,
+  ): Promise<T | null> {
     // Live disk only: the fixed collector through the Boat command API. onlyIfRunning refuses a
     // stopping or stopped sandbox instead of resuming it; its retained disk is not read (#2570 scope).
     const result = await provider
@@ -334,7 +336,7 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
     if (result.detached) throw new OutputCollectionError("collector_failed");
     if (result.timedOut) throw new OutputCollectionError("output_timeout");
     if (result.truncated) throw new OutputCollectionError("collector_failed");
-    return readCollectorResult(result.exitCode, result.stdout);
+    return read(result.exitCode, result.stdout);
   }
 
   const provider: BoatProvider & BoatRuntimeHost = {
@@ -443,10 +445,10 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
     },
 
     readOutputs(request) {
-      return collectOutputs(request, OUTPUT_COLLECTOR);
+      return collectOutputs(request, OUTPUT_COLLECTOR, readCollectorResult);
     },
     async probeOutputs(request) {
-      return (await collectOutputs(request, OUTPUT_COLLECTOR_PROBE)) !== null;
+      return (await collectOutputs(request, OUTPUT_COLLECTOR_PROBE, readCollectorProbeResult)) !== null;
     },
 
     async observeResources(sandboxId) {

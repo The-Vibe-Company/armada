@@ -21,6 +21,7 @@ import {
 import {
   OUTPUT_COLLECTOR,
   OUTPUT_COLLECTOR_PROBE,
+  readCollectorProbeResult,
   readCollectorResult,
   runtimeBootstrapScript,
 } from "@armada/core/server";
@@ -870,10 +871,11 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       (!onlyCollected && !!row.snapshotImages?.length)
     );
   }
-  async function collectOutputs(
+  async function collectOutputs<T>(
     { sandboxId, signal }: Parameters<NonNullable<Provider["readOutputs"]>>[0],
     command: string,
-  ) {
+    read: (status: number | null, stdout: string) => T,
+  ): Promise<T | null> {
     await bound();
     signal?.throwIfAborted();
     // Observation, not lifecycle: like exec and getPrompt it reads the row without the
@@ -903,7 +905,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     await child.stdin.close();
     // The caller's budget (the shared pre-stop deadline) bounds the wait, not only the exec timeout.
     const [status, stdout] = await abortable(Promise.all([child.wait(), output]), signal);
-    return readCollectorResult(status, stdout);
+    return read(status, stdout);
   }
 
   const provider: ModalProvider = {
@@ -1146,10 +1148,10 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       }
     },
     readOutputs(request) {
-      return collectOutputs(request, OUTPUT_COLLECTOR);
+      return collectOutputs(request, OUTPUT_COLLECTOR, readCollectorResult);
     },
     async probeOutputs(request) {
-      return (await collectOutputs(request, OUTPUT_COLLECTOR_PROBE)) !== null;
+      return (await collectOutputs(request, OUTPUT_COLLECTOR_PROBE, readCollectorProbeResult)) !== null;
     },
 
     async observeResources(id) {
