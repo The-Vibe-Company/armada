@@ -35,7 +35,6 @@ export async function prepareLaunch(argv: readonly string[], auth: AuthIo): Prom
     [
       "--host",
       "--golden",
-      "--size",
       "--skill",
       "--request-id",
       "--credential-version",
@@ -43,7 +42,7 @@ export async function prepareLaunch(argv: readonly string[], auth: AuthIo): Prom
       "--secret",
       "--max-active-children",
     ],
-    ["--sized", "--armada-access", "--keep-after-merge"],
+    ["--armada-access", "--keep-after-merge"],
   );
   // An explicit launch already describes placement and agent: let normal validation handle it unchanged.
   if (
