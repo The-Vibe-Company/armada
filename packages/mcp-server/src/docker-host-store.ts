@@ -661,6 +661,14 @@ export function createDockerHostStore(sql: Sql, key: string) {
         if (!result.rows.length) deny();
       });
     },
+    async canOfferUpdate(hostToken: string, installationId: string) {
+      const result = await sql.query(
+        `select 1 from public.docker_hosts h join public.members m on m.org_id=h.org_id and m.user_id=h.owner_id
+         where h.hash=$1 and h.installation_id=$2 and h.revoked_at is null and h.draining_at is null`,
+        [hash(hostToken), installationId],
+      );
+      return result.rows.length > 0;
+    },
     /** Every generation with a queued resume/bootstrap, so the daemon fences all of them, not only the head job. */
     pendingStartsForHost(hostToken: string, installationId: string) {
       return transaction(async (tx) => {
@@ -1127,6 +1135,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
       /** Request IDs the daemon reports as still executing (#2561). */
       running: readonly string[] = [],
       snapshotBaselineVersion?: number,
+      heartbeatOnly = false,
     ): Promise<Job | null> {
       // A revoked host or a removed owner can never authenticate again. Retire its
       // undispatchable work in its own committed transaction before the normal
@@ -1162,13 +1171,15 @@ export function createDockerHostStore(sql: Sql, key: string) {
         // sandboxes' jobs are, so one slow launch does not delay the next (#2561).
         // Stop intent fences every later startup, so an absent-resource ACK cannot admit a queued create.
         // Peek before member/host locks: never acquire a late actor lock behind the host.
-        const hint = (
-          await tx.query<StoredJob>(
-            `select j.* from public.docker_host_jobs j join public.docker_hosts h on h.id=j.host_id
+        const hint = heartbeatOnly
+          ? undefined
+          : (
+              await tx.query<StoredJob>(
+                `select j.* from public.docker_host_jobs j join public.docker_hosts h on h.id=j.host_id
            where h.hash=$1 and h.installation_id=$2 and j.outcome is null and (not $3::boolean or j.snapshot_id is null) and ${notRunning(4)} order by case when j.bound_operation in ('stop','delete') then 0 else 1 end,(j.snapshot_id is not null),j.position limit 1`,
-            [hash(hostToken), installationId, skipSnapshots, running],
-          )
-        ).rows[0];
+                [hash(hostToken), installationId, skipSnapshots, running],
+              )
+            ).rows[0];
         const host =
           hint?.bound_sandbox_id && ["stop", "delete"].includes(hint.bound_operation ?? "")
             ? await reconcileHost(tx, hostToken, installationId, hint.bound_actor_id ?? undefined)
@@ -1228,6 +1239,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
             break;
           }
         }
+        if (heartbeatOnly) return null;
         const row = (
           await tx.query<StoredJob>(
             `select j.* from public.docker_host_jobs j where j.host_id=$1 and j.outcome is null and (not $2::boolean or j.snapshot_id is null) and ${notRunning(3)} order by case when j.bound_operation in ('stop','delete') then 0 else 1 end,(j.snapshot_id is not null),j.position limit 1`,

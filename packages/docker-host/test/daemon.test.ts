@@ -989,6 +989,35 @@ test("compaction preserves cleanup capacity, TTL facts and stored replay fences"
   expect(effects).toBe(1);
 });
 
+test("update heartbeats reuse telemetry without waiting for fresh Docker inspections", async () => {
+  const f = fixture();
+  let inspecting = true;
+  const inspect =
+    <T>(value: T) =>
+    async () => {
+      if (!inspecting) throw new Error("Docker inspection unavailable");
+      return value;
+    };
+  const resources = { cpus: 8, memoryBytes: 32 * 1024 ** 3, availableCpus: 3, availableMemoryBytes: 12 * 1024 ** 3 };
+  const api = httpApi(
+    (async (_url, init) => {
+      expect(JSON.parse(String(init?.body))).toMatchObject({
+        diskFreeBytes: 27 * 1024 ** 3,
+        stoppedSandboxBytes: 5 * 1024 ** 3,
+        resources,
+      });
+      return Response.json({ job: null, targetVersion: "9.0.0" });
+    }) as typeof fetch,
+    inspect(resources),
+    inspect(27 * 1024 ** 3),
+    inspect(5 * 1024 ** 3),
+  );
+  const state = await f.store.load();
+  await api.poll(state);
+  inspecting = false;
+  expect(await api.poll(state, { reuseTelemetry: true })).toEqual({ job: null, targetVersion: "9.0.0" });
+});
+
 test("native poll retains sampled availability when an older server rejects retention telemetry", async () => {
   let calls = 0;
   const f = fixture();
@@ -2024,7 +2053,7 @@ test("native held polls report running work and fall back to the previous protoc
       async (_url: string | URL | Request, init?: RequestInit) => {
         const body = JSON.parse(String(init?.body));
         bodies.push(body);
-        if ("waitSeconds" in body) return new Response(null, { status: 400 });
+        if ("waitSeconds" in body || "heartbeatOnly" in body) return new Response(null, { status: 400 });
         return Response.json({ job: null });
       },
       { preconnect: fetch.preconnect },
@@ -2042,6 +2071,11 @@ test("native held polls report running work and fall back to the previous protoc
   expect(bodies[1]).not.toHaveProperty("waitSeconds");
   expect(bodies[1]).not.toHaveProperty("running");
   expect(bodies).toHaveLength(2);
+  bodies.length = 0;
+  await expect(api.poll(await f.store.load(), { heartbeatOnly: true, reuseTelemetry: true })).rejects.toThrow(
+    "Host request denied",
+  );
+  expect(bodies).toEqual([expect.objectContaining({ heartbeatOnly: true })]);
 });
 
 test("a ledger that cannot be saved before a held poll never overwrites a completion saved during it", async () => {
@@ -2118,4 +2152,286 @@ test("a job of a sandbox whose operation still runs here waits, even if the serv
   expect(await tick(f.store, api, f.executor, false, Date.now, options)).toBe("busy");
   expect(f.state().receipts).toEqual([]);
   expect(f.executed).toEqual([]);
+});
+
+test.each([
+  { operation: "launch", outcome: "withdrawn" },
+  { operation: "launch", outcome: "poll failed" },
+  { operation: "long snapshot build", outcome: "matching" },
+  { operation: "long snapshot build", outcome: "matching after slow preparation" },
+] as const)("update drain with $operation and a $outcome post-drain offer", async ({ operation, outcome }) => {
+  const first = fixture();
+  const next = fixture();
+  const job: Job =
+    operation === "launch"
+      ? first.job
+      : {
+          ...first.job,
+          operation: "buildSnapshot",
+          build: {
+            id: first.job.request.sandboxId,
+            armadaVersion: "2.29.0",
+            ownerId: crypto.randomUUID(),
+            visibility: "private",
+            token: "snapshot_access",
+            config: {
+              repos: [{ url: "https://github.com/example/project.git", branch: "main", dir: "project" }],
+              init: [],
+            },
+          },
+        };
+  const expiring = fixture();
+  const expiryReports: string[] = [];
+  if (operation === "long snapshot build") {
+    await tick(expiring.store, expiring.api, expiring.executor);
+    const ledger = first.state();
+    const receipt = expiring.state().receipts[0]!;
+    receipt.request.expiresAt = 40_000;
+    ledger.receipts.push(receipt);
+    ledger.activeTtl = [receipt.requestId];
+    await first.store.save(ledger);
+  }
+  let now = 0;
+  const slowPreparation = outcome === "matching after slow preparation";
+  const matching = outcome.startsWith("matching");
+  const drainHeartbeats: number[] = [];
+  const preparationHeartbeats: number[] = [];
+  const preparing = Promise.withResolvers<void>();
+  const finishPreparation = Promise.withResolvers<void>();
+  let isPreparing = false;
+  const offered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const acknowledged: string[] = [];
+  const started: string[] = [];
+  let failedSave = false;
+  let staged = false;
+  let released = false;
+  let restarted = false;
+  let confirmed = false;
+  let rechecked = false;
+  let postDrainReceipt: string[] | undefined;
+  const loop = runJobs(
+    {
+      ...first.store,
+      async save(state) {
+        if (
+          !failedSave &&
+          state.receipts.some((receipt) => receipt.requestId === job.requestId && receipt.outcome === "completed")
+        ) {
+          failedSave = true;
+          throw new Error("Temporary receipt write failure");
+        }
+        await first.store.save(state);
+      },
+    },
+    {
+      ...first.api,
+      async poll(_state, options) {
+        if (isPreparing) {
+          expect(options?.heartbeatOnly).toBe(true);
+          preparationHeartbeats.push(now);
+          return { job: next.job, targetVersion: "9.0.0" };
+        }
+        if (staged && !released) {
+          expect(options?.heartbeatOnly).toBe(true);
+          if (options?.reuseTelemetry) drainHeartbeats.push(now);
+          return { job: next.job, targetVersion: "9.0.0" };
+        }
+        if (released) {
+          if (options?.reuseTelemetry) {
+            postDrainReceipt = [...acknowledged];
+            if (outcome === "poll failed") throw new Error("Lost poll response");
+            return { job: next.job, ...(matching ? { targetVersion: "9.0.0" } : {}) };
+          }
+          return { job: null };
+        }
+        if (options?.running?.includes(first.job.requestId))
+          return { job: next.job, held: true, targetVersion: "9.0.0" };
+        return { job, held: true };
+      },
+      async result(_state, receipt, expired) {
+        if (expired) {
+          expect(first.state().receipts.find(({ requestId }) => requestId === receipt.requestId)?.expired).toBe(true);
+          expiryReports.push(receipt.requestId);
+          return;
+        }
+        expect(first.state().receipts.find(({ requestId }) => requestId === receipt.requestId)?.outcome).toBe(
+          "completed",
+        );
+        acknowledged.push(receipt.requestId);
+      },
+    },
+    {
+      ...first.executor,
+      async stopIfExpired(request) {
+        return request.expiresAt !== undefined && request.expiresAt <= now;
+      },
+      async buildSnapshot() {
+        started.push(job.request.sandboxId);
+        await release.promise;
+        return { imageId: job.request.image, baselineVersion: null };
+      },
+      async create(request) {
+        started.push(request.sandboxId);
+        if (request.sandboxId === first.job.request.sandboxId) await release.promise;
+      },
+    },
+    {
+      stopping: () => confirmed,
+      update: {
+        staged: () => staged,
+        async checkRecovery() {
+          return false;
+        },
+        async confirm(target) {
+          expect(target).toEqual(
+            outcome === "poll failed"
+              ? { type: "poll-failed" }
+              : { type: "offer", version: matching ? "9.0.0" : undefined },
+          );
+          confirmed = !matching;
+          rechecked = true;
+          return matching;
+        },
+        async restart() {
+          restarted = true;
+          return true;
+        },
+      },
+      retryCompletion: () => true,
+      async beforeAdmission(target) {
+        if (released) confirmed = true;
+        if (!target) return false;
+        if (slowPreparation) {
+          isPreparing = true;
+          preparing.resolve();
+          await finishPreparation.promise;
+          isPreparing = false;
+        }
+        staged = true;
+        offered.resolve();
+        return true;
+      },
+      now: () => now,
+      async sleep(ms) {
+        if (released) return;
+        if (isPreparing && now >= 100_000) await finishPreparation.promise;
+        else if (!isPreparing && now >= (slowPreparation ? 200_000 : 100_000)) await release.promise;
+        else now += ms;
+      },
+    },
+  );
+  let drained = false;
+  const complete = loop.then(() => {
+    drained = true;
+  });
+  if (slowPreparation) {
+    await preparing.promise;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    finishPreparation.resolve();
+  }
+  await offered.promise;
+  expect(drained).toBe(false);
+  expect(acknowledged).toEqual([]);
+  if (operation === "long snapshot build") {
+    // Flush the simulated sleeps and polls before releasing the admitted job.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(drainHeartbeats.at(-1)).toBeGreaterThan(slowPreparation ? 191_000 : 91_000);
+    expect(Date.parse(first.state().lastPollAt ?? "")).toBe(drainHeartbeats.at(-1)!);
+    expect(expiryReports).toEqual([expiring.job.requestId]);
+  }
+  released = true;
+  release.resolve();
+  await complete;
+  expect(rechecked).toBe(true);
+  expect(restarted).toBe(matching);
+  if (slowPreparation) expect(preparationHeartbeats.at(-1)).toBeGreaterThan(91_000);
+  if (operation === "long snapshot build") {
+    const heartbeats = [...preparationHeartbeats, ...drainHeartbeats];
+    const gaps = heartbeats.map((at, i) => at - (heartbeats[i - 1] ?? 0));
+    expect(Math.max(...gaps)).toBeLessThan(60_000);
+  }
+  expect(postDrainReceipt).toEqual([first.job.requestId]);
+  expect(failedSave).toBe(true);
+  expect(started).toEqual([first.job.request.sandboxId]);
+  expect(acknowledged).toEqual([first.job.requestId]);
+  expect(
+    first
+      .state()
+      .receipts.filter(({ requestId }) => requestId !== expiring.job.requestId)
+      .map(({ requestId, outcome }) => [requestId, outcome]),
+  ).toEqual([[first.job.requestId, "completed"]]);
+});
+
+test("a failed update preparation discards a job from before an intervening poll denial", async () => {
+  const f = fixture();
+  const denied = Promise.withResolvers<void>();
+  let polls = 0;
+  await runJobs(
+    f.store,
+    {
+      ...f.api,
+      async poll() {
+        if (++polls === 1) return { job: f.job, targetVersion: "9.0.0", held: true };
+        denied.resolve();
+        throw new Error("Host no longer authorized");
+      },
+    },
+    f.executor,
+    {
+      stopping: () => polls >= 3,
+      async beforeAdmission() {
+        await denied.promise;
+        return false;
+      },
+      async sleep() {},
+    },
+  );
+  expect(polls).toBe(3);
+  expect(f.executed).toEqual([]);
+  expect(f.state().receipts).toEqual([]);
+});
+
+test("completion retry persists an already compacted outcome after a directory sync failure", async () => {
+  const f = fixture("delete");
+  const initial = f.state();
+  initial.receipts.push({
+    requestId: crypto.randomUUID(),
+    operation: "create",
+    request: { ...f.job.request, sandboxId: crypto.randomUUID(), image: "x".repeat(1_100_000) },
+  });
+  await f.store.save(initial);
+  let syncFailed = false;
+  let retries = 0;
+  let acknowledged = false;
+  await runJobs(
+    {
+      ...f.store,
+      async save(state) {
+        compactReceipts(state);
+        await f.store.save(state);
+        if (!syncFailed && state.retired?.some(([id]) => id === f.job.requestId)) {
+          syncFailed = true;
+          throw new Error("Directory sync failed after rename");
+        }
+      },
+    },
+    {
+      ...f.api,
+      async result(_state, receipt) {
+        expect(receipt.outcome).toBe("completed");
+        acknowledged = true;
+      },
+    },
+    f.executor,
+    {
+      stopping: () => acknowledged || retries > 1,
+      retryCompletion: () => ++retries === 1,
+      async sleep() {},
+    },
+  );
+  expect(syncFailed).toBe(true);
+  expect(retries).toBe(1);
+  expect(acknowledged).toBe(true);
+  expect(f.executed).toEqual(["delete"]);
 });

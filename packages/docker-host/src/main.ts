@@ -24,15 +24,19 @@ import { cleanupOfficialImages } from "./image-retention.ts";
 import { dockerCli, fileStore, httpApi, readDockerOutputArchive } from "./native.ts";
 import { dockerRuntimeStarter } from "./runtime-install.ts";
 import {
+  automaticUpdate,
   installService,
   inventory,
+  managedUpdateInstance,
+  prepareUninstall,
+  recoverUpdate,
   removeInstallation,
   servicePreflight,
   stateDirectory,
   stopService,
+  superviseUpdate,
   uninstallPreflight,
   upgradeService,
-  validateInstallation,
 } from "./service.ts";
 
 const usage = `Usage:
@@ -68,6 +72,14 @@ async function main(args: string[]) {
     return;
   }
   const [command, ...flags] = args;
+  if (command === "supervise-update" || command === "recover-update") {
+    if (flags.length !== 0 && (flags.length !== 2 || flags[0] !== "--instance" || !flags[1]))
+      throw new Error("Invalid update supervisor arguments");
+    const instance = flags[1];
+    const serviceAction = command === "supervise-update" ? superviseUpdate : recoverUpdate;
+    await serviceAction(await fileStore(stateDirectory(undefined, instance)), instance);
+    return;
+  }
   const options = new Map<string, string>();
   for (let i = 0; i < flags.length; i += 2) {
     const key = flags[i];
@@ -144,7 +156,7 @@ async function main(args: string[]) {
   if (command === "install") await servicePreflight(instance);
   if (command === "uninstall") {
     const state = await store.load();
-    await validateInstallation(state, undefined, instance);
+    await prepareUninstall(state, instance);
     const deadline = Date.now() + 10 * 60_000;
     const api = httpApi();
     // Keep the service alive to execute ordinary bound stop/delete jobs. The
@@ -181,13 +193,21 @@ async function main(args: string[]) {
     const sampleDisk = () => dockerDiskFreeBytes(dockerCli);
     let stoppedSampleAt = 0;
     let stoppedSample: number | null = null;
-    const api = httpApi(fetch, createAvailabilitySampler(dockerCli), sampleDisk, async (state) => {
-      if (Date.now() - stoppedSampleAt >= 60_000) {
-        stoppedSampleAt = Date.now();
-        stoppedSample = await stoppedSandboxBytes(dockerCli, state);
-      }
-      return stoppedSample;
-    });
+    const managed = command === "run" ? managedUpdateInstance(directory) : undefined;
+    const update = managed ? automaticUpdate(await store.load(), managed) : undefined;
+    const api = httpApi(
+      fetch,
+      createAvailabilitySampler(dockerCli),
+      sampleDisk,
+      async (state) => {
+        if (Date.now() - stoppedSampleAt >= 60_000) {
+          stoppedSampleAt = Date.now();
+          stoppedSample = await stoppedSandboxBytes(dockerCli, state);
+        }
+        return stoppedSample;
+      },
+      update,
+    );
     if (command === "register" || command === "install") {
       if (await store.exists()) throw new Error("Host already registered");
       const token = (await Bun.stdin.text()).trim();
@@ -271,6 +291,20 @@ async function main(args: string[]) {
       let nextImageCleanup = 0;
       await runJobs(store, api, runtime, {
         stopping: () => stopping,
+        ...(update
+          ? {
+              beforeAdmission: update.beforeAdmission,
+              trialPoll: update.trialPoll,
+              retryCompletion: () => !stopping,
+              update: {
+                staged: () => update.staged,
+                confirm: update.confirm,
+                checkRecovery: update.checkRecovery,
+                trialActive: update.trialActive,
+                restart: update.restart,
+              },
+            }
+          : {}),
         sleep: Bun.sleep,
         async beforeTick() {
           if (Date.now() < nextImageCleanup) return;
