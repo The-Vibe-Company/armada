@@ -345,15 +345,22 @@ test("a persist failure deletes only a confirmed unreferenced ready snapshot and
 test.each([
   ["pending", undefined, "pending", ["discard:golden-bx", "delete:golden-bx", "collect:golden-bx", "stop"], false],
   ["refused", "delete", "pending", ["discard:golden-bx", "delete:golden-bx", "stop"], false],
-  // Without the durable record the known-unpublished artifact is still retired by the worker itself.
-  ["unrecorded", "discard", "pending", ["discard:golden-bx", "delete:golden-bx", "collect:golden-bx", "stop"], false],
+  // Without the durable record the known-unpublished artifact is still retired by the worker itself,
+  // and the record is retried once before the builder cleanup.
+  [
+    "unrecorded",
+    "discard",
+    "pending",
+    ["discard:golden-bx", "delete:golden-bx", "collect:golden-bx", "discard:golden-bx", "stop"],
+    false,
+  ],
   ["collected", undefined, "collected", ["discard:golden-bx", "delete:golden-bx", "collect:golden-bx", "stop"], true],
   // A failed record alone never makes confirmed cleanup unsafe: nothing is left for recovery.
   [
     "unrecorded but collected",
     "discard",
     "collected",
-    ["discard:golden-bx", "delete:golden-bx", "collect:golden-bx", "stop"],
+    ["discard:golden-bx", "delete:golden-bx", "collect:golden-bx", "discard:golden-bx", "stop"],
     true,
   ],
 ] as const)(

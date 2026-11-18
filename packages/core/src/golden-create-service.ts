@@ -439,10 +439,19 @@ export class GoldenCreateService {
           // retirement, collection and builder disposal, whatever happens to this attempt. If the
           // record cannot be written, the known-unpublished artifact is still retired here, and the
           // job carries it into its final recovery write: the record's outcome alone never makes
-          // confirmed cleanup unsafe.
+          // confirmed cleanup unsafe. A failed record is retried once before the builder cleanup,
+          // so a worker lost during that cleanup still leaves the artifact to its reconciler.
           const owned = ownedSnapshot;
           const deferred = provider.collectRetiredSnapshot?.bind(provider);
-          if (deferred && this.deps.execution?.discarding) await this.deps.execution.discarding(owned).catch(() => {});
+          const discarding = deferred ? this.deps.execution?.discarding : undefined;
+          const record = async () =>
+            discarding
+              ? discarding(owned).then(
+                  () => true,
+                  () => false,
+                )
+              : true;
+          const recorded = await record();
           await provider
             .deleteSnapshot(owned)
             .then(async () => {
@@ -451,6 +460,7 @@ export class GoldenCreateService {
             .catch(() => {
               cleanupSafe = false;
             });
+          if (!recorded) await record();
         }
       }
       if (!persisted && requestedSnapshot && !artifactSettled && snapshotAttempted) cleanupSafe = false;

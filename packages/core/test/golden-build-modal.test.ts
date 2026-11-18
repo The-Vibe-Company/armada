@@ -494,6 +494,7 @@ test.each([
   ["collection confirmed", "collected", false],
   ["collection pending", "pending", false],
   ["collection pending and lease swept", "pending", true],
+  ["collection confirmed and lease swept", "collected", true],
 ] as const)("a rejected rollback handoff write never strands the build (%s)", async (_, first, sweep) => {
   const f = await fixture();
   try {
@@ -523,12 +524,13 @@ test.each([
       ).rows[0]!;
     expect(f.retired).toHaveLength(1);
     expect(f.deleted).toEqual(["modal-builder-1"]);
-    if (available) {
+    if (available && !sweep) {
       // Image collected, builder deleted: the failed record alone leaves nothing to recover.
       expect(await row()).toMatchObject({ state: "failed", snapshot: null });
       return;
     }
-    // Cleanup incomplete: the artifact identity is carried into the recovery state under the fence.
+    // Cleanup incomplete, or the row already swept to recovery: the artifact identity is carried
+    // into the recovery state under the fence.
     const handed = await row();
     expect(handed).toMatchObject({ state: "recovery_required", phase: "persist", snapshot: f.retired[0] });
     await f.db.exec("drop trigger reject_modal_handoff on golden_build_jobs");
