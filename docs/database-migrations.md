@@ -19,6 +19,14 @@ closed rather than falling back to a main-push apply.
 
 Before opening a PR, and again against current main before merge:
 
+- Put at most one migration in each PR. Ship additive changes first so both
+  revisions can use the schema during the
+  [180-second deployment overlap](deployment-draining.md). Then deploy code
+  that no longer uses the column or table being removed, or whose writes already
+  satisfy the invariant the trigger enforces. A column or table drop, or an
+  enforcement trigger, ships one deploy after that code change. Before applying
+  the migration in each environment, confirm the preceding deploy has completed
+  and all older processes have exited. A merge alone does not meet this rule.
 - Name each new file `<14-digit-version>_<description>.sql`. The version must
   be unique across `supabase/migrations` and strictly newer than the largest
   version on current `origin/main`, not just the branch's original base.

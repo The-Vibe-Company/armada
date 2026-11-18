@@ -1,26 +1,18 @@
 # Railway deployment draining
 
-For #972; completes the host-side prerequisite of #975. No release-model change.
-
 ## Configuration and sources
 
-The shared `railway.json` sets numeric `deploy.drainingSeconds: 30` and
-`deploy.overlapSeconds: 0`. The current [published schema](https://railway.com/railway.schema.json)
-accepts nonnegative numbers (or null) for both. Use numbers, despite quoted
-examples in some documentation.
-
-Both **staging and production** inherit this base config: there are no
-`environments` overrides in the file. Railway's [config precedence](https://docs.railway.com/config-as-code/reference)
-places environment-specific code above base code, then service settings. Both
-services must use this config file; the authorized operator should confirm their
-resolved settings. Do not add a staging/production override that shortens grace.
+The shared [Railway IaC](../.railway/railway.ts) declares
+`overlapSeconds: 180` and `drainingSeconds: 30` for the server. The authorized
+operator should confirm those effective settings in staging and production.
 
 [Railway teardown documentation](https://docs.railway.com/deployments/deployment-teardown)
 distinguishes overlap (old version remains active after the new one activates)
 from draining (time between SIGTERM and SIGKILL). Thirty seconds provides five
 seconds of host headroom over Armada's 25-second application shutdown deadline.
-Zero overlap avoids intentionally extending old-version admission; overlap is
-not a replacement for termination grace.
+Both revisions can access the shared database during overlap and drain. Follow
+the [migration author checklist](database-migrations.md#migration-author-checklist)
+when removing schema objects or introducing enforcement.
 
 ## Timeline (relative to activation, not build start)
 
@@ -30,14 +22,22 @@ shutdown implementation, **not a measured routing-propagation guarantee**:
 - Before t=0: the candidate builds/boots while the old deployment serves. Existing
   `/healthz` must return 200 before activation; its 180-second startup healthcheck
   timeout is **not** termination grace. See [healthchecks](https://docs.railway.com/deployments/healthchecks).
-- t=0: the candidate becomes active. With zero configured overlap, Railway starts
-  retiring the old deployment without an intentional overlap delay and sends
-  SIGTERM. Routing and signal delivery need not occur at exactly the same instant.
+- t=0 through the 180-second overlap: the candidate is active and the previous
+  deployment stays up. Old processes can still run background workers, read and
+  write shared state, serve requests that reach them, and process messages on
+  existing sockets. In-flight turns can continue across activation while their
+  connections are live. Activation alone gives no guarantee about which
+  deployment handles a request or when any particular socket disconnects.
+- At the end of overlap: Railway begins tearing down the previous deployment.
+  Measure the drain deadlines below from the old process receiving SIGTERM.
 - t=0 through t<25, measured from the old process receiving SIGTERM: Armada stops
-  admission (late requests get 503 + Retry-After if they reach its handler), drains
-  admitted handlers and POST tool-response streams, closes MCP/idle GET streams,
-  completes native HTTP shutdown, then closes SQL. If all settle, it exits 0
-  immediately; it does not sleep out the grace period.
+  admission (late requests get 503 + Retry-After if they reach its handler),
+  signals workers to stop, and closes runtime WebSockets with code 1012 so
+  runtimes can reconnect. It lets admitted handlers and POST tool-response
+  streams finish, closes MCP/idle GET streams, completes native HTTP shutdown,
+  then closes SQL. A turn can still be running when its transport disconnects.
+  Overlap and draining do not guarantee uninterrupted event delivery across
+  reconnects. If shutdown settles, Armada exits 0 immediately.
 - t=25 from SIGTERM: if still pending, Armada logs the fixed shutdown-deadline
   reason, force-stops HTTP and exits 1. Remote actions can remain ambiguous; do
   not blindly replay a launch or prompt. Reconciliation only covers registered
@@ -53,16 +53,16 @@ are replayed by this configuration.
 
 ## Operator staging check: `drain-grace-cutover`
 
-Do not run this against production. No deployment was performed to validate this PR.
+Run this check only in staging.
 
-1. Confirm staging and production resolve this file with overlap 0 / draining 30,
-   without environment overrides. Do not assume an already-running deployment
-   retroactively acquired new code/config. In staging, first establish a deployment
-   containing #975 and this config, then replace that deployment in a second
-   authorized deploy to exercise its teardown policy.
-2. On a disposable staging sandbox, start exactly one launch/request on the old
-   deployment shortly before the cutover. Choose controlled work that completes
-   within 25 seconds of SIGTERM. Record timestamps for activation, old-process
+1. Confirm staging resolves the IaC to 180 seconds of overlap and 30 seconds of
+   draining. Establish a staging deployment with these settings and the shutdown
+   implementation, then replace it in a second authorized deploy to exercise
+   its teardown policy.
+2. Arrange for one controlled request on a disposable staging sandbox to be
+   active on the old deployment at SIGTERM and finish within 25 seconds of the
+   signal. Account for the overlap when timing the request. Record timestamps
+   for activation, old-process
    drain log, client response, process exit, and sandbox identity. Confirm response
    completion before exit 0, no premature SQL/MCP close, and one sandbox only.
    Confirm fresh traffic reaches the new version. Idle MCP notification streams
