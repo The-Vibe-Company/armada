@@ -78,9 +78,10 @@ export function readLangfuseForm(form: FormData, baseline?: LangfuseEditable): L
     (contentMode !== "metadata" && contentMode !== "full")
   )
     return null;
+  const hostChanged = host.trim() !== baseline?.host;
   return {
-    ...(host.trim() === baseline?.host ? {} : { host: host.trim() }),
-    ...(publicKey.trim() === baseline?.publicKey ? {} : { publicKey: publicKey.trim() }),
+    ...(hostChanged ? { host: host.trim() } : {}),
+    ...(hostChanged || publicKey.trim() !== baseline?.publicKey ? { publicKey: publicKey.trim() } : {}),
     ...(secretKey === null ? {} : { secretKey: secretKey.trim() }),
     ...(contentMode === baseline?.contentMode ? {} : { contentMode }),
   };

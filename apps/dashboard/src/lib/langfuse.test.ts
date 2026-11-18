@@ -28,3 +28,22 @@ test("a mode-only edit omits the stored credentials and untouched host", () => {
     }),
   ).toEqual({ contentMode: "full" });
 });
+
+test("moving to a new host sends both keys required by the API", () => {
+  const form = new FormData();
+  form.set("host", "https://us.cloud.langfuse.com");
+  form.set("publicKey", "fixture_public");
+  form.set("secretKey", "fixture_replacement");
+  form.set("contentMode", "metadata");
+  expect(
+    readLangfuseForm(form, {
+      host: "https://cloud.langfuse.com",
+      publicKey: "fixture_public",
+      contentMode: "metadata",
+    }),
+  ).toEqual({
+    host: "https://us.cloud.langfuse.com",
+    publicKey: "fixture_public",
+    secretKey: "fixture_replacement",
+  });
+});
