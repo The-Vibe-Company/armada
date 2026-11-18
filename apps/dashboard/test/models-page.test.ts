@@ -39,6 +39,7 @@ test("the Morph account summary shows its first saved model as the default", () 
     models: [{ model: "owner/model-v2", input: null, output: null }],
   };
   expect(modelsPageModel(morph, "opencode")).toBe("owner/model-v2");
+  expect(modelsPageModel({ ...morph, models: undefined }, "opencode")).toBe("Model list unavailable");
 });
 
 test("personal per-agent accounts override account-wide defaults without billing fallback", () => {

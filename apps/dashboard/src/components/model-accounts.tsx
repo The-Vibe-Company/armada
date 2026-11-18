@@ -933,7 +933,7 @@ function LimitsDialog({
             </p>
           </div>
           {Object.entries(account.modelCounts ?? {}).map(([model, counts]) => (
-            <p key={model} className="text-xs text-muted-foreground">
+            <p key={model} className="text-xs wrap-anywhere text-muted-foreground">
               {model}: {counts.runningAgents} working / {counts.waitingAgents} waiting /{" "}
               {account.modelLimits?.[model] ?? "unlimited"} max
             </p>
