@@ -109,6 +109,9 @@ const digestPattern = /^[a-f0-9]{64}$/;
 const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 /** Daemon-owned, re-creatable public artifact caches (runtime binary; #2562 shared and private archives). */
 const CACHE_DIRECTORIES = ["runtime-cache", "artifact-cache", "artifact-cache-private"];
+// A killed daemon can leave a private state write before its atomic rename.
+const disposableStateFile =
+  /^(?:daemon-[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\.lock|\.state-[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})$/;
 
 async function safeAncestors(path: string, home: string) {
   for (let directory = dirname(path); ; directory = dirname(directory)) {
@@ -173,7 +176,7 @@ export async function validateInstallation(
       !["state.json", "daemon.lock", "managed.json", "update.json", "update-candidate", ...CACHE_DIRECTORIES].includes(
         entry,
       ) &&
-      !/^daemon-[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\.lock$/.test(entry)
+      !disposableStateFile.test(entry)
     )
       throw new Error("Unknown files in installation directory; preserve and inspect before uninstalling.");
     const entryStat = await lstat(join(directory, entry));
@@ -194,6 +197,15 @@ export interface UpgradeServiceIo {
   service(args: string[]): Promise<unknown>;
 }
 
+async function syncDirectory(path: string) {
+  const directory = await open(path, constants.O_RDONLY);
+  try {
+    await directory.sync();
+  } finally {
+    await directory.close();
+  }
+}
+
 /** Durable rename: pending marker is synced before the executable can be replaced. */
 async function atomicReplace(path: string, bytes: Uint8Array, mode: number, temporaryDirectory = dirname(path)) {
   const temporary = join(temporaryDirectory, `.armada-host-upgrade-${randomUUID()}.tmp`);
@@ -206,12 +218,7 @@ async function atomicReplace(path: string, bytes: Uint8Array, mode: number, temp
       await file.close();
     }
     await rename(temporary, path);
-    const directory = await open(dirname(path), constants.O_RDONLY);
-    try {
-      await directory.sync();
-    } finally {
-      await directory.close();
-    }
+    await syncDirectory(dirname(path));
   } finally {
     await unlink(temporary).catch((error: NodeJS.ErrnoException) => {
       if (error.code !== "ENOENT") throw error;
@@ -288,8 +295,12 @@ export async function removeInstallation(instance?: string) {
   // Preserve registration/ownership proof until the final binary unlink succeeds.
   const update = await readUpdate(homedir(), instance);
   const recovery = update?.previousDigest ? await existingRecovery(homedir(), instance) : undefined;
+  const backupDigest =
+    update && (update.previousDigest || update.pendingPreviousDigest)
+      ? await recordedBackupDigest(homedir(), instance, update)
+      : undefined;
   const extra = ["update.json", "update-candidate"].map((name) => join(directory, name));
-  if (update?.previousDigest) extra.push(`${p.binary}.previous`);
+  if (backupDigest) extra.push(`${p.binary}.previous`);
   const saved = await Promise.all(
     [p.unit, join(directory, "state.json"), join(directory, "managed.json"), ...(recovery ? [recovery.path] : [])].map(
       async (path) => ({
@@ -304,15 +315,15 @@ export async function removeInstallation(instance?: string) {
     await command(["systemctl", "--user", "daemon-reload"]);
     for (const cache of CACHE_DIRECTORIES) await rm(join(directory, cache), { recursive: true, force: true });
     for (const entry of await readdir(directory)) {
-      if (/^daemon-[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\.lock$/.test(entry)) {
+      if (disposableStateFile.test(entry)) {
         const file = join(directory, entry);
         const stat = await lstat(file);
-        if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600)
-          throw new Error("Unsafe stale boot lock; preserve for inspection.");
+        if (!stat.isFile() || stat.nlink !== 1 || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600)
+          throw new Error("Unsafe stale state file; preserve for inspection.");
         await unlink(file);
       }
     }
-    if (update?.previousDigest) await verifyBackup(homedir(), instance, update.previousDigest);
+    if (backupDigest) await verifyBackup(homedir(), instance, backupDigest);
     for (const file of extra) await rm(file, { force: true });
     await unlink(join(directory, "state.json"));
     await unlink(join(directory, "managed.json"));
@@ -334,8 +345,9 @@ export async function removeInstallation(instance?: string) {
 
 type Update = {
   version: string;
-  phase: "failed" | "staged" | "starting" | "updated";
+  phase: "cancelled" | "failed" | "staged" | "starting" | "updated";
   previousDigest?: string;
+  pendingPreviousDigest?: string;
   candidateDigest?: string;
   reported?: true;
 };
@@ -350,8 +362,9 @@ async function readUpdate(home: string, instance?: string): Promise<Update | und
     );
     if (
       !stableDockerHostVersion(update.version) ||
-      !["failed", "staged", "starting", "updated"].includes(update.phase) ||
+      !["cancelled", "failed", "staged", "starting", "updated"].includes(update.phase) ||
       (update.previousDigest !== undefined && !digestPattern.test(update.previousDigest)) ||
+      (update.pendingPreviousDigest !== undefined && !digestPattern.test(update.pendingPreviousDigest)) ||
       (update.candidateDigest !== undefined && !digestPattern.test(update.candidateDigest))
     )
       throw new Error("Invalid Docker host update record");
@@ -378,6 +391,17 @@ async function verifyBackup(home: string, instance: string | undefined, digest: 
   return bytes;
 }
 
+async function recordedBackupDigest(home: string, instance: string | undefined, update: Update) {
+  try {
+    const digest = sha256(await ownedFile(`${paths(home, instance).binary}.previous`, home, true));
+    if (digest !== update.previousDigest && digest !== update.pendingPreviousDigest)
+      throw new Error("Docker host rollback copy changed");
+    return digest;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT" || update.previousDigest) throw error;
+  }
+}
+
 function newer(target: string, current: string) {
   const parts = current.split(".").map(Number);
   for (const [index, value] of target.split(".").map(Number).entries()) {
@@ -387,18 +411,39 @@ function newer(target: string, current: string) {
   return false;
 }
 
+type ManagedUpdateInstance = { home: string; instance?: string };
+
 /** The generated service owns both its executable and its private state directory. */
-export function managedUpdateInstance(directory: string): { instance?: string } | undefined {
+export function managedUpdateInstance(directory: string): ManagedUpdateInstance | undefined {
   if (process.platform !== "linux" || !process.env.INVOCATION_ID) return;
   const match = /\/armada-docker-host(?:@([a-f0-9]{64}))?$/.exec(directory);
   if (!match) return;
   const instance = match[1];
-  if (directory === stateDirectory(homedir(), instance) && process.execPath === paths(homedir(), instance).binary)
-    return instance ? { instance } : {};
+  const home = homedir();
+  if (directory === stateDirectory(home, instance) && process.execPath === paths(home, instance).binary)
+    return instance ? { home, instance } : { home };
 }
 
-export function automaticUpdate(state: State, instance?: string) {
-  const home = homedir();
+async function supervisorAbsent(service: UpgradeServiceIo["service"], instance?: string) {
+  // A successful empty listing means the transient unit was collected or
+  // lost at reboot. An activating unit may be waiting for RestartSec.
+  const listing = await service([
+    "systemctl",
+    "--user",
+    "list-units",
+    "--all",
+    "--plain",
+    "--no-legend",
+    "--no-pager",
+    updateUnit(instance),
+  ]);
+  if (typeof listing !== "string") throw new Error("Could not read Docker host update supervisor state");
+  if (listing.trim() === "") return true;
+  const [unit, , active] = listing.trim().split(/\s+/);
+  return unit === updateUnit(instance) && (active === "inactive" || active === "failed");
+}
+
+export function automaticUpdate(state: State, { home, instance }: ManagedUpdateInstance) {
   const p = paths(home, instance);
   let staged = false;
   let nextManifestCheck = 0;
@@ -413,22 +458,14 @@ export function automaticUpdate(state: State, instance?: string) {
       if (last?.phase === "starting") {
         // A supervisor stopped while the trial is alive still needs to be
         // replaced. The replacement sees "starting" and can only roll back.
-        const supervisor = await command([
-          "systemctl",
-          "--user",
-          "show",
-          "-p",
-          "ActiveState",
-          "--value",
-          updateUnit(instance),
-        ]).catch(() => undefined);
-        if (supervisor === "inactive" || supervisor === "failed")
-          staged = (await readUpdate(home, instance))?.phase === "starting";
-        return true;
+        const absent = await supervisorAbsent(command, instance);
+        const phase = (await readUpdate(home, instance))?.phase;
+        staged = absent && phase === "starting";
+        return phase === "starting" || phase === "staged";
       }
       if (last?.phase === "staged") {
-        if (process.env.ARMADA_DOCKER_HOST_AUTO_UPDATE === "0") {
-          await saveUpdate(home, instance, { ...last, phase: "failed" });
+        if (target !== last.version || process.env.ARMADA_DOCKER_HOST_AUTO_UPDATE === "0") {
+          await saveUpdate(home, instance, { ...last, phase: "cancelled" });
           return false;
         }
         staged = true;
@@ -454,6 +491,7 @@ export function automaticUpdate(state: State, instance?: string) {
           version: target,
           phase: "failed",
           ...(last?.previousDigest ? { previousDigest: last.previousDigest } : {}),
+          ...(last?.pendingPreviousDigest ? { pendingPreviousDigest: last.pendingPreviousDigest } : {}),
         };
         // Staging can advertise a version before its artifact arrives. Throttle
         // manifest checks, and fence the attempt only once the official
@@ -469,16 +507,16 @@ export function automaticUpdate(state: State, instance?: string) {
         const previous = await ownedFile(p.binary, home, true);
         const previousDigest = sha256(previous);
         const backup = `${p.binary}.previous`;
-        try {
-          const existing = sha256(await ownedFile(backup, home, true));
-          if (existing !== last?.previousDigest && existing !== previousDigest)
-            throw new Error("Docker host rollback copy changed");
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-        }
+        const existing = await recordedBackupDigest(home, instance, attempt);
+        await saveUpdate(home, instance, {
+          version: target,
+          phase: "failed",
+          ...(existing ? { previousDigest: existing } : {}),
+          pendingPreviousDigest: previousDigest,
+        });
         await atomicReplace(backup, previous, 0o700);
         await saveUpdate(home, instance, {
-          ...attempt,
+          version: target,
           phase: "staged",
           previousDigest,
           candidateDigest: sha256(bytes),
@@ -547,11 +585,18 @@ async function existingRecovery(home: string, instance?: string) {
 }
 
 async function armRecovery(home: string, instance?: string) {
-  if (await existingRecovery(home, instance)) return;
   const recovery = recoveryDropIn(home, instance);
-  await mkdir(dirname(recovery.path), { recursive: true, mode: 0o700 });
-  await safeAncestors(recovery.path, home);
-  await atomicReplace(recovery.path, Buffer.from(recovery.contents), 0o600);
+  const directory = dirname(recovery.path);
+  if (await existingRecovery(home, instance)) {
+    // A previous helper may have been interrupted just after the rename.
+    await syncDirectory(directory);
+  } else {
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    await safeAncestors(recovery.path, home);
+    await atomicReplace(recovery.path, Buffer.from(recovery.contents), 0o600);
+  }
+  // The unit directory entry for the drop-in must survive a reboot too.
+  await syncDirectory(dirname(directory));
 }
 
 function saveManagedMarker(home: string, instance: string | undefined, marker: ManagedInstallation) {
@@ -559,20 +604,27 @@ function saveManagedMarker(home: string, instance: string | undefined, marker: M
   return atomicReplace(join(directory, "managed.json"), Buffer.from(JSON.stringify(marker)), 0o600, dirname(directory));
 }
 
-async function restorePrevious(store: ManagedStore, home: string, instance: string | undefined, update: Update) {
+async function restorePrevious(store: ManagedStore, home: string, instance: string | undefined, expected: Update) {
   const unlock = await store.lock();
   try {
-    if (update.phase === "starting" && update.previousDigest) {
+    const update = await readUpdate(home, instance);
+    if (update?.version !== expected.version || (update.phase !== "starting" && update.phase !== "staged")) return;
+    if (update.phase === "starting") {
+      if (!update.previousDigest || !update.candidateDigest) throw new Error("Incomplete Docker host trial record");
       const marker = await validateInstallation(await store.load(), home, instance);
       const previous = await verifyBackup(home, instance, update.previousDigest);
       const binary = paths(home, instance).binary;
       const currentDigest = sha256(await ownedFile(binary, home, true));
-      await saveManagedMarker(home, instance, {
-        ...marker,
-        binarySha256: currentDigest,
-        pendingBinarySha256: update.previousDigest,
-      });
-      await atomicReplace(binary, previous, 0o700);
+      if (currentDigest !== update.previousDigest) {
+        if (currentDigest !== update.candidateDigest) throw new Error("Docker host trial binary changed");
+        // Keep both verified digests valid until the rollback rename is durable.
+        await saveManagedMarker(home, instance, {
+          ...marker,
+          binarySha256: currentDigest,
+          pendingBinarySha256: update.previousDigest,
+        });
+        await atomicReplace(binary, previous, 0o700);
+      }
       await saveManagedMarker(home, instance, {
         installationId: marker.installationId,
         unit: marker.unit,
@@ -593,12 +645,7 @@ export async function recoverUpdate(
 ) {
   const update = await readUpdate(io.home, instance);
   if (update?.phase !== "starting") return;
-  try {
-    await io.service(["systemctl", "--user", "is-active", updateUnit(instance)]);
-    return; // The live supervisor owns the trial.
-  } catch {
-    await restorePrevious(store, io.home, instance, update);
-  }
+  if (await supervisorAbsent(io.service, instance)) await restorePrevious(store, io.home, instance, update);
 }
 
 export async function superviseUpdate(

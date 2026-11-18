@@ -187,7 +187,7 @@ async function main(args: string[]) {
     let stoppedSampleAt = 0;
     let stoppedSample: number | null = null;
     const managed = command === "run" ? managedUpdateInstance(directory) : undefined;
-    const update = managed ? automaticUpdate(await store.load(), managed.instance) : undefined;
+    const update = managed ? automaticUpdate(await store.load(), managed) : undefined;
     const api = httpApi(
       fetch,
       createAvailabilitySampler(dockerCli),
@@ -281,7 +281,12 @@ async function main(args: string[]) {
       let nextImageCleanup = 0;
       await runJobs(store, api, runtime, {
         stopping: () => stopping || update?.staged === true,
-        ...(update ? { beforeAdmission: update.beforeAdmission } : {}),
+        ...(update
+          ? {
+              beforeAdmission: update.beforeAdmission,
+              retryCompletion: () => !stopping,
+            }
+          : {}),
         sleep: Bun.sleep,
         async beforeTick() {
           if (Date.now() < nextImageCleanup) return;

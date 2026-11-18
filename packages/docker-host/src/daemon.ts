@@ -255,6 +255,7 @@ export type TickOptions = {
    */
   running?: ReadonlySet<string>;
   beforeAdmission?(target: string | undefined): Promise<boolean>;
+  persistCompletion?(save: () => Promise<void>): Promise<void>;
   /** Sandboxes whose machine operation is still executing in this process. */
   sandboxes?: ReadonlySet<string>;
   /** Snapshot builds still executing in this process; when given, it replaces `skipSnapshots` after the poll. */
@@ -342,7 +343,8 @@ export async function runJobs(
     stopping(): boolean;
     sleep(ms: number): Promise<unknown>;
     beforeTick?(): Promise<void>;
-    beforeAdmission?(target: string | undefined): Promise<boolean>;
+    beforeAdmission?: TickOptions["beforeAdmission"];
+    retryCompletion?(): boolean;
     failed?(what: "tick" | "job"): void;
     now?: () => number;
   },
@@ -355,6 +357,18 @@ export async function runJobs(
   // as busy (it is then no longer in `settled()`), the loop polls again at once.
   let finished = 0;
   const settled = () => Promise.race(running.values());
+  async function persistCompletion(save: () => Promise<void>) {
+    for (;;) {
+      try {
+        await save();
+        return;
+      } catch (error) {
+        if (!loop.retryCompletion?.()) throw error;
+        loop.failed?.("job");
+        await loop.sleep(DOCKER_HOST_IDLE_MS);
+      }
+    }
+  }
   try {
     while (!loop.stopping()) {
       await loop.beforeTick?.();
@@ -369,6 +383,7 @@ export async function runJobs(
           waitSeconds: DOCKER_HOST_POLL_WAIT_SECONDS,
           ...live,
           ...(loop.beforeAdmission ? { beforeAdmission: loop.beforeAdmission } : {}),
+          ...(loop.retryCompletion ? { persistCompletion } : {}),
           dispatch(job, work) {
             const done = work
               .catch(() => loop.failed?.("job"))
@@ -518,6 +533,7 @@ async function admitLocked(
   lock.release();
   let polled: Awaited<ReturnType<Api["poll"]>> | undefined;
   let pollError: unknown;
+  let upgradeFenced = false;
   try {
     polled = await api.poll(state, {
       skipSnapshots,
@@ -525,6 +541,8 @@ async function admitLocked(
         ? {}
         : { waitSeconds: options.waitSeconds, running: [...(options.running ?? [])] }),
     });
+    // Release downloads must not hold up durable completion of admitted jobs.
+    upgradeFenced = (await options.beforeAdmission?.(polled.targetVersion)) ?? false;
   } catch (error) {
     pollError = error;
   } finally {
@@ -879,7 +897,20 @@ async function admitLocked(
     // Reload durable state: other ticks may have saved while the operation ran.
     const latest = await store.load();
     const saved = latest.receipts.find((item) => item.requestId === receipt.requestId);
-    if (!saved) throw Error("Missing durable receipt");
+    if (!saved) {
+      // The preceding save may have renamed a compacted ledger before its
+      // directory sync failed. Re-save only an exact terminal match.
+      const retired = latest.retired?.find((item) => item[0] === receipt.requestId);
+      if (
+        !retired ||
+        !receipt.outcome ||
+        JSON.stringify(retired) !== JSON.stringify(retireReceipt(receipt, receipt.outcome))
+      )
+        throw Error("Missing durable receipt");
+      await store.save(latest);
+      Object.assign(state, latest);
+      return;
+    }
     Object.assign(saved, receipt);
     for (const claim of latest.resumeClaims ?? [])
       if (
@@ -897,7 +928,7 @@ async function admitLocked(
   }
   if (pollError) throw pollError;
   if (!polled) throw pollError ?? new Error("Host poll unavailable");
-  if ((await options.beforeAdmission?.(polled.targetVersion)) || !polled.job) {
+  if (upgradeFenced || !polled.job) {
     await store.save(state);
     if (polled.job) return "idle";
     // A claim this host cannot acknowledge would end every held poll at once.
@@ -1011,7 +1042,9 @@ async function admitLocked(
     async work() {
       if (!accepted.outcome) {
         await perform(accepted, job, admitted, refusal);
-        await exclusive(store, () => finish(accepted));
+        const save = () => exclusive(store, () => finish(accepted));
+        if (options.persistCompletion) await options.persistCompletion(save);
+        else await save();
       }
       await api.result(state, accepted);
     },
@@ -1055,21 +1088,28 @@ export function compactReceipts(state: State): void {
       !covered.has(generationKey(receipt.request))
     )
       return true;
-    retired.push([
-      receipt.requestId,
-      digest(
-        JSON.stringify([receipt.operation, fingerprint(receipt), "inputHash" in receipt ? receipt.inputHash : null]),
-      ),
-      generationKey(receipt.request),
-      digest(fingerprint(receipt)),
-      receipt.operation,
-      receipt.outcome,
-      receipt.reason ?? null,
-      receipt.operation === "buildSnapshot" ? (receipt.imageId ?? null) : null,
-      receipt.operation === "buildSnapshot" ? (receipt.baselineVersion ?? null) : null,
-      receipt.operation === "buildSnapshot" ? (receipt.baselineTool ?? null) : null,
-      receipt.operation === "buildSnapshot" ? (receipt.missingRefIndex ?? null) : null,
-    ]);
+    retired.push(retireReceipt(receipt, receipt.outcome));
     return false;
   });
+}
+
+function retireReceipt(
+  receipt: Receipt,
+  outcome: NonNullable<Receipt["outcome"]>,
+): NonNullable<State["retired"]>[number] {
+  return [
+    receipt.requestId,
+    digest(
+      JSON.stringify([receipt.operation, fingerprint(receipt), "inputHash" in receipt ? receipt.inputHash : null]),
+    ),
+    generationKey(receipt.request),
+    digest(fingerprint(receipt)),
+    receipt.operation,
+    outcome,
+    receipt.reason ?? null,
+    receipt.operation === "buildSnapshot" ? (receipt.imageId ?? null) : null,
+    receipt.operation === "buildSnapshot" ? (receipt.baselineVersion ?? null) : null,
+    receipt.operation === "buildSnapshot" ? (receipt.baselineTool ?? null) : null,
+    receipt.operation === "buildSnapshot" ? (receipt.missingRefIndex ?? null) : null,
+  ];
 }

@@ -2060,9 +2060,19 @@ test("a staged update drains the admitted launch job and leaves the next job que
   const release = Promise.withResolvers<void>();
   const acknowledged: string[] = [];
   const started: string[] = [];
+  let failedSave = false;
   let staged = false;
   const loop = runJobs(
-    first.store,
+    {
+      ...first.store,
+      async save(state) {
+        if (!failedSave && state.receipts.some((receipt) => receipt.outcome === "completed")) {
+          failedSave = true;
+          throw new Error("Temporary receipt write failure");
+        }
+        await first.store.save(state);
+      },
+    },
     {
       ...first.api,
       async poll(_state, options) {
@@ -2083,6 +2093,7 @@ test("a staged update drains the admitted launch job and leaves the next job que
     },
     {
       stopping: () => staged,
+      retryCompletion: () => true,
       async beforeAdmission(target) {
         if (!target) return false;
         staged = true;
@@ -2101,9 +2112,54 @@ test("a staged update drains the admitted launch job and leaves the next job que
   expect(acknowledged).toEqual([]);
   release.resolve();
   await complete;
+  expect(failedSave).toBe(true);
   expect(started).toEqual([first.job.request.sandboxId]);
   expect(acknowledged).toEqual([first.job.requestId]);
   expect(first.state().receipts.map(({ requestId, outcome }) => [requestId, outcome])).toEqual([
     [first.job.requestId, "completed"],
   ]);
+});
+
+test("completion retry persists an already compacted outcome after a directory sync failure", async () => {
+  const f = fixture("delete");
+  const initial = f.state();
+  initial.receipts.push({
+    requestId: crypto.randomUUID(),
+    operation: "create",
+    request: { ...f.job.request, sandboxId: crypto.randomUUID(), image: "x".repeat(1_100_000) },
+  });
+  await f.store.save(initial);
+  let syncFailed = false;
+  let retries = 0;
+  let acknowledged = false;
+  await runJobs(
+    {
+      ...f.store,
+      async save(state) {
+        compactReceipts(state);
+        await f.store.save(state);
+        if (!syncFailed && state.retired?.some(([id]) => id === f.job.requestId)) {
+          syncFailed = true;
+          throw new Error("Directory sync failed after rename");
+        }
+      },
+    },
+    {
+      ...f.api,
+      async result(_state, receipt) {
+        expect(receipt.outcome).toBe("completed");
+        acknowledged = true;
+      },
+    },
+    f.executor,
+    {
+      stopping: () => acknowledged || retries > 1,
+      retryCompletion: () => ++retries === 1,
+      async sleep() {},
+    },
+  );
+  expect(syncFailed).toBe(true);
+  expect(retries).toBe(1);
+  expect(acknowledged).toBe(true);
+  expect(f.executed).toEqual(["delete"]);
 });

@@ -247,6 +247,9 @@ finishes on the original binary. An admitted launch job finishes there too.
 A later launch job stays queued until the service reconnects. Running containers
 and volumes survive the daemon restart and the next process reconciles them
 through the usual ledger. The update uses no sudo and opens no listening port.
+A daemon resuming a staged update after startup checks that the server still
+offers that version before draining. A withdrawn version stays fenced and job
+admission continues.
 
 A separate systemd user unit runs the old verified executable, kept beside the
 managed binary with a `.previous` suffix. It stops the drained service, swaps the

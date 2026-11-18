@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { State } from "../src/daemon.ts";
 import {
+  automaticUpdate,
   instanceName,
   recoverUpdate,
   stateDirectory,
@@ -66,6 +67,19 @@ test("managed service persists registration and refuses cleanup of unknown files
     }
     expect(run("await uninstallPreflight(state)").stderr.toString()).not.toContain("Unknown files");
     await writeFile(join(directory, "state.json"), JSON.stringify(state), { mode: 0o600 });
+    // The new rollback copy was renamed before the staging record could be finalized.
+    const backup = join(bin, "armada-docker-host.previous");
+    await writeFile(backup, "verified host bytes", { mode: 0o700 });
+    await writeFile(
+      join(directory, "update.json"),
+      JSON.stringify({
+        version: "9.0.0",
+        phase: "failed",
+        previousDigest: createHash("sha256").update("older binary").digest("hex"),
+        pendingPreviousDigest: createHash("sha256").update("verified host bytes").digest("hex"),
+      }),
+      { mode: 0o600 },
+    );
     await writeFile(join(bin, "systemctl"), "#!/bin/sh\nexit 1\n", { mode: 0o700 });
     const failedRemoval = run("await removeInstallation()");
     expect(failedRemoval.exitCode).not.toBe(0);
@@ -74,6 +88,7 @@ test("managed service persists registration and refuses cleanup of unknown files
     await writeFile(join(bin, "systemctl"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
     expect(run("await removeInstallation()").exitCode).toBe(0);
     expect(await Bun.file(join(bin, "armada-docker-host")).exists()).toBe(false);
+    expect(await Bun.file(backup).exists()).toBe(false);
   } finally {
     process.env.HOME = original.HOME;
     process.env.PATH = original.PATH;
@@ -352,32 +367,104 @@ test.each(["healthy", "failed start", "failed health"])(
   },
 );
 
-test("startup recovers an interrupted trial when the transient supervisor is gone", async () => {
+async function writeUpdateFixture(f: Awaited<ReturnType<typeof upgradeFixture>>, phase: "staged" | "starting") {
+  const journal = join(f.directory, "update.json");
+  await writeFile(`${f.binary}.previous`, f.oldBytes, { mode: 0o700 });
+  await writeFile(
+    journal,
+    JSON.stringify({
+      version: "9.0.0",
+      phase,
+      previousDigest: f.hash(f.oldBytes),
+      candidateDigest: f.hash(f.newBytes),
+    }),
+    { mode: 0o600 },
+  );
+  return journal;
+}
+
+async function interruptedTrial(f: Awaited<ReturnType<typeof upgradeFixture>>) {
+  await writeFile(f.binary, f.newBytes);
+  await writeFile(f.markerFile, JSON.stringify({ ...f.marker, pendingBinarySha256: f.hash(f.newBytes) }));
+  return writeUpdateFixture(f, "starting");
+}
+
+test("a staged release withdrawn from the poll does not stop job admission", async () => {
   const f = await upgradeFixture();
   try {
-    const journal = join(f.directory, "update.json");
-    await writeFile(`${f.binary}.previous`, f.oldBytes, { mode: 0o700 });
-    await writeFile(f.binary, f.newBytes);
-    await writeFile(f.markerFile, JSON.stringify({ ...f.marker, pendingBinarySha256: f.hash(f.newBytes) }));
-    await writeFile(
-      journal,
-      JSON.stringify({
-        version: "9.0.0",
-        phase: "starting",
-        previousDigest: f.hash(f.oldBytes),
-        candidateDigest: f.hash(f.newBytes),
-      }),
-      { mode: 0o600 },
-    );
+    const journal = await writeUpdateFixture(f, "staged");
+
+    const updater = automaticUpdate(f.state, { home: f.home });
+    expect(await updater.beforeAdmission(undefined)).toBe(false);
+    expect(updater.staged).toBe(false);
+    expect(await updater.failure()).toBeUndefined();
+    expect(JSON.parse(await readFile(journal, "utf8")).phase).toBe("cancelled");
+  } finally {
+    await rm(f.home, { recursive: true, force: true });
+  }
+});
+
+test("restarted supervisor restores the previous binary after an interruption before the rollback rename", async () => {
+  const f = await upgradeFixture();
+  const bin = join(f.home, ".local/bin");
+  try {
+    const journal = await interruptedTrial(f);
+    // Prevent the executable rename after allowing the rollback marker write.
+    await chmod(bin, 0o500);
+    await expect(superviseUpdate(f.store, undefined, f.io)).rejects.toThrow();
+    expect(await readFile(f.binary, "utf8")).toBe(f.newBytes);
+    expect(await validateInstallation(f.state, f.home)).toEqual({
+      ...f.marker,
+      binarySha256: f.hash(f.newBytes),
+      pendingBinarySha256: f.hash(f.oldBytes),
+    });
+
+    await chmod(bin, 0o700);
+    const starts: string[] = [];
+    await superviseUpdate(f.store, undefined, {
+      home: f.home,
+      async service(args) {
+        if (args.includes("start")) starts.push(await readFile(f.binary, "utf8"));
+      },
+    });
+    expect(starts).toEqual([f.oldBytes]);
+    expect(JSON.parse(await readFile(journal, "utf8")).phase).toBe("failed");
+    expect(await validateInstallation(f.state, f.home)).toEqual(f.marker);
+  } finally {
+    await chmod(bin, 0o700);
+    await rm(f.home, { recursive: true, force: true });
+  }
+});
+
+test("startup recovers a persisted trial after reboot removes its transient supervisor", async () => {
+  const f = await upgradeFixture();
+  try {
+    const journal = await interruptedTrial(f);
     await recoverUpdate(f.store, undefined, {
       home: f.home,
       async service() {
-        throw new Error("supervisor absent after reboot");
+        return "armada-docker-host-update.service loaded activating auto-restart Update";
+      },
+    });
+    expect(await readFile(f.binary, "utf8")).toBe(f.newBytes);
+
+    // The interrupted daemon never renamed this partial write to state.json.
+    const tornWrite = join(f.directory, ".state-6c4ed834-a4f5-46d6-8e7c-fdc00dc1f9d3");
+    await writeFile(tornWrite, "{", { mode: 0o600 });
+    const queries: string[][] = [];
+    await recoverUpdate(f.store, undefined, {
+      home: f.home,
+      async service(args) {
+        queries.push(args);
+        return ""; // A fresh user manager has no transient supervisor to list.
       },
     });
     expect(await readFile(f.binary, "utf8")).toBe(f.oldBytes);
+    expect(queries[0]).toContain("list-units");
+    expect(queries[0]?.at(-1)).toBe("armada-docker-host-update.service");
     expect(JSON.parse(await readFile(journal, "utf8")).phase).toBe("failed");
     expect(await validateInstallation(f.state, f.home)).toEqual(f.marker);
+    expect(await f.store.load()).toEqual(f.state);
   } finally {
     await rm(f.home, { recursive: true, force: true });
   }
