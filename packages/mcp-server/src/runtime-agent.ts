@@ -22,6 +22,7 @@ import {
   type SteerRequest,
 } from "@armada/core";
 import { PRIVATE_SKILL_FAILURES, PrivateSkillError } from "../../core/src/private-skill-error.ts";
+import { observeProviderCall } from "./request-observability.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
 
 const errors: Record<string, ProviderErrorCode> = {
@@ -127,31 +128,33 @@ export function createRuntimeAgent(
     expectedEpoch?: string,
     timeoutMs?: number,
   ): Promise<T> {
-    let reply: Awaited<ReturnType<typeof commands.call>>;
-    try {
-      reply = await commands.call(ownerId, command, {
-        ...(signal ? { signal } : {}),
-        ...(command.op === "workspaceExec" ? { timeoutMs: 610_000 } : timeoutMs ? { timeoutMs } : {}),
-        ...(expectedEpoch !== undefined ? { expectedEpoch } : {}),
-      });
-    } catch (error) {
-      if (error instanceof ProviderError) throw error;
-      // A lost wait is not proof of non-execution. Preserve the exact identity for
-      // reconciliation; never include transport errors or private payloads.
-      throw refusal("conflict", command.requestId);
-    }
-    const body = reply.body;
-    const identified = body.version !== undefined || body.requestId !== undefined;
-    if (identified && (body.version !== 1 || body.requestId !== command.requestId))
-      throw refusal("unavailable", command.requestId);
-    if (body.error && (identified || reply.status === 409)) {
-      const name = typeof body.error === "string" ? body.error : undefined;
-      const code = name && Object.hasOwn(errors, name) ? errors[name] : undefined;
-      throw refusal(code ?? "unknown", name === "request_outcome_unknown" || !code ? command.requestId : undefined);
-    }
-    if (reply.status < 200 || reply.status >= 300 || !identified || !("result" in body))
-      throw refusal("unavailable", command.requestId);
-    return body.result as T;
+    return observeProviderCall(binding.provider ?? "boat", `runtime.${command.op}`, async () => {
+      let reply: Awaited<ReturnType<typeof commands.call>>;
+      try {
+        reply = await commands.call(ownerId, command, {
+          ...(signal ? { signal } : {}),
+          ...(command.op === "workspaceExec" ? { timeoutMs: 610_000 } : timeoutMs ? { timeoutMs } : {}),
+          ...(expectedEpoch !== undefined ? { expectedEpoch } : {}),
+        });
+      } catch (error) {
+        if (error instanceof ProviderError) throw error;
+        // A lost wait is not proof of non-execution. Preserve the exact identity for
+        // reconciliation; never include transport errors or private payloads.
+        throw refusal("conflict", command.requestId);
+      }
+      const body = reply.body;
+      const identified = body.version !== undefined || body.requestId !== undefined;
+      if (identified && (body.version !== 1 || body.requestId !== command.requestId))
+        throw refusal("unavailable", command.requestId);
+      if (body.error && (identified || reply.status === 409)) {
+        const name = typeof body.error === "string" ? body.error : undefined;
+        const code = name && Object.hasOwn(errors, name) ? errors[name] : undefined;
+        throw refusal(code ?? "unknown", name === "request_outcome_unknown" || !code ? command.requestId : undefined);
+      }
+      if (reply.status < 200 || reply.status >= 300 || !identified || !("result" in body))
+        throw refusal("unavailable", command.requestId);
+      return body.result as T;
+    });
   }
   const identity = (requestId: string = randomUUID()) => ({ version: 1 as const, sandboxId, requestId });
   return {
@@ -161,23 +164,25 @@ export function createRuntimeAgent(
       expectedRestore?: RuntimeRestore,
     ): Promise<{ runtime: "armada"; epoch: string }> {
       const command = { ...identity(), op: "health" as const };
-      // Retain epoch alongside the result for provenance validation.
-      let reply: Awaited<ReturnType<typeof commands.call>>;
-      try {
-        reply = await commands.call(ownerId, command, signal ? { signal } : {});
-      } catch {
-        throw refusal("sandbox_not_ready");
-      }
-      const body = reply.body;
-      if (
-        reply.status !== 200 ||
-        body.version !== 1 ||
-        body.requestId !== command.requestId ||
-        body.error !== undefined ||
-        !runtimeHealthMatches(body.result, reply.epoch, expectedRestore)
-      )
-        throw refusal("sandbox_not_ready");
-      return { runtime: "armada", epoch: reply.epoch };
+      return observeProviderCall(binding.provider ?? "boat", "runtime.health", async () => {
+        // Retain epoch alongside the result for provenance validation.
+        let reply: Awaited<ReturnType<typeof commands.call>>;
+        try {
+          reply = await commands.call(ownerId, command, signal ? { signal } : {});
+        } catch {
+          throw refusal("sandbox_not_ready");
+        }
+        const body = reply.body;
+        if (
+          reply.status !== 200 ||
+          body.version !== 1 ||
+          body.requestId !== command.requestId ||
+          body.error !== undefined ||
+          !runtimeHealthMatches(body.result, reply.epoch, expectedRestore)
+        )
+          throw refusal("sandbox_not_ready");
+        return { runtime: "armada", epoch: reply.epoch };
+      });
     },
     async testModelConnection(
       request: Parameters<NonNullable<import("@armada/core").Provider["testModelConnection"]>>[0],

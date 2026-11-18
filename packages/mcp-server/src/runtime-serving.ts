@@ -7,8 +7,8 @@ import {
   type Sql,
   VaultError,
 } from "@armada/core/server";
-import { createBoatProvider } from "@armada/provider-boat";
 import { createSqlData } from "./data.ts";
+import { createObservedBoatProvider } from "./observed-boat.ts";
 import { runtimeHarnessSupported } from "./provider-runtime-admission.ts";
 import { runtimeAgentFor } from "./runtime-agent.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
@@ -118,7 +118,7 @@ export function createRuntimeServing(sql: Sql, key: string) {
       sandbox,
       { model: sandbox.model, reasoningEffort: sandbox.reasoningEffort },
     );
-    const host = typeof apiKey === "string" ? createBoatProvider({ apiKey }) : apiKey;
+    const host = typeof apiKey === "string" ? createObservedBoatProvider({ apiKey }) : apiKey;
     // Native Modal stop expects its private listener. This lane may retain disk
     // only after the common journal checkpoint committed, never on a host ACK.
     const compute =

@@ -14,7 +14,6 @@ import {
   resolveBoatKey,
   VaultError,
 } from "@armada/core/server";
-import { createBoatProvider } from "@armada/provider-boat";
 import { settleDetachedModalCollections } from "@armada/provider-modal";
 import { repairHistoricalTurnModels } from "./account-model-upgrade.ts";
 import { createAccountTurnQueue } from "./account-turn-queue.ts";
@@ -61,9 +60,11 @@ import { createModelAuthOwnership } from "./model-auth.ts";
 import { createModelUsageApi } from "./model-usage.ts";
 import type { NamedLaunchCredentials } from "./named-credentials.ts";
 import { createNativeWebhookPrompts } from "./native-webhook-prompts.ts";
+import { createObservedBoatProvider } from "./observed-boat.ts";
 import { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import { createOutboundWebhooks } from "./outbound-webhooks.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
+import { currentRequestId, observeRequest, REQUEST_ID_HEADER } from "./request-observability.ts";
 import { pruneServerRetention } from "./retention-maintenance.ts";
 import { startRoutineWorker } from "./routine-worker.ts";
 import { createRuntimeArtifactRoute, createRuntimeArtifactSetRoute } from "./runtime-artifacts.ts";
@@ -190,7 +191,7 @@ export async function startServer(
     throw error;
   }
   const providerFor = (apiKey: string, caller?: { userId: string; orgId: string }) => {
-    const provider = createBoatProvider({
+    const provider = createObservedBoatProvider({
       apiKey,
       sanitizeEvents: async (provider, id, events) => {
         if (!caller) throw Error("Native events require trusted Armada caller scope.");
@@ -230,7 +231,7 @@ export async function startServer(
     sql,
     vault: store,
     encryptionKey: config.encryptionKey,
-    providerFor: (apiKey) => createBoatProvider({ apiKey }),
+    providerFor: (apiKey) => createObservedBoatProvider({ apiKey }),
   });
   const modal = await createModalIntegration({
     resumeRefused: (provider, id) => modelAuth.releaseProviderCapacity(provider, id),
@@ -303,7 +304,7 @@ export async function startServer(
       credentials: launchCredentials(store, config.encryptionKey, undefined, modelAuth, { store, app: githubApp }),
       connections: runtimeMcp.connections,
       provider: async (actor, golden) =>
-        createBoatProvider({
+        createObservedBoatProvider({
           apiKey: (
             await resolveBoatKey(store, config.encryptionKey, {
               userId: actor.userId,
@@ -485,7 +486,7 @@ export async function startServer(
         }
       : {}),
     ...(runtimeLaunch
-      ? { boatRuntimeLaunch: runtimeLaunch, runtimeHostFor: (apiKey: string) => createBoatProvider({ apiKey }) }
+      ? { boatRuntimeLaunch: runtimeLaunch, runtimeHostFor: (apiKey: string) => createObservedBoatProvider({ apiKey }) }
       : {}),
     launch,
     publicUrl: config.publicUrl,
@@ -694,7 +695,7 @@ export async function startServer(
   });
   mcp.startBackground();
   dockerLaunch?.startBackground();
-  const requestDrain = createServerRequestDrain(handler);
+  const requestDrain = createServerRequestDrain(handler, options.logError);
   const { fetch, requests } = requestDrain;
   const server = Object.assign(
     Bun.serve<RuntimeSocketData>({
@@ -705,8 +706,18 @@ export async function startServer(
       maxRequestBodySize: 128 * 1024 * 1024,
       fetch: (request, instance) =>
         new URL(request.url).pathname === "/api/runtime/channel"
-          ? runtimeSockets.upgrade(request, (data) => instance.upgrade(request, { data }))
+          ? observeRequest(
+              () =>
+                runtimeSockets.upgrade(request, (data) =>
+                  instance.upgrade(request, {
+                    data,
+                    headers: { [REQUEST_ID_HEADER]: currentRequestId()! },
+                  }),
+                ),
+              options.logError,
+            )
           : fetch(request),
+      error: () => observeRequest(() => Response.json({ error: "internal" }, { status: 500 }), options.logError),
       websocket: runtimeSockets.websocket,
     }),
     {

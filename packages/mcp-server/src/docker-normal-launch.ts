@@ -51,6 +51,7 @@ import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import { resolveDockerSnapshot } from "./docker-snapshot-data.ts";
 import { recordLaunchStageQuietly } from "./launch-stage-record.ts";
+import { observeProviderCall } from "./request-observability.ts";
 import { createRuntimeAgent } from "./runtime-agent.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
@@ -1060,7 +1061,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
   }
   return {
     launch: (caller: Caller, body: Record<string, unknown>, admission?: Parameters<typeof launch>[2]) =>
-      launch(caller, body, admission),
+      observeProviderCall("docker", "launch", () => launch(caller, body, admission)),
     drain,
     drainQueued: promptWorker.drain,
     startBackground() {

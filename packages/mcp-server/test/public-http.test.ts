@@ -2,6 +2,8 @@ import { afterEach, expect, test } from "bun:test";
 import { VERSION } from "@armada/core";
 import { createHandler, type HandlerOptions } from "../src/http.ts";
 
+import { observeProvider } from "../src/request-observability.ts";
+
 const PUBLIC_URL = "https://armada.example.test";
 const forbiddenCalls: string[] = [];
 
@@ -107,4 +109,47 @@ test("mounted routes precede MCP and null falls through to its OAuth challenge",
   expect(mcp.headers.get("www-authenticate")).toContain(
     `resource_metadata="${PUBLIC_URL}/.well-known/oauth-protected-resource"`,
   );
+});
+
+test("overlapping requests correlate provider outcomes, response headers and safe request logs", async () => {
+  const lines: string[] = [];
+  const blocked = Promise.withResolvers<void>();
+  const privateValue = "private_request_data";
+  const provider = observeProvider("boat", {
+    async get(fail: boolean) {
+      if (fail) {
+        await blocked.promise;
+        throw new Error(privateValue);
+      }
+    },
+  });
+  const handle = handler({
+    log: (line) => lines.push(line),
+    routes: [
+      async (request) => {
+        await provider.get(request.method === "POST");
+        return Response.json({ ok: true });
+      },
+    ],
+  });
+  const url = `${PUBLIC_URL}/${privateValue}?${privateValue}`;
+  const failure = handle(new Request(url, { method: "POST", headers: { "x-request-id": privateValue } }));
+  const ok = await handle(new Request(url));
+  blocked.resolve();
+  const failed = await failure;
+  expect(ok.status).toBe(200);
+  expect(failed.status).toBe(500);
+  expect(await failed.json()).toEqual({ error: "internal" });
+  const okId = ok.headers.get("x-request-id");
+  const failedId = failed.headers.get("x-request-id");
+  expect(okId).toBeTruthy();
+  expect(failedId).toBeTruthy();
+  expect(okId).not.toBe(failedId);
+  expect(lines.map((line) => JSON.parse(line))).toMatchObject([
+    { event: "provider_call", provider: "boat", operation: "get", requestId: okId, outcome: "ok" },
+    { event: "http_request", requestId: okId, status: 200 },
+    { event: "provider_call", provider: "boat", operation: "get", requestId: failedId, outcome: "error" },
+    { event: "http_request", requestId: failedId, status: 500 },
+  ]);
+  expect(lines.join("\n")).not.toContain(privateValue);
 });

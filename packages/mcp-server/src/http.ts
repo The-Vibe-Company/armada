@@ -18,7 +18,6 @@ import {
   type Sql,
   VERSION,
 } from "@armada/core/server";
-import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import {
   AuthUnavailable,
   authenticateCaller,
@@ -31,8 +30,10 @@ import { exposedSecrets, type GitHubLaunchOptions, launchCredentials } from "./l
 import { observeNativeFirstToken } from "./launch-stage-record.ts";
 import { redactForLog } from "./log.ts";
 import type { ModelAuthOwnership } from "./model-auth.ts";
+import { createObservedMcpTransport } from "./observed-mcp-transport.ts";
 import type { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import type { ProviderMetadataFor } from "./provider-metadata.ts";
+import { currentRequestId, observeRequest } from "./request-observability.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
@@ -138,7 +139,9 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const log = options.log ?? ((line: string) => console.error(line));
 
-  return async (request) => {
+  const logDiagnostic = (line: string) => log(`[request ${currentRequestId()}] ${line}`);
+
+  const routeRequest = async (request: Request) => {
     const url = new URL(request.url);
     if (url.pathname === CLIENT_CONFIG_PATH) {
       const config: ClientConfig = {
@@ -188,7 +191,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
       });
     } catch (error) {
       if (!(error instanceof AuthUnavailable)) throw error;
-      log(redactForLog(`armada serve: /mcp authentication unavailable: ${describeFailure(error)}`));
+      logDiagnostic(redactForLog(`armada serve: /mcp authentication unavailable: ${describeFailure(error)}`));
       return Response.json({ error: "temporarily_unavailable" }, { status: 503, headers: { "retry-after": "5" } });
     }
     if (!auth.ok) return oauthChallenge(options.publicUrl);
@@ -229,7 +232,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
         deletionProvider: (sandbox) => providerRegistry(options).resolve(sandbox, { userId: sandbox.ownerId }),
         now,
         sleep,
-        logError: log,
+        logError: logDiagnostic,
         ...(options.ordinaryLaunchReceipts ? { ordinaryLaunchReceipts: options.ordinaryLaunchReceipts } : {}),
         ...(options.launch ? { launch: options.launch } : {}),
         ...(options.goldenAdoption ? { goldenAdoption: options.goldenAdoption } : {}),
@@ -237,7 +240,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
       },
       VERSION,
     );
-    const transport = new WebStandardStreamableHTTPServerTransport({ enableJsonResponse: true });
+    const transport = createObservedMcpTransport();
     await server.connect(transport);
     try {
       return await transport.handleRequest(request);
@@ -245,6 +248,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
       await server.close();
     }
   };
+  return (request) => observeRequest(() => routeRequest(request), log);
 }
 
 /**

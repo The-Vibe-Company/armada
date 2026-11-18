@@ -8,6 +8,7 @@ import { DockerHostDraining, DockerLimitsRefused } from "./docker-capacity.ts";
 import { type createDockerHostStore, DockerHostDenied } from "./docker-host-store.ts";
 import type { DockerSnapshots } from "./docker-snapshots.ts";
 import type { Route } from "./http.ts";
+import { observeProviderCall } from "./request-observability.ts";
 
 const machinePaths = [
   "/api/docker-host/register",
@@ -99,10 +100,13 @@ export function createDockerHostRoutes(
         const body: unknown = JSON.parse(await readBoundedText(request, path.includes("/snapshots/") ? 1048576 : 4096));
         if (!object(body)) throw new InvalidInput();
         if (path.includes("/snapshots/")) {
-          if (!options.snapshots) throw new InvalidInput();
-          return Response.json(await options.snapshots.command(result.caller, path.split("/").at(-1) ?? "", body), {
-            headers,
-          });
+          const snapshots = options.snapshots;
+          if (!snapshots) throw new InvalidInput();
+          const operation = path.split("/").at(-1) ?? "";
+          const snapshot = await observeProviderCall("docker", `snapshot.${operation}`, () =>
+            snapshots.command(result.caller, operation, body),
+          );
+          return Response.json(snapshot, { headers });
         }
         fields(
           body,

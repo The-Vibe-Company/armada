@@ -6,6 +6,7 @@ import { DockerHostDenied } from "./docker-host-store.ts";
 import { type createDockerRuntimeLifecycle, DockerRuntimeDenied } from "./docker-runtime-lifecycle.ts";
 import { type createDockerSandboxService, DockerSandboxDenied } from "./docker-sandbox-service.ts";
 import type { Route } from "./http.ts";
+import { observeProvider } from "./request-observability.ts";
 
 const prefix = "/api/v1/docker/sandboxes/";
 const operations = new Set(["launch", "get", "bootstrap", "ready", "prompt", "journal", "stop", "delete", "job"]);
@@ -34,6 +35,9 @@ export function createDockerSandboxRoutes(
   },
   authenticate: (request: Request) => Promise<CallerResult>,
 ): Route {
+  const sandboxes = observeProvider("docker", services.sandboxes);
+  const runtime = observeProvider("docker", services.runtime);
+  const bootstrap = services.bootstrap && observeProvider("docker", services.bootstrap);
   return async (request) => {
     const path = new URL(request.url).pathname;
     if (!path.startsWith(prefix)) return null;
@@ -59,18 +63,15 @@ export function createDockerSandboxRoutes(
           ["ttlSeconds", "model", "reasoningEffort"],
         );
         const { org: _org, ...input } = body;
-        return Response.json(
-          await services.sandboxes.reserve(actor, input as Parameters<typeof services.sandboxes.reserve>[1]),
-          {
-            status: 201,
-            headers,
-          },
-        );
+        return Response.json(await sandboxes.reserve(actor, input as Parameters<typeof sandboxes.reserve>[1]), {
+          status: 201,
+          headers,
+        });
       }
       const sandboxId = string(body.sandboxId);
       if (operation === "get") {
         fields(body, ["org", "sandboxId"]);
-        return Response.json(await services.sandboxes.get(actor, sandboxId), { headers });
+        return Response.json(await sandboxes.get(actor, sandboxId), { headers });
       }
       if (operation === "journal") {
         fields(body, ["org", "sandboxId"], ["cursor", "limit"]);
@@ -80,7 +81,7 @@ export function createDockerSandboxRoutes(
         )
           throw new InvalidInput();
         return Response.json(
-          await services.runtime.journal(actor, sandboxId, {
+          await runtime.journal(actor, sandboxId, {
             ...(body.cursor === undefined ? {} : { cursor: body.cursor }),
             ...(body.limit === undefined ? {} : { limit: body.limit }),
           }),
@@ -96,26 +97,25 @@ export function createDockerSandboxRoutes(
       const requestId = string(body.requestId);
       if (!uuid.test(requestId)) throw new InvalidInput();
       if (operation === "bootstrap") {
-        if (!services.bootstrap) return Response.json({ error: "docker_placement_disabled" }, { status: 503, headers });
-        return Response.json(await services.bootstrap.bootstrap(actor, sandboxId, requestId), { status: 202, headers });
+        if (!bootstrap) return Response.json({ error: "docker_placement_disabled" }, { status: 503, headers });
+        return Response.json(await bootstrap.bootstrap(actor, sandboxId, requestId), { status: 202, headers });
       }
       if (operation === "ready" || operation === "prompt") {
         const result =
           operation === "ready"
-            ? await services.runtime.ready(actor, sandboxId, requestId)
-            : await services.runtime.prompt(actor, sandboxId, {
+            ? await runtime.ready(actor, sandboxId, requestId)
+            : await runtime.prompt(actor, sandboxId, {
                 requestId,
                 text: string(body.text),
                 ...(body.conversationId === undefined ? {} : { conversationId: string(body.conversationId) }),
               });
         return Response.json(result, { status: result.state === "pending" ? 202 : 200, headers });
       }
-      if (operation === "job")
-        return Response.json(await services.sandboxes.job(actor, sandboxId, requestId), { headers });
+      if (operation === "job") return Response.json(await sandboxes.job(actor, sandboxId, requestId), { headers });
       const result =
         operation === "stop"
-          ? await services.sandboxes.stop(actor, sandboxId, requestId)
-          : await services.sandboxes.delete(actor, sandboxId, requestId);
+          ? await sandboxes.stop(actor, sandboxId, requestId)
+          : await sandboxes.delete(actor, sandboxId, requestId);
       return Response.json(result, { status: 202, headers });
     } catch (error) {
       if (error instanceof DockerLimitsRefused)
