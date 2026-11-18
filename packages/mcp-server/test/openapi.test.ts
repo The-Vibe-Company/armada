@@ -100,7 +100,7 @@ test("published 503 schema accepts the real drain refusal and a structured unava
   expect(refusal.safeParse({ error: "something_else" }).success).toBe(false);
 });
 
-test("published launch request is either a golden launch or a Docker launch, never a mix", async () => {
+test("published launch request keeps golden, pinned Modal template and Docker sources distinct", async () => {
   const { publishedRequest } = await import("./published-response.ts");
   const launch = publishedRequest("sandbox/launch");
   const org = "11111111-1111-4111-8111-111111111111";
@@ -111,6 +111,18 @@ test("published launch request is either a golden launch or a Docker launch, nev
     launch.safeParse({ ...golden, provider: "modal", runtimeTransport: "dialout", runtimeVersion: 1 }).success,
   ).toBe(true);
   expect(launch.safeParse({ ...golden, provider: "modal", boatRuntime: true, runtimeVersion: 1 }).success).toBe(false);
+  const template = {
+    org,
+    id: org,
+    revision: 1,
+    requestKey: "probe",
+    provider: "modal",
+    harness: "codex",
+    runtimeTransport: "dialout",
+    runtimeVersion: 1,
+  };
+  expect(launch.safeParse(template).success).toBe(true);
+  expect(launch.safeParse({ ...template, golden: "web" }).success).toBe(false);
   const docker = { org, provider: "docker", hostId: org, harness: "codex", requestId: org };
   expect(launch.safeParse(docker).success).toBe(true);
   // The Docker handler refuses fields it does not know, including a golden or an image.

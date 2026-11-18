@@ -12,7 +12,7 @@ import {
 } from "@armada/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import type { z } from "zod";
+import { z } from "zod";
 import { CONTROL_TOOL_ROUTES } from "./control-tool-routes.ts";
 import { DOCKER_SEND_REQUEST } from "./docker-send-request-schema.ts";
 import { LAUNCH_REQUEST_VARIANTS } from "./launch-request-schema.ts";
@@ -47,7 +47,7 @@ const REST_TOOL_ROUTES: Readonly<Record<string, string>> = {
 const REST_RESPONSES: Readonly<Record<string, z.ZodType>> = {
   "launch/options": LAUNCH_OPTIONS_RESPONSE,
   "golden/list": GOLDEN_LIST_RESPONSE,
-  "sandbox/launch": REST_LAUNCH_RESPONSE,
+  "sandbox/launch": z.union([REST_LAUNCH_RESPONSE, TEMPLATE_LAUNCH_RESPONSE]),
   "templates/launch": TEMPLATE_LAUNCH_RESPONSE,
   "logs/read": REST_LOGS_RESPONSE,
 };
@@ -304,7 +304,7 @@ export async function generateOpenApi() {
           }),
         };
         description +=
-          ' Docker uses the other request variants: provider "docker" with no golden, either on a hostId (optionally with repos) or from a snapshotId (no repos). launch/options reports each provider\'s launch sources.';
+          ' Docker uses the other request variants: provider "docker" with no golden, either on a hostId (optionally with repos) or from a snapshotId (no repos). launch/options reports each provider\'s launch sources. Explicit pinned Modal template requests return a durable template launch receipt.';
       }
       if (route === "sandbox/send") {
         // One public path, two admissions chosen by the sandbox's provider: Docker
@@ -399,7 +399,7 @@ export async function generateOpenApi() {
         title: "Armada shared control API",
         version: VERSION,
         description:
-          "Generated integration REST contracts. Includes SDK operations, launch discovery (launch/options, golden/list) and shared-tool routes. sandbox/launch accepts a golden launch or a Docker launch. Administrative and provider-specific extensions are outside this description. Files use sandbox/exec while compute runs; declared output snapshots are listed and downloaded with GET sandboxes/{id}/outputs, also after stop. This description does not assert provider availability.",
+          "Generated integration REST contracts. Includes SDK operations, launch discovery (launch/options, golden/list) and shared-tool routes. sandbox/launch accepts golden, Docker and explicit pinned Modal template launches. Administrative and provider-specific extensions are outside this description. Files use sandbox/exec while compute runs; declared output snapshots are listed and downloaded with GET sandboxes/{id}/outputs, also after stop. This description does not assert provider availability.",
       },
       paths,
       components: {

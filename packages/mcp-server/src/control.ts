@@ -76,7 +76,11 @@ import type { Invitations } from "./invitations.ts";
 import { launchActor, launchRoute, templateRuntime } from "./launch-control.ts";
 import { exposedSecrets, launchCredentials } from "./launch-credentials.ts";
 import { launchOptions, launchProviderOptions } from "./launch-options.ts";
-import { GOLDEN_LAUNCH_REQUEST } from "./launch-request-schema.ts";
+import {
+  GOLDEN_LAUNCH_REQUEST,
+  PINNED_MODAL_LAUNCH_REQUEST,
+  PINNED_MODAL_TEMPLATE_FIELDS,
+} from "./launch-request-schema.ts";
 import { canonicalLaunchResponse } from "./launch-response-schemas.ts";
 import { dispatchMcp, type McpControlOptions } from "./mcp-control.ts";
 import { type ModelAuthOwnership, modelAuthCapabilities } from "./model-auth.ts";
@@ -666,9 +670,14 @@ export async function dispatchControlCommand(
             ? "Remove the image field and retry. Armada chooses the Docker environment automatically."
             : "Invalid Docker launch request.",
         });
+    } else if (body.id !== undefined) {
+      if (!PINNED_MODAL_LAUNCH_REQUEST.safeParse(body).success)
+        throw new VaultError(
+          "invalid",
+          "Modal runtime templates require a pinned revision, organization UUID and unambiguous template fields.",
+        );
+      operation = "sandbox/launch-modal-runtime-v1";
     } else {
-      if (body.id !== undefined && body.runtimeTransport === "dialout")
-        throw new VaultError("invalid", "Use sandbox/launch-modal-runtime-v1 for pinned Modal runtime templates.");
       if (!GOLDEN_LAUNCH_REQUEST.safeParse(body).success)
         throw new VaultError("invalid", "Invalid golden launch request. See the sandbox/launch request schema.");
       if (body.runtimeTransport !== undefined) operation = "sandbox/launch-modal-runtime-v1";
@@ -920,23 +929,12 @@ export async function dispatchControlCommand(
       if (body.prompt === undefined && !options.runtimeSend)
         throw new VaultError("unavailable", "Modal runtime idle first send is unavailable.");
       if (body.id !== undefined) {
-        const standard = [
-          "org",
-          "id",
-          "revision",
-          "requestKey",
-          "prompt",
-          "ttlSeconds",
-          "size",
-          "repo",
-          "skills",
-          "skipSkillDefaults",
-          "externalRef",
-          "stopWhenWorkMerged",
-        ];
         if (
           Object.keys(body).some(
-            (key) => ![...standard, "runtimeVersion", "runtimeTransport", "provider", "harness"].includes(key),
+            (key) =>
+              ![...PINNED_MODAL_TEMPLATE_FIELDS, "runtimeVersion", "runtimeTransport", "provider", "harness"].includes(
+                key,
+              ),
           ) ||
           typeof body.id !== "string" ||
           !UUID.test(body.id) ||
@@ -953,7 +951,7 @@ export async function dispatchControlCommand(
         const base = templateRuntime(options, caller);
         if (!base) throw new VaultError("unavailable", "Template launching unavailable.");
         const input = Object.fromEntries(
-          standard.filter((key) => body[key] !== undefined).map((key) => [key, body[key]]),
+          PINNED_MODAL_TEMPLATE_FIELDS.filter((key) => body[key] !== undefined).map((key) => [key, body[key]]),
         );
         return options.templates.command(caller, "launch", input, {
           validateDefinition: (definition) => {

@@ -16,6 +16,7 @@ import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import { readRuntimeVariables, runtimeConfigurationWithVariables } from "../src/runtime-readable-variables.ts";
+import { publishedResponse } from "./published-response.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
@@ -200,7 +201,7 @@ async function fixture(
     ).item as LaunchTemplate;
   const api = async (
     body: Record<string, unknown>,
-    path = provider === "boat" || entry !== "explicit" ? "templates/launch" : "sandbox/launch-modal-runtime-v1",
+    path = provider === "boat" || entry !== "explicit" ? "templates/launch" : "sandbox/launch",
   ) => {
     const response = await handleControlRequest(
       new Request(`https://armada.test/api/v1/${path}`, {
@@ -266,6 +267,7 @@ for (const entry of ["explicit", "default"] as const)
       runtime: { kind: string; epoch: string };
       manifest: { variables: Record<string, string> };
     };
+    if (entry === "explicit") publishedResponse("sandbox/launch").parse(launched);
     expect(launched).toMatchObject({ state: "succeeded", runtime: { kind: "armada", epoch: "7" } });
     expect(f.starts).toEqual([{ APP_REGION: "original\n$(not-a-command)" }]);
     const delivered = f.starts[0];
@@ -277,7 +279,7 @@ for (const entry of ["explicit", "default"] as const)
       expectedVersion: 1,
       value: "changed-source",
     });
-    const replay = await f.api(request);
+    const replay = await f.api(request, entry === "explicit" ? "sandbox/launch-modal-runtime-v1" : undefined);
     expect(replay.status).toBe(200);
     expect(await replay.json()).toEqual(launched);
     await f.templates.command(f.caller, "delete", { org: f.people.org, id: template.id, expectedRevision: 1 });

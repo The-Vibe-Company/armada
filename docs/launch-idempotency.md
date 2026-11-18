@@ -153,8 +153,11 @@ For explicit runtime launches from a golden, send the selectors to `POST /api/v1
 Use `runtimeVersion: 1` and `boatRuntime: true` for Boat. Use `runtimeVersion: 1`,
 `provider: "modal"` and `runtimeTransport: "dialout"` for Modal. The existing
 runtime admission checks and server opt-ins apply on both the canonical and
-compatibility routes. Pinned Modal runtime templates still use
-`sandbox/launch-modal-runtime-v1`.
+compatibility routes. For a pinned Modal template, send the same Modal selectors
+with `org` (UUID), `id`, `revision`, `requestKey` and the template's `harness` to
+`sandbox/launch`. This returns the durable template launch receipt, including
+the frozen manifest on success. Replay the same body and request key to recover
+that receipt. Ordinary template launches continue to use `templates/launch`.
 
 For REST extensions, use `ttlSeconds` on `POST /api/v1/sandbox/extend`
 as well. The server accepts the older `ttl_seconds` spelling for existing
@@ -165,13 +168,10 @@ clients. Send only one field.
 | `sandbox/launch-sized-v1` | Released CLI, dashboard and iOS builds with sizing or repository selection |
 | `sandbox/launch-access-v1` | Released CLI and dashboard builds with scoped access, and older scoped-access probes |
 | `sandbox/launch-runtime-v1` | Older Boat runtime probes and direct API integrations |
-| `sandbox/launch-modal-runtime-v1` | Older Modal runtime probes, direct API integrations and pinned Modal runtime template requests |
+| `sandbox/launch-modal-runtime-v1` | Older Modal runtime probes, direct API integrations and older explicit pinned Modal template callers |
 
 The CLI, dashboard, iOS app and direct golden smoke probes now send these
-selectors to `sandbox/launch`. Pinned Modal runtime templates keep their
-versioned entry point when explicitly selecting Modal dial-out, including
-the Modal readable-variable probe's explicit mode. Its ordinary mode uses
-`templates/launch`. Keep golden launch aliases available for at least 90
-days after the first release carrying the first-party golden launch migration.
-Review remaining released-client usage and migrate the pinned template
-entry point before retiring its alias.
+selectors to `sandbox/launch`, including the Modal readable-variable probe's
+explicit pinned-template mode. Keep launch aliases available for at least 90 days
+after the first release carrying the first-party golden launch migration. Audit
+remaining released-client and external usage before retiring the aliases.

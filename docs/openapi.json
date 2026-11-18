@@ -3,7 +3,7 @@
   "info": {
     "title": "Armada shared control API",
     "version": "2.56.0",
-    "description": "Generated integration REST contracts. Includes SDK operations, launch discovery (launch/options, golden/list) and shared-tool routes. sandbox/launch accepts a golden launch or a Docker launch. Administrative and provider-specific extensions are outside this description. Files use sandbox/exec while compute runs; declared output snapshots are listed and downloaded with GET sandboxes/{id}/outputs, also after stop. This description does not assert provider availability."
+    "description": "Generated integration REST contracts. Includes SDK operations, launch discovery (launch/options, golden/list) and shared-tool routes. sandbox/launch accepts golden, Docker and explicit pinned Modal template launches. Administrative and provider-specific extensions are outside this description. Files use sandbox/exec while compute runs; declared output snapshots are listed and downloaded with GET sandboxes/{id}/outputs, also after stop. This description does not assert provider availability."
   },
   "paths": {
     "/api/v1/launch/options": {
@@ -6237,7 +6237,7 @@
     "/api/v1/sandbox/launch": {
       "post": {
         "operationId": "sandbox_launch",
-        "description": "Forks a golden into a new sandbox, pulls its repos, runs its init commands, and starts the agent. With `prompt` the agent starts working at once (status running). Without it the sandbox is left ready and the conversation starts at the first `send`. The sandbox gets only your (or your org's) Armada credentials for this agent, never the boat.dev account's. When the caller connected GitHub, git and gh in the sandbox act as that person (8 hour token): see `github` in the answer. Setup can take a few minutes. Docker uses the other request variants: provider \"docker\" with no golden, either on a hostId (optionally with repos) or from a snapshotId (no repos). launch/options reports each provider's launch sources.",
+        "description": "Forks a golden into a new sandbox, pulls its repos, runs its init commands, and starts the agent. With `prompt` the agent starts working at once (status running). Without it the sandbox is left ready and the conversation starts at the first `send`. The sandbox gets only your (or your org's) Armada credentials for this agent, never the boat.dev account's. When the caller connected GitHub, git and gh in the sandbox act as that person (8 hour token): see `github` in the answer. Setup can take a few minutes. Docker uses the other request variants: provider \"docker\" with no golden, either on a hostId (optionally with repos) or from a snapshotId (no repos). launch/options reports each provider's launch sources. Explicit pinned Modal template requests return a durable template launch receipt.",
         "security": [
           {
             "serviceToken": []
@@ -6692,6 +6692,112 @@
                     ],
                     "additionalProperties": false,
                     "description": "Explicit Modal runtime launch from a golden."
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "org": {
+                        "type": "string",
+                        "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$"
+                      },
+                      "id": {
+                        "type": "string",
+                        "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$"
+                      },
+                      "revision": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "requestKey": {
+                        "type": "string",
+                        "maxLength": 128,
+                        "pattern": "^[A-Za-z0-9._:-]+$"
+                      },
+                      "prompt": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 100000
+                      },
+                      "ttlSeconds": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "size": {
+                        "type": "string",
+                        "enum": [
+                          "small",
+                          "medium",
+                          "large",
+                          "xlarge"
+                        ]
+                      },
+                      "repo": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 200
+                      },
+                      "skills": {
+                        "anyOf": [
+                          {
+                            "maxItems": 20,
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "pattern": "^(?:[a-z0-9][a-z0-9-]*\\/)?[a-z0-9][a-z0-9-]*@[0-9]+\\.[0-9]+\\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$"
+                            }
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "skipSkillDefaults": {
+                        "type": "boolean"
+                      },
+                      "externalRef": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 200,
+                        "pattern": "^[^\\x00-\\x1f\\x7f-\\x9f]+(?![\\s\\S])"
+                      },
+                      "stopWhenWorkMerged": {
+                        "type": "boolean"
+                      },
+                      "provider": {
+                        "type": "string",
+                        "const": "modal"
+                      },
+                      "harness": {
+                        "type": "string",
+                        "enum": [
+                          "codex",
+                          "claude",
+                          "opencode"
+                        ]
+                      },
+                      "runtimeVersion": {
+                        "type": "number",
+                        "const": 1
+                      },
+                      "runtimeTransport": {
+                        "type": "string",
+                        "const": "dialout"
+                      }
+                    },
+                    "required": [
+                      "org",
+                      "id",
+                      "revision",
+                      "requestKey",
+                      "provider",
+                      "harness",
+                      "runtimeVersion",
+                      "runtimeTransport"
+                    ],
+                    "additionalProperties": false,
+                    "description": "Launch a pinned Modal template revision with the template's model account and explicit dial-out."
                   },
                   {
                     "type": "object",
@@ -7381,97 +7487,85 @@
               "application/json": {
                 "schema": {
                   "$schema": "http://json-schema.org/draft-07/schema#",
-                  "type": "object",
-                  "properties": {
-                    "sandbox": {
+                  "anyOf": [
+                    {
                       "type": "object",
                       "properties": {
-                        "id": {
-                          "type": "string",
-                          "description": "Armada sandbox ID: pass it as `id` to status, send, wait, logs, exec and stop."
-                        },
-                        "provider": {
-                          "type": "string"
-                        },
-                        "providerSandboxId": {
-                          "type": "string"
-                        },
-                        "status": {
-                          "type": "string"
-                        },
-                        "externalRef": {
-                          "description": "Opaque caller reference, when provided.",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "id",
-                        "provider",
-                        "providerSandboxId",
-                        "status"
-                      ],
-                      "additionalProperties": {}
-                    },
-                    "golden": {
-                      "anyOf": [
-                        {
+                        "sandbox": {
                           "type": "object",
                           "properties": {
                             "id": {
+                              "type": "string",
+                              "description": "Armada sandbox ID: pass it as `id` to status, send, wait, logs, exec and stop."
+                            },
+                            "provider": {
                               "type": "string"
                             },
-                            "name": {
+                            "providerSandboxId": {
+                              "type": "string"
+                            },
+                            "status": {
+                              "type": "string"
+                            },
+                            "externalRef": {
+                              "description": "Opaque caller reference, when provided.",
                               "type": "string"
                             }
                           },
                           "required": [
                             "id",
-                            "name"
+                            "provider",
+                            "providerSandboxId",
+                            "status"
                           ],
                           "additionalProperties": {}
                         },
-                        {
-                          "type": "null"
-                        }
-                      ],
-                      "description": "Null for Docker launches, which have no golden."
-                    },
-                    "promptId": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "conversationId": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "ttlSeconds": {
-                      "type": "number"
-                    },
-                    "expiresAt": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "github": {
-                      "type": "object",
-                      "properties": {
-                        "status": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "status"
-                      ],
-                      "additionalProperties": {}
-                    },
-                    "helper": {
-                      "anyOf": [
-                        {
+                        "golden": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "id": {
+                                  "type": "string"
+                                },
+                                "name": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "id",
+                                "name"
+                              ],
+                              "additionalProperties": {}
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "Null for Docker launches, which have no golden."
+                        },
+                        "promptId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "conversationId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "ttlSeconds": {
+                          "type": "number"
+                        },
+                        "expiresAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "github": {
                           "type": "object",
                           "properties": {
                             "status": {
@@ -7483,48 +7577,160 @@
                           ],
                           "additionalProperties": {}
                         },
-                        {
-                          "type": "null"
+                        "helper": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": {}
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "runtime": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "armada"
+                                },
+                                "epoch": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "epoch"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
-                      ]
+                      },
+                      "required": [
+                        "sandbox",
+                        "golden",
+                        "promptId",
+                        "conversationId",
+                        "ttlSeconds",
+                        "expiresAt",
+                        "github",
+                        "helper",
+                        "runtime"
+                      ],
+                      "additionalProperties": {}
                     },
-                    "runtime": {
+                    {
                       "anyOf": [
                         {
                           "type": "object",
                           "properties": {
-                            "kind": {
+                            "requestId": {
                               "type": "string",
-                              "const": "armada"
+                              "description": "The durable request. Replay the same requestKey to read it again."
                             },
-                            "epoch": {
+                            "state": {
+                              "type": "string",
+                              "enum": [
+                                "claimed",
+                                "allocating",
+                                "succeeded",
+                                "failed",
+                                "reconciling"
+                              ]
+                            },
+                            "id": {
+                              "type": "string",
+                              "description": "Armada sandbox ID reserved for this request."
+                            },
+                            "reason": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "message": {
+                              "type": "string"
+                            },
+                            "provider": {
+                              "type": "string"
+                            },
+                            "providerSandboxId": {
+                              "type": "string"
+                            },
+                            "status": {
+                              "type": "string"
+                            },
+                            "promptId": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "conversationId": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "requestId",
+                            "state",
+                            "id"
+                          ],
+                          "additionalProperties": {},
+                          "description": "A recorded launch request."
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "state": {
+                              "type": "string",
+                              "const": "failed"
+                            },
+                            "reason": {
+                              "type": "string",
+                              "enum": [
+                                "invalid_config",
+                                "forbidden",
+                                "not_found",
+                                "conflict",
+                                "setup_failed",
+                                "snapshot_failed",
+                                "build_failed"
+                              ]
+                            },
+                            "message": {
                               "type": "string"
                             }
                           },
                           "required": [
-                            "kind",
-                            "epoch"
+                            "state",
+                            "reason",
+                            "message"
                           ],
-                          "additionalProperties": false
-                        },
-                        {
-                          "type": "null"
+                          "additionalProperties": false,
+                          "description": "Golden admission refused the launch before a request was recorded. Nothing was launched."
                         }
-                      ]
+                      ],
+                      "description": "A receipt has requestId; a pre-admission refusal has none."
                     }
-                  },
-                  "required": [
-                    "sandbox",
-                    "golden",
-                    "promptId",
-                    "conversationId",
-                    "ttlSeconds",
-                    "expiresAt",
-                    "github",
-                    "helper",
-                    "runtime"
-                  ],
-                  "additionalProperties": {}
+                  ]
                 }
               }
             }
