@@ -66,8 +66,83 @@ async function fixture() {
     expect(response.headers.get("cache-control")).toBe("no-store");
     return response;
   }
-  return { db, userId, memberId, orgId, store, authenticate, route, post };
+  return { db, sql, userId, memberId, orgId, store, authenticate, route, post };
 }
+
+test("an authenticated Docker inventory report counts only unknown containers in its own binding", async () => {
+  const { db, sql, userId, orgId, store, authenticate, post } = await fixture();
+  const actor = { userId, orgId };
+  const installationId = randomUUID();
+  const ticket = await store.issueRegistration(actor);
+  const host = await store.exchangeRegistration(ticket.registrationToken, installationId);
+  const poll = await post("/api/docker-host/poll", host.hostToken, {
+    installationId,
+    version: "2.57.1",
+    resources: { cpus: 8, memoryBytes: 26 * 1024 ** 3 },
+    resourcePolicyVersion: 1,
+  });
+  expect(await poll.json()).toMatchObject({ containerInventory: 1 });
+  const credentialId = randomUUID();
+  await db.query("insert into credentials(id,scope,owner_id,kind,value_enc) values($1,'user',$2,'openai',$3)", [
+    credentialId,
+    userId,
+    new Uint8Array([1]),
+  ]);
+  const sandboxes = createDockerSandboxService(sql, Buffer.alloc(32, 8).toString("base64"), { enabled: true });
+  const sandbox = await sandboxes.reserve(actor, {
+    requestId: randomUUID(),
+    hostId: host.hostId,
+    image: `worker@sha256:${"a".repeat(64)}`,
+    credentialId,
+    credentialVersion: 1,
+  });
+  const deploymentId = `https://public.example/${host.hostId}/${installationId}`;
+  const owned = {
+    machineId: "a".repeat(64),
+    sandboxId: sandbox.id,
+    generation: sandbox.generation,
+    deploymentId,
+    createdAt: "2026-11-18T00:00:00.000Z",
+  };
+  const unknown = { ...owned, machineId: "b".repeat(64), sandboxId: randomUUID() };
+  const records: unknown[] = [];
+  const route = createDockerHostRoutes(store, authenticate, {
+    publicUrl: "https://public.example",
+    clock: { now: () => Date.parse("2026-11-18T01:00:00.000Z"), wait: async () => {} },
+    log: (line) => records.push(JSON.parse(line)),
+  });
+  const report = {
+    installationId,
+    containers: [
+      owned,
+      unknown,
+      unknown,
+      { ...owned, machineId: "c".repeat(64), generation: randomUUID() },
+      {
+        ...unknown,
+        machineId: "d".repeat(64),
+        deploymentId: `https://foreign.example/${host.hostId}/${installationId}`,
+      },
+    ],
+  };
+  const send = (token: string, body: unknown) => post("/api/docker-host/container-inventory", token, body, {}, route);
+  expect((await send(ticket.registrationToken, report)).status).toBe(401);
+  expect((await send(host.hostToken, { ...report, installationId: randomUUID() })).status).toBe(401);
+  expect(records).toHaveLength(0);
+  expect((await send(host.hostToken, report)).status).toBe(204);
+  expect(records).toEqual([
+    {
+      metric: "reaper_unknown_machines",
+      provider: "docker",
+      source: host.hostId,
+      count: 2,
+      overdue: 2,
+      complete: true,
+    },
+    { metric: "reaper_deleted", provider: "docker", source: host.hostId, reason: "unknown", count: 0 },
+    { metric: "reaper_deleted", provider: "docker", source: host.hostId, reason: "terminal", count: 0 },
+  ]);
+});
 
 test("a draining snapshot refusal is a typed conflict the dashboard can show, not a generic snapshot refusal", async () => {
   const f = await fixture();

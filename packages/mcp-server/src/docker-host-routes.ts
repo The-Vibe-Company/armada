@@ -4,6 +4,7 @@ import {
   DOCKER_JOB_FAILURE_REASONS,
   type DockerJobFailureReason,
   OUTPUT_ARCHIVE_LIMIT,
+  type ProviderInventoryMachine,
 } from "@armada/core";
 import { isSnapshotBaselineTool } from "@armada/core/server";
 import { type DockerHostResources, validDockerAvailability } from "../../core/src/docker-resource-policy.ts";
@@ -15,10 +16,13 @@ import { type createDockerHostStore, DockerHostDenied } from "./docker-host-stor
 import { dockerHostVersions } from "./docker-host-version.ts";
 import { DockerSnapshotHostUpgradeRequired, type DockerSnapshots } from "./docker-snapshots.ts";
 import type { Route } from "./http.ts";
+import { createProviderReaper } from "./provider-reaper.ts";
 import { withRequestBodyCeiling } from "./request-body-ceiling.ts";
 import { runtimeWakes, waitForTimeout } from "./wake-bus.ts";
 
+const inventoryPath = "/api/docker-host/container-inventory";
 const machinePaths = [
+  inventoryPath,
   "/api/docker-host/register",
   "/api/docker-host/poll",
   "/api/docker-host/results",
@@ -69,6 +73,31 @@ function deadlinesOf(value: unknown): { sandboxId: string; generation: string; d
   });
 }
 
+type DockerInventoryMachine = ProviderInventoryMachine & { sandboxId: string; generation: string };
+function containersOf(value: unknown): DockerInventoryMachine[] {
+  if (!Array.isArray(value) || value.length > 4096) throw new InvalidInput();
+  return value.map((entry) => {
+    if (!object(entry)) throw new InvalidInput();
+    fields(entry, ["machineId", "sandboxId", "generation", "deploymentId", "createdAt"]);
+    const machineId = string(entry.machineId);
+    const sandboxId = string(entry.sandboxId);
+    const generation = string(entry.generation);
+    const deploymentId = string(entry.deploymentId);
+    const timestamp = string(entry.createdAt);
+    const createdAt = new Date(timestamp);
+    if (
+      !/^[a-f0-9]{64}$/.test(machineId) ||
+      !uuid.test(sandboxId) ||
+      !uuid.test(generation) ||
+      deploymentId.length > 512 ||
+      !Number.isFinite(createdAt.getTime()) ||
+      createdAt.toISOString() !== timestamp
+    )
+      throw new InvalidInput();
+    return { machineId, sandboxId, generation, deploymentId, createdAt };
+  });
+}
+
 /** Longest a daemon poll is held open waiting for work (#2561). */
 export const DOCKER_HOST_POLL_HOLD_SECONDS = 20;
 /** Most machine operations a daemon may report as still executing. */
@@ -91,6 +120,7 @@ export function createDockerHostRoutes(
     publicUrl?: string;
     snapshots?: DockerSnapshots;
     clock?: DockerHostPollClock;
+    log?: (line: string) => void;
     configureArchiveTimeout?: (request: Request) => void;
   } = {},
 ): Route {
@@ -191,6 +221,39 @@ export function createDockerHostRoutes(
         } finally {
           if (request.body) uploadingOutputs = false;
         }
+      }
+      if (path === inventoryPath) {
+        const body: unknown = JSON.parse(await readBoundedText(request, 2 * 1024 * 1024));
+        if (!object(body)) throw new InvalidInput();
+        fields(body, ["installationId", "containers"]);
+        const installationId = string(body.installationId);
+        if (!uuid.test(installationId)) throw new InvalidInput();
+        const machines = containersOf(body.containers);
+        const { hostId, rows } = await store.inventoryOwnership(token, installationId, [
+          ...new Set(machines.map(({ sandboxId }) => sandboxId)),
+        ]);
+        const ownership = new Map(rows.map((row) => [row.id, row]));
+        const origin = new URL(options.publicUrl ?? request.url).origin;
+        const reaper = createProviderReaper(
+          {
+            provider: "docker",
+            sourceId: hostId,
+            deploymentId: `${origin}/${hostId}/${installationId}`,
+            inventory: {
+              async *listInventory() {
+                yield* machines;
+              },
+            },
+            async lookupOwnership(machine) {
+              const row = machine.sandboxId ? ownership.get(machine.sandboxId) : undefined;
+              return row && row.generation === machine.generation ? { kind: "owned", ...row } : { kind: "absent" };
+            },
+          },
+          options.log,
+          () => clock.now(),
+        );
+        await reaper.reconcileOne(request.signal);
+        return new Response(null, { status: 204, headers });
       }
       // The poll carries the host's per-generation retention deadlines, so its
       // body grows with the number of retained sandboxes; other machine calls
@@ -378,6 +441,7 @@ export function createDockerHostRoutes(
             ...(retentionSeconds === undefined ? {} : { retentionSeconds }),
             ...(wait === undefined ? {} : { held: true }),
             ...dockerHostVersions,
+            containerInventory: 1,
             resumeClaims,
             job,
             // Every generation with a queued resume/bootstrap, so the daemon
