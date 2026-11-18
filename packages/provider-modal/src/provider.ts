@@ -738,13 +738,18 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       // The source lease is released before any remote call: a slow or failing image deletion
       // never refuses the source's own lifecycle (delete, snapshot, fork). A claim survives a
       // failure or crash and is retried by the next collection in scope, again without the lease.
+      // Only the holder of the exclusive dispatch claim issues the RPC: a concurrent sweep skips a
+      // live claim instead of multiplying deletions of the same physical image.
       for (const image of await retired()) {
         if (!image.collecting || (await imagesStore.imageReferenced(image.imageId))) continue;
+        const token = randomUUID();
+        if (!(await imagesStore.takeImage(image.info.name, image.sourceId, image.imageId, token))) continue;
         try {
           await client.images.delete(image.imageId);
         } catch (error) {
           if (modalError(error).code !== "not_found") {
             failure ??= { error };
+            await imagesStore.releaseImage(image.info.name, image.sourceId, image.imageId, token);
             continue;
           }
         }

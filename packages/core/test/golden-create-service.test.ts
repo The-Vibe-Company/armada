@@ -342,6 +342,43 @@ test("a persist failure deletes only a confirmed unreferenced ready snapshot and
   expect(log).toEqual(["delete:golden-bx", "stop"]);
 });
 
+test("an unpublished artifact whose deferred collection is still pending never reports cleanup safe", async () => {
+  const log: string[] = [];
+  const safety: boolean[] = [];
+  const s = new GoldenCreateService({
+    canDiscardSnapshot: async () => true,
+    execution: {
+      id: "job",
+      cleaned: (safe) => void safety.push(safe),
+      phase: async () => {},
+      builder: async () => {},
+    },
+    authorize: async () => ({ repos: [repo], token: "caller-token" }),
+    ssh: async () => {},
+    scan: async () => {},
+    persist: async () => {
+      throw new Error("database is down");
+    },
+  });
+  const p: any = {
+    id: "boat",
+    createGolden: async () => ({ id: "bx" }),
+    snapshot: async ({ name }: any) => ({ name, status: "ready" }),
+    // The tombstone commits, but the image service keeps the physical artifact.
+    deleteSnapshot: async (name: string) => void log.push(`delete:${name}`),
+    collectRetiredSnapshot: async (name: string) => {
+      log.push(`collect:${name}`);
+      return "pending";
+    },
+    stop: async () => void log.push("stop"),
+  };
+  await expect(s.create(p, actor, { name: "x", visibility: "org", repos: ["acme/web"] })).rejects.toMatchObject({
+    code: "build_failed",
+  });
+  expect(log).toEqual(["delete:golden-bx", "collect:golden-bx", "stop"]);
+  expect(safety).toEqual([false]);
+});
+
 test("uses normalized branches, directories, and init commands after canonical authorization", async () => {
   let script = "";
   let authorized: string[] = [];

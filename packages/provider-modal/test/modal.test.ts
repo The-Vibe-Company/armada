@@ -1498,6 +1498,43 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await f.store.lease(builder.id, () => f.provider.collectGarbage());
     expect(await f.store.tombstoneSources()).not.toContain(builder.id);
   });
+  test("a concurrent sweep skips a live dispatch claim and recovers an expired one", async () => {
+    const f = fixture();
+    const builder = await f.provider.createGolden({});
+    const name = crypto.randomUUID();
+    await f.provider.snapshot({ sandboxId: builder.id, name });
+    const imageId = (await f.store.image(name)).imageId;
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let calls = 0;
+    f.onImageDelete(async (id) => {
+      if (id !== imageId) return;
+      calls++;
+      if (calls === 1) {
+        entered.resolve();
+        await release.promise;
+        throw Object.assign(new Error("image service unavailable"), { name: "TimeoutError" });
+      }
+    });
+    // The retirement's own collection holds the remote call open.
+    const retiring = f.provider.deleteSnapshot(name);
+    await entered.promise;
+    // Sixteen sweeps while the claim is live dispatch nothing.
+    await Promise.all(Array.from({ length: 16 }, () => f.provider.collectGarbage()));
+    expect(calls).toBe(1);
+    // A holder that never returns: its claim expires, and the next sweep takes and completes it.
+    await db.query(
+      `update public.modal_images set record=jsonb_set(record,'{collectUntil}','0') where record->>'imageId'=$1`,
+      [imageId],
+    );
+    await f.provider.collectGarbage();
+    expect(calls).toBe(2);
+    expect(await f.store.tombstoneSources()).not.toContain(builder.id);
+    // The stale holder's late failure releases nothing and erases nothing.
+    release.resolve();
+    await retiring;
+    expect(await f.store.tombstoneSources()).not.toContain(builder.id);
+  });
   test("a snapshot retired after restore read it never gains a restore reference", async () => {
     const f = fixture();
     const builder = await f.provider.createGolden({});

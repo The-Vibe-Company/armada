@@ -428,9 +428,18 @@ export class GoldenCreateService {
           }
         }
         if (ownedSnapshot && artifactSettled && (!persistAttempted || knownUnpublished)) {
-          await provider.deleteSnapshot(ownedSnapshot).catch(() => {
-            cleanupSafe = false;
-          });
+          // An unpublished artifact has no retirement row to retry its collection, so cleanup is
+          // safe only once a deferred-collection provider confirms the artifact itself is gone.
+          const owned = ownedSnapshot;
+          await provider
+            .deleteSnapshot(owned)
+            .then(async () => {
+              if (provider.collectRetiredSnapshot && (await provider.collectRetiredSnapshot(owned)) !== "collected")
+                cleanupSafe = false;
+            })
+            .catch(() => {
+              cleanupSafe = false;
+            });
         }
       }
       if (!persisted && requestedSnapshot && !artifactSettled && snapshotAttempted) cleanupSafe = false;
