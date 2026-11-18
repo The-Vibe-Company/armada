@@ -44,6 +44,13 @@ const clock: Clock = {
 function record(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
+/** Read-only output samples (`outputs_<deadline ms>_<nonce>`) expire at the deadline in their id.
+ * An expired read is never dispatched and never makes the runtime look busy: nobody awaits its
+ * reply, so it must not hold the ordered queue ahead of later commands or idle checks. Its row
+ * stays until the runtime can no longer acknowledge it (see `docker-outputs.ts`). */
+export function expiredOutputRead(column: string, now: string): string {
+  return `(case when ${column} ~ '^outputs_[0-9]{1,16}_' then split_part(${column},'_',2)::bigint<=${now}::bigint else false end)`;
+}
 function requestId(value: unknown): value is string {
   return typeof value === "string" && /^[a-zA-Z0-9_-]{1,128}$/.test(value);
 }
@@ -125,8 +132,9 @@ export function createRuntimeCommands(
     return authority.withSession(token, epoch, async (tx, scope) => {
       const row = (
         await tx.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
-          `select request_enc from public.runtime_commands where sandbox_id=$1 and epoch=$2 and result_enc is null order by sequence limit 1`,
-          [scope.sandboxId, scope.epoch],
+          `select request_enc from public.runtime_commands where sandbox_id=$1 and epoch=$2 and result_enc is null
+           and not ${expiredOutputRead("request_id", "$3")} order by sequence limit 1`,
+          [scope.sandboxId, scope.epoch, String(time.now())],
         )
       ).rows[0];
       return use({

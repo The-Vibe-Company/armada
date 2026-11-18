@@ -7,6 +7,7 @@ import { readOutputDirectory } from "../../agent-runtime/src/outputs.ts";
 import { captureDockerStopOutputs, createDockerOutputReader } from "../src/docker-outputs.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
+import { createRuntimeSelfFinish, selfFinishToken } from "../src/sandbox-finish.ts";
 import { createSandboxOutputs } from "../src/sandbox-outputs.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
@@ -95,7 +96,7 @@ async function fixture() {
     return route(new Request(`https://armada.example/api/v1/sandboxes/${id}/outputs/${name}`));
   };
   const cleanup = () => rmSync(home, { recursive: true, force: true });
-  return { db, people, id, sql, outputs, ops, runtime, reader, service, download, cleanup, hold };
+  return { db, people, id, sql, session, outputs, ops, runtime, reader, service, download, cleanup, hold };
 }
 
 test("a Docker file produced while live is sampled through the runtime and stays downloadable after stop", async () => {
@@ -106,10 +107,15 @@ test("a Docker file produced while live is sampled through the runtime and stays
     expect(await f.service.reconcileOne(new AbortController().signal)).toBe(true);
     await f.service.drain();
     expect(f.ops).toEqual(["readOutputs"]);
-    // Reads are fresh data, not runtime history: the answered command is removed.
+    // The answered read stays (the runtime may still retry its acknowledgement) until a later
+    // answer proves it was acknowledged; it never holds the queue.
     expect(
-      (await f.db.query(`select 1 from runtime_commands where sandbox_id=$1 and request_id like 'outputs_%'`, [f.id]))
-        .rows,
+      (
+        await f.db.query(
+          `select 1 from runtime_commands where sandbox_id=$1 and request_id like 'outputs_%' and result_enc is null`,
+          [f.id],
+        )
+      ).rows,
     ).toHaveLength(0);
     await f.db.query(`update sandboxes set status='stopped',stopped_at=now() where id=$1`, [f.id]);
     const response = await f.download("memo.pdf");
@@ -211,12 +217,75 @@ test("a Docker read still refuses to pile up behind two unanswered reads", async
     for (const n of [1, 2])
       await f.runtime.enqueue(f.people.owner, {
         version: 1,
-        requestId: `outputs_${Date.now()}_${n}`,
+        requestId: `outputs_${Date.now() + 25_000}_${n}`,
         sandboxId: f.id,
         op: "readOutputs",
       });
     expect(await f.reader(f.id).readOutputs!({ sandboxId: f.id })).toBeNull();
     expect(f.ops).toEqual([]);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("a timed-out Docker read stops holding the runtime queue and is removed once a later command answers", async () => {
+  const f = await fixture();
+  try {
+    // Nobody answers: the fake clock only advances, so the read times out deterministically.
+    let t = Date.now();
+    const clock = {
+      now: () => t,
+      async wait(ms: number) {
+        t += ms;
+      },
+    };
+    const reader = createDockerOutputReader(f.sql, ENCRYPTION_KEY, clock);
+    expect(await reader(f.id).readOutputs!({ sandboxId: f.id })).toBeNull();
+    const reads = async () =>
+      (await f.db.query(`select 1 from runtime_commands where sandbox_id=$1 and request_id like 'outputs_%'`, [f.id]))
+        .rows.length;
+    expect(await reads()).toBe(1);
+    // A later command is dispatched first: the expired read is never delivered.
+    const runtime = createRuntimeCommands(createRuntimeEnrolments(f.sql, ENCRYPTION_KEY), ENCRYPTION_KEY, clock);
+    await runtime.enqueue(f.people.owner, { version: 1, requestId: "later_health", sandboxId: f.id, op: "health" });
+    const { command } = await runtime.next(f.session.runtimeToken, f.session.epoch);
+    expect(command?.requestId).toBe("later_health");
+    await runtime.complete(f.session.runtimeToken, f.session.epoch, {
+      epoch: f.session.epoch,
+      requestId: "later_health",
+      status: 200,
+      body: { requestId: "later_health" },
+    });
+    // Answering a later command proves the runtime can no longer acknowledge the expired read.
+    expect(await reader(f.id).readOutputs!({ sandboxId: f.id })).toBeNull();
+    expect(await reads()).toBe(1);
+    expect(f.ops).toEqual([]);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("a stale Docker self-finish binding is refused before any output read", async () => {
+  const f = await fixture();
+  try {
+    const reads: string[] = [];
+    const reader = (_id: string, epoch?: string) => ({
+      async readOutputs() {
+        reads.push(epoch ?? "unfenced");
+        return [];
+      },
+    });
+    const generation = (
+      await f.db.query<{ mcp_generation: number }>("select mcp_generation from sandboxes where id=$1", [f.id])
+    ).rows[0]!.mcp_generation;
+    const finish = createRuntimeSelfFinish(f.sql, ENCRYPTION_KEY, { reader });
+    const binding = { sandboxId: f.id, ownerId: f.people.owner, epoch: f.session.epoch, generation };
+    await expect(finish(selfFinishToken(ENCRYPTION_KEY, { ...binding, generation: generation + 1 }))).rejects.toThrow();
+    await expect(finish(selfFinishToken(ENCRYPTION_KEY, { ...binding, epoch: `${binding.epoch}0` }))).rejects.toThrow();
+    expect(reads).toHaveLength(0);
+    // A live binding reads under exactly its validated epoch (this fixture host then refuses the stop job).
+    await finish(selfFinishToken(ENCRYPTION_KEY, binding)).catch(() => {});
+    expect(reads).toEqual([binding.epoch]);
   } finally {
     f.cleanup();
   }

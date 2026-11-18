@@ -70,17 +70,23 @@ export function createRuntimeSelfFinish(
   const authority = createRuntimeEnrolments(sql, key);
   return async (token: string) => {
     const binding = bindingFromToken(key, token);
-    // Docker: the final output capture must precede stop admission (the runtime then refuses
-    // commands). Boat/Modal capture on the lifecycle stop path instead.
-    await captureDockerStopOutputs(sql, key, binding.sandboxId, outputs);
-    return authority.withOwner(binding.sandboxId, binding.ownerId, async (tx, live) => {
-      if (live.epoch !== binding.epoch) throw new DelegatedAuthorityDenied();
+    const live = async (tx: Sql, scope: { epoch: string }) => {
+      if (scope.epoch !== binding.epoch) throw new DelegatedAuthorityDenied();
       const current = (
         await tx.query<{ mcp_generation: number }>("select mcp_generation from public.sandboxes where id=$1", [
           binding.sandboxId,
         ])
       ).rows[0];
       if (current?.mcp_generation !== binding.generation) throw new DelegatedAuthorityDenied();
+    };
+    // A stale binding is refused before any collection: no read may run on its behalf.
+    await authority.withOwner(binding.sandboxId, binding.ownerId, live);
+    // Docker: the final output capture must precede stop admission (the runtime then refuses
+    // commands), and is fenced to the validated epoch. Boat/Modal capture on the lifecycle stop
+    // path instead.
+    await captureDockerStopOutputs(sql, key, binding.sandboxId, { ...outputs, epoch: binding.epoch });
+    return authority.withOwner(binding.sandboxId, binding.ownerId, async (tx, scope) => {
+      await live(tx, scope);
       return requestSandboxFinish(tx, key, binding.sandboxId, binding.ownerId);
     });
   };

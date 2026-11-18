@@ -2,6 +2,7 @@ import { type AgentEvent, isFinalPromptStatus, type Sql } from "@armada/core/ser
 import { hostDrainingSql } from "./docker-host-drain.ts";
 import { dockerHostSupportsResume } from "./docker-host-version.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
+import { expiredOutputRead } from "./runtime-commands.ts";
 import { projectRuntimeIdle } from "./runtime-idle-evidence.ts";
 
 /** Unknown/truncated history cannot prove idle. Detached processes follow the timer,
@@ -45,8 +46,8 @@ export function createRuntimeIdle(
     const busy = await tx.query(
       `select 1 from public.runtime_commands c join public.runtime_enrolments r
        on r.sandbox_id=c.sandbox_id and r.epoch=c.epoch
-       where c.sandbox_id=$1 and c.result_enc is null limit 1`,
-      [id],
+       where c.sandbox_id=$1 and c.result_enc is null and not ${expiredOutputRead("c.request_id", "$2")} limit 1`,
+      [id, String(now())],
     );
     if (busy.rows.length) throw Error("Runtime command pending.");
     const evidence = (
