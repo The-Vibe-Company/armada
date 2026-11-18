@@ -22,9 +22,11 @@ permissions. Keep this bearer out of browsers, URLs and logs. Send
 
 ## Launch a sandbox
 
-`POST /api/v1/sandbox/launch` takes a snapshot name in `golden` and an agent
-identifier in `harness`. This example assumes a Modal snapshot called `review`
-and a configured Codex account:
+`POST /api/v1/sandbox/launch` serves Boat, Modal and Docker, but Docker takes a
+different body (see [Docker launches](#docker-launches)). For Boat and Modal,
+the body takes a snapshot name in `golden` and an agent identifier in
+`harness`. This example assumes a Modal snapshot called `review` and a
+configured Codex account:
 
 ```json
 {
@@ -75,8 +77,32 @@ inherit snapshot visibility. A private snapshot is visible to its owner.
   Keep the original key, do not relaunch, and escalate to an Armada operator
   with the organization, the idempotency key and the `externalRef`.
 
-See [idempotency and recovery](../launch-idempotency.md) for receipt lookup,
-template launch keys and Docker's separate `requestId` contract.
+The `idempotencyKey`, `externalRef` and recovery rules above apply only to Boat
+and Modal launches. See [idempotency and recovery](../launch-idempotency.md)
+for receipt lookup and template launch keys.
+
+### Docker launches
+
+A launch with `"provider":"docker"` goes to a separate handler that accepts an
+exact list of fields. It refuses `golden`, `idempotencyKey` and `externalRef`
+with HTTP 400 `invalid_request`. A Docker sandbox therefore has no external
+reference, and `sandbox/list` with `externalRef` never returns it.
+
+- `org` is required and must be the organization UUID.
+- `requestId` is required and must be a fresh UUID. It becomes the sandbox ID
+  and is the replay key, so store it before you launch. A replay with the same
+  `requestId` and body returns the original result. A changed body returns
+  409 `conflict`.
+- `hostId` (a Docker host UUID) is required, unless you launch from a Docker
+  snapshot with `snapshotId` (a snapshot UUID). The snapshot selects its host.
+- `harness` is required. `credentialId`, `credentialVersion`, `model`,
+  `reasoningEffort`, `prompt`, `ttlSeconds` and `"visibility":"private"` are
+  optional.
+
+After a dropped response, replay with the same `requestId` and body, or call
+`sandbox/status` with that UUID as `id`. Do not launch with a new `requestId`
+until you know that the first launch failed. See
+[Docker hosts](../docker-host-daemon.md) for an example body.
 
 ## Embed the conversation
 
@@ -124,8 +150,24 @@ Send rules depend on the sandbox:
 | Runtime Boat or Modal, including OpenCode | Required without a pinned model account. Otherwise Armada generates one when omitted. | Optional. Omit it to continue the latest conversation. On an idle sandbox with no turn yet, omitting it opens the first conversation. A supplied ID must name an existing conversation of this sandbox. | Refused. Boat accepts values equal to the launch values. |
 | Docker | Armada generates one when omitted, because every Docker sandbox has a pinned model account | Optional. Omit it to continue the latest recorded conversation, or the launch conversation when none is recorded yet. A supplied ID must name a conversation already recorded for this sandbox. | Refused |
 
-Sends to a sandbox with a pinned model account, which includes every Docker
-sandbox, pass through the account turn queue first. For runtime and Docker
+Before the queue or the provider sees a send, Armada checks the sandbox, in
+this order:
+
+1. HTTP 404 `not_found` when the caller cannot see the sandbox.
+2. HTTP 409 `credential_binding_required` for a Modal sandbox without a model
+   account binding that could otherwise accept the send, including a stopped
+   and retained one. A `request_id` does not bypass this check. The sandbox
+   owner must bind an account first, on the sandbox's dashboard page, with
+   `armada bind-credential`, or with `POST /api/v1/sandbox/bind-credential`
+   and `{"id":"<sandbox UUID>","credentialId":"<account UUID>"}`. The
+   workspace and conversations are retained.
+3. HTTP 409 `sandbox_terminal` when the sandbox can no longer take a send. It
+   has expired, failed or been deleted, or it is stopped and cannot resume.
+   Stopped Boat and Modal sandboxes resume on send when their work was
+   retained, and idle-paused sandboxes wake on send.
+
+Sends that pass these checks to a sandbox with a pinned model account, which
+includes every Docker sandbox, then pass through the account turn queue. For runtime and Docker
 sandboxes, the queue returns HTTP 400 `invalid` for a refused override or a
 `conversation_id` that names no recorded conversation. It returns HTTP 409
 `conflict` when the sandbox cannot accept a prompt now, for example while a
@@ -141,8 +183,9 @@ own checks at dispatch, and a prompt rejected there is marked failed. Call
 Until dispatch, status reports the turn as `running`, with the queue message
 in `statusMessage`. A rejected send reports `failed` with the reason.
 
-A runtime sandbox without a pinned model account accepts a send only while it
-is stopped and resumable. Otherwise the send returns 409 `conflict`. Such a
+A Boat runtime sandbox without a pinned model account accepts a send only
+while it is stopped and resumable. Otherwise the send returns 409 `conflict`.
+A Modal sandbox in that state returns `credential_binding_required` first. Such a
 send returns HTTP 400 `invalid` for a refused override or a missing UUID
 `request_id`. Runtime and Docker
 sends keep the model and reasoning effort selected at launch. When Armada
@@ -206,7 +249,11 @@ Ordinary control errors use `{"error":{"code":"…","message":"…"}}`. Branch o
 code. Handle 400 `invalid` for request correction, 401 `unauthorized` for
 authentication, 403 `forbidden` for permission, and 404 `not_found` for a
 missing or inaccessible sandbox. A 409 `conflict` or `sandbox_not_ready`
-requires checking the current state or request before retrying. A 503
+requires checking the current state or request before retrying. A 409
+`sandbox_terminal` means the sandbox can no longer take that control, so do
+not retry. A 409 `credential_binding_required` means the sandbox owner must
+bind a model account before a control can succeed. Docker launches report
+request errors as 400 `invalid_request`. A 503
 `outcome_unknown` requires inspecting or replaying the existing operation
 with the same identity.
 

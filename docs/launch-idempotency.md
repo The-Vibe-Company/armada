@@ -2,11 +2,12 @@
 
 An embedding product (for example one sandbox per tender application) needs to
 launch exactly one sandbox per business object and find it again. Two launch
-fields serve that, on every ordinary launch surface (#2568):
+fields serve that, on every ordinary Boat and Modal launch surface (#2568).
+Docker launches use a different contract, described [below](#docker-launches).
 
 | Surface | Exactly-once field | External reference |
 | --- | --- | --- |
-| `POST /api/v1/sandbox/launch` (and the `launch-sized-v1`, `launch-access-v1`, runtime variants) | `idempotencyKey`, 16–128 characters | `externalRef` |
+| `POST /api/v1/sandbox/launch` for Boat and Modal (and the `launch-sized-v1`, `launch-access-v1`, runtime variants) | `idempotencyKey`, 16–128 characters | `externalRef` |
 | MCP `launch` / `launch_sized_v1` | `idempotencyKey`, 16–128 characters | `externalRef` |
 | `POST /api/v1/templates/launch` | `requestKey` (required, see [templates](templates-cli.md)) | `externalRef` |
 
@@ -37,7 +38,25 @@ A key is scoped to the caller and organization.
 Without a key the REST route behaves as before: every call launches. A server
 without durable receipts, or a launch path that cannot pin its allocation
 authority, refuses a keyed launch rather than launching without the guarantee.
-Normal Docker launch has its own `requestId` and refuses both fields.
+
+## Docker launches
+
+`POST /api/v1/sandbox/launch` with `"provider":"docker"` goes to the normal
+Docker handler, which accepts an exact list of fields. It refuses `golden`,
+`idempotencyKey` and `externalRef` with 400 `invalid_request`, so a Docker
+sandbox carries no external reference and `sandbox/list` with `externalRef`
+never finds it. Instead:
+
+- `requestId`, a fresh UUID you generate and store before launching, is the
+  sandbox ID and the replay key. The same `requestId` and body return the
+  original result. A changed body returns `conflict` (409).
+- `org` is the organization UUID. `hostId` names the Docker host, unless
+  `snapshotId` names a Docker snapshot, which selects its own host.
+
+After an uncertain Docker launch, replay with the same `requestId` and body,
+or read `sandbox/status` with that UUID as `id`. Never retry with a new
+`requestId`. See [Docker hosts](docker-host-daemon.md) for an example body.
+The rest of this page covers Boat and Modal launches.
 
 ## Retry contract for an uncertain launch
 
