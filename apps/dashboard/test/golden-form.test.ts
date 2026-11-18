@@ -25,7 +25,7 @@ describe("the snapshot form request", () => {
           config: {
             repos: [
               { url: "https://github.com/acme/web.git", branch: "develop", dir: "app" },
-              { url: "https://github.com/acme/api.git", branch: "main" },
+              { url: "https://github.com/acme/api.git" },
             ],
             init: ["bun install", "make deps"],
           },
@@ -78,7 +78,7 @@ describe("the snapshot form request", () => {
       name: "web",
       org: ORG,
       provider: "boat",
-      config: { repos: [{ url: "https://github.com/acme/web.git", branch: "main" }], init: [] },
+      config: { repos: [{ url: "https://github.com/acme/web.git" }], init: [] },
     });
     expect(parsed.ok && "private" in parsed.value.body).toBe(false);
   });

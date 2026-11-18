@@ -1,11 +1,21 @@
 import { randomUUID } from "node:crypto";
-import { type OutputFile, type Provider, parseOutputFiles, type Sql } from "@armada/core/server";
+import { OUTPUT_MAX_READ_BYTES, type OutputChunkRequest } from "@armada/core";
+import {
+  encryptSecret,
+  OutputCollectionError,
+  type OutputFile,
+  type Provider,
+  parseOutputChunk,
+  parseOutputEntries,
+  parseOutputFiles,
+  type Sql,
+} from "@armada/core/server";
 import { createRuntimeCommands, expiredOutputRead } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import { captureFinalOutputs, recordOutputFailure } from "./sandbox-outputs.ts";
 
 type Clock = Parameters<typeof createRuntimeCommands>[2];
-type OutputReader = Pick<Provider, "readOutputs">;
+type OutputReader = Pick<Provider, "readOutputs" | "listOutputEntries" | "readOutputChunk" | "outputReadBytes">;
 
 /** Docker sandboxes have no provider exec: the machine channel is the host daemon, and the only
  * server-to-sandbox channel is the enrolled runtime. Outputs use its fixed, read-only
@@ -26,8 +36,12 @@ export function createDockerOutputReader(sql: Sql, key: string, clock?: Clock) {
   const commands = createRuntimeCommands(createRuntimeEnrolments(sql, key), key, clock);
   const now = clock ? () => clock.now() : () => Date.now();
   /** `expectedEpoch` fences the read to an already validated runtime authority. */
-  return (id: string, expectedEpoch?: string): OutputReader => ({
-    async readOutputs(request): Promise<OutputFile[] | null> {
+  return (id: string, expectedEpoch?: string): OutputReader => {
+    async function read<T>(
+      request: { signal?: AbortSignal },
+      decode: (result: unknown) => T | null,
+      part?: OutputChunkRequest | null,
+    ): Promise<T | null> {
       const row = (
         await sql.query<{ owner_id: string }>(
           `select owner_id from public.sandboxes where id=$1 and provider='docker' and not application_secret_tainted`,
@@ -68,31 +82,83 @@ export function createDockerOutputReader(sql: Sql, key: string, clock?: Clock) {
       if (queue?.busy) return null;
       const requestId = `outputs_${deadline}_${randomUUID().replaceAll("-", "")}`;
       // Parsed once: under a request the boundary's check parses this same reply.
-      let files: OutputFile[] | null | undefined;
+      let files: T | null | undefined;
       try {
         const reply = await commands.call(
           row.owner_id,
-          { version: 1, requestId, sandboxId: id, op: "readOutputs" },
+          { version: 1, requestId, sandboxId: id, op: "readOutputs", ...(part !== undefined ? { part } : {}) },
           {
             timeoutMs: READ_TIMEOUT_MS,
             ...(request.signal ? { signal: request.signal } : {}),
             ...(expectedEpoch !== undefined ? { expectedEpoch } : {}),
             // Same parse as the snapshot below, so a reply whose files Armada rejects is not `ok`.
             accept: (candidate) => {
-              files = parsed(candidate.body.result);
+              files = decode(candidate.body.result);
               return files !== null;
             },
           },
         );
+        if (part === null && reply.body.error === "invalid_request")
+          throw new OutputCollectionError("output_protocol_unsupported");
         if (reply.status !== 200 || reply.body.requestId !== requestId) return null;
-        return files === undefined ? parsed(reply.body.result) : files;
-      } catch {
+        const decoded = files === undefined ? decode(reply.body.result) : files;
+        if (part && decoded) {
+          // The original reader has consumed the reply. Keep an ACK-compatible tombstone so a
+          // lost acknowledgement can be retried without retaining a second copy of the chunk.
+          const receipt = await encryptSecret(
+            JSON.stringify({
+              epoch: reply.epoch,
+              requestId,
+              status: 410,
+              body: { requestId, error: "output_consumed" },
+            }),
+            key,
+          );
+          await sql
+            .query(
+              "update public.runtime_commands set result_enc=$3 where sandbox_id=$1 and request_id=$2 and result_enc is not null",
+              [id, requestId, receipt],
+            )
+            .catch(() => {});
+        }
+        return decoded;
+      } catch (error) {
+        if (error instanceof OutputCollectionError) throw error;
         // Not live (stop requested, no enrolment, other epoch), refused or timed out: keep the
         // previous snapshot. A read left unanswered expires at its deadline.
         return null;
       }
-    },
-  });
+    }
+    const values = (result: unknown) => (result as { values?: unknown } | null)?.values;
+    return {
+      outputReadBytes: OUTPUT_MAX_READ_BYTES,
+      readOutputs: (request) => read(request, parsed),
+      listOutputEntries: (request) =>
+        read(
+          request,
+          (result) => {
+            try {
+              return parseOutputEntries(values(result));
+            } catch {
+              return null;
+            }
+          },
+          null,
+        ),
+      readOutputChunk: (request) =>
+        read(
+          request,
+          (result) => {
+            try {
+              return parseOutputChunk(values(result), request.chunk);
+            } catch {
+              return null;
+            }
+          },
+          request.chunk,
+        ),
+    };
+  };
 }
 
 /** Final capture before an Armada-initiated Docker stop is enqueued: the runtime refuses commands

@@ -1,9 +1,16 @@
 import { createHash, randomUUID } from "node:crypto";
-import { normalizeGitHubGoldenConfig, officialSandboxImage, parseGoldenConfig, VERSION } from "@armada/core";
+import {
+  dockerHostUpgradeMessage,
+  normalizeGitHubGoldenConfig,
+  officialSandboxImage,
+  parseSnapshotConfig,
+  VERSION,
+} from "@armada/core";
 import {
   type GitHubInstallationApp,
   type GitHubResolveDeps,
   goldenGitHubAdapter,
+  isLegacySnapshotRef,
   resolveGitHubAccess,
   SNAPSHOT_BASELINE_VERSION,
   type Sql,
@@ -20,15 +27,20 @@ import { scopedRuntimeSql as scopedSql } from "./runtime-enrolment.ts";
 
 const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/;
 const invalid = () => new VaultError("invalid", "Invalid snapshot request.");
+type HostUpgradeCode = "host_update_required" | "docker_host_upgrade_required";
 export class DockerSnapshotHostUpgradeRequired extends Error {
-  readonly code = "host_update_required";
-
-  constructor(version: string | null) {
-    super(
-      `Snapshot builds require a Docker host daemon that can verify the developer baseline. Installed version: ${version ?? "unknown"}. Update the host and wait for its next poll.`,
-    );
+  constructor(
+    message: string,
+    readonly code: HostUpgradeCode = "docker_host_upgrade_required",
+  ) {
+    super(message);
   }
 }
+const baselineUpgradeRequired = (version: string | null) =>
+  new DockerSnapshotHostUpgradeRequired(
+    `Snapshot builds require a Docker host daemon that can verify the developer baseline. Installed version: ${version ?? "unknown"}. Update the host and wait for its next poll.`,
+    "host_update_required",
+  );
 
 export function createDockerSnapshots(
   sql: Sql,
@@ -119,23 +131,31 @@ export function createDockerSnapshots(
     const visibility = body.visibility ?? "private";
     if (visibility === "org" && membership.role !== "admin")
       throw new VaultError("forbidden", "Only an administrator can publish an organization snapshot.");
-    const config = parseGoldenConfig(body.config),
+    const requestedConfig = parseSnapshotConfig(body.config),
       id = body.requestId,
       hostId = body.hostId,
       name = body.name;
-    const digest = createHash("sha256")
-      .update(JSON.stringify({ org, hostId, name, visibility, config, ...(rebuildOf ? { rebuildOf } : {}) }))
-      .digest("hex");
+    const request = { org, hostId, name, visibility, config: requestedConfig, ...(rebuildOf ? { rebuildOf } : {}) };
+    const hashRequest = (payload: object) => createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+    const digest = hashRequest({ ...request, resolveDefaultBranch: true });
+    // The old parser inserted main for a missing branch before it hashed the request.
+    const legacyDigest = hashRequest({
+      ...request,
+      config: {
+        ...requestedConfig,
+        repos: requestedConfig.repos.map((repo) => ({ ...repo, branch: repo.branch ?? "main" })),
+      },
+    });
     const known = (await read(id))[0];
     if (known) {
-      if (known.owner_id !== caller.userId || known.request_hash !== digest)
+      if (known.owner_id !== caller.userId || (known.request_hash !== digest && known.request_hash !== legacyDigest))
         throw new VaultError("conflict", "Snapshot request changed.");
       return { snapshot: snapshotRecord(known) };
     }
     const baseImage = officialSandboxImage();
     const target = (
-      await sql.query<{ id: string; draining: boolean }>(
-        `select h.id,${hostDrainingSql("h")} as draining from public.docker_hosts h join public.members m on m.org_id=h.org_id and m.user_id=h.owner_id where h.id=$1 and h.org_id=$2 and h.hash is not null and h.registration_hash is null and h.revoked_at is null`,
+      await sql.query<{ id: string; draining: boolean; daemon_version: string | null }>(
+        `select h.id,h.daemon_version,${hostDrainingSql("h")} as draining from public.docker_hosts h join public.members m on m.org_id=h.org_id and m.user_id=h.owner_id where h.id=$1 and h.org_id=$2 and h.hash is not null and h.registration_hash is null and h.revoked_at is null`,
         [hostId, org],
       )
     ).rows[0];
@@ -154,12 +174,28 @@ export function createDockerSnapshots(
         return access.token;
       },
     });
-    const normalized = normalizeGitHubGoldenConfig(config);
+    const normalized = normalizeGitHubGoldenConfig(requestedConfig);
     const authorized = await authorizer.authorize(
       { ...actor, role: membership.role },
       visibility,
       normalized.repos.map((r) => `${r.owner}/${r.repo}`),
     );
+    const config = {
+      ...requestedConfig,
+      repos: requestedConfig.repos.map((repo, index) => ({
+        ...repo,
+        branch: repo.branch ?? authorized.repos[index]!.branch,
+      })),
+    };
+    const requireCompatibleDaemon = (version: string | null) => {
+      if (config.repos.every((repo) => isLegacySnapshotRef(repo.branch))) return;
+      const upgrade = dockerHostUpgradeMessage(version?.split(/[-+]/, 1)[0]?.slice(0, 32), VERSION);
+      if (upgrade)
+        throw new DockerSnapshotHostUpgradeRequired(
+          `This snapshot uses a ref that requires a newer Docker host daemon. ${upgrade}`,
+        );
+    };
+    requireCompatibleDaemon(target.daemon_version);
     let token = authorized.token;
     const installations = new Set(authorized.repos.map((r) => r.installationId));
     if (authorizer.mint && installations.size === 1 && authorized.repos[0]?.installationId)
@@ -209,12 +245,17 @@ export function createDockerSnapshots(
           const previous = (await tx.query<SnapshotRow>("select * from public.docker_snapshots where id=$1", [id]))
             .rows[0];
           if (previous) {
-            if (previous.owner_id !== caller.userId || previous.org_id !== org || previous.request_hash !== digest)
+            if (
+              previous.owner_id !== caller.userId ||
+              previous.org_id !== org ||
+              (previous.request_hash !== digest && previous.request_hash !== legacyDigest)
+            )
               throw new VaultError("conflict", "Snapshot request changed.");
             return;
           }
           if (!dockerHostSupportsSnapshotBaseline(host.daemon_version, host.snapshot_baseline_version))
-            throw new DockerSnapshotHostUpgradeRequired(host.daemon_version);
+            throw baselineUpgradeRequired(host.daemon_version);
+          requireCompatibleDaemon(host.daemon_version);
           if (
             (
               await tx.query(

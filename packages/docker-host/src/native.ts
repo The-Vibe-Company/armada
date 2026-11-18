@@ -408,6 +408,7 @@ export function httpApi(
       };
       const baselineVersion = receipt.operation === "buildSnapshot" ? receipt.baselineVersion : undefined;
       const baselineTool = receipt.operation === "buildSnapshot" ? receipt.baselineTool : undefined;
+      const missingRefIndex = receipt.operation === "buildSnapshot" ? receipt.missingRefIndex : undefined;
       if (expired || (!receipt.reason && baselineVersion === undefined))
         return void (await post(state.server, "results", state.hostToken, body));
       try {
@@ -416,6 +417,7 @@ export function httpApi(
           ...(receipt.reason ? { reason: receipt.reason } : {}),
           ...(baselineVersion === undefined ? {} : { baselineVersion }),
           ...(baselineTool === undefined ? {} : { baselineTool }),
+          ...(missingRefIndex === undefined ? {} : { missingRefIndex }),
         });
       } catch (error) {
         // Older replicas may reject optional body fields. Carry verified baseline metadata in a header

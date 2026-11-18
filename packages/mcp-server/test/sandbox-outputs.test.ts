@@ -373,6 +373,86 @@ test("a hanging provider read yields at the caller deadline, stays tracked and n
   expect(state.reads).toBe(2);
 });
 
+async function stalledModalFixture() {
+  const healthy = await fixture();
+  const { db, people } = healthy;
+  const golden = (
+    await db.query<{ id: string }>(
+      `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,
+        modal_workspace,modal_environment,modal_app_id,config)
+       values($1,$2,'stalled','private','modal','master','image','workspace','main','app','{"repos":[],"init":[]}')
+       returning id`,
+      [people.org, people.owner],
+    )
+  ).rows[0]!;
+  const stalled = (
+    await db.query<{ id: string }>(
+      `insert into sandboxes(provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status)
+       select 'modal','stalled_' || n,$1,$2,$3,'codex','ready' from generate_series(1,5) n returning id`,
+      [golden.id, people.org, people.owner],
+    )
+  ).rows.map(({ id }) => id);
+  const { state, provider } = disks();
+  state.live = [file("memo.txt", "healthy")];
+  const names = async () => (await db.query("select sandbox_id,name from sandbox_outputs")).rows;
+  return { ...healthy, stalled, provider, names };
+}
+
+test("expired Modal lookups leave sampling capacity for a healthy Boat sandbox", async () => {
+  const { db, id, sql, stalled, provider, names } = await stalledModalFixture();
+  // Make the healthy sandbox the oldest previously sampled row, behind all unsampled Modal rows.
+  await db.query("update sandboxes set outputs_checked_at=now()-interval '1 minute' where id=$1", [id]);
+  const hold = Promise.withResolvers<typeof provider>();
+  let lookups = 0;
+  const service = createSandboxOutputs(sql, KEY, async (sandboxId) => {
+    if (sandboxId === id) return provider;
+    lookups++;
+    return hold.promise;
+  });
+  try {
+    for (const _ of stalled.slice(0, 4)) {
+      const deadline = new AbortController();
+      expect(await service.reconcileOne(deadline.signal)).toBe(true);
+      deadline.abort();
+    }
+    expect(lookups).toBe(4);
+    expect(await sample(service)).toBe(true);
+    expect(await names()).toEqual([{ sandbox_id: id, name: "memo.txt" }]);
+    expect(lookups).toBe(4);
+  } finally {
+    hold.resolve(provider);
+    await service.drain();
+  }
+});
+
+test("expired Modal reads leave final capture capacity for a healthy Boat sandbox", async () => {
+  const { id, sql, stalled, provider, names } = await stalledModalFixture();
+  const modal = disks();
+  modal.state.live = [file("late.txt", "expired")];
+  const hold = Promise.withResolvers<void>();
+  modal.state.hold = hold.promise;
+  try {
+    for (const sandboxId of stalled.slice(0, 4)) {
+      const reading = Promise.withResolvers<void>();
+      modal.state.entered = reading.resolve;
+      const deadline = new AbortController();
+      const capture = captureFinalOutputs(sql, modal.provider, sandboxId, { key: KEY, signal: deadline.signal });
+      await reading.promise;
+      deadline.abort();
+      await expect(capture).rejects.toBe(deadline.signal.reason);
+    }
+    await expect(captureFinalOutputs(sql, provider, stalled[4]!, { key: KEY })).rejects.toMatchObject({
+      reason: "output_busy",
+    });
+    await captureFinalOutputs(sql, provider, id, { key: KEY });
+    expect(await names()).toEqual([{ sandbox_id: id, name: "memo.txt" }]);
+  } finally {
+    hold.resolve();
+    await drainFinalOutputs();
+  }
+  expect(await names()).toEqual([{ sandbox_id: id, name: "memo.txt" }]);
+});
+
 test("a collection whose deadline passes while it waits for the row lock never commits files or events", async () => {
   const { db, people, id, sql } = await fixture({ boatId: "gated_fixture" });
   await db.query(
@@ -657,4 +737,107 @@ test("worker shutdown finishes while a cancelled sample's provider read is still
   }
   expect((await db.query(`select 1 from sandbox_outputs where sandbox_id=$1`, [id])).rows).toHaveLength(0);
   expect(state.reads).toBe(1);
+});
+
+test("a failed chunk read resumes from durable progress and publishes a ranged download", async () => {
+  const { db, people, id, sql } = await fixture();
+  const bytes = Buffer.alloc(65538, 7);
+  Buffer.from("abcd").copy(bytes, 32766);
+  const entries = [
+    { name: "document.pdf", size: bytes.length, revision: "1:2:3:4" },
+    { name: "oversized.zip", size: 33554433, revision: "1:3:3:4" },
+  ];
+  const offsets: number[] = [];
+  let interrupted = false;
+  const reader = {
+    listOutputEntries: async () => entries,
+    readOutputChunk: async ({ chunk }: Parameters<NonNullable<Provider["readOutputChunk"]>>[0]) => {
+      expect(chunk.entry.name).toBe("document.pdf");
+      offsets.push(chunk.offset);
+      if (chunk.offset === 32768 && !interrupted) {
+        interrupted = true;
+        return null;
+      }
+      return bytes.subarray(chunk.offset, chunk.offset + 32768);
+    },
+  };
+  const service = createSandboxOutputs(sql, KEY, async () => reader);
+  const route = routeFor(service, people.owner, people.org);
+  const url = `https://armada.example/api/v1/sandboxes/${id}/outputs`;
+  await expect(captureFinalOutputs(sql, reader, id, { key: KEY })).rejects.toThrow("output_unavailable");
+  expect((await route(new Request(`${url}/document.pdf`)))?.status).toBe(404);
+  await captureFinalOutputs(sql, reader, id, { key: KEY });
+  expect(offsets).toEqual([0, 32768, 32768, 65536]);
+  const list = await (await route(new Request(url)))?.json();
+  expect(publishedGetResponse("sandboxes/{id}/outputs", "200").parse(list)).toMatchObject({
+    files: [
+      { name: "document.pdf", size: bytes.length, sha256: new Bun.CryptoHasher("sha256").update(bytes).digest("hex") },
+      { name: "oversized.zip", size: 33554433, skipped: "too_large", sha256: null },
+    ],
+    limits: { maxFileBytes: 33554432 },
+  });
+  expect((await route(new Request(`${url}/oversized.zip`)))?.status).toBe(404);
+  const response = await route(new Request(`${url}/document.pdf`, { headers: { range: "bytes=32766-32769" } }));
+  expect(response?.status).toBe(206);
+  expect(response?.headers.get("content-range")).toBe("bytes 32766-32769/65538");
+  expect(await response?.text()).toBe("abcd");
+  await db.query("update sandboxes set application_secret_tainted=true where id=$1", [id]);
+  expect((await route(new Request(`${url}/document.pdf`)))?.status).toBe(404);
+  expect((await db.query("select 1 from sandbox_output_chunks")).rows).toHaveLength(0);
+});
+
+test("other sandboxes' in-progress reservations count toward the organization limit", async () => {
+  const { db, people, id, sql } = await fixture();
+  await db.query(
+    `with occupied as (
+        insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status)
+        select gen_random_uuid(),golden_id,org_id,owner_id,'quota_fixture_' || n,harness,'ready'
+        from sandboxes cross join generate_series(1,16) n where id=$1 returning id
+      )
+      insert into sandbox_output_transfers(sandbox_id,name,revision,size,scan)
+      select id, 'reserved-' || n, '1:2:3:4', 33554432, now()
+      from occupied cross join generate_series(1,2) n`,
+    [id],
+  );
+  let revision = "1:2:3:4";
+  const reader = {
+    listOutputEntries: async () => [{ name: "report.pdf", size: 1, revision }],
+    readOutputChunk: async () => new Uint8Array([revision === "1:2:3:4" ? 97 : 98]),
+  };
+  await captureFinalOutputs(sql, reader, id, { key: KEY });
+  const service = createSandboxOutputs(sql, KEY, async () => reader);
+  const route = routeFor(service, people.owner, people.org);
+  const url = `https://armada.example/api/v1/sandboxes/${id}/outputs`;
+  const list = await route(new Request(url));
+  expect(await list?.json()).toMatchObject({ files: [{ name: "report.pdf", size: 1, skipped: "org_limit" }] });
+
+  await db.query(
+    `update sandbox_output_transfers set progress_at=now()-interval '16 minutes'
+      where id=(select id from sandbox_output_transfers order by id limit 1)`,
+  );
+  await captureFinalOutputs(sql, reader, id, { key: KEY });
+  expect(await (await route(new Request(url + "/report.pdf")))?.text()).toBe("a");
+
+  await db.query(
+    `insert into sandbox_output_transfers(sandbox_id,name,revision,size,scan)
+      select t.sandbox_id, 'remaining', '1:2:3:4', 33554431, now()
+      from sandbox_output_transfers t group by t.sandbox_id having count(*)=1 and min(t.size)=33554432 limit 1`,
+  );
+  revision = "1:2:3:5";
+  await captureFinalOutputs(sql, reader, id, { key: KEY });
+  expect(await (await route(new Request(url + "/report.pdf")))?.text()).toBe("a");
+});
+
+test("a member stopping the sandbox discards its incomplete output transfers", async () => {
+  const { db, people, id } = await fixture();
+  await db.query(
+    `insert into sandbox_output_transfers(sandbox_id,name,revision,size,scan) values($1,'partial.pdf','1:2:3:4',65536,now())`,
+    [id],
+  );
+  await db.exec("begin");
+  await db.query("select set_config('request.jwt.claim.sub', $1, true)", [people.owner]);
+  await db.exec("set local role authenticated");
+  await db.query(`update sandboxes set status='stopped',stopped_at=now() where id=$1`, [id]);
+  await db.exec("commit");
+  expect((await db.query(`select 1 from sandbox_output_transfers where sandbox_id=$1`, [id])).rows).toHaveLength(0);
 });

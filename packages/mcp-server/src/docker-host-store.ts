@@ -1377,6 +1377,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         imageId?: string;
         baselineVersion?: number;
         baselineTool?: SnapshotBaselineTool;
+        missingRefIndex?: number;
       },
     ) {
       return transaction(async (tx) => {
@@ -1387,6 +1388,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           ...(result.imageId !== undefined ? ["imageId"] : []),
           ...(result.baselineVersion !== undefined ? ["baselineVersion"] : []),
           ...(result.baselineTool !== undefined ? ["baselineTool"] : []),
+          ...(result.missingRefIndex !== undefined ? ["missingRefIndex"] : []),
         ]);
         if (
           result.reason !== undefined &&
@@ -1454,6 +1456,15 @@ export function createDockerHostStore(sql: Sql, key: string) {
             result.baselineVersion > 2147483647)
         )
           deny();
+        if (
+          result.missingRefIndex !== undefined &&
+          (!job.snapshot_id ||
+            result.reason !== "snapshot_build_failed" ||
+            result.baselineTool !== undefined ||
+            !Number.isInteger(result.missingRefIndex) ||
+            result.missingRefIndex < 1)
+        )
+          deny();
         if (job.snapshot_id) {
           const parsed = await readJob(job);
           if (
@@ -1463,6 +1474,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
               : result.imageId !== undefined)
           )
             deny();
+          if (result.missingRefIndex !== undefined && result.missingRefIndex > parsed.build.config.repos.length) deny();
           if (job.outcome === null) {
             let eligible = false,
               draining = false,
@@ -1478,7 +1490,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
               }
             }
             await tx.query(
-              "update public.docker_snapshots set status=$2,image_id=$3,failure_reason=$4,baseline_version=$5,baseline_failure_tool=$6 where id=$1 and status='building'",
+              "update public.docker_snapshots set status=$2,image_id=$3,failure_reason=$4,baseline_version=$5,baseline_failure_tool=$6,missing_ref_index=$7 where id=$1 and status='building'",
               [
                 job.snapshot_id,
                 eligible ? "ready" : "failed",
@@ -1496,6 +1508,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
                           : DOCKER_SNAPSHOT_FAILURE_MESSAGES.build,
                 eligible ? (result.baselineVersion ?? null) : null,
                 result.baselineTool ?? null,
+                result.missingRefIndex ?? null,
               ],
             );
           }

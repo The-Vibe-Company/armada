@@ -10,7 +10,11 @@ import {
 } from "../../core/src/docker-host-job.ts";
 import { DockerMachineError, type DockerMachineRequest } from "../../core/src/docker-machine.ts";
 import type { DockerSandboxLimits } from "../../core/src/docker-resource-policy.ts";
-import { DockerSnapshotBaselineError, type DockerSnapshotBuildReceipt } from "../../core/src/docker-snapshot-build.ts";
+import {
+  DockerSnapshotBaselineError,
+  type DockerSnapshotBuildReceipt,
+  DockerSnapshotMissingRefError,
+} from "../../core/src/docker-snapshot-build.ts";
 
 import type { SnapshotBaselineTool } from "../../core/src/snapshot-baseline.ts";
 
@@ -34,6 +38,7 @@ export type Receipt = {
       imageId?: string;
       baselineVersion?: number;
       baselineTool?: SnapshotBaselineTool;
+      missingRefIndex?: number;
     }
 );
 export type State = {
@@ -54,6 +59,7 @@ export type State = {
     imageId: string | null,
     baselineVersion?: number | null,
     baselineTool?: SnapshotBaselineTool | null,
+    missingRefIndex?: number | null,
   ][];
   cleanupLimit?: number;
   /** Local durable retention obligations survive receipt compaction and offline polls. */
@@ -853,10 +859,11 @@ async function admitLocked(
       else if (receipt.operation === "buildSnapshot") {
         receipt.reason = "snapshot_build_failed";
         if (error instanceof DockerSnapshotBaselineError) receipt.baselineTool = error.tool;
+        if (error instanceof DockerSnapshotMissingRefError) receipt.missingRefIndex = error.index;
         // Do not log exception text: build output and init commands can contain credentials.
         console.error(
           `Snapshot ${receipt.request.sandboxId}: ${
-            error instanceof DockerSnapshotBaselineError
+            error instanceof DockerSnapshotBaselineError || error instanceof DockerSnapshotMissingRefError
               ? error.message
               : "Snapshot image build failed. Check registry access, repository access, init commands and the secret scan; build output is suppressed to protect secrets."
           }`,
@@ -944,6 +951,7 @@ async function admitLocked(
         ...(old[7] ? { imageId: old[7] } : {}),
         ...(old[8] ? { baselineVersion: old[8] } : {}),
         ...(old[9] ? { baselineTool: old[9] } : {}),
+        ...(old[10] ? { missingRefIndex: old[10] } : {}),
       } as Receipt;
       await api.result(state, replay);
       return "worked";
@@ -1056,6 +1064,7 @@ export function compactReceipts(state: State): void {
       receipt.operation === "buildSnapshot" ? (receipt.imageId ?? null) : null,
       receipt.operation === "buildSnapshot" ? (receipt.baselineVersion ?? null) : null,
       receipt.operation === "buildSnapshot" ? (receipt.baselineTool ?? null) : null,
+      receipt.operation === "buildSnapshot" ? (receipt.missingRefIndex ?? null) : null,
     ]);
     return false;
   });

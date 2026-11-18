@@ -10,7 +10,7 @@ import {
   type Sql,
   VaultError,
 } from "@armada/core";
-import { isLaunchTtlSeconds } from "@armada/core/server";
+import { admitLaunchPlan, isLaunchTtlSeconds } from "@armada/core/server";
 import { admitAccountCapacity } from "./account-capacity.ts";
 import {
   admitDockerCapacity,
@@ -282,10 +282,16 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
         // A drain refuses new allocation with its own reason, never a permission failure. An
         // already-admitted request replays above: admission is historical, not current.
         if (host.draining) throw new DockerHostDraining();
-        if (request.credentialId)
-          await admitAccountCapacity(tx, request.credentialId, request.requestId, request.model);
-        await admitDockerDisk(tx, request.hostId);
-        await admitDockerCapacity(tx, request.hostId);
+        await admitLaunchPlan(
+          () =>
+            request.credentialId
+              ? admitAccountCapacity(tx, request.credentialId, request.requestId, request.model)
+              : undefined,
+          async () => {
+            await admitDockerDisk(tx, request.hostId);
+            await admitDockerCapacity(tx, request.hostId);
+          },
+        );
         const generation = randomUUID();
         const physical = `armada-${host.installation_id}-${request.hostId}-${request.requestId}-${generation}`;
         const row =

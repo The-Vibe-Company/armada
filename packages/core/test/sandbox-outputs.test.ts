@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -8,7 +8,10 @@ import {
   OUTPUT_COLLECTOR_MANAGED_PROBE,
   OUTPUT_COLLECTOR_PROBE,
   OUTPUT_MAX_ENTRIES,
+  outputEntryCollector,
   parseCollectorOutput,
+  readCollectorChunk,
+  readCollectorEntries,
   readCollectorProbeResult,
 } from "../src/sandbox-outputs.ts";
 import { shellQuote } from "../src/shell-quote.ts";
@@ -73,7 +76,7 @@ function runCollector(root: string, readers?: { bun?: string; python?: string })
 test.skipIf(process.platform !== "linux")("the Python-free collector bounds admitted files in name order", () => {
   const root = mkdtempSync(join(realpathSync(tmpdir()), "outputs-"));
   try {
-    expect(runCollector(root).exitCode).not.toBe(0);
+    expect(runCollector(root).exitCode).toBe(4);
     const outputs = join(root, "outputs");
     mkdirSync(outputs);
     expect(parseCollectorOutput(runCollector(root).stdout.toString())).toEqual([]);
@@ -163,6 +166,37 @@ test.skipIf(process.platform !== "linux")(
 );
 
 const python = Bun.which("python3", { PATH: "/usr/local/bin:/usr/bin:/bin" });
+
+test.skipIf(process.platform !== "linux" || !python)(
+  "probe and read fall back to Python when Bun cannot access descriptors",
+  () => {
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "outputs-"));
+    try {
+      const outputs = join(root, "outputs");
+      mkdirSync(outputs);
+      writeFileSync(join(outputs, "memo.txt"), "document");
+      const run = (program: string) =>
+        Bun.spawnSync([
+          "/bin/sh",
+          "-c",
+          guest(program, { bun: process.execPath, python: python!, outputs }).replaceAll(
+            "/proc/self/fd/",
+            join(root, "unavailable-fd") + "/",
+          ),
+        ]);
+      const probe = run(OUTPUT_COLLECTOR_PROBE);
+      expect(readCollectorProbeResult(probe.exitCode, probe.stdout.toString())).toBe(true);
+      const read = run(OUTPUT_COLLECTOR);
+      expect(read.exitCode).toBe(0);
+      expect(
+        parseCollectorOutput(read.stdout.toString()).map((file) => [file.name, Buffer.from(file.bytes).toString()]),
+      ).toEqual([["memo.txt", "document"]]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
 /** A repository-pinned Bun from before `--no-env-file`: prints its CLI help and exits 0. */
 function helpPrintingBun(root: string) {
   const bun = join(root, "old-bun");
@@ -313,6 +347,31 @@ test.skipIf(!managedBun)("a privileged exec collects through a protected managed
     expect(
       parseCollectorOutput(run.stdout.toString()).map((file) => [file.name, Buffer.from(file.bytes).toString()]),
     ).toEqual([["memo.txt", "document"]]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test.skipIf(process.platform !== "linux")("the cloud collector refuses a chunk from a replaced revision", () => {
+  const root = mkdtempSync(join(realpathSync(tmpdir()), "output-revision-"));
+  try {
+    const name = "résumé.pdf";
+    const initial = Buffer.alloc(32772, 0);
+    initial.write("data", 32768);
+    writeFileSync(join(root, name), initial);
+    const run = (program: string) => {
+      const result = Bun.spawnSync(["/bin/sh", "-c", guest(program, { bun: process.execPath, outputs: root })]);
+      return [result.exitCode, result.stdout.toString()] as const;
+    };
+    const [entry] = readCollectorEntries(...run(outputEntryCollector(null)));
+    expect(entry).toMatchObject({ name, size: 32772 });
+    const chunk = { entry: entry!, offset: 32768 };
+    const command = outputEntryCollector(chunk);
+    expect(Buffer.from(readCollectorChunk(...run(command), chunk)!).toString()).toBe("data");
+    // A distinct inode exists before the original is unlinked, even on a coarse clock.
+    writeFileSync(join(root, "replacement"), initial);
+    renameSync(join(root, "replacement"), join(root, name));
+    expect(readCollectorChunk(...run(command), chunk)).toBeNull();
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -2575,7 +2575,7 @@ test("a lost Docker template response retains one reconciling claim and never re
   expect(await counts(f)).toMatchObject({ sandboxes: 1, claims: 1, jobs: 2 });
 });
 
-async function snapshotFixture(enabled = true, options: Parameters<typeof fixture>[0] = {}) {
+async function snapshotFixture(enabled = true, options: Parameters<typeof fixture>[0] = {}, defaultBranch = "main") {
   const db = database();
   const f = await fixture(options);
   await hosts.poll(f.hostToken, f.installationId, "2.55.0");
@@ -2598,7 +2598,7 @@ async function snapshotFixture(enabled = true, options: Parameters<typeof fixtur
             name: "project",
             owner: { login: "example" },
             private: false,
-            default_branch: "main",
+            default_branch: defaultBranch,
           })
         : Response.json({ id: admin ? 124 : 123, login: "owner", name: "Owner" });
   }) as unknown as typeof fetch;
@@ -2722,8 +2722,12 @@ test.each(["private", "org"] as const)(
   "host snapshot %s publication enforces visibility and launches the baked image without cloning again",
   async (visibility) => {
     const db = database();
-    const f = await snapshotFixture(),
+    const branch = visibility === "private" ? "release+next" : "trunk";
+    const daemonVersion = visibility === "private" ? VERSION : "2.51.0";
+    const f = await snapshotFixture(true, {}, branch),
       id = randomUUID();
+    // Admission needs a baseline-capable daemon; the org case downgrades before it builds a legacy queued request.
+    expect(await hosts.poll(f.hostToken, f.installationId, VERSION)).toBeNull();
     const creator = visibility === "private" ? f.caller : f.adminCaller;
     const input = {
       org: f.actor.orgId,
@@ -2731,8 +2735,15 @@ test.each(["private", "org"] as const)(
       requestId: id,
       name: "local-snapshot",
       visibility,
-      config: f.config,
+      config: { ...f.config, repos: [{ url: f.config.repos[0]!.url }] },
     };
+    if (visibility === "private") {
+      expect(await hosts.poll(f.hostToken, f.installationId, "2.51.0")).toBeNull();
+      await expect(f.snapshots.command(creator, "create", input)).rejects.toThrow(
+        "This snapshot uses a ref that requires a newer Docker host daemon.",
+      );
+      expect(await hosts.poll(f.hostToken, f.installationId, daemonVersion)).toBeNull();
+    }
     const created = await f.snapshots.command(creator, "create", input);
     expect(created).toMatchObject({ snapshot: { id, status: "building", visibility, builtOnVersion: VERSION } });
     expect(
@@ -2749,9 +2760,12 @@ test.each(["private", "org"] as const)(
     ).rejects.toThrow("Snapshot base is immutable");
     expect(JSON.stringify(created)).not.toContain("offline-snapshot-access");
     expect(await f.snapshots.command(creator, "create", input)).toMatchObject({ snapshot: { id } });
-    const build = await hosts.poll(f.hostToken, f.installationId);
+    const build = await hosts.poll(f.hostToken, f.installationId, daemonVersion);
     if (build?.operation !== "buildSnapshot") throw Error("missing snapshot build");
-    expect(build.build.config).toEqual(input.config);
+    expect(build.build.config).toEqual({
+      ...f.config,
+      repos: [{ ...f.config.repos[0]!, branch }],
+    });
     expect(build.request.image).toBe(officialSandboxImage());
     expect(build.build).toMatchObject({ armadaVersion: VERSION });
     for (const fields of [{ image: officialImage }, { baseImage: officialImage }, { builtOnVersion: "0.0.1" }])
@@ -2779,6 +2793,9 @@ test.each(["private", "org"] as const)(
         hostAvailable: true,
         baselineVersion: visibility === "private" ? 1 : null,
         baselineOutdated: visibility === "org",
+        ...(visibility === "org"
+          ? { baselineWarning: expect.stringContaining("Docker host daemon 2.51.0 is outdated") }
+          : {}),
       },
     });
     if (visibility === "private") {
@@ -3468,32 +3485,37 @@ test.each(["private", "org"] as const)(
   },
 );
 
-test("failed snapshot machine facts persist a safe reason in get and list responses", async () => {
-  const f = await snapshotFixture(),
-    id = randomUUID();
-  await f.snapshots.command(f.caller, "create", {
-    org: f.actor.orgId,
-    hostId: f.hostId,
-    requestId: id,
-    name: "failed-build",
-    visibility: "private",
-    config: f.config,
-  });
-  expect((await hosts.poll(f.hostToken, f.installationId))?.operation).toBe("buildSnapshot");
-  await hosts.complete(f.hostToken, f.installationId, {
-    requestId: id,
-    outcome: "failed",
-    reason: "snapshot_build_failed",
-    baselineTool: "jq",
-  });
-  const failureReason = "Snapshot baseline 1 requires a working jq at the declared version.";
-  expect(await f.snapshots.command(f.caller, "get", { org: f.actor.orgId, id })).toMatchObject({
-    snapshot: { id, status: "failed", image: null, failureReason },
-  });
-  expect(await f.snapshots.command(f.caller, "list", { org: f.actor.orgId })).toMatchObject({
-    snapshots: [expect.objectContaining({ id, status: "failed", failureReason })],
-  });
-});
+test.each([
+  [{ baselineTool: "jq" } as const, "Snapshot baseline 1 requires a working jq at the declared version."],
+  [{ missingRefIndex: 1 }, "Ref 'main' was not found in example/project. Check the branch or tag and retry."],
+])(
+  "failed snapshot machine facts persist a safe reason in get and list responses (%j)",
+  async (diagnostic, failureReason) => {
+    const f = await snapshotFixture(),
+      id = randomUUID();
+    await f.snapshots.command(f.caller, "create", {
+      org: f.actor.orgId,
+      hostId: f.hostId,
+      requestId: id,
+      name: "failed-build",
+      visibility: "private",
+      config: f.config,
+    });
+    expect((await hosts.poll(f.hostToken, f.installationId))?.operation).toBe("buildSnapshot");
+    await hosts.complete(f.hostToken, f.installationId, {
+      requestId: id,
+      outcome: "failed",
+      reason: "snapshot_build_failed",
+      ...diagnostic,
+    });
+    expect(await f.snapshots.command(f.caller, "get", { org: f.actor.orgId, id })).toMatchObject({
+      snapshot: { id, status: "failed", image: null, failureReason },
+    });
+    expect(await f.snapshots.command(f.caller, "list", { org: f.actor.orgId })).toMatchObject({
+      snapshots: [expect.objectContaining({ id, status: "failed", failureReason })],
+    });
+  },
+);
 
 test("a failed snapshot build retried with the same request records host work only once", async () => {
   const f = await snapshotFixture(),

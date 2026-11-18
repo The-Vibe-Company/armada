@@ -91,8 +91,9 @@ export function langfuseSpans(
     const history = events.filter((e) => e.promptId === end.promptId);
     const start = history.find((e): e is PromptEvent => e.kind === "prompt" && e.status === "running");
     const startAt = start?.at || end.at;
-    const traceId = hash(sandboxId, 32);
-    const spanId = hash(`${sandboxId}/${end.promptId}`, 16);
+    const turnKey = `${sandboxId}/${end.promptId}`;
+    const traceId = hash(turnKey, 32);
+    const spanId = hash(turnKey, 16);
     const attributes = (values: Record<string, unknown>) =>
       Object.entries({
         "langfuse.trace.name": "Armada sandbox",
@@ -172,7 +173,7 @@ export function langfuseSpans(
     for (const [id, t] of tools)
       spans.push({
         traceId,
-        spanId: hash(`${sandboxId}/${end.promptId}/${id}`, 16),
+        spanId: hash(`${turnKey}/${id}`, 16),
         parentSpanId: spanId,
         name: trusted ? redactCredentials(t.tool.name) : "tool",
         kind: 1,

@@ -1,4 +1,5 @@
 import { isFinalPromptStatus, type Provider, type Sql } from "@armada/core/server";
+import type { ServerLifecycleLane } from "./server-workers.ts";
 import { promptsAfter } from "./turns.ts";
 
 /** Observe durable native turn identities independently of stop/current-task state.
@@ -8,8 +9,6 @@ export function createNativeWebhookPrompts(
   sql: Sql,
   providerFor: (id: string) => Promise<Pick<Provider, "id" | "getPrompt" | "events">>,
 ) {
-  const pending = new Set<Promise<boolean>>();
-  let stopped = false;
   /** A steer accepted without a provable run left a durable cursor. Register each
    * later run as a receipt so shared settlement exports it. This read-only pass
    * runs here rather than in lifecycle reconciliation because the replacement can
@@ -29,10 +28,13 @@ export function createNativeWebhookPrompts(
       }>(
         `with candidate as (
           select c.sandbox_id from public.native_steer_cursors c join public.sandboxes s on s.id=c.sandbox_id
-          where c.pending_since>now()-interval '1 hour' and (c.lease_until is null or c.lease_until<now())
+          where c.pending_since is not null and (c.lease_until is null or c.lease_until<now())
             and s.provider in ('boat','modal') and not s.boat_runtime and s.runtime_transport is distinct from 'dialout'
             and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id)
-          order by c.pending_since for update of c skip locked limit 1
+          -- Schedule by eligibility so an old cursor that keeps retrying
+          -- cannot starve newer cursors.
+          order by coalesce(c.lease_until,c.pending_since),c.sandbox_id
+          for update of c skip locked limit 1
         ) update public.native_steer_cursors c set lease_id=$1::uuid,lease_until=now()+interval '60 seconds'
           from candidate x join public.sandboxes s on s.id=x.sandbox_id where c.sandbox_id=x.sandbox_id
           returning c.sandbox_id,c.steer_id::text as steer_id,c.after_prompt_id,s.provider::text as provider,s.provider_sandbox_id`,
@@ -40,6 +42,7 @@ export function createNativeWebhookPrompts(
       )
     ).rows[0];
     if (!cursor) return false;
+    signal.throwIfAborted();
     let later: Awaited<ReturnType<typeof promptsAfter>> = { prompts: [], proven: false };
     try {
       const provider = await providerFor(cursor.sandbox_id);
@@ -47,7 +50,7 @@ export function createNativeWebhookPrompts(
       if (provider.id !== cursor.provider) throw Error("Native steer provider binding changed.");
       later = await promptsAfter(provider, cursor.provider_sandbox_id, cursor.after_prompt_id, signal);
     } catch (caught) {
-      // Optional evidence: a retry follows on a later pass while the cursor is fresh.
+      // Optional evidence: retry after the lease spacing has elapsed.
       if (signal.aborted) throw caught;
     }
     signal.throwIfAborted();
@@ -90,8 +93,6 @@ export function createNativeWebhookPrompts(
     return true;
   }
   async function observe(signal: AbortSignal): Promise<boolean> {
-    signal.throwIfAborted();
-    if (await resolveSteer(signal)) return true;
     signal.throwIfAborted();
     // A final claim whose worker was cancelled or crashed leaves an expired lease
     // on an exhausted receipt that no claim will ever select again. Releasing the
@@ -191,6 +192,12 @@ export function createNativeWebhookPrompts(
     );
     return true;
   }
+  return { ...nativeObservationLane(observe), steerRecovery: nativeObservationLane(resolveSteer) };
+}
+
+function nativeObservationLane(observe: (signal: AbortSignal) => Promise<boolean>): ServerLifecycleLane {
+  const pending = new Set<Promise<boolean>>();
+  let stopped = false;
   return {
     stopAdmission() {
       stopped = true;

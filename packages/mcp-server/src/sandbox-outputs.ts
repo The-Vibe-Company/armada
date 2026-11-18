@@ -1,5 +1,14 @@
 import { createHash } from "node:crypto";
 import {
+  OUTPUT_CHUNK_BYTES,
+  OUTPUT_MAX_FILE_BYTES,
+  OUTPUT_MAX_FILES,
+  OUTPUT_MAX_ORG_BYTES,
+  OUTPUT_MAX_SANDBOX_BYTES,
+  type SandboxPlacementProviderId,
+  validOutputName,
+} from "@armada/core";
+import {
   admitOutputs,
   decryptSecret,
   encryptionKey,
@@ -12,6 +21,7 @@ import {
 } from "@armada/core/server";
 import type { CallerResult } from "./caller.ts";
 import type { Route } from "./http.ts";
+import { collectOutputTransfers, remainingOutputOrgBytes } from "./output-transfers.ts";
 
 // Native and enrolled-runtime Boat/Modal sandboxes: providers read the declared directory through
 // their own fixed channel (Provider.readOutputs), never caller commands or the agent runtime.
@@ -21,7 +31,10 @@ const ELIGIBLE = `provider in ('boat','modal','docker') and not application_secr
   and not ('collector_unsupported' = any(outputs_failure_reasons))`;
 
 /** The only provider surface output collection uses. */
-type OutputReader = Pick<Provider, "readOutputs" | "probeOutputs">;
+type OutputReader = Pick<
+  Provider,
+  "readOutputs" | "probeOutputs" | "listOutputEntries" | "readOutputChunk" | "outputReadBytes" | "outputReadConcurrency"
+>;
 
 /** SDKs may ignore cancellation once a request reached the provider. Callers wait at most until
  * their signal aborts; the outstanding read stays tracked, bounded and fenced from persisting. */
@@ -128,6 +141,31 @@ async function collect(
     if (!(await probeOutputCapability(sql, provider, id, providerId, signal))) return;
   }
   signal?.throwIfAborted();
+  if (provider.listOutputEntries && provider.readOutputChunk) {
+    try {
+      await collectOutputTransfers(
+        sql,
+        {
+          ...(provider.outputReadConcurrency !== undefined
+            ? { outputReadConcurrency: provider.outputReadConcurrency }
+            : {}),
+          ...(provider.outputReadBytes !== undefined ? { outputReadBytes: provider.outputReadBytes } : {}),
+          listOutputEntries: provider.listOutputEntries.bind(provider),
+          readOutputChunk: provider.readOutputChunk.bind(provider),
+        },
+        id,
+        { sandboxId: providerId, ...(signal ? { signal } : {}) },
+        scan,
+        key,
+        writes,
+      );
+      return;
+    } catch (error) {
+      // Runtimes enrolled before chunk support still serve their original small snapshots.
+      if (!(error instanceof OutputCollectionError) || error.reason !== "output_protocol_unsupported") throw error;
+    }
+  }
+  signal?.throwIfAborted();
   const read = provider.readOutputs
     ? await provider.readOutputs({ sandboxId: providerId, ...(signal ? { signal } : {}) })
     : null;
@@ -156,22 +194,35 @@ async function collect(
   // expired collection rolls back its files and webhook events.
   const write = sql.transaction(async (tx) => {
     signal?.throwIfAborted();
-    const authority = await tx.query(
-      `select id from public.sandboxes where id=$1 and status<>'deleted' and not application_secret_tainted
+    const authority = await tx.query<{ org_id: string }>(
+      `select org_id from public.sandboxes where id=$1 and status<>'deleted' and not application_secret_tainted
         and (outputs_published_scan is null or outputs_published_scan<$2::timestamptz) for update`,
       [id, scan],
     );
     // A newer read (e.g. a pre-stop capture claimed after this sample) already committed: never go
     // back. An older read whose newer rival failed still publishes what live compute held.
-    if (!authority.rows.length) return;
+    const sandbox = authority.rows[0];
+    if (!sandbox) return;
+    signal?.throwIfAborted();
+    const remaining = await remainingOutputOrgBytes(tx, sandbox.org_id);
+    const existing =
+      (
+        await tx.query<{ bytes: number }>(
+          "select coalesce(sum(size),0)::integer as bytes from public.sandbox_outputs where sandbox_id=$1 and content_enc is not null",
+          [id],
+        )
+      ).rows[0]?.bytes ?? 0;
+    if (payload.reduce((total, file) => total + file.size, 0) > Math.max(0, remaining) + existing)
+      throw new OutputCollectionError("output_limit");
     signal?.throwIfAborted();
     await tx.query(
       `with incoming as (select * from jsonb_to_recordset($2::jsonb) as f(name text,digest text,size integer,content text)),
       removed as (delete from public.sandbox_outputs where sandbox_id=$1 and name not in(select name from incoming))
       insert into public.sandbox_outputs(sandbox_id,name,digest,size,content_enc)
       select $1,name,digest,size,decode(content,'hex') from incoming
-      on conflict(sandbox_id,name) do update set digest=excluded.digest,size=excluded.size,content_enc=excluded.content_enc,updated_at=now()
-      where sandbox_outputs.digest<>excluded.digest`,
+      on conflict(sandbox_id,name) do update set digest=excluded.digest,size=excluded.size,content_enc=excluded.content_enc,
+        transfer_id=null,skipped=null,updated_at=now()
+      where sandbox_outputs.digest is distinct from excluded.digest`,
       [id, JSON.stringify(payload)],
     );
     await tx.query(`update public.sandboxes set outputs_published_scan=$2::timestamptz where id=$1`, [id, scan]);
@@ -190,11 +241,11 @@ async function collect(
 }
 
 /** Final captures that outlived their stop deadline and still hang in the provider SDK. */
-const finalLate = new Set<Promise<void>>();
+const finalLate = new Map<Promise<void>, SandboxPlacementProviderId | undefined>();
 
 /** Settle final captures that outlived their stop deadline (tests); late ones never persist. */
 export async function drainFinalOutputs(): Promise<void> {
-  await Promise.allSettled(finalLate);
+  await Promise.allSettled(finalLate.keys());
 }
 
 /** Final capture on Armada's stop path: after quiesce, before provider stop revokes compute.
@@ -209,13 +260,8 @@ export async function captureFinalOutputs(
 ): Promise<void> {
   const key = options.key ?? encryptionKey();
   if (!key) return;
-  // Earlier captures outlived their deadline and still hang in the provider SDK: skip rather than
-  // pile up; the snapshot stays. Concurrent stops that are still within their deadline never count.
-  if (finalLate.size >= OUTSTANDING_MAX) {
-    void recordOutputFailure(sql, id, "sandbox_output_final_capture_failed", "output_busy").catch(() => {});
-    throw new OutputCollectionError("output_busy");
-  }
   const { signal } = options;
+  let providerKind: SandboxPlacementProviderId | undefined;
   // The whole capture is bounded, from the scan claim on: a claim that waits on a row lock or a
   // pool connection must not hold stop dispatch either, and a claim that returns after the
   // deadline never reaches the provider.
@@ -224,16 +270,20 @@ export async function captureFinalOutputs(
     signal?.throwIfAborted();
     // Live compute only: an admitted stop keeps 'failed' rows failed while compute may still run.
     const row = (
-      await sql.query<{ provider_sandbox_id: string; scan: string }>(
+      await sql.query<{ provider: SandboxPlacementProviderId; provider_sandbox_id: string; scan: string }>(
         `update public.sandboxes set outputs_checked_at=clock_timestamp()
         where id=$1 and (status in ('ready','running','stopping') or (status='failed' and stop_requested_at is not null and stopped_at is null))
         and provider_sandbox_id is not null and ${ELIGIBLE}
-        returning provider_sandbox_id,outputs_checked_at::text as scan`,
+        returning provider,provider_sandbox_id,outputs_checked_at::text as scan`,
         [id],
       )
     ).rows[0];
     if (!row) return;
     signal?.throwIfAborted();
+    // Only overdue captures from this provider count. Live concurrent stops all get a read.
+    if ([...finalLate.values()].filter((kind) => kind === row.provider).length >= OUTSTANDING_MAX)
+      throw new OutputCollectionError("output_busy");
+    providerKind = row.provider;
     try {
       await collect(sql, provider, id, row.provider_sandbox_id, row.scan, key, { signal, final: true });
     } catch (error) {
@@ -250,7 +300,7 @@ export async function captureFinalOutputs(
     await untilAborted(work, signal);
   } catch (error) {
     if (signal?.aborted) {
-      finalLate.add(work);
+      finalLate.set(work, providerKind);
       void work.catch(() => {}).finally(() => finalLate.delete(work));
     }
     void recordOutputFailure(sql, id, "sandbox_output_final_capture_failed", failureReason(error, signal)).catch(
@@ -267,28 +317,40 @@ export function createSandboxOutputs(
   docker?: (id: string) => OutputReader,
 ) {
   /** In-flight samples with their deadline: provider SDK work may outlive cancellation. */
-  const pending = new Map<Promise<boolean>, AbortSignal>();
+  const pending = new Map<Promise<boolean>, { deadline: AbortSignal; provider: SandboxPlacementProviderId }>();
   /** Snapshot transactions in progress (never started once a sample's deadline aborted). */
   const writes = new Set<Promise<unknown>>();
   return {
     async reconcileOne(signal: AbortSignal): Promise<boolean> {
-      if (!key || signal.aborted || pending.size >= OUTSTANDING_MAX) return false;
+      if (!key || signal.aborted) return false;
+      // Keep the shared limit for live work. Uncancellable calls retain capacity only
+      // in their own provider's budget after their deadline, so another provider can proceed.
+      const outstanding = [...pending.values()];
+      if (outstanding.filter(({ deadline }) => !deadline.aborted).length >= OUTSTANDING_MAX) return false;
+      const saturated = [...new Set(outstanding.map(({ provider }) => provider))].filter(
+        (kind) => outstanding.filter(({ provider }) => provider === kind).length >= OUTSTANDING_MAX,
+      );
       const row = (
         await sql.query<{
           id: string;
-          provider: string;
+          provider: SandboxPlacementProviderId;
           provider_sandbox_id: string;
           scan: string;
-        }>(`update public.sandboxes set outputs_checked_at=clock_timestamp()
+        }>(
+          `update public.sandboxes set outputs_checked_at=clock_timestamp()
         where id=(select id from public.sandboxes where ${ELIGIBLE} and provider_sandbox_id is not null
+        and provider::text <> all($1::text[])
         and status in ('running','ready') and (outputs_checked_at is null or outputs_checked_at<now()-interval '30 seconds')
-        order by outputs_checked_at nulls first for update skip locked limit 1) returning id,provider::text,provider_sandbox_id,outputs_checked_at::text as scan`)
+        order by outputs_checked_at nulls first for update skip locked limit 1) returning id,provider::text,provider_sandbox_id,outputs_checked_at::text as scan`,
+          [saturated],
+        )
       ).rows[0];
       if (!row) return false;
       // The sample runs in the background under its own deadline (and the worker's shutdown), so
       // stop reconciliation, webhooks and other lanes never wait for a provider read. At most
-      // OUTSTANDING_MAX samples are in flight; drain() settles them; a late one never persists.
+      // OUTSTANDING_MAX live samples share the worker, and a late one never persists.
       const deadline = AbortSignal.any([signal, AbortSignal.timeout(SAMPLE_DEADLINE_MS)]);
+      if (deadline.aborted) return false;
       const reader = row.provider === "docker" ? Promise.resolve(docker?.(row.id) ?? {}) : providerFor(row.id);
       const work = reader
         .then((provider) =>
@@ -300,7 +362,7 @@ export function createSandboxOutputs(
           ),
         )
         .then(() => true);
-      pending.set(work, deadline);
+      pending.set(work, { deadline, provider: row.provider });
       void work.then(() => pending.delete(work));
       return true;
     },
@@ -309,7 +371,7 @@ export function createSandboxOutputs(
      * and for snapshot writes already in progress, never for a provider call that ignores
      * cancellation (a read still in flight can only fail once the pool closes; its result is discarded). */
     async drain() {
-      await Promise.allSettled([...pending].map(([work, deadline]) => untilAborted(work, deadline)));
+      await Promise.allSettled([...pending].map(([work, { deadline }]) => untilAborted(work, deadline)));
       await Promise.allSettled([...writes]);
     },
     route(authenticate: (request: Request) => Promise<CallerResult>): Route {
@@ -345,8 +407,15 @@ export function createSandboxOutputs(
           return Response.json({ error: "invalid_name" }, { status: 400 });
         }
         if (!name) {
-          const files = await sql.query(
-            `select name,size,digest as sha256,updated_at as "updatedAt" from public.sandbox_outputs where sandbox_id=$1 order by name limit 32`,
+          const files = await sql.query<{
+            name: string;
+            size: number;
+            sha256: string | null;
+            updatedAt: string;
+            skipped?: string | null;
+          }>(
+            `select name,size::double precision as size,digest as sha256,updated_at as "updatedAt",skipped
+              from public.sandbox_outputs where sandbox_id=$1 order by name limit ${OUTPUT_MAX_FILES}`,
             [row.id],
           );
           const current = await authorize();
@@ -354,7 +423,13 @@ export function createSandboxOutputs(
           return Response.json(
             {
               directory: OUTPUT_DIRECTORY,
-              files: files.rows,
+              limits: {
+                maxFiles: OUTPUT_MAX_FILES,
+                maxFileBytes: OUTPUT_MAX_FILE_BYTES,
+                maxSandboxBytes: OUTPUT_MAX_SANDBOX_BYTES,
+                maxOrgBytes: OUTPUT_MAX_ORG_BYTES,
+              },
+              files: files.rows.map(({ skipped, ...file }) => (skipped ? { ...file, skipped } : file)),
               ...(current.outputs_failure_reasons.includes("collector_unsupported")
                 ? { unavailable: "collector_unsupported" }
                 : {}),
@@ -362,21 +437,76 @@ export function createSandboxOutputs(
             { headers: { "cache-control": "private, no-store" } },
           );
         }
+        if (!validOutputName(name)) return Response.json({ error: "invalid_name" }, { status: 400 });
         const file = (
-          await sql.query<{ name: string; content_enc: Uint8Array<ArrayBuffer> }>(
-            `select name,content_enc from public.sandbox_outputs where sandbox_id=$1 and name=$2`,
+          await sql.query<{
+            name: string;
+            size: number;
+            transfer_id: string | null;
+            digest: string;
+            content_enc: Uint8Array<ArrayBuffer> | null;
+          }>(
+            `select name,content_enc,size::integer,transfer_id,digest from public.sandbox_outputs
+              where sandbox_id=$1 and name=$2 and skipped is null`,
             [row.id, name],
           )
         ).rows[0];
-        if (!file) return Response.json({ error: "not_found" }, { status: 404 });
+        if (!file) return notFound();
         if (!key) return Response.json({ error: "unavailable" }, { status: 503 });
-        const bytes = Buffer.from(await decryptSecret(file.content_enc, key), "base64");
+        const bytes = file.content_enc ? Buffer.from(await decryptSecret(file.content_enc, key), "base64") : null;
         if (!(await authorize())) return notFound();
+        const size = bytes?.length ?? file.size;
+        const etag = JSON.stringify(file.digest);
+        const ifRange = request.headers.get("if-range");
+        const requestedRange = !ifRange || ifRange === etag ? request.headers.get("range") : null;
+        const range = requestedRange ? outputRange(requestedRange, size) : { start: 0, end: size };
+        if (!range)
+          return new Response(null, {
+            status: 416,
+            headers: { "content-range": `bytes */${size}`, "cache-control": "private, no-store" },
+          });
+        const { start, end } = range;
+        let offset = start;
+        const stream =
+          file.transfer_id && end > start
+            ? new ReadableStream<Uint8Array>(
+                {
+                  // Pull at most one encrypted chunk at a time, with backpressure from the HTTP consumer.
+                  async pull(controller) {
+                    request.signal.throwIfAborted();
+                    const base = offset - (offset % OUTPUT_CHUNK_BYTES);
+                    const chunk = (
+                      await sql.query<{ content_enc: Uint8Array<ArrayBuffer> }>(
+                        `select c.content_enc from public.sandbox_output_chunks c
+                join public.sandbox_outputs o on o.transfer_id=c.transfer_id
+                where c.transfer_id=$1 and c.byte_offset=$2 and o.sandbox_id=$3 and o.name=$4`,
+                        [file.transfer_id, base, row.id, name],
+                      )
+                    ).rows[0];
+                    if (!chunk) throw Error("output_snapshot_changed");
+                    const buffer = Buffer.from(await decryptSecret(chunk.content_enc, key), "base64");
+                    if (!(await authorize())) throw Error("output_unavailable");
+                    request.signal.throwIfAborted();
+                    if (buffer.length !== Math.min(size - base, OUTPUT_CHUNK_BYTES))
+                      throw Error("invalid_output_chunk");
+                    const next = Math.min(end, base + buffer.length);
+                    controller.enqueue(buffer.subarray(offset - base, next - base));
+                    offset = next;
+                    if (offset === end) controller.close();
+                  },
+                },
+                { highWaterMark: 0 },
+              )
+            : null;
         const type = new Blob([], { type: Bun.file(file.name).type }).type || "application/octet-stream";
-        return new Response(bytes, {
+        return new Response(bytes?.subarray(start, end) ?? stream, {
+          status: requestedRange ? 206 : 200,
           headers: {
             "content-type": type,
-            "content-length": String(bytes.length),
+            "accept-ranges": "bytes",
+            etag,
+            ...(requestedRange ? { "content-range": `bytes ${start}-${end - 1}/${size}` } : {}),
+            "content-length": String(end - start),
             "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`,
             "x-content-type-options": "nosniff",
             "cache-control": "private, no-store",
@@ -385,4 +515,15 @@ export function createSandboxOutputs(
       };
     },
   };
+}
+
+function outputRange(header: string, size: number): { start: number; end: number } | null {
+  const match = /^bytes=(\d*)-(\d*)$/.exec(header);
+  if (!match || !size || (!match[1] && !match[2])) return null;
+  const first = Number(match[1]);
+  const last = Number(match[2]);
+  if (!Number.isSafeInteger(first) || !Number.isSafeInteger(last)) return null;
+  if (!match[1]) return last > 0 ? { start: Math.max(0, size - last), end: size } : null;
+  if (first >= size || (match[2] && last < first)) return null;
+  return { start: first, end: match[2] ? Math.min(size, last + 1) : size };
 }

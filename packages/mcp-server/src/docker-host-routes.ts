@@ -202,6 +202,7 @@ export function createDockerHostRoutes(
               ...("imageId" in body ? ["imageId"] : []),
               ...("baselineVersion" in body ? ["baselineVersion"] : []),
               ...("baselineTool" in body ? ["baselineTool"] : []),
+              ...("missingRefIndex" in body ? ["missingRefIndex"] : []),
             ]
           : path.endsWith("/poll") && "version" in body
             ? [
@@ -404,6 +405,17 @@ export function createDockerHostRoutes(
       const baselineTool = body.baselineTool;
       if ("baselineTool" in body && (reason !== "snapshot_build_failed" || !isSnapshotBaselineTool(baselineTool)))
         throw new InvalidInput();
+      const missingRefIndex = body.missingRefIndex;
+      if (
+        "missingRefIndex" in body &&
+        (reason !== "snapshot_build_failed" ||
+          "baselineTool" in body ||
+          typeof missingRefIndex !== "number" ||
+          !Number.isInteger(missingRefIndex) ||
+          missingRefIndex < 1 ||
+          missingRefIndex > 16)
+      )
+        throw new InvalidInput();
       const baselineHeader = snapshotBaselineHeader(request);
       const baselineVersion = "baselineVersion" in body ? body.baselineVersion : baselineHeader;
       if (
@@ -423,6 +435,7 @@ export function createDockerHostRoutes(
         ...("imageId" in body ? { imageId: string(body.imageId) } : {}),
         ...(typeof baselineVersion === "number" ? { baselineVersion } : {}),
         ...(isSnapshotBaselineTool(baselineTool) ? { baselineTool } : {}),
+        ...(typeof missingRefIndex === "number" ? { missingRefIndex } : {}),
       });
       return Response.json({ requestId }, { headers });
     } catch (error) {

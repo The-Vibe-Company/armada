@@ -2,19 +2,9 @@ import { CLAUDE_ENDPOINT_ENV } from "./claude-endpoint.ts";
 import { CODEX_ENDPOINT_ENV } from "./codex-endpoint.ts";
 import { COMPATIBLE_MODEL_PROVIDERS } from "./compatible-providers.ts";
 import { HARNESSES, type Harness } from "./contract.ts";
-import { CODEX_AUTH_ENV, type HarnessCredentials, redact } from "./credentials.ts";
+import { type HarnessCredentials, redact } from "./credentials.ts";
+import { GITHUB_NOT_CONNECTED, type GitHubAccess, type GitHubStatus, githubEnv } from "./github.ts";
 import {
-  GH_MISSING_NOTE,
-  GH_PRESENT_MARKER,
-  GITHUB_NOT_CONNECTED,
-  type GitHubAccess,
-  type GitHubStatus,
-  type GitIdentity,
-  githubEnv,
-  gitSetupCommand,
-} from "./github.ts";
-import {
-  delay,
   type GoldenActor,
   type GoldenLimits,
   type GoldenRecord,
@@ -22,19 +12,19 @@ import {
   goldenForLaunch,
   waitReady,
 } from "./golden.ts";
-import {
-  GOLDEN_ROOT,
-  GoldenError,
-  type GoldenRepo,
-  initCommand,
-  pullCommand,
-  REPOSITORY_FETCH_FAILED_EXIT,
-  REPOSITORY_FETCH_FAILED_MARKER,
-  type ShellCommand,
-} from "./golden-config.ts";
+import { GoldenError, type GoldenRepo, initCommand, pullCommand } from "./golden-config.ts";
 import { HARNESS_CAPABILITIES } from "./harnesses.ts";
 import { type HelperNegotiation, negotiateHelper } from "./helper.ts";
 import { LaunchError, type LaunchInitializationStage } from "./launch-error.ts";
+import { nativeLaunch } from "./launch-native.ts";
+import { goldenLaunchPlacements } from "./launch-placement.ts";
+import {
+  admitLaunchPlan,
+  applyLaunchAccountDefaults,
+  resolveLaunchConnections,
+  resolveLaunchSkills,
+} from "./launch-plan.ts";
+import { runtimeLaunch } from "./launch-runtime.ts";
 import type { LaunchStage } from "./launch-stages.ts";
 import { isLaunchTtlSeconds, validateLaunchSkillPins } from "./launch-validation.ts";
 import { type MachineSize, resolveMachineSize } from "./machine-size.ts";
@@ -48,18 +38,15 @@ import { sandboxActivity } from "./sandbox-activity.ts";
 import { DEFAULT_SANDBOX_EXTENSION_HEADROOM_SECONDS, SANDBOX_STOP_MARGIN_SECONDS } from "./sandbox-lifetime.ts";
 import { OUTPUT_DIRECTORY } from "./sandbox-output-limits.ts";
 import * as placement from "./sandbox-provider.ts";
-import { assertProviderOf, HOST_CAPABILITIES, PROVIDER_LIMITS, type SandboxProviderId } from "./sandbox-provider.ts";
-import { mergeSkillPins } from "./skill-merge.ts";
-import { installSkill, skillExclusionCommand } from "./skillpack.ts";
+import { assertProviderOf, PROVIDER_LIMITS, type SandboxProviderId } from "./sandbox-provider.ts";
+
+export { prepareLaunchWorkspace } from "./launch-workspace.ts";
 
 /** Four hours: long enough for an autonomous run, short enough that a forgotten sandbox stops by itself. */
 export const DEFAULT_LAUNCH_TTL_SECONDS = 14_400;
 
 /** The longest TTL any provider accepts (boat's 30 days). Each provider's own limit is in `PROVIDER_LIMITS`. */
 export const MAX_LAUNCH_TTL_SECONDS = Math.max(...Object.values(PROVIDER_LIMITS).map((limits) => limits.maxTtlSeconds));
-
-const OUTPUT_LIMIT = 2000;
-const OWNERSHIP_RETRY_DELAY_MS = 1000;
 
 export interface LaunchRequest {
   /** Explicit admission requirement; slice 0 supports diagnose only. */
@@ -250,23 +237,40 @@ export interface LaunchOptions extends GoldenLimits {
   newId?: () => string;
 }
 
-/**
- * Forks a golden into a sandbox, brings its repos up to date, runs its init commands and, with a
- * prompt, starts the agent.
- *
- * The caller's own database role does the reads and writes: a private golden of someone else is
- * `not_found`. The fork starts from the stored snapshot name, gets `noEnv` and an environment with
- * only the credentials of this harness (user over org), and never writes them to the golden. A fork
- * inherits neither TTL nor labels, so both are set here. When anything fails after the fork the
- * sandbox is recorded as `failed` and its machine is stopped.
- */
-export async function launchSandbox(
+export interface LaunchPlan {
+  acceptedAt: number;
+  provider: Provider;
+  stores: LaunchStores;
+  request: LaunchRequest;
+  options: LaunchOptions;
+  golden: GoldenRecord;
+  runtime: LaunchOptions["runtime"];
+  harness: Harness;
+  prompt: string | undefined;
+  choice: ModelChoice;
+  ttlSeconds: number;
+  allocationTtlSeconds: number;
+  repositoryDir: string | null;
+  resourceProject: GoldenRepo | undefined;
+  machineSize: ReturnType<typeof resolveMachineSize>;
+  prepareNativeCwd: Provider["prepareNativeHarnessCwd"];
+  visibility: "private" | "org";
+  connectionIds: string[];
+  snapshot: string;
+  credentials: HarnessCredentials;
+  github: GitHubAccess;
+  connected: Extract<GitHubAccess, { status: "connected" }> | null;
+  env: HarnessCredentials["env"];
+  secrets: HarnessCredentials["secrets"];
+}
+
+async function resolveLaunchPlan(
   provider: Provider,
   stores: LaunchStores,
   actor: GoldenActor,
   request: LaunchRequest,
-  options: LaunchOptions = {},
-): Promise<LaunchResult> {
+  options: LaunchOptions,
+): Promise<LaunchPlan> {
   // #2560: the request is accepted here; the sandbox row (and so the stage table) exists only after the fork.
   const acceptedAt = performance.now();
   validateLaunchSkillPins(request.skills ?? []);
@@ -279,11 +283,9 @@ export async function launchSandbox(
   const golden = await goldenForLaunch(stores.goldens, actor, request.golden, request.provider);
   if (golden.visibility === "private" && golden.ownerId !== actor.userId)
     throw new GoldenError("not_found", `No golden named '${golden.name}'.`);
-  const runtimeDefaults = {
-    boat: options.boatRuntimeDefault ?? (request.harness === "opencode" ? options.boatEndpointRuntime : undefined),
-    modal: options.modalRuntimeDefault,
-  };
-  const defaultRuntime = !options.runtime && !options.boatRuntime ? runtimeDefaults[golden.provider] : undefined;
+  const launchPlacement = goldenLaunchPlacements[golden.provider];
+  const defaultRuntime =
+    !options.runtime && !options.boatRuntime ? launchPlacement.runtimeDefault(options, request.harness) : undefined;
   if (defaultRuntime) {
     const providerName = placement.SANDBOX_PLACEMENT_LABELS[golden.provider];
     const rollback = `ARMADA_${golden.provider.toUpperCase()}_AGENT_PATH`;
@@ -314,32 +316,17 @@ export async function launchSandbox(
       "The experimental runtime supports ordinary Boat or Modal Codex/Claude/OpenCode workers only.",
     );
   const prompt = checkPrompt(request.prompt);
-  const preference = await stores.credentials.defaults?.(actor, harness);
-  if (preference && (request.credentialId === undefined || request.credentialId === preference.credentialId)) {
-    request = {
-      ...request,
-      ...(request.credentialId === undefined && preference.credentialId
-        ? { credentialId: preference.credentialId }
-        : {}),
-      ...(request.model === undefined && preference.model ? { model: preference.model } : {}),
-    };
-  }
+  request = applyLaunchAccountDefaults(request, await stores.credentials.defaults?.(actor, harness));
   const choice = checkModel(provider, harness, request, Boolean(runtime));
 
-  const defaults = !request.skipSkillDefaults ? await stores.skillDefaults?.resolve(actor, golden) : undefined;
-  try {
-    request = {
-      ...request,
-      skills: mergeSkillPins(
-        defaults?.environment ?? [],
-        defaults?.org ?? [],
-        defaults?.personal ?? [],
-        request.skills ?? [],
-      ),
-    };
-  } catch {
-    throw new LaunchError("invalid_request", "Merged skills exceed 20 distinct exact pins.");
-  }
+  request = {
+    ...request,
+    skills: await resolveLaunchSkills(
+      request,
+      () => stores.skillDefaults?.resolve(actor, golden),
+      () => new LaunchError("invalid_request", "Merged skills exceed 20 distinct exact pins."),
+    ),
+  };
   if (request.skills?.length && !stores.sandboxes.recordSkills)
     throw new LaunchError("invalid_request", "Skill receipts are not supported by this store.");
 
@@ -385,14 +372,17 @@ export async function launchSandbox(
   // Public launch visibility cannot change access or source authority. Only the
   // trusted managed-parent caller may narrow sandbox access; the source stays unchanged.
   const visibility = options.privateParent || options.privateVisibility ? "private" : golden.visibility;
-  const connectionIds = [
-    ...new Set(request.connections ?? (await stores.connections?.defaults?.(actor, visibility)) ?? []),
-  ];
-  if (runtime && request.helperCapabilities?.length)
-    throw new LaunchError("invalid_request", "The experimental runtime does not yet support helpers.");
-  if (connectionIds.length && !stores.connections)
-    throw new LaunchError("invalid_request", "MCP launch connections are not configured.");
-  await stores.connections?.validate(actor, connectionIds, visibility);
+  const connectionIds = await resolveLaunchConnections(
+    request.connections,
+    () => stores.connections?.defaults?.(actor, visibility),
+    async (ids) => {
+      if (runtime && request.helperCapabilities?.length)
+        throw new LaunchError("invalid_request", "The experimental runtime does not yet support helpers.");
+      if (ids.length && !stores.connections)
+        throw new LaunchError("invalid_request", "MCP launch connections are not configured.");
+      await stores.connections?.validate(actor, ids, visibility);
+    },
+  );
   const snapshot = golden.providerSnapshotId;
   if (!snapshot) throw new GoldenError("conflict", `Golden '${golden.name}' has no snapshot yet.`);
   const credentials = await stores.credentials.resolve(actor, harness, request.credentialId, options.credentialVersion);
@@ -410,17 +400,13 @@ export async function launchSandbox(
     if (!models.includes(choice.model))
       throw new LaunchError("invalid_request", "Choose a Morph plan model for this account.");
   }
-  if (
-    placement.launchInfrastructure(provider.id).nativeCli &&
-    !runtime &&
-    (credentials.env[CLAUDE_ENDPOINT_ENV] || credentials.env[CODEX_ENDPOINT_ENV]) &&
-    options.boatEndpointRuntime
-  ) {
+  const endpointRuntime = launchPlacement.endpointRuntime?.(options);
+  if (!runtime && (credentials.env[CLAUDE_ENDPOINT_ENV] || credentials.env[CODEX_ENDPOINT_ENV]) && endpointRuntime) {
     // Re-enter through the shared runtime selection before allocating compute.
     // Its resolver excludes native GitHub/model environment delivery.
-    return launchSandbox(provider, stores, actor, request, {
+    return resolveLaunchPlan(provider, stores, actor, request, {
       ...options,
-      boatRuntimeDefault: options.boatEndpointRuntime,
+      boatRuntimeDefault: endpointRuntime,
     });
   }
   if (defaultRuntime && !credentials.binding)
@@ -463,6 +449,79 @@ export async function launchSandbox(
   const secrets = connected ? [...credentials.secrets, connected.token] : credentials.secrets;
 
   await stores.credentials.authorizeRepositories?.(actor, credentials, golden.config.repos);
+  return {
+    acceptedAt,
+    provider,
+    stores,
+    request,
+    options,
+    golden,
+    runtime,
+    harness,
+    prompt,
+    choice,
+    ttlSeconds,
+    // Managed parents own their separate lifecycle policy. Ordinary workers need stop headroom.
+    allocationTtlSeconds: launchPlacement.allocationTtlSeconds(
+      ttlSeconds,
+      extensionHeadroom,
+      options.privateParent === true,
+    ),
+    repositoryDir,
+    resourceProject,
+    machineSize,
+    prepareNativeCwd,
+    visibility,
+    connectionIds,
+    snapshot,
+    credentials,
+    github,
+    connected,
+    env,
+    secrets,
+  };
+}
+
+/**
+ * Forks a golden into a sandbox, brings its repos up to date, runs its init commands and, with a
+ * prompt, starts the agent.
+ *
+ * The caller's own database role does the reads and writes: a private golden of someone else is
+ * `not_found`. The fork starts from the stored snapshot name, gets `noEnv` and an environment with
+ * only the credentials of this harness (user over org), and never writes them to the golden. A fork
+ * inherits neither TTL nor labels, so both are set here. When anything fails after the fork the
+ * sandbox is recorded as `failed` and its machine is stopped.
+ */
+export async function launchSandbox(
+  initialProvider: Provider,
+  initialStores: LaunchStores,
+  actor: GoldenActor,
+  initialRequest: LaunchRequest,
+  initialOptions: LaunchOptions = {},
+): Promise<LaunchResult> {
+  const plan = await resolveLaunchPlan(initialProvider, initialStores, actor, initialRequest, initialOptions);
+  const {
+    acceptedAt,
+    provider,
+    stores,
+    request,
+    options,
+    golden,
+    harness,
+    prompt,
+    choice,
+    ttlSeconds,
+    allocationTtlSeconds,
+    repositoryDir,
+    resourceProject,
+    machineSize,
+    visibility,
+    connectionIds,
+    snapshot,
+    credentials,
+    secrets,
+  } = plan;
+  const strategy = plan.runtime ? runtimeLaunch(plan.runtime) : nativeLaunch;
   const id = (options.newId ?? (() => crypto.randomUUID()))();
   const releaseOperation = await stores.goldens.beginOperation?.(golden.id, {
     kind: "launch",
@@ -472,24 +531,18 @@ export async function launchSandbox(
   let childRecorded = false;
   let noAllocation = true;
   try {
-    await stores.credentials.admit?.(actor, credentials, id, choice.model);
-    await options.beforeFork?.(id);
+    await admitLaunchPlan(
+      () => stores.credentials.admit?.(actor, credentials, id, choice.model),
+      () => options.beforeFork?.(id),
+    );
     noAllocation = false;
     const forked = await provider
       .fork({
         from: snapshot,
         ...(machineSize.effective ? { size: machineSize.effective } : {}),
         noEnv: true,
-        env: runtime ? {} : env,
-        // Managed parents own their separate lifecycle policy. Ordinary workers need stop headroom.
-        ttlSeconds: options.privateParent
-          ? ttlSeconds
-          : Math.min(
-              PROVIDER_LIMITS[golden.provider].maxTtlSeconds,
-              ttlSeconds +
-                SANDBOX_STOP_MARGIN_SECONDS +
-                (HOST_CAPABILITIES[golden.provider].reserveExtensionHeadroom ? extensionHeadroom : 0),
-            ),
+        env: strategy.forkEnv(plan),
+        ttlSeconds: allocationTtlSeconds,
         labels: {
           armada: "sandbox",
           sandbox: id,
@@ -522,20 +575,8 @@ export async function launchSandbox(
     let record: SandboxRecord;
     try {
       record = await stores.sandboxes.insert({
-        ...(runtime
-          ? placement.launchInfrastructure(provider.id).nativeCli
-            ? { boatRuntime: true as const }
-            : { runtimeTransport: "dialout" as const }
-          : {}),
         ...credentials.binding,
-        ...(!runtime && connected?.connectionEpoch
-          ? {
-              pullRequestSource: {
-                connectionEpoch: connected.connectionEpoch,
-                repositories: golden.config.repos.map(({ url, dir, branch }) => ({ url, dir, branch })),
-              },
-            }
-          : {}),
+        ...strategy.recordFields(plan),
         id,
         provider: golden.provider,
         providerSandboxId: forked.id,
@@ -603,9 +644,8 @@ export async function launchSandbox(
         /* Best effort only. */
       }
     };
-    let startedRuntime: ReturnType<NonNullable<LaunchOptions["boatRuntime"]>["start"]> | undefined;
     const start = async (signal: AbortSignal) => {
-      if ((record.boatRuntime === true || record.runtimeTransport === "dialout") !== Boolean(runtime))
+      if ((record.boatRuntime === true || record.runtimeTransport === "dialout") !== (strategy.kind === "enrolled"))
         throw new LaunchError("start_failed", "The sandbox runtime selection was not persisted; no agent was started.");
       if ((record.visibility ?? golden.visibility) !== visibility) {
         await provider.delete({ sandboxId: forked.id });
@@ -615,169 +655,47 @@ export async function launchSandbox(
           { safeReason: "visibility_not_persisted" },
         );
       }
-      if ((placement.launchInfrastructure(golden.provider).nativeRuntime || runtime) && credentials.usagePricing)
+      if (
+        (placement.launchInfrastructure(golden.provider).nativeRuntime || strategy.kind === "enrolled") &&
+        credentials.usagePricing
+      )
         await stores.sandboxes.recordUsagePricingContext?.(record.id, credentials.usagePricing);
       progress("initialization_bind");
       await stores.connections?.bind(record.id, connectionIds);
       progress("initialization_ready");
       const ready = await waitReady(provider, forked.id, options);
       await mark("machine_started");
-      progress("initialization_hydrate");
-      if (
-        !runtime &&
-        credentials.codexAuthJson &&
-        !(await stores.credentials.hydrateNative?.(actor, credentials, id, provider, ready.id))
-      )
-        await writeCodexAuth(provider, ready.id, secrets);
-      progress("initialization_github");
-      let launchGithub: GitHubLaunchInfo = runtime
-        ? {
-            status: "not_connected",
-            message:
-              "Experimental runtime uses the golden checkout as-is, without native GitHub setup or initialization.",
-          }
-        : github.status === "connected"
-          ? await setupGitHub(provider, ready.id, github.identity, secrets)
-          : { status: github.status, message: github.message };
-      if (!runtime && github.status === "connected" && github.expiresAt)
-        launchGithub.tokenExpiresAt = github.expiresAt.toISOString();
-      if (!runtime) {
-        const warnings = await prepareLaunchWorkspace(
-          provider,
-          ready.id,
-          record.id,
-          golden,
-          secrets,
-          progress,
-          options.sleep,
-          undefined,
-          connected !== null,
-        );
-        if (warnings.length) launchGithub.message = [launchGithub.message, ...warnings].filter(Boolean).join(" ");
-        await mark("checkout_done");
-      }
-      progress("initialization_cwd");
-      if (!runtime && repositoryDir !== null && prepareNativeCwd)
-        await prepareNativeCwd({ sandboxId: ready.id, harness, cwd: `${GOLDEN_ROOT}/${repositoryDir}` });
-      if (!runtime && request.skills?.length) {
-        const receipts = [];
-        let privateKey: string | null | undefined;
-        for (const skill of request.skills) {
-          const projectDir = repositoryDir === null ? GOLDEN_ROOT : `${GOLDEN_ROOT}/${repositoryDir}`;
-          if (!skill.includes("/")) {
-            if (!stores.credentials.installPrivateSkill)
-              throw new PrivateSkillError("skillpack_transport_failed", "transport");
-            if (privateKey === undefined) privateKey = (await stores.credentials.skillpackKey?.(actor)) ?? null;
-            receipts.push(
-              await stores.credentials.installPrivateSkill(provider, {
-                sandboxId: ready.id,
-                projectDir,
-                reference: skill,
-                harness,
-                key: privateKey,
-                ...(golden.buildWarnings ? { buildWarnings: golden.buildWarnings } : {}),
+      const {
+        github: launchGithub,
+        prompt: dispatchPrompt,
+        runtime: provenance,
+      } = await strategy.initialize(plan, {
+        actor,
+        launchId: id,
+        record,
+        providerSandboxId: ready.id,
+        signal,
+        progress,
+        mark,
+        reportGitHub: (launchGithub) => {
+          try {
+            console.error(
+              JSON.stringify({
+                event: "launch_github_prepared",
+                sandboxId: record.id,
+                goldenId: golden.id,
+                provider: provider.id,
+                path: strategy.kind,
+                status: launchGithub.status,
+                repositorySelected: repositoryDir !== null,
+                configuredRepositories: golden.config.repos.length,
               }),
             );
-          } else
-            receipts.push(await installSkill(provider, ready.id, projectDir, harness, skill, golden.buildWarnings));
-        }
-        if (repositoryDir !== null) {
-          // Local Git metadata only: do not stage third-party launch skills with worker changes.
-          const excluded = await provider.exec({
-            sandboxId: ready.id,
-            cwd: `${GOLDEN_ROOT}/${repositoryDir}`,
-            timeoutSeconds: 30,
-            command: skillExclusionCommand(request.skills, harness),
-          });
-          if (excluded.detached || excluded.timedOut || excluded.truncated || excluded.exitCode !== 0)
-            throw new Error("Skillpack checkout exclusions could not be prepared.");
-        }
-        await stores.sandboxes.recordSkills!(record.id, receipts);
-        record.skills = receipts;
-      }
-      progress("initialization_mcp");
-      if (record.expiresAt && new Date(record.expiresAt).getTime() <= Date.now())
-        throw new LaunchError("invalid_request", "Provider lifetime has no remaining preservation headroom.");
-      if (!runtime) await stores.connections?.prepare?.(provider, record, actor, signal);
-      const runtimeWorkspace = Boolean(runtime);
-      if (!runtimeWorkspace) await options.beforeStart?.(provider, record);
-      if (runtime && !startedRuntime)
-        startedRuntime = Promise.resolve().then(() =>
-          runtime.start({ host: provider, actor, sandbox: record, credentials, signal }),
-        );
-      const agent = startedRuntime ? await startedRuntime : undefined;
-      if (runtime && (!agent || typeof agent.prompt !== "function" || !/^[1-9][0-9]{0,18}$/.test(agent.epoch)))
-        throw new LaunchError("start_failed", "The runtime did not acknowledge a valid epoch.");
-      if (runtimeWorkspace) {
-        if (!agent?.prepareWorkspace)
-          throw new LaunchError(
-            "start_failed",
-            "Runtime workspace setup requires updated runtime artifacts; no native fallback.",
-          );
-        launchGithub = await agent.prepareWorkspace(golden, progress, options.sleep);
-        await mark("checkout_done");
-      }
-      if (runtime && request.skills?.length) {
-        if (!agent?.installSkills) throw new PrivateSkillError("skillpack_transport_failed", "transport");
-        const needsKey = request.skills.some((ref) => !ref.includes("/"));
-        const key = needsKey ? ((await stores.credentials.skillpackKey?.(actor)) ?? null) : null;
-        if (needsKey && !key) throw new PrivateSkillError("skillpack_credential_missing", "credential");
-        try {
-          record.skills = await agent.installSkills(request.skills, key);
-        } catch (error) {
-          if (
-            error instanceof PrivateSkillError &&
-            error.reason === "skillpack_cli_unavailable" &&
-            golden.buildWarnings?.includes("skillpack_download_unavailable")
-          )
-            throw new PrivateSkillError("skillpack_download_unavailable", error.stage);
-          throw error;
-        }
-        await stores.sandboxes.recordSkills!(record.id, record.skills);
-      }
-      if (runtime) await stores.connections?.prepare?.(provider, record, actor, signal);
-      if (runtimeWorkspace) await options.beforeStart?.(provider, record);
-      try {
-        console.error(
-          JSON.stringify({
-            event: "launch_github_prepared",
-            sandboxId: record.id,
-            goldenId: golden.id,
-            provider: provider.id,
-            path: runtime ? "enrolled" : "native",
-            status: launchGithub.status,
-            repositorySelected: repositoryDir !== null,
-            configuredRepositories: golden.config.repos.length,
-          }),
-        );
-      } catch {
-        // Safe diagnostics must not change launch outcomes. Never include tokens or helper contents.
-      }
-      const provenance = agent ? { kind: "armada" as const, epoch: agent.epoch } : undefined;
-      // Boat goldens carry the native CLI. A restored fork can be ready while its
-      // executable cannot even boot; probe the installed wrapper (including its
-      // harness-only readable environment) without creating a session or model turn.
-      // Modal validates its separately distributed native runtime at installation.
-      if (placement.launchInfrastructure(provider.id).nativeCli && !runtime) {
-        try {
-          const health = await provider.exec({
-            sandboxId: ready.id,
-            command: `${harness} --version >/dev/null 2>&1`,
-            cwd: repositoryDir === null ? GOLDEN_ROOT : `${GOLDEN_ROOT}/${repositoryDir}`,
-            timeoutSeconds: 15,
-            signal: AbortSignal.any([signal, AbortSignal.timeout(20_000)]),
-          });
-          if (health.detached || health.timedOut || health.truncated || health.exitCode !== 0)
-            throw new Error("harness_health_failed");
-        } catch {
-          // Fixed text only: native boot errors can include paths or credentials.
-          // Reuse the existing public code; iPhone clients decode closed lists.
-          throw new LaunchError(
-            "start_failed",
-            "The agent runtime could not start in this sandbox. Relaunch in a new sandbox.",
-          );
-        }
-      }
+          } catch {
+            // Safe diagnostics must not change launch outcomes. Never include tokens or helper contents.
+          }
+        },
+      });
       progress("initialization_publish");
       // Every harness and path is ready for a prompt here; a launch prompt's dispatch is not launch time.
       await mark("harness_ready");
@@ -805,17 +723,11 @@ export async function launchSandbox(
         signal,
         ...choice,
       };
-      const receipt = await (agent ? agent.prompt(promptRequest) : provider.prompt(promptRequest)).catch(
-        (error: unknown) => {
-          throw new LaunchError(
-            "prompt_failed",
-            `The agent could not be started: ${redact(messageOf(error), secrets)}`,
-            {
-              cause: error,
-            },
-          );
-        },
-      );
+      const receipt = await dispatchPrompt(promptRequest).catch((error: unknown) => {
+        throw new LaunchError("prompt_failed", `The agent could not be started: ${redact(messageOf(error), secrets)}`, {
+          cause: error,
+        });
+      });
       try {
         await stores.sandboxes.recordTurnModel?.(
           record.id,
@@ -945,203 +857,6 @@ function finish(
     ...(prompt ?? {}),
     ...(runtime ? { runtime } : {}),
   };
-}
-
-export async function prepareLaunchWorkspace(
-  provider: Pick<Provider, "id" | "exec">,
-  sandboxId: string,
-  armadaSandboxId: string,
-  golden: Pick<GoldenRecord, "config">,
-  secrets: readonly string[],
-  progress: (stage: LaunchInitializationStage) => void,
-  sleep: (ms: number) => Promise<void> = delay,
-  transport?: (
-    request: Parameters<Provider["exec"]>[0],
-    step: { phase: "repository" | "init"; index: number; attempt: number },
-  ) => ReturnType<Provider["exec"]>,
-  trackPushes = false,
-): Promise<string[]> {
-  const runner = (phase: "repository" | "init", index: number) => {
-    let attempt = 0;
-    return transport
-      ? {
-          id: provider.id,
-          exec: (request: Parameters<Provider["exec"]>[0]) => transport(request, { phase, index, attempt: attempt++ }),
-        }
-      : provider;
-  };
-  const warnings: string[] = [];
-  for (const [index, repo] of golden.config.repos.entries()) {
-    progress("initialization_repository");
-    const warning = await run(
-      runner("repository", index),
-      sandboxId,
-      pullCommand(repo, trackPushes),
-      `git pull of ${repo.dir}`,
-      secrets,
-      {
-        dir: repo.dir,
-        sandboxId: armadaSandboxId,
-        sleep,
-      },
-    );
-    if (warning) warnings.push(warning);
-  }
-  for (const [index, command] of golden.config.init.entries()) {
-    progress("initialization_commands");
-    await run(runner("init", index), sandboxId, initCommand(command), `init command ${index + 1}`, secrets);
-  }
-  return warnings;
-}
-
-/** Identity and the credential helper, before any repo is pulled. A failure here is a broken sandbox, so it fails the launch. */
-async function setupGitHub(
-  provider: Provider,
-  sandboxId: string,
-  identity: GitIdentity,
-  secrets: readonly string[],
-): Promise<GitHubLaunchInfo> {
-  const result = await provider.exec({
-    sandboxId,
-    command: gitSetupCommand(identity),
-    cwd: GOLDEN_ROOT,
-    timeoutSeconds: 60,
-  });
-  if (result.detached)
-    throw new LaunchError("start_failed", "GitHub setup started in the background.", {
-      safeReason: "github_setup_background",
-    });
-  if (result.timedOut || result.exitCode !== 0) {
-    throw new LaunchError(
-      "start_failed",
-      `GitHub could not be set up in the sandbox.${output(result.stderr, result.stdout, secrets)}`,
-      { safeReason: result.timedOut ? "github_setup_timeout" : "github_setup_nonzero" },
-    );
-  }
-  const present = result.stdout.includes(GH_PRESENT_MARKER);
-  return { status: "connected", login: identity.login, ...(present ? {} : { message: GH_MISSING_NOTE }) };
-}
-
-async function writeCodexAuth(provider: Provider, sandboxId: string, secrets: readonly string[]): Promise<void> {
-  const dir = `${GOLDEN_ROOT}/.codex`;
-  const command = `umask 077 && mkdir -p ${dir} && printf '%s' "$${CODEX_AUTH_ENV}" > ${dir}/auth.json`;
-  const result = await provider.exec({ sandboxId, command, cwd: GOLDEN_ROOT, timeoutSeconds: 60 });
-  if (result.detached || result.timedOut || result.exitCode !== 0) {
-    throw new LaunchError("start_failed", redact("Codex auth.json could not be written in the sandbox.", secrets), {
-      safeReason: "native_auth_write_failed",
-    });
-  }
-}
-
-function isFetchFailure(result: Awaited<ReturnType<Provider["exec"]>>): boolean {
-  return (
-    !result.detached &&
-    result.exitCode === REPOSITORY_FETCH_FAILED_EXIT &&
-    result.stderr.split(/\r?\n/).includes(REPOSITORY_FETCH_FAILED_MARKER)
-  );
-}
-
-async function run(
-  provider: Pick<Provider, "id" | "exec">,
-  sandboxId: string,
-  spec: ShellCommand,
-  label: string,
-  secrets: readonly string[],
-  repository?: { dir: string; sandboxId: string; sleep: (ms: number) => Promise<void> },
-): Promise<string | void> {
-  const request = {
-    sandboxId,
-    command: spec.command,
-    cwd: spec.cwd,
-    timeoutSeconds: spec.timeoutSeconds,
-  };
-  let result = await provider.exec(request);
-  // Production has shown intermittent refusals with either selector path. Retry only
-  // a completed Git ownership rejection once; keep the same user and ownership guard.
-  if (
-    repository !== undefined &&
-    !result.detached &&
-    !result.timedOut &&
-    (result.exitCode === 128 || isFetchFailure(result)) &&
-    result.stderr.includes("detected dubious ownership in repository")
-  ) {
-    await repository.sleep(OWNERSHIP_RETRY_DELAY_MS);
-    let retry: "ownership_refused" | "exit_nonzero" | "timed_out" | "detached" | "exec_threw" | "succeeded" =
-      "exec_threw";
-    try {
-      result = await provider.exec(request);
-      if (result.detached) retry = "detached";
-      else if (result.timedOut) retry = "timed_out";
-      else if (result.exitCode === 0) retry = "succeeded";
-      else if (
-        (result.exitCode === 128 || isFetchFailure(result)) &&
-        result.stderr.includes("detected dubious ownership in repository")
-      )
-        retry = "ownership_refused";
-      else retry = "exit_nonzero";
-    } finally {
-      try {
-        console.error(
-          JSON.stringify({
-            event: "launch_repository_ownership_retry",
-            sandboxId: repository.sandboxId,
-            provider: provider.id,
-            providerSandboxId: sandboxId,
-            attempt: 2,
-            delayMs: OWNERSHIP_RETRY_DELAY_MS,
-            outcome: retry === "succeeded" ? "recovered" : "failed",
-            retry,
-          }),
-        );
-      } catch {
-        // Best-effort diagnostics must not change launch or cleanup outcomes.
-      }
-    }
-  }
-  if (result.detached) throw new LaunchError("init_failed", `${label} started in the background.`);
-  if (result.timedOut) {
-    throw new LaunchError("init_failed", `${label} timed out.${output(result.stderr, result.stdout, secrets)}`);
-  }
-  if (result.exitCode !== 0 && repository !== undefined) {
-    // Match only fixed Git diagnostic classes. Never publish arbitrary stderr or credentials.
-    if (
-      /Authentication failed|could not read (?:Username|Password)|terminal prompts disabled|Repository not found|repository .* not found|returned error: (?:401|403)/i.test(
-        result.stderr,
-      )
-    )
-      throw new LaunchError(
-        "no_credentials",
-        `Repository ${repository.dir} needs a GitHub connection with read access. Run armada github connect, grant your account and the Armada GitHub App access, then launch again.`,
-      );
-    if (
-      isFetchFailure(result) &&
-      /Could not resolve host|Failed to connect|Could not resolve proxy|Connection (?:timed out|reset)|RPC failed|early EOF|index-pack failed|returned error: (?:408|429|500|502|503|504)/i.test(
-        result.stderr,
-      )
-    )
-      return `Warning: repository ${repository.dir} could not refresh because the Git transfer failed; launching with its snapshot checkout. Retry refresh when the network is healthy.`;
-  }
-  if (result.exitCode !== 0) {
-    const failure = new LaunchError(
-      "init_failed",
-      `${label} failed (exit ${result.exitCode}).${output(result.stderr, result.stdout, secrets)}`,
-    );
-    // Inspect stderr before diagnostic-tail truncation; never bypass Git's ownership guard.
-    if (repository !== undefined && result.stderr.includes("detected dubious ownership in repository"))
-      throw new LaunchError(
-        "init_failed",
-        `Cannot update repository '${repository.dir}' in sandbox ${repository.sandboxId}: checkout ownership does not match the user running sandbox commands. Report this golden and sandbox ID to its administrator to check command-user and checkout UIDs before retrying.`,
-        { cause: failure, safeReason: "repository_ownership_mismatch" },
-      );
-    throw failure;
-  }
-}
-
-function output(stderr: string, stdout: string, secrets: readonly string[]): string {
-  const text = redact([stderr.trim(), stdout.trim()].filter(Boolean).join("\n"), secrets).trim();
-  if (text === "") return "";
-  const tail = text.length <= OUTPUT_LIMIT ? text : `...${text.slice(-OUTPUT_LIMIT)}`;
-  return `\n${tail}`;
 }
 
 function withSandbox(error: unknown, sandboxId: string, secrets: readonly string[]): LaunchError {

@@ -28,6 +28,7 @@ import {
   validateSkillPins,
 } from "@armada/core";
 import {
+  applyLaunchAccountDefaults,
   createSkillDefaultsService,
   createSqlMcpLaunchPort,
   createSqlMcpRegistry,
@@ -35,9 +36,10 @@ import {
   decryptSecret,
   encryptSecret,
   isLaunchTtlSeconds,
-  mergeSkillPins,
   prepareLaunchWorkspace,
+  resolveLaunchConnections,
   resolveLaunchSecrets,
+  resolveLaunchSkills,
   resolveLaunchVariables,
   validateLaunchSkillPins,
 } from "@armada/core/server";
@@ -505,15 +507,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
               { userId: caller.userId, orgId: org, role: caller.orgs.find((entry) => entry.orgId === org)!.role },
               body.harness as Harness,
             );
-        if (preference && (body.credentialId === undefined || body.credentialId === preference.credentialId)) {
-          selected = {
-            ...body,
-            ...(body.credentialId === undefined && preference.credentialId
-              ? { credentialId: preference.credentialId }
-              : {}),
-            ...(body.model === undefined && preference.model ? { model: preference.model } : {}),
-          };
-        }
+        selected = applyLaunchAccountDefaults(body, preference);
       }
       const request = normalize(sourceHost ? { ...selected, hostId: sourceHost } : selected, image);
       const actor = { userId: identifier(caller.userId), orgId: request.org };
@@ -546,23 +540,21 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           }
         }
         reason = "skill_defaults";
-        const defaults = request.skipSkillDefaults
-          ? { org: [], personal: [] }
-          : await createSkillDefaultsService(sql).resolve(launchActor, null);
-        let skills: string[];
-        try {
-          skills = mergeSkillPins(defaults.org, defaults.personal, request.skills ?? []);
-        } catch {
-          throw failure("invalid_request");
-        }
+        const skills = await resolveLaunchSkills(
+          request,
+          () => createSkillDefaultsService(sql).resolve(launchActor, null),
+          () => failure("invalid_request"),
+        );
         reason = "mcp_defaults";
-        const connections =
-          request.connections ??
-          (await createSqlMcpLaunchPort(sql, createSqlMcpRegistry(sql, key)).defaults(actor, "private"));
-        if (connections.length) {
-          if (!options.mcp) throw failure("unavailable");
-          await options.mcp.connections.validate(actor, connections, "private");
-        }
+        const connections = await resolveLaunchConnections(
+          request.connections,
+          () => createSqlMcpLaunchPort(sql, createSqlMcpRegistry(sql, key)).defaults(actor, "private"),
+          async (ids) => {
+            if (!ids.length) return;
+            if (!options.mcp) throw failure("unavailable");
+            await options.mcp.connections.validate(actor, ids, "private");
+          },
+        );
         const correlationId = currentRequestId();
         const manifest: Manifest = {
           ...(source ? { snapshotConfig: source.config } : {}),

@@ -10,7 +10,7 @@ import {
   normalizeGitHubGoldenConfig,
   type Provider,
   ProviderRoutingError,
-  parseGoldenConfig,
+  parseSnapshotConfig,
   resolveBoatKey,
   resolveOrg,
   scanGoldenSandbox,
@@ -69,7 +69,7 @@ export async function createGoldenRoute(options: GoldenControlOptions, caller: C
   if (target.provider === "modal" && !target.modal)
     throw new ProviderRoutingError("provider_routing_unavailable", "modal", "Modal is not configured.");
   const name = required(body, "name");
-  const config = body.config === undefined ? undefined : normalizeGitHubGoldenConfig(parseGoldenConfig(body.config));
+  const config = body.config === undefined ? undefined : normalizeGitHubGoldenConfig(parseSnapshotConfig(body.config));
   const repos = config ? [] : requiredRepos(body);
   const setup = optional(body, "setup");
   const actor: GoldenActor = { userId: caller.userId, orgId: org.id, role: org.role };
@@ -137,8 +137,9 @@ export async function updateGoldenRoute(
   if (!additive && body.config === undefined) throw new VaultError("invalid", "config is required.");
   if (additive && (!Array.isArray(body.addRepos) || !body.addRepos.every((repo) => typeof repo === "string")))
     throw new VaultError("invalid", "addRepos must be a non-empty list of repository URLs.");
+  const additions = additive ? (body.addRepos as string[]) : undefined;
   const config = normalizeGitHubGoldenConfig(
-    additive ? addGoldenRepositories(existingGolden.config, body.addRepos as string[]) : parseGoldenConfig(body.config),
+    additions ? addGoldenRepositories(existingGolden.config, additions, "snapshot") : parseSnapshotConfig(body.config),
   );
   const provider = await providerForGolden(options, caller, existingGolden);
   return options.goldenBuilds.admit(
@@ -153,6 +154,7 @@ export async function updateGoldenRoute(
       existingGolden,
     },
     required(body, "idempotencyKey"),
+    additions,
   );
 }
 

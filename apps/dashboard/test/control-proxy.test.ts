@@ -796,18 +796,25 @@ test("GET proxy forwards the authenticated sandbox outputs list and download wit
   // The server matches lowercase identifiers only; the proxy admits exactly what it serves.
   const upper = "AAAAAAAA-1111-4111-8111-111111111111";
   const seen: Request[] = [];
-  const send = (rawPath: string, path: string[], bearer = true) =>
+  const send = (rawPath: string, path: string[], bearer = true, range?: string) =>
     forwardControl(
       new Request(`https://dashboard.test/api/v1/${rawPath}`, {
-        headers: bearer ? { authorization: "Bearer masked" } : {},
+        headers: bearer
+          ? { authorization: "Bearer masked", ...(range ? { range, "if-range": '"file-digest"' } : {}) }
+          : {},
       }),
       path,
       async (input, init) => {
         seen.push(new Request(input, init));
-        return new Response("pdf", {
+        const status = range === "bytes=1-3" ? 206 : range ? 416 : 200;
+        return new Response(status === 416 ? null : "pdf", {
+          status,
           headers: {
             "content-type": "application/pdf",
-            "content-length": "3",
+            "content-length": status === 416 ? "0" : "3",
+            "accept-ranges": "bytes",
+            etag: '"file-digest"',
+            ...(range ? { "content-range": status === 206 ? "bytes 1-3/4" : "bytes */4" } : {}),
             "content-disposition": "attachment; filename*=UTF-8''a%2Fb%20memo.pdf",
             "x-content-type-options": "nosniff",
             "set-cookie": "private=must-not-forward",
@@ -820,11 +827,18 @@ test("GET proxy forwards the authenticated sandbox outputs list and download wit
     (await send(`sandboxes/${id}/outputs/a%2Fb%20memo.pdf`, ["sandboxes", id, "outputs", "a/b memo.pdf"], false))
       .status,
   ).toBe(401);
-  const download = await send(`sandboxes/${id}/outputs/a%2Fb%20memo.pdf`, ["sandboxes", id, "outputs", "a/b memo.pdf"]);
-  expect(download.status).toBe(200);
+  const downloadPath = `sandboxes/${id}/outputs/a%2Fb%20memo.pdf`;
+  const decoded = ["sandboxes", id, "outputs", "a/b memo.pdf"];
+  const download = await send(downloadPath, decoded, true, "bytes=1-3");
+  expect(download.status).toBe(206);
   expect(seen[0]?.url).toBe(`https://armada.test/api/v1/sandboxes/${id}/outputs/a%2Fb%20memo.pdf`);
   expect(seen[0]?.method).toBe("GET");
   expect(seen[0]?.headers.get("authorization")).toBe("Bearer masked");
+  expect(seen[0]?.headers.get("range")).toBe("bytes=1-3");
+  expect(seen[0]?.headers.get("if-range")).toBe('"file-digest"');
+  expect(download.headers.get("content-range")).toBe("bytes 1-3/4");
+  expect(download.headers.get("etag")).toBe('"file-digest"');
+  expect(download.headers.get("accept-ranges")).toBe("bytes");
   expect(download.headers.get("content-disposition")).toBe("attachment; filename*=UTF-8''a%2Fb%20memo.pdf");
   expect(download.headers.get("x-content-type-options")).toBe("nosniff");
   expect(download.headers.get("content-type")).toBe("application/pdf");
@@ -834,6 +848,9 @@ test("GET proxy forwards the authenticated sandbox outputs list and download wit
   expect(await download.text()).toBe("pdf");
   expect((await send(`sandboxes/${id}/outputs`, ["sandboxes", id, "outputs"])).status).toBe(200);
   expect(seen[1]?.url).toBe(`https://armada.test/api/v1/sandboxes/${id}/outputs`);
+  const rejected = await send(downloadPath, decoded, true, "bytes=32-");
+  expect(rejected.status).toBe(416);
+  expect(rejected.headers.get("content-range")).toBe("bytes */4");
   for (const [rawPath, path] of [
     [`sandboxes/not-a-uuid/outputs`, ["sandboxes", "not-a-uuid", "outputs"]],
     [`sandboxes/${id}/outputs/a/b`, ["sandboxes", id, "outputs", "a", "b"]],
@@ -854,5 +871,5 @@ test("GET proxy forwards the authenticated sandbox outputs list and download wit
     },
   );
   expect(post.status).toBe(404);
-  expect(seen).toHaveLength(2);
+  expect(seen).toHaveLength(3);
 });

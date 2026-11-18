@@ -2,10 +2,15 @@ import { SNAPSHOT_BASELINE_BUN } from "./snapshot-baseline.ts";
 /** Declared sandbox outputs (#2570): one fixed directory, bounded snapshot, no caller-supplied path. */
 
 import {
+  OUTPUT_CHUNK_BYTES,
   OUTPUT_DIRECTORY,
   OUTPUT_MAX_BYTES,
   OUTPUT_MAX_ENTRIES,
   OUTPUT_MAX_FILES,
+  type OutputChunkRequest,
+  type OutputEntry,
+  validOutputChunk,
+  validOutputEntry,
   validOutputName,
 } from "./sandbox-output-limits.ts";
 import { shellQuote } from "./shell-quote.ts";
@@ -82,7 +87,7 @@ const managedShell = (program: string) => `${READERS}${managedBun(program)}exit 
 // Linux glibc and /proc/self/fd are part of the managed VM/container baseline. Read each
 // directory entry incrementally and anchor each path component to an open directory descriptor,
 // so even a concurrent rename cannot redirect an open through a symlink.
-const collectorSetup = `
+const collectorSetup = String.raw`
 const fs = require("node:fs");
 let ptr, read, toArrayBuffer;
 const { O_RDONLY, O_DIRECTORY, O_NOFOLLOW, O_NONBLOCK } = fs.constants;
@@ -104,6 +109,21 @@ try {
 } catch {
   process.exit(86);
 }
+
+function openCollectorRoot() {
+  try {
+    const root = fs.openSync("/", parentFlags);
+    const stream = libc.opendir(ptr(Buffer.from(descriptor(root) + "\0")));
+    if (stream) {
+      libc.closedir(stream);
+      return root;
+    }
+    fs.closeSync(root);
+  } catch {
+    // Descriptor access is unavailable. The shell can try the next reader.
+  }
+  process.exit(86);
+}
 `;
 
 /** The only probe answer that proves the collector program ran. An incompatible Bun can exit 0
@@ -114,21 +134,8 @@ export const OUTPUT_COLLECTOR_PROBE_MARKER = "armada-output-collector-ready";
  * any repository Bun pin. */
 export const OUTPUT_COLLECTOR_BUN_VERSION = SNAPSHOT_BASELINE_BUN;
 
-const probeProgram =
-  collectorSetup +
-  String.raw`
-try {
-  const root = fs.openSync("/", parentFlags);
-  try {
-    const stream = libc.opendir(ptr(Buffer.from(descriptor(root) + "\0")));
-    if (!stream) process.exit(86);
-    libc.closedir(stream);
-  } finally {
-    fs.closeSync(root);
-  }
-} catch {
-  process.exit(86);
-}
+const probeProgram = `${collectorSetup}
+fs.closeSync(openCollectorRoot());
 console.log(${JSON.stringify(OUTPUT_COLLECTOR_PROBE_MARKER)});
 `;
 
@@ -143,31 +150,35 @@ flags=os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW
 const pythonProbe = `${pythonSetup}os.close(os.open('/',flags))
 print(${JSON.stringify(OUTPUT_COLLECTOR_PROBE_MARKER)})
 `;
-const pythonCollector =
+const pythonCollector = (chunk?: OutputChunkRequest | null) =>
   pythonSetup +
   String.raw`def valid(name):
  if name in ('.','..') or '/' in name or '\\' in name: return False
  if any(ord(c)<32 or ord(c)==127 for c in name): return False
  return 0<len(name.encode('utf-16-le','surrogatepass'))//2<=255
+part=json.loads(${JSON.stringify(JSON.stringify(chunk === undefined ? false : chunk))})
 files=[]
 try:
  directory=os.open('/',flags)
- for part in ${JSON.stringify(OUTPUT_DIRECTORY)}.strip('/').split('/'):
+ for component in ${JSON.stringify(OUTPUT_DIRECTORY)}.strip('/').split('/'):
   parent=directory
-  try: directory=os.open(part,flags,dir_fd=parent)
+  try: directory=os.open(component,flags,dir_fd=parent)
   finally: os.close(parent)
 except FileNotFoundError: sys.exit(4)
 except OSError: sys.exit(5)
 try:
  names=[]
  count=0
- with os.scandir(directory) as entries:
-  for entry in entries:
-   count+=1
-   if count>${OUTPUT_MAX_ENTRIES}: sys.exit(3)
-   try: entry.name.encode('utf-8')
-   except UnicodeEncodeError: continue
-   if valid(entry.name): names.append(entry.name)
+ if part:
+  names=[part['entry']['name']]
+ else:
+  with os.scandir(directory) as entries:
+   for entry in entries:
+    count+=1
+    if count>${OUTPUT_MAX_ENTRIES}: sys.exit(3)
+    try: entry.name.encode('utf-8')
+    except UnicodeEncodeError: continue
+    if valid(entry.name): names.append(entry.name)
  names.sort(key=lambda name: name.encode('utf-8'))
  total=0
  budget=2
@@ -177,7 +188,21 @@ try:
   except OSError: continue
   try:
    info=os.fstat(fd)
-   if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1 or info.st_size>${OUTPUT_MAX_BYTES}-total: continue
+   if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1: continue
+   if part is not False:
+    def entry_for(st):
+     return dict(name=name,size=min(st.st_size,9007199254740991),revision=f'{st.st_dev}:{st.st_ino}:{st.st_mtime_ns}:{st.st_ctime_ns}')
+    entry=entry_for(info)
+    if part is None:
+     files.append(entry)
+     continue
+    if entry != part['entry']: continue
+    length=min(part.get('length',${OUTPUT_CHUNK_BYTES}),entry['size']-part['offset'])
+    data=os.pread(fd,length,part['offset'])
+    after=os.fstat(fd)
+    if len(data)==length and after.st_nlink==1 and entry_for(after)==entry: files.append({'name':name,'base64':base64.b64encode(data).decode()})
+    continue
+   if info.st_size>${OUTPUT_MAX_BYTES}-total: continue
    data=os.read(fd,${OUTPUT_MAX_BYTES + 1})
    if len(data)>${OUTPUT_MAX_BYTES}-total: continue
    item={'name':name,'base64':base64.b64encode(data).decode()}
@@ -194,12 +219,14 @@ print(json.dumps(files,separators=(',',':')))
 `;
 
 export const OUTPUT_COLLECTOR_PROBE = collectorShell(probeProgram, pythonProbe);
-export const OUTPUT_COLLECTOR = collectorShell(
-  collectorSetup +
-    String.raw`
+function outputCollector(chunk?: OutputChunkRequest | null): string {
+  return collectorShell(
+    collectorSetup +
+      String.raw`
 const files = [];
+const part = ${JSON.stringify(chunk === undefined ? false : chunk)};
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-let directory = fs.openSync("/", parentFlags);
+let directory = openCollectorRoot();
 try {
   for (const part of ${JSON.stringify(OUTPUT_DIRECTORY)}.slice(1).split("/")) {
     const next = fs.openSync(descriptor(directory) + "/" + part, parentFlags);
@@ -207,34 +234,37 @@ try {
     directory = next;
   }
   const base = descriptor(directory);
-  const stream = libc.opendir(ptr(Buffer.from(base + "\0")));
-  if (!stream) process.exit(5);
   const names = [];
-  let count = 0;
-  try {
-    const errno = libc.__errno_location();
-    while (true) {
-      libc.memset(errno, 0, 4);
-      const entry = libc.readdir(stream);
-      if (!entry) {
-        if (read.i32(errno)) process.exit(5);
-        break;
+  if (part) names.push(part.entry.name);
+  else {
+    const stream = libc.opendir(ptr(Buffer.from(base + "\0")));
+    if (!stream) process.exit(5);
+    let count = 0;
+    try {
+      const errno = libc.__errno_location();
+      while (true) {
+        libc.memset(errno, 0, 4);
+        const entry = libc.readdir(stream);
+        if (!entry) {
+          if (read.i32(errno)) process.exit(5);
+          break;
+        }
+        // d_name is at byte 19 of Linux's 64-bit dirent (x64 and arm64).
+        const start = entry + 19;
+        const raw = new Uint8Array(toArrayBuffer(start, 0, Number(libc.strlen(start))));
+        if (raw[0] === 46 && (raw.length === 1 || (raw.length === 2 && raw[1] === 46))) continue;
+        if (++count > ${OUTPUT_MAX_ENTRIES}) process.exit(3);
+        let name;
+        try {
+          name = decoder.decode(raw);
+        } catch {
+          continue;
+        }
+        if ((${validOutputName.toString()})(name)) names.push(name);
       }
-      // d_name is at byte 19 of Linux's 64-bit dirent (x64 and arm64).
-      const start = entry + 19;
-      const raw = new Uint8Array(toArrayBuffer(start, 0, Number(libc.strlen(start))));
-      if (raw[0] === 46 && (raw.length === 1 || (raw.length === 2 && raw[1] === 46))) continue;
-      if (++count > ${OUTPUT_MAX_ENTRIES}) process.exit(3);
-      let name;
-      try {
-        name = decoder.decode(raw);
-      } catch {
-        continue;
-      }
-      if ((${validOutputName.toString()})(name)) names.push(name);
+    } finally {
+      libc.closedir(stream);
     }
-  } finally {
-    libc.closedir(stream);
   }
   let total = 0;
   let budget = 2;
@@ -244,7 +274,26 @@ try {
     try {
       fd = fs.openSync(base + "/" + name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
       const info = fs.fstatSync(fd);
-      if (!info.isFile() || info.nlink !== 1 || info.size > ${OUTPUT_MAX_BYTES} - total) continue;
+      if (!info.isFile() || info.nlink !== 1) continue;
+      if (part !== false) {
+        const entryFor = () => {
+          const st = fs.fstatSync(fd, { bigint: true });
+          if (!st.isFile() || st.nlink !== 1n) throw Error("invalid_output");
+          return { name, size: Math.min(Number(st.size), Number.MAX_SAFE_INTEGER), revision: [st.dev, st.ino, st.mtimeNs, st.ctimeNs].join(":") };
+        };
+        const entry = entryFor();
+        if (part === null) {
+          files.push(entry);
+          continue;
+        }
+        if (entry.size !== part.entry.size || entry.revision !== part.entry.revision) continue;
+        const buffer = Buffer.alloc(Math.min(part.length ?? ${OUTPUT_CHUNK_BYTES}, entry.size - part.offset));
+        const length = fs.readSync(fd, buffer, 0, buffer.length, part.offset);
+        if (length === buffer.length && entryFor().revision === entry.revision)
+          files.push({ name, base64: buffer.toString("base64") });
+        continue;
+      }
+      if (info.size > ${OUTPUT_MAX_BYTES} - total) continue;
       const buffer = Buffer.alloc(${OUTPUT_MAX_BYTES + 1});
       const length = fs.readSync(fd, buffer, 0, buffer.length, 0);
       if (length > ${OUTPUT_MAX_BYTES} - total) continue;
@@ -267,14 +316,69 @@ try {
 }
 console.log(JSON.stringify(files));
 `,
-  pythonCollector,
-);
+    pythonCollector(chunk),
+  );
+}
+
+export const OUTPUT_COLLECTOR = outputCollector();
+
+export function outputEntryCollector(chunk: OutputChunkRequest | null): string {
+  if (chunk !== null && !validOutputChunk(chunk)) throw Error("invalid_output_chunk");
+  return outputCollector(
+    chunk === null
+      ? null
+      : {
+          entry: { name: chunk.entry.name, size: chunk.entry.size, revision: chunk.entry.revision },
+          offset: chunk.offset,
+          ...(chunk.length !== undefined ? { length: chunk.length } : {}),
+        },
+  );
+}
+
+export function parseOutputEntries(values: unknown): OutputEntry[] {
+  if (!Array.isArray(values) || values.length > OUTPUT_MAX_FILES || !values.every(validOutputEntry))
+    throw Error("invalid_output");
+  if (new Set(values.map(({ name }) => name)).size !== values.length) throw Error("invalid_output");
+  return values.map(({ name, size, revision }) => ({ name, size, revision }));
+}
+
+export function parseOutputChunk(values: unknown, chunk: OutputChunkRequest): Uint8Array | null {
+  if (Array.isArray(values) && values.length === 0) return null;
+  const length = Math.min(chunk.length ?? OUTPUT_CHUNK_BYTES, chunk.entry.size - chunk.offset);
+  if (
+    !Array.isArray(values) ||
+    values.length !== 1 ||
+    typeof values[0]?.base64 !== "string" ||
+    values[0].base64.length > Math.ceil(length / 3) * 4
+  )
+    throw Error("invalid_output");
+  const [file] = parseOutputFiles(values);
+  if (!file || file.name !== chunk.entry.name || file.bytes.length !== length) throw Error("invalid_output");
+  return file.bytes;
+}
+
+export function readCollectorEntries(status: number | null, stdout: string): OutputEntry[] {
+  if (status !== 0) readCollectorResult(status, stdout);
+  if (stdout.length > 60000) throw Error("output_limit");
+  return parseOutputEntries(JSON.parse(stdout));
+}
+
+export function readCollectorChunk(
+  status: number | null,
+  stdout: string,
+  chunk: OutputChunkRequest,
+): Uint8Array | null {
+  if (status !== 0) readCollectorResult(status, stdout);
+  if (stdout.length > Math.ceil((chunk.length ?? OUTPUT_CHUNK_BYTES) / 3) * 4 + 4096) throw Error("output_limit");
+  return parseOutputChunk(JSON.parse(stdout), chunk);
+}
 
 export type OutputFailureReason =
   | "collector_unsupported"
   | "output_directory_missing"
   | "output_limit"
   | "collector_failed"
+  | "output_protocol_unsupported"
   | "output_unavailable"
   | "output_timeout"
   | "output_busy"

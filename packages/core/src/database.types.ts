@@ -840,6 +840,7 @@ export type Database = {
           failure_reason: string | null;
           baseline_version: number | null;
           baseline_failure_tool: string | null;
+          missing_ref_index: number | null;
           required_baseline_version: number | null;
         };
         Insert: {
@@ -864,6 +865,7 @@ export type Database = {
           failure_reason?: string | null;
           baseline_version?: number | null;
           baseline_failure_tool?: string | null;
+          missing_ref_index?: number | null;
           required_baseline_version?: number | null;
         };
         Update: {
@@ -888,6 +890,7 @@ export type Database = {
           failure_reason?: string | null;
           baseline_version?: number | null;
           baseline_failure_tool?: string | null;
+          missing_ref_index?: number | null;
           required_baseline_version?: number | null;
         };
         Relationships: [
@@ -4419,30 +4422,106 @@ export type Database = {
           },
         ];
       };
+      sandbox_output_chunks: {
+        Row: {
+          transfer_id: string;
+          byte_offset: number;
+          content_enc: string;
+        };
+        Insert: {
+          transfer_id: string;
+          byte_offset: number;
+          content_enc: string;
+        };
+        Update: {
+          transfer_id?: string;
+          byte_offset?: number;
+          content_enc?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "sandbox_output_chunks_transfer_id_fkey";
+            columns: ["transfer_id"];
+            isOneToOne: false;
+            referencedRelation: "sandbox_output_transfers";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      sandbox_output_transfers: {
+        Row: {
+          id: string;
+          sandbox_id: string;
+          name: string;
+          revision: string;
+          size: number;
+          received: number;
+          scan: string;
+          progress_at: string;
+          digest: string | null;
+        };
+        Insert: {
+          id?: string;
+          sandbox_id: string;
+          name: string;
+          revision: string;
+          size: number;
+          received?: number;
+          scan: string;
+          progress_at?: string;
+          digest?: string | null;
+        };
+        Update: {
+          id?: string;
+          sandbox_id?: string;
+          name?: string;
+          revision?: string;
+          size?: number;
+          received?: number;
+          scan?: string;
+          progress_at?: string;
+          digest?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "sandbox_output_transfers_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: false;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       sandbox_outputs: {
         Row: {
           sandbox_id: string;
           name: string;
-          digest: string;
+          digest: string | null;
           size: number;
-          content_enc: string;
+          content_enc: string | null;
           updated_at: string;
+          skipped: string | null;
+          transfer_id: string | null;
         };
         Insert: {
           sandbox_id: string;
           name: string;
-          digest: string;
+          digest?: string | null;
           size: number;
-          content_enc: string;
+          content_enc?: string | null;
           updated_at?: string;
+          skipped?: string | null;
+          transfer_id?: string | null;
         };
         Update: {
           sandbox_id?: string;
           name?: string;
-          digest?: string;
+          digest?: string | null;
           size?: number;
-          content_enc?: string;
+          content_enc?: string | null;
           updated_at?: string;
+          skipped?: string | null;
+          transfer_id?: string | null;
         };
         Relationships: [
           {
@@ -4451,6 +4530,13 @@ export type Database = {
             isOneToOne: false;
             referencedRelation: "sandboxes";
             referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "sandbox_outputs_sandbox_id_transfer_id_fkey";
+            columns: ["sandbox_id", "transfer_id"];
+            isOneToOne: false;
+            referencedRelation: "sandbox_output_transfers";
+            referencedColumns: ["sandbox_id", "id"];
           },
         ];
       };
@@ -5107,6 +5193,8 @@ export type RuntimeIdleTurnRow = Database["public"]["Tables"]["runtime_idle_turn
 export type RuntimeResumeRow = Database["public"]["Tables"]["runtime_resumes"]["Row"];
 export type SandboxAccountUsagePricingRow = Database["public"]["Tables"]["sandbox_account_usage_pricing"]["Row"];
 export type SandboxLaunchStageRow = Database["public"]["Tables"]["sandbox_launch_stages"]["Row"];
+export type SandboxOutputChunkRow = Database["public"]["Tables"]["sandbox_output_chunks"]["Row"];
+export type SandboxOutputTransferRow = Database["public"]["Tables"]["sandbox_output_transfers"]["Row"];
 export type SandboxOutputRow = Database["public"]["Tables"]["sandbox_outputs"]["Row"];
 export type SandboxTransitionRow = Database["public"]["Tables"]["sandbox_transitions"]["Row"];
 export type SandboxTurnModelRow = Database["public"]["Tables"]["sandbox_turn_models"]["Row"];

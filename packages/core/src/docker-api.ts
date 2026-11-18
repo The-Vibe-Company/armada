@@ -277,6 +277,7 @@ export interface DockerSnapshotRecord {
   /** Absent from older APIs and null when a verified build receipt is unavailable. */
   baselineVersion?: number | null;
   baselineOutdated?: boolean;
+  baselineWarning?: string;
   id: string;
   orgId: string;
   ownerId: string;

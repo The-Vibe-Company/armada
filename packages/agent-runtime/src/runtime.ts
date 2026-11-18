@@ -1,6 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import type { ExecRequest, ExecResult, Harness } from "@armada/core";
-import { HARNESSES } from "@armada/core";
+import { HARNESSES, validOutputChunk } from "@armada/core";
 import { PRIVATE_SKILL_FAILURES } from "../../core/src/private-skill-error.ts";
 import { ChildOwner } from "./children.ts";
 import { validateHarnessCwd } from "./cwd.ts";
@@ -14,7 +14,7 @@ import { recordMcpRevision } from "./mcp-revisions.ts";
 import { withNativeAuthPublication } from "./native-auth-publication.ts";
 import { NativeEpoch } from "./native-epoch.ts";
 import { observeRuntime } from "./observation.ts";
-import { readOutputDirectory } from "./outputs.ts";
+import { readOutputDirectory, readOutputPart } from "./outputs.ts";
 import { groupState, type ProcessIdentity, processIdentity } from "./processes.ts";
 import {
   AUTH_HEADER,
@@ -316,11 +316,15 @@ export class Runner {
       if (r.op === "readOutputs") {
         if (
           this.credentialFreeBuilder ||
-          Object.keys(r).some((key) => !["version", "requestId", "sandboxId", "op"].includes(key))
+          Object.keys(r).some((key) => !["version", "requestId", "sandboxId", "op", "part"].includes(key))
         )
           throw Error("invalid_request");
-        // Fixed read-only output read (#2570): fresh data, never cached or journaled. It runs during
-        // a checkpoint too, because Armada takes the final capture after quiesce and before stop.
+        // Fresh fixed-directory data, including during final capture after quiesce.
+        if (r.part === null || validOutputChunk(r.part)) {
+          const values = r.part === null ? await readOutputPart(null) : await readOutputPart(r.part);
+          return Response.json({ version: 1, requestId: r.requestId, result: { values } });
+        }
+        if (r.part !== undefined) throw Error("invalid_request");
         const files = await readOutputDirectory();
         return Response.json({ version: 1, requestId: r.requestId, result: { files } });
       }

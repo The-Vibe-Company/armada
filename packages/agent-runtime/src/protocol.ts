@@ -1,4 +1,4 @@
-import type { AgentEvent, ExecRequest, Harness, PromptRequest, PromptStatus } from "@armada/core";
+import type { AgentEvent, ExecRequest, Harness, OutputChunkRequest, PromptRequest, PromptStatus } from "@armada/core";
 import type { GitHubBrokerConfiguration } from "./github-broker.ts";
 import type { ModelConnectionTestResult } from "./model-connection-test.ts";
 export const PROTOCOL_VERSION = 1;
@@ -128,7 +128,7 @@ export type RunnerRequest = { version: 1; requestId: string; sandboxId: string }
   | { op: "installSkills"; input: import("./skills.ts").SkillInstallInput }
   | { op: "configureGitHub"; configuration: GitHubBrokerConfiguration | null }
   | { op: "resourceObservation" }
-  | { op: "readOutputs" }
+  | { op: "readOutputs"; part?: OutputChunkRequest | null }
   | ConfigureMcpRequest
   | InstallOrchestratorEpochRequest
   | ScrubOrchestratorEpochRequest

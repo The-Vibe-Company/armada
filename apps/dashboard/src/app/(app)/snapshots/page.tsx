@@ -1034,6 +1034,7 @@ function dockerSnapshotRow(
       <div className="space-y-1">
         <StateCell tone={state.tone} label={state.label} />
         {snapshot.status === "failed" && <p className="text-xs text-muted-foreground">{detailText}</p>}
+        {snapshot.baselineWarning && <p className="text-xs text-muted-foreground">Developer baseline outdated</p>}
         {canRebuild && (
           <p className="text-xs text-muted-foreground">A newer Armada version is available. Open it to rebuild.</p>
         )}
@@ -1050,6 +1051,7 @@ function dockerSnapshotRow(
       <div className="space-y-4">
         <StateCell tone={state.tone} label={state.label} />
         <p className="text-sm text-muted-foreground">{detailText}</p>
+        {snapshot.baselineWarning && <p className="text-sm text-muted-foreground">{snapshot.baselineWarning}</p>}
         {snapshot.status === "failed" && (
           <p className="text-sm text-muted-foreground">
             Check this server and the build configuration, then use New snapshot to create a new build. This failed

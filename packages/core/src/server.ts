@@ -30,6 +30,7 @@ export {
 } from "./github-installation.ts";
 export { createGoldenAdoption, type GoldenAdoption } from "./golden-adoption.ts";
 export { GoldenBuildJobs, type GoldenBuildJobsOptions } from "./golden-build-jobs.ts";
+export { isLegacySnapshotRef, snapshotMissingRefMessage } from "./golden-config.ts";
 export {
   assertGoldenBackendBinding,
   createGoldenCreateService,
@@ -52,6 +53,12 @@ export * from "./golden-snapshot-retirement.ts";
 export { assertSqlGoldenMutation } from "./golden-store.ts";
 export * from "./index.ts";
 export { prepareLaunchWorkspace } from "./launch.ts";
+export {
+  admitLaunchPlan,
+  applyLaunchAccountDefaults,
+  resolveLaunchConnections,
+  resolveLaunchSkills,
+} from "./launch-plan.ts";
 export { assertLaunchSecretBindings, resolveLaunchSecrets } from "./launch-secrets.ts";
 export { isLaunchTtlSeconds, validateLaunchSkillPins } from "./launch-validation.ts";
 export { resolveLaunchVariables } from "./launch-variables.ts";
@@ -90,8 +97,13 @@ export {
   OutputCollectionError,
   type OutputFailureReason,
   type OutputFile,
+  outputEntryCollector,
   parseCollectorOutput,
+  parseOutputChunk,
+  parseOutputEntries,
   parseOutputFiles,
+  readCollectorChunk,
+  readCollectorEntries,
   readCollectorProbeResult,
   readCollectorResult,
 } from "./sandbox-outputs.ts";

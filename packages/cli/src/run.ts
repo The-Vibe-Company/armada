@@ -16,11 +16,10 @@ import {
   type Provider,
   ProviderError,
   ProviderRoutingError,
-  parseGoldenConfig,
   parseMachineSize,
+  parseSnapshotConfig,
   resolveModelChoice,
   type SandboxProviderId,
-  SIZED_LAUNCH_ROUTE_V1,
   VaultError,
   VERSION,
 } from "@armada/core";
@@ -725,7 +724,7 @@ async function update(positionals: string[], args: ReturnType<typeof parseArgs>,
       "invalid_config",
       "Full replacement can drop stored repositories and init commands. Use --add-repo to append safely, or pass --replace with --repo/--config to confirm replacing the entire config.",
     );
-  let config: GoldenConfig | undefined;
+  let config: GoldenConfig<string | undefined> | undefined;
   try {
     if (additions.length)
       configFromFlags(additions, []); // Never reconstruct the stored list.
@@ -1011,45 +1010,37 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
   });
   const sized = size !== undefined || repo !== undefined || flag(args, "--sized");
   const result = decodeLaunchResult(
-    await client.request<LaunchWireResult>(
-      flag(args, "--armada-access")
-        ? "/api/v1/sandbox/launch-access-v1"
-        : sized
-          ? SIZED_LAUNCH_ROUTE_V1
-          : "/api/v1/sandbox/launch",
+    await client.sandboxes.launch<LaunchWireResult>(
       {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          ...(flag(args, "--no-connections") ? { connections: [] } : {}),
-          ...(flag(args, "--keep-after-merge") ? { stopWhenWorkMerged: false } : {}),
-          ...(values(args, "--skill").length ? { skills: values(args, "--skill") } : {}),
-          ...(connections === undefined ? {} : { connections: connections.split(",") }),
-          ...(flag(args, "--armada-access")
-            ? {
-                armadaAccessVersion: 1,
-                armadaAccess: {
-                  ...(maxActiveChildren === undefined ? {} : { maxActiveChildren: Number(maxActiveChildren) }),
-                },
-              }
-            : {}),
-          credentialId: single(args, "--credential-id"),
-          golden: name,
-          ...(sized ? { sizePolicyVersion: 1 } : {}),
-          ...(size === undefined ? {} : { size }),
-          ...(repo === undefined ? {} : { repo }),
-          ...(providerFlag(args) ? { provider: providerFlag(args) } : {}),
-          harness,
-          ...(single(args, "--model") === undefined ? {} : { model: single(args, "--model") }),
-          ...(single(args, "--reasoning-effort") === undefined
-            ? {}
-            : { reasoningEffort: single(args, "--reasoning-effort") }),
-          ...(prompt === undefined ? {} : { prompt }),
-          ...(ttlSeconds === undefined ? {} : { ttlSeconds }),
-          ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
-        }),
-        signal: AbortSignal.timeout(10 * 60_000),
+        ...(flag(args, "--no-connections") ? { connections: [] } : {}),
+        ...(flag(args, "--keep-after-merge") ? { stopWhenWorkMerged: false } : {}),
+        ...(values(args, "--skill").length ? { skills: values(args, "--skill") } : {}),
+        ...(connections === undefined ? {} : { connections: connections.split(",") }),
+        ...(flag(args, "--armada-access")
+          ? {
+              armadaAccessVersion: 1,
+              armadaAccess: {
+                ...(maxActiveChildren === undefined ? {} : { maxActiveChildren: Number(maxActiveChildren) }),
+              },
+            }
+          : {}),
+        credentialId: single(args, "--credential-id"),
+        golden: name,
+        ...(sized ? { sizePolicyVersion: 1 } : {}),
+        ...(size === undefined ? {} : { size }),
+        ...(repo === undefined ? {} : { repo }),
+        ...(providerFlag(args) ? { provider: providerFlag(args) } : {}),
+        harness,
+        ...(single(args, "--model") === undefined ? {} : { model: single(args, "--model") }),
+        ...(single(args, "--reasoning-effort") === undefined
+          ? {}
+          : { reasoningEffort: single(args, "--reasoning-effort") }),
+        ...(prompt === undefined ? {} : { prompt }),
+        ...(ttlSeconds === undefined ? {} : { ttlSeconds }),
+        ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
       },
+      { signal: AbortSignal.timeout(10 * 60_000) },
+      flag(args, "--armada-access") ? "access" : sized ? "sized" : undefined,
     ),
   );
   io.out(
@@ -1230,7 +1221,7 @@ function jsonGolden(row: GoldenRecord) {
   return { ...goldenResponse(row), buildWarnings: row.buildWarnings ?? [] };
 }
 
-async function readConfig(args: ReturnType<typeof parseArgs>, deps: Deps): Promise<GoldenConfig> {
+async function readConfig(args: ReturnType<typeof parseArgs>, deps: Deps): Promise<GoldenConfig<string | undefined>> {
   const file = single(args, "--config");
   const repos = values(args, "--repo");
   // --setup is its own field now (create() reads it as a local file and sends its content),
@@ -1253,9 +1244,9 @@ async function readConfig(args: ReturnType<typeof parseArgs>, deps: Deps): Promi
     } catch {
       throw new GoldenError("invalid_config", `Config file '${file}' is not JSON.`);
     }
-    return parseGoldenConfig(parsed);
+    return parseSnapshotConfig(parsed);
   }
-  return configFromFlags(repos, init);
+  return configFromFlags(repos, init, "snapshot");
 }
 
 function oneName(positionals: string[]): string {

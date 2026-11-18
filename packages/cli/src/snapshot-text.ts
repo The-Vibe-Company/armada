@@ -1,7 +1,8 @@
 /** Legacy API identifiers stay untouched; only diagnostic prose is renamed. */
 export function snapshotText(text: string): string {
   return text.replace(
-    /(?<![-/\w])(Golden|golden)(s?)\b/g,
-    (_, word: string, plural: string) => `${word === "Golden" ? "Snapshot" : "snapshot"}${plural}`,
+    /Ref '[^\r\n]*?' was not found in [^\s]+\. Check the branch or tag and retry\.|(?<![-/\w])(Golden|golden)(s?)\b/g,
+    (match, word?: string, plural?: string) =>
+      word ? `${word === "Golden" ? "Snapshot" : "snapshot"}${plural ?? ""}` : match,
   );
 }
