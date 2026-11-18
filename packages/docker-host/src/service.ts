@@ -16,6 +16,7 @@ export function instanceName(instance?: string) {
 export const stateDirectory = (home = homedir(), instance?: string) =>
   join(home, ".local/state", instanceName(instance));
 const serviceName = (instance?: string) => `${instanceName(instance)}.service`;
+const updateUnit = (instance?: string) => `${instanceName(instance)}-update.service`;
 function paths(home = homedir(), instance?: string) {
   return {
     binary: join(home, ".local/bin", instanceName(instance)),
@@ -286,16 +287,20 @@ export async function removeInstallation(instance?: string) {
   const directory = stateDirectory(homedir(), instance);
   // Preserve registration/ownership proof until the final binary unlink succeeds.
   const update = await readUpdate(homedir(), instance);
+  const recovery = update?.previousDigest ? await existingRecovery(homedir(), instance) : undefined;
   const extra = ["update.json", "update-candidate"].map((name) => join(directory, name));
   if (update?.previousDigest) extra.push(`${p.binary}.previous`);
   const saved = await Promise.all(
-    [p.unit, join(directory, "state.json"), join(directory, "managed.json")].map(async (path) => ({
-      path,
-      bytes: await readFile(path),
-    })),
+    [p.unit, join(directory, "state.json"), join(directory, "managed.json"), ...(recovery ? [recovery.path] : [])].map(
+      async (path) => ({
+        path,
+        bytes: await readFile(path),
+      }),
+    ),
   );
   try {
     await unlink(p.unit);
+    if (recovery) await unlink(recovery.path);
     await command(["systemctl", "--user", "daemon-reload"]);
     for (const cache of CACHE_DIRECTORIES) await rm(join(directory, cache), { recursive: true, force: true });
     for (const entry of await readdir(directory)) {
@@ -479,7 +484,7 @@ export function automaticUpdate(state: State, instance?: string) {
           "--user",
           "--collect",
           "--unit",
-          `${instanceName(instance)}-update`,
+          updateUnit(instance),
           "--property=Type=exec",
           "--property=Restart=on-failure",
           "--property=RestartSec=10s",
@@ -507,6 +512,80 @@ export function automaticUpdate(state: State, instance?: string) {
   };
 }
 
+function recoveryDropIn(home: string, instance?: string) {
+  const p = paths(home, instance);
+  return {
+    path: join(`${p.unit}.d`, "90-armada-update.conf"),
+    contents: `[Service]\nExecStartPre=${quoted(`${p.binary}.previous`)} recover-update${instance ? ` --instance ${instance}` : ""}\n`,
+  };
+}
+
+async function existingRecovery(home: string, instance?: string) {
+  const recovery = recoveryDropIn(home, instance);
+  try {
+    if ((await ownedFile(recovery.path, home)).toString("utf8") !== recovery.contents)
+      throw new Error("Docker host update recovery configuration changed");
+    return recovery;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+}
+
+async function armRecovery(home: string, instance?: string) {
+  if (await existingRecovery(home, instance)) return;
+  const recovery = recoveryDropIn(home, instance);
+  await mkdir(dirname(recovery.path), { recursive: true, mode: 0o700 });
+  await safeAncestors(recovery.path, home);
+  await atomicReplace(recovery.path, Buffer.from(recovery.contents), 0o600);
+}
+
+function saveManagedMarker(home: string, instance: string | undefined, marker: ManagedInstallation) {
+  const directory = stateDirectory(home, instance);
+  return atomicReplace(join(directory, "managed.json"), Buffer.from(JSON.stringify(marker)), 0o600, dirname(directory));
+}
+
+async function restorePrevious(store: ManagedStore, home: string, instance: string | undefined, update: Update) {
+  const unlock = await store.lock();
+  try {
+    if (update.phase === "starting" && update.previousDigest) {
+      const marker = await validateInstallation(await store.load(), home, instance);
+      const previous = await verifyBackup(home, instance, update.previousDigest);
+      const binary = paths(home, instance).binary;
+      const currentDigest = sha256(await ownedFile(binary, home, true));
+      await saveManagedMarker(home, instance, {
+        ...marker,
+        binarySha256: currentDigest,
+        pendingBinarySha256: update.previousDigest,
+      });
+      await atomicReplace(binary, previous, 0o700);
+      await saveManagedMarker(home, instance, {
+        installationId: marker.installationId,
+        unit: marker.unit,
+        binarySha256: update.previousDigest,
+      });
+    }
+    await saveUpdate(home, instance, { ...update, phase: "failed" });
+  } finally {
+    await unlock();
+  }
+}
+
+/** The managed unit runs this before ExecStart so a reboot cannot strand a bad candidate. */
+export async function recoverUpdate(
+  store: ManagedStore,
+  instance?: string,
+  io: Pick<UpgradeServiceIo, "home" | "service"> = { home: homedir(), service: command },
+) {
+  const update = await readUpdate(io.home, instance);
+  if (update?.phase !== "starting") return;
+  try {
+    await io.service(["systemctl", "--user", "is-active", updateUnit(instance)]);
+    return; // The live supervisor owns the trial.
+  } catch {
+    await restorePrevious(store, io.home, instance, update);
+  }
+}
+
 export async function superviseUpdate(
   store: ManagedStore,
   instance?: string,
@@ -515,13 +594,12 @@ export async function superviseUpdate(
   const { home } = io;
   const p = paths(home, instance);
   const directory = stateDirectory(home, instance);
-  const markerFile = join(directory, "managed.json");
   const candidateFile = join(directory, "update-candidate");
   const service = (verb: string) => io.service(["systemctl", "--user", verb, serviceName(instance)]);
-  const writeMarker = (marker: ManagedInstallation) =>
-    atomicReplace(markerFile, Buffer.from(JSON.stringify(marker)), 0o600, dirname(directory));
+  const writeMarker = (marker: ManagedInstallation) => saveManagedMarker(home, instance, marker);
   let update = await readUpdate(home, instance);
   if (update?.phase === "failed") {
+    await service("reset-failed").catch(() => {});
     await service("start");
     return;
   }
@@ -539,6 +617,8 @@ export async function superviseUpdate(
       if (sha256(candidate) !== update.candidateDigest) throw new Error("Staged Docker host release changed");
       if (update.previousDigest !== marker.binarySha256) throw new Error("Managed Docker host executable changed");
       await verifyBackup(home, instance, update.previousDigest);
+      await armRecovery(home, instance);
+      await io.service(["systemctl", "--user", "daemon-reload"]);
       update = { ...update, phase: "starting" };
       await saveUpdate(home, instance, update);
       trialMarker = { ...marker, pendingBinarySha256: sha256(candidate) };
@@ -568,23 +648,8 @@ export async function superviseUpdate(
     await saveUpdate(home, instance, { ...update, phase: "updated" });
   } catch {
     await service("stop");
-    const unlock = await store.lock();
-    try {
-      if (update.phase === "starting" && update.previousDigest) {
-        const marker = await validateInstallation(await store.load(), home, instance);
-        const previous = await verifyBackup(home, instance, update.previousDigest);
-        await writeMarker({ ...marker, pendingBinarySha256: update.previousDigest });
-        await atomicReplace(p.binary, previous, 0o700);
-        await writeMarker({
-          installationId: marker.installationId,
-          unit: marker.unit,
-          binarySha256: update.previousDigest,
-        });
-      }
-      await saveUpdate(home, instance, { ...update, phase: "failed" });
-    } finally {
-      await unlock();
-    }
+    await restorePrevious(store, home, instance, update);
+    await service("reset-failed").catch(() => {});
     // Retry a transient service-manager failure inside the supervisor. The
     // old release is already restored, so this cannot retry the update.
     await service("start");

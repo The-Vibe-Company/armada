@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { State } from "../src/daemon.ts";
 import {
   instanceName,
+  recoverUpdate,
   stateDirectory,
   superviseUpdate,
   type UpgradeServiceIo,
@@ -350,3 +351,34 @@ test.each(["healthy", "failed start", "failed health"])(
     }
   },
 );
+
+test("startup recovers an interrupted trial when the transient supervisor is gone", async () => {
+  const f = await upgradeFixture();
+  try {
+    const journal = join(f.directory, "update.json");
+    await writeFile(`${f.binary}.previous`, f.oldBytes, { mode: 0o700 });
+    await writeFile(f.binary, f.newBytes);
+    await writeFile(f.markerFile, JSON.stringify({ ...f.marker, pendingBinarySha256: f.hash(f.newBytes) }));
+    await writeFile(
+      journal,
+      JSON.stringify({
+        version: "9.0.0",
+        phase: "starting",
+        previousDigest: f.hash(f.oldBytes),
+        candidateDigest: f.hash(f.newBytes),
+      }),
+      { mode: 0o600 },
+    );
+    await recoverUpdate(f.store, undefined, {
+      home: f.home,
+      async service() {
+        throw new Error("supervisor absent after reboot");
+      },
+    });
+    expect(await readFile(f.binary, "utf8")).toBe(f.oldBytes);
+    expect(JSON.parse(await readFile(journal, "utf8")).phase).toBe("failed");
+    expect(await validateInstallation(f.state, f.home)).toEqual(f.marker);
+  } finally {
+    await rm(f.home, { recursive: true, force: true });
+  }
+});

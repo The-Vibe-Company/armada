@@ -253,7 +253,9 @@ managed binary with a `.previous` suffix. It stops the drained service, swaps th
 binary atomically, and starts the service. The candidate reconciles and polls
 before taking work. The supervisor requires an active service and a fresh
 successful poll within 90 seconds. If startup or health fails, it restores the
-previous binary atomically and starts it. The daemon sends the failed target on
+previous binary atomically and starts it. An Armada-owned systemd drop-in runs
+the same recovery from the previous binary before daemon startup if the machine
+reboots during the trial. The daemon sends the failed target on
 its next authenticated poll for the server log. Its private update record
 prevents another automatic attempt at that version or any older version.
 

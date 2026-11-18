@@ -21,6 +21,7 @@ import {
   installService,
   inventory,
   managedUpdateInstance,
+  recoverUpdate,
   removeInstallation,
   servicePreflight,
   stateDirectory,
@@ -64,11 +65,12 @@ async function main(args: string[]) {
     return;
   }
   const [command, ...flags] = args;
-  if (command === "supervise-update") {
+  if (command === "supervise-update" || command === "recover-update") {
     if (flags.length !== 0 && (flags.length !== 2 || flags[0] !== "--instance" || !flags[1]))
       throw new Error("Invalid update supervisor arguments");
     const instance = flags[1];
-    await superviseUpdate(await fileStore(stateDirectory(undefined, instance)), instance);
+    const serviceAction = command === "supervise-update" ? superviseUpdate : recoverUpdate;
+    await serviceAction(await fileStore(stateDirectory(undefined, instance)), instance);
     return;
   }
   const options = new Map<string, string>();
@@ -303,7 +305,7 @@ async function main(args: string[]) {
       await Promise.all(scans);
       await expiry.drain();
     }
-    if (update?.staged) await update.restart();
+    if (!stopping && update?.staged) await update.restart();
   } finally {
     await release();
   }
