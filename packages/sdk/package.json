@@ -1,6 +1,6 @@
 {
   "name": "@armada/sdk",
-  "version": "2.52.1",
+  "version": "2.53.0",
   "private": true,
   "type": "module",
   "exports": {

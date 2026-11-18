@@ -145,11 +145,21 @@ test("an already enrolled uncertain resume reconciles on a fresh server without 
   }
 });
 
-test.each(["missing-proof", "prefix", "taint", "account", "owner", "expired"] as const)(
-  "resume refuses unsafe state before preparing or activating compute (%s)",
-  async (mode) => {
-    const f = await stopped();
-    try {
+describe.each(["missing-proof", "prefix", "taint", "account", "owner", "expired"] as const)(
+  "unsafe resume (%s)",
+  (mode) => {
+    let f: Awaited<ReturnType<typeof stopped>>;
+    // Building the stopped checkpoint is a prerequisite, not refusal work: under a
+    // contended CI shard it alone exceeded the 5s test budget (#2592). The refusal
+    // itself and every assertion stay inside the timed test.
+    beforeAll(async () => {
+      f = await stopped();
+    }, 20_000);
+    afterAll(async () => {
+      await f?.close();
+    });
+
+    test(`resume refuses unsafe state before preparing or activating compute (${mode})`, async () => {
       let calls = 0;
       if (mode === "missing-proof") await f.db.query("delete from runtime_checkpoints where sandbox_id=$1", [f.row.id]);
       if (mode === "prefix")
@@ -168,9 +178,7 @@ test.each(["missing-proof", "prefix", "taint", "account", "owner", "expired"] as
       ).rejects.toThrow();
       expect(calls).toBe(0);
       expect(f.starts).toHaveLength(1);
-    } finally {
-      await f.close();
-    }
+    });
   },
 );
 
