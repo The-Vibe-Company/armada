@@ -368,6 +368,7 @@ export {
   controlBodyMaxBytes,
   PUBLIC_CONTROL_ROUTES,
   VAULT_CONTROL_BODY_MAX_BYTES,
+  vaultControlRoute,
 } from "./public-control-routes.ts";
 export {
   isApplicationVariableName,

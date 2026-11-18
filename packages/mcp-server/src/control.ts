@@ -7,6 +7,7 @@ import {
   PUBLIC_CONTROL_ROUTES,
   parseMachineSizePolicy,
   VERSION,
+  vaultControlRoute,
 } from "@armada/core";
 import {
   type ApplicationVault,
@@ -254,26 +255,11 @@ async function timedControlRequest(
     return fail(405, "invalid", deletion ? "Use DELETE." : "Use POST.");
   try {
     const caller = await timing.measure("auth", () => authenticatedCaller(request, options));
-    if (
-      (route === "skillpack/catalog" ||
-        route === "skillpack/versions" ||
-        route.startsWith("skills/defaults/") ||
-        route.startsWith("templates/") ||
-        route.startsWith("routines/") ||
-        route.startsWith("variables/") ||
-        route.startsWith("secrets/")) &&
-      url.search
-    )
+    if (vaultControlRoute(route) && url.search)
       throw new VaultError("invalid", "Parameters must be in the request body.");
     const body = deletion
       ? { id: deletion[1], org: url.searchParams.get("org") ?? undefined }
-      : route === "skillpack/catalog" ||
-          route === "skillpack/versions" ||
-          route.startsWith("skills/defaults/") ||
-          route.startsWith("templates/") ||
-          route.startsWith("routines/") ||
-          route.startsWith("variables/") ||
-          route.startsWith("secrets/")
+      : vaultControlRoute(route)
         ? await readVaultBody(request)
         : await readBody(request, route === "logs/read" ? 512 * 1024 : undefined);
     if (

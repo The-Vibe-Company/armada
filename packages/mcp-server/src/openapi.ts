@@ -1,4 +1,10 @@
-import { API_FAILURE_STATUS, controlBodyMaxBytes, VERSION } from "@armada/core";
+import {
+  API_FAILURE_STATUS,
+  CONTROL_BODY_MAX_BYTES,
+  controlBodyMaxBytes,
+  VERSION,
+  vaultControlRoute,
+} from "@armada/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { z } from "zod";
@@ -73,6 +79,8 @@ const REST_EXTRA_FIELDS: Readonly<Record<string, Readonly<Record<string, object>
 /**
  * Bound a top-level string field by the route's serialized-body limit: no longer string
  * can arrive through either public boundary, whatever the handler itself would admit.
+ * maxLength counts characters, so it is only an upper bound: the rest of the body, JSON
+ * escaping and multibyte UTF-8 lower the real ceiling.
  */
 function boundByBody(schema: Record<string, unknown>, field: string, maxBytes: number, description?: string) {
   const property = (schema.properties as Record<string, Record<string, unknown>> | undefined)?.[field];
@@ -152,7 +160,7 @@ export async function generateOpenApi() {
           docker,
           "prompt",
           maxBodyBytes,
-          `The instruction: not blank. The whole serialized JSON request body is limited to ${maxBodyBytes} bytes, so this bound, not Docker's 256 KiB admission limit, is the effective prompt limit over REST.`,
+          `The instruction: not blank. Over REST the whole serialized JSON request body is limited to ${maxBodyBytes} bytes, below Docker's own 256 KiB prompt admission limit, so maxLength is only an upper bound: the other fields, JSON escaping and multibyte UTF-8 count against the same limit.`,
         );
         // A Docker body must satisfy the shared send input and Docker admission.
         request = {
@@ -171,7 +179,9 @@ export async function generateOpenApi() {
           security: [{ serviceToken: [] }],
           requestBody: {
             required: true,
-            description: `The serialized JSON body is limited to ${maxBodyBytes} bytes; a larger body is refused with HTTP 413 before any handler runs.`,
+            description: vaultControlRoute(route)
+              ? `Send at most ${maxBodyBytes} bytes of serialized JSON. The server reads this route with the vault body reader and refuses a larger body with HTTP 400 (code invalid); the dashboard endpoint refuses a body over ${CONTROL_BODY_MAX_BYTES} bytes with HTTP 413. Nothing is dispatched in either case.`
+              : `Send at most ${maxBodyBytes} bytes of serialized JSON. The dashboard endpoint refuses a larger body with HTTP 413 without forwarding it, and the server refuses a body over its own limit, which is never lower, with HTTP 413 before any handler runs.`,
             "x-max-body-bytes": maxBodyBytes,
             content: { "application/json": { schema: request } },
           },
@@ -187,7 +197,7 @@ export async function generateOpenApi() {
               },
             },
             "413": {
-              description: `The serialized request body exceeds ${maxBodyBytes} bytes. Nothing was dispatched.`,
+              description: `The serialized request body exceeds ${CONTROL_BODY_MAX_BYTES} bytes. Nothing was dispatched.`,
               content: { "application/json": { schema: { $ref: "#/components/schemas/Failure" } } },
             },
             "503": {

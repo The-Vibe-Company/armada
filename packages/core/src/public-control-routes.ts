@@ -15,9 +15,20 @@ export const PUBLIC_CONTROL_ROUTES = {
  * HTTP 413 before any handler runs, so it bounds every field, including a send prompt.
  */
 export const CONTROL_BODY_MAX_BYTES = 128 * 1024;
-/** Vault-backed control routes (templates, routines, variables, secrets, skill defaults) accept at most this. */
+/**
+ * Vault-backed control routes accept at most this. The server refuses a larger body with
+ * the opaque vault refusal (HTTP 400, code "invalid"), not 413.
+ */
 export const VAULT_CONTROL_BODY_MAX_BYTES = 64 * 1024;
-/** The effective body limit of a published integration route, through both public boundaries. */
+/** Control routes the server reads with the strict vault body reader. */
+export function vaultControlRoute(route: string): boolean {
+  return (
+    route === "skillpack/catalog" ||
+    route === "skillpack/versions" ||
+    ["skills/defaults/", "templates/", "routines/", "variables/", "secrets/"].some((prefix) => route.startsWith(prefix))
+  );
+}
+/** The largest body a client may send to a control route through either public boundary. */
 export function controlBodyMaxBytes(route: string): number {
-  return route.startsWith("templates/") ? VAULT_CONTROL_BODY_MAX_BYTES : CONTROL_BODY_MAX_BYTES;
+  return vaultControlRoute(route) ? VAULT_CONTROL_BODY_MAX_BYTES : CONTROL_BODY_MAX_BYTES;
 }
