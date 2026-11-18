@@ -89,7 +89,8 @@ abandoned five times by worker timeouts or shutdown settles as `failed`. Runtime
 turn's first archived event to its settlement, and is bounded at 2,000 records
 and 4 MiB of ciphertext, and each outbound payload is bounded at 4 MiB.
 Oversized exports and jobs whose settings were disabled before delivery count
-as `dropped`. Transport, decryption and export-processing failures count as
+as `dropped`. A native receipt that the provider fails to answer five times in
+a row is abandoned before settlement, so its turn also counts as `dropped`. Transport, decryption and export-processing failures count as
 `failed`. Requests time out after five seconds, reject redirects, and failed
 requests are counted without an automatic retry. A restart during delivery
 can replay the same stable observation ID. Disabling may leave an in-flight

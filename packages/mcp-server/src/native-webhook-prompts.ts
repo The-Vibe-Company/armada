@@ -72,7 +72,14 @@ export function createNativeWebhookPrompts(
           and s.owner_id=p.owner_id and s.org_id=p.org_id
           and not s.boat_runtime and s.runtime_transport is distinct from 'dialout'
           and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id)
-        returning p.sandbox_id,p.prompt_id
+        returning p.sandbox_id,p.prompt_id,p.org_id,p.failures
+      ), abandoned as (
+        -- The final failed observation abandons the receipt, so its turn never
+        -- reaches settlement: count it as a durable Langfuse drop.
+        insert into public.org_langfuse_export_stats as stats(org_id,dropped)
+        select s.org_id,1 from settled s join public.org_langfuse c on c.org_id=s.org_id and c.enabled
+        where $5 and s.failures>=5
+        on conflict(org_id) do update set dropped=stats.dropped+1
       ) select public.enqueue_webhook_turn(sandbox_id,prompt_id,$4::text) from settled
         where $4::text is not null`,
       [row.sandbox_id, row.prompt_id, lease, status, failed],

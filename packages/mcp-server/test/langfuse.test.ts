@@ -406,6 +406,43 @@ for (const [settled, delivered, content] of [
     expect(await counters()).toEqual([{ exported: "1", failed: "0" }]);
   });
 
+test("a native receipt abandoned after its final failed observation counts one durable drop", async () => {
+  const { db, people } = await database();
+  await db.query(
+    `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status,task_prompt_id)
+     select $1,id,org_id,owner_id,'boat_abandoned','codex','ready','turn'
+     from goldens where owner_id=$2 and visibility='private' limit 1`,
+    [crypto.randomUUID(), people.owner],
+  );
+  await db.query("insert into org_langfuse(org_id,enabled,content_mode,config_enc) values($1,true,'full',$2)", [
+    people.org,
+    await encryptConfig(),
+  ]);
+  const provider = {
+    id: "boat",
+    getPrompt: async () => {
+      throw Error("provider_unavailable");
+    },
+  } as const;
+  const native = createNativeWebhookPrompts(db, async () => provider as unknown as Pick<Provider, "id" | "getPrompt">);
+  const signal = new AbortController().signal;
+  const dropped = async () =>
+    (
+      await db.query<{ dropped: string }>("select dropped::text from org_langfuse_export_stats where org_id=$1", [
+        people.org,
+      ])
+    ).rows[0]?.dropped ?? "0";
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    expect(await dropped()).toBe("0");
+    await db.query("update native_webhook_prompts set next_attempt_at=now()");
+    expect(await native.reconcileOne(signal)).toBe(true);
+  }
+  expect(await dropped()).toBe("1");
+  await db.query("update native_webhook_prompts set next_attempt_at=now()");
+  expect(await native.reconcileOne(signal)).toBe(false);
+  expect(await dropped()).toBe("1");
+});
+
 test("an in-flight native history read that outlives its deadline does not hold the export", async () => {
   const { db, counters } = await settledBoatTurn("turn");
   let deadline = new AbortController();
