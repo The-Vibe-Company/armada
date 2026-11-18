@@ -54,13 +54,26 @@ const errorClasses = new Set([
   "PermissionDeniedError",
   "ResourceExhaustedError",
   "SandboxTimeoutError",
+  "PostgresError",
 ]);
-// PostgreSQL schema drift (a missing or failed migration) names only identifiers from our own SQL,
-// never a bound parameter. Keep exactly that shape so operators can see which relation is missing.
-const identifier = String.raw`"[A-Za-z_][\w$]{0,62}(?:\.[A-Za-z_][\w$]{0,62}){0,2}"`;
+// PostgreSQL schema drift and grant failures (a missing or failed migration) name only identifiers
+// and type names from our own SQL, never a bound parameter. Keep exactly those shapes so operators
+// can see what is missing; anything else from the database stays withheld but keeps its SQLSTATE.
+const name = String.raw`[A-Za-z_][\w$]{0,62}`;
+const qualified = String.raw`${name}(?:\.${name}){0,2}`;
+const quoted = `"${qualified}"`;
 const schemaDrift = new RegExp(
-  `^(?:relation|column|type|schema) ${identifier}(?: of relation ${identifier})? does not exist$`,
+  [
+    `(?:relation|column|type|schema) ${quoted}(?: of relation ${quoted})? does not exist`,
+    `column ${qualified} does not exist`,
+    String.raw`function ${qualified}\([\w$ ,."[\]]{0,256}\) does not exist`,
+    `permission denied for (?:table|relation|schema|sequence|view|function) ${qualified}`,
+    "there is no unique or exclusion constraint matching the ON CONFLICT specification",
+  ]
+    .map((shape) => `^${shape}$`)
+    .join("|"),
 );
+const sqlState = /^[0-9A-Z]{5}$/;
 const systemCodes = new Set(["ENOSPC", "EACCES", "EPERM", "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "ENOENT"]);
 
 export function failureDiagnostic(error: unknown): FailureDiagnostic {
@@ -90,13 +103,16 @@ function projectError(error: Error): FailureDiagnostic {
   const code = "code" in error && typeof error.code === "string" ? error.code : "";
   // Pattern redaction cannot identify arbitrary values (for example a password
   // echoed by an SDK). Only exact server-owned messages, identifier-only schema drift and system codes survive.
+  const state = sqlStateOf(error);
   const message = internalMessages.has(error.message)
     ? error.message
     : schemaDrift.test(error.message)
-      ? redactKnownTokens(error.message)
+      ? `${redactKnownTokens(error.message)}${state ? ` (SQLSTATE ${state})` : ""}`
       : systemCodes.has(code)
         ? code
-        : "Exception message withheld";
+        : state
+          ? `SQLSTATE ${state}`
+          : "Exception message withheld";
   const stackText = error.stack;
   const header = error.message ? `${error.name}: ${error.message}` : error.name;
   const stack = (
@@ -111,6 +127,15 @@ function projectError(error: Error): FailureDiagnostic {
     })
     .slice(0, 8);
   return { errorClass, message, stack };
+}
+
+/** Bun's PostgresError keeps the server SQLSTATE in `errno`; other drivers use `code`. */
+function sqlStateOf(error: Error): string | undefined {
+  if (error.name !== "PostgresError") return undefined;
+  for (const value of ["errno" in error ? error.errno : undefined, "code" in error ? error.code : undefined]) {
+    if (typeof value === "string" && sqlState.test(value)) return value;
+  }
+  return undefined;
 }
 
 /** A provider normalization can retain evidence without adding data to public error objects. */

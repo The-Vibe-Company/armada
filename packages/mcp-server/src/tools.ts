@@ -1887,14 +1887,12 @@ export function createArmadaServer(context: ToolContext, version: string, option
         await data.sandboxes.recordNativePrompt?.(found.id, found.providerSandboxId, receipt.promptId, args.request_id);
         try {
           await data.sandboxes.recordTurnModel?.(found.id, receipt.promptId, choice?.model ?? null, pricingContext);
-        } catch {
-          try {
-            (context.logError ?? console.error)(
-              "armada: turn model request record unavailable; accepted prompt continues.",
-            );
-          } catch {
-            /* Logging must not change accepted work. */
-          }
+        } catch (error) {
+          // The accepted prompt continues; the structured line carries the request and sandbox IDs.
+          recordOperatorFailure("tool.send.turn_model_record", error, {
+            sandboxId: found.id,
+            ...(context.logError ? { log: context.logError } : {}),
+          });
         }
         const conversationIds = appendConversation(found.conversationIds, receipt.conversationId);
         return {
