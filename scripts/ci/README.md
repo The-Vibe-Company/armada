@@ -58,3 +58,11 @@ Before measurements and source: completed merge-queue run 43482535658. Jobs
 waited 11–71 seconds; eight unit job runtimes ranged 60–90 seconds. Actual
 post-change queue wait and runtime must be measured on the PR/after merge; local
 worker timings or old isolated-file sums are not an observed six-shard result.
+
+## Documentation assets
+
+`bun run lint` checks `docs/` for images, video, other non-text files and
+files over 200,000 bytes. The generated `docs-guard-allowlist.json` records
+the exact paths and SHA-256 hashes of existing violations while #2713 is in
+progress. Delete the corresponding entry when a file is removed or made
+compliant. The inventory is shrink-only.
