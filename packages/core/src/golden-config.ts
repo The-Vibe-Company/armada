@@ -15,7 +15,6 @@ export const GOLDEN_SNAPSHOT_POLLS = 1800;
 const CLONE_TIMEOUT_SECONDS = 600;
 const INIT_TIMEOUT_SECONDS = 600;
 
-const BRANCH = /^(?![-/.])(?!.*\.\.)(?!.*@)[A-Za-z0-9._/-]{1,255}$/;
 const DIR = /^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/;
 
 /**
@@ -193,12 +192,18 @@ export function configFromFlags(repos: readonly string[], init: readonly string[
 /** Add repositories without replacing stored branches, directories or initialization commands.
  * Repeating the same addition is a no-op so a successful admission remains recoverable.
  */
-export function addGoldenRepositories(existing: GoldenConfig, additions: readonly string[]): GoldenConfig {
+export function addGoldenRepositories(existing: GoldenConfig, additions: readonly string[]): GoldenConfig;
+export function addGoldenRepositories(
+  existing: GoldenConfig,
+  additions: readonly string[],
+  mode: "snapshot",
+): GoldenConfig<string | undefined>;
+export function addGoldenRepositories(existing: GoldenConfig, additions: readonly string[], mode?: "snapshot") {
   if (!additions.length) throw new GoldenError("invalid_config", "Pass at least one --add-repo URL.");
   const current = parseGoldenConfig(existing);
-  const requested = configFromFlags(additions, []);
-  const repos = [...current.repos];
-  const identities = new Map(
+  const requested = mode === "snapshot" ? configFromFlags(additions, [], mode) : configFromFlags(additions, []);
+  const repos: GoldenRepo<string | undefined>[] = [...current.repos];
+  const identities = new Map<string, GoldenRepo<string | undefined>>(
     normalizeGitHubGoldenConfig(current).repos.map((repo, index) => [
       `${repo.owner}/${repo.repo}`.toLowerCase(),
       current.repos[index]!,
@@ -209,7 +214,7 @@ export function addGoldenRepositories(existing: GoldenConfig, additions: readonl
     const prior = identities.get(key);
     const addition = requested.repos[index]!;
     if (prior) {
-      if (prior.branch !== addition.branch)
+      if (addition.branch !== undefined && prior.branch !== addition.branch)
         throw new GoldenError(
           "invalid_config",
           "This repository already has a different branch in the golden. Use --config with the complete desired repository list to change it.",
@@ -220,7 +225,8 @@ export function addGoldenRepositories(existing: GoldenConfig, additions: readonl
     identities.set(key, addition);
   }
   try {
-    return parseGoldenConfig({ repos, init: current.init });
+    const config = { repos, init: current.init };
+    return mode === "snapshot" ? parseSnapshotConfig(config) : parseGoldenConfig(config);
   } catch (error) {
     if (error instanceof GoldenError)
       throw new GoldenError(
@@ -504,7 +510,22 @@ function parseRepoUrl(value: string): string {
 }
 
 function isBranch(value: string): boolean {
-  return BRANCH.test(value);
+  return (
+    value.length > 0 &&
+    value.length <= 255 &&
+    value !== "@" &&
+    !value.startsWith("-") &&
+    !value.endsWith(".") &&
+    !/[\p{Cc} ~^:?*[\\]/u.test(value) &&
+    !value.includes("..") &&
+    !value.includes("@{") &&
+    value.split("/").every((part) => part && !part.startsWith(".") && !part.endsWith(".lock"))
+  );
+}
+
+/** Format a missing checkout ref using the validated request, never raw Git output. */
+export function snapshotMissingRefMessage(repository: string, ref: string): string {
+  return `Ref '${ref}' was not found in ${repository}. Check the branch or tag and retry.`;
 }
 
 function badBranch(branch: string): GoldenError {

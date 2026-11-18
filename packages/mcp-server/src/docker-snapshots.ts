@@ -111,14 +111,20 @@ export function createDockerSnapshots(
       id = body.requestId,
       hostId = body.hostId,
       name = body.name;
-    const digest = createHash("sha256")
-      .update(
-        JSON.stringify({ org, hostId, name, visibility, config: requestedConfig, ...(rebuildOf ? { rebuildOf } : {}) }),
-      )
-      .digest("hex");
+    const request = { org, hostId, name, visibility, config: requestedConfig, ...(rebuildOf ? { rebuildOf } : {}) };
+    const hashRequest = (payload: object) => createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+    const digest = hashRequest({ ...request, resolveDefaultBranch: true });
+    // The old parser inserted main for a missing branch before it hashed the request.
+    const legacyDigest = hashRequest({
+      ...request,
+      config: {
+        ...requestedConfig,
+        repos: requestedConfig.repos.map((repo) => ({ ...repo, branch: repo.branch ?? "main" })),
+      },
+    });
     const known = (await read(id))[0];
     if (known) {
-      if (known.owner_id !== caller.userId || known.request_hash !== digest)
+      if (known.owner_id !== caller.userId || (known.request_hash !== digest && known.request_hash !== legacyDigest))
         throw new VaultError("conflict", "Snapshot request changed.");
       return { snapshot: snapshotRecord(known) };
     }
@@ -149,11 +155,13 @@ export function createDockerSnapshots(
       { ...actor, role: membership.role },
       visibility,
       normalized.repos.map((r) => `${r.owner}/${r.repo}`),
-      normalized.repos.map((r) => r.branch),
     );
     const config = {
       ...requestedConfig,
-      repos: requestedConfig.repos.map((repo, index) => ({ ...repo, branch: authorized.repos[index]!.branch })),
+      repos: requestedConfig.repos.map((repo, index) => ({
+        ...repo,
+        branch: repo.branch ?? authorized.repos[index]!.branch,
+      })),
     };
     let token = authorized.token;
     const installations = new Set(authorized.repos.map((r) => r.installationId));
@@ -199,7 +207,11 @@ export function createDockerSnapshots(
           const previous = (await tx.query<SnapshotRow>("select * from public.docker_snapshots where id=$1", [id]))
             .rows[0];
           if (previous) {
-            if (previous.owner_id !== caller.userId || previous.org_id !== org || previous.request_hash !== digest)
+            if (
+              previous.owner_id !== caller.userId ||
+              previous.org_id !== org ||
+              (previous.request_hash !== digest && previous.request_hash !== legacyDigest)
+            )
               throw new VaultError("conflict", "Snapshot request changed.");
             return;
           }

@@ -1,6 +1,6 @@
 "use client";
 
-import { type DockerSnapshotRecord, parseGoldenConfig } from "@armada/core";
+import { type DockerSnapshotRecord, parseSnapshotConfig } from "@armada/core";
 import { LockIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import {
@@ -282,7 +282,7 @@ function DockerSnapshotForm({
                   if (!file) return;
                   try {
                     if (file.size > 1_048_576) throw new Error();
-                    const parsed = parseGoldenConfig(JSON.parse(await file.text()));
+                    const parsed = parseSnapshotConfig(JSON.parse(await file.text()));
                     if (source.files?.[0] === file) setConfig(JSON.stringify(parsed));
                   } catch {
                     if (source.files?.[0] === file)
@@ -307,7 +307,7 @@ function DockerSnapshotForm({
                       placeholder="owner/repo or a github.com link"
                       required
                     />
-                    <span className="text-xs text-muted-foreground">{repo.branch || "main"}</span>
+                    <span className="text-xs text-muted-foreground">{repo.branch || "Default branch"}</span>
                     <Button
                       type="button"
                       variant="ghost"
@@ -325,7 +325,7 @@ function DockerSnapshotForm({
                       <Input
                         id={`${id}-branch-${index}`}
                         value={repo.branch}
-                        placeholder="main"
+                        placeholder="Default branch"
                         onChange={(e) => updateRepo(index, "branch", e.target.value)}
                       />
                       <Label htmlFor={`${id}-dir-${index}`}>Folder on the machine</Label>

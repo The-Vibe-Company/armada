@@ -2711,7 +2711,7 @@ test.each(["private", "org"] as const)(
   "host snapshot %s publication enforces visibility and launches the baked image without cloning again",
   async (visibility) => {
     const db = database();
-    const f = await snapshotFixture(true, {}, "trunk"),
+    const f = await snapshotFixture(true, {}, "release+next"),
       id = randomUUID();
     const creator = visibility === "private" ? f.caller : f.adminCaller;
     const input = {
@@ -2742,7 +2742,7 @@ test.each(["private", "org"] as const)(
     if (build?.operation !== "buildSnapshot") throw Error("missing snapshot build");
     expect(build.build.config).toEqual({
       ...f.config,
-      repos: [{ ...f.config.repos[0]!, branch: "trunk" }],
+      repos: [{ ...f.config.repos[0]!, branch: "release+next" }],
     });
     expect(build.request.image).toBe(officialSandboxImage());
     expect(build.build).toMatchObject({ armadaVersion: VERSION });
@@ -3343,32 +3343,37 @@ test.each(["private", "org"] as const)(
   },
 );
 
-test("failed snapshot machine facts persist a safe reason in get and list responses", async () => {
-  const f = await snapshotFixture(),
-    id = randomUUID();
-  await f.snapshots.command(f.caller, "create", {
-    org: f.actor.orgId,
-    hostId: f.hostId,
-    requestId: id,
-    name: "failed-build",
-    visibility: "private",
-    config: f.config,
-  });
-  expect((await hosts.poll(f.hostToken, f.installationId))?.operation).toBe("buildSnapshot");
-  await hosts.complete(f.hostToken, f.installationId, {
-    requestId: id,
-    outcome: "failed",
-    reason: "snapshot_build_failed",
-    baselineTool: "jq",
-  });
-  const failureReason = "Snapshot baseline 1 requires a working jq at the declared version.";
-  expect(await f.snapshots.command(f.caller, "get", { org: f.actor.orgId, id })).toMatchObject({
-    snapshot: { id, status: "failed", image: null, failureReason },
-  });
-  expect(await f.snapshots.command(f.caller, "list", { org: f.actor.orgId })).toMatchObject({
-    snapshots: [expect.objectContaining({ id, status: "failed", failureReason })],
-  });
-});
+test.each([
+  [{ baselineTool: "jq" } as const, "Snapshot baseline 1 requires a working jq at the declared version."],
+  [{ missingRefIndex: 1 }, "Ref 'main' was not found in example/project. Check the branch or tag and retry."],
+])(
+  "failed snapshot machine facts persist a safe reason in get and list responses (%j)",
+  async (diagnostic, failureReason) => {
+    const f = await snapshotFixture(),
+      id = randomUUID();
+    await f.snapshots.command(f.caller, "create", {
+      org: f.actor.orgId,
+      hostId: f.hostId,
+      requestId: id,
+      name: "failed-build",
+      visibility: "private",
+      config: f.config,
+    });
+    expect((await hosts.poll(f.hostToken, f.installationId))?.operation).toBe("buildSnapshot");
+    await hosts.complete(f.hostToken, f.installationId, {
+      requestId: id,
+      outcome: "failed",
+      reason: "snapshot_build_failed",
+      ...diagnostic,
+    });
+    expect(await f.snapshots.command(f.caller, "get", { org: f.actor.orgId, id })).toMatchObject({
+      snapshot: { id, status: "failed", image: null, failureReason },
+    });
+    expect(await f.snapshots.command(f.caller, "list", { org: f.actor.orgId })).toMatchObject({
+      snapshots: [expect.objectContaining({ id, status: "failed", failureReason })],
+    });
+  },
+);
 
 test("a failed snapshot build retried with the same request records host work only once", async () => {
   const f = await snapshotFixture(),

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GitHubHydrationError, type GitHubHydrationPhase, githubHydrationPhase } from "./api-failure.ts";
 import type { GoldenBuildWarning } from "./golden-build-warning.ts";
-import { GoldenError } from "./golden-config.ts";
+import { GoldenError, snapshotMissingRefMessage } from "./golden-config.ts";
 import { type PRIVATE_SSH_FAILURES, PrivateSshError } from "./private-skill-error.ts";
 import type { Provider } from "./provider.ts";
 import { launchInfrastructure } from "./sandbox-provider.ts";
@@ -26,7 +26,14 @@ export interface SshExecDeps {
 /** Token is first stdin line. The one quoted remote command reads it before running the script. */
 export async function sshStdinCheckout(
   provider: Provider,
-  input: { sandboxId: string; token: string; script: string; timeoutMs?: number; repositories?: readonly string[] },
+  input: {
+    sandboxId: string;
+    token: string;
+    script: string;
+    timeoutMs?: number;
+    repositories?: readonly string[];
+    refs?: readonly string[];
+  },
   deps: SshExecDeps = {},
 ): Promise<void> {
   await sshExchange(provider, input, deps, false, input.timeoutMs);
@@ -252,7 +259,13 @@ export async function sshPrivateSkillCommand(
 
 async function sshExchange(
   provider: Pick<Provider, "sshKey">,
-  input: { sandboxId: string; token: string; script: string; repositories?: readonly string[] },
+  input: {
+    sandboxId: string;
+    token: string;
+    script: string;
+    repositories?: readonly string[];
+    refs?: readonly string[];
+  },
   deps: SshExecDeps,
   capture: boolean,
   timeoutMs = capture ? 30_000 : 600_000,
@@ -329,6 +342,7 @@ async function sshExchange(
       input.sandboxId,
       deps.githubHydration === true,
       input.repositories,
+      input.refs,
     );
   } catch (error) {
     if (!privateTransport || error instanceof PrivateSshError) throw error;
@@ -395,6 +409,7 @@ function command(
   sandboxId?: string,
   githubHydration = false,
   repositories?: readonly string[],
+  refs?: readonly string[],
 ) {
   return new Promise<string>((resolve, reject) => {
     // Typed as the base ChildProcess, not the stdio-narrowed overload: which @types/node overload
@@ -535,6 +550,12 @@ function command(
           reject(new GitHubHydrationError(hydrationPhase));
           return;
         }
+        const missingRef = gitFailure?.reason === "branch_missing" ? refs?.[gitFailure.index - 1] : undefined;
+        const gitMessage = gitFailure
+          ? missingRef
+            ? snapshotMissingRefMessage(safeGitRepository(repositories, gitFailure.index), missingRef)
+            : `Could not clone ${safeGitRepository(repositories, gitFailure.index)}: ${GIT_FAILURE_MESSAGES[gitFailure.reason]}`
+          : undefined;
         reject(
           new GoldenError(
             "build_failed",
@@ -546,9 +567,8 @@ function command(
               safeMessage: timedOut
                 ? `Build timed out during ${phase}.`
                 : phase === "checkout"
-                  ? gitFailure
-                    ? `Could not clone ${safeGitRepository(repositories, gitFailure.index)}: ${GIT_FAILURE_MESSAGES[gitFailure.reason]}`
-                    : `Clone failed (exit ${exitCode ?? code ?? "unknown"}). Check the requested branches and GitHub access, then rebuild.`
+                  ? (gitMessage ??
+                    `Clone failed (exit ${exitCode ?? code ?? "unknown"}). Check the requested branches and GitHub access, then rebuild.`)
                   : phase === "init" && commandIndex && Number(commandIndex) > 0
                     ? `Init command ${commandIndex} exited ${exitCode ?? code ?? "unknown"}. Correct the command, then rebuild.`
                     : phase === "output_collector"

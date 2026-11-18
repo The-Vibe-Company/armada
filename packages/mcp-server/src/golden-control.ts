@@ -137,10 +137,9 @@ export async function updateGoldenRoute(
   if (!additive && body.config === undefined) throw new VaultError("invalid", "config is required.");
   if (additive && (!Array.isArray(body.addRepos) || !body.addRepos.every((repo) => typeof repo === "string")))
     throw new VaultError("invalid", "addRepos must be a non-empty list of repository URLs.");
+  const additions = additive ? (body.addRepos as string[]) : undefined;
   const config = normalizeGitHubGoldenConfig(
-    additive
-      ? addGoldenRepositories(existingGolden.config, body.addRepos as string[])
-      : parseSnapshotConfig(body.config),
+    additions ? addGoldenRepositories(existingGolden.config, additions, "snapshot") : parseSnapshotConfig(body.config),
   );
   const provider = await providerForGolden(options, caller, existingGolden);
   return options.goldenBuilds.admit(
@@ -155,6 +154,7 @@ export async function updateGoldenRoute(
       existingGolden,
     },
     required(body, "idempotencyKey"),
+    additions,
   );
 }
 

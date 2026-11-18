@@ -33,7 +33,7 @@ test("snapshot builds mount credentials privately, publish automatic ownership l
   };
   const images = new Map<string, { Id: string; Config: { Labels: Record<string, string> } }>();
   let proofFailure: unknown;
-  let missingBaselineTool = false;
+  let failureOutput: string | undefined;
   const commands: (readonly string[])[] = [];
   let builds = 0,
     directory = "";
@@ -53,8 +53,7 @@ test("snapshot builds mount credentials privately, publish automatic ownership l
           return { exitCode: 0, stdout: "" };
         if (argv[0] !== "build") throw Error("Unexpected Docker operation");
         builds++;
-        if (missingBaselineTool)
-          return { exitCode: 1, stdout: "", stderr: "#22 0.05 ARMADA_BASELINE_1_FAILED jq\nproject output" };
+        if (failureOutput) return { exitCode: 1, stdout: "", stderr: failureOutput };
         try {
           directory = argv.at(-1)!;
           expect(stdin).toBeUndefined();
@@ -159,6 +158,11 @@ test("snapshot builds mount credentials privately, publish automatic ownership l
   await expect(executor.buildSnapshot(job, true)).rejects.toThrow("Docker snapshot build failed or outcome unknown.");
   expect(builds).toBe(1);
   images.clear();
-  missingBaselineTool = true;
+  failureOutput = "#22 0.05 ARMADA_BASELINE_1_FAILED jq\nproject output";
   await expect(executor.buildSnapshot(job)).rejects.toThrow("Snapshot baseline 1 requires a working jq");
+  failureOutput = "#21 0.02 ARMADA_GIT_FAILURE 1 branch_missing\nraw checkout output";
+  await expect(executor.buildSnapshot(job)).rejects.toMatchObject({
+    message: "Snapshot checkout ref was not found.",
+    index: 1,
+  });
 });

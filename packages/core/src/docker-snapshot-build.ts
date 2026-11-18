@@ -30,6 +30,12 @@ export class DockerSnapshotBaselineError extends Error {
   }
 }
 
+export class DockerSnapshotMissingRefError extends Error {
+  constructor(readonly index: number) {
+    super("Snapshot checkout ref was not found.");
+  }
+}
+
 const baselineLabel = "dev.armada.environment.baseline-version";
 
 /** BuildKit secret mount and shared golden checkout/init/scan. No credential file or model account. */
@@ -77,6 +83,12 @@ export async function buildDockerSnapshot(
     if (result.exitCode !== 0) {
       const diagnostic = githubBuildToken === undefined ? undefined : snapshotBaselineFailure(result.stderr ?? "");
       if (diagnostic) throw new DockerSnapshotBaselineError(diagnostic);
+      if (githubBuildToken !== undefined) {
+        for (const line of (result.stderr ?? "").split("\n")) {
+          const marker = /^#\d+ \d+(?:\.\d+)? ARMADA_GIT_FAILURE ([1-9]|1[0-6]) branch_missing$/.exec(line.trim());
+          if (marker) throw new DockerSnapshotMissingRefError(Number(marker[1]));
+        }
+      }
       throw Error("Snapshot build failed.");
     }
     return result.stdout;
@@ -211,7 +223,7 @@ RUN ${snapshotBaselineVerify}
     );
     return await verify(true);
   } catch (error) {
-    if (error instanceof DockerSnapshotBaselineError) throw error;
+    if (error instanceof DockerSnapshotBaselineError || error instanceof DockerSnapshotMissingRefError) throw error;
     throw Error("Docker snapshot build failed or outcome unknown.");
   } finally {
     // Removal is scoped to this request's disposable builder, never the shared Docker builder.

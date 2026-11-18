@@ -65,7 +65,6 @@ export interface GoldenCreateDeps {
     actor: GoldenActor,
     visibility: Visibility,
     repos: string[],
-    branches?: readonly (string | undefined)[],
   ): Promise<{ repos: AuthorizedRepo[]; token: string }>;
   /**
    * Mints a short-lived, repo-scoped installation token. Optional: absent (no GITHUB_APP_PRIVATE_KEY)
@@ -79,6 +78,7 @@ export interface GoldenCreateDeps {
       token: string;
       script: string;
       repositories?: readonly string[];
+      refs?: readonly string[];
       onWarning?: (warning: GoldenBuildWarning) => void;
     },
   ): Promise<void>;
@@ -168,12 +168,7 @@ export class GoldenCreateService {
       throw new GoldenError("invalid_config", `A golden needs 1 to ${MAX_REPOS} repositories.`);
     }
     const authorizationRepos = requested ? requested.map(({ owner, repo }) => `${owner}/${repo}`) : input.repos;
-    const { repos, token: callerToken } = await this.deps.authorize(
-      actor,
-      input.visibility,
-      authorizationRepos,
-      requested?.map((repo) => repo.branch),
-    );
+    const { repos, token: callerToken } = await this.deps.authorize(actor, input.visibility, authorizationRepos);
     if (!repos.length) throw new GoldenError("invalid_config", "A golden needs at least one authorized repository.");
     const prepared = requested ? applyRequestedRepos(repos, requested) : withGoldenDirs(repos);
     const reservation = await this.deps.reserve?.(provider, actor, input.existingGolden);
@@ -274,6 +269,7 @@ export class GoldenCreateService {
           sandboxId: builder.id,
           token: group.token,
           repositories: group.repos.map((repo) => `${repo.owner}/${repo.repo}`),
+          refs: group.repos.map((repo) => repo.branch ?? "main"),
           onWarning,
           script: groups.length === 1 ? goldenScript(prepared, setup) : goldenCheckoutFrame(group.repos),
         });

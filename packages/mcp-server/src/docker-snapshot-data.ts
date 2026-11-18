@@ -3,6 +3,7 @@ import {
   DOCKER_SNAPSHOT_FAILURE_MESSAGES,
   type DockerSnapshotRecord,
   dockerHostUpgradeMessage,
+  normalizeGitHubGoldenConfig,
   parseGoldenConfig,
   VERSION,
 } from "@armada/core";
@@ -11,6 +12,7 @@ import {
   SNAPSHOT_BASELINE_VERSION,
   type Sql,
   snapshotBaselineFailureMessage,
+  snapshotMissingRefMessage,
   VaultError,
 } from "@armada/core/server";
 import type { DockerHostJob } from "../../core/src/docker-host-job.ts";
@@ -34,6 +36,7 @@ export type SnapshotRow = {
   built_on_version: string | null;
   baseline_version: number | null;
   baseline_failure_tool: string | null;
+  missing_ref_index: number | null;
   build_expires_at: Date | string;
   status: DockerSnapshotRecord["status"];
   image_id: string | null;
@@ -47,7 +50,12 @@ export type SnapshotRow = {
 };
 export function snapshotRecord(row: SnapshotRow): DockerSnapshotRecord {
   const baselineOutdated = row.status === "ready" && (row.baseline_version ?? 0) < SNAPSHOT_BASELINE_VERSION;
-  const upgrade = baselineOutdated ? dockerHostUpgradeMessage(row.host_daemon_version, VERSION) : null;
+  const hostVersion = row.host_daemon_version?.match(/^\d{1,9}\.\d{1,9}\.\d{1,9}/)?.[0];
+  const upgrade = baselineOutdated ? dockerHostUpgradeMessage(hostVersion, VERSION) : null;
+  const config = parseGoldenConfig(row.config);
+  const missing = row.missing_ref_index
+    ? normalizeGitHubGoldenConfig(config).repos[row.missing_ref_index - 1]
+    : undefined;
   const baselineWarning = baselineOutdated
     ? [
         row.baseline_version == null
@@ -72,12 +80,12 @@ export function snapshotRecord(row: SnapshotRow): DockerSnapshotRecord {
     name: row.name,
     visibility: row.visibility,
     provider: "docker",
-    config: parseGoldenConfig(row.config),
+    config,
     definitionHash: createHash("sha256")
       .update(
         JSON.stringify({
           image: row.base_image,
-          config: parseGoldenConfig(row.config),
+          config,
           ...(row.built_on_version === null ? {} : { armadaVersion: row.built_on_version }),
         }),
       )
@@ -90,7 +98,9 @@ export function snapshotRecord(row: SnapshotRow): DockerSnapshotRecord {
         : row.status === "failed"
           ? isSnapshotBaselineTool(row.baseline_failure_tool)
             ? snapshotBaselineFailureMessage(row.baseline_failure_tool)
-            : (row.failure_reason ?? DOCKER_SNAPSHOT_FAILURE_MESSAGES.build)
+            : missing
+              ? snapshotMissingRefMessage(`${missing.owner}/${missing.repo}`, missing.branch)
+              : (row.failure_reason ?? DOCKER_SNAPSHOT_FAILURE_MESSAGES.build)
           : null,
     createdAt: new Date(row.created_at).toISOString(),
     hostName: row.host_name,
