@@ -17,6 +17,7 @@ const machinePaths = [
   "/api/docker-host/unregister",
 ];
 const reusePath = "/api/docker-host/reuse-registration";
+const SNAPSHOT_HOST_WORK = new Set(["create", "rebuild"]);
 const ownerPaths = [
   "/api/v1/docker/snapshots/list",
   "/api/v1/docker/snapshots/get",
@@ -103,9 +104,11 @@ export function createDockerHostRoutes(
           const snapshots = options.snapshots;
           if (!snapshots) throw new InvalidInput();
           const operation = path.split("/").at(-1) ?? "";
-          const snapshot = await observeProviderCall("docker", `snapshot.${operation}`, () =>
-            snapshots.command(result.caller, operation, body),
-          );
+          const command = () => snapshots.command(result.caller, operation, body);
+          // Only create and rebuild queue host work; list and get read Armada's database alone.
+          const snapshot = SNAPSHOT_HOST_WORK.has(operation)
+            ? await observeProviderCall("docker", `snapshot.${operation}`, command)
+            : await command();
           return Response.json(snapshot, { headers });
         }
         fields(

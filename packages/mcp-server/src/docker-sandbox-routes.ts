@@ -35,6 +35,8 @@ export function createDockerSandboxRoutes(
   },
   authenticate: (request: Request) => Promise<CallerResult>,
 ): Route {
+  // Calls that queue host work are provider calls; get, job and journal read Armada's database
+  // alone and go to the unobserved services, so they leave only the HTTP record.
   const sandboxes = observeProvider("docker", services.sandboxes);
   const runtime = observeProvider("docker", services.runtime);
   const bootstrap = services.bootstrap && observeProvider("docker", services.bootstrap);
@@ -71,7 +73,7 @@ export function createDockerSandboxRoutes(
       const sandboxId = string(body.sandboxId);
       if (operation === "get") {
         fields(body, ["org", "sandboxId"]);
-        return Response.json(await sandboxes.get(actor, sandboxId), { headers });
+        return Response.json(await services.sandboxes.get(actor, sandboxId), { headers });
       }
       if (operation === "journal") {
         fields(body, ["org", "sandboxId"], ["cursor", "limit"]);
@@ -81,7 +83,7 @@ export function createDockerSandboxRoutes(
         )
           throw new InvalidInput();
         return Response.json(
-          await runtime.journal(actor, sandboxId, {
+          await services.runtime.journal(actor, sandboxId, {
             ...(body.cursor === undefined ? {} : { cursor: body.cursor }),
             ...(body.limit === undefined ? {} : { limit: body.limit }),
           }),
@@ -111,7 +113,8 @@ export function createDockerSandboxRoutes(
               });
         return Response.json(result, { status: result.state === "pending" ? 202 : 200, headers });
       }
-      if (operation === "job") return Response.json(await sandboxes.job(actor, sandboxId, requestId), { headers });
+      if (operation === "job")
+        return Response.json(await services.sandboxes.job(actor, sandboxId, requestId), { headers });
       const result =
         operation === "stop"
           ? await sandboxes.stop(actor, sandboxId, requestId)

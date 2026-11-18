@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
 import { createSqlAuthStore } from "@armada/auth";
 import {
@@ -43,6 +43,7 @@ import { createDockerSandboxControls } from "../src/docker-sandbox-controls.ts";
 import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
 import { createDockerSnapshots } from "../src/docker-snapshots.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
+import { observeRequest } from "../src/request-observability.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
@@ -2772,8 +2773,37 @@ test.each(["auth", "auth-deferred", "network"] as const)(
         ]);
       } else {
         if (mode === "auth-deferred") {
-          expect((await service.launch(f.caller, request)).sandbox.status).toBe("starting");
-          await service.drain();
+          // Admission is recorded as such; the worker's real outcome joins the admitting request's ID.
+          const records: Record<string, unknown>[] = [];
+          let admitted: Awaited<ReturnType<typeof service.launch>> | undefined;
+          const response = await observeRequest(
+            async () => {
+              admitted = await service.launch(f.caller, request);
+              return new Response(null, { status: 201 });
+            },
+            (line) => records.push(JSON.parse(line)),
+          );
+          expect(admitted?.sandbox.status).toBe("starting");
+          const requestId = response?.headers.get("x-request-id");
+          expect(records.filter((record) => record.event === "provider_call")).toEqual([
+            expect.objectContaining({ requestId, provider: "docker", operation: "launch.admit", outcome: "ok" }),
+          ]);
+          const background = spyOn(console, "error").mockImplementation(() => {});
+          const warnings = spyOn(console, "warn").mockImplementation(() => {});
+          try {
+            await service.drain();
+            const worker = background.mock.calls
+              .map(([line]) => (typeof line === "string" && line.startsWith("{") ? JSON.parse(line) : undefined))
+              .filter((record) => record?.event === "provider_call" && record.operation === "launch");
+            expect(worker).toEqual([expect.objectContaining({ requestId, provider: "docker", outcome: "error" })]);
+            expect(warnings.mock.calls).toContainEqual([
+              "docker_launch_failed",
+              expect.objectContaining({ requestId }),
+            ]);
+          } finally {
+            background.mockRestore();
+            warnings.mockRestore();
+          }
           expect(
             (
               await db.query<{ status_reason: string }>("select status_reason from sandboxes where id=$1", [

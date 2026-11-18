@@ -10,6 +10,17 @@ export function currentRequestId(): string | undefined {
   return current.getStore()?.id;
 }
 
+const serverId = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/;
+
+/**
+ * Resume a request's correlation inside durable background work it handed off (a deferred Docker
+ * launch), so provider records there carry the ID returned to the caller. Without a well-formed ID
+ * the work runs uncorrelated, like other background provider work.
+ */
+export function continueRequest<T>(id: string | undefined, work: () => Promise<T>, log: Log = stderr): Promise<T> {
+  return id && serverId.test(id) ? current.run({ id, log }, work) : work();
+}
+
 /** Generate our own ID. Caller-supplied headers and runtime idempotency keys are independent. */
 export function observeRequest<T extends Response | undefined>(work: () => T | Promise<T>, log: Log = stderr) {
   const id = crypto.randomUUID();
@@ -49,12 +60,12 @@ type Provider = "boat" | "modal" | "docker";
 
 /**
  * One `provider_call` record per call made inside an HTTP request. `provider` may be resolved
- * late (the enrolled-runtime boundary learns it under its lock); `accepted` classifies a
+ * late (the enrolled-runtime boundary learns it under its lock), and so may `operation`; `accepted` classifies a
  * returned value, so a refusal reply that does not throw still records `outcome: "error"`.
  */
 export async function observeProviderCall<T>(
   provider: Provider | (() => Provider | undefined),
-  operation: string,
+  operation: string | (() => string),
   work: () => Promise<T>,
   accepted: (result: T) => boolean = () => true,
 ): Promise<T> {
@@ -73,7 +84,7 @@ export async function observeProviderCall<T>(
         event: "provider_call",
         requestId: request.id,
         ...(name ? { provider: name } : {}),
-        operation: redactForLog(operation),
+        operation: redactForLog(typeof operation === "function" ? operation() : operation),
         outcome,
         durationMs: Math.round(performance.now() - started),
       }),
