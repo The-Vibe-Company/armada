@@ -1534,7 +1534,7 @@ test("queued prompt receipt publication loss reconciles one native turn and pres
       () => {},
     );
   const accepted = await admit();
-  const queued = await accepted?.json();
+  const queued = (await accepted?.json()) as Awaited<ReturnType<typeof controls.invoke>> | undefined;
   if (!queued?.handled) throw Error("not handled");
   const { promptId } = queued.result as { promptId: string };
   const replay = await admit();
