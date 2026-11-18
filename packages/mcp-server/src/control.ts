@@ -50,7 +50,6 @@ import {
   VaultError,
   type VaultStore,
 } from "@armada/core/server";
-import { z } from "zod";
 import { validateAzureModelAccount } from "./azure-model-account.ts";
 import type { Caller, SupabaseProject } from "./caller.ts";
 import { readBody, readVaultBody } from "./control-body.ts";
@@ -75,6 +74,7 @@ import {
   snapshotGoldenRoute,
   updateGoldenRoute,
 } from "./golden-control.ts";
+import { GOLDEN_ADOPTION_REQUEST } from "./golden-rest-schemas.ts";
 import type { Invitations } from "./invitations.ts";
 import { launchActor, launchRoute, templateRuntime } from "./launch-control.ts";
 import { exposedSecrets, launchCredentials } from "./launch-credentials.ts";
@@ -473,11 +473,15 @@ export async function dispatchControlCommand(
   }
   if (route === "golden/adopt") {
     if (!options.data || !options.providers) throw new VaultError("unavailable", "Sandbox control is not configured.");
-    const scoped = await selectedCaller(options, caller, optional(body, "org"));
-    const input = goldenAdoptionInput.safeParse(body);
+    const org = optional(body, "org");
+    const scoped = await selectedCaller(options, caller, org);
+    const input = GOLDEN_ADOPTION_REQUEST.safeParse({ ...body, org });
     if (!input.success) {
       const details = input.error.issues.map((issue) => `${issue.message} at ${issue.path.join(".")}`).join("\n");
-      throw new ToolApiError("internal", `Input validation error: Invalid arguments for tool golden_adopt: ${details}`);
+      throw new ToolApiError(
+        "internal",
+        `MCP error -32602: Input validation error: Invalid arguments for tool golden_adopt: ${details}`,
+      );
     }
     if (!options.goldenAdoption) throw new ToolApiError("unsupported", "Canonical adoption is not configured.");
     const data = options.data(scoped);
@@ -1066,8 +1070,6 @@ function scope(body: Record<string, unknown>): "user" | "org" {
   if (value === "user" || value === "org") return value;
   throw new VaultError("invalid", "scope is user or org.");
 }
-
-const goldenAdoptionInput = z.object({ id: z.string().uuid(), confirmation: z.string().uuid().optional() });
 
 async function selectedCaller(options: ControlOptions, caller: Caller, ref: string | undefined): Promise<Caller> {
   if (ref === undefined) return caller;
