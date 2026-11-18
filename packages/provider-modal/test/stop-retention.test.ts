@@ -56,8 +56,12 @@ function fixture(stage: "scrub" | "snapshot", { productionDetach = false } = {})
         (x) => x.info.name !== name || !x.deleted || x.sourceId !== sourceId || x.imageId !== imageId,
       );
     },
-    claimImage: async (name: string) => {
-      images = images.map((x) => (x.info.name === name && x.deleted ? { ...x, collecting: true } : x));
+    claimImage: async (name: string, sourceId: string, imageId: string) => {
+      images = images.map((x) =>
+        x.info.name === name && x.deleted && x.sourceId === sourceId && x.imageId === imageId
+          ? { ...x, collecting: true }
+          : x,
+      );
     },
     imageReferenced: async () => false,
     tombstoneSources: async () => (images.some((x) => x.deleted) ? [stored.info.id] : []),

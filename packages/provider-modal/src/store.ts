@@ -161,11 +161,11 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
         [key, name, sourceId, imageId],
       );
     },
-    async claimImage(name) {
+    async claimImage(name, sourceId, imageId) {
       await authorize();
       await sql.query(
-        `update public.modal_images set record=jsonb_set(record,'{collecting}','true') where scope=$1 and name=$2 and record->>'deleted'='true'`,
-        [key, name],
+        `update public.modal_images set record=jsonb_set(record,'{collecting}','true') where scope=$1 and name=$2 and source_id=$3 and record->>'imageId'=$4 and record->>'deleted'='true'`,
+        [key, name, sourceId, imageId],
       );
     },
     async images(sourceId) {

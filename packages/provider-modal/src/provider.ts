@@ -725,7 +725,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         const claim = imagesStore.lease(source.info.id, async () => {
           for (const image of await retired())
             if (!image.collecting && !(await imagesStore.imageReferenced(image.imageId)))
-              await imagesStore.claimImage(image.info.name);
+              await imagesStore.claimImage(image.info.name, image.sourceId, image.imageId);
         });
         // Another controller owns this source now (a golden prompt, snapshot, restore or a
         // concurrent delete). Its tombstones stay durable for the next collection in scope.
@@ -769,8 +769,10 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
   /** After a tombstone is committed, the retirement has succeeded: nothing after it may fail the
    * call. Its own image is collected best-effort now (the retirement worker retries it through
    * collectRetiredSnapshot); other retired images are collected detached, once. */
-  async function collectAfterRetirement(snapshot: string) {
-    await collectFrom(source.store, true, undefined, snapshot).catch(logDeferredCollection({ snapshot }));
+  async function collectAfterRetirement(snapshot: string, sourceId?: string) {
+    await collectFrom(source.store, true, sourceId ? [sourceId] : undefined, snapshot).catch(
+      logDeferredCollection({ snapshot }),
+    );
     detachCollection(() => collectImages(true).catch(logDeferredCollection({ snapshot, scope: "unrelated" })));
   }
   async function collectImages(skipBusy = false) {
@@ -1687,7 +1689,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           });
         throw error;
       }
-      await collectAfterRetirement(name);
+      await collectAfterRetirement(name, image.sourceId);
     },
     async collectRetiredSnapshot(name) {
       if (scopeKey(source.scope) !== scopeKey(options.scope))

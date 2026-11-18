@@ -151,7 +151,7 @@ export interface ModalStore {
   /** Deletes a tombstone only while it still records this source and physical image. */
   purgeImage(name: string, sourceId: string, imageId: string): Promise<void>;
   /** Durably claims a tombstone for physical collection; a live image is never claimed. */
-  claimImage(name: string): Promise<void>;
+  claimImage(name: string, sourceId: string, imageId: string): Promise<void>;
   images(sourceId: string): Promise<SavedImage[]>;
   /** Visible machines that still own a retired image record awaiting physical collection. */
   tombstoneSources(): Promise<string[]>;

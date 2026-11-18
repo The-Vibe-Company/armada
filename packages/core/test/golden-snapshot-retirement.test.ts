@@ -110,10 +110,15 @@ async function fixture(sql: Sql, placement: "boat" | "modal" = "boat", visibilit
       await deleteGate?.();
       snapshots.delete(name);
     },
-    collectRetiredSnapshot: async () => {
-      if (artifactPending instanceof Error) throw artifactPending;
-      return artifactPending ? "pending" : "collected";
-    },
+    // Only Modal collects a deleted snapshot's artifact afterwards; Boat has no such hook.
+    ...(placement === "modal"
+      ? {
+          collectRetiredSnapshot: async () => {
+            if (artifactPending instanceof Error) throw artifactPending;
+            return artifactPending ? ("pending" as const) : ("collected" as const);
+          },
+        }
+      : {}),
     fork: async () => {
       throw Error("A stale revision reached fork");
     },
