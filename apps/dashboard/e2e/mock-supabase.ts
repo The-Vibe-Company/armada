@@ -44,6 +44,7 @@ const users = new Map<string, { id: string; email: string }>([
 
 type State = {
   orgs: Row[];
+  langfuse: Map<string, Row>;
   members: Row[];
   goldens: Row[];
   sandboxes: Row[];
@@ -84,6 +85,7 @@ type State = {
 function seed(): State {
   const now = "2026-11-08T10:00:00.000Z";
   const state: State = {
+    langfuse: new Map(),
     // Acme's Boat key predates org credentials: the legacy `orgs.boat_api_key_enc` column, never readable by a user JWT.
     orgs: [{ id: ACME, name: "Acme", created_at: now, boat_api_key_enc: "\\x0102" }],
     members: [
@@ -2875,6 +2877,52 @@ function control(url: URL, body: Row): Response {
   return json({ message: "not found" }, 404);
 }
 
+function langfuseControl(request: Request, match: RegExpMatchArray, body: Row): Response {
+  const org = match[1]!;
+  const testing = Boolean(match[2]);
+  const user = viewer(request);
+  if (!user) return json({ error: "unauthorized" }, 401);
+  const admin = isAdmin(org, user);
+  if (!isMember(org, user) || (!admin && (testing || request.method !== "GET"))) {
+    return json({ error: "forbidden" }, 403);
+  }
+  const saved = state.langfuse.get(org);
+  const status = { enabled: saved?.enabled ?? false, contentMode: saved?.contentMode ?? "metadata" };
+  const host = "https://cloud.langfuse.com";
+  if (request.method === "GET" && !testing) {
+    if (!admin) return json(status);
+    return json({
+      ...status,
+      configured: Boolean(saved),
+      host: saved?.host ?? host,
+      publicKey: saved?.publicKey ?? null,
+      counters: { exported: 0, failed: 0, dropped: 0 },
+      lastExportAt: null,
+    });
+  }
+  if (request.method === "DELETE" && !testing) {
+    state.langfuse.delete(org);
+    return new Response(null, { status: 204 });
+  }
+  if ((testing && request.method !== "POST") || (!testing && request.method !== "PUT")) {
+    return new Response(null, { status: 405 });
+  }
+  const candidate: Row = { host, ...status, ...saved, ...body };
+  if (!candidate.publicKey || !candidate.secretKey) return json({ error: "langfuse_configuration_unavailable" }, 400);
+  if (testing) {
+    return json({
+      status:
+        candidate.host !== host
+          ? "unreachable"
+          : candidate.publicKey === "fixture_public" && candidate.secretKey === "fixture_secret"
+            ? "ok"
+            : "rejected",
+    });
+  }
+  state.langfuse.set(org, candidate);
+  return json({ enabled: candidate.enabled, contentMode: candidate.contentMode });
+}
+
 const server = Bun.serve({
   port: PORT,
   hostname: "127.0.0.1",
@@ -2916,6 +2964,8 @@ const server = Bun.serve({
       return mcpControl(url.pathname.slice("/api/v1/mcp/".length), body, viewer(request));
     }
     if (url.pathname.startsWith("/oauth/")) return oauth(url);
+    const langfuse = url.pathname.match(/^\/api\/v1\/orgs\/([0-9a-f-]{36})\/langfuse(\/test)?$/i);
+    if (langfuse) return langfuseControl(request, langfuse, body);
     if (url.pathname.startsWith("/api/v1/")) {
       const route = url.pathname.slice("/api/v1/".length);
       if (route === "docker/hosts/list" && body.org === LARGE) {
