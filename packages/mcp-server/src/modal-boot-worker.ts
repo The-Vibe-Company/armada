@@ -175,8 +175,8 @@ export function createModalBootWorker(
     }
     const settlement = await sql.transaction!(async (tx) => {
       const sandbox = (
-        await tx.query<{ cancelled: boolean }>(
-          "select stop_requested_at is not null as cancelled from public.sandboxes where id=$1 for update",
+        await tx.query<{ stopping: boolean }>(
+          "select status='stopping' and stop_requested_at is not null as stopping from public.sandboxes where id=$1 for update",
           [id],
         )
       ).rows[0];
@@ -213,8 +213,8 @@ export function createModalBootWorker(
         if (reservation.rows.length) return false;
       }
       const resolvedOutcome: Outcome =
-        allocationGone && sandbox?.cancelled && !("reason" in outcome && outcome.cancelled)
-          ? { reason: "cancelled_during_boot", cancelled: true }
+        allocationGone && sandbox?.stopping && !("reason" in outcome && outcome.cancelled)
+          ? { reason: claim.phase === "queued" ? "cancelled_before_boot" : "cancelled_during_boot", cancelled: true }
           : outcome;
       const cancelled = "reason" in resolvedOutcome && resolvedOutcome.cancelled === true;
       const updated = await tx.query(
@@ -389,9 +389,11 @@ export function createModalBootWorker(
         await reschedule();
         return;
       }
-      const liveDispatch = async (transaction?: Sql) =>
-        (
-          await (transaction ?? sql).query<{ expired: boolean }>(
+      const liveDispatch = async (tx?: Sql) => {
+        // Match settlement's lock order and serialize with stop before guarding provider writes.
+        if (tx) await tx.query("select id from public.sandboxes where id=$1 for update", [id]);
+        return (
+          await (tx ?? sql).query<{ expired: boolean }>(
             `select r.dispatch_deadline<=clock_timestamp() as expired
              from public.provider_launch_requests r join public.sandboxes s on s.id=r.sandbox_id
              join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
@@ -402,13 +404,16 @@ export function createModalBootWorker(
                  recovery
                    ? "r.phase='cleanup_pending'"
                    : `r.phase='booting' and e.epoch=r.actor_epoch and ${cleanup ? "s.status='stopping' and s.stop_requested_at is not null" : BOOT_ALLOWED}`
-               } ${transaction ? "for update of r" : ""}`,
+               }
+             ${tx ? "for update of r" : ""}`,
             token,
           )
         ).rows[0];
+      };
       const guardDispatch = Object.assign(
-        async (transaction?: Sql) => {
-          const dispatch = await liveDispatch(transaction);
+        async (tx?: Sql) => {
+          signal.throwIfAborted();
+          const dispatch = await liveDispatch(tx);
           if (!accepting || signal.aborted || !dispatch || (!recovery && dispatch.expired))
             throw new LaunchError("outcome_unknown", "Modal dispatch authority expired or changed.", { sandboxId: id });
         },

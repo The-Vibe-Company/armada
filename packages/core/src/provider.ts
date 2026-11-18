@@ -309,7 +309,8 @@ export interface SnapshotRequest {
 
 /** Server-side guard checked immediately before a provider dispatches a durable launch mutation. */
 export interface ProviderDispatchGuard {
-  (transaction?: Sql): Promise<void>;
+  /** With a transaction, lock the claim through the guarded provider write. */
+  (tx?: Sql): Promise<void>;
   readonly signal?: AbortSignal;
 }
 

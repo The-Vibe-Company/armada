@@ -1321,7 +1321,76 @@ test.each([
   });
 });
 
-test("durable Modal dispatch checks authority at reservation, create, and deletion", async () => {
+test.each(["abort", "lose authority"] as const)(
+  "a stalled Modal boot can %s without blocking recovery",
+  async (event) => {
+    const f = fixture();
+    const builder = await f.provider.createGolden({});
+    const name = crypto.randomUUID();
+    await f.provider.snapshot({ sandboxId: builder.id, name });
+    const launchId = crypto.randomUUID();
+    const child = modalLaunchSandboxId(launchId);
+    const controller = new AbortController();
+    let hasAuthority = true;
+    const guard = Object.assign(
+      async () => {
+        controller.signal.throwIfAborted();
+        if (!hasAuthority) throw new Error("Claim superseded.");
+      },
+      { signal: controller.signal },
+    );
+    const entered = deferred();
+    const release = deferred();
+    f.distribution.captureProcessBaseline = async (_sb, row) => {
+      entered.resolve();
+      await release.promise;
+      return {
+        version: 1,
+        physicalId: row.physicalId!,
+        generation: row.generation,
+        namespace: { pid: "pid:[fixture]", mount: "mnt:[fixture]" },
+        processes: [],
+      };
+    };
+    const intervals = spyOn(globalThis, "setInterval");
+    const boot = f.provider.fork(
+      { from: name, modalLaunchId: launchId, idempotencyKey: launchId, labels: { sandbox: launchId } },
+      guard,
+    );
+    try {
+      await Promise.race([entered.promise, boot]);
+      const heartbeat = intervals.mock.calls.find(([, delay]) => delay === 10_000)?.[0];
+      if (!heartbeat) throw new Error("The stalled boot has no child heartbeat.");
+      const {
+        rows: [before],
+      } = await db.query(
+        "update modal_machines set lease_until=clock_timestamp()+interval '30 seconds' where id=$1 returning lease_until::text",
+        [child],
+      );
+      if (event === "abort") controller.abort();
+      else hasAuthority = false;
+      // Invoke a tick already queued at cancellation without waiting for a wall-clock interval.
+      await heartbeat();
+      expect((await db.query("select lease_until::text from modal_machines where id=$1", [child])).rows[0]).toEqual(
+        before,
+      );
+      if (event === "lose authority") {
+        release.resolve();
+        await expect(boot).rejects.toThrow();
+        expect((await f.store.get(child)).processBaseline).toBeUndefined();
+      }
+      await db.query("update modal_machines set lease_until=now()-interval '1 second' where id=$1", [child]);
+      expect(await f.provider.delete({ sandboxId: child }, async () => {})).toEqual({ status: "deleted" });
+    } finally {
+      intervals.mockRestore();
+      release.resolve();
+      await expect(boot).rejects.toThrow();
+    }
+    expect(await f.store.get(child)).toMatchObject({ phase: "deleted" });
+  },
+);
+
+test("durable Modal dispatch checks authority after the reservation and lookup", async () => {
   const f = fixture();
   const builder = await f.provider.createGolden({});
   const name = crypto.randomUUID();
@@ -1329,32 +1398,30 @@ test("durable Modal dispatch checks authority at reservation, create, and deleti
   const launchId = crypto.randomUUID();
   const key = modalLaunchSandboxId(launchId);
   const request = { from: name, modalLaunchId: launchId, idempotencyKey: launchId, labels: { sandbox: launchId } };
-  // A stale worker cannot reserve after the cleanup claim fences the launch.
   await expect(
-    f.provider.fork(request, async (transaction) => {
-      if (transaction) throw Error("Dispatch expired");
+    f.provider.fork(request, async (tx) => {
+      if (tx) throw Error("Reservation authority expired");
     }),
-  ).rejects.toThrow();
-  const noReservation = { sandboxId: key, modalLaunchId: launchId };
-  expect(await f.provider.delete(noReservation, async () => {})).toEqual({ status: "deleted" });
+  ).rejects.toMatchObject({ code: "unknown" });
   expect(await f.store.findByRequestKey(launchId)).toBeNull();
-  expect(f.creates).toBe(1);
-  const dispatch = new AbortController();
-  const abortAtCreate = Object.assign(
-    async (transaction?: Sql) => {
-      if (!transaction && (await f.store.get(key)).phase === "creating") dispatch.abort();
-      dispatch.signal.throwIfAborted();
+  const controller = new AbortController();
+  const guard = Object.assign(
+    async (tx?: Sql) => {
+      if (tx) return;
+      if ((await f.store.get(key)).phase === "creating") controller.abort();
+      controller.signal.throwIfAborted();
     },
-    { signal: dispatch.signal },
+    { signal: controller.signal },
   );
-  await expect(f.provider.fork(request, abortAtCreate)).rejects.toThrow();
+  await expect(f.provider.fork(request, guard)).rejects.toThrow();
   expect(f.creates).toBe(1);
   expect(await f.store.get(key)).toMatchObject({ phase: "reserved" });
   const child = await f.provider.fork({ from: name });
   const terminations = f.log.filter((op) => op === "terminate").length;
   let phaseAtDeleteDispatch: Machine["phase"] | undefined;
   await expect(
-    f.provider.delete({ sandboxId: child.id }, async () => {
+    f.provider.delete({ sandboxId: child.id }, async (tx) => {
+      if (tx) return;
       phaseAtDeleteDispatch = (await f.store.get(child.id)).phase;
       throw Error("Dispatch expired");
     }),

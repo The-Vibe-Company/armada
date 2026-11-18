@@ -47,6 +47,7 @@ import type {
   RunnerDistribution,
   RunnerTransport,
   SavedImage,
+  SaveMachine,
   Scope,
   SshPreparation,
 } from "./ports.ts";
@@ -348,7 +349,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
   }
   async function create(
     row: Machine,
-    save: (row: Machine, undoUndispatchedCreate?: true) => Promise<void>,
+    save: SaveMachine,
     env: Readonly<Record<string, string>>,
     beforeDispatch?: ProviderDispatchGuard,
     onResumeStage?: ResumeStageObserver,
@@ -413,7 +414,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         // pre-create state if this attempt still owns the child lease.
         row.phase = "reserved";
         delete row.grantExpiresAt;
-        await save(row, true);
+        await save(row, "undispatched_create");
         throw error;
       }
     } else {
@@ -571,9 +572,9 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         )
           throw refusal("sandbox_not_ready", "Snapshot revision is no longer ready.");
         sourceImage = { scopeKey: sourceScope, name: request.from, imageId: current.imageId };
-        // Serialize reservation with the worker claim. After cleanup takes over,
-        // a late fork cannot pin an image behind a proven-absent reservation.
-        await beforeDispatch?.(tx);
+        // The request row stays locked until the child reservation commits.
+        // A successor cannot claim cleanup and prove absence while this write can still land.
+        if (launchId !== undefined) await beforeDispatch!(tx);
         return reserve(sourceImage, tx);
       });
     }
@@ -613,7 +614,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
             ? create(current, save, "env" in request ? (request.env ?? {}) : {}, beforeDispatch)
             : Promise.resolve(sandboxInfo(current));
         },
-        launchId === undefined ? undefined : { signal: beforeDispatch?.signal },
+        launchId === undefined ? undefined : beforeDispatch,
       );
     } catch (error) {
       if (
@@ -1234,7 +1235,8 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           )
             throw refusal("conflict", "Common resume belongs to another activation.");
           signal?.throwIfAborted();
-          if (["reserved", "creating", "booting"].includes(row.phase)) return create(row, save, {}, undefined, onResumeStage);
+          if (["reserved", "creating", "booting"].includes(row.phase))
+            return create(row, save, {}, undefined, onResumeStage);
           if (row.phase !== "active" || (await (await physical(row)).poll()) !== null)
             throw refusal("conflict", "Resume activation outcome is unavailable; do not allocate again.");
           return sandboxInfo(row);
@@ -2002,19 +2004,20 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     async delete({ sandboxId, modalLaunchId }, beforeDispatch) {
       await boundNotAbsence();
       if (modalLaunchId !== undefined) {
-        if (!beforeDispatch || sandboxId !== modalLaunchSandboxId(modalLaunchId))
-          throw refusal("invalid_request", "Invalid Modal launch cleanup identity.");
+        if (!beforeDispatch || modalLaunchSandboxId(modalLaunchId) !== sandboxId)
+          throw refusal("invalid_request", "Invalid row-first Modal cleanup identity.");
         await beforeDispatch();
+        // Dispatch requires a reservation committed under the live boot claim.
+        // After cleanup claims the request, a missing exact-key row proves pre-create absence.
         const reservation = await store.findByRequestKey(modalLaunchId);
-        // Every create requires a committed reservation. The worker's cleanup
-        // claim prevents any future reservation or create for this launch.
         if (!reservation) return { status: "deleted" };
         if (
           reservation.info.id !== sandboxId ||
           reservation.launchUserId !== options.scope.userId ||
           reservation.golden
         )
-          throw refusal("conflict", "Modal launch reservation does not match cleanup identity.");
+          throw refusal("conflict", "Modal cleanup key belongs to another launch.");
+        assertMachineSource(reservation);
       }
       await store.lease(
         sandboxId,
@@ -2070,7 +2073,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           row.phase = "deleted";
           await save(row);
         },
-        beforeDispatch ? { signal: beforeDispatch.signal } : undefined,
+        beforeDispatch,
       );
       // The target's compute and recovery images are gone and durably recorded, so the receipt
       // is published now. Retired images of other sources are collected detached, once. Each is

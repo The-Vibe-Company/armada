@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
 import { type GoldenRecord, modalLaunchSandboxId, type Provider, ProviderError, type Sql } from "@armada/core";
+import { createModalProvider, createSqlModalStore, type RunnerDistribution } from "@armada/provider-modal";
+import type { ModalClient } from "modal";
 import { createSqlData } from "../src/data.ts";
 import { createModalBootWorker } from "../src/modal-boot-worker.ts";
 import { createOrdinaryLaunchReceipts } from "../src/ordinary-launch-receipts.ts";
@@ -12,7 +14,10 @@ const database = rowOnlyDatabase();
 test.each([
   "restart after an uncertain fork",
   "stop before dispatch",
+  "publish a terminal failure when admission expires before dispatch",
   "keep an expired boot failed during cleanup",
+  "release a fence after a crash before reservation",
+  "cancel after boot intent before reservation",
   "fence an expired stop without contacting Modal",
   "fence a stop that expires during authority resolution",
   "fence a stop that expires inside the adapter",
@@ -132,10 +137,81 @@ test.each([
     return;
   }
 
+  if (scenario === "publish a terminal failure when admission expires before dispatch") {
+    await db.query(
+      "update provider_launch_requests set dispatch_deadline=now()-interval '1 second' where sandbox_id=$1",
+      [id],
+    );
+    expect(await first.reconcileOne(signal)).toBe(true);
+    await first.drain();
+    expect(attempts).toBe(0);
+    expect(await persisted()).toMatchObject({ phase: "failed", status: "failed", fenced: false, sealed: false });
+    const store = createSqlData(sql)({
+      userId: people.owner,
+      orgs: [{ orgId: people.org, role: "member" }],
+      via: "service",
+    }).sandboxes;
+    expect(await readStatus(provider, store, (await store.get(id))!, { now: new Date() })).toMatchObject({
+      status: "failed",
+      providerState: null,
+      settled: true,
+    });
+    return;
+  }
+
   expect(await first.reconcileOne(signal)).toBe(true);
   await first.drain();
   expect(await persisted()).toMatchObject({ phase: "booting", fenced: true, lease_epoch: "1" });
   first.stopAdmission();
+  if (
+    scenario === "release a fence after a crash before reservation" ||
+    scenario === "cancel after boot intent before reservation"
+  ) {
+    // The first claim persisted boot intent but exited without a Modal reservation.
+    const cancelled = scenario === "cancel after boot intent before reservation";
+    if (cancelled) {
+      const caller = {
+        userId: people.owner,
+        orgs: [{ orgId: people.org, role: "member" as const }],
+        via: "service" as const,
+      };
+      expect(await createSqlData(sql)(caller).sandboxes.requestPendingModalStop!(id)).toBe(true);
+    } else {
+      await db.query(
+        "update provider_launch_requests set dispatch_deadline=now()-interval '1 second' where sandbox_id=$1",
+        [id],
+      );
+    }
+    await db.query("update provider_launch_requests set next_attempt_at=now() where sandbox_id=$1", [id]);
+    const scope = { orgId: people.org, userId: people.owner, visibility: "private" as const, binding: golden.modal! };
+    const adapter = createModalProvider({
+      scope,
+      store: createSqlModalStore(sql, scope),
+      appName: "fixture",
+      client: { apps: { fromName: async () => ({ appId: scope.binding.appId }) } } as unknown as ModalClient,
+      distribution: {} as RunnerDistribution,
+      runner: {
+        call: async () => {
+          throw new Error("No runner exists.");
+        },
+      },
+    });
+    const recovery = createModalBootWorker(sql, ENCRYPTION_KEY, async () => ({
+      ...adapter,
+      backendIdentity: provider.backendIdentity!,
+    }));
+    for (const phase of cancelled ? ["cancelled"] : ["cleanup_pending", "failed"]) {
+      expect(await recovery.reconcileOne(signal)).toBe(true);
+      await recovery.drain();
+      expect(await persisted()).toMatchObject({ phase });
+    }
+    expect(await persisted()).toMatchObject({ status: cancelled ? "stopped" : "failed", fenced: false, sealed: false });
+    await db.query("select set_config('request.jwt.claim.sub',$1,false)", [people.owner]);
+    expect((await db.query("select remove_golden($1) as removed_at", [golden.id])).rows[0]).toMatchObject({
+      removed_at: expect.any(Date),
+    });
+    return;
+  }
   if (scenario === "keep an expired boot failed during cleanup") {
     await db.query(
       "update provider_launch_requests set dispatch_deadline=now()-interval '1 second',next_attempt_at=now() where sandbox_id=$1",
@@ -215,10 +291,9 @@ test.each([
       fenced: true,
       sealed: true,
     });
-    if (!expiredBeforeClaim) return;
-    // A change in membership role invalidates launch authority, while the
-    // still-accessible pinned Modal App remains valid for delete-only cleanup.
-    await db.query("update members set role='admin' where org_id=$1 and user_id=$2", [people.org, people.owner]);
+    // A role change invalidates admission while the pinned Modal owner still has cleanup access.
+    if (expiredBeforeClaim)
+      await db.query("update members set role='admin' where org_id=$1 and user_id=$2", [people.org, people.owner]);
     await db.query("select set_config('request.jwt.claim.sub',$1,false)", [people.owner]);
     await expect(db.query("select remove_golden($1)", [golden.id])).rejects.toThrow("unresolved");
     await db.query("update provider_launch_requests set next_attempt_at=now() where sandbox_id=$1", [id]);

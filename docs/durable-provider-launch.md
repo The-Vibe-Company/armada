@@ -171,14 +171,16 @@ This path depends on the previously added `provider_launch_requests` migration.
 Modal locks the snapshot source row only through the transaction that pins the
 image in the child reservation. A successor can recover that reservation directly
 once the renewable child lease expires. The worker checks its persisted lease,
-deadline and cancellation immediately before adapter allocation. Once dispatch
-expires, unresolved allocations enter leased, delete-only cleanup under the
-original Modal authority. Cleanup can settle under the launch claim without
+deadline and cancellation before reserving and immediately before allocation.
+The reservation transaction locks the worker claim. Child lease renewals require
+live dispatch authority and stop when the worker aborts its attempt. Once
+dispatch expires, unresolved allocations enter leased, delete-only cleanup under
+the original Modal authority. Cleanup can settle under the launch claim without
 resolving provider authority when SQL proves there is no reservation, the
 reservation never reached physical create, or the child has a deleted tombstone.
-The worker clears the golden fence after that proof or once the durable child
-reference protects the snapshot. Cleanup retains its request until removal or
-absence is confirmed, even after golden retirement.
+The worker clears the golden fence after that proof, confirmed removal, or once
+a durable child reference protects the snapshot. Cleanup retains its request
+until removal or absence is confirmed, even after golden retirement.
 
 A crash after committing create intent can leave a named create with an unknown
 outcome. [Modal guarantees name uniqueness for running sandboxes](https://modal.com/docs/guide/sandboxes#named-sandboxes).
