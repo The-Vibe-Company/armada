@@ -43,14 +43,16 @@ without a repo selector retain their existing behavior.
   requests explicitly supply the wrong cwd. It covers start, resume, turn,
   argument/field preservation, unrelated messages, malformed input, stderr, EOF
   and native exit status.
-- Optional offline real-binary test (no inference or credentials):
-  `CODEX_NATIVE_TEST_BINARY=/path/to/unwrapped/codex bun test packages/provider-boat/test/native-cwd.test.ts`.
-  It runs the native app-server with an isolated HOME and allowlisted environment.
-  The unwrapped process starts in repo B but returns the caller-supplied other cwd;
-  the wrapped process returns repo B for the same `thread/start` request.
-
-The optional test passed using the production-installed
-`/usr/local/bin/codex.armada-original`. This does not replace the parent's final
-post-deployment first-native-`pwd` check in a new sandbox.
+- The synthetic cwd sentinel in `native-cwd.test.ts` replaces the native
+  binary with a stdio peer that reports its process cwd and the cwd it received.
+  It proves the selected repo is both the process cwd and the rewritten
+  `thread/start`, `thread/resume` and `turn/start` cwd, without a real binary.
+- The former opt-in real-binary cwd test ("real Codex app-server reports the
+  selected thread cwd") was removed from unit CI in #2622. It started pinned Codex
+  twice inside a five-second test and failed the release check intermittently.
+  The real executable now runs only in the publishing contract
+  `packages/mcp-server/test/mcp-codex-bridge.release.ts`, which runs the pinned
+  executable behind the managed wrapper and checks its exclusive writer lock. Post-deploy
+  smoke still checks the first native `pwd` in a new sandbox.
 
 Protocol reference: [Codex App Server](https://developers.openai.com/codex/app-server).

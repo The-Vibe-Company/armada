@@ -190,15 +190,28 @@ try:
             with open(os.path.join(native_home,".armada-native-writer.json")) as source:
                 writer=json.load(source)
             assert writer["pid"] in current_pids
-            lock=os.stat(os.path.join(native_home,".armada-native-writer.lock"))
-            inherited=False
-            for fd in os.listdir("/proc/%d/fd"%writer["pid"]):
-                try:
-                    info=os.stat("/proc/%d/fd/%s"%(writer["pid"],fd))
-                    inherited=inherited or (info.st_dev,info.st_ino)==(lock.st_dev,lock.st_ino)
-                except FileNotFoundError:
-                    pass
-            assert inherited, "Pinned native Codex must retain the managed OS writer lock"
+            lock_path=os.path.join(native_home,".armada-native-writer.lock")
+            lock=os.stat(lock_path)
+            def holds_exclusive_writer_lock(pid):
+                # A matching descriptor is not enough: an inherited unlocked descriptor
+                # would admit concurrent writers. fdinfo lists the FLOCK held by that
+                # open file description, so require an exclusive (WRITE) flock on it.
+                for fd in os.listdir("/proc/%d/fd"%pid):
+                    try:
+                        info=os.stat("/proc/%d/fd/%s"%(pid,fd))
+                        if (info.st_dev,info.st_ino)!=(lock.st_dev,lock.st_ino):continue
+                        with open("/proc/%d/fdinfo/%s"%(pid,fd)) as source:
+                            for entry in source:
+                                fields=entry.split()
+                                if fields[:1]==["lock:"] and fields[2:5]==["FLOCK","ADVISORY","WRITE"] and fields[6].endswith(":%d"%lock.st_ino):
+                                    return True
+                    except (FileNotFoundError,ProcessLookupError):
+                        pass
+                return False
+            assert holds_exclusive_writer_lock(writer["pid"]), "Pinned native Codex must retain the managed OS writer lock"
+            # Negative control: this process holds a matching but unlocked descriptor.
+            with open(lock_path,"rb"):
+                assert not holds_exclusive_writer_lock(os.getpid()), "An unlocked writer-lock descriptor must not satisfy the lock check"
             wrong=json.loads(subprocess.check_output(inspection[:-1]+["/usr/bin/python3"],text=True))
             assert wrong["inspectionComplete"] and wrong["nativeAppServerFound"]
             assert not wrong["nativeExecutableMatchesInstalledBinary"]
