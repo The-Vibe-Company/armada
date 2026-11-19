@@ -33,12 +33,6 @@ const goldenReceipt = {
   runtime: null,
 };
 
-test("an incomplete golden receipt leaves the launch outcome unknown", async () => {
-  await expect(launchSandbox(answering({ sandbox: { id: "s1" } }), args)).rejects.toMatchObject({
-    outcomeUnknown: true,
-  });
-});
-
 const answering = (body: unknown, status = 200, seen: unknown[] = []) => ({
   serverUrl: "https://armada.test/mcp",
   token: "t",
@@ -55,6 +49,12 @@ const answeringAt = (routes: string[], body: unknown, status = 200) => ({
     routes.push(`${new URL(String(input)).pathname} ${String(init?.body)}`);
     return Response.json(body, { status });
   }) as typeof fetch,
+});
+
+test("an unusable success receipt leaves the launch outcome unknown", async () => {
+  for (const payload of [{ sandbox: { id: "s1" } }, null]) {
+    await expect(launchSandbox(answering(payload), args)).rejects.toMatchObject({ outcomeUnknown: true });
+  }
 });
 
 test("an explicit size or stored defaults carry the sizing version on the canonical route", async () => {

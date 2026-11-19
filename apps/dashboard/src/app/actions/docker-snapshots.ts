@@ -19,7 +19,7 @@ import { requireViewer } from "@/lib/data/viewer";
 import { launchedDockerSandbox, UNKNOWN_DOCKER_LAUNCH } from "@/lib/docker-launch";
 import { snapshotBuildHostBlocker } from "@/lib/docker-snapshots";
 import { mcpUrl } from "@/lib/env";
-import { LAUNCH_PATH, LAUNCH_TIMEOUT_MS, launchFailureMessage } from "@/lib/launch";
+import { launchFailureMessage, postSandboxLaunch } from "@/lib/launch";
 import { LAUNCH_KEY_FIELD } from "@/lib/launch-key";
 import { checkAccountChoice } from "@/lib/model-accounts";
 import { chosenConnection, modelChoice } from "@/lib/model-choice";
@@ -136,9 +136,8 @@ export async function launchFromDockerSnapshot(_previous: ActionResult | null, d
   let id: string | null;
   try {
     id = launchedDockerSandbox(
-      await controlPost(
-        { serverUrl, token: viewer.token, timeoutMs: LAUNCH_TIMEOUT_MS },
-        LAUNCH_PATH,
+      await postSandboxLaunch(
+        { serverUrl, token: viewer.token },
         {
           org,
           provider: "docker",

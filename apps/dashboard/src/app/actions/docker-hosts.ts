@@ -4,7 +4,7 @@ import { type Harness, validateSkillPins } from "@armada/core";
 import { revalidatePath } from "next/cache";
 import { type ActionResult, done, fail, formString, isUuid } from "@/lib/action";
 import { CONNECTION_CHOICE_FIELD, launchSelection } from "@/lib/connections";
-import { ControlError, controlPost } from "@/lib/control";
+import { ControlError } from "@/lib/control";
 import { listSelectedConnections } from "@/lib/data/connections";
 import { readDockerLaunchOption, readSelectedDockerHosts, viewerDockerHosts } from "@/lib/data/docker-hosts";
 import { listSelectedAccounts } from "@/lib/data/model-accounts";
@@ -26,7 +26,7 @@ import {
 } from "@/lib/docker-launch";
 import { mcpUrl } from "@/lib/env";
 import { HARNESS_LABELS } from "@/lib/labels";
-import { LAUNCH_PATH, LAUNCH_TIMEOUT_MS } from "@/lib/launch";
+import { postSandboxLaunch } from "@/lib/launch";
 import { LAUNCH_KEY_FIELD } from "@/lib/launch-key";
 import { checkAccountChoice } from "@/lib/model-accounts";
 import { modelChoice } from "@/lib/model-choice";
@@ -175,9 +175,8 @@ export async function launchOnDockerHost(
   let id: string | null;
   try {
     id = launchedDockerSandbox(
-      await controlPost(
-        { serverUrl, token: viewer.token, timeoutMs: LAUNCH_TIMEOUT_MS },
-        LAUNCH_PATH,
+      await postSandboxLaunch(
+        { serverUrl, token: viewer.token },
         {
           ...dockerLaunchBody({
             org,
@@ -202,7 +201,8 @@ export async function launchOnDockerHost(
       return fail(UNKNOWN_DOCKER_LAUNCH, { href: "/sandboxes?owner=me&sort=newest", label: "See newest sandboxes" });
     return fail(dockerHostActionFailure(error.status, "launch", error.code));
   }
-  if (!id) return fail("The Armada server did not answer with a Docker sandbox.");
+  if (!id)
+    return fail(UNKNOWN_DOCKER_LAUNCH, { href: "/sandboxes?owner=me&sort=newest", label: "See newest sandboxes" });
   revalidatePath("/sandboxes");
   // The dialog navigates once it has forgotten this launch's request key, so a later launch is a new request.
   return { ok: true, message: "Launched. Opening the sandbox…", sandboxId: id };
