@@ -6,76 +6,82 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { State } from "../src/daemon.ts";
 import {
+  installService,
   instanceName,
+  removeInstallation,
   stateDirectory,
   type UpgradeServiceIo,
   upgradeService,
   validateInstallation,
 } from "../src/service.ts";
 
-// Real service-management boundary with recorded local executables: no systemd,
-// Docker daemon, network or sleeps. Protect service persistence and cleanup refusal.
 test("managed service persists registration and refuses cleanup of unknown files", async () => {
   const home = await mkdtemp(join(tmpdir(), "armada-service-"));
-  const original = { HOME: process.env.HOME, PATH: process.env.PATH };
   try {
-    process.env.HOME = home;
-    process.env.PATH = `${home}/.local/bin:${original.PATH}`;
     const bin = join(home, ".local/bin");
+    const binary = join(bin, "armada-docker-host");
     const directory = stateDirectory(home);
+    const unitFile = join(home, ".config/systemd/user/armada-docker-host.service");
+    const stateFile = join(directory, "state.json");
+    const markerFile = join(directory, "managed.json");
     await mkdir(bin, { recursive: true });
     await mkdir(directory, { recursive: true, mode: 0o700 });
-    await writeFile(join(bin, "armada-docker-host"), "verified host bytes", { mode: 0o700 });
-    await writeFile(join(bin, "systemctl"), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${home}/commands'\n`, { mode: 0o700 });
+    await writeFile(binary, "verified host bytes", { mode: 0o700 });
     const state: State = {
       server: "https://armada.example",
       installationId: crypto.randomUUID(),
       hostId: crypto.randomUUID(),
-      hostToken: "a".repeat(64),
+      hostToken: "fixture-token",
       receipts: [],
     };
-    const serviceModule = new URL("../src/service.ts", import.meta.url).pathname;
-    const run = (code: string) =>
-      Bun.spawnSync(
-        [
-          process.execPath,
-          "-e",
-          `import {installService,uninstallPreflight,removeInstallation} from ${JSON.stringify(serviceModule)}; const state=${JSON.stringify(state)}; ${code}`,
-        ],
-        { env: { ...process.env, HOME: home, PATH: `${bin}:${original.PATH}` }, stdout: "pipe", stderr: "pipe" },
-      );
-    const installed = run("await installService(state)");
-    expect(installed.exitCode).toBe(0);
-    const unit = await readFile(join(home, ".config/systemd/user/armada-docker-host.service"), "utf8");
+    await writeFile(stateFile, JSON.stringify(state), { mode: 0o600 });
+    const commands: string[][] = [];
+    const io = {
+      home,
+      service: async (args: string[]) => {
+        commands.push(args);
+      },
+    };
+    await installService(state, undefined, io);
+    const unit = await readFile(unitFile, "utf8");
+    const marker = await readFile(markerFile, "utf8");
     expect(unit).toContain("WantedBy=default.target");
     expect(unit).toContain("Restart=on-failure");
     expect(unit).toContain(`run --state-dir "${directory}"`);
     expect(unit).not.toContain(state.hostToken);
-    expect(await readFile(join(home, "commands"), "utf8")).toContain("--user enable --now armada-docker-host.service");
-    await writeFile(join(directory, "unrelated.txt"), "keep");
-    const refused = run("await uninstallPreflight(state)");
-    expect(refused.exitCode).not.toBe(0);
-    expect(refused.stderr.toString()).toContain("Unknown files");
-    expect(await readFile(join(directory, "unrelated.txt"), "utf8")).toBe("keep");
-    await rm(join(directory, "unrelated.txt"));
-    // Daemon-owned artifact caches (#2562) are neither unknown files nor left behind.
+    expect(commands).toEqual([
+      ["systemctl", "--user", "daemon-reload"],
+      ["systemctl", "--user", "enable", "--now", "armada-docker-host.service"],
+    ]);
+
+    const unrelated = join(directory, "unrelated.txt");
+    await writeFile(unrelated, "keep");
+    await expect(validateInstallation(state, home)).rejects.toThrow("Unknown files");
+    expect(await readFile(unrelated, "utf8")).toBe("keep");
+    await rm(unrelated);
+
     for (const cache of ["runtime-cache", "artifact-cache", "artifact-cache-private"]) {
       await mkdir(join(directory, cache), { mode: cache === "artifact-cache" ? 0o755 : 0o700 });
       await writeFile(join(directory, cache, "a".repeat(64)), "public bytes", { mode: 0o444 });
     }
-    expect(run("await uninstallPreflight(state)").stderr.toString()).not.toContain("Unknown files");
-    await writeFile(join(directory, "state.json"), JSON.stringify(state), { mode: 0o600 });
-    await writeFile(join(bin, "systemctl"), "#!/bin/sh\nexit 1\n", { mode: 0o700 });
-    const failedRemoval = run("await removeInstallation()");
-    expect(failedRemoval.exitCode).not.toBe(0);
-    expect(await readFile(join(directory, "state.json"), "utf8")).toBe(JSON.stringify(state));
-    expect(await readFile(join(home, ".config/systemd/user/armada-docker-host.service"), "utf8")).toBe(unit);
-    await writeFile(join(bin, "systemctl"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
-    expect(run("await removeInstallation()").exitCode).toBe(0);
-    expect(await Bun.file(join(bin, "armada-docker-host")).exists()).toBe(false);
+    await validateInstallation(state, home);
+    const reloadFailure = new Error("systemd reload failed");
+    await expect(
+      removeInstallation(undefined, {
+        home,
+        service: async () => {
+          throw reloadFailure;
+        },
+      }),
+    ).rejects.toBe(reloadFailure);
+    expect(await readFile(stateFile, "utf8")).toBe(JSON.stringify(state));
+    expect(await readFile(unitFile, "utf8")).toBe(unit);
+    expect(await readFile(markerFile, "utf8")).toBe(marker);
+
+    await removeInstallation(undefined, io);
+    await expect(lstat(directory)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(lstat(binary)).rejects.toMatchObject({ code: "ENOENT" });
   } finally {
-    process.env.HOME = original.HOME;
-    process.env.PATH = original.PATH;
     await rm(home, { recursive: true, force: true });
   }
 });

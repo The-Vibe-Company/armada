@@ -57,13 +57,20 @@ function quoted(value: string) {
   if (/[\r\n\0]/.test(value)) throw new Error("Unsupported installation path.");
   return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("%", "%%").replaceAll("$", "$$")}"`;
 }
-export async function installService(state: State, instance?: string) {
-  const p = paths(homedir(), instance);
-  const unit = `[Unit]\nDescription=Armada Docker host\nAfter=network-online.target\n\n[Service]\nExecStart=${quoted(p.binary)} run --state-dir ${quoted(stateDirectory(homedir(), instance))}\nRestart=on-failure\nRestartSec=10\nTimeoutStopSec=90\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`;
+interface ServiceIo {
+  home: string;
+  service(args: string[]): Promise<unknown>;
+}
+
+const localService = (): ServiceIo => ({ home: homedir(), service: command });
+
+export async function installService(state: State, instance?: string, io = localService()) {
+  const p = paths(io.home, instance);
+  const unit = `[Unit]\nDescription=Armada Docker host\nAfter=network-online.target\n\n[Service]\nExecStart=${quoted(p.binary)} run --state-dir ${quoted(stateDirectory(io.home, instance))}\nRestart=on-failure\nRestartSec=10\nTimeoutStopSec=90\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`;
   await mkdir(p.units, { recursive: true, mode: 0o700 });
   await writeFile(p.unit, unit, { flag: "wx", mode: 0o600 });
   await writeFile(
-    join(stateDirectory(homedir(), instance), "managed.json"),
+    join(stateDirectory(io.home, instance), "managed.json"),
     JSON.stringify({
       installationId: state.installationId,
       binarySha256: createHash("sha256")
@@ -73,8 +80,8 @@ export async function installService(state: State, instance?: string) {
     }),
     { flag: "wx", mode: 0o600 },
   );
-  await command(["systemctl", "--user", "daemon-reload"]);
-  await command(["systemctl", "--user", "enable", "--now", serviceName(instance)]);
+  await io.service(["systemctl", "--user", "daemon-reload"]);
+  await io.service(["systemctl", "--user", "enable", "--now", serviceName(instance)]);
   console.log("Installed Armada Docker host user service with linger. Use armada-docker-host status.");
 }
 
@@ -178,10 +185,8 @@ export async function validateInstallation(
   return marker;
 }
 
-export interface UpgradeServiceIo {
-  home: string;
+export interface UpgradeServiceIo extends ServiceIo {
   executable: string;
-  service(args: string[]): Promise<unknown>;
 }
 
 /** Durable rename: pending marker is synced before the executable can be replaced. */
@@ -213,7 +218,7 @@ async function atomicReplace(path: string, bytes: Uint8Array, mode: number, temp
 export async function upgradeService(
   store: Pick<Store, "load"> & { lock(): Promise<() => Promise<void>> },
   server: string,
-  io: UpgradeServiceIo = { home: homedir(), executable: process.execPath, service: command },
+  io: UpgradeServiceIo = { ...localService(), executable: process.execPath },
   instance?: string,
 ) {
   const origin = serverOrigin(server);
@@ -269,9 +274,9 @@ export async function uninstallPreflight(state: State, instance?: string) {
 export async function stopService(instance?: string) {
   await command(["systemctl", "--user", "disable", "--now", serviceName(instance)]);
 }
-export async function removeInstallation(instance?: string) {
-  const p = paths(homedir(), instance);
-  const directory = stateDirectory(homedir(), instance);
+export async function removeInstallation(instance?: string, io = localService()) {
+  const p = paths(io.home, instance);
+  const directory = stateDirectory(io.home, instance);
   // Preserve registration/ownership proof until the final binary unlink succeeds.
   const saved = await Promise.all(
     [p.unit, join(directory, "state.json"), join(directory, "managed.json")].map(async (path) => ({
@@ -281,7 +286,7 @@ export async function removeInstallation(instance?: string) {
   );
   try {
     await unlink(p.unit);
-    await command(["systemctl", "--user", "daemon-reload"]);
+    await io.service(["systemctl", "--user", "daemon-reload"]);
     for (const cache of CACHE_DIRECTORIES) await rm(join(directory, cache), { recursive: true, force: true });
     for (const entry of await readdir(directory)) {
       if (/^daemon-[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\.lock$/.test(entry)) {
