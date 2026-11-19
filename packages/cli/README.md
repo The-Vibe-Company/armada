@@ -25,3 +25,18 @@ acknowledgements.
 
 The golden list normalizer handles older Boat responses whose sandbox and
 snapshot IDs predate the provider field.
+
+## Vault input and output
+
+Application variables and secrets use separate commands from model-account
+credentials. Supply values through stdin or `--file`, since command arguments
+can end up in shell history. The interactive secret prompt suppresses echo,
+including readline redraws.
+
+Application vault writes read the value before contacting the API. Input
+errors omit file paths, file contents, and rejected arguments because each
+could contain a secret. The CLI selects approved scalar metadata fields from
+list and write responses. Only an explicit variable read prints a value.
+
+Native model login obtains consent locally before import. The CLI sends the
+credential to the Armada API and prints a fixed confirmation after the write.
