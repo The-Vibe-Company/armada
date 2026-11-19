@@ -14,6 +14,10 @@ export const RUNTIME_REQUEST_EVIDENCE = `(s.activity_lease_id=q.request_id
 export const QUEUED_DISPATCH_EVIDENCE = `(q.native_prompt_id is not null
   or (s.task_prompt_id=q.request_id::text) is true or (${RUNTIME_REQUEST_EVIDENCE}) is true)`;
 export const RUNTIME_LANE = `(s.provider='docker' or s.boat_runtime or s.runtime_transport='dialout')`;
+export const NATIVE_DISPATCH_UNCERTAIN = `(not coalesce(${RUNTIME_LANE},false)
+  and (s.lifecycle_generation is distinct from q.dispatch_generation
+    or s.activity_lease_id is not null or coalesce(${RUNTIME_REQUEST_EVIDENCE},false)))`;
+export const UNCERTAIN_DISPATCH_MESSAGE = "Dispatch outcome uncertain; inspect sandbox history before resending.";
 
 const TURN_LIFECYCLE_CANCELLED = `(s.deleted_at is not null or s.expires_at <= now() or s.stop_requested_at is not null
   or (s.status = 'stopped' and s.lifecycle_generation <> q.queued_generation))`;
@@ -21,16 +25,18 @@ const TURN_LIFECYCLE_CANCELLED = `(s.deleted_at is not null or s.expires_at <= n
 export const QUEUED_TURN_CANCELLED = `(${TURN_LIFECYCLE_CANCELLED} or s.status not in ('ready','running','stopped'))`;
 export const DISPATCHING_TURN_CANCELLED = `(${TURN_LIFECYCLE_CANCELLED} or s.status in ('deleted','stopping','failed'))`;
 
-export async function failTurnReceipt(tx: Sql, sandboxId: string, requestId: string) {
+export async function failTurnReceipt(tx: Sql, sandboxId: string, requestId: string, uncertain = false) {
   await tx.query(
     `update public.account_turn_queue q set state='failed', failure_reason=case
+       when $3 then '${UNCERTAIN_DISPATCH_MESSAGE}'
        when q.state='dispatching' then 'Dispatch cancelled by confirmed stop.'
        when ${QUEUED_DISPATCH_EVIDENCE}
          then 'Queued receipt already has dispatch evidence; inspect sandbox history before resending.'
-       else 'Queued prompt cannot start: sandbox stopped, deleted, expired, or stopping.' end
+       else 'Queued prompt cannot start: sandbox stopped, deleted, expired, or stopping.' end,
+       dispatch_until=case when $3 then null else q.dispatch_until end
      from public.sandboxes s
      where q.sandbox_id=$1 and q.request_id=$2 and q.state in ('queued','dispatching') and s.id=q.sandbox_id`,
-    [sandboxId, requestId],
+    [sandboxId, requestId, uncertain],
   );
 }
 
@@ -128,7 +134,7 @@ export async function dispatchAccountTurn(
         return !retry;
       } else {
         await tx.query(
-          `update public.account_turn_queue q set failure_reason='Dispatch outcome uncertain; inspect sandbox history before resending.',
+          `update public.account_turn_queue q set failure_reason='${UNCERTAIN_DISPATCH_MESSAGE}',
            state=case when coalesce(${RUNTIME_LANE},false) then q.state else 'failed' end,
            dispatch_until=case when not coalesce(${RUNTIME_LANE},false) then null when ${RUNTIME_REQUEST_EVIDENCE} then now() else q.dispatch_until end
            from public.sandboxes s where s.id=q.sandbox_id and q.sandbox_id=$1 and q.request_id=$2 and q.state='dispatching'`,

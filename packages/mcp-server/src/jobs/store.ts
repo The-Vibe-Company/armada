@@ -2,6 +2,7 @@ import { decryptSecret, encryptSecret, type Sql, toBytea } from "@armada/core/se
 import {
   DISPATCHING_TURN_CANCELLED,
   failTurnReceipt,
+  NATIVE_DISPATCH_UNCERTAIN,
   QUEUED_DISPATCH_EVIDENCE,
   QUEUED_TURN_CANCELLED,
 } from "../account-turn-dispatch.ts";
@@ -80,19 +81,30 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
         await tx.query("select id from public.sandboxes where id = $1 for update nowait", [sandboxId]);
         const {
           rows: [sandbox],
-        } = await tx.query<{ generation: string; cancelled: boolean; queued_with_evidence: boolean }>(
+        } = await tx.query<{
+          generation: string;
+          cancelled: boolean;
+          queued_with_evidence: boolean;
+          native_uncertain: boolean;
+        }>(
           `select s.lifecycle_generation::text as generation,
                   case when q.state = 'queued' then ${QUEUED_TURN_CANCELLED}
                        else ${DISPATCHING_TURN_CANCELLED} end as cancelled,
-                  (q.state = 'queued' and ${QUEUED_DISPATCH_EVIDENCE}) as queued_with_evidence
+                  (q.state = 'queued' and ${QUEUED_DISPATCH_EVIDENCE}) as queued_with_evidence,
+                  (q.state = 'dispatching' and (q.dispatch_until is null or q.dispatch_until <= clock_timestamp())
+                    and ${NATIVE_DISPATCH_UNCERTAIN}) as native_uncertain
            from public.sandboxes s join public.account_turn_queue q on q.sandbox_id = s.id
            where s.id = $1 and q.request_id = $2`,
           [sandboxId, requestId],
         );
-        if (sandbox?.cancelled || sandbox?.queued_with_evidence) {
-          const reason = sandbox.cancelled ? "cancelled_receipt" : "queued_dispatch_evidence";
+        if (sandbox?.cancelled || sandbox?.queued_with_evidence || sandbox?.native_uncertain) {
+          const reason = sandbox.cancelled
+            ? "cancelled_receipt"
+            : sandbox.queued_with_evidence
+              ? "queued_dispatch_evidence"
+              : "native_dispatch_uncertain";
           if (await retireClaim(tx, job, owner, sandbox.generation, reason))
-            await failTurnReceipt(tx, sandboxId, requestId);
+            await failTurnReceipt(tx, sandboxId, requestId, reason === "native_dispatch_uncertain");
           return job;
         }
         if (receipt.state === "queued") {
@@ -136,7 +148,11 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
     job: Job,
     owner: string,
     generation: string | null,
-    reason: "stale_generation" | "cancelled_receipt" | "queued_dispatch_evidence" = "stale_generation",
+    reason:
+      | "stale_generation"
+      | "cancelled_receipt"
+      | "queued_dispatch_evidence"
+      | "native_dispatch_uncertain" = "stale_generation",
   ) {
     const { rows } = await tx.query(
       `update public.jobs j set state = 'failed', lease_owner = null, lease_until = null,
