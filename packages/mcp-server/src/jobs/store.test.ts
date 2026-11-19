@@ -91,7 +91,7 @@ test.each([1, 2])("a stale lifecycle lease is retired from claim generation %i",
   ]);
 });
 
-test.each(["complete", "takeover", "stale", "rollback"] as const)(
+test.each(["complete", "takeover", "stale", "interrupted", "not advanced", "expired"] as const)(
   "turn admission generation handoff handles %s",
   async (scenario) => {
     const f = await fixture();
@@ -115,25 +115,22 @@ test.each(["complete", "takeover", "stale", "rollback"] as const)(
         turn_dispatch: {
           concurrency: 1,
           async run(job, context) {
-            if (scenario === "rollback") {
-              await expect(
-                context.handoffGeneration({
-                  async lockPrerequisites() {},
-                  async advance(tx) {
-                    await tx.query(advance, [sandboxId]);
-                    throw new Error("Admission interrupted.");
-                  },
-                }),
-              ).rejects.toThrow("Admission interrupted.");
+            const handoff = context.handoffGeneration({
+              async lockPrerequisites() {},
+              async advance(tx) {
+                if (scenario === "not advanced") return;
+                await tx.query(advance, [sandboxId]);
+                if (scenario === "interrupted") throw new Error("Admission interrupted.");
+                if (scenario === "expired")
+                  await tx.query("update jobs set lease_until = '-infinity' where id = $1", [id]);
+              },
+            });
+            if (scenario === "interrupted") {
+              await expect(handoff).rejects.toThrow("Admission interrupted.");
+            } else if (scenario === "not advanced" || scenario === "expired") {
+              await expect(handoff).rejects.toThrow("Turn admission did not advance its fenced generation.");
             } else {
-              expect(
-                await context.handoffGeneration({
-                  async lockPrerequisites() {},
-                  async advance(tx) {
-                    await tx.query(advance, [sandboxId]);
-                  },
-                }),
-              ).toBe("3");
+              expect(await handoff).toBe("3");
               expect(await context.canDispatch()).toBe(true);
               expect(await store.renew(job, firstOwner!, 30)).toBe(true);
               if (scenario === "stale") await db.query(advance, [sandboxId]);
@@ -159,6 +156,7 @@ test.each(["complete", "takeover", "stale", "rollback"] as const)(
       expect(await store.complete(successor, owner, { status: "done" })).toBe(true);
       expect(await store.enqueue("turn_dispatch", sandboxId, 2, request, null, options)).toBe(id);
     }
+    const rolledBack = scenario === "interrupted" || scenario === "not advanced" || scenario === "expired";
     expect(
       (
         await db.query(
@@ -170,8 +168,8 @@ test.each(["complete", "takeover", "stale", "rollback"] as const)(
     ).toEqual([
       {
         state: scenario === "stale" ? "failed" : "done",
-        job_generation: scenario === "rollback" ? "2" : "3",
-        sandbox_generation: scenario === "rollback" ? "2" : scenario === "stale" ? "4" : "3",
+        job_generation: rolledBack ? "2" : "3",
+        sandbox_generation: rolledBack ? "2" : scenario === "stale" ? "4" : "3",
       },
     ]);
   },
