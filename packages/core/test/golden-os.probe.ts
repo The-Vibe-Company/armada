@@ -219,6 +219,11 @@ async function runProbe(image: string, mode: "user-standard" | "root-nnp") {
 const image = process.env.ARMADA_GOLDEN_OS_IMAGE;
 if (!image) throw new Error("ARMADA_GOLDEN_OS_IMAGE is required");
 for (const mode of ["user-standard", "root-nnp"] as const) {
-  await runProbe(image, mode);
-  console.log(`Golden OS fixture passed (${mode}).`);
+  try {
+    await runProbe(image, mode);
+    console.log(`Golden OS fixture passed (${mode}).`);
+  } catch (error) {
+    console.error(`Golden OS fixture failed (${mode}).`, error);
+    process.exitCode = 1;
+  }
 }
