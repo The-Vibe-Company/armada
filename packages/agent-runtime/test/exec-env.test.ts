@@ -49,7 +49,6 @@ test.skipIf(process.platform !== "linux")(
     // Runner instances share one connection here; state.test.ts owns physical WAL-byte scrubbing.
     const journal = new Journal(":memory:", (s) => s);
     const execution: RunnerExecutionOptions = {
-      readableVariables: { APP_REGION: "eu-west", EMPTY_VALUE: "" },
       execEnv: {
         ...githubEnv(gitCredential),
         PATH: `${home}:/usr/bin:/bin`,

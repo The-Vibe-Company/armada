@@ -87,12 +87,13 @@ export class Runner {
     this.publishNativeAuth = execution.publishNativeAuth;
     this.exclusiveNativeAuth = execution.exclusiveNativeAuth ?? false;
     const execEnv = validateExecEnvironment(execution.execEnv, this.credentialFreeBuilder);
+    // Template readables are already delivered to the selected harness environment.
+    validateExecReadables(execution.readableVariables, this.credentialFreeBuilder);
     journal.registerSecrets(execCredentialValues(execEnv));
     this.execEnvironment = Object.freeze({
       PATH: process.env.PATH ?? "/usr/bin:/bin",
       HOME: process.env.HOME ?? "/tmp",
       GIT_TERMINAL_PROMPT: "0",
-      ...validateExecReadables(execution.readableVariables, this.credentialFreeBuilder),
       ...execEnv,
       ...(execution.ghConfigDir ? { GH_CONFIG_DIR: execution.ghConfigDir } : {}),
       ...(execution.githubToolsRoot
