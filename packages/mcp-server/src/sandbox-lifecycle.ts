@@ -14,6 +14,7 @@ import { INTERRUPTED_LAUNCH_REASON } from "./turns.ts";
 import { preserveBeforeStop, recordStopDispatch } from "./work-preservation.ts";
 
 export const UNENROLLED_RESUME_STOP = "runtime_resume_unenrolled";
+const BOAT_ACTIVATION_PHASES = new Set(["init", "provisioning", "provisioned", "cloning"]);
 const OPERATOR_CLEANUP_PREFIX = "Operator cleanup required:";
 
 export async function deferAmbiguousBoatResume(
@@ -313,6 +314,7 @@ export function createSandboxLifecycle(
           !row.application_secret_tainted &&
           info.id === row.provider_sandbox_id &&
           info.state === "starting" &&
+          BOAT_ACTIVATION_PHASES.has(info.providerState) &&
           !info.physicalExitConfirmed
         ) {
           handingOffObservedResume = true;

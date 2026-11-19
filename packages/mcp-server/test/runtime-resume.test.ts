@@ -328,8 +328,8 @@ test("an unenrolled Boat resume returns to a confirmed retained stop before anot
   }
 });
 
-test.each(["activation receipt", "pending ticket", "observed archive", "observed running"])(
-  "the worker recovers an interrupted Boat resume with %s evidence",
+test.each(["activation receipt", "pending ticket", "observed archive", "observed running", "unrecognized state"])(
+  "the worker reconciles an interrupted Boat resume with %s evidence",
   async (proof) => {
     const f = await stopped();
     try {
@@ -361,10 +361,17 @@ test.each(["activation receipt", "pending ticket", "observed archive", "observed
           ? [{ body: { sandbox: retainedSandbox({ id: f.row.providerSandboxId, snapshotAvailable: false }) } }]
           : []),
         ...(proof === "observed running" ? [running, running, {}] : []),
+        ...(proof === "unrecognized state"
+          ? [{ body: { sandbox: sdkSandbox({ id: f.row.providerSandboxId, state: "unrecognized" }) } }, {}]
+          : []),
         { body: { sandbox: retainedSandbox({ id: f.row.providerSandboxId }) } },
       );
       const worker = createSandboxLifecycle(f.sql, async () => provider);
       expect(await worker.reconcileOne()).toBe(true);
+      if (proof === "unrecognized state") {
+        expect((await store.get(f.row.id))?.status).toBe("failed");
+        return;
+      }
       expect((await store.get(f.row.id))?.status).toBe("stopping");
       if (proof === "observed running") expect(requests.map(({ method }) => method)).toEqual(["GET"]);
       if (ticket) await expect(f.authority.enrol(ticket)).rejects.toThrow("runtime_enrolment_denied");
