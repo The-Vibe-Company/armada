@@ -13,7 +13,8 @@ export type UsageGroup =
   | "logs"
   | "setup"
   | "session"
-  | "account";
+  | "account"
+  | "automation";
 
 export type Command = {
   name: string;

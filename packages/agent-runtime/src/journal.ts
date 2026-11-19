@@ -36,14 +36,24 @@ export class Journal {
   readonly redact: (text: string) => string;
   private dynamicRedactor = createRedactor([]);
   private applicationSecrets = new Set<string>();
+  private hasApplicationSecrets = false;
   private redactShortApplicationText: ((text: string) => string) | undefined;
   registerSecrets(values: readonly string[]) {
     this.dynamicRedactor.register(values);
   }
   registerApplicationSecrets(values: readonly string[]) {
     this.registerSecrets(values);
+    this.hasApplicationSecrets ||= values.some(Boolean);
     for (const value of values) if (value.length > 0 && value.length < 8) this.applicationSecrets.add(value);
     this.redactShortApplicationText = createShortSecretTextRedactor([...this.applicationSecrets]);
+  }
+  redactCommandOutput(capture: { text: string; truncated: boolean }, limit: number) {
+    const mask = this.redactShortApplicationText;
+    if (this.hasApplicationSecrets && capture.truncated) return { text: "[REDACTED]", truncated: true };
+    const scrubbed = this.redact(capture.text);
+    const text = mask ? maskText(capture.text, scrubbed, mask) : scrubbed;
+    if (text.length > limit) return { text: "[REDACTED]", truncated: true };
+    return { text, truncated: capture.truncated };
   }
   constructor(path: string, redact: (text: string) => string) {
     this.redact = (text) => this.dynamicRedactor(redact(text));

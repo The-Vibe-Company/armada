@@ -455,3 +455,54 @@ Examples:
 For other commands and authentication settings: armada --help.
 "
 `;
+
+exports[`armada routine help preserves its output 1`] = `
+"Usage: armada routine <command> [arguments]
+Manage scheduled template launches that run as the routine owner.
+
+  create  Create a paused routine from file or inline configuration.
+  list    List visible IDs, names, status, versions and next occurrences.
+  show    Inspect configuration, prompt and current version.
+  update  Replace configuration from file, or change only the inline schedule.
+  enable  Schedule the next occurrence, not an immediate manual launch.
+  pause   Stop new admissions; already admitted runs may finish.
+  delete  Mark deleted; does not stop or delete running sandboxes.
+  runs    Read the latest 100 decisions and original-prompt outcomes.
+
+Actions require Armada login or ARMADA_TOKEN. Select an organization with --org
+NAME|UUID or armada org use. Organization-scoped writes require administrator permission.
+Use IDs from routine list when exact names collide; keep IDs for history after deletion.
+Updates and state changes require --expected-version from routine show/list;
+conflicts are not retried automatically. Prompts are readable configuration, not secrets.
+Schedules use five-field cron and IANA time zones, with runs at least one hour apart.
+Launch success is not task success; unknown is not success. Inspect routine runs.
+Inspect a command's options with armada routine <command> --help.
+Example: armada routine list --org ORG_UUID --json
+Example: armada routine runs ROUTINE_UUID --org ORG_UUID --json
+"
+`;
+
+exports[`armada template help preserves its output 1`] = `
+"Usage: armada template <command> [arguments]
+Manage reusable launch definitions and their immutable template versions.
+
+  create   Create a template from a JSON definition file or definition flags.
+  list     List visible IDs, names, scopes, status and current versions.
+  get      Inspect metadata or a selected version's definition with --json.
+  publish  Publish a complete new version, guarded by --expected-revision.
+  delete   Mark a template deleted, guarded by --expected-revision.
+  launch   Launch a template version using a saved --request-key for safe retries.
+
+Actions require Armada login or ARMADA_TOKEN. Select an organization with --org
+NAME|UUID or armada org use. Templates may be personal or organization-scoped;
+organization-scoped writes require administrator permission.
+Use IDs from template list when exact names collide across scopes.
+Definitions store variable/secret references; do not put raw secret values in them.
+References resolve into frozen manifests at launch, not publication.
+After an unknown launch outcome, keep the same request key and body; do not start
+a new attempt. See template launch --help for resolved-ID recovery.
+Inspect a command's full options with armada template <command> --help.
+Example: armada template list --org ORG_UUID --json
+Example: armada template get TEMPLATE_UUID --revision 1 --org ORG_UUID --json
+"
+`;
