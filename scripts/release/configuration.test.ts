@@ -4,7 +4,12 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 type Step = { id?: string; name?: string; run?: string; env?: Record<string, string>; with?: Record<string, string> };
-type Job = { steps: Step[]; needs?: string | string[]; outputs?: Record<string, string> };
+type Job = {
+  steps: Step[];
+  needs?: string | string[];
+  outputs?: Record<string, string>;
+  env?: Record<string, string>;
+};
 const workflow = Bun.YAML.parse(
   readFileSync(resolve(import.meta.dir, "../../.github/workflows/release.yml"), "utf8"),
 ) as { jobs: Record<string, Job> };
@@ -251,6 +256,7 @@ test("binary and publish jobs use the validated release version for npm artifact
   expect(binary.needs).toContain("release-metadata");
   expect(publish.needs).toContain("release-metadata");
   expect(collection?.env?.VERSION).toBe(version);
+  expect(publish.env?.VERSION).toBe(version);
   expect(artifact?.with?.name).toBe(`npm-tarballs-${version}-\${{ matrix.target }}`);
   expect(download?.with?.pattern).toBe(`npm-tarballs-${version}-*`);
 });
