@@ -1,23 +1,13 @@
 import type { AuthStore } from "@armada/auth";
-import {
-  goldenForSettings,
-  PUBLIC_CONTROL_ROUTES,
-  parseMachineSizePolicy,
-  providerRateLimitDetails,
-  VERSION,
-  vaultControlRoute,
-} from "@armada/core";
+import { PUBLIC_CONTROL_ROUTES, VERSION, vaultControlRoute } from "@armada/core";
 import {
   type ApplicationVault,
   addMember,
-  assertGoldenMutation,
   createOrg,
   createSkillCatalog,
   type GitHubApp,
   type GoldenBuildJobs,
-  GoldenError,
   type GoldenRecord,
-  isSandboxProvider,
   LaunchError,
   type LaunchOptions,
   type LaunchStores,
@@ -27,7 +17,6 @@ import {
   listOrgs,
   mutateCredentialAccount,
   type Provider,
-  ProviderError,
   type ProviderRegistry,
   type ProviderTarget,
   parseCredentialKind,
@@ -38,7 +27,6 @@ import {
   resolveModelChoice,
   resolveOrg,
   resolveSkillpackCredential,
-  retainFailureDiagnostic,
   type SkillDefaultsService,
   setCredential,
   setMemberRole,
@@ -61,17 +49,8 @@ import type { createSqlCredentialList } from "./credential-list-sql.ts";
 import type { DataSource, ScopedData } from "./data.ts";
 import type { GitHubAccountApi } from "./github-account.ts";
 import { dispatchGitHubRestControl, isGitHubRestControl } from "./github-rest-controls.ts";
-import {
-  connectGoldenRoute,
-  createGoldenRoute,
-  listGoldens,
-  selectGolden,
-  snapshotGoldenRoute,
-  updateGoldenRoute,
-} from "./golden-control.ts";
-import { GOLDEN_ADOPTION_REQUEST } from "./golden-rest-schemas.ts";
 import type { Invitations } from "./invitations.ts";
-import { launchActor, templateRuntime } from "./launch-control.ts";
+import { templateRuntime } from "./launch-control.ts";
 import { dispatchMcp, type McpControlOptions } from "./mcp-control.ts";
 import { type ModelAuthOwnership, modelAuthCapabilities } from "./model-auth.ts";
 import type { ModelUsageApi } from "./model-usage.ts";
@@ -94,7 +73,7 @@ import {
   refreshRoute,
 } from "./public-auth-control.ts";
 import { recordOperatorFailure } from "./request-observability.ts";
-import { measureRequestPhase, RequestTiming, withRequestTiming } from "./request-timing.ts";
+import { RequestTiming, withRequestTiming } from "./request-timing.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
@@ -102,8 +81,6 @@ import type { RuntimeMcp } from "./runtime-mcp.ts";
 import type { RuntimeResume } from "./runtime-resume.ts";
 import type { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 import { tokenCreateRoute, tokenListRoute, tokenRevokeRoute } from "./token-control.ts";
-import { ToolApiError } from "./tool-api.ts";
-import { describeToolFailure } from "./tool-failure.ts";
 
 import { viewerControl } from "./viewer-control.ts";
 
@@ -385,55 +362,6 @@ export async function dispatchControlCommand(
     }
     return dispatchMcp(route.slice(4), caller.userId, { ...body, org }, options);
   }
-  if (route === "golden/capabilities") {
-    const selected = scopedOrg(caller, optional(body, "org"));
-    const member =
-      selected === undefined
-        ? caller.orgs.length === 1
-          ? caller.orgs[0]
-          : undefined
-        : caller.orgs.find((org) => org.orgId === selected);
-    if (!member) throw new VaultError("forbidden", "Name an org in this caller's scope.");
-    const backend = optional(body, "provider") ?? "boat";
-    if (!isSandboxProvider(backend)) throw new VaultError("invalid", "Provider is boat or modal.");
-    if (!options.providerMetadata)
-      throw new VaultError("unavailable", "Read-only provider metadata is not configured.");
-    return options.providerMetadata({ orgId: member.orgId, provider: backend }, caller);
-  }
-  if (route === "golden/adopt") {
-    if (!options.data || !options.providers) throw new VaultError("unavailable", "Sandbox control is not configured.");
-    const org = optional(body, "org");
-    const scoped = await selectedCaller(options, caller, org);
-    const input = GOLDEN_ADOPTION_REQUEST.safeParse({ ...body, org });
-    if (!input.success) {
-      const details = input.error.issues.map((issue) => `${issue.message} at ${issue.path.join(".")}`).join("\n");
-      throw new ToolApiError(
-        "internal",
-        `MCP error -32602: Input validation error: Invalid arguments for tool golden_adopt: ${details}`,
-      );
-    }
-    if (!options.goldenAdoption) throw new ToolApiError("unsupported", "Canonical adoption is not configured.");
-    const data = options.data(scoped);
-    try {
-      for (const { orgId, role } of scoped.orgs) {
-        const golden = (await data.goldens.list(orgId)).find((row) => row.id === input.data.id);
-        if (!golden) continue;
-        const actor = { userId: scoped.userId, orgId, role };
-        assertGoldenMutation(actor, golden);
-        const providers = options.providers;
-        const provider = await measureRequestPhase(options.timing, "provider", () => providers.resolve(golden, scoped));
-        return await options.goldenAdoption(provider, actor, golden, input.data.confirmation);
-      }
-      throw new GoldenError("not_found", "Canonical adoption unavailable.");
-    } catch (error) {
-      const { code, message } = describeToolFailure(error);
-      const details =
-        error instanceof ProviderError && code === "rate_limited"
-          ? providerRateLimitDetails({ ...error.details, retryAfterSeconds: error.retryAfterSeconds })
-          : undefined;
-      throw retainFailureDiagnostic(new ToolApiError(code, message, details), error);
-    }
-  }
   if (isGitHubRestControl(route)) {
     const context = await sandboxToolContext({ route, caller, body, options });
     return dispatchGitHubRestControl(
@@ -606,33 +534,6 @@ export async function dispatchControlCommand(
         kind: parseCredentialKind(required(body, "kind")),
       });
       return { ok: true };
-    case "golden/size-policy": {
-      if (!options.data) throw new VaultError("unavailable", "Golden policies are not configured.");
-      const data = options.data(caller);
-      const name = required(body, "golden");
-      const actor = await launchActor(data, caller, name, optional(body, "org"), store);
-      const golden = await goldenForSettings(
-        data.goldens,
-        actor,
-        name,
-        optional(body, "provider") as "boat" | "modal" | undefined,
-      );
-      if (body.policy !== undefined) {
-        const policy = parseMachineSizePolicy(
-          body.policy,
-          golden.config.repos.map((r) => r.dir),
-        );
-        if (!data.goldens.setSizePolicy) throw new VaultError("unavailable", "Policy writes are unavailable.");
-        await data.goldens.setSizePolicy(golden, actor, policy);
-        return { goldenId: golden.id, provider: golden.provider, repositories: golden.config.repos, policy };
-      }
-      return {
-        goldenId: golden.id,
-        provider: golden.provider,
-        repositories: golden.config.repos,
-        policy: golden.sizePolicy ?? null,
-      };
-    }
     case "logs/read":
       return readLogs(
         options,
@@ -640,82 +541,6 @@ export async function dispatchControlCommand(
         required(body, "id"),
         body,
       );
-    case "golden/retirement/dry-run":
-    case "golden/retirement/reconcile": {
-      if (!options.goldenRetirements) throw new VaultError("unavailable", "Snapshot retirement is not configured.");
-      const id = required(body, "id");
-      if (!UUID.test(id)) throw new VaultError("invalid", "id must be a golden UUID.");
-      const selected = await selectedCaller(options, caller, optional(body, "org"));
-      return options.goldenRetirements.forCaller(
-        caller.userId,
-        selected.orgs.map((o) => o.orgId),
-        id,
-        body.limit === undefined ? 20 : Number(body.limit),
-        route.endsWith("reconcile"),
-        body.receipts === undefined ? [] : (body.receipts as string[]),
-      );
-    }
-    case "golden/remove": {
-      const scopedCaller = await selectedCaller(options, caller, optional(body, "org"));
-      const data = options.data?.(scopedCaller);
-      if (!data?.removeGolden) throw new VaultError("unavailable", "Golden removal is not configured.");
-      return data.removeGolden(required(body, "id"));
-    }
-    case "golden/visibility": {
-      const visibility = required(body, "visibility");
-      if (visibility !== "org" && visibility !== "private")
-        throw new VaultError("invalid", "Visibility is private or org.");
-      const scopedCaller = await selectedCaller(options, caller, optional(body, "org"));
-      const data = options.data?.(scopedCaller);
-      if (!data?.setGoldenVisibility) throw new VaultError("unavailable", "Visibility management is not configured.");
-      await data.setGoldenVisibility(required(body, "id"), visibility);
-      return { ok: true };
-    }
-    case "golden/list":
-      return options.listGoldenRecords
-        ? listGoldens(options, caller, optional(body, "org"))
-        : listGoldens(options, await selectedCaller(options, caller, optional(body, "org")));
-    case "golden/build/find": {
-      if (!options.goldenBuilds || !options.data)
-        throw new VaultError("unavailable", "Durable golden builds are not configured.");
-      const scoped = await selectedCaller(options, caller, optional(body, "org"));
-      const org = await resolveOrg(options.store, caller.userId, scopedOrg(scoped, optional(body, "org")));
-      const golden = selectGolden(await options.data(scoped).goldens.findByName(org.id, required(body, "name")), body);
-      if (!golden)
-        throw new GoldenError(
-          "not_found",
-          "No visible golden has that name and provider. Check golden list in the intended organization.",
-        );
-      return { build: await options.goldenBuilds.findActive(caller.userId, golden.id, [org.id]) };
-    }
-    case "golden/build/cancel": {
-      if (!options.goldenBuilds) throw new VaultError("unavailable", "Durable golden builds are not configured.");
-      const scoped = await selectedCaller(options, caller, optional(body, "org"));
-      return options.goldenBuilds.cancel(
-        caller.userId,
-        required(body, "jobId"),
-        scoped.orgs.map((org) => org.orgId),
-      );
-    }
-    case "golden/build/status":
-      if (!options.goldenBuilds) throw new VaultError("unavailable", "Durable golden builds are not configured.");
-      return options.goldenBuilds.status(
-        caller.userId,
-        optional(body, "jobId") ?? "",
-        optional(body, "idempotencyKey") ? scopedOrg(caller, optional(body, "org")) : undefined,
-        optional(body, "idempotencyKey"),
-        caller.orgs.map((org) => org.orgId),
-      );
-    case "golden/create":
-      return createGoldenRoute(options, caller, body);
-    case "golden/update":
-      return updateGoldenRoute(options, caller, body);
-    case "golden/update-add-repos":
-      return updateGoldenRoute(options, caller, body, true);
-    case "golden/snapshot":
-      return snapshotGoldenRoute(options, caller, body);
-    case "golden/connect":
-      return connectGoldenRoute(options, caller, body);
     default:
       return undefined;
   }
