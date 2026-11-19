@@ -252,6 +252,16 @@ describe.each([
     expect(f.starts).toEqual([undefined, "native-thread"]);
     const row = (await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))!;
     expect(row.status).toBe("ready");
+    expect(row.lifecycleGeneration).toBe((before?.lifecycleGeneration ?? 0) + 1);
+    expect(
+      (
+        await f.db.query(
+          `select actor,code,generation::text from sandbox_transitions
+           where sandbox_id=$1 and from_status='starting' and to_status='running'`,
+          [f.row.id],
+        )
+      ).rows,
+    ).toEqual([{ actor: "runtime_enrolment", code: "runtime_enrolled", generation: String(row.lifecycleGeneration) }]);
     expect(row.expiresAt).toBe(before?.expiresAt);
     expect(row.stoppedAt).toBeNull();
     expect(row.taskPromptId).toBe(result.promptId);
@@ -286,6 +296,15 @@ test("an already enrolled uncertain resume reconciles on a fresh server without 
     try {
       await expect(resume(f.caller, request)).rejects.toMatchObject({ code: "conflict" });
       expect((await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))?.status).toBe("starting");
+      expect(
+        (
+          await f.db.query(
+            `select 1 from sandbox_transitions
+             where sandbox_id=$1 and from_status='starting' and to_status='running'`,
+            [f.row.id],
+          )
+        ).rows,
+      ).toEqual([]);
     } finally {
       await f.db.exec("alter table sandbox_transitions drop constraint test_reject_settlement");
     }
@@ -294,6 +313,56 @@ test("an already enrolled uncertain resume reconciles on a fresh server without 
     expect(recovered.runtime.epoch).toBe("2");
     expect(activations).toBe(1);
     expect(f.starts).toHaveLength(2);
+  } finally {
+    await f.close();
+  }
+});
+
+test("a wake that loses its activity lease after prompt acceptance cannot publish", async () => {
+  const f = await stopped();
+  try {
+    const request = input(f.row.id);
+    const replacementLease = crypto.randomUUID();
+    const bridge: typeof f.bridge = {
+      ...f.bridge,
+      async call(...args) {
+        const reply = await f.bridge.call(...args);
+        if (args[1].op === "prompt") {
+          await f.db.query("update sandboxes set activity_lease_id=$2 where id=$1", [f.row.id, replacementLease]);
+        }
+        return reply;
+      },
+    };
+    const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, bridge, async () => ({
+      start: async (_signal, restore) => f.reboot(restore),
+      async stop() {
+        throw Error("The stale wake no longer owns the sandbox");
+      },
+    }));
+    await expect(resume(f.caller, request)).rejects.toMatchObject({ code: "conflict" });
+    expect(
+      (
+        await f.db.query(
+          `select s.status,s.task_prompt_id,s.activity_lease_id,r.receipt,
+             exists(select 1 from runtime_commands c where c.sandbox_id=s.id
+               and c.request_id='resume_'||r.request_id::text and c.accepted_prompt_id is not null) as accepted,
+             exists(select 1 from sandbox_transitions t where t.sandbox_id=s.id
+               and t.from_status='starting' and t.to_status='running') as journaled
+           from sandboxes s join runtime_resumes r on r.sandbox_id=s.id
+           where s.id=$1 and r.request_id=$2`,
+          [f.row.id, request.request_id],
+        )
+      ).rows,
+    ).toEqual([
+      {
+        status: "starting",
+        task_prompt_id: null,
+        activity_lease_id: replacementLease,
+        receipt: null,
+        accepted: true,
+        journaled: false,
+      },
+    ]);
   } finally {
     await f.close();
   }

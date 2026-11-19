@@ -1283,3 +1283,38 @@ export function createSandboxLifecycle(
     },
   };
 }
+
+export async function publishRuntimeWake(
+  tx: Sql,
+  sandboxId: string,
+  generation: number,
+  requestId: string,
+  promptId: string,
+  conversationIds: string[],
+) {
+  const published = await tx.query(
+    `update public.sandboxes s set task_prompt_id=$4,conversation_ids=$5::text[],status_reason=null,
+       activity_lease_id=null,activity_until=null
+     where s.id=$1 and s.lifecycle_generation=$2 and s.activity_lease_id=$3
+       and s.status='starting' and s.activity_until>clock_timestamp() and s.expires_at>clock_timestamp()
+       and s.stop_requested_at is null and s.stopped_at is null and s.deleted_at is null
+       and not s.application_secret_tainted
+       and (s.reconcile_lease_until is null or s.reconcile_lease_until<=clock_timestamp())
+       and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)
+     returning s.id`,
+    [sandboxId, generation, requestId, promptId, conversationIds],
+  );
+  if (!published.rows.length) throw new VaultError("conflict", "Runtime wake publication is stale.");
+  const transition = await transitionSandbox(tx, {
+    sandboxId,
+    expectedGeneration: generation,
+    fromStates: ["starting"],
+    toState: "running",
+    actor: "runtime_enrolment",
+    code: "runtime_enrolled",
+    effects: [],
+  });
+  if (transition.kind === "conflict") throw new VaultError("conflict", "Runtime wake publication is stale.");
+  await releaseAccountCapacity(tx, sandboxId);
+  await settleRuntimeTurn(tx, sandboxId, generation);
+}

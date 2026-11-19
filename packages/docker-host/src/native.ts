@@ -21,8 +21,6 @@ import { createDockerContainerInventory } from "./container-inventory.ts";
 import { type Api, compactReceipts, type State, type Store, serverOrigin, validId, validToken } from "./daemon.ts";
 
 const MAX_STATE_BYTES = 16 * 1024 * 1024;
-
-/** Private atomic state and an exclusive process lock; abandoned locks require operator intervention. */
 export async function fileStore(
   directory: string,
 ): Promise<Store & { lock(): Promise<() => Promise<void>>; exists(): Promise<boolean> }> {
@@ -83,7 +81,7 @@ export async function fileStore(
       compactReceipts(state);
       const serialized = JSON.stringify(state);
       if (Buffer.byteLength(serialized) > MAX_STATE_BYTES) throw new Error("Host state capacity reached");
-      if (await exists()) await load(); // Refuse unsafe existing configuration rather than replacing it.
+      if (await exists()) await load();
       const temporary = join(directory, `.state-${crypto.randomUUID()}`);
       const file = await open(temporary, "wx", 0o600);
       try {
@@ -103,8 +101,6 @@ export async function fileStore(
     async lock() {
       let lockName = "daemon.lock";
       if (process.platform === "linux") {
-        // A lock from another boot cannot have a surviving process owner. Keep
-        // legacy locks for explicit operator inspection. OS flock releases on crashes.
         try {
           await lstat(join(directory, "daemon.lock"));
           throw new Error("Legacy daemon lock requires operator inspection");
@@ -123,7 +119,6 @@ export async function fileStore(
           await file.close();
           throw new Error("Unsafe daemon lock");
         }
-        // The private stdin pipe is a lifetime lease: kernel closes it even on SIGKILL.
         const child = spawn("sh", ["-c", "flock --exclusive --nonblock 3 || exit 1; printf ready; cat >/dev/null"], {
           stdio: ["pipe", "pipe", "ignore", file.fd],
         });
@@ -155,15 +150,11 @@ export async function fileStore(
     },
   };
 }
-
-/** A host request the server answered with an error status. */
 class HostRequestDenied extends Error {
   constructor(readonly status: number) {
     super("Host request denied");
   }
 }
-
-/** Outbound HTTPS only. Redirects cannot forward host credentials to another origin. */
 export function httpApi(
   request: typeof fetch = fetch,
   resources?: (state: State) => Promise<DockerHostResources>,
@@ -208,7 +199,6 @@ export function httpApi(
       await response.body?.cancel();
       return undefined;
     }
-    // Bound protocol output as well as Docker inspect output; neither is ever logged.
     if (!response.body) throw new Error("Invalid host response");
     let size = 0;
     const reader = response.body.getReader();
@@ -333,7 +323,6 @@ export function httpApi(
             const at = new Date(entry.deadline).toISOString();
             return next === null || at < next ? at : next;
           }, null),
-        // The authoritative per-generation deadlines the daemon will delete at.
         deadlines: (state.retention ?? [])
           .filter((entry) => !entry.deleted)
           .map((entry) => ({
@@ -394,7 +383,6 @@ export function httpApi(
         if (response.status !== 204 && response.status !== 202) throw new HostRequestDenied(response.status);
         return response.status;
       }
-      // Admission denies tainted or superseded work before requesting any bytes.
       if ((await send()) === 204) return;
       const archive = await read();
       if (archive && (await send(archive)) !== 204) throw new Error("Retained output upload not acknowledged");
@@ -448,12 +436,8 @@ export async function observeRetainedStop(
   });
   return (await executor.isStopped(request)) && exitedContainer;
 }
-
-/** Never a shell, never inherited output; inspect can contain secrets. */
 export const dockerCli: DockerMachineCli = {
   run(argv, stdin, options) {
-    // Buildx is a separate client process: its stdin may be a socket that cannot be reopened as /dev/stdin.
-    // A scoped environment secret is consumed by BuildKit, not Dockerfile ENV/ARG or the image.
     const env = { ...process.env };
     delete env.ARMADA_SNAPSHOT_GITHUB_TOKEN;
     if (options?.githubBuildToken !== undefined) {
@@ -467,8 +451,6 @@ export const dockerCli: DockerMachineCli = {
         env,
       });
       let buildStderr = "";
-      // Keep only a bounded tail in memory. The builder admits only fixed tool
-      // names as errors and never forwards the raw stream to logs or the API.
       child.stderr.on("data", (data: Buffer) => {
         if (!captureBuildDiagnostic) return;
         buildStderr = (buildStderr + data.toString("utf8")).slice(-32768);
@@ -500,8 +482,6 @@ export const dockerCli: DockerMachineCli = {
     });
   },
 };
-
-/** Binary collector output with a hard byte budget. Never expose Docker diagnostics. */
 export async function readDockerOutputArchive(argv: readonly string[]): Promise<Uint8Array<ArrayBuffer> | null> {
   const child = Bun.spawn(["docker", ...argv], {
     stdin: "ignore",
