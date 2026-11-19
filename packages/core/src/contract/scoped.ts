@@ -21,7 +21,7 @@ const selection = z
       .max(20)
       .optional()
       .describe(
-        `${INVALID_SKILL_PINS_MESSAGE} Pin strings may be at most 256 characters. The armada-tools slug is reserved.`,
+        `${INVALID_SKILL_PINS_MESSAGE} Each pin is at most 256 characters. Slugs must be unique across namespaces and versions. The armada-tools slug is reserved.`,
       ),
     reasoningEffort: z
       .string()
