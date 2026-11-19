@@ -292,14 +292,19 @@ assistant assertion is a tool-call pass. Local pinned stdio remains unsupported;
 its production use needs owner inventory, not speculative porting or deletion.
 This procedure is not evidence of a staging pass or permission to flip defaults.
 
-## Environment-wide Boat default switch (prepared, not flipped)
+## Environment-wide Boat runtime default
 
 Trusted **server** setting `ARMADA_BOAT_AGENT_PATH=native|runtime` chooses the
-ordinary Boat launch path. Unset means `native`; any other value fails startup.
-Set `runtime` on **staging first**, through the normal operator deployment
-process, not in the smoke client's shell. Ordinary API, CLI, dashboard, MCP
-`sandbox_launch`, template and routine launches share the same Core launch
-selection: no client flag/endpoint change. Modal/Docker selection is unchanged.
+ordinary Boat launch path. Unset means `runtime`. Values outside `native` and
+`runtime` fail startup. Ordinary API, CLI, dashboard, MCP `sandbox_launch`,
+template and routine launches share the same Core launch selection.
+
+After the Modal production checklist passes, release through the normal operator
+deployment process with the Boat selector unset or set to `runtime`. After
+release, the coordinator checks Boat on their own sandbox using
+`bun scripts/post-deploy-smoke.ts --parity --only boat --production-boat` and
+records the release and checklist in the [coordinator ledger](native-agent-path-retirement.md#coordinator-ledger).
+Boat stays outside CI, staging acceptance and the release gate.
 Runtime mode uses the image's matching `/opt/armada/runtime-manifests/<arch>.json`
 (or the existing trusted manifest override); in runtime-default mode,
 missing/invalid manifest metadata fails startup rather than selecting native. Valid
