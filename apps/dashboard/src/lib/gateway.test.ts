@@ -1,10 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { ControlError, createControlClient } from "../src/lib/control.ts";
-import { createGateway, GatewayError, sandboxGateway } from "../src/lib/gateway.ts";
+import { ControlError, createControlClient } from "./control.ts";
+import { createGateway, GatewayError, sandboxGateway } from "./gateway.ts";
 
 type Call = { method: string; headers: Record<string, string>; body: Record<string, unknown> };
 
-/** A fake MCP server: answers initialize, accepts the initialized notification, then answers tools/call. */
 function server(reply: (call: Call) => Response, sessionId?: string) {
   const calls: Call[] = [];
   const fakeFetch = (async (_url: unknown, init?: RequestInit) => {
@@ -174,7 +173,9 @@ describe("gateway", () => {
     const gateway = createGateway({
       url: "https://mcp.example/mcp",
       token: "user-jwt",
-      fetch: async () => new Response("Private proxy diagnostics", { status: 503 }),
+      fetch: Object.assign(async () => new Response("Private proxy diagnostics", { status: 503 }), {
+        preconnect: fetch.preconnect,
+      }),
     });
     const error = await gateway.call("stop", {}).catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(GatewayError);

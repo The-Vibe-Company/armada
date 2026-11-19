@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { checkModalToken, checkSecretValue, isCredentialKind, personalKeyDbFailure } from "../src/lib/credentials.ts";
+import { checkModalToken, checkSecretValue, isCredentialKind, personalKeyDbFailure } from "./credentials.ts";
 
 describe("credentials", () => {
   test("only hosting kinds are written directly: a model credential is a named account on the server", () => {
@@ -34,7 +34,7 @@ describe("credentials", () => {
     ] as const) {
       const checked = checkModalToken(badId, badSecret);
       expect(checked.ok).toBe(false);
-      // The refusal never repeats what was typed.
+
       expect(JSON.stringify(checked)).not.toMatch(/AbCdEf123456|ZyXwVu987654/);
     }
   });

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { describeFailure } from "../src/lib/failure.ts";
+import { describeFailure } from "./failure.ts";
 
 test("usage_limit and auth_expiry have a clear message and a place to fix them", () => {
   expect(describeFailure("usage_limit")).toMatchObject({ title: "Usage limit reached", fix: { href: "/harness" } });
@@ -18,7 +18,7 @@ test("provider error codes map to the same messages, and unknown reasons have no
   expect(describeFailure("provider_unavailable")?.title).toBe("Provider unavailable");
   expect(describeFailure("dependency_unavailable")?.title).toBe("Server dependency unavailable");
   expect(describeFailure("outcome_unknown")?.hint).toContain("before retrying");
-  // A retention refusal is durable, not a provider outage that invites a retry.
+
   expect(describeFailure("sandbox_retention_ended")).toMatchObject({
     title: "Retention ended",
     hint: expect.stringContaining("Launch a new sandbox"),

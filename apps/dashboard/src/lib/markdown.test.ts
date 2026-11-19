@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseInline, parseMarkdown } from "../src/lib/markdown.ts";
+import { parseInline, parseMarkdown } from "./markdown.ts";
 
 describe("markdown", () => {
   test("only web and mail links keep a target; script and data links and raw HTML stay text", () => {
@@ -27,7 +27,6 @@ describe("markdown", () => {
   });
 
   test("hostile spacing in headings and rules is read in linear time", () => {
-    // Backtracking regexes took seconds here (cubic in the spaces); the test's default timeout catches a regression.
     const spaces = " ".repeat(6000);
     expect(parseMarkdown(`# a${spaces}#x`)).toEqual([
       { kind: "heading", level: 1, children: [{ kind: "text", text: `a${spaces}#x` }] },
