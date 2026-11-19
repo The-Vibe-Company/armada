@@ -3676,6 +3676,9 @@ test("Docker refuses models outside the Morph account and freezes its OpenCode d
     const resolutions = f.resolutions();
     expect((await launcher.launch(f.caller, body)).sandbox.model).toBe(admitted.sandbox.model);
     expect(f.resolutions()).toBe(resolutions);
+    await expect(launcher.launch(f.caller, { ...body, model: "armada/deepseek-flash" })).rejects.toMatchObject({
+      code: "conflict",
+    });
   } finally {
     const controls = createDockerSandboxControls(sql, key, { clock: f.clock });
     await controls.invoke(f.caller, "stop", { id: admitted.sandbox.id });

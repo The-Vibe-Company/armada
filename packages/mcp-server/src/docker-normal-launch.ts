@@ -97,6 +97,7 @@ type Manifest = {
   variables?: Record<string, string>;
   snapshotConfig?: import("@armada/core").GoldenConfig;
   request: Request;
+  accountModelDefaulted?: true;
   /** Resolved pin stays separate from the caller identity used by retries. */
   credentialId?: string;
   credentialVersion: number;
@@ -312,7 +313,13 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
     if (!membership) throw failure("not_found");
     return membership;
   }
-  async function load(tx: Sql, actor: { userId: string; orgId: string }, request: Request, hash: string) {
+  async function load(
+    tx: Sql,
+    actor: { userId: string; orgId: string },
+    request: Request,
+    hash: string,
+    explicitModel = false,
+  ) {
     const membership = await member(tx, actor);
     const row = (
       await tx.query<Row>(
@@ -341,6 +348,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       !manifest.request ||
       !matchesDockerLaunchRequestHash(manifest.request, claim.request_hash) ||
       dockerLaunchRequestHash(manifest.request) !== hash ||
+      (explicitModel && manifest.accountModelDefaulted) ||
       (manifest.credentialId !== undefined && !UUID.test(manifest.credentialId)) ||
       (!claim.result_enc &&
         (row.credential_version !== manifest.credentialVersion ||
@@ -507,9 +515,10 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       if (!caller.orgs.some((org) => org.orgId.toLowerCase() === request.org)) throw failure("not_found");
       const hash = dockerLaunchRequestHash(request);
       reason = "membership_and_launch_state";
-      const state = await transaction((tx) => load(tx, actor, request, hash));
+      const explicitModel = workerId === undefined && input.model !== undefined;
+      const state = await transaction((tx) => load(tx, actor, request, hash, explicitModel));
       dispatchPossible ||= Boolean(state.row);
-      const plan = { request, actor, hash, state };
+      const plan = { request, actor, hash, state, explicitModel };
       if (state.row && state.receipt)
         return { ...plan, kind: "retained" as const, row: state.row, receipt: state.receipt };
       reason = "runtime_configuration";
@@ -556,6 +565,9 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       const manifest: Manifest = {
         ...(source ? { snapshotConfig: source.config } : {}),
         request,
+        ...(selected.model === undefined && modelChoice && modelChoice.model !== request.model
+          ? { accountModelDefaulted: true }
+          : {}),
         credentialId: binding.credentialId,
         credentialVersion: binding.credentialVersion,
         bootstrapId: randomUUID(),
@@ -570,7 +582,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
 
     const dockerPlacement = {
       async admit(plan: Awaited<ReturnType<typeof resolve>>, launchAdmission: typeof admission) {
-        const { actor, request, hash, state } = plan;
+        const { actor, request, hash, state, explicitModel } = plan;
         if (plan.kind === "retained" || !plan.fresh) return state;
         const { resolved, binding, manifest, modelChoice } = plan.fresh;
         const choice = modelChoice ?? request;
@@ -587,7 +599,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
             (await tx.query(`select id from public.sandboxes where id=$1`, [request.requestId])).rows.length > 0;
           if (exists) {
             dispatchPossible = true;
-            return load(tx, actor, request, hash);
+            return load(tx, actor, request, hash, explicitModel);
           }
           await createDockerSandboxService(scopedRuntimeSql(tx), key, { enabled: true }).reserve(
             actor,
