@@ -497,7 +497,7 @@ test.each(["codex", "claude", "opencode"] as const)(
       operation: "resume",
       state: "completed",
     });
-    expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("ready");
+    expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("starting");
     const healthId = randomUUID();
     expect(await runtime.ready(f.actor, f.sandbox.id, healthId)).toEqual({ state: "pending" });
     const health = await commands.next(enrolled.runtimeToken, enrolled.epoch);
@@ -707,6 +707,7 @@ test.each([false, true])("idle checkpoint fences Docker stop and retained restor
     body: { version: 1, requestId: health.requestId, result: { ready: true, generation: resumed.epoch } },
   });
   await expect(runtime.ready(f.actor, f.sandbox.id, healthId)).rejects.toThrow();
+  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("starting");
   const verifiedId = randomUUID();
   await runtime.ready(f.actor, f.sandbox.id, verifiedId);
   const verified = (await commands.next(resumed.runtimeToken, resumed.epoch)).command;
@@ -722,7 +723,10 @@ test.each([false, true])("idle checkpoint fences Docker stop and retained restor
     },
   });
   expect(await runtime.ready(f.actor, f.sandbox.id, verifiedId)).toEqual({ state: "ready", epoch: resumed.epoch });
-  expect((await reservations.get(f.actor, f.sandbox.id)).expiresAt).toBe(new Date(stored.expires_at).toISOString());
+  expect(await reservations.get(f.actor, f.sandbox.id)).toMatchObject({
+    status: "ready",
+    expiresAt: new Date(stored.expires_at).toISOString(),
+  });
 });
 
 test.each(["cleanup", "claim"] as const)(

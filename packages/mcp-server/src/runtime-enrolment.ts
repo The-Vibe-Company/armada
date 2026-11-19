@@ -5,7 +5,7 @@ import { createSqlSandboxStore, DelegatedAuthority, decryptSecret, encryptSecret
 import { createDockerHostStore } from "./docker-host-store.ts";
 import type { Route } from "./http.ts";
 import { runtimeHttpFailure } from "./runtime-http-failure.ts";
-import { finishDockerRuntimeEnrolment } from "./sandbox-lifecycle.ts";
+import { publishDockerRuntimeReadiness } from "./sandbox-lifecycle.ts";
 
 const ENROL_PATH = "/api/runtime/enrol";
 const SESSION_PATH = "/api/runtime/session";
@@ -288,10 +288,12 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
         )
       ).rows[0];
       if (!updated) throw new RuntimeEnrolmentDenied();
-      if (sandbox.provider === "docker" && sandbox.status === "starting") {
-        const transition = await finishDockerRuntimeEnrolment(tx, sandbox.id, sandbox.lifecycle_generation);
-        if (transition.kind === "conflict") throw new RuntimeEnrolmentDenied();
-      }
+      if (
+        sandbox.provider === "docker" &&
+        sandbox.status === "starting" &&
+        !(await publishDockerRuntimeReadiness(tx, sandbox.id, "bootstrap_enrolment"))
+      )
+        throw new RuntimeEnrolmentDenied();
       return { sandboxId: sandbox.id, epoch: updated.epoch, runtimeToken, configuration };
     });
     if (result instanceof RuntimeProtocolUnsupported) throw result;

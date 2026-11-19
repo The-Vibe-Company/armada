@@ -657,7 +657,7 @@ test("bound bootstrap requires ACKed creation and the exact pending capability, 
   await denied(store.enqueueSandbox(a.owner, a.sandboxId, { ...selection, requestId: randomUUID() }));
 });
 
-test.each(["account", "docker", "runtime", "revoked runtime", "revoked issuer"] as const)(
+test.each(["launch", "account", "docker", "runtime", "revoked runtime", "revoked issuer"] as const)(
   "idle-only stop checks %s work",
   async (queue) => {
     const db = database();
@@ -666,7 +666,13 @@ test.each(["account", "docker", "runtime", "revoked runtime", "revoked issuer"] 
     await db.query("update public.sandboxes set status='ready' where id=$1", [a.sandboxId]);
     const turn = randomUUID();
     const sealed = await encryptSecret("queued turn", key);
-    if (queue === "account") {
+    if (queue === "launch") {
+      await db.query(
+        `insert into public.docker_launch_requests(sandbox_id,actor_epoch,request_hash,request_enc)
+         values($1,1,$2,$3)`,
+        [a.sandboxId, "a".repeat(64), sealed],
+      );
+    } else if (queue === "account") {
       const credential = randomUUID();
       await db.query(
         "insert into public.credentials(id,scope,owner_id,kind,value_enc) values($1,'user',$2,'openai',$3)",

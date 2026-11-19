@@ -7,6 +7,7 @@ import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import { runtimeHealthMatches } from "./runtime-agent.ts";
 import { createRuntimeCommands, readDockerPromptReceipt, readRuntimeCommandSuccess } from "./runtime-commands.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
+import { publishDockerRuntimeReadiness } from "./sandbox-lifecycle.ts";
 
 type Actor = { userId: string; orgId: string };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -153,8 +154,9 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
             )
               deny();
           }
-          return authority.withOwner(sandboxId, actor.userId, async (_fenced, scope) => {
+          return authority.withOwner(sandboxId, actor.userId, async (fenced, scope) => {
             if (scope.epoch !== queued.epoch) deny();
+            if (!(await publishDockerRuntimeReadiness(fenced, sandboxId, "resume_health"))) deny();
             return { state: "ready" as const, epoch: scope.epoch };
           });
         },
