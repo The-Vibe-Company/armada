@@ -579,8 +579,23 @@ function createTestServer(
       return client;
     },
     async close() {
-      for (const client of clients) await client.close();
-      if (ownsDatabase) await db.close();
+      const errors: unknown[] = [];
+      for (const client of clients) {
+        try {
+          await client.close();
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      if (ownsDatabase) {
+        try {
+          await db.close();
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      if (errors.length === 1) throw errors[0];
+      if (errors.length > 1) throw new AggregateError(errors, "Test server cleanup failed");
     },
   } satisfies TestServer;
 }
