@@ -549,6 +549,6 @@ jobs:
           platforms=("$prefix"-{darwin-arm64,darwin-x64,linux-arm64,linux-x64}-"$VERSION.tgz")
           cat SHA256SUMS-{darwin-arm64,darwin-x64,linux-arm64,linux-x64} > SHA256SUMS
           # Check the complete expected set, even if an artifact omitted both a tarball and its entry.
-          sha256sum -- "$main" "$sdk" "${platforms[@]}" > SHA256SUMS.actual
+          shasum -a 256 -- "$main" "$sdk" "${platforms[@]}" > SHA256SUMS.actual
           LC_ALL=C sort SHA256SUMS.actual | diff -u <(LC_ALL=C sort SHA256SUMS) -
           bash ../../.release-tools/scripts/publish-npm.sh "$main" "$sdk" "${platforms[@]}"

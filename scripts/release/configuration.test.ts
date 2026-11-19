@@ -238,7 +238,7 @@ test("the production consumer rechecks its configuration in its actual first ste
 
 const verifiedPublish = workflow.jobs.publish?.steps.find((step) => step.id === "verified-npm-publish");
 
-test.each(["intact", "tampered", "missing"])("npm publication validates all tarball bytes first (%s)", (scenario) => {
+test.each(["intact", "tampered", "incomplete artifact"])("npm verifies tarballs before publish (%s)", (scenario) => {
   const directory = mkdtempSync(join(tmpdir(), "release-tarballs-"));
   try {
     const tarballDir = join(directory, "dist/tarballs");
@@ -254,8 +254,7 @@ test.each(["intact", "tampered", "missing"])("npm publication validates all tarb
         target === "linux-x64" ? [`${prefix}-${target}`, prefix, `${prefix}-sdk`] : [`${prefix}-${target}`];
       const entries = packages.flatMap((name) => {
         const filename = `${name}-${version}.tgz`;
-        // An incomplete artifact can omit both the tarball and its manifest entry.
-        if (name === prefix && scenario === "missing") return [];
+        if (name === prefix && scenario === "incomplete artifact") return [];
         writeFileSync(join(tarballDir, filename), name === prefix && scenario === "tampered" ? "changed" : name);
         return [`${new Bun.CryptoHasher("sha256").update(name).digest("hex")}  ${filename}\n`];
       });
