@@ -382,6 +382,27 @@ jobs:
           if-no-files-found: error
           overwrite: true
 
+      - name: Collect smoke-tested npm tarballs
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist/npm-artifact
+          mv "dist/tarballs/the-vibe-company-armada-$TARGET-$VERSION.tgz" dist/npm-artifact/
+          if [[ "$TARGET" == linux-x64 ]]; then
+            mv dist/tarballs/the-vibe-company-armada{,-sdk}-"$VERSION".tgz dist/npm-artifact/
+          fi
+          cd dist/npm-artifact
+          shasum -a 256 -- *.tgz > "SHA256SUMS-$TARGET"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: npm-tarballs-${{ needs.check.outputs.version }}-${{ matrix.target }}
+          path: dist/npm-artifact
+          compression-level: 0
+          if-no-files-found: error
+          overwrite: true
+
   staging-smoke:
     permissions:
       contents: read
@@ -499,11 +520,7 @@ jobs:
       DIST_TAG: ${{ needs.check.outputs.dist_tag }}
       PUBLISH: ${{ needs.check.outputs.publish }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ needs.check.outputs.sha }}
-      # Recovery may target a release tag that predates the registry guard.
-      # Load publication tooling from this workflow's revision, keeping artifacts on the release tag.
+      # Load publication tooling from this workflow's revision, including on tag recovery.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.workflow_sha }}
@@ -511,10 +528,6 @@ jobs:
           persist-credentials: false
           sparse-checkout: scripts/publish-npm.sh
           sparse-checkout-cone-mode: false
-      - uses: ./.github/actions/setup-bun
-      # Staging bundles the SDK from workspace sources and emits its declarations with TypeScript.
-      # No dependency lifecycle scripts while this job holds id-token: write.
-      - run: bun install --frozen-lockfile --ignore-scripts
       # npm 11 supports Trusted Publishing. CI never needs a long-lived npm token.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -522,23 +535,20 @@ jobs:
       - run: npm --version
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          pattern: armada-*
-          path: dist
+          pattern: npm-tarballs-${{ needs.check.outputs.version }}-*
+          path: dist/tarballs
           merge-multiple: true
-      - name: Stage and pack every package
+      - name: Verify and publish the smoke-tested tarballs
+        id: verified-npm-publish
         run: |
           set -euo pipefail
-          bun scripts/npm.ts --binaries dist
-          mkdir -p dist/tarballs
-          for dir in dist/npm/*/; do (cd "$dir" && npm pack --pack-destination ../../tarballs); done
-          sha256sum dist/tarballs/*.tgz > dist/tarballs/SHA256SUMS
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: npm-tarballs-${{ needs.check.outputs.version }}
-          path: dist/tarballs
-          if-no-files-found: error
-          overwrite: true
-      - name: Install the tarballs that are published
-        run: scripts/npm-smoke.sh dist/tarballs linux-x64
-      - name: npm publish
-        run: bash .release-tools/scripts/publish-npm.sh
+          cd dist/tarballs
+          prefix=the-vibe-company-armada
+          main="$prefix-$VERSION.tgz"
+          sdk="$prefix-sdk-$VERSION.tgz"
+          platforms=("$prefix"-{darwin-arm64,darwin-x64,linux-arm64,linux-x64}-"$VERSION.tgz")
+          cat SHA256SUMS-{darwin-arm64,darwin-x64,linux-arm64,linux-x64} > SHA256SUMS
+          # Check the complete expected set, even if an artifact omitted both a tarball and its entry.
+          sha256sum -- "$main" "$sdk" "${platforms[@]}" > SHA256SUMS.actual
+          LC_ALL=C sort SHA256SUMS.actual | diff -u <(LC_ALL=C sort SHA256SUMS) -
+          bash ../../.release-tools/scripts/publish-npm.sh "$main" "$sdk" "${platforms[@]}"

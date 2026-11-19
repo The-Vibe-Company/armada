@@ -236,11 +236,44 @@ test("the production consumer rechecks its configuration in its actual first ste
   }
 });
 
-test("npm publication installs workspace dependencies without lifecycle scripts before staging bundles the SDK", () => {
-  const steps = workflow.jobs.publish?.steps ?? [];
-  const install = steps.findIndex((step) => step.run === "bun install --frozen-lockfile --ignore-scripts");
-  const stage = steps.findIndex((step) => step.name === "Stage and pack every package");
-  expect(stage).toBeGreaterThan(-1);
-  expect(install).toBeGreaterThan(-1);
-  expect(install).toBeLessThan(stage);
+const verifiedPublish = workflow.jobs.publish?.steps.find((step) => step.id === "verified-npm-publish");
+
+test.each(["intact", "tampered", "missing"])("npm publication validates all tarball bytes first (%s)", (scenario) => {
+  const directory = mkdtempSync(join(tmpdir(), "release-tarballs-"));
+  try {
+    const tarballDir = join(directory, "dist/tarballs");
+    mkdirSync(tarballDir, { recursive: true });
+    const toolsDir = join(directory, ".release-tools/scripts");
+    mkdirSync(toolsDir, { recursive: true });
+    writeFileSync(join(toolsDir, "publish-npm.sh"), 'printf "publish %s\\n" "$@"\n');
+
+    const version = "1.2.3";
+    const prefix = "the-vibe-company-armada";
+    for (const target of ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"]) {
+      const packages =
+        target === "linux-x64" ? [`${prefix}-${target}`, prefix, `${prefix}-sdk`] : [`${prefix}-${target}`];
+      const entries = packages.flatMap((name) => {
+        const filename = `${name}-${version}.tgz`;
+        // An incomplete artifact can omit both the tarball and its manifest entry.
+        if (name === prefix && scenario === "missing") return [];
+        writeFileSync(join(tarballDir, filename), name === prefix && scenario === "tampered" ? "changed" : name);
+        return [`${new Bun.CryptoHasher("sha256").update(name).digest("hex")}  ${filename}\n`];
+      });
+      writeFileSync(join(tarballDir, `SHA256SUMS-${target}`), entries.join(""));
+    }
+
+    const result = Bun.spawnSync(["bash", "-c", script(verifiedPublish)], {
+      cwd: directory,
+      env: { PATH: "/usr/bin:/bin", VERSION: version },
+    });
+    if (scenario === "intact") {
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout.toString().trim().split("\n")).toHaveLength(6);
+    } else {
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stdout.toString()).not.toContain("publish ");
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
