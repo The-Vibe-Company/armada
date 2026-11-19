@@ -8,7 +8,9 @@ normalizes it while preserving the upstream project path.
 ## Create an account from the CLI
 
 Supply the exact upstream model IDs with `--models`. For Azure Foundry, use
-the resource's deployment names. Read the API key from stdin or a private file.
+the resource's deployment names. Saves to official Azure addresses send a
+small billable request per deployment before storing the account. Read the
+API key from stdin or a private file.
 
 ```sh
 armada creds set openai --name foundry --base-url 'https://RESOURCE.services.ai.azure.com/api/projects/PROJECT/openai/v1/responses' --models my-deployment --file /path/to/private-key
