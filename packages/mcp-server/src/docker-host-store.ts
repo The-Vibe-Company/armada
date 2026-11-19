@@ -78,6 +78,7 @@ type Sandbox = {
   effective_ttl_seconds: number;
   expires_at: Date | string;
   status: string;
+  lifecycle_generation: string | number;
   status_reason?: string | null;
   stop_requested_at: unknown;
   deleted_at: unknown;
@@ -400,7 +401,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
         : reason === "image_unavailable" && operation === "create"
           ? DOCKER_IMAGE_UNAVAILABLE_MESSAGE
           : DOCKER_LAUNCH_FAILURE_MESSAGES.startup;
-    if (operation === "resume") return failDockerResumeActivation(tx, row.id, job.request_id, message);
+    if (operation === "resume")
+      return failDockerResumeActivation(tx, row.id, row.lifecycle_generation, job.request_id, message);
     if (operation !== "create" && operation !== "bootstrap") return;
     await tx.query(
       `update public.sandboxes set status='failed',status_reason=$2,
