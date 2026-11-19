@@ -7,8 +7,7 @@
     "apps/dashboard/test/landing.test.ts": 1,
     "apps/dashboard/test/routine-staging-transport.test.ts": 1,
     "apps/dashboard/test/staging-check-route-parity.test.ts": 1,
-    "apps/dashboard/test/stats-db.test.ts": 1,
-    "packages/core/test/launch-contract.test.ts": 1
+    "apps/dashboard/test/stats-db.test.ts": 1
   },
   "landmines-style/no-comments": {
     ".railway/railway.ts": 3,
