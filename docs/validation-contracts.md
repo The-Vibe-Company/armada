@@ -558,6 +558,508 @@ the request before execution. The Boat provider composition test injects its
 SSH spawn function. Explicit conformance and release probes are outside unit
 discovery.
 
+## Repository-script subprocess cases
+
+The [process-test allowlist](../scripts/ci/process-tests.txt) selects files by
+spawn syntax. The inventory covers 373 cases across 13 files and follows helper calls,
+including the post-deploy preservation bundle verifier. Linux timings use Bun 1.4.2
+(744846f84) at `f9bf5dd6`, with the sandbox-access row remeasured after the
+fixture change described below. Each timing is for one case in an untraced
+per-file run, excluding shared hooks. Separate `execve` traces identify
+subprocess boundaries. Provider, deployment and publishing commands use
+offline fixtures.
+
+The audit traced helper callers in the local-port, changed-workspace,
+artifact publishing, model-price, architecture-counter, migration-renumbering,
+release publication, receipt, rollback, agents, docs, ratchet, table-owner and
+unit-shard tests. Those cases either inject command results or exercise pure
+helpers. They started no child processes.
+
+### `scripts/build.test.ts`
+
+Bun runs the build entrypoint with compilation and preparation spawns stubbed.
+
+| Case | Local (ms) |
+| --- | ---: |
+| `build batch {"args":[],"compilations":2}` | 12.04 |
+| `build batch {"args":["--target","linux-arm64"],"compilations":2}` | 9.12 |
+| `build batch {"args":["--all"],"compilations":8}` | 9.37 |
+| `build batch {"args":["--target","bad"],"compilations":0,"failure":true}` | 8.44 |
+| `build batch {"args":["--all","--target","bad"],"compilations":0,"failure":true}` | 9.29 |
+| `build batch {"args":["--all"],"compilations":0,"failure":true,"failAt":0}` | 8.11 |
+| `build batch {"args":["--all"],"compilations":2,"failure":true,"failAt":2}` | 8.57 |
+
+### `scripts/check-boat-runtime.test.ts`
+
+Bun runs the coordinator entrypoint with an injected HTTP transport and clock.
+
+The parameterized case name is `one-launch coordinator check is fail-closed (<case>)`.
+
+| Case | Local (ms) |
+| --- | ---: |
+| `success` | 16.26 |
+| `ordinary` | 10.56 |
+| `ordinary-idle` | 11.06 |
+| `ordinary-claude-resume` | 11.55 |
+| `ordinary-native-default` | 10.51 |
+| `ordinary-unknown-default` | 10.12 |
+| `ordinary-native-receipt` | 11.50 |
+| `ordinary-wrong-source` | 12.32 |
+| `idle` | 10.88 |
+| `idle-resume` | 10.83 |
+| `idle-not-ready` | 12.00 |
+| `idle-conversation` | 11.84 |
+| `idle-lost-send` | 12.76 |
+| `disabled` | 10.23 |
+| `wrong-source` | 12.46 |
+| `runtime-failed` | 13.37 |
+| `old-diagnostics` | 10.75 |
+| `followup` | 10.05 |
+| `old-followup` | 9.72 |
+| `followup-lost` | 12.01 |
+| `checkpoint` | 10.35 |
+| `old-checkpoint` | 9.90 |
+| `bad-checkpoint` | 11.96 |
+| `checkpoint-lost` | 12.54 |
+| `resume` | 12.08 |
+| `old-resume` | 10.11 |
+| `resume-lost` | 12.33 |
+| `bad-resume` | 12.88 |
+| `github` | 10.54 |
+| `old-github` | 10.45 |
+| `github-preflight-denied` | 10.33 |
+| `github-no-tool` | 12.25 |
+| `github-no-audit` | 13.81 |
+| `github-resume` | 11.89 |
+| `github-resume-no-tool` | 12.66 |
+| `github-resume-no-audit` | 13.31 |
+| `github-resume-stale-status` | 12.80 |
+| `github-resume-lost-refresh` | 14.11 |
+| `github-resume-lost-history` | 16.43 |
+| `mcp` | 11.26 |
+| `mcp-resume` | 11.21 |
+| `old-mcp` | 9.72 |
+| `mcp-preflight-denied` | 9.49 |
+| `mcp-invalid-json` | 10.48 |
+| `mcp-no-default` | 9.83 |
+| `mcp-wrong-server` | 11.84 |
+| `mcp-wrong-args` | 11.90 |
+| `mcp-no-result` | 12.77 |
+| `mcp-resume-no-tool` | 13.18 |
+| `mcp-github-resume` | 12.95 |
+| `mcp-skills-resume` | 13.24 |
+| `skills` | 10.96 |
+| `skills-empty` | 11.38 |
+| `skills-status` | 11.92 |
+| `skills-golden` | 11.62 |
+| `skills-resume` | 10.69 |
+| `claude-resume` | 10.69 |
+| `invalid-harness` | 7.99 |
+| `usage` | 11.02 |
+| `usage-resume` | 11.90 |
+| `usage-unknown` | 10.53 |
+| `usage-no-admission` | 11.77 |
+| `usage-wrong-counters` | 12.07 |
+| `usage-resume-repriced` | 13.09 |
+| `usage-no-event` | 14.09 |
+| `workspace` | 10.36 |
+| `workspace-resume` | 10.65 |
+| `workspace-missing` | 11.57 |
+| `workspace-late` | 12.73 |
+| `workspace-resume-rerun` | 12.79 |
+| `old-workspace` | 9.67 |
+
+### `scripts/check-boat-subscription.test.ts`
+
+Bun runs the subscription check with injected HTTP and a stubbed nested Boat probe.
+
+The parameterized case name is `single subscription acceptance entrypoint fails closed (<case>)`.
+
+| Case | Local (ms) |
+| --- | ---: |
+| `success` | 10.72 |
+| `key` | 7.63 |
+| `missing` | 7.49 |
+| `expired` | 7.62 |
+| `inventory-denied` | 7.37 |
+| `unknown` | 8.34 |
+| `zero` | 8.16 |
+| `estimated` | 8.23 |
+| `no-resume` | 8.36 |
+| `same-epoch` | 7.75 |
+| `historical-cost` | 8.26 |
+| `child-failed` | 8.18 |
+| `stop-only` | 8.71 |
+| `zero-first` | 8.67 |
+| `wrong-account` | 8.83 |
+| `no-status` | 7.86 |
+| `claude-success` | 9.25 |
+| `claude-zero-input` | 8.88 |
+| `claude-missing-input` | 8.20 |
+| `claude-key` | 7.36 |
+| `claude-codex-account` | 7.25 |
+| `unsupported-harness` | 6.91 |
+
+### `scripts/check-modal-runtime.test.ts`
+
+Bun runs the one-allocation check with an injected HTTP transport, including
+nested Bun receipt fixtures on the applicable paths.
+
+The parameterized case name is `Modal one-allocation check is fail-closed (<case>)`.
+
+| Case | Local (ms) |
+| --- | ---: |
+| `success` | 21.26 |
+| `ordinary` | 16.45 |
+| `ordinary-resume` | 17.00 |
+| `ordinary-claude` | 16.46 |
+| `ordinary-opencode` | 16.74 |
+| `ordinary-variables` | 32.63 |
+| `ordinary-idle-variables` | 30.58 |
+| `ordinary-empty` | 17.99 |
+| `ordinary-usage-variables-skills-mcp-github-resume` | 36.81 |
+| `ordinary-default-off` | 15.01 |
+| `ordinary-missing-transport` | 17.02 |
+| `ordinary-template-missing-transport` | 33.38 |
+| `empty-success` | 16.56 |
+| `empty-claude` | 17.00 |
+| `empty-opencode` | 16.64 |
+| `empty-variables` | 32.15 |
+| `empty-skills` | 17.07 |
+| `empty-combined` | 33.27 |
+| `empty-old-version` | 15.05 |
+| `empty-two-activations` | 14.81 |
+| `empty-bad-checkpoint` | 16.59 |
+| `empty-stop-unknown` | 18.28 |
+| `empty-hidden-history` | 16.94 |
+| `empty-lost-first-send` | 19.79 |
+| `empty-wrong-epoch` | 19.20 |
+| `empty-missing-proof` | 17.40 |
+| `empty-wrong-watermark` | 17.51 |
+| `empty-disk-mismatch` | 16.98 |
+| `idle` | 16.25 |
+| `idle-resume` | 16.32 |
+| `idle-variables` | 31.16 |
+| `idle-variables-resume` | 32.60 |
+| `idle-usage-variables-skills-mcp-github-resume` | 38.66 |
+| `idle-template-wrong-status` | 23.55 |
+| `idle-template-foreign-status` | 22.80 |
+| `idle-template-active-conversation` | 19.68 |
+| `idle-claude` | 17.21 |
+| `idle-opencode` | 17.06 |
+| `idle-old-version` | 16.17 |
+| `idle-bad-receipt` | 18.76 |
+| `idle-running-history` | 17.55 |
+| `idle-lost-first-send` | 18.76 |
+| `idle-wrong-first-epoch` | 18.03 |
+| `idle-wrong-first-request` | 17.41 |
+| `idle-wrong-first-conversation` | 18.63 |
+| `idle-template-old-version` | 15.93 |
+| `opencode` | 19.62 |
+| `opencode-resume` | 16.93 |
+| `opencode-mcp` | 17.30 |
+| `opencode-mcp-resume` | 17.95 |
+| `opencode-usage-variables-skills-mcp-github-resume` | 36.65 |
+| `opencode-mcp-no-result` | 18.96 |
+| `opencode-mcp-error-result` | 19.30 |
+| `opencode-mcp-wrong-server` | 19.11 |
+| `opencode-mcp-wrong-tool` | 20.79 |
+| `opencode-mcp-wrong-args` | 20.06 |
+| `opencode-mcp-old-prompt` | 19.72 |
+| `opencode-mcp-resume-replay` | 20.86 |
+| `opencode-mcp-collision` | 16.21 |
+| `opencode-mcp-duplicate-name` | 15.81 |
+| `opencode-mcp-inventory-missing` | 15.82 |
+| `opencode-mcp-inventory-drift` | 19.07 |
+| `opencode-mcp-display-only` | 18.68 |
+| `opencode-github` | 16.78 |
+| `opencode-github-resume` | 18.97 |
+| `opencode-variables` | 32.70 |
+| `opencode-variables-resume` | 33.73 |
+| `opencode-usage-variables-skills-github-resume` | 35.63 |
+| `opencode-github-display-only` | 18.83 |
+| `opencode-github-wrong-output` | 18.56 |
+| `opencode-variables-old-prompt` | 33.30 |
+| `opencode-variables-echo-mask` | 32.74 |
+| `opencode-variables-bad-exit` | 33.18 |
+| `opencode-variables-truncated` | 32.78 |
+| `opencode-shell-old` | 15.94 |
+| `opencode-usage` | 19.19 |
+| `opencode-skills-resume` | 19.95 |
+| `opencode-old-version` | 16.55 |
+| `opencode-mcp-old-version` | 15.38 |
+| `opencode-claude-conflict` | 15.68 |
+| `claude` | 16.44 |
+| `claude-resume` | 18.16 |
+| `claude-old-version` | 15.32 |
+| `claude-variables-skills-mcp-github-resume` | 35.25 |
+| `claude-mcp-wrong-server` | 18.57 |
+| `claude-mcp-no-result` | 19.16 |
+| `claude-mcp-wrong-result-id` | 18.69 |
+| `claude-mcp-error-result` | 19.99 |
+| `claude-variables-old-prompt` | 32.96 |
+| `claude-github-wrong-output` | 19.42 |
+| `disabled` | 14.97 |
+| `old-followup` | 14.59 |
+| `wrong-source` | 19.15 |
+| `wrong-prompt` | 20.10 |
+| `tool-result` | 20.87 |
+| `bad-checkpoint` | 18.03 |
+| `lost-launch` | 20.33 |
+| `lost-followup` | 22.83 |
+| `stale-epoch` | 18.31 |
+| `wrong-conversation` | 18.25 |
+| `reused-prompt` | 18.69 |
+| `wrong-request` | 18.11 |
+| `replayed-answer` | 21.27 |
+| `resume` | 16.41 |
+| `old-resume` | 17.56 |
+| `resume-bad-epoch` | 18.23 |
+| `resume-wrong-source` | 18.52 |
+| `resume-empty-checkpoint` | 18.46 |
+| `resume-wrong-watermark` | 17.97 |
+| `resume-wrong-conversation` | 17.86 |
+| `resume-wrong-request` | 18.24 |
+| `resume-reused-prompt` | 18.27 |
+| `resume-not-resumed` | 17.84 |
+| `resume-lost` | 18.58 |
+| `resume-lost-stopped-history` | 21.25 |
+| `resume-lost-old-history` | 21.68 |
+| `resume-tool-result` | 21.60 |
+| `resume-bad-checkpoint` | 20.44 |
+| `resume-stop-unknown` | 19.37 |
+| `github` | 17.97 |
+| `github-resume` | 16.84 |
+| `github-old-preflight` | 15.99 |
+| `github-missing-tool` | 17.85 |
+| `github-no-acquisition` | 18.74 |
+| `github-stale-revision` | 19.02 |
+| `github-wrong-epoch` | 18.44 |
+| `github-resume-old-config` | 18.89 |
+| `github-resume-reused-revision` | 19.15 |
+| `github-echo-mask` | 18.16 |
+| `github-wrong-output` | 18.02 |
+| `github-wrapper` | 17.64 |
+| `mcp` | 18.02 |
+| `mcp-resume` | 17.98 |
+| `mcp-github-resume` | 17.82 |
+| `mcp-old-version` | 14.60 |
+| `mcp-preflight-denied` | 15.76 |
+| `mcp-invalid-json` | 16.52 |
+| `mcp-wrong-server` | 18.53 |
+| `mcp-wrong-tool` | 18.56 |
+| `mcp-wrong-args` | 19.96 |
+| `mcp-no-result` | 19.47 |
+| `mcp-error-result` | 18.97 |
+| `mcp-wrong-output` | 18.46 |
+| `mcp-old-prompt` | 17.47 |
+| `mcp-resume-replay` | 20.75 |
+| `skills` | 18.29 |
+| `skills-empty` | 16.06 |
+| `skills-old-version` | 15.55 |
+| `skills-missing-launch` | 17.71 |
+| `skills-wrong-golden` | 18.51 |
+| `skills-status-mismatch` | 18.30 |
+| `skills-resume` | 19.72 |
+| `skills-resume-status-mismatch` | 19.65 |
+| `skills-resume-stop-status-mismatch` | 18.91 |
+| `skills-mcp-github-resume` | 19.06 |
+| `variables` | 31.87 |
+| `variables-resume` | 33.69 |
+| `variables-skills-mcp-github-resume` | 33.40 |
+| `variables-wrapper` | 32.01 |
+| `variables-old-version` | 15.00 |
+| `variables-wrong-template` | 15.32 |
+| `variables-wrong-golden` | 15.82 |
+| `variables-wrong-account` | 15.04 |
+| `variables-wrong-keys` | 15.12 |
+| `variables-missing-vars` | 14.78 |
+| `variables-secrets` | 16.13 |
+| `variables-no-tool` | 32.83 |
+| `variables-missing-env` | 34.34 |
+| `variables-wrong-hash` | 34.45 |
+| `variables-echo-mask` | 33.50 |
+| `variables-old-prompt` | 33.33 |
+| `variables-unrelated-launch` | 32.15 |
+| `variables-receipt-mismatch` | 32.34 |
+| `variables-resume-replay` | 34.31 |
+| `usage` | 19.17 |
+| `usage-unknown` | 18.36 |
+| `usage-late` | 18.05 |
+| `usage-extra-observation` | 17.44 |
+| `usage-forged-guest-money` | 17.66 |
+| `usage-old-version` | 15.44 |
+| `usage-missing-facts` | 22.19 |
+| `usage-wrong-totals` | 18.53 |
+| `usage-wrong-model` | 18.10 |
+| `usage-wrong-account` | 18.97 |
+| `usage-no-admission` | 19.57 |
+| `usage-forged-cost` | 19.05 |
+| `usage-zero-missing` | 19.42 |
+| `usage-stopped-drift` | 22.00 |
+| `usage-resume-repricing` | 21.61 |
+| `usage-resume-stopped-drift` | 20.75 |
+| `usage-variables-skills-mcp-github-resume` | 35.05 |
+
+### `scripts/db/check-migrations.test.ts`
+
+Local Git builds a temporary migration history and Bun runs the migration CLI against it.
+
+| Case | Local (ms) |
+| --- | ---: |
+| `migration CLI rejects collisions, placeholder versions and non-increasing additions against the current base` | 371.08 |
+
+### `scripts/golden-runtime-smoke.test.ts`
+
+Bash runs the guest probe against a local executable or a download stub.
+
+| Case | Local (ms) |
+| --- | ---: |
+| `helper probe accepts the pinned executable and rejects changed bytes without emitting guest output` | 9.51 |
+| `Skillpack probe rejects an untrusted archive before extraction and removes temporary downloads` | 6.58 |
+
+### `scripts/post-deploy-smoke.test.ts`
+
+The preservation suite creates one local bundle in shared setup using six Git
+commands. An isolated run of a case that stops before bundle verification took
+56 ms end to end, including Bun startup and that setup. The table marks cases
+that also start local Git in the bundle verifier. The workflow case runs the
+workflow shell step with a stub Bun executable.
+
+| Case | Local (ms) | Git in verifier |
+| --- | ---: | --- |
+| `wrong_handle_owner` | 8.24 | Yes |
+| `none` | 6.38 | Yes |
+| `default_policy` | 8.38 | Yes |
+| `default_empty` | 6.95 | Yes |
+| `default_wrong_receipt` | 6.17 | Yes |
+| `default_opt_out_ignored` | 0.54 | No |
+| `default_wrong_golden` | 0.25 | No |
+| `scoped_pair` | 10.43 | Yes |
+| `scoped_unsupported` | 9.62 | Yes |
+| `missing` | 0.49 | No |
+| `wrong` | 0.52 | No |
+| `corrupt` | 0.35 | No |
+| `corrupt_pack` | 4.15 | Yes |
+| `clean_note` | 6.78 | Yes |
+| `clean_archive` | 6.36 | Yes |
+| `overwritten` | 0.54 | No |
+| `explicit_missing` | 6.44 | Yes |
+| `selector_ignored` | 6.17 | Yes |
+| `recovery_changes` | 6.22 | Yes |
+| `recovery_wakes` | 6.08 | Yes |
+| `recovery_note_changes` | 5.91 | Yes |
+| `the advertised smoke workflow invocation admits ordinary staging checks` | 4.83 | No |
+
+### `scripts/release/configuration.test.ts`
+
+Bash runs release preflight or the publish verification step against local fixtures.
+
+| Case | Local (ms) |
+| --- | ---: |
+| `release preflight lists all missing names once without disclosing any configuration values` | 3.20 |
+| `staging requires its smoke token, cases and origin in addition to common deployment configuration` | 1.28 |
+| `complete release configuration succeeds silently for each environment` | 3.72 |
+| `release preflight rejects an unsupported environment before credentials or external commands` | 1.11 |
+| `the production consumer rechecks its configuration in its actual first step` | 3.28 |
+| `npm verifies tarballs before publish (intact)` | 18.42 |
+| `npm verifies tarballs before publish (tampered)` | 15.84 |
+| `npm verifies tarballs before publish (incomplete artifact)` | 16.66 |
+
+### `scripts/release/deploy-production.test.ts`
+
+Local Git prepares source archives and Bash runs the release entrypoint.
+Provider executables and sleeps are stubbed. The production-ordering cases
+synchronize through a local FIFO.
+
+| Case | Local (ms) |
+| --- | ---: |
+| `release uploads and gates providers in migration/server/health/dashboard order` | 124.23 |
+| `production builds while Railway is pending and publishes only after exact health` | 321.48 |
+| `staging retries a transient list-failed Railway deployment list and completes` | 129.91 |
+| `production retries a transient list-failed Railway deployment list and completes` | 128.69 |
+| `staging retries a transient list-unparseable Railway deployment list and completes` | 145.39 |
+| `migrations failure stops later release stages` | 55.00 |
+| `server failure stops later release stages` | 115.70 |
+| `health failure stops later release stages` | 195.25 |
+| `wrong-commit failure stops later release stages` | 191.23 |
+| `dashboard-pull failure stops later release stages` | 123.63 |
+| `dashboard-build failure stops later release stages` | 123.14 |
+| `dashboard-deploy failure stops later release stages` | 125.00 |
+| `missing VERCEL_TOKEN fails before any deployment mutation` | 11.29 |
+| `missing RAILWAY_TOKEN fails before any deployment mutation` | 10.73 |
+| `missing RAILWAY_SERVICE_ID fails before any deployment mutation` | 11.69 |
+| `current source only supersedes ordinary queued main deployments` | 126.60 |
+| `stale source only supersedes ordinary queued main deployments` | 16.81 |
+| `pinned source only supersedes ordinary queued main deployments` | 121.80 |
+| `unresolved source only supersedes ordinary queued main deployments` | 15.51 |
+| `deployment carries only a matching generated official-image pin into the source archive` | 228.24 |
+
+### `scripts/routines-staging.test.ts`
+
+Python runs the offline routine runner unit suite with injected HTTP.
+
+| Case | Local (ms) |
+| --- | ---: |
+| `routine staging script validates proof, cleanup and credential-safe HTTP` | 280.98 |
+
+### `scripts/sandbox-access/staging-check.test.ts`
+
+Python runs the offline sandbox-access unit suite. On the baseline, this
+wrapper took 1,080.77 ms. Profiling attributed 900 ms to 47 default CA store
+loads, although the tests substitute the HTTP transport. The fixture now skips
+loading the host trust store while keeping the real TLS context and redirect
+handler.
+
+| Case | Local (ms) |
+| --- | ---: |
+| `sandbox staging runner's offline safety contracts` | 139.27 |
+
+### `scripts/smoke-docker-lifecycle.test.ts`
+
+Python runs the Docker smoke entrypoint against stubbed transport and SSH, or
+rejects an invalid snapshot invocation during argument validation.
+
+The parameterized case name is `normal Docker smoke uses normal routes (<case>)`.
+
+| Case | Local (ms) |
+| --- | ---: |
+| `launch` | 79.50 |
+| `resume` | 75.38 |
+| `preview-follow-up` | 80.91 |
+| `cost` | 76.66 |
+| `bad-cost` | 76.09 |
+| `claude` | 79.41 |
+| `opencode` | 77.99 |
+| `repository` | 77.70 |
+| `repository-no-proof` | 75.93 |
+| `github` | 75.67 |
+| `github-no-proof` | 80.41 |
+| `github-no-broker` | 80.95 |
+| `variable` | 78.63 |
+| `variable-mcp` | 76.05 |
+| `variable-no-proof` | 75.57 |
+| `variable-whitespace` | 75.73 |
+| `secret` | 80.01 |
+| `secret-mcp` | 77.91 |
+| `secret-no-proof` | 78.43 |
+| `secret-wrong-digest` | 79.51 |
+| `snapshot` | 77.33 |
+| `snapshot-no-init` | 78.31 |
+| `snapshot-wrong-version` | 77.49 |
+| `snapshot-build-failed` | 76.40 |
+| `snapshot smoke refuses repository overrides before config or host work` | 72.39 |
+
+### `scripts/testflight/testflight.test.ts`
+
+Bash runs the TestFlight entrypoint with fixture platform tools. The signing
+case uses local OpenSSL and also runs the cleanup entrypoint.
+
+| Case | Local (ms) |
+| --- | ---: |
+| `signs with the distribution identity, uploads and distributes without exposing keys` | 54.41 |
+| `refuses a build number that could collide with the hand-uploaded builds` | 3.60 |
+
 ## Evidence owed after merge
 
 Run the existing publishing release validation on the exact release SHA. Verify
