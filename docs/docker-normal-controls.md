@@ -16,11 +16,11 @@ SANDBOX_PLACEMENT_LABELS, isSandboxPlacementProvider and SandboxPlacementProvide
 The label catalog is exhaustive over the generated database provider enum. Adding
 a producer value requires updating this shared catalog in the same PR. List DTOs,
 MCP output validation, dashboard parser/filter and CLI formatter use it; there is
-no separate dashboard-widened provider list. Golden-source identity stays narrower
-(Boat/Modal): accepting a Docker row must not manufacture a Docker golden.
+no separate dashboard-widened provider list. The `golden` launch field is
+reserved for Boat and Modal. Docker rows carry their host and image identity.
 A real SQL row is tested through normal list/MCP output validation and the actual
 dashboard parser and CLI formatter. Swift's existing DTO keeps provider strings
-and ignores the golden field in detail; it does not reject this new row value.
+and ignores the `golden` field in detail; it does not reject this new row value.
 
 ## Routes and authority
 
