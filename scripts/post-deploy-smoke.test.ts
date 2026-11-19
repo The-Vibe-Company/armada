@@ -2211,6 +2211,7 @@ test("the advertised smoke workflow invocation admits ordinary staging checks", 
       env: {
         ...process.env,
         PATH: `${directory}:${process.env.PATH}`,
+        RUNNER_TEMP: directory,
         ARMADA_URL: "https://armada-mcp-staging.up.railway.app",
         ARMADA_TOKEN: "fixture",
         ARMADA_SMOKE_CASES: JSON.stringify([selected]),
