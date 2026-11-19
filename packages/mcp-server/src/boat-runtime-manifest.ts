@@ -21,12 +21,15 @@ export async function readBoatRuntimeManifest(
     )
       throw Error();
     if (mode === "runtime") {
-      const claude = runtimeArtifactPin(row.harnesses?.claude?.archive);
-      const codex = runtimeArtifactPin(row.harnesses?.codex?.archive);
+      const archives = [row.harnesses?.claude, row.harnesses?.codex].map((harness) => {
+        const archive = runtimeArtifactPin(harness?.archive);
+        if (!archive || !Array.isArray(harness?.files) || !harness.files.length) throw Error();
+        return archive;
+      });
       const opencode = runtimeArtifactPin(row.opencode);
-      if (!claude || !codex || !opencode || !artifactDirectory) throw Error();
+      if (!opencode || !artifactDirectory) throw Error();
       await Promise.all(
-        [runtime, claude, codex, opencode].map(async ({ sha256, bytes }) => {
+        [runtime, ...archives, opencode].map(async ({ sha256, bytes }) => {
           const file = await lstat(join(artifactDirectory, sha256));
           if (!file.isFile() || file.size !== bytes) throw Error();
         }),
