@@ -673,7 +673,6 @@
     "packages/core/test/docker-machine.test.ts": 13,
     "packages/core/test/docker-sandbox-schema.test.ts": 2,
     "packages/core/test/docker-snapshot-build.test.ts": 1,
-    "packages/core/test/docker-snapshot-init.test.ts": 2,
     "packages/core/test/github-reconnect-postgres.release.ts": 7,
     "packages/core/test/github-runtime-postgres.release.ts": 5,
     "packages/core/test/github.test.ts": 4,

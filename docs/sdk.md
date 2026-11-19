@@ -18,7 +18,7 @@ await armada.stop({ id: sandbox.id });
 
 The client sends its service token on every request, so `url` must be an `https:` origin. Plain `http:` is accepted only for loopback hosts (`localhost`, `127.0.0.0/8` and `[::1]`), for local servers and test fixtures; any other `http:` origin throws a `TypeError` before a request is made.
 
-`launch` accepts `DockerLaunchInput` with `provider: "docker"`, `harness`, and either `hostId` (with optional `repos`) or `snapshotId` (which selects its host and workspace). Supply one replay identifier: `idempotencyKey` or a caller-chosen `requestId` UUID. An optional `externalRef` lets you find the sandbox later. With a service token, omit `org` or set it to the token's organization UUID. Discover Docker availability with `launch/options`.
+`launch` accepts `DockerLaunchInput` with `provider: "docker"`, `harness`, and either `hostId` (with optional `repos`) or `snapshotId` (which selects its host and workspace). Supply an `idempotencyKey` of 16–128 characters and keep it for retries. An optional `externalRef` lets you find the sandbox later. With a service token, omit `org` or set it to the token's organization UUID. Discover Docker availability with `launch/options`.
 
 Ordinary `launch` calls return the shared `LaunchResult` envelope for Boat, Modal and Docker. Read the Armada ID from `sandbox.id` and the provider ID from `sandbox.providerSandboxId`. Check `golden` before reading `golden.name`, since Docker returns `golden: null`. The required `promptId` and `conversationId` fields are `null` when their IDs are unavailable, including an idle launch. Provider-specific sandbox metadata is available as additional fields with type `unknown`.
 
