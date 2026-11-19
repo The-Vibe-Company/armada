@@ -43,7 +43,11 @@ import { collectOutputTransfers, DOCKER_RETAINED_OUTPUT_STOP } from "./output-tr
 import { noteAdmission } from "./request-observability.ts";
 import { createRuntimeEnrolments, preserveResumeRefusalTicket, scopedRuntimeSql } from "./runtime-enrolment.ts";
 import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
-import { failDockerResumeActivation, requestRefusedDockerResumeStop } from "./sandbox-lifecycle.ts";
+import {
+  confirmRefusedDockerResumeRetention,
+  failDockerResumeActivation,
+  requestRefusedDockerResumeStop,
+} from "./sandbox-lifecycle.ts";
 import { deferTransactionWake } from "./wake-bus.ts";
 
 type Actor = { userId: string; orgId: string };
@@ -1649,6 +1653,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         baselineVersion?: number;
         baselineTool?: SnapshotBaselineTool;
         missingRefIndex?: number;
+        retained?: true;
       },
     ) {
       return transaction(async (tx) => {
@@ -1660,6 +1665,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           ...(result.baselineVersion !== undefined ? ["baselineVersion"] : []),
           ...(result.baselineTool !== undefined ? ["baselineTool"] : []),
           ...(result.missingRefIndex !== undefined ? ["missingRefIndex"] : []),
+          ...(result.retained !== undefined ? ["retained"] : []),
         ]);
         if (
           result.reason !== undefined &&
@@ -1668,6 +1674,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           deny();
         id(result.requestId);
         if (result.outcome !== "completed" && result.outcome !== "failed") deny();
+        if (result.retained !== undefined && (result.retained !== true || result.outcome !== "failed")) deny();
         const peek = (
           await tx.query<StoredJob>(
             `select j.* from public.docker_host_jobs j join public.docker_hosts h on h.id=j.host_id where j.request_id=$1 and h.hash=$2 and h.installation_id=$3`,
@@ -1679,7 +1686,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
               tx,
               hostToken,
               installationId,
-              peek.bound_operation === "resume" ? (peek.bound_actor_id ?? undefined) : undefined,
+              peek.bound_operation === "resume" || (peek.bound_operation === "stop" && result.retained)
+                ? (peek.bound_actor_id ?? undefined)
+                : undefined,
             )
           : await authenticate(
               tx,
@@ -1805,6 +1814,11 @@ export function createDockerHostStore(sql: Sql, key: string) {
         // effects onto a lifecycle admitted after that job.
         const staleCleanup =
           (job.bound_operation === "stop" || job.bound_operation === "delete") && (await supersededLifecycle(tx, job));
+        if (result.retained) {
+          if (!logical || job.bound_operation !== "stop") deny();
+          if (!staleCleanup)
+            await confirmRefusedDockerResumeRetention(tx, logical.id, logical.lifecycle_generation, job.request_id);
+        }
         if (result.outcome === "completed" && job.bound_sandbox_id && !staleCleanup) {
           // #2560: the host created and started the container. A create job only exists for the inserted row, so it
           // belongs to the launch (activation 1): a replayed or late create ACK must never date a later resume. A
