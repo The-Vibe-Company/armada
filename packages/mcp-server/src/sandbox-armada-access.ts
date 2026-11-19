@@ -37,8 +37,13 @@ export function createSandboxArmadaAccess(input: { sql: Sql; encryptionKey: stri
         lifecycle_generation: string;
         golden_ids: string[];
         credential_ids: string[];
+        runtime_transport: "dialout" | null;
+        stop_requested: boolean;
+        terminal: boolean;
       }>(
-        `select p.id,p.sandbox_id,p.owner_id,p.org_id,s.lifecycle_generation,p.golden_ids,p.credential_ids from public.armada_access_parents p
+        `select p.id,p.sandbox_id,p.owner_id,p.org_id,s.lifecycle_generation,p.golden_ids,p.credential_ids,
+          s.runtime_transport,s.stop_requested_at is not null as stop_requested,
+          s.status in ('stopped','failed','deleted') as terminal from public.armada_access_parents p
        join public.sandboxes s on s.id=p.sandbox_id where p.kind='sandbox' and s.provider=$1 and s.provider_sandbox_id=$2`,
         [provider.id, providerId],
       )
@@ -94,9 +99,13 @@ export function createSandboxArmadaAccess(input: { sql: Sql; encryptionKey: stri
       },
     );
   }
-  async function scrub(provider: Provider, id: string) {
+  async function scrub(provider: Provider, id: string, cleanup?: "stop" | "delete") {
     const parent = await scope(provider, id);
     if (!parent) return;
+    if (cleanup && parent.runtime_transport === "dialout") {
+      if (parent.terminal || (cleanup === "stop" && parent.stop_requested)) return;
+      throw new VaultError("conflict", "Scoped runtime cleanup requires a lifecycle stop or terminal state.");
+    }
     await authority.revoke(parent.id);
     const target = native(provider);
     const physical = await target.get(id);
@@ -148,7 +157,7 @@ export function createSandboxArmadaAccess(input: { sql: Sql; encryptionKey: stri
         get(target, key) {
           if (key === "stop" || key === "delete")
             return async (request: { sandboxId: string }) => {
-              await scrub(target, request.sandboxId);
+              await scrub(target, request.sandboxId, key);
               return key === "stop" ? target.stop(request) : target.delete(request);
             };
           const value = Reflect.get(target, key, target);
