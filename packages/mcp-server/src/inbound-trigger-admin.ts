@@ -113,7 +113,7 @@ async function create(sql: Sql, org: string, actor: Caller, request: Request, en
   }
   if (!triggerId) return fail(409, "conflict", "The template or account pool is unavailable for this trigger.");
   const payload: CreatedInboundTrigger = { triggerId, signingSecret: key.secret };
-  return Response.json(payload, { status: 201, headers: noStore });
+  return Response.json(payload, { status: createInboundTrigger.successStatus, headers: noStore });
 }
 
 async function mutate(
@@ -188,8 +188,9 @@ export function inboundTriggerAdminRoute(
       return fail(503, "dependency_unavailable", "Authentication is temporarily unavailable.");
     }
     if (!auth.ok) return fail(401, "unauthorized", "Sign in to manage inbound triggers.");
-    const org = url.searchParams.get("org")?.toLowerCase();
-    if (!org || !UUID.test(org)) return fail(400, "invalid_request", "Supply the organization UUID.");
+    const scope = createInboundTrigger.input.query.safeParse({ org: url.searchParams.get("org") });
+    if (!scope.success) return fail(400, "invalid_request", "Supply the organization UUID.");
+    const org = scope.data.org.toLowerCase();
     if (!auth.caller.orgs.some((membership) => membership.orgId === org && membership.role === "admin")) {
       return fail(403, "forbidden", "Organization admin access is required.");
     }
