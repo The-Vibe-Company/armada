@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { State } from "../src/daemon.ts";
@@ -79,9 +80,16 @@ test("managed service persists registration and refuses cleanup of unknown files
   }
 });
 
-// Real filesystem boundary; service/lock recording needs no child or wall-clock wait.
+// Keep real fsync and rename without contending for the CI runner's backing disk.
 async function upgradeFixture(instance?: string) {
-  const home = await mkdtemp(join(tmpdir(), "armada-upgrade-"));
+  const fixtureDirectory =
+    process.platform === "linux"
+      ? await access("/dev/shm", constants.W_OK | constants.X_OK).then(
+          () => "/dev/shm",
+          () => tmpdir(),
+        )
+      : tmpdir();
+  const home = await mkdtemp(join(fixtureDirectory, "armada-upgrade-"));
   const binary = join(home, ".local/bin", instanceName(instance));
   const directory = stateDirectory(home, instance);
   const markerFile = join(directory, "managed.json");
@@ -142,30 +150,6 @@ async function upgradeFixture(instance?: string) {
     io,
   };
 }
-
-test("verified native upgrade atomically swaps the binary and preserves credentials, unit and enabled service", async () => {
-  const f = await upgradeFixture();
-  try {
-    const oldInode = (await lstat(f.binary)).ino;
-    const stateBytes = await readFile(join(f.directory, "state.json"), "utf8");
-    await upgradeService(f.store, f.state.server, f.io);
-    expect(await readFile(f.binary, "utf8")).toBe(f.newBytes);
-    expect((await lstat(f.binary)).ino).not.toBe(oldInode);
-    expect(await readFile(f.executable, "utf8")).toBe(f.newBytes);
-    expect(JSON.parse(await readFile(f.markerFile, "utf8"))).toEqual({ ...f.marker, binarySha256: f.hash(f.newBytes) });
-    expect(await readFile(join(f.directory, "state.json"), "utf8")).toBe(stateBytes);
-    expect(await readFile(f.unitFile, "utf8")).toBe(f.unit);
-    expect(f.events).toEqual([
-      "systemctl --user stop armada-docker-host.service",
-      "lock",
-      "unlock",
-      "systemctl --user start armada-docker-host.service",
-    ]);
-    await validateInstallation(f.state, f.home);
-  } finally {
-    await rm(f.home, { recursive: true, force: true });
-  }
-});
 
 test.each(["before swap", "after swap"])(
   "an interrupted upgrade %s accepts the old/pending digest and can finalize a later verified upgrade",
@@ -281,14 +265,22 @@ test("same verified binary with a stable marker leaves the running service untou
   }
 });
 
-test("namespaced upgrade changes only its own binary and service, preserving legacy installation", async () => {
+test("verified namespaced upgrade atomically replaces its own binary and preserves its registration and the default binary", async () => {
   const instance = createHash("sha256").update("https://second.example").digest("hex");
   const f = await upgradeFixture(instance);
   try {
     const legacy = join(f.home, ".local/bin/armada-docker-host");
     await writeFile(legacy, "legacy untouched", { mode: 0o700 });
+    const oldInode = (await lstat(f.binary)).ino;
+    const stateFile = join(f.directory, "state.json");
+    const stateBytes = await readFile(stateFile, "utf8");
     await upgradeService(f.store, f.state.server, f.io, instance);
     expect(await readFile(f.binary, "utf8")).toBe(f.newBytes);
+    expect((await lstat(f.binary)).ino).not.toBe(oldInode);
+    expect(await readFile(f.executable, "utf8")).toBe(f.newBytes);
+    expect(JSON.parse(await readFile(f.markerFile, "utf8"))).toEqual({ ...f.marker, binarySha256: f.hash(f.newBytes) });
+    expect(await readFile(stateFile, "utf8")).toBe(stateBytes);
+    expect(await readFile(f.unitFile, "utf8")).toBe(f.unit);
     expect(await readFile(legacy, "utf8")).toBe("legacy untouched");
     expect(f.events).toEqual([
       `systemctl --user stop armada-docker-host@${instance}.service`,
