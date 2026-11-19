@@ -1,14 +1,14 @@
 import type { ActionResult } from "@/lib/action";
 
 /** A toast's tone: the #757 success and destructive colours, nothing else. */
-export type ToastTone = "success" | "destructive";
+type ToastTone = "success" | "destructive";
 
 export type ToastInput = { tone: ToastTone; title: string; description?: string };
 
 export type ToastItem = ToastInput & { id: number; open: boolean };
 
 /** At most this many toasts are open at once: the oldest closes first. */
-export const TOAST_LIMIT = 3;
+const TOAST_LIMIT = 3;
 
 /** How long a toast stays before it closes on its own. A failure stays longer: it has more to read. */
 export const TOAST_DURATION: Record<ToastTone, number> = { success: 5000, destructive: 8000 };

@@ -13,7 +13,7 @@ import { explainDbError } from "./action";
  */
 export type CredentialKind = Extract<CoreCredentialKind, "boat" | "modal">;
 
-export type CredentialKindInfo = { kind: CredentialKind; label: string; description: string };
+type CredentialKindInfo = { kind: CredentialKind; label: string; description: string };
 
 export const CREDENTIAL_KINDS: readonly CredentialKindInfo[] = [
   {
