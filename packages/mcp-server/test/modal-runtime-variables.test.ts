@@ -397,9 +397,9 @@ test("Modal template selection rejects foreign provider/harness, invalid pins an
   expect(f.starts).toEqual([]);
 });
 
-test("Modal delivers a raw binding only through the encrypted runtime command and preserves its receipt", async () => {
+test("Modal delivers a short raw binding only through the encrypted runtime command and preserves its receipt", async () => {
   const f = await fixture("codex", "modal", false, "explicit", true);
-  const canary = crypto.randomUUID();
+  const canary = `v${crypto.randomUUID().slice(0, 6)}`;
   const secret = (
     await f.db.query<{ id: string }>(
       "insert into application_secrets(org_id,owner_id,scope,name,value_enc) values($1,$2,'personal','APP_TOKEN',$3) returning id",
@@ -540,26 +540,6 @@ test.each([
   expect(f.physical.stops).toHaveLength(1);
   expect(f.deliveries).toHaveLength(entry === "explicit" ? 0 : 1);
   expect(f.prompts()).toBe(0);
-});
-
-test("Modal refuses a short secret before admitting a runtime configuration command", async () => {
-  const f = await fixture("codex", "modal", false, "explicit", true);
-  const secret = (
-    await f.db.query<{ id: string }>(
-      "insert into application_secrets(org_id,owner_id,scope,name,value_enc) values($1,$2,'personal','APP_TOKEN',$3) returning id",
-      [f.people.org, f.people.owner, await encryptSecret("fixture", ENCRYPTION_KEY)],
-    )
-  ).rows[0]!;
-  const template = await f.create({
-    ...f.definition,
-    secrets: [{ key: "APP_TOKEN", secretId: secret.id, version: 1 }],
-  });
-  const response = await f.api(f.request(template.id));
-  expect(await response.json()).toMatchObject({ state: "reconciling" });
-  expect(f.deliveries).toHaveLength(0);
-  expect((await f.db.query("select 1 from runtime_commands where request_id like 'modal_variables_%'")).rows).toEqual(
-    [],
-  );
 });
 
 test.each(["modal", "boat"] as const)(
