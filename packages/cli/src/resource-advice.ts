@@ -40,6 +40,5 @@ export async function printOptionalResourceAdvice(
     );
     const text = resourceAdviceText(advice);
     if (text) err(`${text}\n`);
-  } catch {
-  }
+  } catch {}
 }
