@@ -852,6 +852,7 @@ const refusalOrders = [
   "missing ACK after daemon restart",
   "failed retained-stop ACK",
   "failed retained-stop ACK after early resume failure",
+  "owner stop before refused resume ACK",
 ];
 
 test.each(refusalOrders)(
@@ -961,6 +962,25 @@ test.each(refusalOrders)(
     const response = await refuse();
     expect(response?.status).toBe(409);
     expect(await response?.json()).toEqual({ error: "runtime_protocol_unsupported" });
+    const reportRetained = (requestId: string, store = hosts) =>
+      createDockerHostRoutes(store, async () => ({ ok: false }))(
+        new Request("https://armada.example/api/docker-host/results", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${f.hostToken}`,
+            [DOCKER_HOST_PROTOCOL_HEADER]: String(DOCKER_HOST_PROTOCOL),
+          },
+          body: JSON.stringify({ installationId: f.installationId, requestId, outcome: "failed", retained: true }),
+        }),
+      );
+    if (order === "owner stop before refused resume ACK") {
+      const ownerStop = await hosts.enqueueSandbox(f.actor, id, { operation: "stop", requestId: randomUUID() });
+      await ack(job.requestId);
+      await ack(ownerStop.requestId, "failed");
+      expect((await reportRetained(ownerStop.requestId))?.status).toBe(200);
+      expect((await reservations.get(f.actor, id)).status).toBe("stopping");
+      return;
+    }
     if (missingAck) {
       if (!enrolmentDeadline) throw Error("missing original enrolment deadline");
       await database().query(
@@ -1075,17 +1095,6 @@ test.each(refusalOrders)(
     if (stop?.operation !== "stop") throw Error("missing refusal stop");
     expect(stop.request).toEqual(job.request);
     const failedRetainedStop = order.startsWith("failed retained-stop ACK");
-    const reportRetained = (requestId: string, store = hosts) =>
-      createDockerHostRoutes(store, async () => ({ ok: false }))(
-        new Request("https://armada.example/api/docker-host/results", {
-          method: "POST",
-          headers: {
-            authorization: `Bearer ${f.hostToken}`,
-            [DOCKER_HOST_PROTOCOL_HEADER]: String(DOCKER_HOST_PROTOCOL),
-          },
-          body: JSON.stringify({ installationId: f.installationId, requestId, outcome: "failed", retained: true }),
-        }),
-      );
     if (failedRetainedStop) {
       for (const fragment of ["from public.sandbox_transition(", "set outcome=$2,completed_at=now()"]) {
         const failingStore = createDockerHostStore(failWrite(fragment), key);
@@ -1093,12 +1102,14 @@ test.each(refusalOrders)(
         expect((await reservations.get(f.actor, id)).status).toBe("stopping");
         expect((await hosts.poll(f.hostToken, f.installationId))?.requestId).toBe(stop.requestId);
       }
-      await ack(stop.requestId, "failed");
-      expect((await reservations.get(f.actor, id)).status).toBe("stopping");
-      const unrelated = await hosts.enqueueSandbox(f.actor, id, { operation: "stop", requestId: randomUUID() });
-      await ack(unrelated.requestId, "failed");
-      expect((await reportRetained(unrelated.requestId))?.status).toBe(200);
-      expect((await reservations.get(f.actor, id)).status).toBe("stopping");
+      if (!failedAckFirst) {
+        await ack(stop.requestId, "failed");
+        expect((await reservations.get(f.actor, id)).status).toBe("stopping");
+        const unrelated = await hosts.enqueueSandbox(f.actor, id, { operation: "stop", requestId: randomUUID() });
+        await ack(unrelated.requestId, "failed");
+        expect((await reportRetained(unrelated.requestId))?.status).toBe(200);
+        expect((await reservations.get(f.actor, id)).status).toBe("stopping");
+      }
       expect((await reportRetained(stop.requestId))?.status).toBe(200);
       await expect(ack(stop.requestId)).rejects.toThrow();
     } else {

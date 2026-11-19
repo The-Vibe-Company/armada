@@ -170,7 +170,8 @@ export async function failDockerResumeActivation(
 export async function requestRefusedDockerResumeStop(tx: Sql, sandboxId: string, generation: string) {
   const stopped = await tx.query(
     `update public.sandboxes set status='stopping',status_reason=null,
-       stop_requested_at=now(),lifecycle_generation=lifecycle_generation+1
+       stop_requested_at=now(),lifecycle_generation=lifecycle_generation+1,
+       transition_context=jsonb_build_object('actor','docker_host','code','docker_resume_refusal_stop')
      where id=$1 and provider='docker' and stop_requested_at is null and deleted_at is null
        and expires_at>now()
        and ((status='starting' and lifecycle_generation=$2::bigint)
@@ -194,7 +195,7 @@ export async function confirmRefusedDockerResumeRetention(
   const retained = await tx.query(
     `select s.id from public.sandboxes s
      where s.id=$1 and s.lifecycle_generation=$2 and s.provider='docker' and s.status='stopping'
-       and s.status_reason is null and s.stopped_at is null and s.deleted_at is null and s.expires_at>now()
+       and s.status_reason is null and s.stopped_at is null and s.deleted_at is null and s.expires_at>clock_timestamp()
        and not s.application_secret_tainted and cardinality(s.conversation_ids)=1
        and exists (
          select 1 from public.docker_host_jobs stop
@@ -212,12 +213,13 @@ export async function confirmRefusedDockerResumeRetention(
            and stop.bound_actor_id=s.owner_id and stop.bound_actor_epoch=e.epoch
            and stop.created_at=s.stop_requested_at and stop.cancelled_at is null
            and resume.outcome is not null and resume.cancelled_at is null
-           and (s.lifecycle_generation=resume.refused_resume_generation+1
-             or (s.lifecycle_generation=resume.refused_resume_generation+2 and exists (
-               select 1 from public.sandbox_transitions t where t.sandbox_id=s.id
-                 and t.generation=resume.refused_resume_generation+1 and t.from_status='starting'
-                 and t.to_status='failed' and t.actor='docker_host' and t.code='resume_ack_failed'
-             )))
+           and exists (
+             select 1 from public.sandbox_transitions t where t.sandbox_id=s.id
+               and t.generation=s.lifecycle_generation and t.to_status='stopping'
+               and t.actor='docker_host' and t.code='docker_resume_refusal_stop'
+               and t.generation=resume.refused_resume_generation+
+                 case t.from_status when 'starting' then 1 when 'failed' then 2 end
+           )
            and not exists (
              select 1 from public.docker_host_jobs earlier where earlier.bound_sandbox_id=s.id
                and earlier.bound_operation='stop' and earlier.position between resume.position+1 and stop.position-1
