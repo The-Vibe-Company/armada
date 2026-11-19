@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import type { AgentEvent, PromptStatus } from "@armada/core";
-import { HARNESSES, isFinalPromptStatus } from "@armada/core";
+import { HARNESSES, isFinalPromptStatus, planLimitData } from "@armada/core";
 import { HarnessError } from "./errors.ts";
 import { checkpointIdentity, checkpointIdentityKey } from "./identity.ts";
 import type { CheckpointIdentity, StoredPrompt } from "./protocol.ts";
@@ -36,6 +36,7 @@ function isStructuredDiagnostic(type: string) {
     type === "result" ||
     type === "usage_report" ||
     type === "model/rerouted" ||
+    Object.hasOwn(terminalDiagnosticShapes, type) ||
     isCodexQuotaDiagnostic(type)
   );
 }
@@ -202,6 +203,26 @@ const quotaPayload = {
     rateLimitsByLimitId: { entries: quotaSnapshot },
     ordinaryUsageAllowed: null,
   },
+};
+const terminalDiagnosticShapes: Readonly<Record<string, PayloadShape>> = {
+  "turn/completed": {
+    fields: {
+      threadId: null,
+      turn: {
+        fields: {
+          id: null,
+          status: null,
+          error: {
+            fields: { message: null, codexErrorInfo: null, additionalDetails: null, misalignment: null },
+          },
+        },
+      },
+    },
+  },
+  "armada/modelRateLimit": {
+    fields: { retryCount: null, delayMs: null, totalWaitMs: null, reason: null, message: null },
+  },
+  usage_limit: { fields: { code: null, resetsAt: null } },
 };
 const turnUsagePayload = {
   fields: {
@@ -454,6 +475,13 @@ export class Journal {
         scrubbed.data = maskShapedPayload(event.data, scrubbed.data, maskField, quotaPayload);
       } else if (event.type === "armada/turnUsage") {
         scrubbed.data = maskShapedPayload(event.data, scrubbed.data, maskField, turnUsagePayload);
+      } else if (Object.hasOwn(terminalDiagnosticShapes, event.type)) {
+        scrubbed.data = maskShapedPayload(event.data, scrubbed.data, maskField, terminalDiagnosticShapes[event.type]);
+        // Consumers classify plan exhaustion using this closed protocol enum.
+        if (event.type === "usage_limit") {
+          const limit = planLimitData(event.data);
+          if (limit) scrubbed.data.code = limit.code;
+        }
       } else if (event.type === "model/rerouted") {
         maskPayloadField({ data: event.data }, scrubbed, "data", maskField);
       } else {

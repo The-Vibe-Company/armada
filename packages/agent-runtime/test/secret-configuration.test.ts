@@ -229,6 +229,41 @@ test.each([
     },
   },
   {
+    type: "turn/completed",
+    data: {
+      threadId: "thread-prefixvalue",
+      turn: {
+        id: "turn-fixture",
+        status: "failed",
+        error: {
+          message: "Plan limit reached. Resets at 2042-01-01T00:00:00.000Z.",
+          additionalDetails: { prefixlongfixture: "prefixvalue" },
+        },
+      },
+    },
+    masked: {
+      threadId: "thread-prefix[REDACTED]",
+      turn: {
+        id: "turn-fixture",
+        status: "failed",
+        error: {
+          message: "Plan limit reached. Resets at 20[REDACTED]-01-01T00:00:00.000Z.",
+          additionalDetails: { "prefix[REDACTED]": "prefix[REDACTED]" },
+        },
+      },
+    },
+  },
+  {
+    type: "usage_limit",
+    data: { code: "usage_limit_exceeded", resetsAt: "2042-01-01T00:00:00.000Z" },
+    masked: { code: "usage_limit_exceeded", resetsAt: "20[REDACTED]-01-01T00:00:00.000Z" },
+  },
+  {
+    type: "armada/modelRateLimit",
+    data: { retryCount: 2, delayMs: 42000, totalWaitMs: 43000, message: "Retrying in 42 s" },
+    masked: { retryCount: 2, delayMs: "[REDACTED]", totalWaitMs: 43000, message: "Retrying in [REDACTED] s" },
+  },
+  {
     type: "usage_report",
     data: {
       rate_limits: {
@@ -355,6 +390,7 @@ test.each([
       type,
       "bash",
       "longfixture",
+      ...(["turn/completed", "usage_limit", "armada/modelRateLimit"].includes(type) ? ["42"] : []),
       ...(type === "usage_report" ? ["limits"] : []),
       ...(type.startsWith("account/") ? ["rateLimits", "42"] : []),
       ...(type === "result" || type === "armada/turnUsage" ? ["Tokens", "tokens", "42"] : []),
