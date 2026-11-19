@@ -131,6 +131,7 @@ const TEMPLATE_LAUNCH_TIMEOUT_MS = 600_000;
  * row: the longest launch request timeout, so a slow but valid sibling launch is never misreported.
  */
 const SIBLING_ATTRIBUTION_WAIT_MS = TEMPLATE_LAUNCH_TIMEOUT_MS;
+const SANDBOX_ID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 const LAUNCH_PATH = /^(?:sandbox\/launch|templates\/launch)$/;
 type Lane = "templates" | "expiry" | "lifecycle";
 
@@ -544,14 +545,15 @@ async function runPostDeploySmoke(
           launchResponse,
         );
       }
-      let result: {
+      type ResponseBody = {
         sandbox?: { id?: unknown; provider?: unknown };
         state?: unknown;
         id?: unknown;
         provider?: unknown;
       } | null;
+      let result: ResponseBody;
       try {
-        result = await response.json();
+        result = (await response.json()) as ResponseBody;
       } catch {
         if (path === "sandbox/wait")
           throw new SmokeFailure("invalid_response", response.status, {
@@ -560,6 +562,7 @@ async function runPostDeploySmoke(
           });
         throw new SmokeFailure("invalid_response", response.status, undefined, launchResponse);
       }
+      // Keep the handle before validating the receipt, as the cleanup journal does.
       record(result);
       if (sandboxLaunch) {
         const provider = smokeReceiptProvider(result);
@@ -700,7 +703,13 @@ async function runPostDeploySmoke(
                 });
                 const rows = result?.sandboxes;
                 const row = rows?.[0];
-                if (rows?.length === 1 && row?.id && row.provider === item.provider && row.externalRef === requestKey) {
+                if (
+                  rows?.length === 1 &&
+                  typeof row?.id === "string" &&
+                  SANDBOX_ID.test(row.id) &&
+                  row.provider === item.provider &&
+                  row.externalRef === requestKey
+                ) {
                   if (observedId === undefined) {
                     observedId = row.id;
                     keepHandle(row.id);
@@ -1536,7 +1545,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
       } | null;
       const id = result?.sandbox?.id ?? result?.id;
       const provider = smokeReceiptProvider(result);
-      if (typeof id === "string" && typeof org === "string") {
+      if (typeof id === "string" && SANDBOX_ID.test(id) && typeof org === "string") {
         const row: SmokeSandboxReceipt = {
           requestKey,
           org,

@@ -1,6 +1,10 @@
 import { expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { postDeploySmoke } from "./post-deploy-smoke.ts";
 
+const ownedWorker = "12345678-1234-1234-1234-123456789abc";
 const origin = "https://armada-mcp-staging.up.railway.app";
 type Fault =
   | "none"
@@ -16,6 +20,7 @@ type Fault =
   | "recovered_launch"
   | "late_launch"
   | "unreadable_launch"
+  | "missing_launch_id"
   | "invalid_launch_receipt"
   | "cleanup_lost"
   | "cleanup_failed"
@@ -42,6 +47,9 @@ function fixture(provider: "modal", fault: Fault = "none") {
       expect(new URL(url).origin).toBe(origin);
       expect(new Headers(init.headers).get("authorization")).toBe("Bearer canary-token");
       const path = new URL(url).pathname.replace("/api/v1/", "");
+      if (init.method === "DELETE" && path === `sandboxes/${ownedWorker}`) {
+        return Response.json({ id: ownedWorker, status: "deleted" });
+      }
       const body = JSON.parse(String(init.body));
       calls.push({ path, body });
       if (path === "sandbox/launch") {
@@ -58,7 +66,7 @@ function fixture(provider: "modal", fault: Fault = "none") {
         }
         if (fault === "unreadable_launch") return new Response("{", { status: 200 });
         return Response.json({
-          sandbox: { id: "owned-worker", provider },
+          sandbox: fault === "missing_launch_id" ? { id: "" } : { id: ownedWorker, provider },
           ...(fault === "invalid_launch_receipt" ? { promptId: "unexpected" } : {}),
         });
       }
@@ -72,12 +80,15 @@ function fixture(provider: "modal", fault: Fault = "none") {
           lookups++;
           if (fault === "late_launch") clock += 120_001;
           const found =
-            fault === "late_launch" || fault === "unreadable_launch" || (fault === "recovered_launch" && lookups > 1);
+            fault === "late_launch" ||
+            fault === "unreadable_launch" ||
+            fault === "missing_launch_id" ||
+            (fault === "recovered_launch" && lookups > 1);
           return Response.json({
             sandboxes: found
               ? [
                   {
-                    id: "owned-worker",
+                    id: ownedWorker,
                     provider,
                     externalRef: body.externalRef,
                     status: lookups === 2 ? "starting" : "ready",
@@ -95,7 +106,7 @@ function fixture(provider: "modal", fault: Fault = "none") {
               ? []
               : [
                   {
-                    id: "owned-worker",
+                    id: ownedWorker,
                     provider: fault === "list_identity" ? "wrong" : provider,
                     harness: "codex",
                     status:
@@ -114,7 +125,7 @@ function fixture(provider: "modal", fault: Fault = "none") {
           nextPage: null,
         });
       }
-      expect(body.id).toBe("owned-worker");
+      expect(body.id).toBe(ownedWorker);
       if (path === "sandbox/stop") {
         if (fault === "cleanup_failed") throw new Error("secret stop detail");
         manualStop = true;
@@ -136,7 +147,7 @@ function fixture(provider: "modal", fault: Fault = "none") {
                 ? "starting"
                 : "ready";
         return Response.json({
-          id: "owned-worker",
+          id: ownedWorker,
           status,
           providerState: status === "failed" ? null : stopped && fault !== "physical" ? "stopped" : "active",
           statusReason: fault === "reason" ? "other" : "expired",
@@ -213,7 +224,7 @@ test("expiry false receipts and timeouts fail closed; cleanup cannot turn a manu
     const cleanup = fake.reports.find((line) => line.step === "expiry_cleanup_summary");
     expect(cleanup?.pass).toBe(!["physical", "cleanup_failed", "failed_unconfirmed"].includes(fault));
     expect(cleanup?.leftoverSandboxIds).toEqual(
-      ["physical", "cleanup_failed", "failed_unconfirmed"].includes(fault) ? ["owned-worker"] : [],
+      ["physical", "cleanup_failed", "failed_unconfirmed"].includes(fault) ? [ownedWorker] : [],
     );
     expect(JSON.stringify(fake.reports)).not.toContain("secret");
   }
@@ -268,7 +279,7 @@ test("an expiry lookup that returns after the deadline provides a cleanup handle
   const fake = fixture("modal", "late_launch");
   expect(await postDeploySmoke(fake.env, ["--expiry"], fake.io)).toBe(false);
   expect(fake.calls.filter((call) => call.path === "sandbox/stop")).toEqual([
-    { path: "sandbox/stop", body: { org: "org", id: "owned-worker" } },
+    { path: "sandbox/stop", body: { org: "org", id: ownedWorker } },
   ]);
   expect(fake.reports.find((line) => line.step === "expiry_launch")?.pass).toBe(false);
 });
@@ -277,4 +288,20 @@ test("expiry reconciles an unreadable successful launch response", async () => {
   const fake = fixture("modal", "unreadable_launch");
   expect(await postDeploySmoke(fake.env, ["--expiry"], fake.io)).toBe(true);
   expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(1);
+});
+
+test("an empty launch receipt ID leaves the recovered staging journal clean", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "expiry-smoke-"));
+  try {
+    const fake = fixture("modal", "missing_launch_id");
+    const journal = join(directory, "sandboxes.json");
+    expect(await postDeploySmoke({ ...fake.env, ARMADA_SMOKE_JOURNAL: journal }, ["--expiry"], fake.io)).toBe(true);
+    expect(await Bun.file(journal).json()).toEqual([]);
+    expect(fake.reports.find((line) => line.step === "smoke_cleanup_summary")).toMatchObject({
+      pass: true,
+      launchOutcomeUnknown: false,
+    });
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
