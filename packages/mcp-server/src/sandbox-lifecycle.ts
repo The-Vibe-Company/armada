@@ -131,6 +131,56 @@ export async function requestRefusedDockerResumeStop(tx: Sql, sandboxId: string,
   return stopped.rows.length > 0;
 }
 
+export async function confirmRefusedDockerResumeRetention(
+  tx: Sql,
+  sandboxId: string,
+  generation: string | number,
+  requestId: string,
+) {
+  // The refusal handoff uses now() for its stop intent and the mailbox insert.
+  // Match the first stop after the refused resume, from that same transaction.
+  await tx.query(
+    `update public.sandboxes s set status='stopped',stopped_at=now()
+     where s.id=$1 and s.lifecycle_generation=$2 and s.provider='docker' and s.status='stopping'
+       and s.stopped_at is null and s.deleted_at is null and s.expires_at>now()
+       and not s.application_secret_tainted and cardinality(s.conversation_ids)=1
+       and exists (
+         select 1 from public.docker_host_jobs stop
+         join public.docker_hosts h on h.id=stop.host_id
+         join public.mcp_actor_epochs e on e.org_id=s.org_id and e.user_id=stop.bound_actor_id
+         join public.members m on m.org_id=e.org_id and m.user_id=e.user_id
+         join lateral (
+           select r.* from public.docker_host_jobs r
+           where r.bound_sandbox_id=s.id and r.bound_operation='resume' and r.position<stop.position
+           order by r.position desc limit 1
+         ) resume on resume.host_id=stop.host_id and resume.bound_actor_id=stop.bound_actor_id
+             and resume.bound_actor_epoch=stop.bound_actor_epoch
+         where stop.request_id=$3 and stop.bound_sandbox_id=s.id and stop.bound_operation='stop'
+           and stop.host_id=s.docker_host_id and h.installation_id=s.docker_installation_id and h.revoked_at is null
+           and stop.bound_actor_id=s.owner_id and stop.bound_actor_epoch=e.epoch
+           and stop.created_at=s.stop_requested_at and stop.cancelled_at is null
+           and resume.outcome is not null and resume.cancelled_at is null
+           and (s.lifecycle_generation=resume.refused_resume_generation+1
+             or (s.lifecycle_generation=resume.refused_resume_generation+2 and exists (
+               select 1 from public.sandbox_transitions t where t.sandbox_id=s.id
+                 and t.generation=resume.refused_resume_generation+1 and t.from_status='starting'
+                 and t.to_status='failed' and t.actor='docker_host' and t.code='resume_ack_failed'
+             )))
+           and not exists (
+             select 1 from public.docker_host_jobs earlier where earlier.bound_sandbox_id=s.id
+               and earlier.bound_operation='stop' and earlier.position between resume.position+1 and stop.position-1
+           )
+       )
+       and exists (
+         select 1 from public.runtime_enrolments r
+         join public.runtime_checkpoints p on p.sandbox_id=r.sandbox_id and p.epoch=r.epoch
+         where r.sandbox_id=s.id and p.completed_at is not null
+           and p.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=s.id)
+       )`,
+    [sandboxId, generation, requestId],
+  );
+}
+
 async function recoverInterruptedRuntimeResume(
   tx: Sql,
   sandboxId: string,

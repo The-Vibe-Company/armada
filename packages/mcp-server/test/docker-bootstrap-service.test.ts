@@ -2,6 +2,7 @@ import { afterAll, beforeAll, expect, mock, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
 import {
   DOCKER_HOST_PROTOCOL,
+  DOCKER_HOST_PROTOCOL_HEADER,
   DOCKER_LAUNCH_FAILURE_MESSAGES,
   DockerRetentionEnded,
   type Harness,
@@ -12,6 +13,7 @@ import { canonicalDockerHostJob } from "../../core/src/docker-host-job.ts";
 import { type Api, type Executor, type State, type Store, tick } from "../../docker-host/src/daemon.ts";
 import { createDockerBootstrapService, DockerBootstrapDenied } from "../src/docker-bootstrap-service.ts";
 import { DockerHostDraining } from "../src/docker-capacity.ts";
+import { createDockerHostRoutes } from "../src/docker-host-routes.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
 import { createDockerRuntimeLifecycle } from "../src/docker-runtime-lifecycle.ts";
 import { createDockerSandboxControls } from "../src/docker-sandbox-controls.ts";
@@ -848,6 +850,7 @@ const refusalOrders = [
   "previous server failed ACK",
   "ACK transaction rollback",
   "missing ACK after daemon restart",
+  "failed retained-stop ACK",
 ];
 
 test.each(refusalOrders)(
@@ -912,20 +915,20 @@ test.each(refusalOrders)(
 
     if (order === "ACK first") await ack(job.requestId);
     const failedAckFirst = order === "failed ACK first";
+    const failWrite = (fragment: string) =>
+      ({
+        query: sql.query,
+        transaction: (work) =>
+          sql.transaction!((tx) =>
+            work({
+              query: (statement, values) => {
+                if (statement.includes(fragment)) throw Error("handoff write failed");
+                return tx.query(statement, values);
+              },
+            }),
+          ),
+      }) satisfies Sql;
     if (failedAckFirst) {
-      const failWrite = (fragment: string) =>
-        ({
-          query: sql.query,
-          transaction: (work) =>
-            sql.transaction!((tx) =>
-              work({
-                query: (statement, values) => {
-                  if (statement.includes(fragment)) throw Error("handoff write failed");
-                  return tx.query(statement, values);
-                },
-              }),
-            ),
-        }) satisfies Sql;
       await expect(
         createDockerHostStore(failWrite("set outcome=$2,completed_at=now()"), key).complete(
           f.hostToken,
@@ -1069,7 +1072,34 @@ test.each(refusalOrders)(
     const stop = await hosts.poll(f.hostToken, f.installationId);
     if (stop?.operation !== "stop") throw Error("missing refusal stop");
     expect(stop.request).toEqual(job.request);
-    await ack(stop.requestId);
+    const failedRetainedStop = order === "failed retained-stop ACK";
+    const reportRetained = (requestId: string, store = hosts) =>
+      createDockerHostRoutes(store, async () => ({ ok: false }))(
+        new Request("https://armada.example/api/docker-host/results", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${f.hostToken}`,
+            [DOCKER_HOST_PROTOCOL_HEADER]: String(DOCKER_HOST_PROTOCOL),
+          },
+          body: JSON.stringify({ installationId: f.installationId, requestId, outcome: "failed", retained: true }),
+        }),
+      );
+    if (failedRetainedStop) {
+      const failingStore = createDockerHostStore(failWrite("set outcome=$2,completed_at=now()"), key);
+      expect((await reportRetained(stop.requestId, failingStore))?.status).toBe(503);
+      expect((await reservations.get(f.actor, id)).status).toBe("stopping");
+      expect((await hosts.poll(f.hostToken, f.installationId))?.requestId).toBe(stop.requestId);
+      await ack(stop.requestId, "failed");
+      expect((await reservations.get(f.actor, id)).status).toBe("stopping");
+      const unrelated = await hosts.enqueueSandbox(f.actor, id, { operation: "stop", requestId: randomUUID() });
+      await ack(unrelated.requestId, "failed");
+      expect((await reportRetained(unrelated.requestId))?.status).toBe(200);
+      expect((await reservations.get(f.actor, id)).status).toBe("stopping");
+      expect((await reportRetained(stop.requestId))?.status).toBe(200);
+      await expect(ack(stop.requestId)).rejects.toThrow();
+    } else {
+      await ack(stop.requestId);
+    }
     expect((await reservations.get(f.actor, id)).status).toBe("stopped");
     if (earlier) {
       expect((await hosts.poll(f.hostToken, f.installationId, "3.0.0", false, undefined, 1))?.requestId).toBe(
@@ -1086,6 +1116,11 @@ test.each(refusalOrders)(
     if (order === "previous server failed ACK" || failedAckFirst || missingAck) {
       await ack(job.requestId, "failed");
       await ack(stop.requestId);
+      expect((await reservations.get(f.actor, id)).status).toBe("starting");
+      expect((await service.resume(f.actor, id, resume.requestId)).state).toBe("failed");
+    }
+    if (failedRetainedStop) {
+      expect((await reportRetained(stop.requestId))?.status).toBe(200);
       expect((await reservations.get(f.actor, id)).status).toBe("starting");
       expect((await service.resume(f.actor, id, resume.requestId)).state).toBe("failed");
     }
