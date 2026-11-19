@@ -8,13 +8,13 @@ import { Button } from "@/components/ui/button";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Kbd } from "@/components/ui/kbd";
-import { type Command as MenuCommand, matchCommands } from "@/lib/command-menu";
+import { commandsForOrganization, type Command as MenuCommand, matchCommands } from "@/lib/command-menu";
 
 /**
  * ⌘K (Ctrl+K elsewhere) from anywhere in the signed-in app: type a few letters of a page or an action, arrows to
  * choose, Enter to go. Mounted once per page; the sidebar has no search box (#1474), the shortcut opens it.
  */
-export function CommandMenu() {
+export function CommandMenu({ organizationAdmin }: { organizationAdmin: boolean }) {
   const [open, setOpen] = useState(false);
   const openingFocus = useRef<HTMLElement | null>(null);
 
@@ -49,16 +49,19 @@ export function CommandMenu() {
           openingFocus.current?.focus();
         }}
       >
-        {open && <Palette onDone={() => setOpen(false)} />}
+        {open && <Palette organizationAdmin={organizationAdmin} onDone={() => setOpen(false)} />}
       </DialogContent>
     </Dialog>
   );
 }
 
-function Palette({ onDone }: { onDone: () => void }) {
+function Palette({ onDone, organizationAdmin }: { onDone: () => void; organizationAdmin: boolean }) {
   const router = useRouter();
   const [query, setQuery] = useState("");
-  const results = useMemo(() => matchCommands(query), [query]);
+  const results = useMemo(
+    () => matchCommands(query, commandsForOrganization(organizationAdmin)),
+    [query, organizationAdmin],
+  );
 
   function go(command: MenuCommand) {
     onDone();

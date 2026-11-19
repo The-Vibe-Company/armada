@@ -80,6 +80,7 @@ type State = {
   templateRequests: Map<string, Row>;
   routines: Row[];
   routineHistory: Row[];
+  inboundTriggerEnabled: boolean;
 };
 
 function seed(): State {
@@ -215,6 +216,7 @@ function seed(): State {
       routineRow(id(2201), "personal", ALICE, "Release notes", "paused", id(91), 1),
       routineRow(id(2202), "personal", BOB, "Bob private check", "paused", id(90), 2),
     ],
+    inboundTriggerEnabled: true,
     routineHistory: [
       {
         id: id(2210),
@@ -2921,6 +2923,44 @@ function langfuseControl(request: Request, match: RegExpMatchArray, body: Row): 
   return json({ enabled: candidate.enabled, contentMode: candidate.contentMode });
 }
 
+function inboundTriggers(request: Request, url: URL, path: RegExpMatchArray) {
+  const caller = viewer(request);
+  const org = url.searchParams.get("org");
+  if (!caller) return controlFail(401, "unauthorized", "Sign in again.");
+  if (!isAdmin(org, caller)) return controlFail(403, "forbidden", "Only organization admins can manage triggers.");
+
+  const trigger = id(2220);
+  const [, triggerId, operation] = path;
+  const headers = { "cache-control": "no-store" };
+  if (request.method === "GET" && !triggerId) {
+    const summary = {
+      id: trigger,
+      templateId: id(90),
+      poolHarness: "claude",
+      enabled: state.inboundTriggerEnabled,
+      ratePerMinute: 25,
+      concurrency: 2,
+      rateRefusals: 1,
+    };
+    return json({ triggers: org === ACME ? [summary] : [] }, 200, headers);
+  }
+  if (org !== ACME || triggerId !== trigger) return controlFail(404, "not_found", "Trigger not found.");
+  if (request.method === "GET" && operation === "deliveries") {
+    const delivery = { deliveryId: "fixture_delivery", receivedAt: "2026-11-19T10:00:00Z", jobState: "done" };
+    return json({ deliveries: [delivery] }, 200, headers);
+  }
+  if (request.method === "POST" && operation === "disable") {
+    state.inboundTriggerEnabled = false;
+    return new Response(null, { status: 204, headers });
+  }
+  if (request.method === "POST" && operation === "rotate") {
+    if (!state.inboundTriggerEnabled) return controlFail(404, "not_found", "Active trigger not found.");
+    const signingSecret = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64");
+    return json({ signingSecret }, 200, headers);
+  }
+  return controlFail(405, "method_not_allowed", "Method not allowed.");
+}
+
 const server = Bun.serve({
   port: PORT,
   hostname: "127.0.0.1",
@@ -2957,6 +2997,8 @@ const server = Bun.serve({
     if (url.pathname.startsWith("/oauth/")) return oauth(url);
     const langfuse = url.pathname.match(/^\/api\/v1\/orgs\/([0-9a-f-]{36})\/langfuse(\/test)?$/i);
     if (langfuse) return langfuseControl(request, langfuse, body);
+    const triggerPath = url.pathname.match(/^\/api\/v1\/triggers(?:\/([^/]+)\/(deliveries|rotate|disable))?$/);
+    if (triggerPath) return inboundTriggers(request, url, triggerPath);
     if (url.pathname.startsWith("/api/v1/")) {
       const route = url.pathname.slice("/api/v1/".length);
       if (route === "docker/hosts/list" && body.org === LARGE) {

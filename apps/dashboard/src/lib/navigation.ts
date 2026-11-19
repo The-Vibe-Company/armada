@@ -5,6 +5,7 @@
 export type NavIcon =
   | "sandboxes"
   | "routines"
+  | "triggers"
   | "templates"
   | "environments"
   | "skills"
@@ -18,7 +19,7 @@ export type NavIcon =
 /** A destination behind a server opt-in: the entry appears only once the server says it offers it. */
 export type NavOptIn = "dockerHosts";
 
-export type NavLink = { href: string; label: string; icon: NavIcon; optIn?: NavOptIn };
+export type NavLink = { href: string; label: string; icon: NavIcon; optIn?: NavOptIn; adminOnly?: boolean };
 export type NavGroup = { label: string; links: readonly NavLink[] };
 
 export const NAV_GROUPS: readonly NavGroup[] = [
@@ -27,6 +28,7 @@ export const NAV_GROUPS: readonly NavGroup[] = [
     links: [
       { href: "/sandboxes", label: "Sandboxes", icon: "sandboxes" },
       { href: "/routines", label: "Routines", icon: "routines" },
+      { href: "/triggers", label: "Inbound triggers", icon: "triggers", adminOnly: true },
     ],
   },
   {
@@ -74,7 +76,11 @@ export const showsOrganizations = (memberships: number, selected: boolean) => !s
  * Switch at section level, never carrying item IDs or filters into another organization.
  * Canonical sections come from the navigation catalog; older entry points stay supported.
  */
-export function organizationSwitchDestination(section: string, organizationId: string): string {
+export function organizationSwitchDestination(
+  section: string,
+  organizationId: string,
+  organizationAdmin = false,
+): string {
   const pathname = section.startsWith("/") ? section : `/${section}`;
   const aliases: Record<string, string> = {
     setup: "/providers/cloud",
@@ -87,6 +93,9 @@ export function organizationSwitchDestination(section: string, organizationId: s
   const key = pathname.split("/")[1] ?? "";
   const alias = Object.hasOwn(aliases, key) ? aliases[key] : undefined;
   const destination =
-    alias ?? NAV_GROUPS.flatMap((group) => group.links).find((link) => isActiveLink(pathname, link.href))?.href;
+    alias ??
+    NAV_GROUPS.flatMap((group) => group.links).find(
+      (link) => (!link.adminOnly || organizationAdmin) && isActiveLink(pathname, link.href),
+    )?.href;
   return destination === "/orgs" ? `/orgs/${encodeURIComponent(organizationId)}` : (destination ?? "/sandboxes");
 }

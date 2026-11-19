@@ -1,0 +1,12 @@
+import { selectedOrganization } from "@/lib/data/selected-org";
+import { requireViewer } from "@/lib/data/viewer";
+import { mcpUrl } from "@/lib/env";
+import { createInboundTriggerControl } from "@/lib/inbound-triggers";
+
+export async function viewerInboundTriggers(org: string) {
+  const selected = await selectedOrganization();
+  if (selected?.org.id !== org || selected.role !== "admin") return null;
+  const { token } = await requireViewer();
+  const serverUrl = mcpUrl();
+  return serverUrl && token ? createInboundTriggerControl({ serverUrl, token }, org) : null;
+}

@@ -43,6 +43,7 @@ const CATALOG: readonly Command[] = [
     group: "Go to",
     keywords: ["schedule", "interval", "pause", "runs"],
   },
+  { id: "triggers", label: "Inbound triggers", href: "/triggers", group: "Go to", keywords: ["webhook"] },
   { id: "sandboxes", label: "Sandboxes", href: "/sandboxes", group: "Go to", keywords: ["agents", "logs", "running"] },
   {
     id: "environments",
@@ -100,6 +101,11 @@ export const COMMANDS: readonly Command[] = CATALOG.map((command) => {
       }
     : command;
 });
+
+export function commandsForOrganization(isAdmin: boolean) {
+  const restricted = NAV_GROUPS.flatMap((group) => group.links).filter((link) => link.adminOnly);
+  return isAdmin ? COMMANDS : COMMANDS.filter((command) => !restricted.some((link) => link.href === command.href));
+}
 
 /**
  * The commands that match `query`, best first: a label that starts with it, then a word of the label that does, then

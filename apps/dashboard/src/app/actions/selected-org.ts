@@ -13,8 +13,8 @@ export async function switchOrganization(_previous: ActionResult | null, data: F
   const viewer = await requireViewer();
   const memberships = await listMemberships(await createClient(), viewer.id);
   const id = formString(data, "org");
-  if (!memberships.some((item) => item.org.id === id))
-    return fail("That organization is no longer available. Reload and try again.");
+  const membership = memberships.find((item) => item.org.id === id);
+  if (!membership) return fail("That organization is no longer available. Reload and try again.");
   (await cookies()).set(SELECTED_ORG_COOKIE, id, {
     httpOnly: true,
     sameSite: "lax",
@@ -23,7 +23,7 @@ export async function switchOrganization(_previous: ActionResult | null, data: F
     maxAge: 60 * 60 * 24 * 365,
   });
   const section = formString(data, "section");
-  const destination = organizationSwitchDestination(section, id);
+  const destination = organizationSwitchDestination(section, id, membership.role === "admin");
   revalidatePath("/", "layout");
   redirect(destination);
 }
