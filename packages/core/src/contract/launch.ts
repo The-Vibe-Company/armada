@@ -74,10 +74,7 @@ const pinnedModal = z.strictObject({
   runtimeTransport: z.literal("dialout"),
   id: uuid,
   revision: z.number().int().positive(),
-  requestKey: z
-    .string()
-    .regex(/^[A-Za-z0-9._:-]+$/)
-    .max(128),
+  idempotencyKey,
   prompt: nonBlank.max(100000).optional(),
   ttlSeconds: ttl("modal"),
   size,
@@ -131,4 +128,5 @@ export const launchInput = z.union([
   dockerSnapshotLaunchFields.extend({ idempotencyKey }),
 ]);
 
+export type PinnedModalLaunchInput = z.input<typeof pinnedModal>;
 export type LaunchInput = z.input<typeof launchInput>;

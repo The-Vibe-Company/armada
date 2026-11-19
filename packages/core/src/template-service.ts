@@ -1,13 +1,14 @@
 import { createHash } from "node:crypto";
 import { parseApplicationSecretBindings } from "./application-secret-bindings.ts";
 import type { ApplicationVaultActor } from "./application-vault.ts";
+import type { LaunchEnvelope } from "./contract/launch-response.ts";
 import { HARNESS_KINDS } from "./credentials.ts";
 import type { DockerLaunchResult } from "./docker-api.ts";
 import type { GoldenActor, GoldenOperation, GoldenRecord } from "./golden.ts";
 import { GoldenError } from "./golden-config.ts";
 import { GOLDEN_SELECT, type GoldenRow, mapGoldenRow, type Sql } from "./golden-store.ts";
 import { isHarness } from "./harnesses.ts";
-import { type LaunchOptions, type LaunchStores, launchSandbox } from "./launch.ts";
+import { type LaunchOptions, type LaunchResult, type LaunchStores, launchSandbox } from "./launch.ts";
 import { LaunchError } from "./launch-error.ts";
 import {
   assertLaunchSecretBindings,
@@ -36,6 +37,7 @@ export interface TemplateRuntime {
   provider(golden: GoldenRecord): Promise<Provider>;
   /** Validate the selected definition at admission and the frozen definition on replay. */
   validateDefinition?(definition: TemplateDefinition): void | Promise<void>;
+  pinnedLaunch?: (result: LaunchResult, manifest: Manifest) => LaunchEnvelope;
   options?: LaunchOptions;
   launchDocker?(
     body: Record<string, unknown>,
@@ -458,7 +460,10 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       } catch (error) {
         // Pre-claim golden admission has no durable request yet, but its public
         // refusal must use the same outcome contract as post-claim refusals.
-        if (error instanceof GoldenError) return { state: "failed", reason: error.code, message: error.message };
+        if (error instanceof GoldenError) {
+          if (runtime?.pinnedLaunch) throw error;
+          return { state: "failed", reason: error.code, message: error.message };
+        }
         const reason = refusalReason(error);
         // Closed reason only: never log credential errors, request bodies or readable values.
         if (reason) console.warn("armada: template launch refused", { reason, templateId: id(input.id), orgId: org });
@@ -521,7 +526,8 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     if (!runtime) throw new VaultError("unavailable", "Template launching unavailable.");
     id(input.id);
     const key = text(input.requestKey, 128);
-    if (!/^[A-Za-z0-9._:-]+$/.test(key)) invalid();
+    const keyPattern = runtime.pinnedLaunch ? /^pinned-modal\/[a-f0-9]{64}$/ : /^[A-Za-z0-9._:-]+$/;
+    if (!keyPattern.test(key)) invalid();
     if (input.revision !== undefined) integer(input.revision);
     if (input.prompt !== undefined) text(input.prompt, 100000);
     if (input.ttlSeconds !== undefined) integer(input.ttlSeconds);
@@ -808,6 +814,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
             })();
       const output = {
         requestId: request.id,
+        ...(runtime.pinnedLaunch && result.golden !== null ? { envelope: runtime.pinnedLaunch(result, m) } : {}),
         ...("runtime" in result && result.runtime ? { runtime: result.runtime } : {}),
         state: "succeeded",
         id: result.sandbox.id,

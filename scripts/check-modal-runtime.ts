@@ -19,20 +19,23 @@ const org = process.env.ARMADA_RUNTIME_ORG;
 const credentialId = process.env.ARMADA_RUNTIME_CREDENTIAL_ID;
 if (!token || !golden || !org || !credentialId) throw Error("Missing coordinator staging inputs.");
 
+interface TemplateManifest {
+  templateId?: string;
+  requestKey?: string;
+  revision?: number;
+  revisionId?: string;
+  golden?: { id?: string; orgId?: string; provider?: string };
+  account?: { id?: string; version?: number };
+  definition?: TemplateDefinition;
+  variables?: unknown;
+  skillReceipts?: unknown;
+}
+
 interface Reply {
   id?: string;
   state?: string;
-  manifest?: {
-    templateId?: string;
-    requestKey?: string;
-    revision?: number;
-    revisionId?: string;
-    golden?: { id?: string; orgId?: string; provider?: string };
-    account?: { id?: string; version?: number };
-    definition?: TemplateDefinition;
-    variables?: unknown;
-    skillReceipts?: unknown;
-  };
+  manifest?: TemplateManifest;
+  golden?: { id?: string; orgId?: string; provider?: string };
   provider?: import("../packages/core/src/sandbox-provider.ts").SandboxProviderId;
   runtimeTransport?: "dialout";
   githubReady?: boolean;
@@ -72,6 +75,8 @@ interface Reply {
     skills?: unknown;
     provider?: string;
     runtimeTransport?: string;
+    externalRef?: string;
+    templateManifest?: TemplateManifest;
   };
   runtime?: { kind?: string; epoch?: string };
   promptId?: string;
@@ -590,20 +595,21 @@ const checkpoint = async (expectedEpoch: string) => {
 };
 try {
   const templateRequestKey = templateSource ? crypto.randomUUID() : undefined;
+  const ordinaryTemplate = Boolean(templateSource && ordinaryMode);
   if (templateSource)
     console.log(
       JSON.stringify({
         operation: "runtime_template_launch",
         templateId,
         revision: templateSource.revision,
-        requestKey: templateRequestKey,
+        ...(ordinaryTemplate ? { requestKey: templateRequestKey } : { idempotencyKey: templateRequestKey }),
       }),
     );
   const initialPrompt =
     mcpMode || variablesMode
       ? `Remember token ${memory}. ${[...(variablesMode ? [variableInstruction] : []), ...(mcpMode ? [mcpInstruction] : [])].join(" ")} After it succeeds, reply exactly ${answer}. Do not change files.`
       : `Remember token ${memory}. Reply exactly ${answer}. Do not use tools or change files.`;
-  const route = templateSource && ordinaryMode ? "templates/launch" : "sandbox/launch";
+  const route = ordinaryTemplate ? "templates/launch" : "sandbox/launch";
   const raw = await api(route, {
     ...(!ordinaryMode
       ? { runtimeVersion: 1, runtimeTransport: "dialout", provider: "modal", harness }
@@ -611,7 +617,14 @@ try {
         ? {}
         : { provider: "modal", harness }),
     ...(templateSource
-      ? { org: templateSource.org, id: templateId, revision: templateSource.revision, requestKey: templateRequestKey }
+      ? {
+          org: templateSource.org,
+          id: templateId,
+          revision: templateSource.revision,
+          ...(ordinaryTemplate
+            ? { requestKey: templateRequestKey }
+            : { idempotencyKey: templateRequestKey, externalRef: templateRequestKey }),
+        }
       : {
           org,
           golden,
@@ -623,22 +636,23 @@ try {
     ttlSeconds: 900,
     ...(!idleMode ? { prompt: initialPrompt } : {}),
   });
-  id = templateSource ? raw.id : raw.sandbox?.id;
+  id = ordinaryTemplate ? raw.id : raw.sandbox?.id;
   shouldStop = Boolean(id);
   if (templateSource) {
-    const m = raw.manifest;
+    const m = ordinaryTemplate ? raw.manifest : raw.sandbox?.templateManifest;
+    const selectedGolden = ordinaryTemplate ? m?.golden : raw.golden;
     if (
-      raw.state !== "succeeded" ||
       !id ||
-      raw.provider !== "modal" ||
+      (ordinaryTemplate
+        ? raw.state !== "succeeded" || raw.provider !== "modal" || m?.requestKey !== templateRequestKey
+        : raw.sandbox?.provider !== "modal" || raw.sandbox.externalRef !== templateRequestKey) ||
       !m ||
       m.templateId !== templateId ||
-      m.requestKey !== templateRequestKey ||
       m.revision !== templateSource.revision ||
       m.revisionId !== templateSource.revisionId ||
-      m.golden?.id !== templateSource.goldenId ||
-      m.golden.orgId !== templateSource.org ||
-      m.golden.provider !== "modal" ||
+      selectedGolden?.id !== templateSource.goldenId ||
+      selectedGolden.orgId !== templateSource.org ||
+      selectedGolden.provider !== "modal" ||
       m.account?.id !== templateSource.definition.modelAccount?.id ||
       m.account?.version !== templateSource.definition.modelAccount?.version ||
       canonical(m.definition) !== canonical(templateSource.definition)
@@ -658,22 +672,20 @@ try {
       .update(JSON.stringify(Object.fromEntries(variableKeys.map((key) => [key, values[key]]))))
       .digest("hex");
   }
-  const launched: Reply = templateSource
-    ? {
-        ...raw,
-        sandbox: {
-          ...(id ? { id } : {}),
-          goldenId: templateSource.goldenId,
-          provider: "modal",
-          ...(raw.runtimeTransport
-            ? { runtimeTransport: raw.runtimeTransport }
-            : ordinaryMode
-              ? {}
-              : { runtimeTransport: "dialout" }),
-          skills: raw.manifest?.skillReceipts,
-        },
-      }
-    : raw;
+  const launched: Reply =
+    ordinaryTemplate && templateSource
+      ? {
+          ...raw,
+          sandbox: {
+            ...(id ? { id } : {}),
+            goldenId: templateSource.goldenId,
+            provider: "modal",
+            ...(raw.runtimeTransport ? { runtimeTransport: raw.runtimeTransport } : {}),
+            ...(raw.status ? { status: raw.status } : {}),
+            skills: raw.manifest?.skillReceipts,
+          },
+        }
+      : raw;
   conversationId = launched.conversationId ?? undefined;
   epoch = launched.runtime?.epoch;
   promptId = launched.promptId ?? undefined;
@@ -692,7 +704,7 @@ try {
   if (idleMode && templateSource) {
     const current = await api("sandbox/status", { id });
     if (
-      raw.status !== "ready" ||
+      launched.sandbox.status !== "ready" ||
       current.id !== id ||
       current.status !== "ready" ||
       !Array.isArray(current.conversationIds) ||

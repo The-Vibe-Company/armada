@@ -10,7 +10,9 @@ interface RequestBody {
   provider: string;
   repository: string;
   request_id: string;
-  requestKey: string;
+  requestKey?: string;
+  idempotencyKey?: string;
+  externalRef?: string;
   revision: number;
   runtimeTransport: string;
   runtimeVersion: number;
@@ -262,6 +264,31 @@ const templateReceipt = (body: RequestBody, idle: boolean) => ({
     skillReceipts: receipts,
   },
 });
+const pinnedLaunchEnvelope = (body: RequestBody, idle: boolean) => {
+  const receipt = templateReceipt(body, idle);
+  const { requestKey: _requestKey, golden, skillReceipts, ...templateManifest } = receipt.manifest;
+  return {
+    sandbox: {
+      id: receipt.id,
+      provider: receipt.provider,
+      providerSandboxId: "modal-worker",
+      status: receipt.status,
+      goldenId: golden.id,
+      runtimeTransport: receipt.runtimeTransport,
+      externalRef: body.externalRef,
+      skills: skillReceipts,
+      templateManifest,
+    },
+    golden: { ...golden, name: "golden" },
+    runtime: receipt.runtime,
+    promptId: receipt.promptId,
+    conversationId: receipt.conversationId,
+    ttlSeconds: 900,
+    expiresAt: null,
+    github: { status: "none" },
+    helper: null,
+  };
+};
 const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Promise<Response> => {
   if (!options || typeof options.body !== "string") throw Error("Missing JSON request body");
   const path = new URL(url instanceof Request ? url.url : url).pathname,
@@ -426,7 +453,9 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
       if (
         body.id !== templateId ||
         body.revision !== 2 ||
-        !body.requestKey ||
+        (ordinary
+          ? !body.requestKey || Object.hasOwn(body, "idempotencyKey")
+          : Object.hasOwn(body, "requestKey") || !body.idempotencyKey || body.externalRef !== body.idempotencyKey) ||
         body.org !== orgId ||
         ["golden", "credentialId", "model", "connections"].some((key) => Object.hasOwn(body, key))
       )
@@ -435,7 +464,7 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
       throw Error("unsafe direct connections");
     if (idle) {
       if (Object.hasOwn(body, "prompt")) throw Error("Idle launch must omit prompt");
-      if (variables) return Response.json(templateReceipt(body, true));
+      if (variables) return Response.json(ordinary ? templateReceipt(body, true) : pinnedLaunchEnvelope(body, true));
       return Response.json({
         sandbox: {
           id: "worker",
@@ -453,7 +482,7 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
     }
     readPrompt(body.prompt);
     if (defects.includes("lost-launch")) throw Error("private transport diagnostics must not surface");
-    if (variables) return Response.json(templateReceipt(body, false));
+    if (variables) return Response.json(ordinary ? templateReceipt(body, false) : pinnedLaunchEnvelope(body, false));
     return Response.json({
       sandbox: {
         id: "worker",

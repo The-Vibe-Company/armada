@@ -62,7 +62,9 @@ any receipt UUID returned. On success, pass `sandbox.id` to subsequent tools.
   Docker returns `golden: null`. Docker REST launches require `idempotencyKey`.
   Save the key and replay the identical request after an uncertain launch.
   With `armada launch --provider docker`, pass the saved key as `--idempotency-key`.
-  Pinned template launches return a template receipt.
+  For a pinned Modal template on `sandbox/launch`, supply `idempotencyKey` and
+  read `sandbox.id`. With `templates/launch` or `armada template launch`, use
+  `requestKey` or `--request-key` and read the template receipt.
 - Ordinary Modal launches default to the enrolled runtime. To confirm the deployed
   default, check `modalRuntime.defaultPath` in the authenticated response to
   `POST /api/v1/launch/options`.

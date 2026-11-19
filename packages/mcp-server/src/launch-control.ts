@@ -1,4 +1,5 @@
-import type { Harness, VaultStore } from "@armada/core";
+import { createHash } from "node:crypto";
+import { type Harness, launchFailureHelp, type VaultStore } from "@armada/core";
 import type { LaunchInput } from "@armada/core/contract";
 import { launch as launchOperation, launchOptionsOperation } from "@armada/core/contract";
 import {
@@ -30,6 +31,7 @@ import { launchOptions, launchProviderOptions } from "./launch-options.ts";
 import { canonicalLaunchResponse, goldenLaunchResponse } from "./launch-response-schemas.ts";
 import { type GoldenLaunchTiming, observeGoldenLaunch } from "./request-timing.ts";
 import { defineRoutes } from "./routes.ts";
+import { ToolApiError } from "./tool-api.ts";
 
 type LaunchControlOptions = Pick<
   ControlOptions,
@@ -450,13 +452,33 @@ export const launchRoutes = defineRoutes("launch", {
       if (!options.templates) throw new VaultError("unavailable", "Templates unavailable.");
       const base = templateRuntime(options, caller);
       if (!base) throw new VaultError("unavailable", "Template launching unavailable.");
-      const { provider, harness, runtimeVersion: _runtimeVersion, runtimeTransport, org: _org, ...input } = template;
+      const {
+        provider,
+        harness,
+        runtimeVersion: _runtimeVersion,
+        runtimeTransport,
+        org: _org,
+        idempotencyKey,
+        ...input
+      } = template;
       const organization = await resolveOrg(store, userId, templateOrg);
-      return launchTemplate(
+      const requestKey = `pinned-modal/${createHash("sha256").update(JSON.stringify(idempotencyKey)).digest("hex")}`;
+      const receipt = await launchTemplate(
         options.templates,
         caller,
-        { ...input, org: organization.id },
+        { ...input, org: organization.id, requestKey },
         {
+          pinnedLaunch: (result, manifest) => {
+            const envelope = goldenLaunchResponse(result);
+            const { templateId, revision, revisionId, account, definition, variables } = manifest;
+            return {
+              ...envelope,
+              sandbox: {
+                ...envelope.sandbox,
+                templateManifest: { templateId, revision, revisionId, account, definition, variables },
+              },
+            };
+          },
           validateDefinition: (definition) => {
             if (definition.provider !== provider || definition.harness !== harness)
               throw new VaultError("invalid", "Modal runtime templates require the selected Modal harness.");
@@ -477,6 +499,13 @@ export const launchRoutes = defineRoutes("launch", {
           options: { ...base.options, runtime: options.modalRuntimeLaunch },
         },
         "template_rest",
+      );
+      if (receipt.state === "succeeded") return launchOperation.output.parse(receipt.envelope);
+      const code = receipt.state === "failed" ? "start_failed" : "outcome_unknown";
+      throw new ToolApiError(
+        code,
+        launchFailureHelp(code)!,
+        typeof receipt.id === "string" ? { sandboxId: receipt.id } : undefined,
       );
     }
     scopedOrg(caller, launch.org);
