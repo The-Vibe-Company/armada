@@ -122,6 +122,7 @@ Usage:
   armada send|steer|exec <sandbox-id> <text-or-command> [--model ID] [--reasoning-effort LEVEL]
                                            send accepts --request-id UUID to reuse an uncertain runtime instruction.
                                            Full-account follow-up sends can queue FIFO; queued is not completed.
+  armada api ROUTE [JSON|-]
   armada snapshot retirement dry-run|reconcile <snapshot-id> [--limit 1-50] [--org UUID]
   armada snapshot remove <name|snapshot-id> [--provider boat|modal] [--org UUID] [--json]
                                            Names must match one visible snapshot; use provider/org or snapshot list --json to disambiguate.
@@ -207,6 +208,16 @@ Environment:
   ARMADA_TOKEN                             API token for non-interactive authentication. Takes precedence over
                                            a saved login session.
   ARMADA_URL                               Armada API server (default: https://armada.thevibecompany.co).
+"
+`;
+
+exports[`armada api help preserves its output 1`] = `
+"Usage: armada api ROUTE [JSON|-]
+POST to /api/v1/ROUTE using the selected Armada login and print the JSON response.
+Pass the route relative to /api/v1/. With no body argument, send {}.
+Pass - to read JSON from stdin, including for bodies that contain secrets.
+Treat stdout as sensitive if the endpoint returns credentials.
+Example: armada api org/list
 "
 `;
 

@@ -1,4 +1,5 @@
 import advice from "./advice.ts";
+import api from "./api.ts";
 import type { Command, UsageGroup } from "./command.ts";
 import detail from "./detail.ts";
 import exec from "./exec.ts";
@@ -33,6 +34,7 @@ export const commands: readonly Command[] = [
   steer,
   exec,
   logs,
+  api,
 ];
 
 const byName = new Map(commands.map((command) => [command.name, command]));
