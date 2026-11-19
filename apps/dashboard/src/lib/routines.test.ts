@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createRoutineControl } from "../src/lib/control.ts";
+import { createRoutineControl } from "./control.ts";
 import {
   canManageRoutine,
   parseRoutine,
@@ -8,7 +8,7 @@ import {
   routineRequest,
   runDescription,
   scheduleLabel,
-} from "../src/lib/routines.ts";
+} from "./routines.ts";
 
 const ORG = "00000000-0000-4000-8000-000000000010",
   USER = "00000000-0000-4000-8000-000000000001",
@@ -46,7 +46,6 @@ const fields = {
 };
 const templates = [{ id: TEMPLATE, scope: "org" as const, currentRevision: 2 }];
 
-// Form validation owns exact prompt/pin and cost bounds; server integration owns launch authorization.
 test("routine form preserves exact prompt, pins its selected revision and validates schedule/reference limits", () => {
   expect(routineRequest(fields, templates)).toEqual({
     ok: true,
@@ -136,7 +135,6 @@ test("routine UI management rules do not grant org mutation to a non-admin owner
   expect(canManageRoutine({ scope: "org", ownerId: USER }, { userId: ID, admin: true })).toBe(true);
 });
 
-// Transport contract: exact route/org/version, viewer bearer only, bounded no-store request, no retries/echo.
 test("routine control authenticates scoped commands, preserves CAS versions and refuses raw upstream errors", async () => {
   const calls: { path: string; body: unknown; init: RequestInit }[] = [];
   let conflict = false;
@@ -151,7 +149,6 @@ test("routine control authenticates scoped commands, preserves CAS versions and 
             { error: { code: "conflict", message: "raw private prompt/token must never appear" } },
             { status: 409 },
           );
-        // A routine off the contract is left out of the list, never the whole list (#1398).
         return Response.json(String(input).endsWith("/list") ? { items: [item, { id: "off-contract" }] } : { item });
       },
       { preconnect: fetch.preconnect },

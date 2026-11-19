@@ -15,20 +15,21 @@ import {
   parseStdioImport,
   statusLabel,
   unreadyDefaults,
-} from "../src/lib/connections.ts";
+} from "./connections.ts";
 
 const ORG = "00000000-0000-4000-8000-000000000010";
-const connection = (n: number, overrides: Partial<McpConnection> = {}): McpConnection => ({
-  id: `00000000-0000-4000-8000-0000000000${n}`,
-  name: `server-${n}`,
-  orgId: ORG,
-  scope: "org",
-  transport: "http",
-  authType: "none",
-  status: "connected",
-  defaultForLaunch: false,
-  ...overrides,
-});
+const connection = (n: number, overrides: Partial<McpConnection> = {}) =>
+  ({
+    id: `00000000-0000-4000-8000-0000000000${n}`,
+    name: `server-${n}`,
+    orgId: ORG,
+    scope: "org",
+    transport: "http",
+    authType: "none",
+    status: "connected",
+    defaultForLaunch: false,
+    ...overrides,
+  }) satisfies McpConnection;
 
 describe("launch selection", () => {
   const personal = connection(50, { scope: "personal", name: "My Linear" });
@@ -36,7 +37,6 @@ describe("launch selection", () => {
   const expired = connection(52, { status: "needs_reconnect" });
   const available = [personal, shared, expired];
 
-  // #681: a launch's connections no longer depend on a sandbox visibility; personal and org connections both go.
   test.each([
     ["personal and org connections together", [personal.id, shared.id, shared.id], true],
     ["no connections, deliberately", [], true],
@@ -62,7 +62,6 @@ describe("launch defaults", () => {
   const personalExpired = connection(59, { scope: "personal", defaultForLaunch: true, status: "unavailable" });
   const available = [personal, shared, optIn, expired, disabled, personalExpired];
 
-  // The selection itself is owned by @armada/core's mcpLaunchSelection test; this guards the dialog's held list.
   test("an unconnected default is held whatever its scope, never dropped", () => {
     expect(unreadyDefaults(available).map((item) => item.id)).toEqual([expired.id, personalExpired.id]);
   });
@@ -92,7 +91,7 @@ describe("stdio definitions", () => {
     ["uvx", "mcp-server-git", "exact version"],
     ["npx -y server@1.0.0", "", "one program"],
     ["npx;rm", "", "one program"],
-  ])("%s %j", (command, args, expected) => {
+  ] as const)("%s %j", (command, args, expected) => {
     const result = checkStdio(command, args);
     if (expected === true) expect(result.ok).toBe(true);
     else expect(result).toEqual({ ok: false, error: expect.stringContaining(expected) });
@@ -128,7 +127,7 @@ describe("remote form fields", () => {
     ["https://mcp.example.com/mcp?access_token=abc", "access_token"],
     ["https://mcp.example.com/mcp?x-api-key=abc", "x-api-key"],
     ["https://mcp.example.com/mcp?Token=abc", "Token"],
-  ])("server URL %s", (url, expected) => {
+  ] as const)("server URL %s", (url, expected) => {
     const result = checkServerUrl(url);
     if (expected === true) expect(result.ok).toBe(true);
     else expect(result).toEqual({ ok: false, error: expect.stringContaining(expected) });
