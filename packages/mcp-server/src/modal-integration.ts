@@ -166,9 +166,12 @@ export async function createModalIntegration(options: {
   }
   async function warmRegisteredArtifactCaches(
     cache: ReturnType<typeof createModalArtifactCache>,
+    startupSql: Sql,
     logError: (line: string) => void,
   ) {
-    const { rows } = await options.sql.query<{
+    const startupBudget = AbortSignal.timeout(120_000);
+    const vault = createSqlVaultStore(startupSql);
+    const { rows } = await startupSql.query<{
       app_id: string;
       app_name: string;
       environment: string;
@@ -177,15 +180,14 @@ export async function createModalIntegration(options: {
     }>(
       "select distinct app_id, app_name, environment, authority_scope, authority_owner_id from public.modal_server_apps",
     );
-    const startupBudget = AbortSignal.timeout(120_000);
     for (let offset = 0; offset < rows.length && !startupBudget.aborted; offset += 4) {
       await Promise.all(
         rows.slice(offset, offset + 4).map(async (row) => {
           try {
-            const { tokenId, tokenSecret } = await resolveManagementCredentials({
-              credentialScope: row.authority_scope,
-              credentialOwnerId: row.authority_owner_id,
-            });
+            const { tokenId, tokenSecret } = await resolveManagementCredentials(
+              { credentialScope: row.authority_scope, credentialOwnerId: row.authority_owner_id },
+              vault,
+            );
             startupBudget.throwIfAborted();
             await cache.warm(
               { appId: row.app_id, appName: row.app_name, environment: row.environment, tokenId, tokenSecret },
