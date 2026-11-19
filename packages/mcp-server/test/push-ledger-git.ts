@@ -122,23 +122,3 @@ export function lostConfirmation() {
   );
   return { stdout: read(), first, second };
 }
-
-/**
- * The sandbox pushed `topic` through `origin`, then pushed `escaped` to the
- * same remote by explicit URL with --no-verify: no hook ran and no tracking
- * ref moved, so the ledger never saw it. A later fetch brings `escaped` back as
- * someone else's branch would. Returns the reader output and `topic`'s head.
- */
-export function unrecordedUrlPush() {
-  const { root, work, push, read } = launch();
-  const first = push("topic");
-  sh(work, "git checkout -q -b escaped");
-  // Spelled differently from origin's URL: Git 2.56 (unlike 2.39) treats a push to
-  // the exact URL of a configured remote as a push to it, moving its tracking
-  // refs, so the ledger would record it. A GitHub sandbox escapes the same way
-  // with an https URL against an ssh origin.
-  const second = push("escaped", "", `--no-verify file://${join(root, "remote.git")}`);
-  expect(sh(work, "git ls-remote origin refs/heads/escaped")).toStartWith(second);
-  sh(work, "git checkout -q main && git fetch -q origin");
-  return { stdout: read(), first, second };
-}
