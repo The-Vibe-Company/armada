@@ -587,7 +587,6 @@ export async function createServerServices(env: Record<string, string | undefine
     modalTokensFor: modal.modalTokensFor,
     ...(options.logError ? { log: options.logError } : {}),
   };
-  const { accountTurns: _queue, ...unqueuedControl } = control;
 
   return {
     env,
@@ -627,6 +626,7 @@ export async function createServerServices(env: Record<string, string | undefine
     templates,
     data,
     configureAccountDispatch: () => {
+      const { accountTurns: _queue, ...unqueuedControl } = control;
       accountTurns.setDispatch((caller, input) =>
         dispatchControlCommand(
           "sandbox/send",
