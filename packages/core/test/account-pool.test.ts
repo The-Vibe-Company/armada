@@ -53,7 +53,7 @@ test.each([
   { version: 2, code: "plan_limit", resetsAt: "2027-01-01T00:00:00Z" },
 ])("selects the first eligible account when exhaustion does not apply (%j)", (exhaustion) => {
   const candidates = new Map<string, AccountCandidate>([
-    ["first", { ...active, exhaustion, budget }],
+    ["first", { ...active, exhaustion, budget, fullModels: new Set(["another-model"]) }],
     ["second", active],
   ]);
   expect(choose(pool, "requested-model", { now, candidates })).toEqual({
