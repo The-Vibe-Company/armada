@@ -770,7 +770,7 @@ test.each(["current", "superseded"] as const)(
     expect((await f.publish(active, [{ sequence: 1, event }])).status).toBe(200);
     const read = async () =>
       (
-        await f.db.query(
+        await f.db.query<{ lifecycle_generation: string; stop_generation: string }>(
           `select status,status_reason,lifecycle_generation::text,stop_generation::text,expires_at::text,
                 stop_requested_at is not null as stop_requested,reconcile_after<=now() as due
          from sandboxes where id=$1`,

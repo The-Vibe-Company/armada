@@ -40,11 +40,16 @@ export function createRuntimeIdle(
   let next = 0;
   let cursor: string | null = null;
   const pending = new Set<Promise<unknown>>();
-  async function guard(tx: Sql, id: string, existing: { request_id: string | null; merge_stop: boolean | null }) {
+  async function guard(
+    tx: Sql,
+    id: string,
+    generation: string,
+    existing: { request_id: string | null; merge_stop: boolean | null },
+  ) {
     const target = (
       await tx.query<{ task_prompt_id: string | null; merge_proof: boolean }>(
-        `select task_prompt_id, ${mergedWorkProof("s")} as merge_proof from public.sandboxes s where id=$1`,
-        [id],
+        `select task_prompt_id, ${mergedWorkProof("s")} as merge_proof from public.sandboxes s where id=$1 and lifecycle_generation=$2`,
+        [id, generation],
       )
     ).rows[0];
     // A durable merge stop owns its checkpoint. A manual/idle checkpoint
@@ -137,12 +142,12 @@ export function createRuntimeIdle(
             if (generation === undefined) continue;
             // A legacy/manual checkpoint has no merge-stop intent. It still
             // must pass the ordinary idle timer before this worker can stop it.
-            await guard(sql, row.id, row);
+            await guard(sql, row.id, generation, row);
             const requestId = row.request_id ?? crypto.randomUUID();
             await checkpoint(
               { userId: row.owner_id, orgs: [{ orgId: row.org_id, role: "member" }], via: "service" },
               { id: row.id, request_id: requestId, runtimeVersion: 1 },
-              (tx) => guard(tx, row.id, row),
+              (tx) => guard(tx, row.id, generation, row),
             );
             signal.throwIfAborted();
             if (row.provider === "docker") {
