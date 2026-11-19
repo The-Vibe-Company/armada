@@ -25,7 +25,7 @@ access needs an authorized admin, not a retry loop.
 
 Read [setup and configuration](references/setup.md) when connecting GitHub,
 selecting model accounts, creating goldens/templates, or configuring variables.
-Manage templates, default skill pins, variables and application secrets through
+Manage snapshots, templates, default skill pins, variables and application secrets through
 the dashboard or the authenticated REST API. MCP `template_launch` launches an existing template.
 
 For MCP coordinator launches, call `launch` with optional `size`, a stable
@@ -40,6 +40,8 @@ any receipt UUID returned.
   To refresh a shared snapshot, update its build configuration with the owner authorization.
   A golden is a provider-specific saved environment; a template is an immutable
   revision specifying a golden, harness and configuration. Use IDs if names clash.
+  Use `armada snapshot capabilities --json` for provider capacity and the
+  authenticated REST adoption endpoint for canonical Boat golden adoption.
 - Choose Boat or Modal explicitly when ambiguous. A golden built on one provider
   is not automatically available on the other. Check
   `armada snapshot capabilities --provider boat --json` (or substitute modal).
@@ -157,7 +159,12 @@ before `armada stop SANDBOX`. Stop is not delete, but provider retention is not
 a substitute for a pushed branch. Modal retains disk only after a successful
 checkpoint; checkpoint_failed_disk_not_retained means it cannot resume. `armada rm SANDBOX --yes` permanently deletes
 a stopped sandbox and recovery archives: require explicit user authorization
-and confirmed recovery first.
+and confirmed recovery first. For direct API callers, use
+`DELETE /api/v1/sandboxes/:id` or `POST /api/v1/sandbox/delete`.
+
+For resource advice and preserved archives, use `armada advice SANDBOX --json`
+and `armada recovery SANDBOX`. Explicit runtime checkpoint and resume use the
+owner REST routes `sandbox/checkpoint-runtime-v1` and `sandbox/resume-runtime-v1`.
 
 Read [failure and recovery](references/recovery.md) before recovering stopped
 machines or unpushed work. One authorized armada send to a retained stopped

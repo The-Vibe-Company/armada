@@ -6,34 +6,20 @@ production by this change.** The unique indexes deliberately fail if existing sl
 bindings already violate global uniqueness. Investigate manually; do not delete,
 merge, rename, or widen ACLs to make a migration succeed.
 
-Select the exact existing golden UUID from authenticated `golden_list` (MCP)
-or `POST /api/v1/golden/list`. Do not select by name alone. Only private owners
+Select the exact existing golden UUID from authenticated
+`POST /api/v1/golden/list`. Do not select by name alone. Only private owners
 and org admins can adopt; membership is required. Other historical goldens,
 their snapshots, histories and ACLs remain untouched. Adoption does not make
 those other goldens usable through the canonical binding.
 
-## MCP syntax
-
-MCP dry run:
-
-```json
-{"name":"golden_adopt","arguments":{"id":"<existing-golden-uuid>"}}
-```
-
-Apply, using the receipt returned by that dry run within ten minutes:
-
-```json
-{"name":"golden_adopt","arguments":{"id":"<same-existing-golden-uuid>","confirmation":"<receipt-uuid>"}}
-```
-
-Equivalent authenticated HTTP requests (POST, Content-Type: application/json,
-Authorization: Bearer your Armada token) to `/api/v1/golden/adopt`:
+Send authenticated HTTP requests (POST, Content-Type: application/json,
+Authorization: Bearer your Armada token) to `/api/v1/golden/adopt`. Start with a dry run:
 
 ```json
 {"id":"<existing-golden-uuid>"}
 ```
 
-then:
+Confirm with the receipt from the dry run within ten minutes:
 
 ```json
 {"id":"<same-existing-golden-uuid>","confirmation":"<receipt-uuid>"}

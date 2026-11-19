@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { encryptSecret, type ModalBinding, type ModalTokenPair, type Provider } from "@armada/core";
+import { createSqlVaultStore } from "@armada/core/server";
+import { handleControlRequest } from "../src/control.ts";
+import { createSqlData } from "../src/data.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { call, ENCRYPTION_KEY, fakeBoat, harness, type TestServer } from "./support.ts";
+import { call, ENCRYPTION_KEY, fakeBoat, harness, PUBLIC_URL, type TestServer } from "./support.ts";
 
 const database = rowOnlyDatabase();
 let server: TestServer | undefined;
@@ -46,10 +49,24 @@ describe("provider routing", () => {
   test("a same-name Modal golden is listed apart, named explicitly, and never launched on Boat", async () => {
     server = await harness({}, await database());
     await seedModal(server);
-    const mcp = await server.client(await server.token(server.people.member));
-
-    const listed = await call(mcp, "golden_list");
-    const shared = (listed.data.goldens as Record<string, unknown>[]).filter((golden) => golden.name === "shared");
+    const token = await server.token(server.people.member);
+    const mcp = await server.client(token);
+    const listed = await handleControlRequest(
+      new Request(PUBLIC_URL + "/api/v1/golden/list", {
+        method: "POST",
+        headers: { authorization: "Bearer " + token },
+      }),
+      {
+        authStore: server.auth,
+        supabase: { supabaseUrl: "https://unused.test", anonKey: "test" },
+        store: createSqlVaultStore(server.db),
+        encryptionKey: ENCRYPTION_KEY,
+        data: createSqlData(server.db),
+      },
+    );
+    expect(listed?.status).toBe(200);
+    const body = (await listed?.json()) as { goldens: Record<string, unknown>[] };
+    const shared = body.goldens.filter((golden) => golden.name === "shared");
     expect(
       shared.map(({ provider, boatSnapshotId, providerSnapshotId, modal }) => ({
         provider,
@@ -61,7 +78,7 @@ describe("provider routing", () => {
       { provider: "boat", boatSnapshotId: "set", providerSnapshotId: "set", modal: null },
       { provider: "modal", boatSnapshotId: null, providerSnapshotId: "set", modal: BINDING },
     ]);
-    expect(listed.text).not.toContain(PAIR.token_secret);
+    expect(JSON.stringify(body)).not.toContain(PAIR.token_secret);
 
     const ambiguous = await call(mcp, "launch", { golden: "shared", harness: "claude" });
     expect(ambiguous.text).toContain("exists on boat and modal");

@@ -53,3 +53,18 @@ test("Docker omission selects the personal subscription default while an explici
     resolveDockerLaunchAccount(credentials, actor, { harness: "codex", credentialId: null, credentialVersion: null }),
   ).rejects.toMatchObject({ code: "credential_refused" });
 });
+
+test("Docker tells callers how to replace an unbound account", async () => {
+  const actor = { userId: "owner", orgId: "org", role: "member" as const };
+  const credentials = {
+    async resolve() {
+      return { env: {}, secrets: [], codexAuthJson: false };
+    },
+  };
+  await expect(
+    resolveDockerLaunchAccount(credentials, actor, { harness: "codex", credentialId: null, credentialVersion: null }),
+  ).rejects.toMatchObject({
+    code: "credential_binding_required",
+    message: expect.stringContaining("Models → Add account"),
+  });
+});

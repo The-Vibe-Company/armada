@@ -1,5 +1,6 @@
 import type { RunnerRequest } from "@armada/agent-runtime";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
+import { UUID } from "./control-input.ts";
 import type { Route } from "./http.ts";
 import {
   currentRequestId,
@@ -199,6 +200,9 @@ export function createRuntimeCommands(
       throw new RuntimeCommandConflict();
     const serialized = JSON.stringify(value);
     if (Buffer.byteLength(serialized) > MAX_REPLY) throw new RuntimeCommandConflict();
+    const candidate = record(value.body.result) ? value.body.result.promptId : undefined;
+    let acceptedPromptId =
+      value.status < 300 && typeof candidate === "string" && UUID.test(candidate) ? candidate : null;
     let sealed = await encryptSecret(serialized, key);
     const { sandboxId, ...receipt } = await authority.withSession(token, epoch, async (tx, scope) => {
       // Keep the ordered acknowledgement even if the caller's deadline or the taint fence
@@ -211,7 +215,8 @@ export function createRuntimeCommands(
               scope.sandboxId,
             ])
           ).rows.length > 0;
-        if (tainted || (outputDeadline !== undefined && Number(outputDeadline) <= time.now()))
+        if (tainted || (outputDeadline !== undefined && Number(outputDeadline) <= time.now())) {
+          acceptedPromptId = null;
           sealed = await encryptSecret(
             JSON.stringify({
               epoch: value.epoch,
@@ -221,12 +226,26 @@ export function createRuntimeCommands(
             }),
             key,
           );
+        }
+      }
+      let promptId: string | null = null;
+      if (acceptedPromptId) {
+        const command = (
+          await tx.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
+            `select request_enc from public.runtime_commands
+             where sandbox_id=$1 and request_id=$2 and epoch=$3 and result_enc is null`,
+            [scope.sandboxId, value.requestId, scope.epoch],
+          )
+        ).rows[0];
+        if (command && JSON.parse(await decryptSecret(command.request_enc, key)).op === "prompt")
+          promptId = acceptedPromptId;
       }
       const row = (
         await tx.query<{ request_id: string; result_enc: Uint8Array<ArrayBuffer> }>(
-          `update public.runtime_commands set result_enc=coalesce(result_enc,$4)
+          `update public.runtime_commands set result_enc=coalesce(result_enc,$4),
+           accepted_prompt_id=case when result_enc is null then $5::uuid else accepted_prompt_id end
          where sandbox_id=$1 and request_id=$2 and epoch=$3 returning request_id,result_enc`,
-          [scope.sandboxId, value.requestId, scope.epoch, sealed],
+          [scope.sandboxId, value.requestId, scope.epoch, sealed, promptId],
         )
       ).rows[0];
       if (!row) throw new RuntimeCommandConflict();

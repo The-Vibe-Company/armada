@@ -5,7 +5,7 @@ examples use their literal spellings.
 
 | Term | Meaning |
 | --- | --- |
-| **Snapshot** | A saved workspace used to start a sandbox. Build one for your provider or Docker host. The CLI command group is `armada snapshot`; the API and MCP use `golden` and names such as `golden_list`. |
+| **Snapshot** | A saved workspace used to start a sandbox. Build one for your provider or Docker host. The CLI command group is `armada snapshot`; the API uses paths such as `/api/v1/golden/list`, and MCP launch takes a `golden` field. |
 | **Sandbox** | The isolated environment where an agent works. Use the Armada sandbox ID for control requests. |
 | **Agent** | The coding program running in a sandbox (Claude Code, Codex or OpenCode). Select its type with CLI `--agent` or the API's `harness` field. A conversation is the session with that agent; a turn is one prompt and its work. |
 | **Model account** | A saved connection used to run an agent with a model. A **credential** is the authentication material for a connection, such as an API key or subscription login. Manage model accounts in **Models** or with `armada creds`. |

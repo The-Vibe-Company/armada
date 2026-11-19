@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { HARNESS_CATALOG } from "@armada/core";
+import { MODEL_CATALOG } from "@armada/core";
 import { initialLaunchSelection, launchPickerGroups } from "../src/lib/launch-picker";
 import { launchAccounts, type ModelAccount } from "../src/lib/model-accounts";
 import { modelsPageDefault, modelsPageModel, modelsPageStatus } from "../src/lib/models-page";
@@ -32,6 +32,16 @@ test("custom endpoint models are not mistaken for a saved default", () => {
   expect(modelsPageModel(account, "codex")).toBe("gpt-6.2-sol");
 });
 
+test("the Morph account summary shows its first saved model as the default", () => {
+  const morph = {
+    ...account,
+    kind: "morph" as const,
+    models: [{ model: "owner/model-v2", input: null, output: null }],
+  };
+  expect(modelsPageModel(morph, "opencode")).toBe("owner/model-v2");
+  expect(modelsPageModel({ ...morph, models: undefined }, "opencode")).toBe("Model list unavailable");
+});
+
 test("personal per-agent accounts override account-wide defaults without billing fallback", () => {
   const shared = { ...account, id: "shared_account", kind: "morph" as const, isDefault: false, maxAgents: null };
   const defaults = [{ harness: "codex" as const, credentialId: shared.id, model: "morph-kimik31" }];
@@ -55,16 +65,16 @@ test("launch initialization carries personal agent choices through the account p
     { state: "ready", accounts: [account, shared], orgId: "org", orgName: "Work", defaults },
     1,
   );
-  expect(initialLaunchSelection(list, HARNESS_CATALOG, "codex")).toEqual({
+  expect(initialLaunchSelection(list, MODEL_CATALOG, "codex")).toEqual({
     credentialId: shared.id,
     model: "morph-dsv41flash",
   });
-  expect(initialLaunchSelection(list, HARNESS_CATALOG, "claude")).toEqual({
+  expect(initialLaunchSelection(list, MODEL_CATALOG, "claude")).toEqual({
     credentialId: shared.id,
     model: "morph-kimik31",
   });
   const missing = launchAccounts({ state: "ready", accounts: [account], orgId: "org", orgName: "Work", defaults }, 1);
-  expect(initialLaunchSelection(missing, HARNESS_CATALOG, "codex").credentialId).toBe("");
+  expect(initialLaunchSelection(missing, MODEL_CATALOG, "codex").credentialId).toBe("");
 });
 
 test("OpenAI key and subscription accounts offer GPT-6.2 and select GPT-6.2 Sol by default", () => {
@@ -73,9 +83,9 @@ test("OpenAI key and subscription accounts offer GPT-6.2 and select GPT-6.2 Sol 
       { state: "ready", accounts: [{ ...account, kind, maxAgents: null }], orgId: "org", orgName: "Work" },
       1,
     );
-    expect(launchPickerGroups(list.accounts, HARNESS_CATALOG, "codex", 1)[0]?.options.map((model) => model.id)).toEqual(
+    expect(launchPickerGroups(list.accounts, MODEL_CATALOG, "codex", 1)[0]?.options.map((model) => model.id)).toEqual(
       expect.arrayContaining(["gpt-6.2-sol", "gpt-6.2-astra"]),
     );
-    expect(initialLaunchSelection(list, HARNESS_CATALOG, "codex").model).toBe("gpt-6.2-sol");
+    expect(initialLaunchSelection(list, MODEL_CATALOG, "codex").model).toBe("gpt-6.2-sol");
   }
 });

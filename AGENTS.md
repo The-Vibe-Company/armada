@@ -34,6 +34,7 @@ Rules only. Procedures live in the documents listed under "Where truth lives".
 8. **Never state as verified what you did not run.**
 9. **Boat is never part of CI or staging acceptance.** Boat checks are on demand, by the coordinator only.
 10. **One version** across package manifests under `packages`. **English** in code, output, docs and comments.
+11. **Landmines rules are mandatory.** Give the reason for any inline disable in the PR and only shrink baselines.
 
 ## Pull requests
 - **One module, at most 600 changed lines.** Generated files, pure deletions and `git mv` do not count. If the work is bigger, stop and tell the coordinator so the ticket is split.

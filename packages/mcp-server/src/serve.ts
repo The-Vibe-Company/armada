@@ -120,6 +120,9 @@ export async function startServer(
   } = {},
 ) {
   const config = configFromEnv(env);
+  const boatDeploymentId = env.ARMADA_BOAT_DEPLOYMENT_ID?.trim();
+  const boatInventory = boatDeploymentId ? { deploymentId: boatDeploymentId } : {};
+  const runtimeHostFor = (apiKey: string) => createObservedBoatProvider({ apiKey, ...boatInventory });
   const idleDelayMs = idlePauseDelayMs(env);
   const launch: LaunchOptions = { extensionHeadroomSeconds: config.sandboxExtensionHeadroomSeconds };
   const catalogAuthentication = catalogAuthenticationFromEnv(
@@ -199,6 +202,7 @@ export async function startServer(
     const provider = createObservedBoatProvider(
       {
         apiKey,
+        ...boatInventory,
         sanitizeEvents: async (provider, id, events) => {
           if (!caller) throw Error("Native events require trusted Armada caller scope.");
           return modelAuth.redactEvents(provider, id, caller, events);
@@ -312,15 +316,15 @@ export async function startServer(
       credentials: launchCredentials(store, config.encryptionKey, undefined, modelAuth, { store, app: githubApp }),
       connections: runtimeMcp.connections,
       provider: async (actor, golden) =>
-        createObservedBoatProvider({
-          apiKey: (
+        runtimeHostFor(
+          (
             await resolveBoatKey(store, config.encryptionKey, {
               userId: actor.userId,
               orgId: actor.orgId,
               visibility: golden.visibility,
             })
           ).key,
-        }),
+        ),
     };
     if (config.boatAgentPath === "runtime") launch.boatRuntimeDefault = launch.boatEndpointRuntime;
   }
@@ -493,9 +497,7 @@ export async function startServer(
           modalRuntimeHostFor,
         }
       : {}),
-    ...(runtimeLaunch
-      ? { boatRuntimeLaunch: runtimeLaunch, runtimeHostFor: (apiKey: string) => createObservedBoatProvider({ apiKey }) }
-      : {}),
+    ...(runtimeLaunch ? { boatRuntimeLaunch: runtimeLaunch, runtimeHostFor } : {}),
     launch,
     publicUrl: config.publicUrl,
     modelAuth,
@@ -591,8 +593,6 @@ export async function startServer(
     ...(dockerControls ? { dockerControls } : {}),
     runtimeSend,
     accountTurns,
-    runtimeCheckpoint,
-    runtimeResume,
     ...(runtimeGitHub ? { runtimeGitHub } : {}),
     ...(control.sandboxBillingAccount ? { sandboxBillingAccount: control.sandboxBillingAccount } : {}),
     ready: createDatabaseReadiness(sql),
@@ -619,14 +619,10 @@ export async function startServer(
     vault: store,
     encryptionKey: config.encryptionKey,
     github: { store, app: githubApp },
-    goldenBuilds,
-    goldenAdoption,
     providerFor,
-    providerMetadata,
     modalProviderFor,
     storedProviderFor: modal.storedProviderFor,
     modalTokensFor: modal.modalTokensFor,
-    goldenTarget: modal.goldenTarget,
     routes: [
       outputs.route((request) =>
         authenticateCaller(request.headers.get("authorization"), {
@@ -811,6 +807,7 @@ export async function startServer(
     [
       langfuse,
       nativePrompts.steerRecovery,
+      modal.inventoryReaper(options.log),
       ...(options.providerReaperSources ?? []).map((source) => createProviderReaper(source, options.log)),
     ],
   );

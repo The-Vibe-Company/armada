@@ -62,7 +62,7 @@ const other: GoldenActor = { userId: OTHER, orgId: ORG, role: "member" };
 describe("launch", () => {
   for (const provider of ["boat", "modal"] as const)
     test.each([true, false])(
-      `${provider} ordinary runtime default prepares workspace before publication/inference (prompt=%s)`,
+      `${provider} runtime default prepares workspace before publication/inference (prompt=%s)`,
       async (prompted) => {
         const source = golden("org");
         const world = setup({
@@ -111,6 +111,7 @@ describe("launch", () => {
           owner,
           { golden: "web", harness: "codex", ...(prompted ? { prompt: "ordinary request" } : {}) },
           {
+            templateHasSecretBindings: provider === "modal",
             beforeStart: async () => {
               order.push("admit");
             },
@@ -199,7 +200,38 @@ describe("launch", () => {
         expect(world.forks[0]?.env).toEqual({});
       },
     );
-  test.each(["startup", "account", "secret", "provider"] as const)(
+  test("Boat default refuses template secret bindings before runtime selection or allocation", async () => {
+    const world = setup({ golden: golden("org") });
+    await expect(
+      launchSandbox(
+        world.provider,
+        world.stores,
+        owner,
+        { golden: "web", harness: "codex" },
+        {
+          templateHasSecretBindings: true,
+          boatRuntimeDefault: {
+            provider: async () => {
+              throw Error("Runtime provider resolved before secret admission");
+            },
+            credentials: world.stores.credentials,
+            connections: { async validate() {}, async bind() {} },
+            policy: {
+              async start() {
+                throw Error("Runtime started before secret admission");
+              },
+            },
+          },
+        },
+      ),
+    ).rejects.toMatchObject({
+      code: "invalid_request",
+      message: expect.stringContaining("template application-secret bindings"),
+    });
+    expect(world.forks).toEqual([]);
+  });
+
+  test.each(["startup", "account", "provider"] as const)(
     "Modal default refuses %s without native fallback",
     async (failure) => {
       const world = setup({
@@ -238,7 +270,6 @@ describe("launch", () => {
           owner,
           { golden: "web", harness: "codex", prompt: "answer" },
           {
-            nativeSecretBindings: failure === "secret",
             modalRuntimeDefault: {
               provider: async () => (failure === "provider" ? { ...compute, id: "boat" } : compute),
               credentials: {
@@ -2059,6 +2090,30 @@ test("host_full fork refusal remains definite and does not publish or clean up a
   expect(world.rows.size).toBe(0);
   expect(world.stopped).toEqual([]);
   expect(world.deleted).toEqual([]);
+});
+
+test("Modal golden forks receive the allocated Armada sandbox UUID as their provider key", async () => {
+  const world = setup({
+    boundCredentials: true,
+    golden: {
+      ...golden("org"),
+      provider: "modal",
+      providerSandboxId: "modal-builder",
+      providerSnapshotId: "modal-image",
+      modal: { workspace: "ws", environment: "main", appId: "app" },
+    },
+  });
+  const id = "44444444-4444-4444-8444-444444444444";
+  const key = spyOn(world.provider, "fork");
+  const result = await launchSandbox(
+    { ...world.provider, id: "modal" },
+    world.stores,
+    owner,
+    { golden: "web", harness: "codex" },
+    { newId: () => id },
+  );
+  expect(result.sandbox.id).toBe(id);
+  expect(key).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: id }));
 });
 
 test("Modal launch attributes readiness intervals in order and excludes the prompt", async () => {

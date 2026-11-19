@@ -23,6 +23,22 @@ function formModelPrices(data: FormData) {
   return parseModelPriceOverrides({ [model ?? ""]: { input, output, ...(cacheRead ? { cacheRead } : {}) } });
 }
 
+export function morphAccountValue(data: FormData, { replacing = false } = {}) {
+  const apiKey = data.get("value");
+  const rawModels = data.get("morphModels");
+  if (typeof apiKey !== "string" || !apiKey.trim() || apiKey.trimStart().startsWith("{"))
+    return { ok: false, error: "Paste the Morph API key." } as const;
+  try {
+    if (rawModels === null && replacing) return { ok: true, value: parseCredentialValue("morph", apiKey) } as const;
+    if (typeof rawModels !== "string") return { ok: false, error: "Enter the Morph model IDs." } as const;
+    const models = connectionModelList([], rawModels);
+    return { ok: true, value: parseCredentialValue("morph", JSON.stringify({ apiKey, models })) } as const;
+  } catch (error) {
+    if (error instanceof VaultError) return { ok: false, error: error.message } as const;
+    throw error;
+  }
+}
+
 /** Compose only on the server: never copy a key into hidden fields or client state. */
 export function customAccountValue(
   kind: AccountKind,

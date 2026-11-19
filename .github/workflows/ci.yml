@@ -73,7 +73,12 @@ jobs:
           bun scripts/db/check-migrations.ts "$base"
           bun scripts/ci/docs-guard.ts "${PR_BASE_SHA:-$base}"
           bun scripts/ci/process-tests.ts --check "${PR_BASE_SHA:-$base}"
+          bun scripts/ci/landmines.ts "${PR_BASE_SHA:-$base}"
           echo "TABLE_OWNERS_BASE=${PR_BASE_SHA:-$base}" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        if: matrix.shard == 1
+        with:
+          node-version: ">=22.18.0 <23"
       - run: bun run lint
         if: matrix.shard == 1
       - name: Test migration guard
