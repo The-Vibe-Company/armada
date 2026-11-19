@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
 import { createMemoryAuthStore } from "@armada/auth";
 import type { VaultStore } from "@armada/core";
+import published from "../openapi.json";
 import { type ControlOptions, createHandler, handleControlRequest } from "../src/index.ts";
+import { publishedGetResponse, publishedResponse } from "./published-response.ts";
 
 const challenge = "a".repeat(43);
 const state = "state123";
@@ -50,6 +52,9 @@ test("public browser authorize validates strict loopback PKCE and preserves rand
       `auth/authorize?provider=github&redirect_uri=${encodeURIComponent("http://127.0.0.1:43123/callback")}&code_challenge=${challenge}&state=${state}`,
     ),
   );
+  const authorize = published.paths["/api/v1/auth/authorize"].get;
+  expect(authorize.security).toEqual([]);
+  expect(authorize.responses["302"].headers.Location.schema).toMatchObject({ format: "uri" });
   expect(response.status).toBe(302);
   expect(response.headers.get("cache-control")).toBe("no-store");
   const location = new URL(response.headers.get("location") ?? "");
@@ -97,7 +102,9 @@ test("public exchange forwards the verifier and exposes only the session DTO", a
   expect(response.status).toBe(200);
   expect(providerRequest?.url).toBe("https://supabase.test/auth/v1/token?grant_type=pkce");
   expect(await providerRequest?.json()).toEqual({ auth_code: "authorization-code", code_verifier: verifier });
-  expect(await response.json()).toEqual({
+  const output = await response.json();
+  publishedResponse("auth/exchange").parse(output);
+  expect(output).toEqual({
     accessToken: "access-token",
     refreshToken: "refresh-token",
     expiresAt: expect.any(String),
@@ -119,7 +126,9 @@ test("public refresh succeeds and refusal never exposes provider configuration o
   );
   expect(success.status).toBe(200);
   expect(body).toEqual({ refresh_token: "refresh-secret" });
-  expect(await success.json()).toEqual({
+  const output = await success.json();
+  publishedResponse("auth/refresh").parse(output);
+  expect(output).toEqual({
     accessToken: "access-token",
     refreshToken: "refresh-token",
     expiresAt: expect.any(String),
@@ -169,6 +178,7 @@ test("public email start validates input and valid start and verify use the prov
     }),
   );
   expect(start.status).toBe(200);
+  publishedResponse("auth/email/start").parse(await start.json());
   expect(calls[0]?.url).toBe(
     "https://supabase.test/auth/v1/otp?redirect_to=https%3A%2F%2Farmada.test%2Flogin%3Fflow%3Dcode",
   );
@@ -187,6 +197,7 @@ test("public email start validates input and valid start and verify use the prov
     }),
   );
   expect(verify.status).toBe(200);
+  publishedResponse("auth/email/verify").parse(await verify.json());
   expect(calls[1]?.url).toBe("https://supabase.test/auth/v1/verify");
   expect(await calls[1]?.json()).toEqual({ type: "email", email: "person@example.test", token: "123456" });
 });
@@ -203,7 +214,9 @@ test("public method discovery filters upstream settings and exposes no configura
   const response = await handler(request("auth/methods"));
   expect(response.status).toBe(200);
   expect(response.headers.get("cache-control")).toBe("no-store");
-  expect(await response.json()).toEqual({ methods: ["email", "google"] });
+  const output = await response.json();
+  publishedGetResponse("auth/methods", "200").parse(output);
+  expect(output).toEqual({ methods: ["email", "google"] });
 });
 
 test("public method discovery fails closed when upstream settings cannot be read", async () => {

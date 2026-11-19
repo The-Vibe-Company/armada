@@ -1,4 +1,5 @@
-import { CONTROL_BODY_MAX_BYTES, PUBLIC_CONTROL_ROUTES } from "@armada/core";
+import { CONTROL_BODY_MAX_BYTES } from "@armada/core";
+import { PUBLIC_CONTROL_ROUTES } from "@armada/core/contract";
 import { NextResponse } from "next/server";
 
 const CONTROL_PREFIX = "/api/v1/";
@@ -219,7 +220,7 @@ export async function forwardControl(
   const sandboxDeletion =
     method === "DELETE" && path.length === 2 && path[0] === "sandboxes" && SANDBOX_ID.test(path[1] ?? "");
   const publicMethods: readonly string[] = Object.hasOwn(PUBLIC_CONTROL_ROUTES, relative)
-    ? PUBLIC_CONTROL_ROUTES[relative as keyof typeof PUBLIC_CONTROL_ROUTES]
+    ? (PUBLIC_CONTROL_ROUTES[relative] ?? [])
     : [];
   const isPublic = publicMethods.includes(method);
   if (!sandboxOutputs && !sandboxDeletion && !isPublic && !(method === "POST" && PRIVATE_POST_PATHS.has(relative)))
