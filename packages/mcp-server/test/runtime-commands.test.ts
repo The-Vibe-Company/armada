@@ -4,6 +4,7 @@ import type { Sql } from "@armada/core/server";
 import { encryptSecret } from "@armada/core/server";
 import { controlFailureResponse } from "../src/control-errors.ts";
 import { createOutboundWebhooks } from "../src/outbound-webhooks.ts";
+import { continueRequest } from "../src/request-observability.ts";
 import { createRuntimeAgent } from "../src/runtime-agent.ts";
 import { createRuntimeCommands, RuntimeCommandRefused } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
@@ -758,6 +759,7 @@ test("runtime startup privately issues configuration, awaits enrolment and fence
       cwd: root,
       defaults: { model: "gpt-5.4", reasoningEffort: "high" },
     });
+    let bootstrapStart: unknown;
     let token: string | undefined;
     let now = 0;
     const configuration = { selectedHarness: "codex", privateMarker: "startup-private-configuration" };
@@ -772,6 +774,9 @@ test("runtime startup privately issues configuration, awaits enrolment and fence
       },
       {
         async bootstrap(input) {
+          bootstrapStart = logger.mock.calls
+            .map(([line]) => JSON.parse(String(line)))
+            .find((entry) => entry.event === "armada.runtime.startup_phase" && entry.phase === "bootstrap");
           token = input.enrolmentToken;
           now += 40;
           expect(Object.keys(input).sort()).toEqual([
@@ -840,17 +845,28 @@ test("runtime startup privately issues configuration, awaits enrolment and fence
         },
       },
     );
+    const requestId = crypto.randomUUID();
     expect(
-      await start({
-        ownerId: f.people.owner,
-        sandboxId: f.id,
-        providerSandboxId: "physical",
-        serverUrl: "https://armada.invalid",
-        cacheDir: "/home/user/.armada-bootstrap",
-        artifact: { sha256: "a".repeat(64), bytes: 10 },
-        configuration,
-      }),
+      await continueRequest(requestId, () =>
+        start({
+          ownerId: f.people.owner,
+          sandboxId: f.id,
+          providerSandboxId: "physical",
+          serverUrl: "https://armada.invalid",
+          cacheDir: "/home/user/.armada-bootstrap",
+          artifact: { sha256: "a".repeat(64), bytes: 10 },
+          configuration,
+        }),
+      ),
     ).toEqual({ runtime: "armada", epoch: "2" });
+    expect(bootstrapStart).toEqual({
+      event: "armada.runtime.startup_phase",
+      requestId,
+      sandboxId: f.id,
+      epoch: "2",
+      phase: "bootstrap",
+      elapsedMs: 10,
+    });
     const samples = logger.mock.calls.flatMap(([line]) =>
       String(line).includes('"event":"armada.runtime.startup_timing"') ? [JSON.parse(String(line))] : [],
     );
