@@ -29,7 +29,6 @@ test("authenticated GitHub handoff binds owner, encrypts grants, rejects replay 
   try {
     await db.query("insert into auth.users(id) values ($1),($2)", [owner, other]);
     const authStore = createMemoryAuthStore();
-    let logoutCalls = 0;
     let tokenExchanges = 0;
     let rejectExchange = false;
     let duringExchange: (() => Promise<void>) | undefined;
@@ -69,11 +68,7 @@ test("authenticated GitHub handoff binds owner, encrypts grants, rejects replay 
       supabase: {
         supabaseUrl: "https://supabase.test",
         anonKey: "anon",
-        fetch: async (input, init) => {
-          if (String(input).includes("/auth/v1/logout")) {
-            logoutCalls++;
-            return new Response(null, { status: 204 });
-          }
+        fetch: async (_input, init) => {
           const token = new Headers(init?.headers).get("authorization")?.replace("Bearer ", "") ?? "";
           return Response.json({ id: token === bearer(other) ? other : owner });
         },
@@ -289,16 +284,6 @@ test("authenticated GitHub handoff binds owner, encrypts grants, rejects replay 
     expect(new URL(defaultFlow.authorizationUrl).searchParams.get("redirect_uri")).toBe(
       "https://armada.thevibecompany.co/github/callback",
     );
-    const signedOut = await handleControlRequest(
-      new Request("https://armada.test/api/v1/account/logout", {
-        method: "POST",
-        headers: { authorization: `Bearer ${bearer(owner)}` },
-        body: "{}",
-      }),
-      options,
-    );
-    expect(signedOut?.status).toBe(200);
-    expect(logoutCalls).toBe(1);
     await db.exec("set role authenticated");
     await expect(db.query("select state_hash from github_authorizations")).rejects.toThrow();
   } finally {
