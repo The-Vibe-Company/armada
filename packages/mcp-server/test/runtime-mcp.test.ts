@@ -489,9 +489,11 @@ test("pinned stdio delivers its encrypted environment privately without a gatewa
     });
     await x.service.connections.validate({ userId: f.people.owner, orgId: f.people.org }, [local.id], "org");
     await x.service.connections.bind(f.row.id, [local.id]);
-    const receipt = await x.service.prepare(f.caller, f.row.id);
-    const response = await observeRequest(
-      () => x.api("sandbox/send", f.input("use configured MCP")),
+    const { receipt, response } = await observeRequest(
+      async () => ({
+        receipt: await x.service.prepare(f.caller, f.row.id),
+        response: await x.api("sandbox/send", f.input("use configured MCP")),
+      }),
       (line) => lines.push(line),
     );
     expect(response.status).toBe(200);

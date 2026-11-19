@@ -30,7 +30,6 @@ function pinnedServer(definition: ConnectionDefinition) {
     throw new VaultError("invalid", "Runtime MCP requires an exact pinned stdio launcher and valid arguments.");
   }
 }
-// Keep package resolution, interpreter startup, and launcher configuration under runtime control.
 const launcherEnvironment =
   /^(?:PATH|HOME|USERPROFILE|SHELL|ENV|BASH_ENV|NODE(?:JS)?_.+|NPM_.+|NPX_.+|UV_.+|UVX_.+|PYTHON.*|PIP_.+|VIRTUAL_ENV.*|CONDA_.+|LD_.+|DYLD_.+|XDG_.+|GIT_.+|(?:ALL|HTTP|HTTPS|NO)_PROXY|SSL_CERT_.+|CURL_CA_BUNDLE|REQUESTS_CA_BUNDLE)$/i;
 
@@ -233,7 +232,6 @@ export function createRuntimeMcp(options: {
       generation: current.mcp_generation,
     });
     const grants = definitions.map(({ id, generation }) => [id, generation]);
-    // Receipts expose the revision. Key it so it cannot be used to guess vault values.
     const revision = createHmac("sha256", Buffer.from(key, "base64"))
       .update(JSON.stringify([epoch, current.mcp_generation, grants, servers]))
       .digest("hex");
