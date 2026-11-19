@@ -8,7 +8,7 @@ import { goldenScript, type Provider, scanGoldenSandbox, sshStdinCheckout, withG
  * Build scripts/fixtures/golden-os first. The recipe performs actual npm/Playwright/apt installs.
  * Only the fixture Git remote location is redirected to a real local Git repository.
  */
-async function waitForSsh(name: string): Promise<void> {
+async function waitForSsh(name: string) {
   const logs = Bun.spawn(["docker", "logs", "--follow", name], {
     stdout: "pipe",
     stderr: "inherit",
@@ -29,7 +29,7 @@ async function waitForSsh(name: string): Promise<void> {
   }
 }
 
-async function runProbe(image: string, mode: "user-standard" | "root-nnp"): Promise<void> {
+async function runProbe(image: string, mode: "user-standard" | "root-nnp") {
   const rootSsh = mode === "root-nnp";
   const username = rootSsh ? "root" : "user";
   const name = `armada-golden-os-${crypto.randomUUID()}`;
