@@ -41,6 +41,7 @@ import { authorizeSnapshotBuild, resolveDockerSnapshot } from "./docker-snapshot
 import { recordLaunchStageForActivation } from "./launch-stage-record.ts";
 import { collectOutputTransfers, DOCKER_RETAINED_OUTPUT_STOP } from "./output-transfers.ts";
 import { noteAdmission } from "./request-observability.ts";
+import { unsettledRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
 import { failDockerResumeActivation } from "./sandbox-lifecycle.ts";
 import { deferTransactionWake } from "./wake-bus.ts";
@@ -1015,8 +1016,10 @@ export function createDockerHostStore(sql: Sql, key: string) {
             `select 1 from public.account_turn_queue where sandbox_id=$1 and state in ('queued','dispatching')
              union all
              select 1 from public.docker_queued_prompts where sandbox_id=$1 and status in ('queued','dispatching')
+             union all
+             ${unsettledRuntimeCommands("$1", "$2")}
              limit 1`,
-            [sandboxId],
+            [sandboxId, row.lifecycle_generation],
           );
           if (pendingTurns.rows.length) deny();
         }

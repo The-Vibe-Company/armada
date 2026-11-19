@@ -51,6 +51,16 @@ function record(value: unknown): value is Record<string, unknown> {
 export function expiredOutputRead(column: string, now: string): string {
   return `(case when ${column} ~ '^outputs_[0-9]{1,16}_' then split_part(${column},'_',2)::bigint<=${now}::bigint else false end)`;
 }
+/** Evaluate under the sandbox lock, after any earlier command admission commits. */
+export function unsettledRuntimeCommands(sandboxId: string, generation: string): string {
+  return `select 1 from public.runtime_enrolments r
+    join public.runtime_commands c on c.sandbox_id=r.sandbox_id and c.epoch=r.epoch
+    where r.sandbox_id=${sandboxId} and r.lifecycle_generation=${generation}
+      and ((c.result_enc is null and not ${expiredOutputRead("c.request_id", "extract(epoch from clock_timestamp()) * 1000")})
+        or (c.accepted_prompt_id is not null and not exists(
+          select 1 from public.runtime_idle_turns t
+          where t.sandbox_id=c.sandbox_id and t.prompt_id=c.accepted_prompt_id::text and t.settled)))`;
+}
 function requestId(value: unknown): value is string {
   return typeof value === "string" && /^[a-zA-Z0-9_-]{1,128}$/.test(value);
 }

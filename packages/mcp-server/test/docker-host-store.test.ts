@@ -522,7 +522,7 @@ test("bound bootstrap requires ACKed creation and the exact pending capability, 
   await denied(store.enqueueSandbox(a.owner, a.sandboxId, { ...selection, requestId: randomUUID() }));
 });
 
-test.each(["account", "docker"] as const)("idle-only stop leaves an accepted %s turn intact", async (queue) => {
+test.each(["account", "docker", "runtime"] as const)("idle-only stop leaves accepted %s work intact", async (queue) => {
   const db = database();
   const a = await boundFixture();
   await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
@@ -541,13 +541,25 @@ test.each(["account", "docker"] as const)("idle-only stop leaves an accepted %s 
        values($1,$2,$3,$4,$5,1,1,$6,$7,'first')`,
       [a.sandboxId, turn, credential, a.owner.userId, a.owner.orgId, "a".repeat(64), sealed],
     );
-  } else {
+  } else if (queue === "docker") {
     await db.query(
       `insert into public.docker_queued_prompts
         (sandbox_id,request_id,prompt_id,owner_id,actor_epoch,lifecycle_generation,input_hash,input_enc)
        select id,$2,$3,owner_id,1,lifecycle_generation,$4,$5 from public.sandboxes where id=$1`,
       [a.sandboxId, turn, randomUUID(), "a".repeat(64), sealed],
     );
+  }
+  if (queue === "runtime") {
+    await db.query(
+      `insert into public.runtime_enrolments(sandbox_id,lifecycle_generation,epoch)
+       select id,lifecycle_generation,1 from public.sandboxes where id=$1`,
+      [a.sandboxId],
+    );
+    await db.query("insert into public.runtime_commands(sandbox_id,request_id,epoch,request_enc) values($1,$2,1,$3)", [
+      a.sandboxId,
+      turn,
+      sealed,
+    ]);
   }
   const stop = { requestId: randomUUID(), operation: "stop" as const };
   await denied(store.enqueueSandbox(a.owner, a.sandboxId, { ...stop, onlyIfIdle: true }));
