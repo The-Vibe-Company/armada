@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { createBoatProvider } from "@armada/provider-boat";
 
 import { retainedSandbox } from "../../provider-boat/test/support.ts";
+import { createGoldenBuildLane } from "../src/golden-worker.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { startServerWorkers } from "../src/server-workers.ts";
 import { rowOnlyConnection } from "./row-only-database.ts";
@@ -46,10 +47,12 @@ test("server lifecycle drains multiple rows while independent work is pending; s
   const build = deferred<boolean>();
   const retirement = deferred<boolean>();
   const exportJob = deferred<boolean>();
+  const exportDrained = deferred<void>();
   let exportSignal: AbortSignal | undefined;
   let retirementSignal: AbortSignal | undefined;
   const progress = deferred<void>();
   let buildRunning = false;
+  let recoveryRuns = 0;
   let reconciled = 0;
   const provider = createBoatProvider({
     apiKey: "test-key",
@@ -63,13 +66,6 @@ test("server lifecycle drains multiple rows while independent work is pending; s
   });
   const lifecycle = createSandboxLifecycle(sql, async () => provider);
   const workers = startServerWorkers(
-    {
-      runOne: async () => {
-        buildRunning = true;
-        return build.promise;
-      },
-      reconcileOne: async () => {},
-    },
     {
       drain: () => lifecycle.drain(),
       reconcileOne: async (signal) => {
@@ -88,12 +84,23 @@ test("server lifecycle drains multiple rows while independent work is pending; s
     undefined,
     [],
     [
+      createGoldenBuildLane({
+        runOne: async () => {
+          buildRunning = true;
+          return build.promise;
+        },
+        reconcileOne: async () => {
+          recoveryRuns++;
+        },
+      }),
       {
         reconcileOne: async (signal) => {
           exportSignal = signal;
           return exportJob.promise;
         },
-        async drain() {},
+        async drain() {
+          exportDrained.resolve();
+        },
       },
     ],
   );
@@ -111,8 +118,6 @@ test("server lifecycle drains multiple rows while independent work is pending; s
     });
     await Promise.resolve();
     expect(done).toBe(false);
-    build.resolve(true);
-    await workers.goldenWorker.done;
     expect(retirementSignal?.aborted).toBe(true);
     expect(exportSignal?.aborted).toBe(true);
     expect(done).toBe(false);
@@ -120,8 +125,12 @@ test("server lifecycle drains multiple rows while independent work is pending; s
     await workers.retirementWorker.done;
     expect(done).toBe(false);
     exportJob.resolve(false);
+    await exportDrained.promise;
+    expect(done).toBe(false);
+    build.resolve(false);
     await workers.done;
     expect(done).toBe(true);
+    expect(recoveryRuns).toBe(0);
     const count = reconciled;
     await Promise.resolve();
     expect(reconciled).toBe(count);
@@ -196,7 +205,6 @@ test("a ready ordinary backlog cannot starve orchestrator work and shutdown drai
   let calls = 0,
     drains = 0;
   const workers = startServerWorkers(
-    { runOne: async () => false, reconcileOne: async () => {} },
     {
       reconcileOne: async () => {
         if (++calls === 1) return true;
@@ -252,7 +260,6 @@ test("retention maintenance runs independently and shutdown tracks an in-flight 
   const entered = deferred<void>(),
     release = deferred<void>();
   const workers = startServerWorkers(
-    { runOne: async () => false, reconcileOne: async () => {} },
     { reconcileOne: async () => false, drain: async () => {} },
     () => {},
     undefined,
@@ -297,12 +304,6 @@ test("managed reconciliation shares the existing lane fairly and shutdown drains
     drain,
   });
   const workers = startServerWorkers(
-    {
-      async runOne() {
-        return false;
-      },
-      async reconcileOne() {},
-    },
     lane("ordinary", async () => {}),
     () => {},
     undefined,
