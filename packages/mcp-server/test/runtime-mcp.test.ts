@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { createMemoryAuthStore } from "@armada/auth";
 import type { Provider } from "@armada/core";
+import { sandboxCheckOperations } from "@armada/core/contract";
 import { createSqlMcpLeasePort, createSqlMcpRegistry, createSqlVaultStore, encryptSecret } from "@armada/core/server";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -171,7 +172,9 @@ describe.each(["boat", "modal"] as const)("enrolled runtime remote MCP (%s)", (p
       connections: [x.c.id],
       toolInventory: true,
     });
-    expect(await inventory.json()).toMatchObject({
+    expect(sandboxCheckOperations.postSandboxMcpPreflightV1.output.parse(await inventory.json())).toEqual({
+      mcpReady: true,
+      connections: [x.c.id],
       mcpToolInventory: [{ connectionId: x.c.id, tools: ["read_counter"] }],
     });
     const oldProbe = createRuntimeMcp({

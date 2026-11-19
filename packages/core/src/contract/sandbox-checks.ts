@@ -22,7 +22,15 @@ export const sandboxCheckOperations = {
     readOnly: false,
     destructive: false,
     audience: "admin",
-    errors: [...controlErrors, "conflict", "not_found", "rate_limited", "credential_binding_required"],
+    errors: [
+      ...controlErrors,
+      "invalid_request",
+      "conflict",
+      "not_found",
+      "missing_credential",
+      "rate_limited",
+      "credential_binding_required",
+    ],
     description: "Test a model on a running sandbox with its current bound API-key account. Owner only.",
     input: { body: z.strictObject({ id: uuid, model: z.string(), org }) },
     output: z.object({
@@ -42,12 +50,13 @@ export const sandboxCheckOperations = {
     name: "bindSandboxCredential",
     route: { method: "POST", path: "/api/v1/sandbox/bind-credential" },
     readOnly: false,
-    destructive: false,
+    destructive: true,
     audience: "admin",
     errors: [
       ...controlErrors,
       "conflict",
       "not_found",
+      "missing_credential",
       "credential_binding_unsafe",
       "credential_binding_unsupported",
       "credential_refused",
@@ -66,10 +75,10 @@ export const sandboxCheckOperations = {
   postSandboxMcpPreflightV1: {
     name: "postSandboxMcpPreflightV1",
     route: { method: "POST", path: "/api/v1/sandbox/mcp-preflight-v1" },
-    readOnly: true,
+    readOnly: false,
     destructive: false,
     audience: "public",
-    errors: controlErrors,
+    errors: [...controlErrors, "not_found"],
     description: "Check access to selected runtime MCP connections and optionally report available tools.",
     input: {
       body: proofRequest.extend({
@@ -86,7 +95,7 @@ export const sandboxCheckOperations = {
   postSandboxGithubPreflightV1: {
     name: "postSandboxGithubPreflightV1",
     route: { method: "POST", path: "/api/v1/sandbox/github-preflight-v1" },
-    readOnly: true,
+    readOnly: false,
     destructive: false,
     audience: "public",
     errors: controlErrors,
