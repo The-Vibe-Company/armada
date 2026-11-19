@@ -1005,9 +1005,10 @@ test.each([
   { stdout: "private collector output", errorKind: "syntax_error", reason: "collector_failed" },
   { stdout: JSON.stringify({ private: "collector output" }), errorKind: "invalid_output", reason: "collector_failed" },
   { stdout: " ".repeat(60_001), errorKind: "output_limit", reason: "output_limit" },
+  { status: 3, stdout: "", errorKind: "collector_reported_limit", reason: "output_limit" },
 ])(
   "a failed Modal manifest records $errorKind by phase even after its reason was claimed",
-  async ({ stdout, errorKind, reason }) => {
+  async ({ status = 0, stdout, errorKind, reason }) => {
     const id = "modal_output_fixture";
     const warnings: unknown[] = [];
     const reasons: unknown[] = [];
@@ -1031,7 +1032,7 @@ test.each([
     };
     try {
       const service = createSandboxOutputs(sql, KEY, async () => ({
-        listOutputEntries: async () => readCollectorEntries(0, stdout),
+        listOutputEntries: async () => readCollectorEntries(status, stdout),
         readOutputChunk: async () => null,
       }));
       expect(await sample(service)).toBe(true);

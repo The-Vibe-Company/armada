@@ -101,7 +101,7 @@ function failureReason(error: unknown, signal?: AbortSignal): OutputFailureReaso
 
 function collectorErrorKind(error: unknown) {
   if (error instanceof OutputCollectionError)
-    return error.reason === "output_limit" ? "output_limit" : "collector_reported_failure";
+    return error.reason === "output_limit" ? "collector_reported_limit" : "collector_reported_failure";
   if (error instanceof SyntaxError) return "syntax_error";
   if (!(error instanceof Error)) return "non_error";
   if (error.message === "invalid_output" || error.message === "output_limit") return error.message;
