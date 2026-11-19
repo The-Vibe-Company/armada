@@ -1,4 +1,5 @@
 import { API_FAILURE_STATUS } from "@armada/core";
+import { sandboxOperations } from "@armada/core/contract";
 import { decryptSecret, encryptSecret, failureDiagnostic, type Sql, VaultError } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import { continueRequest, recordOperatorDiagnostic } from "./request-observability.ts";
@@ -14,16 +15,8 @@ export const RUNTIME_LANE = `(s.provider='docker' or s.boat_runtime or s.runtime
 
 const dispatchRefusalCodes = new Set([
   ...Object.keys(API_FAILURE_STATUS),
-  "conflict",
-  "forbidden",
-  "internal",
-  "invalid",
-  "invalid_request",
+  ...sandboxOperations.sendPrompt.errors,
   "missing_credential",
-  "not_found",
-  "sandbox_terminal",
-  "unavailable",
-  "unsupported",
 ]);
 
 type DispatchEntry = {
