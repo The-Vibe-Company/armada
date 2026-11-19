@@ -10,6 +10,7 @@ import { type DockerHostResources, validDockerAvailability } from "../../core/sr
 import { dockerResourceLimits } from "../../core/src/docker-resources.ts";
 import { VERSION } from "../../core/src/version.ts";
 import type { CallerResult } from "./caller.ts";
+import { fail } from "./control-response.ts";
 import { DockerHostDraining, DockerLimitsRefused } from "./docker-capacity.ts";
 import { type createDockerHostStore, DockerHostDenied } from "./docker-host-store.ts";
 import { dockerHostVersions } from "./docker-host-version.ts";
@@ -535,8 +536,7 @@ export function createDockerHostRoutes(
       });
       return Response.json({ requestId }, { headers });
     } catch (error) {
-      if (error instanceof BodyTooLargeError)
-        return Response.json({ error: "docker_host_request_too_large" }, { status: 413, headers });
+      if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
       if (error instanceof DockerLimitsRefused)
         return Response.json(
           { error: { code: error.code, message: error.message } },

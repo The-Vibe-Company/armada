@@ -116,7 +116,9 @@ test("a full Docker inventory with long container names reaches the reaper", asy
 test("an oversized Docker inventory is refused before reaching the reaper", async () => {
   const { installationId, records, send } = inventoryRouteFixture();
   const body = JSON.stringify({ installationId, containers: [] }).padEnd(5 * 1024 * 1024 + 1);
-  expect((await send(body))?.status).toBe(413);
+  const response = await send(body);
+  expect(response?.status).toBe(413);
+  expect(await response?.json()).toEqual({ error: { code: "invalid", message: "The request is too large." } });
   expect(records).toHaveLength(0);
 });
 
