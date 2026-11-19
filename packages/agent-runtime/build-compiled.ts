@@ -33,14 +33,31 @@ const require = createRequire(join(root, "package.json"));
 const codexRequire = createRequire(require.resolve("@openai/codex/package.json"));
 const vendor = dirname(codexRequire.resolve(`@openai/codex-linux-${architecture}/package.json`));
 const triple = architecture === "x64" ? "x86_64-unknown-linux-musl" : "aarch64-unknown-linux-musl";
-const pack = Bun.spawn(
-  ["tar", "--hard-dereference", "-czf", join(out, "codex.tar.gz"), "-C", join(vendor, "vendor", triple), "."],
-  {
-    stdout: "inherit",
-    stderr: "inherit",
-  },
-);
-if (await pack.exited) throw Error("Codex archive failed");
+async function packHarness(source: string, archive: string) {
+  const pack = Bun.spawn(
+    [
+      "tar",
+      "--format=gnu",
+      "--sort=name",
+      "--mtime=@0",
+      "--owner=0",
+      "--group=0",
+      "--numeric-owner",
+      "--hard-dereference",
+      "-I",
+      "gzip -n",
+      "-cf",
+      join(out, archive),
+      "-C",
+      source,
+      ".",
+    ],
+    { stdout: "inherit", stderr: "inherit", env: { ...process.env, LC_ALL: "C" } },
+  );
+  if (await pack.exited) throw Error(`Harness archive failed: ${archive}`);
+}
+const codexRoot = join(vendor, "vendor", triple);
+await packHarness(codexRoot, "codex.tar.gz");
 const claudeRequire = createRequire(require.resolve("@anthropic-ai/claude-code/package.json"));
 const claudeRoot = join(out, "claude-runtime");
 await mkdir(claudeRoot);
@@ -49,11 +66,7 @@ await copyFile(
   join(claudeRoot, "claude"),
 );
 await chmod(join(claudeRoot, "claude"), 0o755);
-const claudePack = Bun.spawn(["tar", "-czf", join(out, "claude.tar.gz"), "-C", claudeRoot, "."], {
-  stdout: "inherit",
-  stderr: "inherit",
-});
-if (await claudePack.exited) throw Error("Claude archive failed");
+await packHarness(claudeRoot, "claude.tar.gz");
 await chmod(executable, 0o755);
 async function file(name: string) {
   const bytes = await Bun.file(join(out, name)).arrayBuffer();
@@ -85,7 +98,7 @@ await Bun.write(
           version: "0.167.0",
           archive: await file("codex.tar.gz"),
           executable: "bin/codex",
-          files: await harnessInventory(join(vendor, "vendor", triple)),
+          files: await harnessInventory(codexRoot),
         },
       },
     },

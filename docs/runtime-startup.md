@@ -77,14 +77,16 @@ bootstrap also checks that path for the runtime executable and verifies size
 and SHA256 before publishing it to the private cache. Provider-run Modal and
 Boat do not mount the Volume.
 
-To make Modal launches use warm artifact bytes, provision that Volume in each
-Modal workspace/environment that serves enrolled launches. Before rolling out
-a server build, populate the Volume root with the public digest-named files
-from that build's `/opt/armada/runtime-artifacts`. Keep the digests required by
-both builds during rollout. Upload the runtime, all published harness archives
-and OpenCode, with files readable by the sandbox user. Keep credentials,
-configuration and private data out of the Volume. Missing or invalid digests
-are cache misses and still go through the verified HTTP installer.
+On startup the server uses the registered Modal App credentials to create
+or warm the Volume in each bound environment. Before an enrolled launch or
+resume uses an App, the server also ensures warming succeeded. This covers
+new bindings and retries a failed startup warm. The seeder verifies existing
+entries and writes only missing or invalid manifest digests, verifies uploaded
+bytes by SHA-256 and size, and preserves digests from other deployments. The
+server image includes the Modal Python SDK used for Volume uploads. The Modal
+credentials need permission to create and write the Volume. The first seed
+can take longer than a warm launch, so existing registered Apps are warmed
+before the server begins serving requests.
 
 The trusted launcher holds exclusive launch/lifecycle ownership and supplies
 only `{serverUrl,enrolmentToken}` to `armada-runtime dialout` on private stdin.

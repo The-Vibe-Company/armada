@@ -45,6 +45,7 @@ import { catalogAuthenticationFromEnv } from "./mcp-catalog-client.ts";
 import { createMcpHttpIntegration } from "./mcp-http-integration.ts";
 import { bootstrapBoatMcp } from "./mcp-native.ts";
 import { createHistoricalSandboxProviderResolver, createMcpSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
+import { createModalArtifactCache } from "./modal-artifact-cache.ts";
 import { createModalIntegration } from "./modal-integration.ts";
 import { modalRuntimeLaunch } from "./modal-runtime-launch.ts";
 import { modalRuntimeResume } from "./modal-runtime-resume.ts";
@@ -298,6 +299,7 @@ export async function createServerServices(env: Record<string, string | undefine
     };
     if (config.boatAgentPath === "runtime") launch.boatRuntimeDefault = launch.boatEndpointRuntime;
   }
+  let warmModalArtifacts: ReturnType<typeof createModalArtifactCache> | undefined;
   let modalRuntimePolicy: ReturnType<typeof modalRuntimeLaunch> | undefined;
   if (env.ARMADA_MODAL_DIALOUT === "1") {
     if (!env.ARMADA_MODAL_RUNTIME_MANIFEST) throw Error("Modal runtime manifest required.");
@@ -309,6 +311,8 @@ export async function createServerServices(env: Record<string, string | undefine
       !["x64", "arm64"].includes(manifest.architecture)
     )
       throw Error("Invalid Modal runtime manifest.");
+    if (!env.ARMADA_RUNTIME_ARTIFACT_DIR) throw Error("Modal runtime requires ARMADA_RUNTIME_ARTIFACT_DIR.");
+    warmModalArtifacts = createModalArtifactCache(manifest, env.ARMADA_RUNTIME_ARTIFACT_DIR);
     modalRuntimePolicy = modalRuntimeLaunch({
       sql,
       encryptionKey: config.encryptionKey,
@@ -346,17 +350,22 @@ export async function createServerServices(env: Record<string, string | undefine
       modelAuth,
     });
   }
+  if (warmModalArtifacts) {
+    await modal.warmRegisteredArtifactCaches(warmModalArtifacts, options.logError ?? console.error);
+  }
   const modalRuntimeHostFor = async (
     target: import("@armada/core").ProviderTarget,
     caller: import("./caller.ts").Caller,
   ) => {
     if (!target.modal) throw Error("Modal binding required.");
     const tokens = await modal.modalTokensFor(target, caller);
-    return (await modal.modalProviderFor({ tokenId: tokens.tokenId, tokenSecret: tokens.tokenSecret }, target.modal, {
-      target,
-      caller,
-      credentialScope: tokens.scope,
-    })) as import("@armada/provider-modal").ModalProvider;
+    return (await modal.modalProviderFor(
+      { tokenId: tokens.tokenId, tokenSecret: tokens.tokenSecret },
+      target.modal,
+      { target, caller, credentialScope: tokens.scope },
+      false,
+      warmModalArtifacts,
+    )) as import("@armada/provider-modal").ModalProvider;
   };
   if (config.modalAgentPath === "runtime") {
     if (!modalRuntimePolicy)
