@@ -78,7 +78,6 @@ async function databaseCounters(url: string) {
   const client = new SQL(url, { max: 1, connectionTimeout: 10 });
   try {
     return await client.begin("READ ONLY", async (tx) => {
-      // Reject an aggregate if row-level security would silently filter its inputs.
       await tx.unsafe("SET LOCAL row_security = off");
       const [schema] = await tx.unsafe<{ available: boolean }[]>(deliveryQueries.hasRuntimePromptAttribution);
       const [latency] = schema?.available
@@ -136,7 +135,6 @@ async function main(args: string[]) {
 }
 
 if (import.meta.main) {
-  // Driver errors and argument text can contain the URL. Print only a fixed diagnostic.
   await main(Bun.argv.slice(2)).catch(() => {
     console.error(
       `Unable to collect delivery counters. Use --offline or --read-only, optionally with --week-ending=YYYY-MM-DD. ${databaseHelp}`,
