@@ -10,6 +10,7 @@ import {
   VaultError,
 } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
+import { createEventFeed } from "../src/event-feed.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { createNativeWebhookPrompts } from "../src/native-webhook-prompts.ts";
 import { observeRequest } from "../src/request-observability.ts";
@@ -387,6 +388,65 @@ test("revocation between reservation and dispatch cancels queued allocation", as
         requestId: response?.headers.get("x-request-id"),
       }),
     );
+  } finally {
+    await close();
+  }
+});
+
+test("revocation after snapshot admission releases a child allocation that never reached the provider", async () => {
+  const { close, db, sql, id, authority, token, selection } = await fixture();
+  try {
+    const boat = fakeBoat();
+    const admissionSql: Sql = {
+      query: sql.query,
+      async transaction(work) {
+        const result = await sql.transaction!(work);
+        await authority.revoke(id);
+        return result;
+      },
+    };
+    const children = createSandboxChildren(sql, authority, {
+      async launch(operation, selected) {
+        return launchSandboxChild({
+          sql,
+          provider: boat.provider,
+          operation,
+          selection: selected,
+          stores: {
+            goldens: createSqlGoldenStore(admissionSql),
+            sandboxes: createSqlSandboxStore(sql),
+            credentials: {
+              async resolve() {
+                throw Error("no legacy fallback");
+              },
+            },
+          },
+          namedCredentials: launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY),
+        });
+      },
+      async read() {
+        throw Error("unexpected");
+      },
+      async message() {
+        throw Error("unexpected");
+      },
+      async stop() {
+        throw Error("unexpected");
+      },
+      async reconcile(op) {
+        return { operationId: op.id, sandboxId: op.sandboxId, state: "unknown" };
+      },
+    });
+    const receipt = await children.launch(token, "revoked-after-admission", selection);
+    expect(receipt.state).toBe("failed");
+    expect(boat.forks).toHaveLength(0);
+    expect(
+      (
+        await db.query("select sandbox_id from ordinary_launch_snapshot_intents where sandbox_id=$1", [
+          receipt.sandboxId,
+        ])
+      ).rows,
+    ).toEqual([]);
   } finally {
     await close();
   }
@@ -1358,5 +1418,38 @@ test("scoped child message settles through the native receipt worker into Langfu
     ).toEqual([{ terminal_status: "finished" }]);
   } finally {
     await close();
+  }
+});
+
+test("the event feed grants a scoped bearer access only to its authorized child", async () => {
+  const f = await fixture();
+  try {
+    const child = await createSqlSandboxStore(f.sql).insert({
+      id: crypto.randomUUID(),
+      provider: "boat",
+      providerSandboxId: "event-feed-child",
+      goldenId: f.golden.id,
+      orgId: f.p.org,
+      ownerId: f.p.owner,
+      harness: "codex",
+      model: "m",
+      reasoningEffort: "medium",
+      status: "ready",
+      visibility: "private",
+    });
+    await f.db.query("insert into orchestrator_children values($1,$2,$3,$4)", [child.id, f.id, f.p.org, f.p.owner]);
+    await f.db.query("insert into event_log(org_id,sandbox_id,kind,ref) values($1,$2,'transition',1)", [
+      f.p.org,
+      child.id,
+    ]);
+    const feed = createEventFeed(f.sql, f.authority);
+    expect(await feed.child(f.token, child.id)("0")).toEqual([
+      expect.objectContaining({ sandboxId: child.id, kind: "transition", sequence: null }),
+    ]);
+    expect(await feed.child(f.token, f.parent.id)("0")).toBeNull();
+    await f.db.query("update orchestrator_delegations set revoked_at=now() where orchestrator_id=$1", [f.id]);
+    expect(await feed.child(f.token, child.id)("0")).toBeNull();
+  } finally {
+    await f.close();
   }
 });

@@ -44,10 +44,6 @@ test("server assembly preserves worker lane order and isolation", () => {
       ],
       "isolated": [
         {
-          "name": "golden-build-recovery",
-          "sweep": true,
-        },
-        {
           "name": "steer-recovery",
           "sweep": false,
         },

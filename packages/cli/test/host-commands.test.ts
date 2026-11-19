@@ -57,7 +57,6 @@ function ticket(expiry = start + 300_000) {
   return { hostId, registrationToken: "a".repeat(64), command, expiresAt: new Date(expiry).toISOString() };
 }
 
-// These exercise the API-only CLI, including selected org and the injected clock/sleep.
 test("host add prints the server command once, submits its name and waits for this exact host online", async () => {
   let issued = 0,
     listed = 0;
@@ -112,7 +111,6 @@ test("host add pending waits respect token expiry and five-minute limit without 
   }
 });
 
-// A draining host is valid list metadata, not a malformed answer, so it is shown with its state and the uninstall reason.
 test("host list accepts a draining host and prints the shared uninstall reason", async () => {
   const result = await capture(["host", "list"], async () =>
     Response.json({
@@ -172,7 +170,6 @@ test("host add network loss after issue retains host identity without issuing an
   expect(result.err).toContain("do not issue another registration blindly");
 });
 
-// Reuse cancels only the fresh ticket; it must not wait for that new ID forever.
 test("host add stops waiting when its unused registration disappears without claiming a new host is online", async () => {
   const result = await capture(["host", "add"], async (request) =>
     new URL(request.url).pathname.endsWith("register-token")

@@ -1,3 +1,5 @@
+begin;
+
 -- Publication and approved reconciliation already insert the retirement
 -- intent in their own transaction.
 create function public.enqueue_snapshot_retirement_job() returns trigger
@@ -41,3 +43,5 @@ select r.id, 'snapshot_retirement', 'snapshot_retirement:' || r.id, g.org_id, 21
        greatest(r.next_attempt_at, r.claim_until)
 from public.golden_snapshot_retirements r join public.goldens g on g.id = r.golden_id
 where r.state <> 'retired';
+
+commit;

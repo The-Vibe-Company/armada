@@ -9,7 +9,7 @@ import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 import { lockRuntimeAccount } from "./runtime-account-admission.ts";
 import { runtimeAgentFor } from "./runtime-agent.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
-import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
+import { createRuntimeEnrolments, runtimeTransaction } from "./runtime-enrolment.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
 import type { RestoreScopedRuntimeAccess } from "./sandbox-armada-access.ts";
@@ -262,7 +262,7 @@ export function createRuntimeResume(
         await authority.withOwner(found.id, caller.userId, async (tx, scope) => {
           if (scope.epoch !== admitted.op.target_epoch || !receipt)
             throw new VaultError("conflict", "Resume epoch changed before publication.");
-          await createSqlData(tx)(caller).sandboxes.update(id, patch);
+          await createSqlData(runtimeTransaction(tx))(caller).sandboxes.update(id, patch);
           if (found.runtimeTransport === "dialout") await restoreModalResumeSchedule(tx, id);
           const saved = await tx.query(
             "update public.runtime_resumes set phase='complete',receipt=$3::jsonb where sandbox_id=$1 and request_id=$2 and phase='dispatched' returning request_id",

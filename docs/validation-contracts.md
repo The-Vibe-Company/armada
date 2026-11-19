@@ -374,6 +374,190 @@ CLI case with direct service calls using injected systemd operations. The
 other two runtime installer cases use in-process machine and fetch fixtures.
 The daemon archive case replaces `Bun.spawn` with a mock.
 
+## Process-spawning unit cases in the Boat adapter
+
+The [process-test allowlist](../scripts/ci/process-tests.txt) identifies four
+Boat adapter files by direct subprocess syntax. One additional case in
+`provider.test.ts` starts a local binary through the SSH helper. Timings
+measure whole cases in focused Linux runs with Bun 1.4.2. The four allowlisted
+files ran together on main at `7dc693ad`. The SSH case ran on its own with
+main at `c9bf4fcf`. Both runs used local fixtures.
+
+| File under `packages/provider-boat/test` | Case | Local subprocess boundary | Local |
+| --- | --- | --- | ---: |
+| `native-claude-mcp.test.ts` | ordinary Claude needs no Python bridge and managed installation refuses a missing interpreter before mutation | Bash runs the ordinary wrapper and the managed installer with Python absent from PATH. | 5.79 ms |
+| `native-claude-mcp.test.ts` | Claude refresh ACK gates turns, removes tools and preserves the process/session and internal MCP | Bash starts the managed Python bridge with a local Claude stream-JSON peer. | 108.85 ms |
+| `native-cwd.test.ts` | installs the codex VM wrapper and preserves dynamic argv without recursion | Bash runs the Linux installer with a local sudo shim, then the wrapper launches a shell peer. | 59.92 ms |
+| `native-cwd.test.ts` | installs the claude VM wrapper and preserves dynamic argv without recursion | Bash runs the Linux installer with a local sudo shim, then the wrapper launches a shell peer. | 36.38 ms |
+| `native-cwd.test.ts` | Codex wrapper enforces Boat's thread/turn protocol cwd, not only process cwd | Bash runs the relocated installer on Linux. The installed wrapper and a local Codex peer exercise transport refusal and stdio. | 361.22 ms |
+| `native-cwd.test.ts` | generic GitHub preparation preserves the managed Claude MCP bridge and rejects a tampered wrapper | Bash runs both Linux installer variants. The installed wrapper starts the managed Python bridge and a local Claude peer. | 123.53 ms |
+| `native-cwd.test.ts` | Codex bridge refuses a second message until the first turn/start replies, then recovers | The installed wrapper starts the Python bridge and a local Codex peer over stdio after Linux shell setup. | 95.99 ms |
+| `native-cwd.test.ts` | Codex lone startup abort returns readable relaunch guidance on the pending RPC | After Linux shell setup, the installed wrapper starts a local Codex peer that aborts by signal. | 83.05 ms |
+| `native-cwd.test.ts` | Codex lone startup exit returns readable relaunch guidance on the pending RPC | After Linux shell setup, the installed wrapper starts a local Codex peer that exits nonzero. | 90.81 ms |
+| `native-cwd.test.ts` | Codex boot abort before initialize still answers the later first request | After Linux shell setup, the installed wrapper starts a local Codex peer that aborts before reading stdin. | 86.15 ms |
+| `native-cwd.test.ts` | Boat-framed Codex input reaches admitted native usage through the real bridge | A stubbed guest exec runs usage commands in a local shell. Python drives the wrapper and a local Codex peer. | 179.37 ms |
+| `native-cwd.test.ts` | Boat external subscription bridge consumes refresh RPC privately and completes the same native turn | OpenSSL creates a temporary certificate. The wrapper starts a local Codex peer and the bridge calls a loopback HTTPS fixture. | 332.25 ms |
+| `native-cwd.test.ts` | Boat plan exhaustion reaches a public outcome with only validated reset evidence (updated, true) | Bash starts the Python bridge and a local Codex peer that emits the fixture error. | 77.39 ms |
+| `native-cwd.test.ts` | Boat plan exhaustion reaches a public outcome with only validated reset evidence (updated, false) | Bash starts the Python bridge and a local Codex peer that emits the fixture error. | 72.78 ms |
+| `native-cwd.test.ts` | Boat plan exhaustion reaches a public outcome with only validated reset evidence (read, true) | Bash starts the Python bridge and a local Codex peer that emits the fixture error. | 70.69 ms |
+| `native-cwd.test.ts` | Boat plan exhaustion reaches a public outcome with only validated reset evidence (read, false) | Bash starts the Python bridge and a local Codex peer that emits the fixture error. | 71.01 ms |
+| `native-cwd.test.ts` | Boat plan exhaustion reaches a public outcome with only validated reset evidence (raced, true) | Bash starts the Python bridge and a local Codex peer that emits the fixture error. | 69.96 ms |
+| `native-cwd.test.ts` | Boat plan exhaustion reaches a public outcome with only validated reset evidence (raced, false) | Bash starts the Python bridge and a local Codex peer that emits the fixture error. | 74.88 ms |
+| `native-cwd.test.ts` | Boat plan exhaustion reaches a public outcome with only validated reset evidence (unauthorized, true) | Bash starts the Python bridge and a local Codex peer that emits the fixture error. | 75.26 ms |
+| `native-cwd.test.ts` | Boat plan exhaustion reaches a public outcome with only validated reset evidence (unknown, true) | Bash starts the Python bridge and a local Codex peer that emits the fixture error. | 73.14 ms |
+| `native-usage.test.ts` | multi-turn Codex cumulative counters yield deltas, retries do not add | Python executes the embedded guest usage code with temporary state. | 28.51 ms |
+| `native-usage.test.ts` | a valid stale flush is never frozen at admission or attributed to the next turn | Python executes the embedded guest usage code with temporary state. | 28.02 ms |
+| `native-usage.test.ts` | missing resume baseline, symlink, mismatched session identity fail closed | Python executes the embedded guest usage code with temporary state. | 27.39 ms |
+| `native-usage.test.ts` | an interrupted native turn leaves counters unknown without poisoning later closed turns | Python executes the embedded guest usage code with temporary state. | 29.39 ms |
+| `native-usage.test.ts` | Claude cumulative files without a proven native boundary remain unknown | Python executes the embedded guest usage code with temporary state. | 26.53 ms |
+| `native-usage.test.ts` | expired and rejected admissions recover without letting late callbacks claim newer prompts | Python executes the embedded guest usage code with temporary state. | 28.72 ms |
+| `native-usage.test.ts` | wire codec rejects ambiguous context and legacy admissions without losing safe recovery | Python executes the embedded guest usage code with temporary state. | 27.50 ms |
+| `native-usage.test.ts` | a warm legacy bridge cannot consume a new admission whose raw text aliases an old envelope | Python executes the embedded guest usage code with temporary state. | 26.25 ms |
+| `native-usage.test.ts` | collection explains the failed stage without exposing raw state or changing counters | Python executes the embedded guest usage code with temporary state. | 26.19 ms |
+| `native-usage.test.ts` | identical ambiguous inputs stay unknown while later distinct admissions and fresh forks recover | Python executes the embedded guest usage code with temporary state. | 25.67 ms |
+| `usage-probe.test.ts` | diagnostic probe exports only metadata and does not mutate guest state | Python runs the guest metadata probe against temporary state. | 20.95 ms |
+| `provider.test.ts` | cleared Boat /run receipt restarts SSH hydration instead of trusting a previous delivery | The SSH helper starts local `ssh-keygen`. The fake provider refuses authorization before an SSH connection is opened. | 15.63 ms |
+
+The native reader transport-error case in `native-usage.test.ts` injects the
+exec response in process. The matching-receipt case in `provider.test.ts`
+returns before SSH hydration. Provider API calls use fake fetch. Explicit
+conformance and the coordinator probe are outside unit discovery.
+
+## Core subprocess cases
+
+The ten Core entries in the [process-test allowlist](../scripts/ci/process-tests.txt)
+identify files by direct spawn syntax. The inventory below follows calls through
+test helpers and the SSH executor. Timings are whole cases from focused,
+untraced Linux runs of each file. A separate execution trace identified the
+process boundaries. The four mount-isolated Claude cases passed untraced,
+and their boundaries are documented from the fixture's command and source.
+
+`sandbox-outputs.test.ts` also runs a shell during module load to check for a
+protected Bun executable. That check occurs before the cases and is outside
+their timings. Focused traces of `private-ssh.test.ts`,
+`golden-build-modal.test.ts`, `github.test.ts`, and
+`golden-snapshot.test.ts` showed no child executables.
+
+| File under `packages/core/test` | Case | Local subprocess boundary | Local |
+| --- | --- | --- | ---: |
+| `docker-machine.test.ts` | Docker machine executor > installs the fixed runtime archive with private modes and numeric workspace ownership | Tar lists and extracts the generated runtime archive. | 5.45 ms |
+| `docker-snapshot-build.test.ts` | snapshot builds mount credentials privately, publish automatic ownership labels and recover without rebuilding | Shell checks the generated snapshot verification and syntax-checks scripts. | 17.12 ms |
+| `golden-helper.test.ts` | installs the inert pinned executable without sudo; bad bytes never execute | Bash runs the installer and invokes the inert helper fixture. | 36.75 ms |
+| `golden-script-shell.test.ts` | real shell: the baseline tolerates a repo with no package.json, pins across repos, and installs claude/codex when missing | Bash runs the generated baseline with local tool installation fixtures. | 19.35 ms |
+| `golden-script-shell.test.ts` | real shell: Boat absolute Claude pin (2.1.319, installer yields 2.1.322, success=true) | Sudo opens a mount namespace and Bash runs the pinned install with local npm and Claude fixtures. | 18.96 ms |
+| `golden-script-shell.test.ts` | real shell: Boat absolute Claude pin (2.1.322, installer yields 2.1.322, success=true) | Sudo opens a mount namespace and Bash runs the pinned install with local npm and Claude fixtures. | 13.60 ms |
+| `golden-script-shell.test.ts` | real shell: Boat absolute Claude pin (2.1.323, installer yields 2.1.322, success=true) | Sudo opens a mount namespace and Bash runs the pinned install with local npm and Claude fixtures. | 14.89 ms |
+| `golden-script-shell.test.ts` | real shell: Boat absolute Claude pin (2.1.319, installer yields 2.1.319, success=false) | Sudo opens a mount namespace and Bash runs the pinned install with local npm and Claude fixtures. | 14.57 ms |
+| `golden-script-shell.test.ts` | real shell: cleanup removes only the exact Armada key line and preserves unrelated ones | Bash runs the generated authorized_keys cleanup. | 5.41 ms |
+| `golden-script-shell.test.ts` | real shell: cleanup removes the file's only line without error | Bash runs the generated authorized_keys cleanup. | 5.09 ms |
+| `golden-script-shell.test.ts` | real shell: a genuine cleanup failure fails closed and never overwrites authorized_keys | Bash runs the generated authorized_keys cleanup. | 5.49 ms |
+| `golden-script-shell.test.ts` | real shell: pinned Bun replaces an image binary in a non-writable PATH directory | Bash runs the pinned install with fixture npm, then a fresh shell resolves Bun. | 16.48 ms |
+| `golden-script-shell.test.ts` | checkout credential protocol tolerates challenge metadata without widening host access ("protocol=https\nhost=github.com\nwwwauth[]=Basic realm=GitHub\n\n") | Bash runs the checkout and a shell invokes the inline credential helper. | 4.73 ms |
+| `golden-script-shell.test.ts` | checkout credential protocol tolerates challenge metadata without widening host access ("protocol=https\nhost=github.com:443\nusername=git\ncapability[]=authtype\n\n") | Bash runs the checkout and a shell invokes the inline credential helper. | 4.16 ms |
+| `golden-script-shell.test.ts` | checkout credential protocol tolerates challenge metadata without widening host access ("protocol=https\nhost=other.example\nwwwauth[]=Basic realm=GitHub\n\n") | Bash runs the checkout and a shell invokes the inline credential helper. | 2.62 ms |
+| `golden-script-shell.test.ts` | checkout credential protocol tolerates challenge metadata without widening host access ("protocol=http\nhost=github.com\n\n") | Bash runs the checkout and a shell invokes the inline credential helper. | 2.69 ms |
+| `golden-script-shell.test.ts` | checkout credential protocol tolerates challenge metadata without widening host access ("protocol=https\nwwwauth[]=Basic realm=GitHub\n\n") | Bash runs the checkout and a shell invokes the inline credential helper. | 2.73 ms |
+| `golden-script-shell.test.ts` | clone stderr is reduced to a closed category (fatal: Authentication failed for https://opaque@example/) | Bash runs generated checkout with a fixture Git function. | 2.12 ms |
+| `golden-script-shell.test.ts` | clone stderr is reduced to a closed category (fatal: Repository not found. opaque) | Bash runs generated checkout with a fixture Git function. | 1.72 ms |
+| `golden-script-shell.test.ts` | clone stderr is reduced to a closed category (fatal: Remote branch missing not found in upstream origin opaque) | Bash runs generated checkout with a fixture Git function. | 1.80 ms |
+| `golden-script-shell.test.ts` | clone stderr is reduced to a closed category (fatal: unable to access opaque: Could not resolve host) | Bash runs generated checkout with a fixture Git function. | 1.92 ms |
+| `golden-script-shell.test.ts` | clone stderr is reduced to a closed category (fatal: git-lfs opaque error) | Bash runs generated checkout with a fixture Git function. | 1.85 ms |
+| `golden-script-shell.test.ts` | clone stderr is reduced to a closed category (fatal: destination path opaque already exists and is not an empty directory.) | Bash runs generated checkout with a fixture Git function. | 1.80 ms |
+| `golden-script-shell.test.ts` | clone stderr is reduced to a closed category (fatal: opaque: No space left on device) | Bash runs generated checkout with a fixture Git function. | 1.79 ms |
+| `golden-script-shell.test.ts` | clone stderr is reduced to a closed category (fatal: arbitrary-opaque-error) | Bash runs generated checkout with a fixture Git function. | 1.83 ms |
+| `golden-script-shell.test.ts` | clone diagnostics finish in repository order and an empty failed checkout gets its own unknown reason | Bash runs generated checkout with a fixture Git function. | 2.53 ms |
+| `golden-script-shell.test.ts` | per-repository history overrides checkout default without changing other repositories (shallowDefault=false) | Bash runs generated checkout with a fixture Git function. | 3.19 ms |
+| `golden-script-shell.test.ts` | per-repository history overrides checkout default without changing other repositories (shallowDefault=true) | Bash runs generated checkout with a fixture Git function. | 3.07 ms |
+| `golden-script-shell.test.ts` | the golden build provisions its own collector Bun and requires the probe answer: the managed collector answers | Bash runs the emitted collector provisioning and probe with a Bun fixture. | 16.48 ms |
+| `golden-script-shell.test.ts` | the golden build provisions its own collector Bun and requires the probe answer: the image already ships the managed Bun | Bash runs the emitted collector provisioning and probe with a Bun fixture. | 7.47 ms |
+| `golden-script-shell.test.ts` | the golden build provisions its own collector Bun and requires the probe answer: an incompatible Bun exits 0 without answering | Bash runs the emitted collector provisioning and probe with a Bun fixture. | 14.15 ms |
+| `golden-skillpack.test.ts` | golden Skillpack provisioning offline | Bash runs the bootstrap with a local curl fixture. | 7.57 ms |
+| `golden-skillpack.test.ts` | golden Skillpack provisioning corrupt | Bash runs the bootstrap with a local curl fixture. | 7.52 ms |
+| `launch.test.ts` | launch > unstartable codex fails idle and prompted launch before publication | Shell runs the admission command against a local failing harness fixture. | 5.05 ms |
+| `launch.test.ts` | launch > unstartable claude fails idle and prompted launch before publication | Shell runs the admission command against a local failing harness fixture. | 3.24 ms |
+| `launch.test.ts` | claude launch artifacts stay out of worker Git staging without changing tracked skills | Local Git checks staging and the generated exclude script runs in a shell. | 14.11 ms |
+| `launch.test.ts` | codex launch artifacts stay out of worker Git staging without changing tracked skills | Local Git checks staging and the generated exclude script runs in a shell. | 12.24 ms |
+| `launch.test.ts` | generated refresh never merges after a failed fetch and preserves its completed failure marker | Bash runs generated refresh with a fixture Git command. | 1.87 ms |
+| `launch.test.ts` | generated refresh uses the installed caller helper without writing its token to commands or config | Bash runs generated refresh with a fixture Git command. | 3.38 ms |
+| `sandbox-outputs.test.ts` | the Python-free collector bounds admitted files in name order | Shell runs the generated collector or probe against a local Bun executable or fixture. | 245.19 ms |
+| `sandbox-outputs.test.ts` | the collector isolates its working directory and environment | Shell runs the generated collector or probe against a local Bun executable or fixture. | 16.77 ms |
+| `sandbox-outputs.test.ts` | the real collector refuses a symlink in a parent of the declared directory | Shell runs the generated collector or probe against a local Bun executable or fixture. | 13.54 ms |
+| `sandbox-outputs.test.ts` | the capability probe refuses a Bun that exits 0 without running the collector | Shell runs the generated collector or probe against a local Bun executable or fixture. | 15.04 ms |
+| `sandbox-outputs.test.ts` | probe and read fall back to Python when Bun cannot access descriptors | Shell runs the collector probe or read with Python fallback. | 58.10 ms |
+| `sandbox-outputs.test.ts` | a sandbox from a pre-upgrade golden (no managed Bun, an old pinned Bun, Python 3) still collects | Shell runs the collector probe or read with Python fallback. | 36.70 ms |
+| `sandbox-outputs.test.ts` | the Python fallback keeps the Bun reader's bounds, exclusions and exit codes | Shell runs the collector probe or read with Python fallback. | 250.93 ms |
+| `sandbox-outputs.test.ts` | privileged exec without the managed Bun refuses agent-replaceable readers | Shell probes the collector and checks ownership with stat. | 3.47 ms |
+| `sandbox-outputs.test.ts` | the managed reader accepts only a root-owned, non-writable chain without symlinks | Shell runs the emitted path check with stat. | 8.88 ms |
+| `sandbox-outputs.test.ts` | a privileged exec collects through a protected managed Bun | Shell runs the generated collector or probe against a local Bun executable or fixture. | 25.56 ms |
+| `sandbox-outputs.test.ts` | the cloud collector refuses a chunk from a replaced revision | Shell runs the generated collector or probe against a local Bun executable or fixture. | 44.44 ms |
+| `ssh-executor.test.ts` | the argv-joined remote shell preserves stdin and trusted undefined home | Bash executes the joined SSH command or quoted value locally. | 5.87 ms |
+| `ssh-executor.test.ts` | the argv-joined remote shell preserves stdin and trusted user home | Bash executes the joined SSH command or quoted value locally. | 4.45 ms |
+| `ssh-executor.test.ts` | the argv-joined remote shell preserves stdin and trusted root home | Bash executes the joined SSH command or quoted value locally. | 4.18 ms |
+| `ssh-executor.test.ts` | shellQuote round-trips a value containing single quotes through a real shell | Bash executes the joined SSH command or quoted value locally. | 1.32 ms |
+| `ssh-executor.test.ts` | real SSH remote shell reports only allowlisted phase and exit code (checkout) | SSH executor starts ssh-keygen, then Bash runs the generated guest command. | 17.74 ms |
+| `ssh-executor.test.ts` | real SSH remote shell reports only allowlisted phase and exit code (explicit-init-exit) | SSH executor starts ssh-keygen, then Bash runs the generated guest command. | 16.44 ms |
+| `ssh-executor.test.ts` | refuses invalid SSH username metadata admin before SSH | SSH executor starts real ssh-keygen, then refuses the SSH destination. | 5.05 ms |
+| `ssh-executor.test.ts` | refuses invalid SSH username metadata root; touch /tmp/forged before SSH | SSH executor starts real ssh-keygen, then refuses the SSH destination. | 4.22 ms |
+| `ssh-executor.test.ts` | refuses invalid SSH username metadata (empty string) before SSH | SSH executor starts real ssh-keygen, then refuses the SSH destination. | 4.46 ms |
+| `ssh-executor.test.ts` | refuses invalid SSH username metadata null before SSH | SSH executor starts real ssh-keygen, then refuses the SSH destination. | 4.04 ms |
+| `ssh-github-token.test.ts` | git overrides stale auth but preserves inherited auth when ephemeral state is missing or expired | Local Python executes the emitted GitHub client, installer, or bootstrap with fixture dependencies. | 57.22 ms |
+| `ssh-github-token.test.ts` | git refuses insecure state instead of downgrading to inherited credentials | Local Python executes the emitted GitHub client, installer, or bootstrap with fixture dependencies. | 57.71 ms |
+| `ssh-github-token.test.ts` | gh overrides stale auth but preserves inherited auth when ephemeral state is missing or expired | Local Python executes the emitted GitHub client, installer, or bootstrap with fixture dependencies. | 60.96 ms |
+| `ssh-github-token.test.ts` | gh refuses insecure state instead of downgrading to inherited credentials | Local Python executes the emitted GitHub client, installer, or bootstrap with fixture dependencies. | 59.39 ms |
+| `ssh-github-token.test.ts` | Git helper emits only the freshest available GitHub credential on the credential protocol | Local Python executes the emitted GitHub client, installer, or bootstrap with fixture dependencies. | 57.97 ms |
+| `ssh-github-token.test.ts` | installer refuses symlink and non-root-owned code paths before replacing any executable | Local Python executes the emitted GitHub client, installer, or bootstrap with fixture dependencies. | 64.00 ms |
+| `ssh-github-token.test.ts` | installer waits through transient lock contention but fails at its deadline before credential or executable writes | Local Python executes the emitted GitHub client, installer, or bootstrap with fixture dependencies. | 62.47 ms |
+| `ssh-github-token.test.ts` | installer reports the failed directory check or atomic install as a closed phase | Local Python executes the emitted GitHub client, installer, or bootstrap with fixture dependencies. | 63.88 ms |
+| `ssh-github-token.test.ts` | bootstrap relays an exact installer phase and maps all other child stderr to sudo | Local Python executes the emitted GitHub client, installer, or bootstrap with fixture dependencies. | 58.35 ms |
+| `ssh-readable-variables.test.ts` | Boat fixed bootstrap successfully restores the same readable file after /run loss | Local Python executes the emitted bootstrap and installer with fixture filesystem paths. | 122.09 ms |
+
+## Server subprocess cases
+
+The [process-test allowlist](../scripts/ci/process-tests.txt) finds eight
+Server files with direct spawn syntax. The push-ledger fixture and the SSH
+executor also start real processes from tests outside the allowlist. The
+table records whole-case timings from untraced Linux runs with Bun 1.4.2
+(744846f84). The control and GitHub broker cases ran at `f9e67913` and
+`4718766a`, respectively. The remaining cases ran in per-file invocations
+at `c8f81db1`. Separate execution traces and source
+inspection identify process boundaries.
+
+| File under `packages/mcp-server/test` | Case | Local subprocess boundary | Local |
+| --- | --- | --- | ---: |
+| `boat-orchestrator-private.test.ts` | Boat private epoch script rejects older writes/boot mismatch and exact hash cleanup preserves newer authority without disk secrets | Bash runs the emitted control and bridge scripts with local Node processes, a Unix socket, and temporary state. | 428.27 ms |
+| `control.test.ts` | control API > GitHub refresh preserves the closed hydration failure over HTTP | The SSH executor starts local `ssh-keygen`. The fake provider refuses key registration before any SSH connection. | 229.90 ms |
+| `docker-host-install.test.ts` | installer publishes both build digests without credentials and refuses missing artifacts | POSIX sh checks the generated installer syntax. Route requests are in process. | 3.35 ms |
+| `docker-host-install.test.ts` | one-line installer verifies bytes, delivers the one-use token privately and confirms a poll | POSIX sh runs the installer with local command and artifact stubs for download, service, registration, and package runners. | 125.71 ms |
+| `github-boat.test.ts` | generated GitHub broker fits the private transport before SSH registration | The SSH executor starts local `ssh-keygen`. The fake provider refuses key registration before any SSH connection. | 91.77 ms |
+| `main.test.ts` | standalone server entrypoint reports configuration errors without starting the CLI | A fresh Bun process runs the standalone server entrypoint and rejects missing configuration. | 459.24 ms |
+| `managed-inspection.test.ts` | native argv sentinel inspection excludes its exec command and ancestors, but catches an actual native-looking child leak | A local Node wrapper invokes Bash to install the sentinel and inspect Linux procfs while fixture Node CLI processes supply argv. | 301.53 ms |
+| `mcp-codex-bridge.test.ts` | Codex reload control is private, preserves unmanaged params, and rejects unsafe config without killing the app-server | Bash installs the wrapper and managed MCP configuration. The installed wrapper runs the Python bridge and a local Python app-server peer over stdio. | 170.77 ms |
+| `mcp-native.test.ts` | an untouched golden snapshot does not require Node or modify public native configuration | Bash evaluates the scrub script with no Node on PATH and untouched public configuration. | 2.15 ms |
+| `orchestrator-bootstrap.test.ts` | built-in reference preserves conflicting files | An injected provider exec runs the built-in reference script in POSIX sh against temporary files. | 9.61 ms |
+| `serve-database-boot.test.ts` | startServer retries real Supavisor admission errors before serving and closes both pools on exhaustion | A fresh Bun fixture isolates the SQL and clock doubles and makes loopback HTTP requests against the composed server. | 701.26 ms |
+| `push-ledger.test.ts` | push evidence survives a pruned tracking ref and reports pushes that escaped the ledger | The helper runs POSIX sh and local Git to push, prune, and detect a push without ledger hooks. | 204.57 ms |
+| `push-ledger.test.ts` | a missing reference-transaction hook is reported, kept in the ledger and restored | POSIX sh and local Git push, remove the reference-transaction hook, and exercise ledger repair. | 113.01 ms |
+| `push-ledger.test.ts` | a missing pre-push hook is reported, kept in the ledger and restored | POSIX sh and local Git push, remove the pre-push hook, and exercise ledger repair. | 114.75 ms |
+| `push-ledger.test.ts` | a push the ledger cannot attribute leaves a gap even after its tracking ref is pruned | POSIX sh and local Git exercise alternate push paths and inspect the ledger after tracking-ref pruning. | 460.51 ms |
+| `push-ledger.test.ts` | the repository's own hooks keep running, with their input and exit status, beside the ledger | POSIX sh and local Git install and exercise existing repository hooks alongside the ledger. | 215.14 ms |
+| `push-ledger.test.ts` | recreating a deleted branch at the SHA its tracking ref still holds is recorded | POSIX sh and local Git use two clones to recreate a deleted branch at its previous SHA. | 110.57 ms |
+| `push-ledger.test.ts` | a push the remote rejects is an unconfirmed attempt, never push evidence | POSIX sh and local Git exercise a push rejected by a local remote hook and inspect the pending and aged ledger records. | 123.66 ms |
+| `push-ledger.test.ts` | confirmed pushes keep their chronological order across both evidence sources | POSIX sh and local Git push and recreate a branch from a newer fetched commit to check ordering. | 160.10 ms |
+| `push-ledger.test.ts` | a verified push is confirmed by its tracking update even without a reflog entry | POSIX sh and local Git disable reflogs, push, prune, and read the tracking-update evidence. | 97.46 ms |
+| `push-ledger.test.ts` | an accepted push whose tracking update failed stays unresolved; a later confirmed push supersedes it | POSIX sh and local Git exercise a locked tracking ref and competing pushes across local clones. | 359.84 ms |
+| `push-ledger.test.ts` | a relative hooks path still resolves in each linked worktree once the ledger is installed | POSIX sh and local Git exercise distinct hook behavior in the primary and linked worktrees. | 59.20 ms |
+
+The unattributed-push gap case took 1,631.84 ms in the
+[archived unit shard](https://github.com/The-Vibe-Company/armada/actions/runs/44526380196/job/135567940848#logs).
+It sets up four local launch fixtures and exercises four push paths in one case.
+
+The other cases in `mcp-native.test.ts` execute the installer payload in a
+VM context or call the pin policy in process. The other
+`orchestrator-bootstrap.test.ts` cases inject the provider result or reject
+the request before execution. The Boat provider composition test injects its
+SSH spawn function. Explicit conformance and release probes are outside unit
+discovery.
+
 ## Evidence owed after merge
 
 Run the existing publishing release validation on the exact release SHA. Verify

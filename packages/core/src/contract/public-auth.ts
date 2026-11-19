@@ -127,11 +127,42 @@ export const publicAuthOperations = {
   },
 } as const satisfies Record<string, Operation<z.ZodType, z.ZodType | undefined>>;
 
-const githubCallback = { "github/oauth/callback": ["GET", "POST"] } as const;
+const githubCallbackPath = "/api/v1/github/oauth/callback";
+const githubCallbackInput = z.strictObject({
+  state: z.string().regex(/^armada_cli_[0-9a-f-]{72}$/),
+  code: z.string().regex(/^[!-~]{1,1024}$/),
+});
+const githubCallback = {
+  ...anonymous,
+  route: { path: githubCallbackPath },
+  output: z.object({ ok: z.literal(true), status: z.literal("connected") }),
+  errorOutput: z.object({ ok: z.literal(false), status: z.literal("failed") }),
+  readOnly: false,
+  errors: ["invalid", "dependency_unavailable"],
+} as const;
 
-export const PUBLIC_CONTROL_ROUTES: typeof githubCallback & Readonly<Record<string, readonly string[]>> = {
-  ...Object.fromEntries(
-    Object.values(publicAuthOperations).map(({ route }) => [route.path.slice("/api/v1/".length), [route.method]]),
-  ),
-  ...githubCallback,
-};
+export const githubCallbackOperations = {
+  githubOAuthCallback: {
+    ...githubCallback,
+    name: "githubOAuthCallback",
+    route: { ...githubCallback.route, method: "GET" },
+    input: { body: z.undefined(), query: githubCallbackInput },
+    description: "Complete the GitHub CLI OAuth flow using exactly one state and one code query parameter.",
+  },
+  githubOAuthRelay: {
+    ...githubCallback,
+    name: "githubOAuthRelay",
+    route: { ...githubCallback.route, method: "POST" },
+    input: { body: githubCallbackInput, maxBodyBytes: 8192, oversizedBodyStatus: 400 },
+    description:
+      "Complete the GitHub CLI OAuth flow using a JSON object with unique state and code keys. Direct server requests must omit the query string.",
+  },
+} as const satisfies Record<string, Operation<z.ZodType, z.ZodType | undefined>>;
+
+const publicMethods: Record<string, string[]> = Object.create(null);
+for (const { route } of Object.values({ ...publicAuthOperations, ...githubCallbackOperations })) {
+  const key = route.path.slice("/api/v1/".length);
+  publicMethods[key] ??= [];
+  publicMethods[key].push(route.method);
+}
+export const PUBLIC_CONTROL_ROUTES: Readonly<Record<string, readonly string[]>> = publicMethods;

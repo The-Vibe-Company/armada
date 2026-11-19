@@ -1,5 +1,6 @@
 import type { SandboxStatus } from "@armada/core";
 import {
+  decryptSecret,
   HOST_CAPABILITIES,
   isFinalPromptStatus,
   isSandboxProvider,
@@ -11,10 +12,10 @@ import {
 import type { ModalProvider } from "@armada/provider-modal";
 import { releaseAccountCapacity } from "./account-capacity.ts";
 import { mergedWorkProof } from "./merged-work.ts";
-
 import { nativeIdleDue, nativeQuiescent } from "./native-idle.ts";
 import { SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 import { INTERRUPTED_LAUNCH_REASON } from "./turns.ts";
+import { deferTransactionWake, eventFeedWakeKey, runtimeWakes } from "./wake-bus.ts";
 import { preserveBeforeStop, recordStopDispatch } from "./work-preservation.ts";
 
 export const UNENROLLED_RESUME_STOP = "runtime_resume_unenrolled";
@@ -36,6 +37,8 @@ interface SandboxTransition {
   actor:
     | "resume_admission"
     | "runtime_enrolment"
+    | "runtime_observation"
+    | "runtime_turn"
     | "owner"
     | "finish"
     | "expiry"
@@ -48,7 +51,7 @@ interface SandboxTransition {
   code: string;
   effects: readonly SandboxTransitionEffect[];
   settlement?: {
-    lease: string;
+    lease: string | null;
     statusReason: string | null;
     stopRequestedAt: string | null;
     stoppedAt: string | null;
@@ -83,7 +86,99 @@ export async function transitionSandbox(tx: Sql, input: SandboxTransition) {
   if (!result) throw new Error("Sandbox transition did not return a result.");
   if (!result.applied) return { kind: "conflict" } satisfies SandboxTransitionResult;
   if (result.generation === null) throw new Error("Applied sandbox transition did not return a generation.");
+  const wakeKey = eventFeedWakeKey(input.sandboxId);
+  if (!deferTransactionWake(tx, wakeKey)) runtimeWakes.notify(wakeKey);
   return { kind: "applied", generation: Number(result.generation) } satisfies SandboxTransitionResult;
+}
+
+export async function publishDockerRuntimeReady(tx: Sql, sandboxId: string, source: "health" | "prepared_launch") {
+  const {
+    rows: [starting],
+  } = await tx.query<{ generation: string }>(
+    `select s.lifecycle_generation::text as generation from public.sandboxes s
+     where s.id=$1 and s.provider='docker' and s.status='starting'
+     and ($2::boolean or not exists(
+       select 1 from public.docker_launch_requests d where d.sandbox_id=s.id and d.result_enc is null
+     ))`,
+    [sandboxId, source === "prepared_launch"],
+  );
+  if (!starting) return true;
+  const result = await transitionSandbox(tx, {
+    sandboxId,
+    expectedGeneration: starting.generation,
+    fromStates: ["starting"],
+    toState: "ready",
+    actor: "runtime_enrolment",
+    code: "runtime_enrolled",
+    effects: [],
+  });
+  return result.kind === "applied";
+}
+
+export async function settleRuntimeTurn(tx: Sql, sandboxId: string, generation: number | string, key?: string) {
+  const {
+    rows: [eligible],
+  } = await tx.query<{ needs_command_evidence: boolean; epoch: string }>(
+    `select s.provider='docker' as needs_command_evidence,r.epoch::text
+     from public.sandboxes s join public.runtime_enrolments r
+       on r.sandbox_id=s.id and r.lifecycle_generation=s.lifecycle_generation
+     where s.id=$1 and s.lifecycle_generation=$2 and s.status='running'
+       and s.stop_requested_at is null and s.stopped_at is null and s.deleted_at is null
+       and s.expires_at>clock_timestamp() and r.runtime_hash is not null
+       and case when s.provider='docker' then
+         $3::boolean and exists(select 1 from public.runtime_commands c
+           where c.sandbox_id=s.id and c.epoch=r.epoch and starts_with(c.request_id,'docker_prompt_'))
+         and not exists(
+           select 1 from public.runtime_commands c where c.sandbox_id=s.id and c.epoch=r.epoch
+             and starts_with(c.request_id,'docker_prompt_')
+             and (c.result_enc is null or (c.accepted_prompt_id is not null and not exists(
+               select 1 from public.runtime_idle_turns t where t.sandbox_id=s.id
+                 and t.prompt_id=c.accepted_prompt_id::text and t.settled))))
+       else
+         ((s.provider='boat' and s.boat_runtime) or (s.provider='modal' and s.runtime_transport='dialout'))
+         and exists(select 1 from public.runtime_idle_turns t where t.sandbox_id=s.id
+           and t.prompt_id=s.task_prompt_id and t.settled)
+       end`,
+    [sandboxId, generation, key !== undefined],
+  );
+  if (!eligible) return;
+  if (eligible.needs_command_evidence && key !== undefined) {
+    const ambiguousReplies = await tx.query<{ result_enc: Uint8Array<ArrayBuffer> }>(
+      `select c.result_enc from public.runtime_commands c
+       where c.sandbox_id=$1 and c.epoch=$2 and starts_with(c.request_id,'docker_prompt_')
+         and c.sequence>coalesce((select max(p.sequence) from public.runtime_commands p
+           where p.sandbox_id=$1 and p.epoch=$2 and starts_with(p.request_id,'docker_prompt_')
+             and p.accepted_prompt_id is not null),0)
+       order by c.sequence desc`,
+      [sandboxId, eligible.epoch],
+    );
+    for (const { result_enc } of ambiguousReplies.rows) {
+      const reply = JSON.parse(await decryptSecret(result_enc, key));
+      if (
+        (reply.status === 400 || reply.status === 409) &&
+        ["conversation_busy", "invalid_request"].includes(reply.body?.error)
+      )
+        continue;
+      if (reply.status !== 200) return;
+      const promptId = reply.body?.result?.promptId;
+      if (typeof promptId !== "string") return;
+      const settled = await tx.query(
+        "select 1 from public.runtime_idle_turns where sandbox_id=$1 and prompt_id=$2 and settled",
+        [sandboxId, promptId],
+      );
+      if (!settled.rows.length) return;
+      break;
+    }
+  }
+  await transitionSandbox(tx, {
+    sandboxId,
+    expectedGeneration: generation,
+    fromStates: ["running"],
+    toState: "ready",
+    actor: "runtime_turn",
+    code: "runtime_turn_settled",
+    effects: [],
+  });
 }
 
 export async function recordDockerCleanupReceipt(
@@ -146,19 +241,20 @@ export async function recordRuntimeStartupFailure(
   return result;
 }
 
-export async function recordObservedRuntimeFailure(
+export async function recordObservedRuntimeState(
   sql: Sql,
   scope: [string[], string],
   observation: {
     sandboxId: string;
     generation: number;
     fromState: "ready" | "running";
+    toState: "failed" | "stopped";
     reason: string | null;
     stoppedAt: string | null;
   },
 ) {
-  if (!sql.transaction) throw new Error("Runtime failure publication requires a transaction.");
-  const { sandboxId, generation, fromState, reason, stoppedAt } = observation;
+  if (!sql.transaction) throw new Error("Runtime observation publication requires a transaction.");
+  const { sandboxId, generation, fromState, toState, reason, stoppedAt } = observation;
   return sql.transaction(async (tx) => {
     const eligible = await tx.query(
       `select s.id from public.sandboxes s
@@ -175,16 +271,20 @@ export async function recordObservedRuntimeFailure(
       sandboxId,
       expectedGeneration: generation,
       fromStates: [fromState],
-      toState: "failed",
-      actor: "lifecycle_runner",
-      code: "runtime_provider_failure",
+      toState,
+      actor: toState === "stopped" ? "runtime_observation" : "lifecycle_runner",
+      code: toState === "stopped" ? "runtime_provider_stopped" : "runtime_provider_failure",
       effects: [],
+      ...(toState === "stopped"
+        ? { settlement: { lease: null, statusReason: reason, stopRequestedAt: null, stoppedAt } }
+        : {}),
     });
     if (result.kind === "applied") {
-      await tx.query(
-        "update public.sandboxes set status_reason=$2,stopped_at=coalesce($3::timestamptz,stopped_at) where id=$1",
-        [sandboxId, reason, stoppedAt],
-      );
+      if (toState === "failed")
+        await tx.query(
+          "update public.sandboxes set status_reason=$2,stopped_at=coalesce($3::timestamptz,stopped_at) where id=$1",
+          [sandboxId, reason, stoppedAt],
+        );
       if (stoppedAt !== null) await releaseAccountCapacity(tx, sandboxId);
     }
     return result;
@@ -260,6 +360,39 @@ export async function requestFailedRuntimeResumeStop(
     [sandboxId, requestId, generation, retained, UNENROLLED_RESUME_STOP],
   );
   return changed.rows[0]?.status;
+}
+
+const dockerStartupStates = ["starting", "ready", "running"] as const;
+
+export async function failDockerStartup(
+  tx: Sql,
+  sandboxId: string,
+  expectedGeneration: string | number,
+  code: "docker_startup_failed" | "docker_host_retired",
+  message: string,
+) {
+  const fenced = await tx.query<{ generation: string }>(
+    `update public.sandboxes set lifecycle_generation=lifecycle_generation+1
+     where id=$1 and lifecycle_generation=$2 and provider='docker'
+       and status=any($3::public.sandbox_status[]) and stop_requested_at is null
+     returning lifecycle_generation::text as generation`,
+    [sandboxId, expectedGeneration, [...dockerStartupStates]],
+  );
+  const activation = fenced.rows[0];
+  if (!activation) return false;
+
+  const result = await transitionSandbox(tx, {
+    sandboxId,
+    expectedGeneration: activation.generation,
+    fromStates: dockerStartupStates,
+    toState: "failed",
+    actor: "docker_host",
+    code,
+    effects: [],
+  });
+  if (result.kind === "conflict") throw new Error("Docker startup changed while settling its failure.");
+  await tx.query("update public.sandboxes set status_reason=$2 where id=$1", [sandboxId, message]);
+  return true;
 }
 
 export async function failDockerResumeActivation(

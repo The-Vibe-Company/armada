@@ -46,6 +46,7 @@ import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
 import {
   confirmRefusedDockerResumeRetention,
   failDockerResumeActivation,
+  failDockerStartup,
   recordDockerCleanupReceipt,
   requestRefusedDockerResumeStop,
 } from "./sandbox-lifecycle.ts";
@@ -431,7 +432,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
     if ((operation === "bootstrap" || operation === "resume") && original.outcome !== "completed") deny();
     return saved.request;
   }
-  async function supersededLifecycle(tx: Sql, job: StoredJob) {
+  async function supersededLifecycle(tx: Sql, job: Pick<StoredJob, "bound_sandbox_id" | "request_id" | "position">) {
     const later = await tx.query(
       `select 1 from public.docker_host_jobs where bound_sandbox_id=$1
        and bound_operation in ('resume','bootstrap') and request_id<>$2 and position>$3
@@ -482,12 +483,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
           : DOCKER_LAUNCH_FAILURE_MESSAGES.startup;
     if (operation === "resume")
       return failDockerResumeActivation(tx, row.id, row.lifecycle_generation, job.request_id, message);
-    if (operation !== "create" && operation !== "bootstrap") return;
-    await tx.query(
-      `update public.sandboxes set status='failed',status_reason=$2,
-       lifecycle_generation=lifecycle_generation+1 where id=$1 and status in ('starting','ready','running') and stop_requested_at is null`,
-      [row.id, message],
-    );
+    if (operation !== "create" && operation !== "bootstrap") return false;
+    if (await supersededLifecycle(tx, job)) return false;
+    return failDockerStartup(tx, row.id, row.lifecycle_generation, "docker_startup_failed", message);
   }
   async function failResumeAck(tx: Sql, row: Sandbox, job: StoredJob, reason?: DockerJobFailureReason) {
     const request = await readJob(job);
@@ -509,19 +507,20 @@ export function createDockerHostStore(sql: Sql, key: string) {
        where host_id=$1 and status='building'`,
       [hostId, reason.snapshot],
     );
-    const startups = await tx.query<{ bound_sandbox_id: string }>(
-      `select bound_sandbox_id from public.docker_host_jobs
-       where host_id=$1 and outcome is null and bound_sandbox_id is not null
-         and bound_operation in ('create','bootstrap','resume') for update`,
+    const startups = await tx.query<
+      Pick<StoredJob, "request_id" | "position"> & { bound_sandbox_id: string; generation: string }
+    >(
+      `select j.request_id,j.position,j.bound_sandbox_id,s.lifecycle_generation::text as generation
+       from public.docker_host_jobs j
+       join public.sandboxes s on s.id=j.bound_sandbox_id and s.docker_host_id=j.host_id
+       where j.host_id=$1 and j.outcome is null
+         and j.bound_operation in ('create','bootstrap','resume') for update of j`,
       [hostId],
     );
-    for (const job of startups.rows)
-      await tx.query(
-        `update public.sandboxes set status='failed',status_reason=$2,
-         lifecycle_generation=lifecycle_generation+1
-         where id=$1 and status in ('starting','ready','running') and stop_requested_at is null`,
-        [job.bound_sandbox_id, reason.sandbox],
-      );
+    for (const startup of startups.rows) {
+      if (await supersededLifecycle(tx, startup)) continue;
+      await failDockerStartup(tx, startup.bound_sandbox_id, startup.generation, "docker_host_retired", reason.sandbox);
+    }
     await tx.query(
       `update public.docker_host_jobs set outcome='failed',completed_at=now(),cancelled_at=now()
        where host_id=$1 and outcome is null
@@ -1407,7 +1406,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
             `select j.* from public.docker_host_jobs j join public.sandboxes s on s.id=j.bound_sandbox_id
              where j.host_id=$1 and j.outcome='failed' and j.bound_operation in ('create','bootstrap')
              and s.provider='docker' and s.docker_host_id=$1 and s.docker_installation_id=$2
-             and s.status in ('starting','ready','running','stopping') order by j.position`,
+             and s.status in ('starting','ready','running') order by j.position`,
             [host.id, installationId],
           )
         ).rows;
@@ -1419,10 +1418,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
             // Corrupt history is not authority and must not starve later
             // valid facts or ordinary pending work.
           }
-          if (verified) {
-            await startupFailed(tx, verified, historical);
-            break;
-          }
+          if (verified && (await startupFailed(tx, verified, historical))) break;
         }
         const row = (
           await tx.query<StoredJob & { recovering_receipt: boolean }>(

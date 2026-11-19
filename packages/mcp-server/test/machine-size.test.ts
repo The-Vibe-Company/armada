@@ -3,10 +3,13 @@ import { createSqlGoldenStore, parseGoldenConfig } from "@armada/core";
 import { createSqlVaultStore } from "@armada/core/server";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
+import { rowOnlyDatabase } from "./row-only-database.ts";
 import { call, ENCRYPTION_KEY, harness, PUBLIC_URL } from "./support.ts";
 
+const database = rowOnlyDatabase();
+
 test("size policies use live org admin/private owner authority, persist without provider work, and validate repository identity", async () => {
-  const server = await harness();
+  const server = await harness({}, await database());
   try {
     const { db, people } = server;
     const control = {
@@ -90,7 +93,7 @@ test("size policies use live org admin/private owner authority, persist without 
 });
 
 test("canonical HTTP launch validates sizes and applies overrides or golden defaults", async () => {
-  const server = await harness();
+  const server = await harness({}, await database());
   try {
     const { db, people } = server;
     const control = {

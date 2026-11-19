@@ -20,7 +20,8 @@ workflow. Browser specs remain available through `bun run e2e`, not PR CI.
 Pull request and merge-queue CI run Biome and Landmines lint, strict TypeScript
 checks, migration guards, a generated iOS harness check and unit tests. The
 separate Apple Quality workflow runs Swift tests and compiles the iOS apps
-when app or harness inputs change. Migration preview runs for changes under `supabase/migrations`.
+when app or harness inputs change. The separate migration preview replays migrations
+on disposable PostgreSQL when migrations or replay inputs change.
 Keep the required verdict self-contained:
 no binary, golden, image or provider build, real PostgreSQL service, browser
 test, network or provider call, or retry. Native and namespace release contracts

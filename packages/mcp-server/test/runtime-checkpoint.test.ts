@@ -245,10 +245,11 @@ test("an unreadable runtime checkpoint acknowledgement never allows compute clea
     f.github(async () => {
       throw Error("runtime_result_unavailable");
     });
+    const before = await f.context.data.sandboxes.get(f.row.id);
     const stop = stopPort(f);
     await expect(callSharedTool(stop.context, "stop", { id: f.row.id })).rejects.toMatchObject({ code: "conflict" });
     expect(stop.calls()).toBe(0);
-    expect((await f.context.data.sandboxes.get(f.row.id))?.status).toBe("running");
+    expect((await f.context.data.sandboxes.get(f.row.id))?.status).toBe(before?.status);
   } finally {
     await f.close();
   }

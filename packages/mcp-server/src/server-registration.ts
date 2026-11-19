@@ -63,7 +63,7 @@ export function registerServer(modules: readonly ServerModule[]) {
               const lane = create(context);
               return lane ? [{ name, lane }] : [];
             });
-          const managed = resolve(workers.managed);
+          const managed = [{ name: "sandbox-lifecycle", lane: context.lifecycle }, ...resolve(workers.managed)];
           const isolated = [...resolve(workers.isolated), ...extraReaperLanes(services)];
           const background = Array.from(workers.background).flatMap(([name, prepare]) => {
             const start = prepare(services);
@@ -71,15 +71,14 @@ export function registerServer(modules: readonly ServerModule[]) {
           });
           return {
             description: {
-              managed: ["sandbox-lifecycle", ...managed.map(({ name }) => name)],
+              managed: managed.map(({ name }) => name),
               isolated: isolated.map(({ name, lane }) => ({ name, sweep: lane.isolatedSweep === true })),
               background: background.map(({ name }) => name),
             },
             start() {
               const core = startServerWorkers(
-                context.lifecycle,
-                options.logError,
                 managed.map(({ lane }) => lane),
+                options.logError,
                 isolated.map(({ lane }) => lane),
               );
               const started = background.map(({ start }) => start());

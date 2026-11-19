@@ -1,14 +1,16 @@
-import { expect, spyOn, test } from "bun:test";
-import type { AgentEvent, Sql } from "@armada/core";
+import { expect, mock, spyOn, test } from "bun:test";
+import type { AgentEvent } from "@armada/core";
 import * as coreServer from "@armada/core/server";
 import { createUsagePricingContext, decryptSecret, encryptSecret } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
+import { createEventFeed } from "../src/event-feed.ts";
 import { createJobsStore } from "../src/jobs/store.ts";
 import { createOutboundWebhooks } from "../src/outbound-webhooks.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeIdle } from "../src/runtime-idle.ts";
 import { sqlOver } from "../src/sql.ts";
+import { eventFeedWakeKey, runtimeWakes } from "../src/wake-bus.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
@@ -39,20 +41,18 @@ async function fixture({ provider = "boat" }: { provider?: "boat" | "modal" } = 
     );
   }
   const queries: string[] = [];
-  const sql: Sql = {
-    query: (q, v) => db.query(q, v),
-    transaction: (work) =>
+  const sql = sqlOver({
+    unsafe: async (q, v) => (await db.query(q, v)).rows,
+    begin: (work) =>
       db.transaction((tx) =>
-        work(
-          sqlOver({
-            unsafe: async (q, v) => {
-              queries.push(q);
-              return (await tx.query(q, v)).rows;
-            },
-          }),
-        ),
+        work({
+          unsafe: async (q, v) => {
+            queries.push(q);
+            return (await tx.query(q, v)).rows;
+          },
+        }),
       ),
-  };
+  });
   const authority = createRuntimeEnrolments(sql, ENCRYPTION_KEY);
   const enrol = async () =>
     authority.enrol(
@@ -169,15 +169,24 @@ test("ACK follows contiguous encrypted persistence and shared usage projection; 
       ).status,
     ).toBe(409);
     expect(await f.rows()).toHaveLength(3);
-    // Database failure after insert must roll the archive back too; never ACK lost projection work.
+    await f.db.query("update sandboxes set status='running',task_prompt_id='prompt-a' where id=$1", [f.id]);
+    const completion = [
+      { sequence: 4, event: f.usage("usage-after-fault") },
+      {
+        sequence: 5,
+        event: { id: "terminal", kind: "prompt", status: "finished", promptId: "prompt-a", text: "", at: 3 },
+      },
+    ] satisfies { sequence: number; event: AgentEvent }[];
+    const status = async () => (await f.db.query("select status from sandboxes where id=$1", [f.id])).rows;
+    // Database failure after insert must roll back the archive and lifecycle journal before ACK.
     await f.db.exec(`create function fail_runtime_usage() returns trigger language plpgsql as $$ begin raise exception 'synthetic storage failure'; end $$;
       create trigger fail_runtime_usage before update of usage_turns on sandboxes for each row execute function fail_runtime_usage();`);
-    expect((await f.publish(active, [{ sequence: 4, event: f.usage("usage-after-fault") }])).status).toBe(503);
+    expect((await f.publish(active, completion)).status).toBe(503);
     expect(await f.rows()).toHaveLength(3);
+    expect(await status()).toEqual([{ status: "running" }]);
     await f.db.exec("drop trigger fail_runtime_usage on sandboxes; drop function fail_runtime_usage()");
-    expect(await (await f.publish(active, [{ sequence: 4, event: f.usage("usage-after-fault") }])).json()).toEqual({
-      acknowledgedSequence: 4,
-    });
+    expect(await (await f.publish(active, completion)).json()).toEqual({ acknowledgedSequence: 5 });
+    expect(await status()).toEqual([{ status: "ready" }]);
     const unknown: AgentEvent = {
       id: "unknown-usage",
       at: 3,
@@ -193,8 +202,8 @@ test("ACK follows contiguous encrypted persistence and shared usage projection; 
         reasoningTokens: null,
       },
     };
-    expect(await (await f.publish(active, [{ sequence: 5, event: unknown }])).json()).toEqual({
-      acknowledgedSequence: 5,
+    expect(await (await f.publish(active, [{ sequence: 6, event: unknown }])).json()).toEqual({
+      acknowledgedSequence: 6,
     });
     expect(await f.aggregate()).toMatchObject({
       turns: expect.arrayContaining([
@@ -721,6 +730,32 @@ test.each(["boat", "modal"] as const)(
   },
 );
 
+test("the runtime sweep settles a completed turn published by an overlapping server", async () => {
+  const f = await fixture();
+  const active = await f.enrol();
+  const promptId = crypto.randomUUID();
+  const event: AgentEvent = {
+    id: crypto.randomUUID(),
+    kind: "prompt",
+    promptId,
+    status: "failed",
+    at: 1,
+    text: "",
+  };
+  expect((await f.publish(active, [{ sequence: 1, event }])).status).toBe(200);
+  await f.db.query(
+    "update sandboxes set status='running',task_prompt_id=$2,expires_at=now()+interval '1 hour' where id=$1",
+    [f.id, promptId],
+  );
+  const checkpoint = mock(async () => {
+    throw Error("A recently settled turn is not ready for idle checkpointing.");
+  });
+  const idle = createRuntimeIdle(f.sql, ENCRYPTION_KEY, checkpoint, { now: () => 2 });
+  await idle.reconcileOne(new AbortController().signal);
+  expect((await f.db.query("select status from sandboxes where id=$1", [f.id])).rows).toEqual([{ status: "ready" }]);
+  expect(checkpoint).not.toHaveBeenCalled();
+});
+
 test("idle evidence upgrades long archives, survives enrolment renewal, and blocks unresolved turns and commands", async () => {
   const f = await fixture();
   let active = await f.enrol();
@@ -1152,4 +1187,33 @@ test("completed API turns publish exact monthly spend once and count unknown tur
     { period_start: "2026-10-01", usd: "0.00078", unpriced_turns: 0 },
     { period_start: "2026-11-01", usd: "0", unpriced_turns: 1 },
   ]);
+});
+
+test("runtime ingest wakes the authorized event feed after commit and suppresses replay wakes", async () => {
+  const f = await fixture();
+  const feed = createEventFeed(f.sql, new coreServer.DelegatedAuthority(f.sql, async () => {}));
+  const actor = {
+    userId: f.people.owner,
+    orgs: [{ orgId: f.people.org, role: "member" as const }],
+    via: "service" as const,
+  };
+  const { promise, resolve, reject } = Promise.withResolvers<Awaited<ReturnType<ReturnType<typeof feed.owner>>>>();
+  let notifications = 0;
+  const close = runtimeWakes.subscribe(eventFeedWakeKey(f.id), () => {
+    notifications++;
+    void feed.owner(actor, f.id)("0").then(resolve, reject);
+  });
+  try {
+    const active = await f.enrol();
+    const item = { sequence: 1, event: f.other("live") };
+    expect((await f.publish(active, [item])).ok).toBe(true);
+    expect(notifications).toBe(1);
+    expect(await promise).toEqual([expect.objectContaining({ kind: "runtime_event", sequence: "1", ref: "1" })]);
+    expect(await feed.owner({ ...actor, userId: f.people.member }, f.id)("0")).toBeNull();
+    expect((await f.publish(active, [item])).ok).toBe(true);
+    expect(notifications).toBe(1);
+  } finally {
+    close();
+    await f.close();
+  }
 });

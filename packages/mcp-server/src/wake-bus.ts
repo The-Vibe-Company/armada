@@ -62,6 +62,8 @@ export async function waitForTimeout(ms: number, signal: AbortSignal) {
   });
 }
 
+export const eventFeedWakeKey = (sandboxId: string) => `events:${sandboxId.toLowerCase()}`;
+
 export const runtimeWakes = createWakeBus();
 
 // Scoped authority calls reuse the original SQL transaction object. Only its owner knows

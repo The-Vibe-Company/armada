@@ -15,7 +15,6 @@ export async function invitationCommand(argv: readonly string[], io: VaultIo): P
   if (input.action === "accept") {
     const token = await readInvitationToken(input.file, io);
     const result = await request(io, "org/invitations/accept", { token });
-    // Do not serialize an arbitrary server object, even on acceptance.
     const output = { orgId: result.orgId, accepted: result.accepted };
     io.auth.out(input.json ? `${JSON.stringify(output)}\n` : `Accepted invitation for organization ${output.orgId}.\n`);
     return 0;
@@ -55,7 +54,6 @@ function request<R extends keyof InvitationRequests>(
   return control<InvitationResponses[R]>(io.auth, route, body);
 }
 
-/** Only the producer's public fields reach output; never a token, URL, hash or future secret field. */
 function publicInvitation(value: OrganizationInvitation): OrganizationInvitation {
   return {
     id: value.id,
@@ -74,7 +72,6 @@ function formatInvitation(value: OrganizationInvitation): string {
   return `${value.id}  ${value.email}  ${value.role}  ${value.status}  email: ${delivery}  expires: ${value.expiresAt}`;
 }
 
-/** Invitation management takes an org UUID; names use the existing authenticated org listing. */
 async function resolveOrganization(ref: string, io: VaultIo): Promise<string> {
   if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(ref)) return ref;
   const { orgs } = await control<{ orgs: OrgSummary[] }>(io.auth, "org/list", {});

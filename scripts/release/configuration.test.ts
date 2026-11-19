@@ -12,7 +12,7 @@ type Job = {
   env?: Record<string, string>;
 };
 const workflow = Bun.YAML.parse(
-  readFileSync(resolve(import.meta.dir, "../../.github/workflows/release.yml"), "utf8"),
+  readFileSync(resolve(import.meta.dir, "../../.github/workflows/release-pipeline.yml"), "utf8"),
 ) as { jobs: Record<string, Job> };
 
 function script(step: Step | undefined) {

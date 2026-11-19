@@ -234,6 +234,10 @@ export function createSqlSandboxStore(sql: Sql, options: { turnModels?: true } =
         ), snapshot_reference as (
           insert into public.sandbox_source_snapshots (sandbox_id,snapshot_id)
           select id,$26::text from inserted where $26::text is not null
+          returning sandbox_id
+        ), consumed_intent as (
+          delete from public.ordinary_launch_snapshot_intents i using snapshot_reference r
+          where i.sandbox_id=r.sandbox_id
         )
         select * from inserted`,
         [

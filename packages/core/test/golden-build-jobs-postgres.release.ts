@@ -99,7 +99,7 @@ test("PostgreSQL serializes durable admission and fences a crashed claim across 
     await started;
     expect(await dispatchGoldenBuild(sqlB, jobsB)).toBe(false);
     expect(resolutions).toBe(1);
-    await b.unsafe("update golden_build_jobs set lease_until=now()-interval '1 second' where id=$1", [one.jobId]);
+    await b.unsafe("update golden_build_jobs set deadline='-infinity' where id=$1", [one.jobId]);
     expect(await dispatchGoldenBuild(sqlB, jobsB)).toBe(false);
     resume();
     await running;

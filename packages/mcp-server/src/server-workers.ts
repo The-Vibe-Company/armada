@@ -10,12 +10,10 @@ export interface ServerLifecycleLane {
 }
 
 export function startServerWorkers(
-  lifecycle: ServerLifecycleLane,
+  lanes: readonly ServerLifecycleLane[],
   log: (line: string) => void = console.error,
-  managed: readonly ServerLifecycleLane[] | ServerLifecycleLane = [],
   isolated: readonly ServerLifecycleLane[] = [],
 ) {
-  const lanes = [lifecycle, ...("reconcileOne" in managed ? [managed] : managed)];
   const shutdown = new AbortController();
   async function runLanes(group: readonly ServerLifecycleLane[], timebox = true, wakes = false) {
     const wake = wakes ? runtimeWakes.watch(JOBS_WAKE) : undefined;

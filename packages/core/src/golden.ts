@@ -67,6 +67,7 @@ export interface GoldenStore {
     id: string,
     expected: { snapshotId: string | null; sandboxId: string | null; kind?: "launch" | "connect" | "snapshot" },
   ): Promise<GoldenOperation>;
+  beginSnapshotLaunch?(golden: GoldenRecord, actor: GoldenActor, sandboxId: string): Promise<() => Promise<void>>;
   reconcileOperations?(golden: GoldenRecord, actor: GoldenActor): Promise<void>;
   /** Recheck live mutation authority, including after long provider operations/readback recovery. */
   assertMutation?(golden: GoldenRecord, actor: GoldenActor): Promise<void>;
