@@ -7,12 +7,17 @@ import type { ToolContext } from "./tools.ts";
 export function registerAgentTools(server: McpServer, context: ToolContext) {
   const handlers = new Map<
     string,
-    (operation: { description: string; readOnly: boolean; destructive: boolean }) => void
+    (operation: { description: string; mcpDescription?: string; readOnly: boolean; destructive: boolean }) => void
   >();
   const bind: ToolBinding = (name, config, invoke) => {
     handlers.set(name, (operation) => {
-      const { description, readOnly, destructive } = operation;
-      registerTool(server, name, { ...config, description, readOnly, destructive }, invoke);
+      const { description, mcpDescription, readOnly, destructive } = operation;
+      registerTool(
+        server,
+        name,
+        { ...config, description: mcpDescription ?? description, readOnly, destructive },
+        invoke,
+      );
     });
   };
   configureTools(context, "mcp", undefined, undefined, bind);

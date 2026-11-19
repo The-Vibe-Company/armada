@@ -84,7 +84,12 @@ test("owner MCP publishes the bound agent operations and their descriptions", as
       (operation) => operation.audience === "agent" && "toolName" in operation,
     );
     expect(Object.fromEntries(tools.map((tool) => [tool.name, tool.description]))).toEqual(
-      Object.fromEntries(agentOperations.map((operation) => [operation.toolName, operation.description])),
+      Object.fromEntries(
+        agentOperations.map((operation) => [
+          operation.toolName,
+          "mcpDescription" in operation ? operation.mcpDescription : operation.description,
+        ]),
+      ),
     );
   } finally {
     await client.close();
