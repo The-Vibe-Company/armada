@@ -945,10 +945,19 @@ test.each(refusalOrders)(
       expect((await refuse(failedStop))?.status).toBe(503);
       expect((await reservations.get(f.actor, id)).status).toBe("failed");
     }
+    const enrolmentDeadline = missingAck
+      ? (
+          await database().query<{ enrolment_expires_at: Date }>(
+            "select enrolment_expires_at from public.runtime_enrolments where sandbox_id=$1",
+            [id],
+          )
+        ).rows[0]?.enrolment_expires_at
+      : undefined;
     const response = await refuse();
     expect(response?.status).toBe(409);
     expect(await response?.json()).toEqual({ error: "runtime_protocol_unsupported" });
     if (missingAck) {
+      if (!enrolmentDeadline) throw Error("missing original enrolment deadline");
       await database().query(
         `update public.docker_hosts set machine_cpus=8,machine_memory_bytes=17179869184,sandbox_cpus=2
          where id=$1`,
@@ -1001,6 +1010,7 @@ test.each(refusalOrders)(
           startRuntime: unexpected,
         },
         false,
+        () => enrolmentDeadline.getTime() + 1,
       );
       expect(resumeCompute).not.toHaveBeenCalled();
     } else if (order !== "ACK first" && !failedAckFirst) {
