@@ -91,11 +91,12 @@ test("encrypted command mailbox survives replica restart, redelivers one stable 
   expect(response.headers.get("cache-control")).toBe("no-store");
   expect(await response.json()).toEqual({ epoch: active.epoch, command: first });
   expect(await (await poll()).json()).toEqual({ epoch: active.epoch, command: first });
+  const promptId = crypto.randomUUID();
   const reply = {
     epoch: active.epoch,
     requestId: first.requestId,
     status: 200,
-    body: { requestId: first.requestId, result: { marker: "private-result-marker" } },
+    body: { requestId: first.requestId, result: { marker: "private-result-marker", promptId } },
   };
   expect(await (await f.request("results", active.runtimeToken, active.epoch, reply)).json()).toEqual({
     epoch: active.epoch,
@@ -105,7 +106,7 @@ test("encrypted command mailbox survives replica restart, redelivers one stable 
     (
       await f.request("results", active.runtimeToken, active.epoch, {
         ...reply,
-        body: { error: "late replay must not overwrite" },
+        body: { result: { promptId: crypto.randomUUID() } },
       })
     ).status,
   ).toBe(200);
@@ -115,6 +116,21 @@ test("encrypted command mailbox survives replica restart, redelivers one stable 
   ).rows[0];
   expect(Buffer.from(sealed?.result_enc ?? []).includes(Buffer.from("private-result-marker"))).toBe(false);
   expect(await (await poll()).json()).toEqual({ epoch: active.epoch, command: last });
+  expect(
+    (
+      await f.request("results", active.runtimeToken, active.epoch, {
+        ...reply,
+        requestId: last.requestId,
+        body: { result: { promptId } },
+      })
+    ).status,
+  ).toBe(200);
+  expect(
+    (await f.db.query("select request_id, accepted_prompt_id from runtime_commands order by sequence")).rows,
+  ).toEqual([
+    { request_id: first.requestId, accepted_prompt_id: promptId },
+    { request_id: last.requestId, accepted_prompt_id: null },
+  ]);
   await expect(
     f.bridge().enqueue(f.people.owner, { ...first, input: { ...first.input, text: "changed" } }),
   ).rejects.toThrow("runtime_command_conflict");

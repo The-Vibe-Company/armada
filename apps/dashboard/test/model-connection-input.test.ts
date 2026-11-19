@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { catalogPriceLabel, visibleCatalogModels } from "../src/lib/connection-presets";
 import {
   customAccountValue,
+  morphAccountValue,
   presetAccountValue,
   presetReplacementValue,
   replacementClaudeAccountValue,
@@ -261,4 +262,24 @@ test("a provider preset replaces only an account of its own kind", () => {
     ok: false,
     error: "That provider cannot replace this account.",
   });
+});
+
+test("Morph account forms preserve edited model order in the credential sent to storage", () => {
+  const form = new FormData();
+  form.set("value", "fixture_morph_key");
+  form.set("morphModels", "owner/model-v2\nowner/model-v1\nowner/model-v2");
+  expect(morphAccountValue(form)).toEqual({
+    ok: true,
+    value: JSON.stringify({
+      apiKey: "fixture_morph_key",
+      models: ["owner/model-v2", "owner/model-v1"],
+    }),
+  });
+});
+
+test("Morph account forms reject a cleared list instead of replacing it with catalog defaults", () => {
+  const form = new FormData();
+  form.set("value", "fixture_morph_key");
+  form.set("morphModels", "  ");
+  expect(morphAccountValue(form).ok).toBe(false);
 });

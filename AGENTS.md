@@ -104,6 +104,8 @@ Adding a CI job or a required check is the owner's decision, never an agent's. W
 
 ## Rules
 
+- **Landmines rules are mandatory.** Give the reason for any inline disable in the PR, and only shrink baselines.
+
 - **Separate client and server.** `armada` is an API-only client; `armada-server` contains the server and provider/database adapters. Both compile with Bun. Never import Supabase, provider implementations or server startup into the CLI runtime dependency graph.
 - **One version.** Every `packages/*/package.json` carries the same version; `@armada/core` exports it and `armada --version` prints it.
 - **Secrets never in the repository.** Keys come from the environment or Armada's encrypted store; never print one, never write one into a file, a fixture or a log. Goldens hold no secrets. In the database a secret is ciphertext (`bytea`, `*_enc`) or a token hash, and a user JWT cannot read the ciphertext columns. One encryption scheme: `encryptSecret` and `decryptSecret` in `@armada/core` with `ARMADA_ENCRYPTION_KEY`. Credential values arrive on stdin or from a file, never as arguments. **Owner-approved exception (#1453):** a single-use, five-minute Docker host registration token may appear in the one-click installer command (`sh -s -- --token ...`). The exchanged long-lived host credential must still never appear in argv, logs or public responses.

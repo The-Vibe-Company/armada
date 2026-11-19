@@ -105,7 +105,7 @@ armada creds set codex-auth --file ~/.codex/auth.json              # Codex; or k
 armada creds list
 ```
 
-Morph is another model-account option for both Claude Code and Codex (not a sandbox provider):
+Morph is another model-account option for Claude Code, Codex and OpenCode:
 `armada creds connect morph --name shared --file /private/morph-key`.
 Select its account ID with `--credential-id ACCOUNT_UUID` and a Morph model such as
 `--model morph-kimik31`; use Modal, Docker or runtime-backed Boat, not native Boat.
@@ -176,7 +176,7 @@ Details: [docs/cli-capabilities-and-mcp-shortcuts.md](docs/cli-capabilities-and-
 
 ## Drive Armada from your own agent
 
-Armada is also a remote MCP server. Add it to Claude Code, Codex, Cursor or your own coordinator, and that agent can list and build snapshots, launch sandboxes and drive them with `golden_list`, `golden_create`, `launch`, `list`, `status`, `wait`, `logs`, `send`, `steer`, `interrupt`, `exec`, `extend` and `stop`.
+Armada is also a remote MCP server. Add it to Claude Code, Codex, Cursor or your own coordinator, and that agent can launch and drive sandboxes with `launch`, `list`, `status`, `wait`, `logs`, `send`, `steer`, `interrupt`, `exec`, `extend` and `stop`.
 
 MCP clients sign in with OAuth; bots and CI use a service token bound to one organization:
 
