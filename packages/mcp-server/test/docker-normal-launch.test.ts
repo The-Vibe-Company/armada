@@ -3441,7 +3441,16 @@ test("old or unreported Docker daemons get an actionable resume refusal before a
       credentialId,
     ],
   );
-  const controls = createDockerSandboxControls(sql, key, { clock: f.clock, resume: bootstrap });
+  let resumeCalls = 0;
+  const controls = createDockerSandboxControls(sql, key, {
+    clock: f.clock,
+    resume: {
+      async resume(...args) {
+        resumeCalls++;
+        return bootstrap.resume(...args);
+      },
+    },
+  });
   const before = await counts(f);
   for (const protocol of [null, DOCKER_HOST_PROTOCOL + 1]) {
     await db.query("update docker_hosts set daemon_protocol=$2 where id=$1", [f.hostId, protocol]);
@@ -3449,6 +3458,7 @@ test("old or unreported Docker daemons get an actionable resume refusal before a
       code: "docker_host_upgrade_required",
       message: expect.stringContaining("Upgrade the Docker host daemon"),
     });
+    expect(resumeCalls).toBe(0);
     expect(await counts(f)).toEqual(before);
     expect((await db.query("select 1 from public.docker_resume_claims where sandbox_id=$1", [requestId])).rows).toEqual(
       [],
