@@ -38,27 +38,27 @@ describe("gateway", () => {
     expect(calls[2]?.headers["mcp-session-id"]).toBe("session-1");
   });
 
-  test("send, steer and interrupt name their own tool and the chosen conversation", async () => {
+  test("send, steer and interrupt address the sandbox without a conversation selector", async () => {
     const { calls, gateway } = server((call) => rpc(call.body.id, { structuredContent: { ok: true } }));
     const sandbox = sandboxGateway(gateway);
-    await sandbox.send("sandbox-9", "go", { reasoning_effort: "high" }, "conv-2");
+    await sandbox.send("sandbox-9", "go", { reasoning_effort: "high" });
     await sandbox.send("sandbox-9", "first");
-    await sandbox.send("sandbox-9", "again", {}, "conv-2", "request-1");
-    await sandbox.steer("sandbox-9", "use the fixture", "conv-2");
-    await sandbox.interrupt("sandbox-9", "conv-2");
+    await sandbox.send("sandbox-9", "again", {}, "request-1");
+    await sandbox.steer("sandbox-9", "use the fixture");
+    await sandbox.interrupt("sandbox-9");
     const tools = calls.filter((call) => call.method === "tools/call").map((call) => call.body.params);
     expect(tools).toEqual([
       {
         name: "send",
-        arguments: { id: "sandbox-9", prompt: "go", conversation_id: "conv-2", reasoning_effort: "high" },
+        arguments: { id: "sandbox-9", prompt: "go", reasoning_effort: "high" },
       },
       { name: "send", arguments: { id: "sandbox-9", prompt: "first" } },
       {
         name: "send",
-        arguments: { id: "sandbox-9", prompt: "again", conversation_id: "conv-2", request_id: "request-1" },
+        arguments: { id: "sandbox-9", prompt: "again", request_id: "request-1" },
       },
-      { name: "steer", arguments: { id: "sandbox-9", text: "use the fixture", conversation_id: "conv-2" } },
-      { name: "interrupt", arguments: { id: "sandbox-9", conversation_id: "conv-2" } },
+      { name: "steer", arguments: { id: "sandbox-9", text: "use the fixture" } },
+      { name: "interrupt", arguments: { id: "sandbox-9" } },
     ]);
   });
 

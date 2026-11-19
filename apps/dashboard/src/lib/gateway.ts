@@ -154,7 +154,6 @@ async function readMessage(response: Response, id?: number): Promise<Record<stri
  * the running one and `interrupt` stops it: the server applies the harness's capabilities, never the dashboard.
  */
 export function sandboxGateway(gateway: Gateway) {
-  const conversation = (id?: string) => (id ? { conversation_id: id } : {});
   return {
     logs: (
       sandboxId: string,
@@ -166,17 +165,14 @@ export function sandboxGateway(gateway: Gateway) {
     /** Permanent; the server refuses it unless the sandbox is stopped or failed. */
     delete: (sandboxId: string) => gateway.call("delete", { id: sandboxId }),
     /** Runtime-backed sends require a stable requestId. Native accepts the field for compatibility only, without deduplication. */
-    send: (sandboxId: string, prompt: string, override: SendArgs = {}, conversationId?: string, requestId?: string) =>
+    send: (sandboxId: string, prompt: string, override: SendArgs = {}, requestId?: string) =>
       gateway.call("send", {
         id: sandboxId,
         prompt,
-        ...conversation(conversationId),
         ...override,
         ...(requestId ? { request_id: requestId } : {}),
       }),
-    steer: (sandboxId: string, text: string, conversationId?: string) =>
-      gateway.call("steer", { id: sandboxId, text, ...conversation(conversationId) }),
-    interrupt: (sandboxId: string, conversationId?: string) =>
-      gateway.call("interrupt", { id: sandboxId, ...conversation(conversationId) }),
+    steer: (sandboxId: string, text: string) => gateway.call("steer", { id: sandboxId, text }),
+    interrupt: (sandboxId: string) => gateway.call("interrupt", { id: sandboxId }),
   };
 }

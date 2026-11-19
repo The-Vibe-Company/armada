@@ -6,7 +6,6 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { type ActionResult, done, fail, formString, isUuid } from "@/lib/action";
 import {
-  chosenConversation,
   drivingFailureMessage,
   INCOMPLETE_MODEL,
   modelChange,
@@ -166,8 +165,7 @@ export async function deleteSandbox(_previous: ActionResult | null, data: FormDa
   redirect("/sandboxes");
 }
 
-/** A new turn, in the conversation the person chose. The model and effort override applies to this turn only. */
-export async function sendToSandbox(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
+export async function sendToSandbox(_previous: ActionResult | null, data: FormData) {
   const id = formString(data, "sandbox");
   const prompt = formString(data, "prompt").trim();
   if (!isUuid(id)) return fail("That request is not valid.");
@@ -175,8 +173,6 @@ export async function sendToSandbox(_previous: ActionResult | null, data: FormDa
   if (modelChange(modelFields(data)) === "incomplete") return fail(INCOMPLETE_MODEL);
   const target = await gatewayFor(id);
   if (target.error) return target.error;
-  const conversation = chosenConversation(formString(data, "conversation"), target.sandbox.conversation_ids);
-  if (!conversation.ok) return fail(conversation.error);
   let override: SendArgs = {};
   const requestId = formString(data, SEND_KEY_FIELD);
   if (!isUuid(requestId)) return fail("That request is not valid. Reload the page and send it again.");
@@ -194,7 +190,7 @@ export async function sendToSandbox(_previous: ActionResult | null, data: FormDa
     override = chosen.args;
   }
   try {
-    await target.gateway.send(id, prompt, override, conversation.id, requestId);
+    await target.gateway.send(id, prompt, override, requestId);
   } catch (error) {
     if (error instanceof GatewayError) return drivingFailure(error, target.owner, pinned);
     throw error;
@@ -204,8 +200,7 @@ export async function sendToSandbox(_previous: ActionResult | null, data: FormDa
   return done("Sent.");
 }
 
-/** A message into the turn running in the chosen conversation. It never changes the model: that is a new turn. */
-export async function steerSandbox(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
+export async function steerSandbox(_previous: ActionResult | null, data: FormData) {
   const id = formString(data, "sandbox");
   const text = formString(data, "prompt").trim();
   if (!isUuid(id)) return fail("That request is not valid.");
@@ -213,11 +208,9 @@ export async function steerSandbox(_previous: ActionResult | null, data: FormDat
   if (modelChange(modelFields(data)) !== "none") return fail(STEER_KEEPS_MODEL);
   const target = await gatewayFor(id);
   if (target.error) return target.error;
-  const conversation = chosenConversation(formString(data, "conversation"), target.sandbox.conversation_ids);
-  if (!conversation.ok) return fail(conversation.error);
   let receipt: unknown;
   try {
-    receipt = await target.gateway.steer(id, text, conversation.id);
+    receipt = await target.gateway.steer(id, text);
   } catch (error) {
     if (error instanceof GatewayError) return drivingFailure(error, target.owner);
     throw error;
@@ -228,16 +221,13 @@ export async function steerSandbox(_previous: ActionResult | null, data: FormDat
   return done(restarted ? "Steered. The turn restarted with your message." : "Steered.");
 }
 
-/** Stops the turn running in the chosen conversation. The sandbox stays up for the next message. */
-export async function interruptSandbox(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
+export async function interruptSandbox(_previous: ActionResult | null, data: FormData) {
   const id = formString(data, "sandbox");
   if (!isUuid(id)) return fail("That request is not valid.");
   const target = await gatewayFor(id);
   if (target.error) return target.error;
-  const conversation = chosenConversation(formString(data, "conversation"), target.sandbox.conversation_ids);
-  if (!conversation.ok) return fail(conversation.error);
   try {
-    await target.gateway.interrupt(id, conversation.id);
+    await target.gateway.interrupt(id);
   } catch (error) {
     if (error instanceof GatewayError) return drivingFailure(error, target.owner);
     throw error;

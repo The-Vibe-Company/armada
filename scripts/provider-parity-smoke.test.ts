@@ -222,10 +222,11 @@ for (const mode of [
     }
     function acceptClient(provider: string, args: Record<string, unknown>) {
       expect(args.id).toBe(provider);
-      expect(args.conversation_id).toBe("client_conversation");
       expect(args.request_id).toMatch(/^[a-f0-9-]{36}$/);
       const marker = String(args.prompt).match(/PARITY_CLIENT_(?:DASHBOARD|CLI)_[a-f0-9-]{36}/)![0];
       const client = marker.includes("DASHBOARD") ? "dashboard" : "cli";
+      if (client === "dashboard") expect(args).not.toHaveProperty("conversation_id");
+      else expect(args.conversation_id).toBe("client_conversation");
       const promptId = `client_${client}_${provider}`;
       clientAnswers.set(promptId, marker);
       const history = turns.get(provider) ?? [];
