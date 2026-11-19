@@ -485,8 +485,8 @@ test("rollback of an observed Boat archive handoff remains recoverable", async (
   }
 });
 
-test.each(["request catch", "expired activity lease"])(
-  "a refused Modal resume recovers through %s and can enrol the current artifact",
+test.each(["request catch", "expired activity lease", "activation before ticket"])(
+  "an unenrolled Modal replacement recovers through %s and can enrol the current artifact",
   async (handoff) => {
     const f = await stopped("codex", "modal");
     try {
@@ -494,6 +494,11 @@ test.each(["request catch", "expired activity lease"])(
       const currentArtifact = { sha256: "b".repeat(64), bytes: 5 };
       let artifact = retainedArtifact;
       let activated = false;
+      let loseSettlement = false;
+      let rollbacks = 0;
+      const settlementFailure = Error("Lost logical settlement");
+      const expireActivity = () =>
+        f.db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [f.row.id]);
       let activations = 0,
         generation: number,
         refused: string | undefined;
@@ -501,8 +506,14 @@ test.each(["request catch", "expired activity lease"])(
       const physicalDeadline = new Date(Date.now() + 86_400_000);
       const host = {
         id: "modal",
-        get: async () =>
-          activated ? { state: "ready", providerState: "active", expiresAt: physicalDeadline } : { state: "stopped" },
+        async get() {
+          if (!activated) return { state: "stopped" };
+          if (activations === 1 && handoff === "activation before ticket") {
+            await expireActivity();
+            throw Error("Lost read after confirming activation");
+          }
+          return { state: "ready", providerState: "active", expiresAt: physicalDeadline };
+        },
         async resumeRuntime(request: { generation: number }) {
           generation = request.generation;
           activations++;
@@ -511,6 +522,8 @@ test.each(["request catch", "expired activity lease"])(
         async rollbackRuntimeResume(request: { sandboxId: string; generation: number }) {
           expect(request).toEqual({ sandboxId: f.row.providerSandboxId, generation });
           activated = false;
+          rollbacks++;
+          if (handoff === "request catch" && rollbacks === 1) loseSettlement = true;
         },
         async startRuntime(request: { artifact: typeof artifact; enrolmentToken: string }) {
           expect(activated).toBe(true);
@@ -518,8 +531,7 @@ test.each(["request catch", "expired activity lease"])(
           if (activations === 1) {
             refused = request.enrolmentToken;
             await expect(f.authority.enrol(refused, "999")).rejects.toThrow("runtime_protocol_unsupported");
-            if (handoff === "expired activity lease")
-              await f.db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [f.row.id]);
+            if (handoff === "expired activity lease") await expireActivity();
             throw Error("Replacement did not enrol");
           }
           enrolled = await f.authority.enrol(request.enrolmentToken);
@@ -550,16 +562,44 @@ test.each(["request catch", "expired activity lease"])(
       const first = input(f.row.id);
       await expect(resume(f.caller, first)).rejects.toMatchObject({ code: "conflict" });
       const store = createSqlData(f.sql)(f.caller).sandboxes;
-      const worker = createSandboxLifecycle(f.sql, async () => host);
-      if (handoff === "expired activity lease") {
+      const worker = createSandboxLifecycle(
+        {
+          ...f.sql,
+          async query(query, params) {
+            if (loseSettlement) {
+              loseSettlement = false;
+              throw settlementFailure;
+            }
+            return f.sql.query(query, params);
+          },
+        },
+        async () => host,
+      );
+      if (handoff !== "request catch") {
         expect((await store.get(f.row.id))?.status).toBe("starting");
-        await f.db.query("update sandboxes set reconcile_after=now() where id=$1", [f.row.id]);
+        expect(
+          (
+            await f.db.query<{ parked: boolean }>(
+              "select reconcile_after='infinity'::timestamptz as parked from sandboxes where id=$1",
+              [f.row.id],
+            )
+          ).rows[0]?.parked,
+        ).toBe(true);
         expect(await worker.reconcileOne()).toBe(true);
       }
       expect((await store.get(f.row.id))?.status).toBe("stopping");
+      if (handoff === "request catch") {
+        await expect(worker.reconcileOne()).rejects.toBe(settlementFailure);
+        expect((await store.get(f.row.id))?.status).toBe("stopping");
+        await f.db.query("update sandboxes set reconcile_lease_until=now()-interval '1 second' where id=$1", [
+          f.row.id,
+        ]);
+      }
       expect(await worker.reconcileOne()).toBe(true);
+      expect(rollbacks).toBe(handoff === "request catch" ? 2 : 1);
       expect((await store.get(f.row.id))?.status).toBe("stopped");
-      await expect(f.authority.enrol(refused!)).rejects.toThrow("runtime_enrolment_denied");
+      expect(Boolean(refused)).toBe(handoff !== "activation before ticket");
+      if (refused) await expect(f.authority.enrol(refused)).rejects.toThrow("runtime_enrolment_denied");
       await expect(resume(f.caller, first)).rejects.toMatchObject({ code: "conflict" });
       expect(activations).toBe(1);
       await expect(resume(f.caller, input(f.row.id))).rejects.toMatchObject({ code: "conflict" });

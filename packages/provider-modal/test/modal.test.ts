@@ -121,6 +121,7 @@ function fixture(
   const resourceRequests: Record<string, unknown>[] = [];
   const sdkCommands: { argv: string[]; params: object; stdin: string[] }[] = [];
   let failSnapshot = false;
+  let loseTerminateResponse = false;
   let failCreate = false;
   let failBoot = false;
   let appId = "ap_pinned";
@@ -239,6 +240,7 @@ function fixture(
             await onTerminate?.();
             log.push("terminate");
             state.exit = 0;
+            if (loseTerminateResponse) throw Error("Lost termination confirmation");
           },
         } as unknown as Sandbox;
         machines.set(id, state);
@@ -390,6 +392,9 @@ function fixture(
     },
     onRpc(work: (row: Machine, op: string, input: object) => Promise<unknown>) {
       onRpc = work;
+    },
+    loseTerminateResponse(value: boolean) {
+      loseTerminateResponse = value;
     },
     onTerminate(work: () => Promise<void>) {
       onTerminate = work;
@@ -1202,13 +1207,10 @@ test("retained Modal rollback retries termination and fences a newer replacement
   const request = { sandboxId: worker.id, generation: 2, ttlSeconds: 900, checkpoint };
   await f.provider.resumeRuntime(request);
   const replacement = await f.store.get(worker.id);
-  f.onTerminate(async () => {
-    throw Error("Termination confirmation unavailable");
-  });
+  const before = f.log.length;
+  f.loseTerminateResponse(true);
   await expect(f.provider.rollbackRuntimeResume(request)).rejects.toThrow();
   expect(await f.store.get(worker.id)).toMatchObject({ phase: "terminate", recoveryImageId });
-  f.onTerminate(async () => {});
-  const before = f.log.length;
   await f.provider.rollbackRuntimeResume(request);
   await f.provider.rollbackRuntimeResume(request);
   expect(f.log.slice(before)).toEqual(["terminate"]);
@@ -1217,6 +1219,7 @@ test("retained Modal rollback retries termination and fences a newer replacement
     recoveryImageId,
     runtimeCheckpoint: { ...checkpoint, physicalId: replacement.physicalId, generation: 2 },
   });
+  await expect(f.provider.resumeRuntime(request)).rejects.toMatchObject({ code: "conflict" });
   await f.provider.resumeRuntime({ ...request, generation: 4 });
   await expect(f.provider.rollbackRuntimeResume(request)).rejects.toMatchObject({ code: "conflict" });
   expect(await f.provider.get(worker.id)).toMatchObject({ state: "ready", physicalGeneration: "3" });

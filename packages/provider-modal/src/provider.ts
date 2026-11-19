@@ -136,7 +136,6 @@ export interface ModalProvider extends Provider {
     signal?: AbortSignal,
     onResumeStage?: ResumeStageObserver,
   ): Promise<SandboxInfo>;
-  /** Roll back an unenrolled replacement bound to this logical resume generation. */
   rollbackRuntimeResume(input: { sandboxId: string; generation: number }): Promise<void>;
   configureGitHub: NonNullable<Provider["configureGitHub"]>;
   findGoldenBuilder: NonNullable<Provider["findGoldenBuilder"]>;
@@ -1204,6 +1203,8 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         !/^[1-9][0-9]{0,18}$/.test(epoch) ||
         !Number.isSafeInteger(watermark) ||
         watermark < 0 ||
+        !Number.isSafeInteger(input.generation) ||
+        input.generation < 1 ||
         !Number.isInteger(input.ttlSeconds) ||
         input.ttlSeconds < 1 ||
         input.ttlSeconds > 86400
@@ -1228,6 +1229,8 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           )
             throw refusal("conflict", "No matching retained common checkpoint is available.");
           if (row.phase === "stopped") {
+            if (row.runtimeResumeGeneration !== undefined && input.generation <= row.runtimeResumeGeneration)
+              throw refusal("conflict", "Resume generation has already been rolled back.");
             if (checkpoint.generation !== row.generation || checkpoint.physicalId !== row.physicalId)
               throw refusal("conflict", "Retained source incarnation does not match.");
             row.generation++;

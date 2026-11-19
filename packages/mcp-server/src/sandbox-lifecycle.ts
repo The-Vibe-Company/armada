@@ -33,6 +33,36 @@ export async function deferAmbiguousBoatResume(
   );
 }
 
+export async function confirmRuntimeResumeActivation(
+  sql: Sql,
+  sandboxId: string,
+  requestId: string,
+  generation: number | undefined,
+) {
+  const saved = await sql.query(
+    `with active as (
+      select id,provider from public.sandboxes where id=$1 and status='starting'
+        and activity_lease_id=$2 and lifecycle_generation=$3 and activity_until>clock_timestamp()
+        and (reconcile_lease_until is null or reconcile_lease_until<=clock_timestamp())
+        and stop_requested_at is null and deleted_at is null for update
+    ), marked as (
+      update public.runtime_resumes r set activated_at=coalesce(r.activated_at,clock_timestamp())
+      from active where r.sandbox_id=active.id and r.request_id=$2 and r.phase='dispatched'
+      returning r.request_id,active.id,active.provider
+    ), protected as (
+      update public.sandboxes s set reconcile_after='infinity'::timestamptz
+      from marked where s.id=marked.id and marked.provider='modal'
+    )
+    select request_id from marked`,
+    [sandboxId, requestId, generation],
+  );
+  return saved.rows.length > 0;
+}
+
+export async function restoreModalResumeSchedule(tx: Sql, sandboxId: string) {
+  await tx.query("update public.sandboxes set reconcile_after=now() where id=$1", [sandboxId]);
+}
+
 export async function requestFailedRuntimeResumeStop(
   tx: Sql,
   sandboxId: string,
@@ -122,8 +152,7 @@ async function recoverInterruptedRuntimeResume(
         and (
           (s.provider='boat' and s.boat_runtime and (s.provider_sandbox_id=$5::text or r.activated_at is not null
             or (e.enrolment_hash is not null and e.lifecycle_generation=$3)))
-          or (s.provider='modal' and s.runtime_transport='dialout'
-            and e.enrolment_hash is not null and e.lifecycle_generation=$3)
+          or (s.provider='modal' and s.runtime_transport='dialout' and r.activated_at is not null)
         )
         and c.watermark=r.watermark
         and c.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=s.id)
@@ -198,17 +227,22 @@ export function createSandboxLifecycle(
           `update public.sandboxes s set reconcile_lease=$1::uuid,
           reconcile_lease_until=now()+interval '2 minutes'
         from (
-          select candidate.id,recovery.retained_resume from public.sandboxes candidate
+          select candidate.id,recovery.retained_resume,recovery.modal_resume from public.sandboxes candidate
           cross join lateral (select candidate.status='stopping' and exists(
             select 1 from public.sandbox_transitions t where t.sandbox_id=candidate.id and t.generation=candidate.lifecycle_generation
             and t.actor='runtime_resume' and t.code=$3 and t.to_status='stopping'
-          ) as retained_resume) recovery
+          ) as retained_resume, (candidate.provider='modal' and candidate.runtime_transport='dialout'
+            and candidate.status='starting' and exists(
+              select 1 from public.runtime_resumes r where r.sandbox_id=candidate.id
+                and r.request_id=candidate.activity_lease_id and r.phase='dispatched'
+                and r.receipt is null and r.activated_at is not null
+            )) as modal_resume) recovery
           where candidate.provider = $2 and candidate.status not in ('stopped','deleted')
           and not exists(select 1 from public.orchestrators parent where parent.sandbox_id=candidate.id)
           and not (candidate.status='failed' and candidate.stopped_at is not null)
           -- Only this worker understands the retained-resume handoff. Old
           -- replicas see an infinite schedule and cannot claim it.
-          and (candidate.reconcile_after<=now()
+          and (candidate.reconcile_after<=now() or recovery.modal_resume
             or (recovery.retained_resume and coalesce(candidate.lifecycle_error,'') not like $4))
           and (candidate.activity_until is null or candidate.activity_until<now())
           and (candidate.reconcile_lease_until is null or candidate.reconcile_lease_until<now())
@@ -220,14 +254,10 @@ export function createSandboxLifecycle(
         where s.id=due.id
         returning s.id,s.provider_sandbox_id,s.runtime_transport,s.boat_runtime,s.lifecycle_generation,s.expires_at,s.status::text as status,s.status_reason,s.task_prompt_id,s.activity_lease_id,s.application_secret_tainted,s.credential_id,s.credential_version,s.stop_requested_at,s.preservation_note,
           ${mergedWorkProof("s")} as work_merged,due.retained_resume,
-          (s.status='starting' and (s.provider='boat' and s.boat_runtime or
-            s.provider='modal' and s.runtime_transport='dialout' and exists(
-              select 1 from public.runtime_enrolments e where e.sandbox_id=s.id and e.runtime_hash is null
-                and e.enrolment_hash is not null and e.lifecycle_generation=s.lifecycle_generation
-            )) and exists(
+          (due.modal_resume or (s.provider='boat' and s.boat_runtime and s.status='starting' and exists(
             select 1 from public.runtime_resumes r where r.sandbox_id=s.id and r.request_id=s.activity_lease_id
               and r.phase='dispatched' and r.receipt is null
-          )) as interrupted_resume,
+          ))) as interrupted_resume,
           exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id) as owner_is_member`,
           [token, providerId, UNENROLLED_RESUME_STOP, `${OPERATOR_CLEANUP_PREFIX}%`],
         )
