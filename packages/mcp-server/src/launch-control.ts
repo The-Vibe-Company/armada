@@ -20,6 +20,8 @@ import {
   resolveModelChoice,
   resolveOrg,
   resolveRepositoryDir,
+  type TemplateRuntime,
+  type TemplateService,
   VaultError,
 } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
@@ -273,6 +275,41 @@ export async function launchActor(
   const member = caller.orgs.find((item) => item.orgId === (holders[0] ?? caller.orgs[0]?.orgId));
   if (!member) throw new VaultError("not_found", "You are not a member of an org.");
   return { userId: caller.userId, orgId: member.orgId, role: member.role };
+}
+
+export function launchTemplate(
+  templates: TemplateService,
+  caller: Caller,
+  input: Record<string, unknown>,
+  runtime: TemplateRuntime | undefined,
+  surface: "template_rest" | "routine",
+) {
+  return observeGoldenLaunch(
+    surface,
+    async (timing) => {
+      let freshModal = false;
+      const result = await templates.command(
+        caller,
+        "launch",
+        input,
+        runtime && {
+          ...runtime,
+          provider: async (golden) => {
+            timing.checkpoint("admission");
+            const provider = await runtime.provider(golden);
+            timing.checkpoint("provider_resolution");
+            freshModal = golden.provider === "modal";
+            return provider;
+          },
+        },
+      );
+      if (freshModal && result.state === "succeeded" && typeof result.id === "string") {
+        timing.launched({ provider: "modal", id: result.id });
+      }
+      return result;
+    },
+    "template_execution",
+  );
 }
 
 /** One launch path for interactive templates and unattended owner-scoped routines. */
