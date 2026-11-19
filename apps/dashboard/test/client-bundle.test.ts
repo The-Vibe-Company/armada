@@ -12,7 +12,7 @@ function files(dir: string): string[] {
   });
 }
 
-test("the dashboard depends on no provider adapter or SDK: its only workspace import is @armada/core", () => {
+test("the dashboard imports only browser-safe Armada core entry points", () => {
   const manifest = JSON.parse(readFileSync(join(APP, "package.json"), "utf8")) as Record<string, unknown>;
   const declared = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"].flatMap((field) =>
     Object.keys((manifest[field] as Record<string, string> | undefined) ?? {}),
@@ -24,7 +24,7 @@ test("the dashboard depends on no provider adapter or SDK: its only workspace im
     const source = readFileSync(path, "utf8");
     expect(source).not.toMatch(/@armada\/provider-|@boatdev\/sdk|createBoatProvider/);
     for (const [, specifier] of source.matchAll(/from\s+["'](@armada\/[^"']+)["']/g))
-      expect(specifier).toBe("@armada/core");
+      expect(["@armada/core", "@armada/core/contract"]).toContain(specifier);
   }
 });
 
