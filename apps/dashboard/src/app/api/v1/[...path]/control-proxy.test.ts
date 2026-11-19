@@ -51,8 +51,12 @@ test("DELETE proxy forwards only the authenticated sandbox deletion shape and or
       },
     );
   expect((await send("DELETE", ["sandboxes", id], false)).status).toBe(401);
-  expect((await send("DELETE", ["sandboxes", id])).status).toBe(200);
+  const deleted = await send("DELETE", ["sandboxes", id]);
+  expect(deleted.status).toBe(200);
+  expect(deleted.headers.get("cache-control")).toBe("no-store");
+  expect(await deleted.json()).toEqual({ id, status: "deleted" });
   expect(seen[0]?.method).toBe("DELETE");
+  expect(seen[0]?.body).toBeNull();
   expect(seen[0]?.url).toBe(`https://armada.test/api/v1/sandboxes/${id}?org=${id}&requestId=${id}`);
   expect(seen[0]?.headers.get("authorization")).toBe("Bearer masked");
   for (const [method, path] of [

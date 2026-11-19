@@ -311,3 +311,53 @@ test("CLI user POST routes reach the dashboard proxy while machine-token routes 
     else process.env.ARMADA_MCP_URL = previous;
   }
 });
+
+test("CLI status and stop forward authenticated scope through the public proxy", async () => {
+  const org = "22222222-2222-4222-8222-222222222222";
+  const token = "fixture-owner";
+  const previous = process.env.ARMADA_MCP_URL;
+  process.env.ARMADA_MCP_URL = "https://control.test/mcp";
+  try {
+    for (const command of ["status", "stop"]) {
+      const expectedBody = command === "status" ? { id, org, recorded: true } : { id, org };
+      const path = `/api/v1/sandbox/${command}`;
+      const forwarded: Request[] = [];
+      await operation(
+        command,
+        [id, "--org", org, "--json"],
+        {
+          env: { ARMADA_TOKEN: token, ARMADA_URL: "https://dashboard.test" },
+          fetch: async (input, init) => {
+            const incoming = new Request(input, init);
+            expect(incoming.url).toBe(`https://dashboard.test${path}`);
+            return forwardControl(
+              incoming,
+              new URL(incoming.url).pathname.slice("/api/v1/".length).split("/"),
+              async (target, options) => {
+                forwarded.push(new Request(target, options));
+                return Response.json({ id, status: "stopped", settled: true, prompt: null });
+              },
+            );
+          },
+          session: memorySessionStore(),
+          now: () => new Date(0),
+          open: () => {},
+          out: () => {},
+          err: () => {},
+        },
+        async () => "",
+      );
+      expect(forwarded).toHaveLength(1);
+      const upstream = forwarded[0];
+      expect(upstream?.url).toBe(`https://control.test${path}`);
+      expect(upstream?.method).toBe("POST");
+      expect(upstream?.headers.get("authorization")).toBe(`Bearer ${token}`);
+      expect(upstream?.headers.get("accept")).toBe("application/json");
+      expect(upstream?.headers.get("content-type")).toBe("application/json");
+      expect(await upstream?.json()).toEqual(expectedBody);
+    }
+  } finally {
+    if (previous === undefined) delete process.env.ARMADA_MCP_URL;
+    else process.env.ARMADA_MCP_URL = previous;
+  }
+});
