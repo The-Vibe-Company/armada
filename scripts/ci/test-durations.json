@@ -333,7 +333,7 @@
     "packages/mcp-server/test/sandbox-usage.test.ts": 3.388,
     "packages/mcp-server/test/serve-database-boot.test.ts": 0.369,
     "packages/mcp-server/test/server-workers.test.ts": 2.778,
-    "packages/mcp-server/test/server.test.ts": 9.981,
+    "packages/mcp-server/test/server.test.ts": 16.601,
     "packages/mcp-server/test/session-amount.test.ts": 2.606,
     "packages/mcp-server/test/shutdown.test.ts": 0.029,
     "packages/mcp-server/test/skill-catalog.test.ts": 2.482,

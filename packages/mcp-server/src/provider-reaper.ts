@@ -3,6 +3,7 @@ import type { ServerLifecycleLane } from "./server-workers.ts";
 
 const UNKNOWN_GRACE_MS = 15 * 60_000;
 const SWEEP_INTERVAL_MS = 60_000;
+const OVERDUE_LOG_BATCH_SIZE = 32;
 
 type Ownership =
   | { kind: "absent" }
@@ -14,6 +15,7 @@ type Decision = "keep" | "unknown_young" | DeleteReason;
 
 export interface ProviderReaperSource {
   provider: SandboxPlacementProviderId;
+  emitOverdueMachineIds?: boolean;
   /** Stable, nonsecret identity unique to the provider account/binding or host within this deployment. */
   sourceId: string;
   /** Stable environment + server identity used when tagging machines. */
@@ -82,9 +84,27 @@ export function createProviderReaperLane(
     const deleted: Record<DeleteReason, number> = { unknown: 0, terminal: 0 };
     let unknown = 0;
     let overdue = 0;
+    const overdueMachineIds: string[] = [];
     let errors = 0;
     let complete = false;
     const observedAt = now();
+    const reportOverdueMachines = () => {
+      if (overdueMachineIds.length === 0) return;
+      const machineIds = overdueMachineIds.splice(0);
+      try {
+        log(
+          JSON.stringify({
+            event: "reaper_overdue_machines",
+            ...labels,
+            deploymentId: source.deploymentId,
+            observedAt,
+            machineIds,
+          }),
+        );
+      } catch {
+        errors++;
+      }
+    };
     try {
       for await (const machine of source.inventory.listInventory(signal)) {
         if (signal.aborted) return;
@@ -95,7 +115,13 @@ export function createProviderReaperLane(
           if (signal.aborted) return;
           const decision = decideInventoryMachine(machine, source.deploymentId, ownership, observedAt);
           if (ownership.kind === "absent") unknown++;
-          if (decision === "unknown") overdue++;
+          if (decision === "unknown") {
+            overdue++;
+            if (source.emitOverdueMachineIds) {
+              overdueMachineIds.push(machine.machineId);
+              if (source.deleteMachine || overdueMachineIds.length === OVERDUE_LOG_BATCH_SIZE) reportOverdueMachines();
+            }
+          }
           if (decision === "unknown" || decision === "terminal") {
             candidates[decision]++;
             if (await source.deleteMachine?.(machine, decision, signal)) deleted[decision]++;
@@ -106,10 +132,12 @@ export function createProviderReaperLane(
           errors++;
         }
       }
-      complete = !signal.aborted && errors === 0;
+      complete = !signal.aborted;
     } catch {
       if (!signal.aborted) errors++;
     } finally {
+      reportOverdueMachines();
+      complete &&= errors === 0;
       log(
         JSON.stringify({
           metric: "reaper_unknown_machines",

@@ -53,5 +53,7 @@ Authority: `docs/api/README.md`, `docs/sdk.md`.
 - One test per operation at the handler boundary, with a real schema parse. No HTTP server process.
 - `scripts/armada-skill.test.ts` checks the skill against CLI help: fix the skill, do not loosen the test.
 
+- Bump `DOCKER_HOST_PROTOCOL` only for a breaking daemon change; the server keeps N and N-1.
+
 ## Server SQL
 - SQL in `packages/mcp-server/src/data.ts` and other server modules bypasses row-level security. Each query enforces the caller's visibility itself.

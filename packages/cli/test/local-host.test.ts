@@ -31,7 +31,11 @@ function machine() {
       const url = String(input);
       requests.push(url);
       if (url.endsWith("reuse-registration")) {
-        expect(init?.headers).toEqual({ authorization: `Bearer ${token}`, "content-type": "application/json" });
+        expect(init?.headers).toEqual({
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          "x-armada-docker-host-protocol": "1",
+        });
         expect(JSON.parse(String(init?.body))).toEqual({ hostId });
         return Response.json({ hostId, name: "owner-machine" });
       }

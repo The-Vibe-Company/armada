@@ -3,7 +3,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { createSqlAuthStore } from "@armada/auth";
 import {
   type AgentEvent,
-  DOCKER_HOST_SNAPSHOT_BASELINE_HEADER,
+  DOCKER_HOST_PROTOCOL,
+  DOCKER_HOST_PROTOCOL_HEADER,
   DOCKER_IMAGE_UNAVAILABLE_MESSAGE,
   DOCKER_LAUNCH_FAILURE_MESSAGES,
   type DockerLaunchResult,
@@ -137,6 +138,7 @@ async function fixture(
     installationId = randomUUID();
   const host = await hosts.exchangeRegistration(registration.registrationToken, installationId);
   await hosts.poll(host.hostToken, installationId, options.daemonVersion ?? "2.28.0");
+  await db.query("update docker_hosts set daemon_protocol=$2 where id=$1", [host.hostId, DOCKER_HOST_PROTOCOL - 1]);
   const secret = `offline-normal-launch-${randomUUID()}`;
   // Omitted version must select the current pin, not fabricate version one.
   await db.query(
@@ -2804,13 +2806,6 @@ test.each(["private", "org"] as const)(
       visibility,
       config: { ...f.config, repos: [{ url: f.config.repos[0]!.url }] },
     };
-    if (visibility === "private") {
-      expect(await hosts.poll(f.hostToken, f.installationId, "2.51.0")).toBeNull();
-      await expect(f.snapshots.command(creator, "create", input)).rejects.toThrow(
-        "This snapshot uses a ref that requires a newer Docker host daemon.",
-      );
-      expect(await hosts.poll(f.hostToken, f.installationId, daemonVersion)).toBeNull();
-    }
     const created = await f.snapshots.command(creator, "create", input);
     expect(created).toMatchObject({ snapshot: { id, status: "building", visibility, builtOnVersion: VERSION } });
     expect(
@@ -2861,7 +2856,9 @@ test.each(["private", "org"] as const)(
         baselineVersion: visibility === "private" ? 1 : null,
         baselineOutdated: visibility === "org",
         ...(visibility === "org"
-          ? { baselineWarning: expect.stringContaining("Docker host daemon 2.51.0 is outdated") }
+          ? {
+              baselineWarning: expect.stringContaining("This snapshot was built without a reported developer baseline"),
+            }
           : {}),
       },
     });
@@ -3376,32 +3373,32 @@ test("old or unreported Docker daemons get an actionable resume refusal before a
   const controls = createDockerSandboxControls(sql, key, { clock: f.clock, resume: bootstrap });
   await controls.invoke(f.caller, "stop", { id: f.body.requestId, request_id: randomUUID() });
   const before = await counts(f);
-  for (const version of [null, "2.27.0"]) {
-    await db.query("update docker_hosts set daemon_version=$2 where id=$1", [f.hostId, version]);
+  for (const protocol of [null, DOCKER_HOST_PROTOCOL + 1]) {
+    await db.query("update docker_hosts set daemon_protocol=$2 where id=$1", [f.hostId, protocol]);
     await expect(
       controls.invoke(f.caller, "resume", { id: f.body.requestId, request_id: randomUUID() }),
     ).rejects.toMatchObject({
-      code: "conflict",
-      retryable: false,
-      message: expect.stringContaining("Update this Docker host daemon"),
+      code: "docker_host_upgrade_required",
+      message: expect.stringContaining("Upgrade the Docker host daemon"),
     });
     expect(await counts(f)).toEqual(before);
     expect((await createDockerSandboxService(sql, key).get(f.actor, f.body.requestId)).status).toBe("stopped");
   }
 });
 
-test("snapshot admission distinguishes daemon builds that report the same release", async () => {
+test("snapshot admission requires a protocol-aware host poll", async () => {
   const f = await snapshotFixture();
   const route = createDockerHostRoutes(hosts, async () => ({ ok: true, caller: f.caller }), {
     snapshots: f.snapshots,
   });
-  const poll = (capable: boolean) =>
+  await database().query("update docker_hosts set daemon_protocol=null where id=$1", [f.hostId]);
+  const poll = () =>
     route(
       new Request("https://fixture.example/api/docker-host/poll", {
         method: "POST",
         headers: {
           authorization: `Bearer ${f.hostToken}`,
-          ...(capable ? { [DOCKER_HOST_SNAPSHOT_BASELINE_HEADER]: "1" } : {}),
+          [DOCKER_HOST_PROTOCOL_HEADER]: String(DOCKER_HOST_PROTOCOL - 1),
         },
         body: JSON.stringify({ installationId: f.installationId, version: "2.54.0" }),
       }),
@@ -3420,20 +3417,19 @@ test("snapshot admission distinguishes daemon builds that report the same releas
         }),
       }),
     );
-  expect(await (await poll(false))?.json()).toMatchObject({ job: null });
   const response = await create();
   expect(response?.status).toBe(409);
   expect(await response?.json()).toMatchObject({
     error: {
-      code: "host_update_required",
-      message: expect.stringContaining("verify the developer baseline"),
+      code: "docker_host_upgrade_required",
+      message: expect.stringContaining("Upgrade the Docker host daemon"),
     },
   });
-  expect(await (await poll(true))?.json()).toMatchObject({ job: null });
+  expect(await (await poll())?.json()).toMatchObject({ job: null });
   expect((await create())?.status).toBe(200);
 });
 
-test("a verified receipt survives retry from an older replica to the current route", async () => {
+test("a verified receipt reaches the snapshot through the daemon result route", async () => {
   const f = await snapshotFixture();
   const requestId = randomUUID();
   await f.snapshots.command(f.caller, "create", {
@@ -3446,13 +3442,7 @@ test("a verified receipt survives retry from an older replica to the current rou
   const job = await hosts.poll(f.hostToken, f.installationId);
   if (job?.operation !== "buildSnapshot") throw Error("Missing build job");
   const route = createDockerHostRoutes(hosts, async () => ({ ok: false }));
-  let firstRequest = true;
   const request = (async (url, init) => {
-    if (firstRequest) {
-      firstRequest = false;
-      expect(JSON.parse(String(init?.body)).baselineVersion).toBe(1);
-      return new Response(null, { status: 400 });
-    }
     return (await route(new Request(String(url), init))) ?? new Response(null, { status: 404 });
   }) as typeof fetch;
   await httpApi(request).result(

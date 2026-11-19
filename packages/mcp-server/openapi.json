@@ -8839,6 +8839,7 @@
                 "type": "string",
                 "description": "Public failure code; clients must tolerate future codes.",
                 "examples": [
+                  "docker_host_upgrade_required",
                   "provider_routing_unavailable",
                   "github_hydration_failed",
                   "extension_not_found",

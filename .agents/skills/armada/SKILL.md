@@ -199,6 +199,11 @@ and access gates. This starts a new agent turn. For a standalone Docker restart,
 use the owner REST route `POST /api/v1/sandbox/resume` with `id` and a
 `request_id` UUID. Reuse that UUID after an uncertain outcome.
 
+A `docker_host_upgrade_required` refusal means the daemon must be upgraded.
+After the protocol-aware release ships, use `armada host add` and run its
+generated installer on the existing Docker host. Check `armada host list --json`
+for the reported protocol and `upgradeRequired: false`.
+
 ## 5. Several sandboxes, including a sandbox as caller
 
 The same API-only CLI can drive other sandboxes wherever it is installed with

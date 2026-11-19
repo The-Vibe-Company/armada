@@ -2,6 +2,7 @@ import { DOCKER_HOST_DRAINING_MESSAGE } from "./docker-host-drain.ts";
 import { providerRateLimitMessage } from "./provider-limit.ts";
 /** Closed failure categories shared by HTTP, MCP and API consumers. Legacy `unavailable` is not emitted. */
 export const API_FAILURE_STATUS = {
+  docker_host_upgrade_required: 409,
   provider_routing_unavailable: 503,
   github_hydration_failed: 503,
   extension_not_found: 404,
@@ -16,6 +17,8 @@ export const API_FAILURE_STATUS = {
 } as const;
 export type ApiFailureCode = keyof typeof API_FAILURE_STATUS;
 export const API_FAILURE_HELP: Record<ApiFailureCode, string> = {
+  docker_host_upgrade_required:
+    "Upgrade the Docker host daemon using the install command from armada host add, then wait for the host to check in.",
   provider_routing_unavailable:
     "Sandbox launch is unavailable because the server provider setup is incomplete. Ask the Armada administrator to finish provider setup, then retry.",
   github_hydration_failed:

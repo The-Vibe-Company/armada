@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import type { DockerHostVersionOffer } from "@armada/core";
 import type { DockerJobFailureReason } from "../../core/src/docker-api.ts";
 import { DOCKER_DISK_FLOOR_BYTES, DockerDiskFloorError } from "../../core/src/docker-disk-policy.ts";
 import {
@@ -8,6 +7,7 @@ import {
   type DockerHostJob,
   parseDockerHostJob,
 } from "../../core/src/docker-host-job.ts";
+import type { DockerHostPollResponse } from "../../core/src/docker-host-wire.ts";
 import { DockerMachineError, type DockerMachineRequest } from "../../core/src/docker-machine.ts";
 import type { DockerSandboxLimits } from "../../core/src/docker-resource-policy.ts";
 import {
@@ -101,20 +101,7 @@ export interface Api {
       /** Request IDs still executing here; the server hands out other sandboxes' jobs. */
       running?: string[];
     },
-  ): Promise<
-    DockerHostVersionOffer & {
-      job: Job | null;
-      containerInventory?: 1;
-      containerInventoryDeploymentId?: string;
-      /** The server held this poll until work existed or its hold elapsed. */
-      held?: true;
-      limits?: DockerSandboxLimits;
-      retentionSeconds?: number;
-      /** Every generation with a queued resume/bootstrap, not only the job handed out. */
-      pendingStarts?: { sandboxId: string; generation: string }[];
-      resumeClaims?: { requestId: string; sandboxId: string; generation: string }[];
-    }
-  >;
+  ): Promise<DockerHostPollResponse>;
   result(state: State, receipt: Receipt, expired?: true): Promise<void>;
   retainedOutputs?(state: State, requestId: string, read: () => Promise<Uint8Array<ArrayBuffer> | null>): Promise<void>;
   claim?(state: State, requestId: string, accepted: boolean): Promise<void>;

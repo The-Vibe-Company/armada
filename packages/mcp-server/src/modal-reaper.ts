@@ -67,6 +67,7 @@ export function createModalReaper(
         let connection: ModalReaperConnection;
         return {
           provider: "modal",
+          emitOverdueMachineIds: true,
           sourceId: appId,
           deploymentId,
           inventory: {
