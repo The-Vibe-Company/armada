@@ -84,19 +84,17 @@ The separate `templates/launch` endpoint keeps its `requestKey` and durable
 receipt, and shares applicable field schemas.
 
 #2773 standardizes `{ sandbox, golden, promptId, conversationId, ttlSeconds,
-expiresAt, github, helper, runtime }` across ordinary REST launches, SDK, CLI JSON and the operator MCP
+expiresAt, github, helper, runtime }` across REST sandbox launches, SDK, CLI JSON and the operator MCP
 `launch` tool. The sandbox has an Armada `id`, `provider`,
 `status` and optional `externalRef`; provider identifiers and runtime metadata
 are present only when available and safe to expose. `golden` is null for
 Docker. Null prompt/conversation IDs cover an idle or still-admitting launch;
 nullable expiry, helper and runtime fields represent absent values.
-For a pinned Modal launch on `sandbox/launch`, #2773 maps an admitted pending
-or successful template receipt to the same envelope using the reserved sandbox
-ID and available metadata. A refusal or terminal failure maps to a typed
-error. An ambiguous allocation returns `outcome_unknown` and carries a
-safe reference for replay or inspection. #2760–#2762 own the move to launch
-jobs and their `starting` semantics. Callers check the returned state for
-readiness.
+For a pinned Modal launch on `sandbox/launch`, the persisted success uses the
+same envelope. A refusal or terminal failure maps to a typed error. An
+unresolved request returns `outcome_unknown` and carries the reserved sandbox
+ID for inspection. #2760–#2762 own the move to launch jobs and their `starting`
+semantics.
 
 Accept `idempotencyKey` and `externalRef` for every provider. Scope replay by
 caller, org and operation, bind the key to the admitted input and return the
@@ -218,7 +216,7 @@ and Docker host daemon protocol retain their own rollout rules.
 operations under D5. The bare `orchestrator-tools` path hosts no operation.
 The four versioned launch aliases were already removed by #2714.
 
-The inventory uses `public-control-routes.ts`, the dashboard
+The inventory uses the public sign-in entries in `@armada/core/contract`, the dashboard
 `control-proxy.ts`, `public-rest-routes.ts`, `control.ts`,
 `control-tool-routes.ts` and the direct mounts in `serve.ts` as inputs.
 The MCP transport, OAuth protocol endpoints outside `/api/v1/`, health,

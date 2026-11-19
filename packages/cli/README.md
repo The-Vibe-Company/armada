@@ -20,3 +20,34 @@ sentinels. The transport recognises the `unknown_route` code and the fixed
 provider-specific GitHub refresh refusal. Typed commands validate success receipts
 before reporting success. Their control routes use JSON objects, including `{}`
 for empty acknowledgements.
+
+## Vault input and output
+
+Application variables and secrets use separate commands from model-account
+credentials. Supply values through stdin or `--file`, since command arguments
+can end up in shell history. The interactive secret prompt suppresses echo,
+including readline redraws.
+
+Application vault writes read the value before contacting the API. Input
+errors omit file paths, file contents, and rejected arguments because each
+could contain a secret. The CLI selects approved scalar metadata fields from
+list and write responses. Only an explicit variable read prints a value.
+
+Native model login obtains consent locally before import. The CLI sends the
+credential to the Armada API and prints a fixed confirmation after the write.
+
+## Sandbox command output
+
+For sandbox failures, HTTP 401 goes through shared login recovery. Other
+failures use recognised codes or complete, fixed binding and policy messages.
+Arbitrary provider and guest text stays out of diagnostics. The terminal list
+renders the safe list response without looking up sandbox internals and
+replaces control characters in labels and owners before displaying them.
+
+After a successful Boat or Modal launch in text mode, the CLI looks up
+optional resource advice with a two-second budget and quietly omits it when
+the route or evidence is unavailable.
+
+A closed stdout pipe ends the CLI with status zero, including during a follow
+operation. Check a submitted mutation's outcome before retrying it. The exit
+status in this case only describes the pipe.

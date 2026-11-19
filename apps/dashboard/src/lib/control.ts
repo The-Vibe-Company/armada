@@ -375,10 +375,12 @@ function failure(status: number, payload: Record<string, unknown> | null, featur
   const make = (text: string, withCode = true) => new ControlError(text, status, withCode ? code : undefined, detail);
   if (status === 401) return make("The Armada server refused this session. Sign in again.", false);
   if (status === 403) return make(message ?? "You are not allowed to do that.");
-  if ((status === 404 || status === 405) && (!message || message === "Unknown route.") && !detail.reason) {
-    return make(`This Armada server does not offer ${feature} yet.`, false);
+  if (
+    (status === 404 && code === "unknown_route") ||
+    ((status === 404 || status === 405) && !message && !code && !detail.reason)
+  ) {
+    return make(`This Armada server does not offer ${feature} yet.`);
   }
-  if (status >= 500) return make(message ?? controlFallback(status));
   return make(message ?? controlFallback(status));
 }
 

@@ -1,4 +1,5 @@
-import type { Harness, VaultStore } from "@armada/core";
+import { createHash } from "node:crypto";
+import { type Harness, launchFailureHelp, type VaultStore } from "@armada/core";
 import type { LaunchInput } from "@armada/core/contract";
 import {
   controlRouteKey,
@@ -34,6 +35,7 @@ import { readLaunchOptions } from "./launch-options.ts";
 import { canonicalLaunchResponse, goldenLaunchResponse } from "./launch-response-schemas.ts";
 import { type GoldenLaunchTiming, observeGoldenLaunch } from "./request-timing.ts";
 import { defineRoutes } from "./routes.ts";
+import { ToolApiError } from "./tool-api.ts";
 
 type LaunchControlOptions = Pick<
   ControlOptions,
@@ -355,6 +357,35 @@ function modelChoice(
   }
 }
 
+const pinnedModalRefusals = new Map([
+  ["credential_busy", "conflict"],
+  ["credential_binding_required", "credential_binding_required"],
+  ["credential_refused", "credential_refused"],
+  ["unauthorized", "credential_refused"],
+  ["forbidden", "forbidden"],
+  ["not_found", "not_found"],
+  ["invalid", "invalid"],
+  ["invalid_request", "invalid_request"],
+  ["no_credentials", "no_credentials"],
+  ["unsupported", "unsupported"],
+  ["unavailable", "dependency_unavailable"],
+  ["payment_required", "payment_required"],
+  ["provider_not_configured", "provider_not_configured"],
+  ["provider_routing_unavailable", "provider_routing_unavailable"],
+  ["rate_limited", "rate_limited"],
+  ["conflict", "conflict"],
+]);
+
+function pinnedModalFailure(receipt: Record<string, unknown>) {
+  const recorded = typeof receipt.failureCode === "string" ? pinnedModalRefusals.get(receipt.failureCode) : undefined;
+  const code = receipt.state === "failed" ? (recorded ?? "start_failed") : "outcome_unknown";
+  return new ToolApiError(
+    code,
+    launchFailureHelp(code) ?? "The pinned Modal launch was refused. Check the template and provider settings.",
+    typeof receipt.id === "string" ? { sandboxId: receipt.id } : undefined,
+  );
+}
+
 function configureDockerLaunch(options: ControlOptions, request: Request | undefined) {
   if (options.dockerLaunch && request) options.configureDockerLaunchRequest?.(request);
 }
@@ -404,13 +435,33 @@ export const launchRoutes = defineRoutes("launch", {
       if (!options.templates) throw new VaultError("unavailable", "Templates unavailable.");
       const base = templateRuntime(options, caller);
       if (!base) throw new VaultError("unavailable", "Template launching unavailable.");
-      const { provider, harness, runtimeVersion: _runtimeVersion, runtimeTransport, org: _org, ...input } = template;
+      const {
+        provider,
+        harness,
+        runtimeVersion: _runtimeVersion,
+        runtimeTransport,
+        org: _org,
+        idempotencyKey,
+        ...input
+      } = template;
       const organization = await resolveOrg(store, userId, templateOrg);
-      return launchTemplate(
+      const requestKey = `pinned-modal/${createHash("sha256").update(JSON.stringify(idempotencyKey)).digest("hex")}`;
+      const receipt = await launchTemplate(
         options.templates,
         caller,
-        { ...input, org: organization.id },
+        { ...input, org: organization.id, requestKey },
         {
+          pinnedLaunch: (result, manifest) => {
+            const envelope = goldenLaunchResponse(result);
+            const { templateId, revision, revisionId, account, definition, variables } = manifest;
+            return {
+              ...envelope,
+              sandbox: {
+                ...envelope.sandbox,
+                templateManifest: { templateId, revision, revisionId, account, definition, variables },
+              },
+            };
+          },
           validateDefinition: (definition) => {
             if (definition.provider !== provider || definition.harness !== harness)
               throw new VaultError("invalid", "Modal runtime templates require the selected Modal harness.");
@@ -432,6 +483,8 @@ export const launchRoutes = defineRoutes("launch", {
         },
         "template_rest",
       );
+      if (receipt.state === "succeeded") return launchOperation.output.parse(receipt.envelope);
+      throw pinnedModalFailure(receipt);
     }
     scopedOrg(caller, launch.org);
     if ("runtimeVersion" in launch) {

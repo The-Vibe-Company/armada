@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { editDefaults, goldenRequest, goldenRowState, providerCapacity, repoSlug } from "./golden-form.ts";
+import {
+  editDefaults,
+  goldenLaunchReadiness,
+  goldenRequest,
+  goldenRowState,
+  providerCapacity,
+  repoSlug,
+} from "./golden-form.ts";
 
 const ORG = "11111111-1111-4111-8111-111111111111";
 const base = { mode: "create", name: "web", org: ORG, provider: "boat", visibility: "org", init: "", setup: "" };
@@ -166,4 +173,41 @@ describe("what the page offers", () => {
       reason: "failed",
     });
   });
+});
+
+test("a golden's launch state names the first thing that holds it, in the tone of its cause", () => {
+  const base = { provider: "modal" as const, hasSnapshot: true, serverReady: true, connected: ["modal" as const] };
+  const look = (overrides: Partial<typeof base> | { connected: null | "boat"[] }) => {
+    const state = goldenLaunchReadiness({ ...base, ...overrides });
+    return state.kind === "ready" ? "ready" : [state.kind, state.tone, state.label, state.detail, state.connect];
+  };
+  expect(look({})).toBe("ready");
+  expect(look({ hasSnapshot: false, serverReady: false, connected: null })).toEqual([
+    "no-snapshot",
+    "warning",
+    "Needs a snapshot",
+    "Build it before launching from it.",
+    false,
+  ]);
+  expect(look({ serverReady: false })).toEqual([
+    "no-server",
+    "destructive",
+    "Server not configured",
+    "Launching needs the Armada server.",
+    false,
+  ]);
+  expect(look({ connected: null })).toEqual([
+    "provider-unknown",
+    "warning",
+    "Launch paused",
+    "The provider status is unavailable.",
+    false,
+  ]);
+  expect(look({ connected: ["boat"] })).toEqual([
+    "provider-missing",
+    "neutral",
+    "Modal not connected",
+    "An org admin connects Modal in Machines → Cloud providers to launch.",
+    true,
+  ]);
 });

@@ -181,7 +181,7 @@ export function generateOpenApi(table: readonly OpenApiOperation[] = Object.valu
         }),
       };
       description +=
-        ' Docker uses the other request variants: provider "docker" with no golden, either on a hostId (optionally with repos) or from a snapshotId (no repos). launch/options reports each provider\'s launch sources. Explicit pinned Modal template requests return a durable template launch receipt.';
+        ' Docker uses the other request variants: provider "docker" with no golden, either on a hostId (optionally with repos) or from a snapshotId (no repos). launch/options reports each provider\'s launch sources. Explicit pinned Modal template requests require idempotencyKey and return the shared launch envelope. An unresolved replay returns outcome_unknown with error.details.sandboxId.';
     }
     if (route === "sandbox/send" && input) {
       // One public path, two admissions chosen by the sandbox's provider: Docker
@@ -239,7 +239,7 @@ export function generateOpenApi(table: readonly OpenApiOperation[] = Object.valu
       operationId,
       description,
       ...(operation.directServer && { "x-armada-direct-server": true }),
-      security: [{ [viewer ? "viewerGrant" : "serviceToken"]: [] }],
+      security: operation.anonymous ? [] : [{ [viewer ? "viewerGrant" : "serviceToken"]: [] }],
       ...(parameters.length ? { parameters } : {}),
       ...(request && {
         requestBody: {
@@ -259,6 +259,14 @@ export function generateOpenApi(table: readonly OpenApiOperation[] = Object.valu
       responses: {
         [operation.successStatus ?? 200]: {
           description: "Success",
+          ...(operation.successHeaders && {
+            headers: Object.fromEntries(
+              Object.entries(operation.successHeaders).map(([name, schema]) => [
+                name,
+                { schema: responseJsonSchema(schema) },
+              ]),
+            ),
+          }),
           ...(operation.output && {
             content: {
               [operation.outputMediaType ?? "application/json"]: { schema: responseJsonSchema(operation.output) },

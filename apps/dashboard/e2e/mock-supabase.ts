@@ -2103,7 +2103,7 @@ function invitations(route: string, body: Row, request: Request): Response {
     row.status = "revoked";
     return json({ invitation: invitationDto(row) });
   }
-  return controlFail(404, "not_found", "Unknown route.");
+  return controlFail(404, "unknown_route", "Unknown route.");
 }
 
 function controlFail(status: number, code: string, message: string): Response {
@@ -2306,7 +2306,7 @@ function mcpControl(operation: string, body: Row, userId: string | null): Respon
       state.connections = state.connections.filter((item) => item !== row);
       return json({ ok: true });
     default:
-      return controlFail(404, "not_found", "Unknown route.");
+      return controlFail(404, "unknown_route", "Unknown route.");
   }
 }
 
@@ -2828,7 +2828,7 @@ function accounts(route: string, body: Row, request: Request): Response {
     return json({ hostedOAuth: false, nativeCLI: { codex_auth: "armada creds login codex" } });
   }
   if (route === "creds/accounts/models") return json({ connections: [] });
-  if (route === "creds/accounts/usage") return json({ error: { message: "Unknown route." } }, 404);
+  if (route === "creds/accounts/usage") return controlFail(404, "unknown_route", "Unknown route.");
   const scope = body.scope === "org" ? "org" : body.scope === "user" ? "user" : null;
   if (!scope) return controlFail(400, "invalid", "Scope is user or org.");
   if (scope === "org" && !isAdmin(body.org, userId))

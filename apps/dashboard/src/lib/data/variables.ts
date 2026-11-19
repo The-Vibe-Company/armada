@@ -30,7 +30,8 @@ export async function listSelectedVault(): Promise<VaultList> {
     return { state: "ready", userId: viewer.id, items: await vault.list(selected.org.id) };
   } catch (error) {
     if (!(error instanceof ControlError)) throw error;
-    if (error.status === 404 && error.code === undefined) return { state: "unsupported", message: error.message };
+    if (error.status === 404 && (error.code === "unknown_route" || error.code === undefined))
+      return { state: "unsupported", message: error.message };
     return { state: "error", message: error.message };
   }
 }

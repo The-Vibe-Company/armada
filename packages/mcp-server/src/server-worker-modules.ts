@@ -11,7 +11,8 @@ import { createRuntimeAgent } from "./runtime-agent.ts";
 import { createRuntimeIdle } from "./runtime-idle.ts";
 import { createFinishedDockerCleanup } from "./sandbox-finish.ts";
 import { createSandboxLifecycle } from "./sandbox-lifecycle.ts";
-import { createSandboxPullRequests } from "./sandbox-pull-requests.ts";
+import { OUTPUTS_CAPTURE } from "./sandbox-outputs.ts";
+import { createPullRequestScanJob } from "./sandbox-pull-requests.ts";
 import { dockerMounts, outputMounts, runtimeMounts } from "./server-mounts.ts";
 import type { ServerModule } from "./server-registration.ts";
 import { createServerRoutineScheduler } from "./server-routines.ts";
@@ -34,25 +35,75 @@ export function createWorkerServices(services: ServerServices) {
 type WorkerServices = ReturnType<typeof createWorkerServices>;
 export type LaneFactory = (services: WorkerServices) => ServerLifecycleLane | undefined;
 
-const pullRequestLane: LaneFactory = ({ githubApp, sql, store, config, lifecycleProvider, runtimeCommands }) =>
-  githubApp
-    ? createSandboxPullRequests(
+const jobsLane: LaneFactory = ({
+  githubApp,
+  sql,
+  jobs,
+  store,
+  config,
+  lifecycleProvider,
+  runtimeCommands,
+  webhooks,
+  options,
+  outputs,
+}) => {
+  const prScan = githubApp
+    ? createPullRequestScanJob(
         sql,
+        jobs,
         { store, app: githubApp, encryptionKey: config.encryptionKey },
-        async (target, request) => {
-          if (!target.runtime) return (await lifecycleProvider(target.id)).exec(request);
-          return createRuntimeAgent(runtimeCommands, {
-            provider: target.provider,
-            harness: target.harness,
-            ownerId: target.owner_id,
-            sandboxId: target.id,
-            providerSandboxId: target.provider_sandbox_id,
-            cwd: "/home/user",
-            defaults: { model: "", reasoningEffort: "" },
-          }).exec(request);
+        async (target, request, canDispatch) => {
+          if (!target.runtime) {
+            const provider = await lifecycleProvider(target.id);
+            if (!(await canDispatch())) throw Error("PR scan generation changed.");
+            request.signal?.throwIfAborted();
+            return provider.exec(request);
+          }
+          const epoch = target.runtime_epoch;
+          if (epoch === null) throw Error("No enrolled runtime for PR scan.");
+          return createRuntimeAgent(
+            {
+              call: (owner, command, options) =>
+                runtimeCommands.call(owner, command, { ...options, expectedEpoch: epoch }),
+            },
+            {
+              provider: target.provider,
+              harness: target.harness,
+              ownerId: target.owner_id,
+              sandboxId: target.id,
+              providerSandboxId: target.provider_sandbox_id,
+              cwd: "/home/user",
+              defaults: { model: "", reasoningEffort: "" },
+            },
+          ).exec(request);
         },
       )
     : undefined;
+  const runner = createJobsRunner(
+    jobs,
+    {
+      webhook: { concurrency: 1, run: webhooks.run },
+      ...(prScan ? { pr_scan: prScan } : {}),
+      ...(config.encryptionKey ? { [OUTPUTS_CAPTURE]: outputs.captureJob } : {}),
+    },
+    options.logError,
+  );
+  return {
+    ...runner,
+    async reconcileOne(signal) {
+      try {
+        await outputs.enqueueCaptures(jobs, signal);
+      } catch {
+        (options.logError ?? console.error)("armada: output capture scheduling unavailable.");
+      }
+      return runner.reconcileOne(signal);
+    },
+    async drain() {
+      await runner.drain();
+      await outputs.drain();
+    },
+  };
+};
 
 const idleLane: LaneFactory = ({ sql, config, runtimeCheckpoint, idleDelayMs, dockerBootstrap }) =>
   createRuntimeIdle(sql, config.encryptionKey, runtimeCheckpoint, {
@@ -71,7 +122,6 @@ const idleLane: LaneFactory = ({ sql, config, runtimeCheckpoint, idleDelayMs, do
       : {}),
   });
 
-const jobsLane: LaneFactory = ({ jobs, options }) => createJobsRunner(jobs, {}, options.logError);
 const dockerCleanupLane: LaneFactory = ({ sql, config }) => createFinishedDockerCleanup(sql, config.encryptionKey);
 export const retentionWorker =
   ({ sql, control }: ServerServices) =>
@@ -98,13 +148,10 @@ export function extraReaperLanes({ options }: ServerServices) {
 }
 
 export const jobsModule: ServerModule = ({ workers }) => {
-  workers.managed.set("pull-requests", pullRequestLane);
   workers.managed.set("jobs", jobsLane);
 };
-export const outputModule: ServerModule = ({ mounts, workers }) => {
+export const outputModule: ServerModule = ({ mounts }) => {
   mounts.push(outputMounts);
-  workers.managed.set("outputs", ({ outputs }) => outputs);
-  workers.managed.set("webhooks", ({ webhooks }) => webhooks);
 };
 export const nativeModule: ServerModule = ({ workers }) => {
   workers.managed.set("native-prompts", ({ nativePrompts }) => nativePrompts);

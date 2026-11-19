@@ -1046,26 +1046,28 @@ describe("tools", () => {
   });
 
   test("failed model record inserts do not fail an accepted launch or send", async () => {
-    // This case creates a trigger: keep it off the row-only shared connection.
-    server = await harness();
-    const { token, client, people, boat, db } = server;
+    const { token, client, people, boat, db } = await start();
     const mcp = await client(await token(people.member));
     await db.exec(
       `create function reject_model_record() returns trigger language plpgsql as $$ begin raise exception 'record unavailable'; end $$; create trigger reject_model_record before insert on sandbox_turn_models for each row execute function reject_model_record();`,
     );
-    const launched = await call(mcp, "launch", {
-      provider: "boat",
-      golden: "shared",
-      harness: "claude",
-      prompt: "work",
-    });
-    expect(launched.isError).toBe(false);
-    expect(boat.stops).toHaveLength(0);
-    const sent = await call(mcp, "send", { id: launchSandboxId(launched.data), prompt: "next" });
-    expect(sent.isError).toBe(false);
-    expect(boat.prompts).toHaveLength(2);
-    const status = await call(mcp, "status", { id: launchSandboxId(launched.data) });
-    expect(status.data).toMatchObject({ status: "running", prompt: { state: "running" } });
+    try {
+      const launched = await call(mcp, "launch", {
+        provider: "boat",
+        golden: "shared",
+        harness: "claude",
+        prompt: "work",
+      });
+      expect(launched.isError).toBe(false);
+      expect(boat.stops).toHaveLength(0);
+      const sent = await call(mcp, "send", { id: launchSandboxId(launched.data), prompt: "next" });
+      expect(sent.isError).toBe(false);
+      expect(boat.prompts).toHaveLength(2);
+      const status = await call(mcp, "status", { id: launchSandboxId(launched.data) });
+      expect(status.data).toMatchObject({ status: "running", prompt: { state: "running" } });
+    } finally {
+      await db.exec("drop trigger reject_model_record on sandbox_turn_models; drop function reject_model_record()");
+    }
   });
 
   test("turn model provenance survives send overrides and provider history retention", async () => {

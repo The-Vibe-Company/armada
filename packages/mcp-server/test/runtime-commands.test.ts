@@ -4,6 +4,7 @@ import type { Sql } from "@armada/core/server";
 import { encryptSecret } from "@armada/core/server";
 import { runtimeOperatorDiagnostic } from "../../core/src/runtime-operator-diagnostic.ts";
 import { controlFailureResponse } from "../src/control-errors.ts";
+import { createJobsStore } from "../src/jobs/store.ts";
 import { createOutboundWebhooks } from "../src/outbound-webhooks.ts";
 import { continueRequest, observeRequest } from "../src/request-observability.ts";
 import { createRuntimeAgent } from "../src/runtime-agent.ts";
@@ -58,6 +59,7 @@ async function fixture() {
   };
   return {
     db,
+    sql,
     people,
     id,
     authority,
@@ -1045,13 +1047,36 @@ test("bound model check uses enrolled health and exact epoch, never destinations
   expect(String(failure)).not.toContain("private_key_echo");
 });
 
+function webhookAttempts(sql: Sql, sandboxId: string) {
+  const worker = createOutboundWebhooks(sql, "invalid_key", "https://armada.example", {
+    now: () => Date.UTC(2030, 0, 1),
+  });
+  const store = createJobsStore(sql);
+  const owner = crypto.randomUUID();
+  return async () => {
+    const { rows } = await sql.query(
+      `update jobs j set run_after=now() from outbound_webhook_deliveries d
+       where j.id=d.id and j.kind='webhook' and j.state='queued'
+         and d.payload->>'sandboxId'=$1 and d.attempts=0 returning j.id`,
+      [sandboxId],
+    );
+    for (const _ of rows) {
+      const job = (await store.claim("webhook", owner, 30, 1))!;
+      const result = await worker.run(job, {
+        signal: new AbortController().signal,
+        canDispatch: async () => (await store.inspect(job, owner)) === "dispatch",
+      });
+      expect(await store.complete(job, owner, result)).toBe(true);
+    }
+  };
+}
+
 test("cancelled queued runtime turns defer webhooks until the first durable command reply preserves their alias", async () => {
   const f = await fixture();
   const active = await f.enrol();
-  const sql: Sql = { query: (q, p) => f.db.query(q, p) };
   // Invalid encryption prevents any network send after a claim, while the
   // attempts counter proves whether admission happened before alias readiness.
-  const worker = createOutboundWebhooks(sql, "invalid_key", "https://armada.example");
+  const tryDeliveries = webhookAttempts(f.sql, f.id);
   await f.db.query(
     "insert into outbound_webhook_endpoints(org_id,url,secret_enc) values($1,'https://receiver.example/events',$2)",
     [f.people.org, new Uint8Array([1])],
@@ -1074,11 +1099,11 @@ test("cancelled queued runtime turns defer webhooks until the first durable comm
     );
     await f.bridge().enqueue(f.people.owner, command);
     await f.db.query("select enqueue_webhook_turn($1,$2,'finished')", [f.id, nativeId]);
-    expect(await worker.reconcileOne(new AbortController().signal)).toBe(false);
+    await tryDeliveries();
     await f.db.query("update account_turn_queue set state='failed',failure_reason='cancelled' where request_id=$1", [
       publicId,
     ]);
-    expect(await worker.reconcileOne(new AbortController().signal)).toBe(false);
+    await tryDeliveries();
     expect(
       (
         await f.db.query<{ attempts: number }>(
@@ -1101,7 +1126,7 @@ test("cancelled queued runtime turns defer webhooks until the first durable comm
     expect(
       (await f.db.query("select state,native_prompt_id from account_turn_queue where request_id=$1", [publicId])).rows,
     ).toEqual([{ state: "failed", native_prompt_id: nativeId }]);
-    expect(await worker.reconcileOne(new AbortController().signal)).toBe(true);
+    await tryDeliveries();
     expect(
       (
         await f.db.query<{ attempts: number }>(
@@ -1110,18 +1135,14 @@ test("cancelled queued runtime turns defer webhooks until the first durable comm
         )
       ).rows,
     ).toEqual([{ attempts: 1 }]);
-    // Isolate each prefix from already-failed delivery retries.
-    await f.db.query("delete from outbound_webhook_deliveries");
   }
 });
 
 test("a superseded unfinished queued command cannot hold stop or later turn webhooks", async () => {
   const f = await fixture();
   await f.enrol();
-  const sql: Sql = { query: (q, p) => f.db.query(q, p) };
-  // Invalid encryption prevents any network send; a claim (true) proves admission.
-  const worker = createOutboundWebhooks(sql, "invalid_key", "https://armada.example");
-  await f.db.query("delete from outbound_webhook_deliveries");
+  // Invalid encryption prevents network I/O. A recorded attempt proves dispatch.
+  const tryDeliveries = webhookAttempts(f.sql, f.id);
   await f.db.query(
     "insert into outbound_webhook_endpoints(org_id,url,secret_enc) values($1,'https://receiver.example/events',$2)",
     [f.people.org, new Uint8Array([1])],
@@ -1149,18 +1170,18 @@ test("a superseded unfinished queued command cannot hold stop or later turn webh
     ).rows;
   await f.db.query("select enqueue_webhook_turn($1,'native_uncertain','finished')", [f.id]);
   // While the reply can still arrive, the alias may still be published.
-  expect(await worker.reconcileOne(new AbortController().signal)).toBe(false);
+  await tryDeliveries();
+  expect(await attempts()).toEqual([{ type: "turn.finished", attempts: 0 }]);
   await f.enrol();
   expect(await f.bridge().result(f.people.owner, f.id, `follow_${publicId}`)).toEqual({ state: "superseded" });
   await f.db.query("select enqueue_webhook_turn($1,'native_later','finished')", [f.id]);
   await f.db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [f.id]);
-  while (await worker.reconcileOne(new AbortController().signal));
+  await tryDeliveries();
   expect(await attempts()).toEqual([
     { type: "sandbox.stopped", attempts: 1 },
     { type: "turn.finished", attempts: 1 },
     { type: "turn.finished", attempts: 1 },
   ]);
-  await f.db.query("delete from outbound_webhook_deliveries");
 });
 
 test.each(["accepted", "rejected"] as const)(
@@ -1333,6 +1354,55 @@ test("a command answered before its first result read still records the fenced a
   expect(replay.records).toEqual([]);
 });
 
+function bootstrapFailureRequest(token: string) {
+  return new Request("https://armada.test/api/runtime/progress", {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}` },
+    body: JSON.stringify({ stage: "bootstrap_failed" }),
+  });
+}
+
+test("bootstrap failure journals one transition and refuses progress authenticated against a stale generation", async () => {
+  const f = await fixture();
+  const { enrolmentToken } = await f.authority.issue({ ownerId: f.people.owner, sandboxId: f.id, configuration: {} });
+  const request = () => bootstrapFailureRequest(enrolmentToken);
+  const stale = createRuntimeProgress({
+    ...f.authority,
+    withBootstrap: (token, work) =>
+      f.authority.withBootstrap(token, (tx, scope, generation) => work(tx, scope, String(BigInt(generation) + 1n))),
+  });
+  const journal = () =>
+    f.db.query("select from_status,to_status,code from sandbox_transitions where sandbox_id=$1", [f.id]);
+  expect((await stale(request()))?.status).toBe(401);
+  expect((await journal()).rows).toEqual([]);
+  expect((await f.db.query("select status from sandboxes where id=$1", [f.id])).rows).toEqual([{ status: "ready" }]);
+
+  const report = createRuntimeProgress(f.authority);
+  expect((await report(request()))?.status).toBe(200);
+  expect((await report(request()))?.status).toBe(401);
+  expect((await journal()).rows).toEqual([{ from_status: "ready", to_status: "failed", code: "bootstrap_failed" }]);
+});
+
+test("a failed reason write rolls back the bootstrap status change and journal", async () => {
+  const f = await fixture();
+  const { enrolmentToken } = await f.authority.issue({ ownerId: f.people.owner, sandboxId: f.id, configuration: {} });
+  const report = createRuntimeProgress(f.authority);
+  await f.db.exec(
+    `alter table sandboxes add constraint fixture_reject_bootstrap_reason
+     check (status_reason is distinct from 'Armada runtime bootstrap failed.') not valid`,
+  );
+  try {
+    expect((await report(bootstrapFailureRequest(enrolmentToken)))?.status).toBe(400);
+    expect((await f.db.query("select status,status_reason from sandboxes where id=$1", [f.id])).rows).toEqual([
+      { status: "ready", status_reason: null },
+    ]);
+    expect((await f.db.query("select id from sandbox_transitions where sandbox_id=$1", [f.id])).rows).toEqual([]);
+  } finally {
+    await f.db.exec("alter table sandboxes drop constraint fixture_reject_bootstrap_reason");
+  }
+  expect((await report(bootstrapFailureRequest(enrolmentToken)))?.status).toBe(200);
+});
+
 test("authenticated boot and turn diagnostics retain their initiating request IDs and sanitized stack", async () => {
   const f = await fixture();
   const records: Record<string, unknown>[] = [];
@@ -1399,6 +1469,9 @@ test("authenticated boot and turn diagnostics retain their initiating request ID
       sandboxId: f.id,
     },
   ]);
+  expect(
+    (await f.db.query("select from_status,to_status,code from sandbox_transitions where sandbox_id=$1", [f.id])).rows,
+  ).toEqual([{ from_status: "ready", to_status: "failed", code: "artifact_preparation" }]);
   expect(JSON.stringify(records)).not.toContain("private_config_canary");
   expect((await f.db.query("select status,status_reason from sandboxes where id=$1", [f.id])).rows).toEqual([
     {

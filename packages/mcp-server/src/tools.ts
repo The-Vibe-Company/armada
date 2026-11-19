@@ -19,10 +19,13 @@ import type { ToolBinding } from "./tool-registration.ts";
 
 /** Everything a tool call may use, for one authenticated request. */
 export interface ToolContext {
+  readOutputSnapshot?: ReturnType<typeof import("./sandbox-outputs.ts").createSandboxOutputs>["readSnapshot"];
+  outputSignal?: AbortSignal;
   accountTurns?: import("./account-turn-queue.ts").AccountTurnQueue;
   sandboxBillingAccount?: (id: string) => Promise<import("./sandbox-billing-account.ts").SandboxBillingAccount | null>;
   dockerControls?: import("./docker-sandbox-controls.ts").DockerSandboxControls;
   runtimeSend?: RuntimeFollowup;
+  runtimeStopCheckpoint?: ReturnType<typeof import("./runtime-checkpoint.ts").createRuntimeStopCheckpoint>;
   measure?: import("./request-timing.ts").RequestTiming["measure"];
   storedProviders?: Partial<Record<SandboxProviderId, ToolContext["provider"]>>;
   skillDefaults?: SkillDefaultsService;

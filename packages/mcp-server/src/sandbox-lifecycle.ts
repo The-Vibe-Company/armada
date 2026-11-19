@@ -9,9 +9,11 @@ import {
   VaultError,
 } from "@armada/core/server";
 import type { ModalProvider } from "@armada/provider-modal";
+import { releaseAccountCapacity } from "./account-capacity.ts";
 import { mergedWorkProof } from "./merged-work.ts";
 
 import { nativeIdleDue, nativeQuiescent } from "./native-idle.ts";
+import { SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 import { INTERRUPTED_LAUNCH_REASON } from "./turns.ts";
 import { preserveBeforeStop, recordStopDispatch } from "./work-preservation.ts";
 
@@ -39,6 +41,7 @@ interface SandboxTransition {
     | "expiry"
     | "idle"
     | "lifecycle_runner"
+    | "docker_host"
     | "delete_job"
     | "retention_job";
   code: string;
@@ -102,6 +105,77 @@ export async function recordDockerCleanupReceipt(
     actor: "delete_job",
     code: "docker_delete_completed",
     effects: [],
+  });
+}
+
+export async function recordRuntimeStartupFailure(
+  tx: Sql,
+  sandboxId: string,
+  generation: string,
+  code: string,
+  message: string,
+) {
+  const result = await transitionSandbox(tx, {
+    sandboxId,
+    expectedGeneration: generation,
+    fromStates: ["starting", "ready", "running"],
+    toState: "failed",
+    actor: "lifecycle_runner",
+    code,
+    effects: [],
+  });
+  if (result.kind === "applied") {
+    await tx.query("update public.sandboxes set status_reason=$2 where id=$1 and lifecycle_generation=$3", [
+      sandboxId,
+      message,
+      generation,
+    ]);
+  }
+  return result;
+}
+
+export async function recordObservedRuntimeFailure(
+  sql: Sql,
+  scope: [string[], string],
+  observation: {
+    sandboxId: string;
+    generation: number;
+    fromState: "ready" | "running";
+    reason: string | null;
+    stoppedAt: string | null;
+  },
+) {
+  if (!sql.transaction) throw new Error("Runtime failure publication requires a transaction.");
+  const { sandboxId, generation, fromState, reason, stoppedAt } = observation;
+  return sql.transaction(async (tx) => {
+    const eligible = await tx.query(
+      `select s.id from public.sandboxes s
+       where s.id=$3::uuid and ${SANDBOX_VISIBLE}
+         and ((s.provider='boat' and s.boat_runtime) or (s.provider='modal' and s.runtime_transport='dialout'))
+         and s.stop_requested_at is null and s.deleted_at is null
+         and (s.activity_until is null or s.activity_until<now())
+         and (s.reconcile_lease_until is null or s.reconcile_lease_until<now())
+       for update of s`,
+      [...scope, sandboxId],
+    );
+    if (!eligible.rows.length) return { kind: "conflict" } satisfies SandboxTransitionResult;
+    const result = await transitionSandbox(tx, {
+      sandboxId,
+      expectedGeneration: generation,
+      fromStates: [fromState],
+      toState: "failed",
+      actor: "lifecycle_runner",
+      code: "runtime_provider_failure",
+      effects: [],
+    });
+    if (result.kind === "applied") {
+      await tx.query(
+        "update public.sandboxes set status_reason=$2,stopped_at=coalesce($3::timestamptz,stopped_at) where id=$1",
+        [sandboxId, reason, stoppedAt],
+      );
+      if (stoppedAt !== null) await releaseAccountCapacity(tx, sandboxId);
+    }
+    return result;
   });
 }
 
@@ -183,10 +257,8 @@ export async function failDockerResumeActivation(
   requestId: string,
   reason: string,
 ) {
-  const failed = await tx.query(
-    `update public.sandboxes s set status='failed',status_reason=$4,
-       transition_context='{"actor":"docker_host","code":"resume_ack_failed"}'::jsonb,
-       lifecycle_generation=s.lifecycle_generation+1
+  const fenced = await tx.query<{ status: "starting" | "ready" | "running"; generation: string }>(
+    `update public.sandboxes s set lifecycle_generation=s.lifecycle_generation+1
      from public.docker_host_jobs resumed
      where s.id=$1 and s.lifecycle_generation=$2 and s.provider='docker'
        and s.status in ('starting','ready','running') and s.stop_requested_at is null and s.deleted_at is null
@@ -195,10 +267,24 @@ export async function failDockerResumeActivation(
        and not exists (
          select 1 from public.docker_host_jobs later where later.bound_sandbox_id=s.id
            and later.host_id=resumed.host_id and later.bound_operation='resume' and later.position>resumed.position
-       ) returning s.id`,
-    [sandboxId, generation, requestId, reason],
+       ) returning s.status, s.lifecycle_generation::text as generation`,
+    [sandboxId, generation, requestId],
   );
-  return failed.rows.length > 0;
+  const activation = fenced.rows[0];
+  if (!activation) return false;
+
+  const result = await transitionSandbox(tx, {
+    sandboxId,
+    expectedGeneration: activation.generation,
+    fromStates: [activation.status],
+    toState: "failed",
+    actor: "docker_host",
+    code: "resume_ack_failed",
+    effects: [],
+  });
+  if (result.kind === "conflict") throw new Error("Docker resume activation changed while settling its failure.");
+  await tx.query("update public.sandboxes set status_reason=$2 where id=$1", [sandboxId, reason]);
+  return true;
 }
 
 export async function requestRefusedDockerResumeStop(tx: Sql, sandboxId: string, generation: string) {
@@ -374,6 +460,7 @@ export function createSandboxLifecycle(
           credential_version: number | null;
           owner_is_member: boolean;
           retained_resume: boolean;
+          checkpointed_stop: boolean;
           interrupted_resume: boolean;
           protected_resume: boolean;
           work_merged: boolean | null;
@@ -412,6 +499,11 @@ export function createSandboxLifecycle(
         returning s.id,s.provider_sandbox_id,s.runtime_transport,s.boat_runtime,s.lifecycle_generation,s.expires_at,s.status::text as status,s.status_reason,s.task_prompt_id,s.activity_lease_id,s.application_secret_tainted,s.credential_id,s.credential_version,s.stop_requested_at,s.preservation_note,
           ${mergedWorkProof("s")} as work_merged,due.retained_resume,
           due.modal_resume as protected_resume,
+          (s.status='stopping' and s.stop_requested_at is not null and exists(
+            select 1 from public.sandbox_transitions t where t.sandbox_id=s.id
+              and t.generation between s.lifecycle_generation-1 and s.lifecycle_generation
+              and t.actor='api' and t.code='runtime_retained_stop' and t.to_status='stopping'
+          )) as checkpointed_stop,
           (s.provider='boat' and s.boat_runtime and s.status='starting' and exists(
             select 1 from public.runtime_resumes r where r.sandbox_id=s.id and r.request_id=s.activity_lease_id
               and r.phase='dispatched' and r.receipt is null
@@ -756,7 +848,10 @@ export function createSandboxLifecycle(
           if (idleStop && !reconcilingStop) await operation(signal, requireIdle);
           const requireRetention =
             !expired &&
-            (retainedResume || idleStop || ["idle_paused", "work_merged"].includes(row.status_reason ?? ""));
+            (row.checkpointed_stop ||
+              retainedResume ||
+              idleStop ||
+              ["idle_paused", "work_merged"].includes(row.status_reason ?? ""));
           recordStopDispatch(row.id, row.provider_sandbox_id, "lifecycle_stop");
           await operation(signal, () =>
             provider.stop({
@@ -806,6 +901,7 @@ export function createSandboxLifecycle(
         if (
           resolved &&
           !rollbackRetainedResume &&
+          (!row.checkpointed_stop || expired) &&
           (providerId !== "boat" || observing) &&
           caught instanceof ProviderError &&
           caught.code === "not_found"

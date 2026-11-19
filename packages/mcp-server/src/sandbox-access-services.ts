@@ -370,6 +370,7 @@ export function createSandboxAccessServices(input: {
   return {
     scopedToolsRoute: createSandboxScopedGateway(
       children,
+      authority,
       finish,
       createRuntimeSelfFinish(sql, input.encryptionKey, input.outputs),
     ),

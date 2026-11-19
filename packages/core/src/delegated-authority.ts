@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { isScopedMethod, scopedOperations } from "./contract/scoped.ts";
 import type { Harness } from "./contract.ts";
 import type { DelegatedScope } from "./delegated-access.ts";
 import type { Sql } from "./golden-store.ts";
@@ -25,14 +26,6 @@ export type AuthorizeDelegatedAccount = (
   sql: Sql,
   input: { userId: string; orgId: string; harness: Harness; credentialId: string; credentialVersion: number },
 ) => Promise<void>;
-const methods: Record<string, DelegatedScope> = {
-  launch: "worker:launch",
-  read: "worker:read",
-  message: "worker:message",
-  stop: "worker:stop",
-  finish: "worker:stop",
-  extend: "worker:extend",
-};
 export class DelegatedAuthorityDenied extends Error {
   constructor() {
     super("Orchestrator authority is unavailable or denied.");
@@ -67,26 +60,25 @@ export class DelegatedAuthority {
     private readonly authorizeAccount: AuthorizeDelegatedAccount,
   ) {}
 
-  /** Hold parent/member/generation locks through receipt reservation, not provider I/O.
-   * Returned work must be a durable operation; external effects reconcile that receipt. */
-  async admit<T>(
-    token: string,
-    request: DelegatedRequest,
-    reserve: (sql: Sql, principal: DelegatedPrincipal) => Promise<T>,
-  ): Promise<T> {
-    const scope = Object.hasOwn(methods, request.method) ? methods[request.method] : undefined;
-    if (!scope || !/^armada_epoch_[a-f0-9]{64}$/.test(token)) return deny();
-    if (!this.sql.transaction) return deny();
-    return this.sql.transaction(async (tx) => {
-      const result = await tx.query<{
-        id: string;
-        owner_id: string;
-        org_id: string;
-        role: "admin" | "member";
-        golden_ids: string[];
-        account_ids: string[];
-      }>(
-        `select o.id,o.owner_id,o.org_id,m.role,d.golden_ids,d.account_ids
+  /** Discovery reads the current grant without reserving work or locking the parent. */
+  async catalogGrant(token: string) {
+    if (!/^armada_epoch_[a-f0-9]{64}$/.test(token)) return deny();
+    const { scopes, kind } = await this.activeGrant(this.sql, token, null);
+    return { scopes, kind };
+  }
+
+  private async activeGrant(tx: Sql, token: string, scope: DelegatedScope | null) {
+    const result = await tx.query<{
+      id: string;
+      owner_id: string;
+      org_id: string;
+      role: "admin" | "member";
+      golden_ids: string[];
+      account_ids: string[];
+      scopes: DelegatedScope[];
+      kind: string;
+    }>(
+      `select o.id,o.owner_id,o.org_id,m.role,d.golden_ids,d.account_ids,d.scopes,o.kind
         from public.orchestrator_delegations d
         join public.armada_access_parents o on o.id=d.orchestrator_id
         join public.members m on m.org_id=o.org_id and m.user_id=o.owner_id
@@ -94,12 +86,25 @@ export class DelegatedAuthority {
         where d.hash=$1 and d.revoked_at is null and d.acknowledged_at is not null
         and d.expires_at>now() and d.epoch=o.authority_epoch and o.state='ready'
         and d.native_generation=s.orchestrator_native_generation and s.status not in ('stopped','deleted','failed')
-        and s.stop_requested_at is null and $2=any(d.scopes)
-        for update of o,d,s,m`,
-        [digest(token), scope],
-      );
-      const row = result.rows[0];
-      if (!row) return deny();
+        and s.stop_requested_at is null and ($2::text is null or $2=any(d.scopes))
+        ${scope === null ? "" : "for update of o,d,s,m"}`,
+      [digest(token), scope],
+    );
+    return result.rows[0] ?? deny();
+  }
+
+  /** Hold parent/member/generation locks through receipt reservation, not provider I/O.
+   * Returned work must be a durable operation; external effects reconcile that receipt. */
+  async admit<T>(
+    token: string,
+    request: DelegatedRequest,
+    reserve: (sql: Sql, principal: DelegatedPrincipal) => Promise<T>,
+  ): Promise<T> {
+    const scope = isScopedMethod(request.method) ? scopedOperations[request.method].scope : undefined;
+    if (!scope || !/^armada_epoch_[a-f0-9]{64}$/.test(token)) return deny();
+    if (!this.sql.transaction) return deny();
+    return this.sql.transaction(async (tx) => {
+      const row = await this.activeGrant(tx, token, scope);
       if (request.method === "launch") {
         if (
           !request.goldenId ||
@@ -257,7 +262,6 @@ export class DelegatedAuthority {
   }
 }
 
-/** Server-only entropy helper. Never persisted, logged, returned through a public DTO, or used as an owner token. */
 export function newDelegatedEpochSecret(): { token: string; hash: string } {
   const token = `armada_epoch_${randomBytes(32).toString("hex")}`;
   return { token, hash: digest(token) };

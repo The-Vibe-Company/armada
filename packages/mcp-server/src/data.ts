@@ -40,6 +40,7 @@ import type { Caller } from "./caller.ts";
 import { scopedOrg } from "./control-caller.ts";
 import { createResourceStore, type ResourceStore } from "./resource-store.ts";
 import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
+import { recordObservedRuntimeFailure } from "./sandbox-lifecycle.ts";
 import { SANDBOX_MEMBER, SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 import { admittedTurnContexts, stampTurnPricing, withServerCost } from "./turn-pricing.ts";
 import { preserveBeforeStop, readWorkRecovery, type StopAuthority } from "./work-preservation.ts";
@@ -56,7 +57,9 @@ export interface SandboxView extends SandboxRecord {
 
 export interface ServerSandboxPatch extends SandboxPatch {
   onlyIfIdle?: boolean;
+  retainedRuntimeStop?: string;
   modalRuntimeExtensionTarget?: string;
+  runtimeFailureFrom?: "ready" | "running";
 }
 
 export interface ServerSandboxStore extends SandboxStore {
@@ -737,6 +740,21 @@ export function createSqlData(
         );
       },
       async update(id, patch) {
+        const reason = statusReasonOf(patch);
+        if (patch.runtimeFailureFrom !== undefined) {
+          if (patch.expectedGeneration === undefined || reason === undefined)
+            throw new DataError("Runtime failure publication requires a transaction, generation and diagnostic.");
+          const result = await recordObservedRuntimeFailure(sql, scope, {
+            sandboxId: id,
+            generation: patch.expectedGeneration,
+            fromState: patch.runtimeFailureFrom,
+            reason,
+            stoppedAt: patch.stoppedAt ?? null,
+          });
+          if (result.kind === "conflict")
+            throw new DataError("Runtime failure observation is stale.", "sandbox_not_ready");
+          return;
+        }
         const sets: string[] = [];
         const params: unknown[] = [...scope, id];
         const set = (column: string, value: unknown, cast: string) => {
@@ -783,8 +801,12 @@ export function createSqlData(
         if (patch.taskPromptId !== undefined) set("task_prompt_id", patch.taskPromptId, "::text");
         if (patch.status !== undefined) {
           set("status", patch.status, "::public.sandbox_status");
+          const code =
+            patch.retainedRuntimeStop === undefined
+              ? `'sandbox_' || ($${params.length}::public.sandbox_status)::text`
+              : "'runtime_retained_stop'";
           sets.push(`transition_context = case when s.provider in ('boat','modal')
-            then jsonb_build_object('actor','api','code','sandbox_' || ($${params.length}::public.sandbox_status)::text) end`);
+            then jsonb_build_object('actor','api','code',${code}) end`);
         }
         if (patch.conversationIds !== undefined) set("conversation_ids", patch.conversationIds, "::text[]");
         if (patch.stoppedAt !== undefined) set("stopped_at", patch.stoppedAt, "::timestamptz");
@@ -794,7 +816,6 @@ export function createSqlData(
         const extensionDeadlineParam = patch.expiresAt === undefined ? undefined : params.length;
         if (patch.effectiveTtlSeconds !== undefined)
           set("effective_ttl_seconds", patch.effectiveTtlSeconds, "::integer");
-        const reason = statusReasonOf(patch);
         if (reason !== undefined) set("status_reason", reason, "::text");
         if (sets.length === 0) return;
         let fence = "";
@@ -832,6 +853,15 @@ export function createSqlData(
           generationParam = params.length;
           fence += ` and s.lifecycle_generation = $${params.length}`;
         }
+        if (patch.retainedRuntimeStop !== undefined) {
+          params.push(patch.retainedRuntimeStop);
+          fence += ` and s.status in ('ready','running') and s.stop_requested_at is null
+            and s.expires_at>clock_timestamp() and not s.application_secret_tainted
+            and exists(select 1 from public.runtime_checkpoints p join public.runtime_enrolments r
+              on r.sandbox_id=p.sandbox_id and r.epoch=p.epoch
+              where p.sandbox_id=s.id and p.request_id=$${params.length}::uuid
+              and p.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=s.id))`;
+        }
         if (patch.deleteRequested)
           fence += ` and s.status in ('stopped','failed')
             and not ${SANDBOX_DELETION_MANAGED}`;
@@ -858,7 +888,9 @@ export function createSqlData(
           patch.status === "deleted";
         const idleAdmission = patch.onlyIfIdle === true && patch.stopRequested === true && patch.advanceGeneration;
         if (idleAdmission)
-          fence += ` and s.status='ready' and s.stop_requested_at is null
+          fence += ` and (s.status='ready' or (s.status='running' and
+            ((s.provider='boat' and s.boat_runtime) or (s.provider='modal' and s.runtime_transport='dialout'))))
+            and s.stop_requested_at is null
             and not exists(select 1 from public.account_turn_queue q
               where q.sandbox_id=s.id and q.state in ('queued','dispatching'))
             and not exists(${unsettledRuntimeCommands("s.id", "s.lifecycle_generation")})`;
@@ -890,7 +922,11 @@ export function createSqlData(
             params,
           );
         let result: Awaited<ReturnType<typeof applyUpdate>>;
-        if (idleAdmission || patch.modalRuntimeExtensionTarget !== undefined) {
+        if (
+          idleAdmission ||
+          patch.retainedRuntimeStop !== undefined ||
+          patch.modalRuntimeExtensionTarget !== undefined
+        ) {
           if (!sql.transaction) throw new Error("Fenced sandbox admission requires a transaction.");
           result = await sql.transaction(async (tx) => {
             // WARNING: The queue check needs a fresh statement snapshot after acquiring the sandbox lock.

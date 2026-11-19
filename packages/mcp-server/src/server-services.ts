@@ -58,7 +58,7 @@ import { createOutboundWebhooks } from "./outbound-webhooks.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
 import type { ProviderReaperSource } from "./provider-reaper.ts";
 import { createRuntimeArtifactSetRoute } from "./runtime-artifacts.ts";
-import { createRuntimeCheckpoint } from "./runtime-checkpoint.ts";
+import { createRuntimeCheckpoint, createRuntimeStopCheckpoint } from "./runtime-checkpoint.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import { createRuntimeEvents } from "./runtime-events.ts";
@@ -110,6 +110,7 @@ export async function createServerServices(env: Record<string, string | undefine
   const runtimeCheckpoint = createRuntimeCheckpoint(sql, config.encryptionKey, runtimeCommands, {
     docker: env.ARMADA_DOCKER_HOSTS === "1" && env.ARMADA_DOCKER_PLACEMENT === "1",
   });
+  const runtimeStopCheckpoint = createRuntimeStopCheckpoint(sql, runtimeCheckpoint);
   let subscriptionMigration: ReturnType<typeof createSubscriptionMigration>;
   const modelAuth = createModelAuthOwnership(sql, config.encryptionKey, undefined, undefined, {
     origin: config.publicUrl,
@@ -475,6 +476,7 @@ export async function createServerServices(env: Record<string, string | undefine
     runtimeSend,
     accountTurns,
     runtimeCheckpoint,
+    runtimeStopCheckpoint,
     runtimeResume,
     ...(runtimeGitHub ? { runtimeGitHub } : {}),
     runtimeMcp,
@@ -578,8 +580,10 @@ export async function createServerServices(env: Record<string, string | undefine
   );
   const handlerOptions: Omit<HandlerOptions, "routes"> = {
     launchDiscovery: control,
+    readOutputSnapshot: outputs.readSnapshot,
     ...(dockerControls ? { dockerControls } : {}),
     runtimeSend,
+    runtimeStopCheckpoint,
     accountTurns,
     ...(control.sandboxBillingAccount ? { sandboxBillingAccount: control.sandboxBillingAccount } : {}),
     ready: createDatabaseReadiness(sql),
