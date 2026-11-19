@@ -89,8 +89,6 @@ export async function transitionSandbox(tx: Sql, input: SandboxTransition) {
   return { kind: "applied", generation: Number(result.generation) } satisfies SandboxTransitionResult;
 }
 
-/** Called under the authenticated runtime owner lock. A normal launch owns
- * publication until it has finished preparing the enrolled workspace. */
 export async function publishDockerRuntimeReady(tx: Sql, sandboxId: string, source: "health" | "prepared_launch") {
   const {
     rows: [starting],
