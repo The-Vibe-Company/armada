@@ -29,9 +29,10 @@ and snapshot. This is not a GitHub refusal by itself.
 
 The new --add-repo mode preserves all stored repositories, their branches and
 directories, and init commands. It uses a distinct server endpoint, not a
-client-side list/read/overwrite fallback:
+client-side list/read/overwrite fallback. Replace `ORG_UUID` with the target
+organization UUID.
 
-    armada snapshot update two-repos-prod-test --provider boat --org <org-id>       --add-repo https://github.com/owner/new.git@main
+    armada snapshot update two-repos-prod-test --provider boat --org ORG_UUID --add-repo https://github.com/owner/new.git@main
 
 Repeat --add-repo for multiple additions. Do not combine it with --repo, --config,
 --init or --setup. To change an existing branch, directory or init command, use a
@@ -46,8 +47,8 @@ Read-only commands:
 
     armada --version
     armada account status --json
-    armada snapshot list --provider boat --org <org-id> --json
-    armada snapshot capabilities --provider boat --org <org-id>
+    armada snapshot list --provider boat --org ORG_UUID --json
+    armada snapshot capabilities --provider boat --org ORG_UUID
 
 --version is the CLI version; account status includes the server version and
 the authenticated user/org scope. Packages on unreleased branches may still
@@ -108,8 +109,10 @@ No raw stderr, command text, matched secret or upstream error is published.
 
 ## Read-only discrimination and retry
 
-    armada snapshot build-status --idempotency-key <printed-key> --org <org-id>
-    armada snapshot build-status <known-job-id>
+Replace `ADMISSION_KEY` with the printed key and `JOB_UUID` with the known job UUID.
+
+    armada snapshot build-status --idempotency-key ADMISSION_KEY --org ORG_UUID
+    armada snapshot build-status JOB_UUID
 
 The key lookup is requester-scoped; use the same user's identity. No such build
 after an immediate refusal is expected. Do not invent a builder failure from a

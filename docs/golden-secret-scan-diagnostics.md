@@ -50,10 +50,10 @@ This is **one repository entry**, not the complete snapshot config. Preserve all
 other repositories and init commands: `snapshot update --config` intentionally
 replaces the full configuration and the CLI requires explicit `--replace`
 confirmation. To derive the owner's complete current config
-without dropping entries, after the updated CLI/server release:
+without dropping entries, replace `ORG_UUID` with the target organization UUID.
 
 ```sh
-armada snapshot list --provider boat --org <org-id> --json > goldens.json
+armada snapshot list --provider boat --org ORG_UUID --json > goldens.json
 jq -e '
   [.[] | select(.name == "two-repos-prod-test")]
   | if length == 1 then .[0].config else error("Expected exactly one Boat snapshot") end
@@ -61,7 +61,7 @@ jq -e '
     then .repos |= map(if .dir == "armada" then . + {history: "shallow"} else . end)
     else error("Expected exactly one armada checkout directory") end
 ' goldens.json > golden.json
-armada snapshot update two-repos-prod-test --provider boat --org <org-id> --config golden.json --replace
+armada snapshot update two-repos-prod-test --provider boat --org ORG_UUID --config golden.json --replace
 ```
 
 Review `golden.json` before the final mutating command. In the dashboard, open

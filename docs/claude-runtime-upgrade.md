@@ -52,14 +52,15 @@ After releasing the rebuilt server/runtime, refresh **every provider-specific
 snapshot used for Claude launches**, including private and organization snapshots.
 Existing snapshots and already-running sandboxes are not upgraded by a release.
 Keep each snapshot's full repo/branch/init configuration (and original setup file,
-if used); update any explicit old tool pin. Rebuild, do not just re-snapshot the
-old master. For example, with the existing configuration saved as `snapshot.json`:
+if used); update any explicit old tool pin. Rebuild from that configuration. Save it
+as `snapshot.json`, replace `SNAPSHOT_NAME` with the snapshot name and `ORG_UUID`
+with its organization UUID, and use the returned build job UUID for `JOB_UUID`.
 
 ```sh
-armada snapshot update <name> --provider boat --org <org> --replace --config snapshot.json
-armada snapshot update <name> --provider modal --org <org> --replace --config snapshot.json
-# Add --setup <original-setup-file> when the original build used one.
-armada snapshot build-status <job-id>
+armada snapshot update "SNAPSHOT_NAME" --provider boat --org ORG_UUID --replace --config snapshot.json
+armada snapshot update "SNAPSHOT_NAME" --provider modal --org ORG_UUID --replace --config snapshot.json
+# Add --setup "path/to/original-setup.sh" when the original build used one.
+armada snapshot build-status JOB_UUID
 ```
 
 Run only the command for each provider actually hosting that snapshot. Boat and
@@ -68,11 +69,12 @@ the executable from the shared recipe; Modal also gets the rebuilt managed
 runner and pinned image. Use the correct owner's session for private snapshots.
 Wait for each build to succeed; launch fresh sandboxes for validation.
 
-On each refreshed provider snapshot:
+On each refreshed snapshot, replace `PROVIDER` with `boat` or `modal` to match
+the snapshot. Run Boat verification only on demand through the coordinator.
 
 ```sh
-armada launch <name> --provider <boat-or-modal> --agent claude --model claude-fable-5-2 "Which model are you running? Report your exact model ID."
-armada launch <name> --provider <boat-or-modal> --agent claude --model claude-opus-5-5 "Which model are you running? Report your exact model ID."
+armada launch "SNAPSHOT_NAME" --provider PROVIDER --org ORG_UUID --agent claude --model claude-fable-5-2 "Which model are you running? Report your exact model ID."
+armada launch "SNAPSHOT_NAME" --provider PROVIDER --org ORG_UUID --agent claude --model claude-opus-5-5 "Which model are you running? Report your exact model ID."
 ```
 
 Inspect turn/model metadata as well as the response. Test with an entitled account;
