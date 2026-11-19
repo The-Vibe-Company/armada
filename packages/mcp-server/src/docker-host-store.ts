@@ -1591,7 +1591,11 @@ export function createDockerHostStore(sql: Sql, key: string) {
               result.requestId,
             ])
           ).rows[0] ?? deny();
-        const logical = hint.bound_sandbox_id ? await boundMachine(tx, hint, host, installationId) : undefined;
+        let logical: Sandbox | undefined;
+        if (hint.bound_sandbox_id) {
+          if (hint.bound_operation === "deletePhysical") await readJob(hint);
+          else logical = await boundMachine(tx, hint, host, installationId);
+        }
         const jobs = await tx.query<StoredJob>(
           `select * from public.docker_host_jobs where host_id=$1 and request_id=$2 for update`,
           [host.id, result.requestId],

@@ -383,6 +383,43 @@ async function boundFixture(registered?: Awaited<ReturnType<typeof fixture>>) {
   return { ...host, sandboxId, generation, owner, create };
 }
 
+test("bound physical deletion records an older generation receipt without deleting the current sandbox", async () => {
+  const db = database();
+  const a = await boundFixture();
+  const requestId = randomUUID();
+  const payload = await encryptSecret(
+    JSON.stringify({
+      bound: 1,
+      job: {
+        operation: "deletePhysical",
+        machineId: "a".repeat(64),
+        request: { ...job().request, sandboxId: a.sandboxId },
+      },
+    }),
+    key,
+  );
+  await db.query(
+    `insert into docker_host_jobs(request_id,host_id,input_enc,bound_sandbox_id,bound_actor_id,bound_actor_epoch,bound_operation)
+     values ($1,$2,$3,$4,$5,1,'deletePhysical')`,
+    [requestId, a.hostId, payload, a.sandboxId, a.owner.userId],
+  );
+  await db.query(`update sandboxes set status='stopped',stopped_at=now() where id=$1`, [a.sandboxId]);
+  const result = { requestId, outcome: "completed" as const };
+  await denied(store.complete(a.hostToken, randomUUID(), result));
+  await store.complete(a.hostToken, a.installationId, result);
+  await store.complete(a.hostToken, a.installationId, result);
+  await denied(store.complete(a.hostToken, a.installationId, { ...result, outcome: "failed" }));
+  expect(
+    (
+      await db.query(
+        `select j.outcome,s.status,s.docker_generation from docker_host_jobs j
+       join sandboxes s on s.id=j.bound_sandbox_id where j.request_id=$1`,
+        [requestId],
+      )
+    ).rows,
+  ).toEqual([{ outcome: "completed", status: "stopped", docker_generation: a.generation }]);
+});
+
 // The migrated SQL boundary owns binding, actor fencing, lifecycle intent and capabilities.
 test("bound member admission derives immutable machine fields and cannot redirect or adopt mailbox IDs", async () => {
   const db = database();
