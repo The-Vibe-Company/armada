@@ -842,8 +842,8 @@ test.each(["current", "superseded", "rolled back"] as const)(
       now += 60_000;
     }
     await sweep();
-    if (scenario === "rolled back") expect(checkpointRequests).toEqual([checkpointRequests[0], checkpointRequests[0]]);
-    else expect(checkpointRequests).toHaveLength(1);
+    expect(checkpointRequests).toHaveLength(scenario === "rolled back" ? 2 : 1);
+    if (scenario === "rolled back") expect(checkpointRequests[1]).toBe(checkpointRequests[0]);
     const journal = await readJournal();
     if (scenario === "superseded") {
       expect(journal).toEqual([]);

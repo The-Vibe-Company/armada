@@ -79,7 +79,7 @@ export function githubInstallationManageUrl(installation: {
 }
 
 /** The App as Connect knows it: the slug builds the install URL, and the numeric id is optional. */
-export interface GitHubAppIdentity {
+interface GitHubAppIdentity {
   slug?: string;
   appId?: number;
 }
@@ -114,14 +114,14 @@ export function installationsForApp(
 }
 
 /** What Settings stores and shows. Not a secret. */
-export interface GitHubInstallationRecord {
+interface GitHubInstallationRecord {
   id: number;
   account: string;
   account_type: "User" | "Organization";
   repository_selection: "all" | "selected";
 }
 
-export function installationRecords(installations: readonly GitHubInstallation[]): GitHubInstallationRecord[] {
+function installationRecords(installations: readonly GitHubInstallation[]): GitHubInstallationRecord[] {
   return installations.map((item) => ({
     id: item.id,
     account: item.accountLogin,
@@ -158,7 +158,7 @@ function storedInstallation(value: unknown): GitHubInstallationRecord | null {
   return { id, account, account_type: accountType, repository_selection: selection };
 }
 
-export type GitHubCallbackDecision =
+type GitHubCallbackDecision =
   | { kind: "result"; result: GitHubConnectResult }
   | { kind: "exchange"; mode: "oauth" | "install"; installationId: number | null };
 
@@ -252,7 +252,7 @@ export type GitHubConnectResult =
   | "not_saved";
 
 /** The callback redirects to GitHub's install page instead of finishing. */
-export type GitHubConnectFinish = GitHubConnectResult | "needs_install";
+type GitHubConnectFinish = GitHubConnectResult | "needs_install";
 
 export const GITHUB_RESULT_MESSAGES: Record<GitHubConnectResult, { ok: boolean; text: string }> = {
   connected: { ok: true, text: "GitHub connected. Sandboxes you launch now run git and gh as you." },

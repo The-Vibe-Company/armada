@@ -2841,19 +2841,25 @@ const snapshotConfig = {
   init: ["printf built > /home/user/proof"],
 };
 
-async function seedReadySnapshot(f: Awaited<ReturnType<typeof fixture>>, config = snapshotConfig) {
+async function seedReadySnapshot(
+  f: Awaited<ReturnType<typeof fixture>>,
+  config = snapshotConfig,
+  { name = "fixture-snapshot", visibility = "private" }: { name?: string; visibility?: "private" | "org" } = {},
+) {
   const id = randomUUID();
   await database().query(
     `insert into public.docker_snapshots(
        id,org_id,owner_id,host_id,installation_id,name,visibility,config,request_hash,actor_epoch,issuer_epoch,
        generation,base_image,status,image_id,build_expires_at,built_on_version,baseline_version,required_baseline_version
-     ) values($1,$2,$3,$4,$5,'fixture-snapshot','private',$6,$7,1,1,$8,$9,'ready',$10,now()+interval '1 hour',$11,1,1)`,
+     ) values($1,$2,$3,$4,$5,$6,$7,$8,$9,1,1,$10,$11,'ready',$12,now()+interval '1 hour',$13,1,1)`,
     [
       id,
       f.actor.orgId,
-      f.actor.userId,
+      visibility === "org" ? f.admin.userId : f.actor.userId,
       f.hostId,
       f.installationId,
+      name,
+      visibility,
       JSON.stringify(config),
       "b".repeat(64),
       randomUUID(),
@@ -3356,24 +3362,8 @@ test("a draining host refuses a snapshot build with the uninstall reason, not Ho
 
 test("launching a saved snapshot on a draining host names the uninstall, not an unavailable snapshot", async () => {
   const db = database();
-  const f = await snapshotFixture(),
-    id = randomUUID();
-  await f.snapshots.command(f.caller, "create", {
-    org: f.actor.orgId,
-    hostId: f.hostId,
-    requestId: id,
-    name: "draining-source",
-    visibility: "private",
-    config: f.config,
-  });
-  const build = await hosts.poll(f.hostToken, f.installationId);
-  if (build?.operation !== "buildSnapshot") throw Error("missing snapshot build");
-  await hosts.complete(f.hostToken, f.installationId, {
-    requestId: id,
-    outcome: "completed",
-    imageId: `sha256:${"b".repeat(64)}`,
-    baselineVersion: 1,
-  });
+  const f = await fixture({ daemonVersion: "2.55.0" });
+  const id = await seedReadySnapshot(f);
   await db.query(`update public.docker_hosts set draining_at=now() where id=$1`, [f.hostId]);
   const { hostId: _, ...body } = f.body;
   await expect(f.service().launch(f.caller, { ...body, snapshotId: id })).rejects.toMatchObject({
@@ -3385,24 +3375,8 @@ test("launching a saved snapshot on a draining host names the uninstall, not an 
 
 test("a retry of an already-admitted launch from a saved snapshot replays it after a drain", async () => {
   const db = database();
-  const f = await snapshotFixture(),
-    id = randomUUID();
-  await f.snapshots.command(f.caller, "create", {
-    org: f.actor.orgId,
-    hostId: f.hostId,
-    requestId: id,
-    name: "draining-retry",
-    visibility: "private",
-    config: f.config,
-  });
-  const build = await hosts.poll(f.hostToken, f.installationId);
-  if (build?.operation !== "buildSnapshot") throw Error("missing snapshot build");
-  await hosts.complete(f.hostToken, f.installationId, {
-    requestId: id,
-    outcome: "completed",
-    imageId: `sha256:${"e".repeat(64)}`,
-    baselineVersion: 1,
-  });
+  const f = await snapshotFixture();
+  const id = await seedReadySnapshot(f);
   const { hostId: _, ...body } = f.body;
   const launched = await f.service().launch(f.caller, { ...body, snapshotId: id });
   await db.query(`update public.docker_hosts set draining_at=now() where id=$1`, [f.hostId]);
@@ -3412,24 +3386,8 @@ test("a retry of an already-admitted launch from a saved snapshot replays it aft
 
 test("rebuilding a snapshot on a draining host names the uninstall, not a missing original host", async () => {
   const db = database();
-  const f = await snapshotFixture(),
-    id = randomUUID();
-  await f.snapshots.command(f.caller, "create", {
-    org: f.actor.orgId,
-    hostId: f.hostId,
-    requestId: id,
-    name: "draining-rebuild",
-    visibility: "private",
-    config: f.config,
-  });
-  const build = await hosts.poll(f.hostToken, f.installationId);
-  if (build?.operation !== "buildSnapshot") throw Error("missing snapshot build");
-  await hosts.complete(f.hostToken, f.installationId, {
-    requestId: id,
-    outcome: "completed",
-    imageId: `sha256:${"c".repeat(64)}`,
-    baselineVersion: 1,
-  });
+  const f = await snapshotFixture();
+  const id = await seedReadySnapshot(f);
   await db.query(`update public.docker_hosts set draining_at=now() where id=$1`, [f.hostId]);
   await expect(
     f.snapshots.command(f.caller, "rebuild", { org: f.actor.orgId, id, requestId: randomUUID() }),
@@ -3522,14 +3480,15 @@ test("snapshot admission requires a protocol-aware host poll", async () => {
   expect((await create())?.status).toBe(200);
 });
 
-test("a verified receipt reaches the snapshot through the daemon result route", async () => {
+test("a verified receipt publishes an organization snapshot through the daemon result route", async () => {
   const f = await snapshotFixture();
   const requestId = randomUUID();
-  await f.snapshots.command(f.caller, "create", {
+  await f.snapshots.command(f.adminCaller, "create", {
     org: f.actor.orgId,
     hostId: f.hostId,
     requestId,
     name: "mixed-replicas",
+    visibility: "org",
     config: f.config,
   });
   const job = await hosts.poll(f.hostToken, f.installationId);
@@ -3557,7 +3516,7 @@ test("a verified receipt reaches the snapshot through the daemon result route", 
     },
   );
   expect(await f.snapshots.command(f.caller, "get", { org: f.actor.orgId, id: requestId })).toMatchObject({
-    snapshot: { status: "ready", baselineVersion: 1 },
+    snapshot: { status: "ready", visibility: "org", baselineVersion: 1 },
   });
 });
 
@@ -3585,26 +3544,10 @@ test.each(["private", "org"] as const)(
   "snapshot rebuild %s publishes a new immutable build and retains its source and retry receipt",
   async (visibility) => {
     const db = database();
-    const f = await snapshotFixture(),
-      id = randomUUID(),
-      requestId = randomUUID();
+    const f = await snapshotFixture();
+    const id = await seedReadySnapshot(f, f.config, { name: "rebuild-source", visibility });
+    const requestId = randomUUID();
     const creator = visibility === "private" ? f.caller : f.adminCaller;
-    await f.snapshots.command(creator, "create", {
-      org: f.actor.orgId,
-      hostId: f.hostId,
-      requestId: id,
-      name: "rebuild-source",
-      visibility,
-      config: f.config,
-    });
-    const job = await hosts.poll(f.hostToken, f.installationId, "2.55.0");
-    if (job?.operation !== "buildSnapshot") throw Error("Missing source build");
-    await hosts.complete(f.hostToken, f.installationId, {
-      requestId: id,
-      outcome: "completed",
-      imageId: `sha256:${"d".repeat(64)}`,
-      baselineVersion: 1,
-    });
     const source = await f.snapshots.command(creator, "get", { org: f.actor.orgId, id });
     const input = { org: f.actor.orgId, id, requestId };
     const unauthorized = visibility === "private" ? f.adminCaller : f.caller;

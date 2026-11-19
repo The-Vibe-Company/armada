@@ -22,6 +22,7 @@ declare
   effect record;
   docker_resume boolean;
   docker_stop boolean;
+  docker_refusal boolean := (p_code = 'docker_resume_refusal_stop') is true;
   docker_expiry boolean;
   docker_cleanup boolean;
   self_finish boolean := (p_actor = 'finish' and p_code = 'agent_finished' and p_to_state = 'stopping') is true;
@@ -47,17 +48,23 @@ begin
     end if;
   end if;
 
-  docker_stop := coalesce(p_code in ('docker_stop_admitted', 'docker_idle_paused', 'docker_work_merged'), false);
+  docker_stop := coalesce(p_code in ('docker_stop_admitted', 'docker_idle_paused', 'docker_work_merged'), false) or docker_refusal;
   docker_expiry := coalesce(p_code = 'docker_expiry_observed', false);
   docker_cleanup := coalesce(p_actor = 'docker_host' and p_code in ('retention_elapsed', 'disk_pressure'), false);
   if docker_stop or docker_expiry or docker_cleanup then
     if sandbox.provider <> 'docker' or p_reconcile_lease is not null
       or jsonb_typeof(p_effects) is distinct from 'array' or jsonb_array_length(p_effects) <> 0
       or (docker_stop and (p_to_state is distinct from 'stopping' or p_actor is distinct from
-        case when p_code = 'docker_stop_admitted' then 'owner' else 'idle' end))
+        case when docker_refusal then 'docker_host' when p_code = 'docker_stop_admitted' then 'owner' else 'idle' end))
       or (docker_expiry and (p_to_state is distinct from 'stopped' or p_actor is distinct from 'docker_host'))
       or (docker_cleanup and p_to_state is distinct from 'deleted') then
       raise exception 'invalid Docker mailbox transition' using errcode = '22023';
+    end if;
+
+    if docker_refusal and (sandbox.stop_requested_at is not null or sandbox.deleted_at is not null
+      or sandbox.expires_at <= now()) then
+      return query select false, null::bigint;
+      return;
     end if;
 
     -- Replayed observations can fill missing timestamps without adding a state edge.
@@ -104,7 +111,8 @@ begin
   ) as edge(source, target, actors, effects)
   where edge.source = sandbox.status::text and edge.target = p_to_state::text;
 
-  if (docker_expiry and sandbox.status in ('starting', 'ready', 'running', 'stopping'))
+  if (docker_refusal and sandbox.status in ('starting', 'failed'))
+    or (docker_expiry and sandbox.status in ('starting', 'ready', 'running', 'stopping'))
     or (docker_cleanup and sandbox.status in ('starting', 'ready', 'running', 'stopping', 'stopped', 'failed')) then
     allowed_actors := array['docker_host'];
     allowed_effects := array[]::text[];
@@ -179,6 +187,7 @@ begin
       status_reason = case
         when docker_expiry then case when s.status_reason in ('agent_finished', 'work_merged')
           then s.status_reason else 'expired' end
+        when docker_refusal then null
         when p_code = 'docker_idle_paused' then 'idle_paused'
         when p_code = 'docker_work_merged' then 'work_merged'
         when p_actor in ('reconciler', 'runtime_observation') then p_status_reason else case p_to_state
