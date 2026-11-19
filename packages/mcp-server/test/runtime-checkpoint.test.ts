@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createMemoryAuthStore } from "@armada/auth";
-import type { Provider } from "@armada/core/server";
+import type { Provider, Sql } from "@armada/core/server";
 import { createSqlVaultStore, DelegatedAuthority } from "@armada/core/server";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
@@ -185,6 +185,23 @@ test("an enrolled scoped parent loses its grant before checkpoint dispatch and s
     const input = args(id);
     f.hold(done.promise);
     await f.send(f.caller, f.input("hold the turn open"));
+    const failedIntent: Sql = {
+      ...f.sql,
+      transaction: (work) =>
+        f.sql.transaction!((tx) =>
+          work({
+            async query(statement, values) {
+              if (statement.startsWith("insert into public.runtime_checkpoints")) throw Error("intent write failed");
+              return tx.query(statement, values);
+            },
+          }),
+        ),
+    };
+    await expect(createRuntimeCheckpoint(failedIntent, ENCRYPTION_KEY, f.bridge)(f.caller, input)).rejects.toThrow(
+      "intent write failed",
+    );
+    await expect(admit()).resolves.toBe(true);
+
     const beforeDispatch = {
       ...f.bridge,
       async call() {
@@ -201,7 +218,32 @@ test("an enrolled scoped parent loses its grant before checkpoint dispatch and s
     await expect(checkpoint(f.caller, input)).rejects.toMatchObject({ code: "conflict" });
     done.resolve("finished");
     await f.runner.flushOutbox();
-    const recovered = await checkpoint(f.caller, input);
+    f.dropReplyOnce("scrubOrchestratorEpoch");
+    await expect(checkpoint(f.caller, input)).rejects.toMatchObject({ code: "conflict" });
+    const pending = (await f.bridge.next(f.active.runtimeToken, f.active.epoch)).command;
+    expect(pending?.op).toBe("scrubOrchestratorEpoch");
+    const lostScrubReply = {
+      ...f.bridge,
+      async call(...params: Parameters<typeof f.bridge.call>) {
+        expect(params[1].requestId).toBe(pending?.requestId);
+        const reply = await f.bridge.call(...params);
+        if (params[1].op === "scrubOrchestratorEpoch" && reply.status === 200) throw Error("lost scrub reply");
+        return reply;
+      },
+    };
+    await expect(createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, lostScrubReply)(f.caller, input)).rejects.toMatchObject(
+      {
+        code: "conflict",
+      },
+    );
+    const checkpointOnly = {
+      ...f.bridge,
+      async call(...params: Parameters<typeof f.bridge.call>) {
+        expect(params[1].op).toBe("checkpoint");
+        return f.bridge.call(...params);
+      },
+    };
+    const recovered = await createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, checkpointOnly)(f.caller, input);
     expect(recovered.checkpoint.state).toBe("complete");
   } finally {
     done.resolve("finished");
