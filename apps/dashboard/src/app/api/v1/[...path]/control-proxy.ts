@@ -1,5 +1,5 @@
 import { CONTROL_BODY_MAX_BYTES } from "@armada/core";
-import { PUBLIC_CONTROL_ROUTES } from "@armada/core/contract";
+import { controlRouteKey, PUBLIC_CONTROL_ROUTES, tokenOperations } from "@armada/core/contract";
 
 const CONTROL_PREFIX = "/api/v1/";
 const MAX_BODY_BYTES = CONTROL_BODY_MAX_BYTES;
@@ -63,9 +63,9 @@ export const PRIVATE_POST_PATHS: ReadonlySet<string> = new Set([
   "github/reconnect",
   "github/disconnect",
   "github/install",
-  "token/list",
-  "token/create",
-  "token/revoke",
+  ...Object.values(tokenOperations)
+    .filter(({ route }) => route.method === "POST")
+    .map(({ route }) => controlRouteKey(route)),
   "org/invitations/create",
   "org/invitations/list",
   "org/invitations/resend",

@@ -24,7 +24,7 @@ Coordinator staging configuration:
 - `ARMADA_MODAL_RUNTIME_MANIFEST=/opt/armada/runtime-manifests/x64.json` selects
   the manifest from that deployed build for the Modal Linux x64 target.
 - Existing authorized Modal management credentials and immutable workspace,
-  environment and App binding, with an existing snapshotted Modal golden.
+  environment and App binding, with an existing ready Modal snapshot.
 - An authorized Codex API-key/custom-endpoint account, or an existing server-owned
   Codex subscription account enrolled in the shared model-auth broker.
 
@@ -33,7 +33,7 @@ In the coordinator's secure environment, supply:
 - `ARMADA_URL`: the staging **armada-server HTTPS origin**, not the dashboard.
 - `ARMADA_TOKEN`: existing authorized Armada bearer, never in argv or logs.
 - `ARMADA_RUNTIME_ORG`: the staging organization selection.
-- `ARMADA_RUNTIME_GOLDEN`: the existing Modal golden name.
+- `ARMADA_RUNTIME_GOLDEN`: the existing Modal snapshot name.
 - `ARMADA_RUNTIME_CREDENTIAL_ID`: the authorized Codex model-account UUID.
 - Optional `ARMADA_RUNTIME_MODEL`: an account-supported model.
 
@@ -51,7 +51,7 @@ first-answer/follow-up/checkpoint/stop subset. It sends one `sandbox/launch` req
 `harness:"codex"` and a 900-second TTL. Without `--skills`, skills are empty
 and defaults are skipped. With `--skills`, both fields are omitted so the normal
 server policy resolves defaults. Connections are empty unless `--mcp` explicitly
-selects one existing connection. The golden repositories are refreshed and configured init commands run before inference. The first prompt stores a random
+selects one existing connection. The snapshot repositories are refreshed and configured init commands run before inference. The first prompt stores a random
 memory token and asks for a separate literal
 nonce answer, without tools or file changes. After verifying that archived first
 answer, the script sends exactly one follow-up on the same conversation asking
@@ -127,10 +127,10 @@ flip defaults or delete the tunnel path until the later parity and cutover gates
 
 Reuse the existing staging `ARMADA_RUNTIME_GITHUB_REPOSITORY=owner/repo` input
 and connected GitHub account/App, with that repository in the selected Modal
-golden's recipe. No new credentials are requested. The script resolves the
-selected visible Modal golden's organization, preflights repository access and
+snapshot's recipe. No new credentials are requested. The script resolves the
+selected visible Modal snapshot's organization, preflights repository access and
 requires an explicit `provider:"modal"` receipt **before allocation**. Old servers
-or ambiguous same-name provider goldens refuse rather than preflighting Boat.
+or ambiguous same-name provider snapshots refuse rather than preflighting Boat.
 
 ```sh
 ARMADA_RUNTIME_SMOKE=one_real_modal_launch bun scripts/check-modal-runtime.ts --github --resume
@@ -138,19 +138,21 @@ ARMADA_RUNTIME_SMOKE=one_real_modal_launch bun scripts/check-modal-runtime.ts --
 
 Still ONE allocation, ONE restore activation and TWO stops. Before the initial
 follow-up it delivers GitHub configuration via the existing common private RPC.
-The follow-up must actually run `gh api repos/<repository> --jq .full_name`:
+The checker substitutes the configured repository from
+`ARMADA_RUNTIME_GITHUB_REPOSITORY` into the literal follow-up command, for
+example `gh api repos/owner/repo --jq .full_name`:
 archived successful command provenance AND current-epoch broker acquisition count
 with the same delivered revision are required. A literal answer or a configured
 receipt alone is not proof. After restore, the old configuration must be absent;
 a new revision is delivered and a fourth same-conversation prompt proves a fresh
-current-epoch acquisition. No token/capability is printed or archived. This flag alone does not pull/init the golden, enable variables, or
+current-epoch acquisition. No token/capability is printed or archived. This flag alone does not pull/init the snapshot, enable variables, or
 authorize cutover. Add `--skills` for existing defaults and `--mcp` below to verify the selected remote tool in the
 same allocation.
 
 
 ## Automatic remote MCP delivery (`--mcp`)
 
-Reuse the existing Boat coordinator inputs; do not create new credentials or
+Reuse the existing Modal coordinator inputs; do not create new credentials or
 supply skill references:
 
 - `ARMADA_RUNTIME_MCP_CONNECTION_ID`: existing connected remote MCP connection UUID.
@@ -161,7 +163,7 @@ supply skill references:
 The selected connection must be visible to the staging owner/organization and use
 HTTP or SSE transport. Pinned stdio connections are not supported by this slice.
 Before allocation, `launch/options.modalRuntime.mcpVersion` must be `2`, the
-script resolves the selected Modal golden's organization once (shared with
+script resolves the selected Modal snapshot's organization once (shared with
 GitHub preflight), and `sandbox/mcp-preflight-v1` must accept the one connection.
 The launch names it explicitly in `connections:[<UUID>]`; it does not rely on
 another user's defaults. **There is no manual MCP configuration call:** the
@@ -199,23 +201,23 @@ the exact revision and result on #1421. Workers do not run billable staging chec
 
 Use the **same combined command above** with `--skills`. It requires no new skill
 references, SKILL.md substrings, keys or staging inputs. Do not configure defaults
-for the smoke: the check must prove the existing selected Modal golden,
-organization and personal policy. The golden is resolved once together with the
+for the smoke: the check must prove the existing selected Modal snapshot,
+organization and personal policy. The snapshot is resolved once together with the
 MCP/GitHub preflight; `launch/options.modalRuntime.skillsVersion` must be `1`.
 
 Before any allocation, the script uses the existing `readDefaultPins` oracle from
-`scripts/default-skill-smoke.ts`: `skills/defaults/get` for the selected golden,
+`scripts/default-skill-smoke.ts`: `skills/defaults/get` for the selected snapshot,
 organization and personal scope, with independent same-slug precedence. If the
 effective list is empty it plainly reports **“No default skills configured … no
 launch attempted”** and allocates nothing. It never creates or changes defaults.
 
 The launch omits **both** `skills` and `skipSkillDefaults`, allowing Armada's
-normal policy to choose all and only those effective exact pins. Its golden ID
-must match the preflight golden. `verifyDefaultReceipts` then compares launch
+normal policy to choose all and only those effective exact pins. Its snapshot ID
+must match the preflight snapshot. `verifyDefaultReceipts` then compares launch
 receipts with `sandbox/status.skills`: exact references and versions, valid
 matching skill IDs, checksums and origins. This is checked at launch, after the
 first confirmed stop, after resume and after the second confirmed stop. Missing,
-extra, changed or foreign-golden receipts fail; a successful model answer cannot
+extra, changed or foreign-snapshot receipts fail; a successful model answer cannot
 mask them.
 
 The first receipt adds `skills:"verified"`; successful resumed cleanup adds
@@ -232,15 +234,15 @@ Workers do not run the billable staging check.
 The combined command above can also prove the template's readable environment on
 every tested prompt, before and after the retained stop/resume. Supply one new
 **non-secret selector**, `ARMADA_RUNTIME_TEMPLATE_ID`, identifying an **existing
-published Modal Codex template** in the selected golden's organization. Do not
+published Modal Codex template** in the selected snapshot's organization. Do not
 create/publish a template or change variables/defaults for this check. No raw
 values, variable references, secret bindings or new credentials are requested.
 
 Before allocation the server must advertise `variablesVersion:1`. The check
-resolves the authorized Modal golden once, reads the existing `templates/get`
+resolves the authorized Modal snapshot once, reads the existing `templates/get`
 revision and requires:
 
-- The selected golden, Modal provider and Codex harness.
+- The selected snapshot, Modal provider and Codex harness.
 - At least one distinct, valid uppercase readable binding; no application secrets.
 - A pinned model account matching `ARMADA_RUNTIME_CREDENTIAL_ID`.
 - Empty explicit template skills (existing effective defaults are checked with
@@ -253,7 +255,7 @@ It pins the returned immutable revision. The explicit Modal path calls
 and prompt/TTL fields. It checks the returned reference and reads the frozen
 manifest from `sandbox.templateManifest`. With `--ordinary`, it calls
 `templates/launch` with `requestKey` and checks the recorded key in the template
-receipt. Both paths verify the template revision, golden, account and definition,
+receipt. Both paths verify the template revision, snapshot, account and definition,
 and validate the frozen readable values against the expected keyset. The script
 prints the replay key before dispatch and uses the returned runtime epoch.
 
@@ -397,9 +399,9 @@ current repository binding. Expired leases cannot acquire credentials. Frozen
 readables are delivered in the private execution environment for init scripts;
 model-account secrets remain confined to the selected harness environment.
 
-Use the same coordinator-owned one-allocation lifecycle command. No golden or
+Use the same coordinator-owned one-allocation lifecycle command. No snapshot or
 configuration mutation, new credentials, schema migration, separate allocation
-or manual artifact publication is needed. The selected golden's existing
+or manual artifact publication is needed. The selected snapshot's existing
 configured init scripts now actually execute: launch success is not a live
 workspace acceptance receipt until the coordinator runs it. Native Modal setup
 is unchanged; retained resume does not rerun first-launch setup. OpenCode and
@@ -414,7 +416,9 @@ services. Use an existing authorized OpenCode key/custom connection account and
 an account-supported model in `ARMADA_RUNTIME_CREDENTIAL_ID` and
 `ARMADA_RUNTIME_MODEL`. OpenAI-compatible, Anthropic Messages and Azure Responses
 connection projection is reused unchanged; this adds no new account kind or
-provider runtime. The smoke requires `modalRuntime.opencodeVersion:1` before
+provider runtime. [Morph accounts](morph.md) use the same
+[per-account agent limits](named-model-credentials.md) as other model accounts.
+The smoke requires `modalRuntime.opencodeVersion:1` before
 allocation.
 
 ```sh
@@ -514,7 +518,7 @@ default-on release cycle and production checklist before tunnel deletion.
 
 ## Promptless direct launch and first send
 
-Add `--idle` to launch the selected Modal golden without an initial prompt, then
+Add `--idle` to launch the selected Modal snapshot without an initial prompt, then
 send the first instruction through the ordinary durable send route:
 
 ```sh
@@ -640,7 +644,7 @@ The shared core admission policy selects the compute-only Modal host, private
 model-account resolver, common MCP lifecycle and enrolled startup BEFORE fork.
 Ordinary HTTP `sandbox/launch`, MCP `launch`/sized launch, pinned templates and
 owner-scoped routines all use that policy. Request JSON cannot enable/bypass it.
-Selected provider identity must still equal the golden provider; runtime failure,
+Selected provider identity must still equal the snapshot provider; runtime failure,
 missing account bindings and unsupported launch inputs are refused on the
 selected path.
 
