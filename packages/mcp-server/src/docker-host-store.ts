@@ -462,25 +462,48 @@ export function createDockerHostStore(sql: Sql, key: string) {
     job: Pick<StoredJob, "bound_sandbox_id" | "request_id" | "position">,
     restoreOnly = false,
   ) {
-    const later = await tx.query(
-      `select 1 from public.docker_host_jobs later where later.bound_sandbox_id=$1 and later.request_id<>$2
+    const { rows } = await tx.query<
+      StoredJob & {
+        target_generation: string | null;
+        target_daemon_generation: string | null;
+        source_daemon_generation: string | null;
+      }
+    >(
+      `select later.*, target.machine_generation::text as target_generation,
+         target.daemon_generation as target_daemon_generation, source.daemon_generation as source_daemon_generation
+       from public.docker_host_jobs later
+       left join public.sandboxes s on later.bound_operation='restore'
+         and s.id=later.bound_sandbox_id and s.docker_host_id=later.host_id
+       left join public.docker_machine_bindings target on target.sandbox_id=s.id
+         and target.host_id=s.docker_host_id and target.installation_id=s.docker_installation_id
+         and target.machine_generation=s.lifecycle_generation and target.daemon_generation<>s.docker_generation
+       left join public.docker_machine_bindings source on source.sandbox_id=s.id
+         and source.host_id=s.docker_host_id and source.installation_id=s.docker_installation_id
+         and source.daemon_generation=s.docker_generation and source.machine_generation<target.machine_generation
+       where later.bound_sandbox_id=$1 and later.request_id<>$2
        and (
          (not $4::boolean and later.position>$3 and
            (later.bound_operation='resume' or (later.bound_operation='bootstrap' and later.outcome is distinct from 'failed')))
-         or (later.bound_operation='restore' and exists(
-           select 1 from public.sandboxes s
-           join public.docker_machine_bindings target on target.sandbox_id=s.id
-             and target.host_id=s.docker_host_id and target.installation_id=s.docker_installation_id
-             and target.machine_generation=s.lifecycle_generation and target.daemon_generation<>s.docker_generation
-           join public.docker_machine_bindings source on source.sandbox_id=s.id
-             and source.host_id=s.docker_host_id and source.installation_id=s.docker_installation_id
-             and source.daemon_generation=s.docker_generation and source.machine_generation<target.machine_generation
-           where s.id=later.bound_sandbox_id and s.docker_host_id=later.host_id
-         ))
-       ) limit 1`,
+         or source.daemon_generation is not null
+       )`,
       [job.bound_sandbox_id, job.request_id, job.position, restoreOnly],
     );
-    return later.rows.length > 0;
+    if (rows.some((row) => row.bound_operation !== "restore")) return true;
+    for (const row of rows) {
+      if (row.target_generation === null) continue;
+      try {
+        const intent = await readJob(row, row.target_generation);
+        if (
+          intent.operation === "restore" &&
+          intent.request.generation === row.target_daemon_generation &&
+          intent.predecessor.request.generation === row.source_daemon_generation
+        )
+          return true;
+      } catch (error) {
+        if (!(error instanceof DockerHostDenied)) throw error;
+      }
+    }
+    return false;
   }
 
   async function admitRestore(tx: Sql, row: StoredJob, host: Host, installationId: string) {

@@ -520,13 +520,31 @@ test("restore dispatch cancels stale intent and reconciles a late physical recei
   expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "starting" });
 });
 
-test("predecessor receipts cannot retire the logical generation reserved for the restore", async () => {
+test.each(["pending", "completed"] as const)(
+  "predecessor receipts cannot retire a %s restore's target",
+  async (phase) => {
+    const a = await restoreFixture();
+    expect(await a.poll()).toEqual(a.restore);
+    if (phase === "completed")
+      await store.complete(a.hostToken, a.installationId, { requestId: a.restore.requestId, outcome: "completed" });
+    await store.expired(a.hostToken, a.installationId, { requestId: a.create.requestId });
+    await store.cleaned(a.hostToken, a.installationId, { requestId: a.cleanupId });
+    await store.complete(a.hostToken, a.installationId, { requestId: a.cleanupId, outcome: "completed" });
+    expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "starting", lifecycle_generation: "2" });
+    if (phase === "pending") expect(await a.poll()).toEqual(a.restore);
+  },
+);
+
+test("an older restore cannot fence a predecessor receipt for a generation with no restore intent", async () => {
   const a = await restoreFixture();
-  await store.expired(a.hostToken, a.installationId, { requestId: a.create.requestId });
+  await database().query("update sandboxes set lifecycle_generation=3 where id=$1", [a.sandboxId]);
+  expect(await a.poll([a.cleanupId])).toBeNull();
+
+  const bindings = createDockerMachineBindings(sql, { ...a, deploymentId: randomUUID() });
+  await bindings.bind({ sandboxId: a.sandboxId, generation: 3 });
   await store.cleaned(a.hostToken, a.installationId, { requestId: a.cleanupId });
-  await store.complete(a.hostToken, a.installationId, { requestId: a.cleanupId, outcome: "completed" });
-  expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "starting", lifecycle_generation: "2" });
-  expect(await a.poll()).toEqual(a.restore);
+
+  expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "deleted", lifecycle_generation: "4" });
 });
 
 test("a malformed restore intent does not hide unrelated work", async () => {
