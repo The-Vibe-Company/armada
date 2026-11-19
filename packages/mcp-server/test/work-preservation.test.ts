@@ -8,13 +8,26 @@ import { encryptedRecoveryExec } from "./fixtures/recovery-exec.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 import { bunLikeSql, ENCRYPTION_KEY, fakeBoat, seedDatabase } from "./support.ts";
 
-let fixture: Awaited<ReturnType<typeof seedDatabase>> | undefined;
+let fixture: (Awaited<ReturnType<typeof seedDatabase>> & { goldenId: string; modalGoldenId: string }) | undefined;
 
 beforeAll(async () => {
   const db = await migratedDatabase();
   try {
     await db.exec("set search_path=public");
-    fixture = await seedDatabase(db);
+    const seeded = await seedDatabase(db);
+    const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0];
+    if (!golden) throw new Error("Missing golden fixture");
+    const modalGolden = (
+      await db.query<{ id: string }>(
+        `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,
+         modal_workspace,modal_environment,modal_app_id,config)
+         values($1,$2,'preservation-modal','private','modal','preservation-modal','preservation-modal',
+         'workspace','main','app','{"repos":[],"init":[]}') returning id`,
+        [seeded.people.org, seeded.people.owner],
+      )
+    ).rows[0];
+    if (!modalGolden) throw new Error("Missing Modal golden fixture");
+    fixture = { ...seeded, goldenId: golden.id, modalGoldenId: modalGolden.id };
   } catch (error) {
     await db.close();
     throw error;
@@ -39,18 +52,16 @@ function sharedDatabase() {
 // Primary owner for encrypted persistence and recovery authorization. Collector behavior
 // (including actual Git reconstruction) belongs to core's work-preservation test.
 test("recovery receipts retain encrypted versions and only current interior owners/admins can retrieve them", async () => {
-  const { db, people } = sharedDatabase();
+  const { db, people, goldenId } = sharedDatabase();
   const oldKey = process.env.ARMADA_ENCRYPTION_KEY;
   process.env.ARMADA_ENCRYPTION_KEY = ENCRYPTION_KEY;
   try {
     const sql = bunLikeSql(db);
     const id = crypto.randomUUID();
-    const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0];
-    if (!golden) throw new Error("Missing golden fixture");
     await db.query(
       `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status)
       values($1,$2,$3,$4,'boat','bx_recovery','claude','running')`,
-      [id, golden.id, people.org, people.owner],
+      [id, goldenId, people.org, people.owner],
     );
     const data = (userId: string, orgId = people.org) =>
       createSqlData(sql)({ via: "service", userId, orgs: [{ orgId, role: "admin" }] }).sandboxes;
@@ -150,17 +161,15 @@ test("recovery receipts retain encrypted versions and only current interior owne
 test.each(["observe", "quiesce", "capture", "known_capture"])(
   "the stop deadline fences late %s work",
   async (stage) => {
-    const { db, people } = sharedDatabase();
+    const { db, people, goldenId } = sharedDatabase();
     const originalTimeout = globalThis.setTimeout;
     try {
       const sql = bunLikeSql(db);
       const id = crypto.randomUUID();
-      const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0];
-      if (!golden) throw new Error("Missing golden fixture");
       await db.query(
         `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status)
       values($1,$2,$3,$4,'boat','bx_late_recovery','claude','running')`,
-        [id, golden.id, people.org, people.owner],
+        [id, goldenId, people.org, people.owner],
       );
       const boat = fakeBoat();
       const info = {
@@ -271,25 +280,14 @@ async function withPreservationRow(
   }) => Promise<void>,
   modalBinding?: string,
 ) {
-  const { db, people } = sharedDatabase();
+  const { db, people, goldenId, modalGoldenId } = sharedDatabase();
   const id = crypto.randomUUID();
-  const golden = (
-    modalBinding
-      ? await db.query<{ id: string }>(
-          `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,
-           modal_workspace,modal_environment,modal_app_id,config)
-           values($1,$2,$3,'private','modal',$3,$3,'workspace','main','app','{"repos":[],"init":[]}') returning id`,
-          [people.org, people.owner, id],
-        )
-      : await db.query<{ id: string }>("select id from goldens where name='shared'")
-  ).rows[0];
-  if (!golden) throw new Error("Missing golden");
   await db.query(
     `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status,runtime_transport)
     values($1,$2,$3,$4,$5,$6,$7,'running',$8)`,
     [
       id,
-      golden.id,
+      modalBinding ? modalGoldenId : goldenId,
       people.org,
       people.owner,
       modalBinding ? "modal" : "boat",
@@ -516,15 +514,13 @@ test("an unavailable receipt lookup defers stop without provider work", async ()
 
 // The real persistence boundary owns this no-archive contract, including restart.
 test("application-secret taint permanently disables collection and recovery, purging older archives", async () => {
-  const { db, people } = sharedDatabase();
+  const { db, people, goldenId } = sharedDatabase();
 
   const id = crypto.randomUUID();
-  const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0];
-  if (!golden) throw Error("Missing golden fixture");
   await db.query(
     `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status)
        values($1,$2,$3,$4,'boat','bx_tainted','claude','running')`,
-    [id, golden.id, people.org, people.owner],
+    [id, goldenId, people.org, people.owner],
   );
   await db.query("insert into sandbox_work_recovery(sandbox_id,archive_enc) values($1,$2)", [id, new Uint8Array([1])]);
   // Taint after a completed stop must replace the now-purged recovery pointer,
