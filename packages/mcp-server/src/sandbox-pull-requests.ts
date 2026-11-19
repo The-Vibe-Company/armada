@@ -262,7 +262,7 @@ export function createPullRequestScanJob(
           )
         ).rows[0],
     );
-    if (!row) return;
+    if (!row) return null;
     nextScan = now() + 15_000;
     try {
       const configured = repos.parse(row.repositories);
@@ -455,23 +455,9 @@ export function createPullRequestScanJob(
       const checkedAt = new Date(now()).toISOString();
       const launchedAt = Date.parse(row.created_at);
       if (numbers.size || branchCount) {
-        const fetchGitHub = github.fetch ?? fetch;
-        const request = Object.assign(
-          async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
-            signal.throwIfAborted();
-            if (!(await canDispatch())) throw Error("PR scan dispatch no longer authorized.");
-            return fetchGitHub(input, { ...init, signal });
-          },
-          { preconnect: fetchGitHub.preconnect },
-        );
-        const access = await resolveGitHubAccess(
-          {
-            ...github,
-            caller: "managed_runtime",
-            fetch: request,
-          },
-          row.owner_id,
-        );
+        if (!(await canDispatch())) return;
+        const request = github.fetch ?? fetch;
+        const access = await resolveGitHubAccess({ ...github, caller: "managed_runtime" }, row.owner_id);
         if (
           access.status !== "connected" ||
           String(access.identity.id) !== row.github_id ||
@@ -487,6 +473,8 @@ export function createPullRequestScanJob(
             throw Error("Repository is outside the sandbox grant.");
           // A large scan costs capacity from subsequent scans, even on failure.
           nextScan = Math.max(nextScan, now() + ++requests * 1000);
+          signal.throwIfAborted();
+          if (!(await canDispatch())) throw Error("PR scan dispatch no longer authorized.");
           const response = await request(`https://api.github.com/repos/${repository}${path}`, {
             signal,
             redirect: "error",
@@ -697,10 +685,12 @@ export function createPullRequestScanJob(
     async run(job, context) {
       if (job.sandbox_id === null || job.generation === null) return { status: "fail", reason: "missing_scan_target" };
       const signal = AbortSignal.any([context.signal, AbortSignal.timeout(45_000)]);
+      let after = retryAfter(15);
       try {
         if (await context.canDispatch()) {
           const result = await check(job, signal, context.canDispatch);
           if (result) return result;
+          if (result === null) after = new Date(now() + 15_000);
         }
       } catch {
         // A timeout, denied grant or partial result preserves the last complete list.
@@ -713,8 +703,8 @@ export function createPullRequestScanJob(
       return rows.length
         ? {
             status: "retry",
-            after: retryAfter(15),
-            commit: (tx) => rescheduleRecurringJob(tx, job, retryAfter(15)),
+            after,
+            commit: (tx) => rescheduleRecurringJob(tx, job, after),
           }
         : { status: "done" };
     },
