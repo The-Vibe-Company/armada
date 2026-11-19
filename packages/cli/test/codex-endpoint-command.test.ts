@@ -92,7 +92,7 @@ test.each(["stdin", "file"] as const)(
       }),
     });
     expect(h.output.join("")).not.toContain(apiKey);
-    expect(h.output.join("")).toContain("Modal only");
+    expect(h.output.join("")).toContain("Modal, Docker hosts and runtime-backed Boat");
     expect(h.output.join("")).toContain("Responses API");
   },
 );
@@ -253,6 +253,7 @@ test.each([
     }),
   });
   expect(h.output.join("")).not.toContain(apiKey);
+  expect(h.output.join("")).toContain("Modal, Docker hosts and runtime-backed Boat");
   expect(h.output.join("")).toContain("supports Claude models only");
 });
 
@@ -459,6 +460,7 @@ test("CLI creates an OpenCode chat-compatible account with explicit upstream mod
     apiKey,
   });
   expect(h.output.join("")).not.toContain(apiKey);
+  expect(h.output.join("")).toContain("Modal, Docker hosts and runtime-backed Boat");
   expect(h.output.join("")).toContain("armada/<upstream-model>");
 });
 

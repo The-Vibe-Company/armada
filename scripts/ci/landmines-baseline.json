@@ -580,7 +580,7 @@
     "packages/core/src/provider-limit.ts": 2,
     "packages/core/src/provider-response.ts": 1,
     "packages/core/src/provider.ts": 125,
-    "packages/core/src/public-control-routes.ts": 5,
+    "packages/core/src/public-control-routes.ts": 4,
     "packages/core/src/readable-variables.ts": 3,
     "packages/core/src/record.ts": 1,
     "packages/core/src/repository-context.ts": 1,
@@ -1199,7 +1199,7 @@
   "landmines-testing/no-test-doubles": {
     "packages/agent-runtime/test/harness-cache.test.ts": 1,
     "packages/agent-runtime/test/runtime.test.ts": 2,
-    "packages/cli/test/email-login.test.ts": 6,
+    "packages/cli/test/email-login.test.ts": 5,
     "packages/cli/test/skill-hint.test.ts": 1,
     "packages/core/test/golden-create.test.ts": 4,
     "packages/core/test/golden-scan.probe.ts": 1,

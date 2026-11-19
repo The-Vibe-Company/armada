@@ -75,6 +75,20 @@ for (const command of [
   });
 }
 
+test("host help lists retention alongside the other account commands", async () => {
+  let stdout = "";
+  const fail = () => {
+    throw new Error("Help must not perform authenticated or secret I/O");
+  };
+  const code = await run(
+    ["host", "--help"],
+    { out: (text) => (stdout += text), err: fail },
+    { env: {}, fetch: Object.assign(fail, { preconnect: fail }) },
+  );
+  expect(code).toBe(0);
+  expect(stdout).toMatch(/^ {2}retention +Update stopped sandbox retention/m);
+});
+
 test("logs help rejects an invalid profile from the environment", async () => {
   let stderr = "";
   const fail = () => {
