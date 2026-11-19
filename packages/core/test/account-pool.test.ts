@@ -25,7 +25,7 @@ test.each([
     { code: "account_exhausted", exhaustionCode: "plan_limit", resetsAt: "2027-01-01T00:00:00Z" },
   ],
 ] as const)("skips the first account for %s and keeps the pool model", (_label, overrides, reason) => {
-  const candidates = new Map([
+  const candidates = new Map<string, AccountCandidate>([
     ["first", { ...active, ...overrides }],
     ["second", { ...active, version: 5, models: ["pool-model"] }],
   ]);
@@ -43,7 +43,7 @@ test.each([
   { version: 3, code: "plan_limit", resetsAt: null },
   { version: 2, code: "plan_limit", resetsAt: "2027-01-01T00:00:00Z" },
 ])("selects the first eligible account when exhaustion does not apply (%j)", (exhaustion) => {
-  const candidates = new Map([
+  const candidates = new Map<string, AccountCandidate>([
     ["first", { ...active, exhaustion, budget }],
     ["second", active],
   ]);
@@ -72,7 +72,7 @@ test("refuses a full pool in preference order and reports account and model capa
 });
 
 test("an explicit account outside the pool uses the harness default model", () => {
-  const candidates = new Map([
+  const candidates = new Map<string, AccountCandidate>([
     ["first", active],
     ["pinned", active],
   ]);
@@ -86,7 +86,7 @@ test.each([
   [2, {}, "refuse", "account_version_changed"],
   [3, { budget: { ...budget, modelPriceKnown: false } }, "refuse", "pricing_unknown"],
 ] as const)("an explicit pin with version %d and facts %j returns %s", (credentialVersion, overrides, kind, code) => {
-  const candidates = new Map([
+  const candidates = new Map<string, AccountCandidate>([
     ["first", active],
     ["pinned", { ...active, ...overrides }],
   ]);
@@ -99,7 +99,7 @@ test.each([
 });
 
 test("refuses a missing explicit account without exposing its eligibility or trying the pool", () => {
-  const candidates = new Map([["first", active]]);
+  const candidates = new Map<string, AccountCandidate>([["first", active]]);
   const explicit = { credentialId: "unavailable" };
   expect(choose(pool, "requested-model", { now, candidates, explicit })).toEqual({
     kind: "refuse",
