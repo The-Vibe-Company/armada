@@ -6,6 +6,7 @@ import { sandboxOperations } from "./sandbox.ts";
 import { sandboxCheckOperations } from "./sandbox-checks.ts";
 import { launchOptionsOperation, readLogsOperation } from "./sandbox-reads.ts";
 import { sandboxRestOperations } from "./sandbox-rest.ts";
+import { sandboxViewerOperations } from "./sandbox-viewer.ts";
 
 export type { CreatedInboundTrigger } from "./inbound-trigger.ts";
 export type { LaunchInput } from "./launch.ts";
@@ -23,11 +24,15 @@ export { sandboxCheckOperations } from "./sandbox-checks.ts";
 export { launchOptionsOperation, MAX_LOG_PAGES, readLogsOperation } from "./sandbox-reads.ts";
 export { sandboxExtensionLifetime, sandboxRestOperations } from "./sandbox-rest.ts";
 
+export { sandboxViewerOperations, VIEWER_ACCESS_DENIED } from "./sandbox-viewer.ts";
+
 export interface Operation<Input extends z.ZodType, Output extends z.ZodType | undefined = undefined> {
   readonly name: string;
   readonly route: { readonly method: string; readonly path: `/api/v1/${string}` };
   readonly input: { readonly body: Input; readonly query?: z.ZodType };
   readonly output: Output;
+  readonly outputMediaType?: string;
+  readonly errorOutput?: z.ZodType;
   readonly successStatus?: number;
   readonly readOnly: boolean;
   readonly destructive: boolean;
@@ -69,4 +74,9 @@ export const operations = {
   ...sandboxCheckOperations,
   launchOptions: launchOptionsOperation,
   readLogs: readLogsOperation,
+  createSandboxViewerToken: sandboxViewerOperations.mint,
+  readViewerLogs: sandboxViewerOperations.logs,
+  readViewerStatus: sandboxViewerOperations.status,
+  sendViewerPrompt: sandboxViewerOperations.send,
+  streamViewerEvents: sandboxViewerOperations.events,
 } as const;
