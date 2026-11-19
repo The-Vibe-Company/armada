@@ -12,7 +12,7 @@ export function createInboundTriggerStore(
   jobs: Pick<ReturnType<typeof createJobsStore>, "enqueue">,
   encryptionKey: string | undefined,
   now = Date.now,
-): InboundTriggerStore {
+) {
   return {
     async signingKey(triggerId) {
       const {
@@ -34,7 +34,6 @@ export function createInboundTriggerStore(
       if (!sql.transaction) throw new Error("Trigger admission requires a transaction.");
       try {
         return await sql.transaction<TriggerAdmission>(async (tx) => {
-          // This lock serializes duplicate and rate checks, and orders admission against key rotation and disable.
           const {
             rows: [trigger],
           } = await tx.query<{ org_id: string; rate_per_minute: number }>(
@@ -56,18 +55,21 @@ export function createInboundTriggerStore(
               : { status: "unauthorized" };
           }
 
-          // A revoked owner or unavailable binding must fail closed. Launch admission rechecks
-          // access to the resolved resources and account policy before creating any intent.
           const {
             rows: [binding],
           } = await tx.query<{ received_at_ms: number }>(
-            `select extract(epoch from clock_timestamp())::float8 * 1000 as received_at_ms
-             from public.triggers t
-             join public.launch_templates l on l.id = t.template_id and l.org_id = t.org_id
-             join public.members m on m.org_id = t.org_id and m.user_id = t.launch_owner_id
-             join public.agent_defaults p on p.user_id = t.launch_owner_id and p.harness = t.pool_harness
-             where t.id = $1 and m.role = 'admin' and l.status = 'active'
-               and (l.scope = 'org' or l.owner_id = t.launch_owner_id)`,
+            `with binding as materialized (
+               select 1 from public.triggers t
+               join public.launch_templates l on l.id = t.template_id and l.org_id = t.org_id
+               join public.launch_template_revisions r on r.template_id = l.id and r.revision = l.current_revision
+               join public.members m on m.org_id = t.org_id and m.user_id = t.launch_owner_id
+               join public.agent_defaults p on p.user_id = t.launch_owner_id and p.harness = t.pool_harness
+               where t.id = $1 and m.role = 'admin' and l.status = 'active'
+                 and (l.scope = 'org' or l.owner_id = t.launch_owner_id)
+                 and r.definition->>'harness' = p.harness
+               for share of m, l, p
+             )
+             select extract(epoch from clock_timestamp())::float8 * 1000 as received_at_ms from binding`,
             [triggerId],
           );
           if (!binding) return { status: "unauthorized" };
@@ -121,5 +123,5 @@ export function createInboundTriggerStore(
         throw error;
       }
     },
-  };
+  } satisfies InboundTriggerStore;
 }

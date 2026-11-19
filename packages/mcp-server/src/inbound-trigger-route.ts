@@ -23,7 +23,7 @@ export interface InboundTriggerStore {
   admit(delivery: VerifiedDelivery): Promise<TriggerAdmission>;
 }
 
-export function freshTriggerTimestamp(timestamp: number, now: number): boolean {
+export function freshTriggerTimestamp(timestamp: number, now: number) {
   return Math.abs(now - timestamp) <= replayWindowMs;
 }
 
@@ -52,8 +52,8 @@ async function readBody(request: Request) {
 
 const unauthorized = () => Response.json({ error: "unauthorized" }, { status: 401 });
 
-export function inboundTriggerRoute(store: InboundTriggerStore, now = Date.now): Route {
-  return async (request) => {
+export function inboundTriggerRoute(store: InboundTriggerStore, now = Date.now) {
+  const route: Route = async (request) => {
     const path = new URL(request.url).pathname;
     const triggerId = hookPath.exec(path)?.[1];
     if (!triggerId || request.method !== "POST") return null;
@@ -111,4 +111,5 @@ export function inboundTriggerRoute(store: InboundTriggerStore, now = Date.now):
       },
     );
   };
+  return route;
 }
