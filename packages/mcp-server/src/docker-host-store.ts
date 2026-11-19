@@ -457,12 +457,28 @@ export function createDockerHostStore(sql: Sql, key: string) {
     if ((operation === "bootstrap" || operation === "resume") && original.outcome !== "completed") deny();
     return saved.request;
   }
-  async function supersededLifecycle(tx: Sql, job: Pick<StoredJob, "bound_sandbox_id" | "request_id" | "position">) {
+  async function supersededLifecycle(
+    tx: Sql,
+    job: Pick<StoredJob, "bound_sandbox_id" | "request_id" | "position">,
+    restoreOnly = false,
+  ) {
     const later = await tx.query(
-      `select 1 from public.docker_host_jobs where bound_sandbox_id=$1
-       and bound_operation in ('resume','bootstrap') and request_id<>$2 and position>$3
-       and (bound_operation='resume' or outcome is distinct from 'failed') limit 1`,
-      [job.bound_sandbox_id, job.request_id, job.position],
+      `select 1 from public.docker_host_jobs later where later.bound_sandbox_id=$1 and later.request_id<>$2
+       and (
+         (not $4::boolean and later.position>$3 and
+           (later.bound_operation='resume' or (later.bound_operation='bootstrap' and later.outcome is distinct from 'failed')))
+         or (later.bound_operation='restore' and exists(
+           select 1 from public.sandboxes s
+           join public.docker_machine_bindings target on target.sandbox_id=s.id
+             and target.host_id=s.docker_host_id and target.installation_id=s.docker_installation_id
+             and target.machine_generation=s.lifecycle_generation and target.daemon_generation<>s.docker_generation
+           join public.docker_machine_bindings source on source.sandbox_id=s.id
+             and source.host_id=s.docker_host_id and source.installation_id=s.docker_installation_id
+             and source.daemon_generation=s.docker_generation and source.machine_generation<target.machine_generation
+           where s.id=later.bound_sandbox_id and s.docker_host_id=later.host_id
+         ))
+       ) limit 1`,
+      [job.bound_sandbox_id, job.request_id, job.position, restoreOnly],
     );
     return later.rows.length > 0;
   }
@@ -1676,6 +1692,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
               )
             ).rows[0] ?? deny();
           const logical = await boundMachine(tx, job, host, installationId);
+          if (await supersededLifecycle(tx, job, true)) return;
           const predicate = `id=$1 and not application_secret_tainted and ${DOCKER_RETAINED_OUTPUT_STOP}`;
           const row = (
             await tx.query<{ id: string; generation: string; provider_sandbox_id: string }>(
@@ -1732,7 +1749,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         const logical = await boundMachine(tx, job, host, installationId);
         // Only the authenticated host's observed physical stop is evidence. SQL's
         // clock may differ from the frozen host deadline and cannot prove exit.
-        if (logical.status === "deleted") return;
+        if (logical.status === "deleted" || (await supersededLifecycle(tx, job, true))) return;
         const transition = await transitionSandbox(tx, {
           sandboxId: logical.id,
           expectedGeneration: logical.lifecycle_generation,
@@ -1905,7 +1922,13 @@ export function createDockerHostStore(sql: Sql, key: string) {
             );
           }
         } else if (result.imageId !== undefined) deny();
-        if (logical && !(await settleRefusedResume(tx, logical, job)) && result.outcome === "failed") {
+        const staleRestorePredecessor = logical !== undefined && (await supersededLifecycle(tx, job, true));
+        if (
+          logical &&
+          !staleRestorePredecessor &&
+          !(await settleRefusedResume(tx, logical, job)) &&
+          result.outcome === "failed"
+        ) {
           if (job.bound_operation === "resume") {
             if (job.outcome === null) await failResumeAck(tx, logical, job, result.reason);
             else if (job.cancelled_at) await startupFailed(tx, logical, job, result.reason);
@@ -1916,7 +1939,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
         // Persist terminal receipts below, but never replay old stop/delete
         // effects onto a lifecycle admitted after that job.
         const staleCleanup =
-          (job.bound_operation === "stop" || job.bound_operation === "delete") && (await supersededLifecycle(tx, job));
+          staleRestorePredecessor ||
+          ((job.bound_operation === "stop" || job.bound_operation === "delete") &&
+            (await supersededLifecycle(tx, job)));
         if (result.retained) {
           if (!logical || job.bound_operation !== "stop") deny();
           if (!staleCleanup)
