@@ -1333,15 +1333,18 @@ test("a command answered before its first result read still records the fenced a
   expect(replay.records).toEqual([]);
 });
 
+function bootstrapFailureRequest(token: string) {
+  return new Request("https://armada.test/api/runtime/progress", {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}` },
+    body: JSON.stringify({ stage: "bootstrap_failed" }),
+  });
+}
+
 test("bootstrap failure journals one transition and refuses progress authenticated against a stale generation", async () => {
   const f = await fixture();
   const { enrolmentToken } = await f.authority.issue({ ownerId: f.people.owner, sandboxId: f.id, configuration: {} });
-  const request = () =>
-    new Request("https://armada.test/api/runtime/progress", {
-      method: "POST",
-      headers: { authorization: `Bearer ${enrolmentToken}` },
-      body: JSON.stringify({ stage: "bootstrap_failed" }),
-    });
+  const request = () => bootstrapFailureRequest(enrolmentToken);
   const stale = createRuntimeProgress({
     ...f.authority,
     withBootstrap: (token, work) =>
@@ -1357,6 +1360,32 @@ test("bootstrap failure journals one transition and refuses progress authenticat
   expect((await report(request()))?.status).toBe(200);
   expect((await report(request()))?.status).toBe(401);
   expect((await journal()).rows).toEqual([{ from_status: "ready", to_status: "failed", code: "bootstrap_failed" }]);
+});
+
+test("a failed reason write rolls back the bootstrap status change and journal", async () => {
+  const f = await fixture();
+  const { enrolmentToken } = await f.authority.issue({ ownerId: f.people.owner, sandboxId: f.id, configuration: {} });
+  const report = createRuntimeProgress({
+    ...f.authority,
+    withBootstrap: (token, work) =>
+      f.authority.withBootstrap(token, (tx, scope, generation) =>
+        work(
+          {
+            async query(query, params) {
+              if (query.startsWith("update public.sandboxes set status_reason=")) throw Error("Injected write failure");
+              return tx.query(query, params);
+            },
+          },
+          scope,
+          generation,
+        ),
+      ),
+  });
+  expect((await report(bootstrapFailureRequest(enrolmentToken)))?.status).toBe(400);
+  expect((await f.db.query("select status,status_reason from sandboxes where id=$1", [f.id])).rows).toEqual([
+    { status: "ready", status_reason: null },
+  ]);
+  expect((await f.db.query("select id from sandbox_transitions where sandbox_id=$1", [f.id])).rows).toEqual([]);
 });
 
 test("authenticated boot and turn diagnostics retain their initiating request IDs and sanitized stack", async () => {

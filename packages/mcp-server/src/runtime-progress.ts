@@ -99,12 +99,10 @@ export function createRuntimeProgress(authority: ReturnType<typeof createRuntime
         generation: string,
       ) => {
         const code = isRuntimeStartupFailure(reason) ? reason : stage;
-        const message =
-          stage === "bootstrap_failed"
-            ? "Armada runtime bootstrap failed."
-            : isRuntimeStartupFailure(reason)
-              ? RUNTIME_STARTUP_FAILURES[reason]
-              : "Armada runtime process failed. Ask the server operator to inspect runtime startup before launching again.";
+        let message =
+          "Armada runtime process failed. Ask the server operator to inspect runtime startup before launching again.";
+        if (stage === "bootstrap_failed") message = "Armada runtime bootstrap failed.";
+        if (isRuntimeStartupFailure(reason)) message = RUNTIME_STARTUP_FAILURES[reason];
         const result = await recordRuntimeStartupFailure(tx, scope.sandboxId, generation, code, message);
         if (result.kind === "conflict") throw new RuntimeEnrolmentDenied();
       };
@@ -113,8 +111,9 @@ export function createRuntimeProgress(authority: ReturnType<typeof createRuntime
       const { scope, correlationId } = await (bootstrap.has(stage)
         ? authority.withBootstrap(token, async (tx, scope, generation) => {
             for (const launch of launchStages[stage] ?? []) await recordLaunchStage(tx, scope.sandboxId, launch);
+            const correlationId = stage === "bootstrap_failed" ? await correlation(tx, scope) : null;
             if (stage === "bootstrap_failed") await recordFailure(tx, scope, generation);
-            return { scope, correlationId: stage === "bootstrap_failed" ? await correlation(tx, scope) : null };
+            return { scope, correlationId };
           })
         : authority.withSession(
             token,
