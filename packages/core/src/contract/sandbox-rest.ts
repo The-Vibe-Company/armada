@@ -4,7 +4,15 @@ import type { Operation } from "./index.ts";
 import { sandboxIdInput as id } from "./sandbox.ts";
 
 const org = z.string().nullish();
-const controlErrors = ["internal", "invalid", "unavailable", "unauthorized", "forbidden", "not_found"] as const;
+const controlErrors = [
+  "internal",
+  "invalid",
+  "unavailable",
+  "dependency_unavailable",
+  "unauthorized",
+  "forbidden",
+  "not_found",
+] as const;
 
 export const sandboxExtensionLifetime = z.number().int().positive().max(MAX_SANDBOX_EXTENSION_TTL_SECONDS);
 const absent = z.never().optional();
@@ -22,7 +30,7 @@ export const sandboxRestOperations = {
     readOnly: false,
     destructive: false,
     audience: "public",
-    errors: [...controlErrors, "unsupported", "conflict", "docker_host_upgrade_required"],
+    errors: [...controlErrors, "unsupported", "conflict", "docker_host_upgrade_required", "sandbox_retention_ended"],
     description:
       "Owner-only. Restarts the same Docker allocation with fresh runtime enrolment, keeping history and the original TTL. Reuse request_id after uncertainty.",
     input: { body: z.object({ id, request_id: z.string().uuid(), org }) },
@@ -40,6 +48,9 @@ export const sandboxRestOperations = {
       "extension_not_allowed",
       "extension_not_found",
       "extension_state",
+      "conflict",
+      "provider_routing_unavailable",
+      "provider_mismatch",
       "rate_limited",
     ],
     description:
@@ -53,7 +64,7 @@ export const sandboxRestOperations = {
     readOnly: false,
     destructive: false,
     audience: "public",
-    errors: [...controlErrors, "dependency_unavailable"],
+    errors: controlErrors,
     description:
       "Collects one bounded read-only VM observation and reports the last ten comparable repository sessions. Missing evidence causes abstention; never resizes or changes defaults.",
     input: { body: z.object({ id, org }) },
@@ -65,7 +76,7 @@ export const sandboxRestOperations = {
     readOnly: true,
     destructive: false,
     audience: "public",
-    errors: [...controlErrors, "dependency_unavailable"],
+    errors: controlErrors,
     description: "Owner/admin only. Returns sensitive base64 recovery archive; never log it.",
     input: { body: z.object({ id, recovery_id: z.string().uuid().optional(), org }) },
     output: z.object({ archive: z.string().nullable() }),
