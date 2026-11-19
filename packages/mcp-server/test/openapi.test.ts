@@ -108,6 +108,12 @@ test("published 503 schema accepts the real drain refusal and a structured unava
 
 test("published launch request keeps golden, pinned Modal template and Docker sources distinct", async () => {
   const { publishedRequest } = await import("./published-response.ts");
+  const { requestBody } = published.paths["/api/v1/sandbox/launch"].post;
+  const variants = requestBody.content["application/json"].schema.oneOf;
+  expect(variants.length).toBeGreaterThan(1);
+  for (const variant of variants) {
+    expect(variant.properties.prompt.maxLength).toBeLessThanOrEqual(requestBody["x-max-body-bytes"]);
+  }
   const launch = publishedRequest("sandbox/launch");
   const org = "11111111-1111-4111-8111-111111111111";
   const golden = { golden: "web", harness: "codex", org };
@@ -179,7 +185,10 @@ test("published template launch request lists exactly the fields the template se
   const id = "11111111-1111-4111-8111-111111111111";
   // The CLI's `templates launch --model-account` body.
   const cli = { org: id, id, requestKey: "k", modelAccount: { id, version: 1 }, externalRef: "tender:1" };
-  expect(publishedRequest("templates/launch").safeParse(cli).success).toBe(true);
+  const templateLaunch = publishedRequest("templates/launch");
+  expect(templateLaunch.safeParse(cli).success).toBe(true);
+  expect(templateLaunch.safeParse({ ...cli, requestKey: "invalid key" }).success).toBe(false);
+  expect(templateLaunch.safeParse({ ...cli, repo: "x".repeat(201) }).success).toBe(false);
 });
 
 test("published extension request accepts either lifetime field and nullable org, and refuses both fields together", async () => {

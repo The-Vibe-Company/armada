@@ -1,13 +1,14 @@
 import { z } from "zod";
 import { MACHINE_SIZES } from "../machine-size.ts";
 import { SANDBOX_PROVIDERS } from "../sandbox-provider.ts";
+import { SKILL_PIN_PATTERN } from "../skill-pins.ts";
 import type { Operation } from "./index.ts";
 import { launchExternalRef } from "./launch.ts";
 import { templateLaunchResponse } from "./launch-response.ts";
 
 const GOLDEN_CAPABILITIES_REQUEST = z.object({
-  org: z.string().optional(),
-  provider: z.enum(SANDBOX_PROVIDERS).optional(),
+  org: z.string().nullish(),
+  provider: z.enum(SANDBOX_PROVIDERS).nullish(),
 });
 
 const GOLDEN_CAPABILITIES_RESPONSE = z.object({
@@ -26,7 +27,7 @@ const GOLDEN_CAPABILITIES_RESPONSE = z.object({
 const GOLDEN_ADOPTION_REQUEST = z.object({
   id: z.string().uuid(),
   confirmation: z.string().uuid().optional(),
-  org: z.string().optional(),
+  org: z.string().nullish(),
 });
 
 const GOLDEN_ADOPTION_RESPONSE = z.object({
@@ -91,7 +92,7 @@ export const githubOperations = {
     errors: [],
     description:
       "Configure or refresh the owner's GitHub access in a running sandbox without relaunching. Enrolled Armada runtimes use current-epoch private RPC; native Boat keeps its existing setup. Reuses a validated unexpired token; rejection/expiry can require renewal. Only the sandbox owner may request this.",
-    input: { body: z.object({ id, org: z.string().optional() }) },
+    input: { body: z.object({ id, org: z.string().nullish() }) },
     output: z.object({
       id: z.string(),
       login: z.string(),
@@ -109,7 +110,7 @@ export const githubOperations = {
     errors: [],
     description:
       "Owner-only non-secret current-epoch configuration and credential-request count. Does not return credentials or probe GitHub.",
-    input: { body: z.object({ id, org: z.string().optional() }) },
+    input: { body: z.object({ id, org: z.string().nullish() }) },
     output: z.object({
       id: z.string(),
       configured: z.boolean(),
@@ -131,7 +132,7 @@ export const goldenOperations = {
     readOnly: true,
     destructive: false,
     errors: [],
-    input: { body: z.object({ org: z.string().optional() }) },
+    input: { body: z.object({ org: z.string().nullish() }) },
     output: GOLDEN_LIST_RESPONSE,
   },
   readGoldenCapabilities: {
@@ -171,18 +172,22 @@ export const launchTemplateOperation = {
   errors: [],
   input: {
     body: z.strictObject({
-      org: z.string().uuid(),
-      id: z.string().uuid(),
+      org: z.guid(),
+      id: z.guid(),
       revision: z.number().int().positive().optional(),
-      requestKey: z.string(),
-      prompt: z.string().optional(),
+      requestKey: z
+        .string()
+        .min(1)
+        .max(128)
+        .regex(/^[A-Za-z0-9._:-]+(?![\s\S])/),
+      prompt: z.string().max(100000).regex(/\S/).optional(),
       ttlSeconds: z.number().int().positive().optional(),
       size: z.enum(MACHINE_SIZES).optional(),
-      repo: z.string().optional(),
-      skills: z.array(z.string()).max(20).optional(),
+      repo: z.string().max(200).regex(/\S/).optional(),
+      skills: z.array(z.string().max(256).regex(SKILL_PIN_PATTERN)).max(20).nullish(),
       skipSkillDefaults: z.boolean().optional(),
       modelAccount: z
-        .strictObject({ id: z.string().uuid(), version: z.number().int().positive() })
+        .strictObject({ id: z.guid(), version: z.number().int().positive() })
         .optional()
         .describe(
           "Model credential account to run with, by id and version, when the revision pins none. Refused when the revision pins one.",

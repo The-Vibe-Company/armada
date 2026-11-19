@@ -168,7 +168,7 @@ export function generateOpenApi(table: readonly OpenApiOperation[] = Object.valu
     let request = input;
     const maxBodyBytes = controlBodyMaxBytes(route);
     const oversizedStatus = vaultControlRoute(route) ? 400 : 413;
-    if (route === "sandbox/launch" && operation.input.body instanceof z.ZodDiscriminatedUnion) {
+    if (route === "sandbox/launch" && operation.input.body instanceof z.ZodUnion) {
       request = {
         oneOf: operation.input.body.options.map((variant) => {
           const { $schema: _dialect, ...schema } = requestJsonSchema(variant as z.ZodType);
@@ -235,7 +235,7 @@ export function generateOpenApi(table: readonly OpenApiOperation[] = Object.valu
       ...(parameters.length ? { parameters } : {}),
       ...(request && {
         requestBody: {
-          required: true,
+          required: route !== "viewer/logs" && route !== "viewer/status",
           description: viewerControl
             ? "Send a JSON object."
             : operation.directServer
@@ -280,13 +280,15 @@ export function generateOpenApi(table: readonly OpenApiOperation[] = Object.valu
               schema: { type: "integer", minimum: 0 },
             },
           },
-          content: {
-            "application/json": {
-              schema: {
-                anyOf: [{ $ref: "#/components/schemas/Failure" }, { $ref: "#/components/schemas/DrainRefusal" }],
+          content: operation.errorOutput
+            ? outputFailure(operation.errorOutput)
+            : {
+                "application/json": {
+                  schema: {
+                    anyOf: [{ $ref: "#/components/schemas/Failure" }, { $ref: "#/components/schemas/DrainRefusal" }],
+                  },
+                },
               },
-            },
-          },
         },
         default: {
           description: "Public API failure",

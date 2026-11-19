@@ -4,6 +4,7 @@ import { sandboxViewerOperations } from "@armada/core/contract";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { controlRoutes } from "../src/modules.ts";
 import { rejectUnroutedViewerRequest } from "../src/viewer-control.ts";
+import { publishedGetResponse } from "./published-response.ts";
 
 async function fixture(status: "ready" | "deleted" = "ready") {
   let time = new Date("2026-11-17T12:00:00Z");
@@ -220,5 +221,24 @@ test("viewer send forwards a structured sandbox refusal", async () => {
   expect(response?.status).toBe(409);
   expect(sandboxViewerOperations.send.errorOutput.parse(await response!.json())).toMatchObject({
     error: { code: "sandbox_terminal" },
+  });
+});
+
+test("the published viewer stream 503 accepts a viewer access denial", async () => {
+  const f = await fixture();
+  const response = await handleControlRequest(
+    new Request("https://example.test/api/v1/viewer/events", {
+      headers: { authorization: `Bearer ${f.grant.token}` },
+    }),
+    {
+      ...f.options,
+      now: () => {
+        throw new Error("clock unavailable");
+      },
+    },
+  );
+  expect(response?.status).toBe(503);
+  expect(publishedGetResponse("viewer/events", "503").parse(await response!.json())).toEqual({
+    error: "viewer_access_denied",
   });
 });
