@@ -1337,79 +1337,74 @@ test("authenticated boot and turn diagnostics retain their initiating request ID
   const f = await fixture();
   const records: Record<string, unknown>[] = [];
   const log = (line: string) => records.push(JSON.parse(line));
-  const stageLog = spyOn(console, "info").mockImplementation(() => {});
-  try {
-    let grant: Awaited<ReturnType<typeof f.enrol>> | undefined;
-    const launch = await observeRequest(async () => {
-      grant = await f.enrol();
+  let grant: Awaited<ReturnType<typeof f.enrol>> | undefined;
+  const launch = await observeRequest(async () => {
+    grant = await f.enrol();
+    return new Response(null, { status: 204 });
+  }, log);
+  if (!grant) throw Error("Missing runtime grant");
+  const { runtimeToken, epoch } = grant;
+  const commandId = "follow_progress_fixture";
+  const command = {
+    version: 1 as const,
+    sandboxId: f.id,
+    requestId: commandId,
+    op: "prompt" as const,
+    input: { sandboxId: f.id, harness: "codex" as const, text: "fixture prompt" },
+  };
+  const accept = () =>
+    observeRequest(async () => {
+      await f.bridge().enqueue(f.people.owner, command);
       return new Response(null, { status: 204 });
     }, log);
-    if (!grant) throw Error("Missing runtime grant");
-    const { runtimeToken, epoch } = grant;
-    const commandId = "follow_progress_fixture";
-    const command = {
-      version: 1 as const,
+  const send = await accept();
+  const replay = await accept();
+  expect(replay?.headers.get("x-request-id")).not.toBe(send?.headers.get("x-request-id"));
+  const route = createRuntimeProgress(f.authority);
+  const report = (body: unknown) =>
+    observeRequest(
+      async () =>
+        (await route(
+          new Request("https://armada.test/api/runtime/progress", {
+            method: "POST",
+            headers: { authorization: `Bearer ${runtimeToken}`, "x-armada-runtime-epoch": epoch },
+            body: JSON.stringify(body),
+          }),
+        )) ?? undefined,
+      log,
+    );
+  const error = new Error("private_config_canary");
+  error.stack +=
+    "\n    at main (/private_config_canary/runtime/main.js:701:12)\n    at /$bunfs/root/armada-runtime:801:19";
+  const diagnostic = runtimeOperatorDiagnostic(error, "session_start_failed");
+  const unrelated = await report({ stage: "harness_turn_failed", commandId: "foreign_command", diagnostic });
+  expect(unrelated?.status).toBe(400);
+  const harness = await report({ stage: "harness_turn_failed", commandId, diagnostic });
+  expect(harness?.status).toBe(200);
+  const boot = await report({ stage: "runtime_failed", reason: "artifact_preparation" });
+  expect(boot?.status).toBe(200);
+  expect(records.filter((record) => record.event === "operator_failure")).toMatchObject([
+    {
+      phase: "runtime.harness_turn_failed",
+      errorClass: "HarnessError",
+      message: "session_start_failed",
+      stack: ["main.js:701:12", "armada-runtime:801:19"],
+      requestId: send?.headers.get("x-request-id"),
       sandboxId: f.id,
-      requestId: commandId,
-      op: "prompt" as const,
-      input: { sandboxId: f.id, harness: "codex" as const, text: "fixture prompt" },
-    };
-    const accept = () =>
-      observeRequest(async () => {
-        await f.bridge().enqueue(f.people.owner, command);
-        return new Response(null, { status: 204 });
-      }, log);
-    const send = await accept();
-    const replay = await accept();
-    expect(replay?.headers.get("x-request-id")).not.toBe(send?.headers.get("x-request-id"));
-    const route = createRuntimeProgress(f.authority);
-    const report = (body: unknown) =>
-      observeRequest(
-        async () =>
-          (await route(
-            new Request("https://armada.test/api/runtime/progress", {
-              method: "POST",
-              headers: { authorization: `Bearer ${runtimeToken}`, "x-armada-runtime-epoch": epoch },
-              body: JSON.stringify(body),
-            }),
-          )) ?? undefined,
-        log,
-      );
-    const error = new Error("private_config_canary");
-    error.stack +=
-      "\n    at main (/private_config_canary/runtime/main.js:701:12)\n    at /$bunfs/root/armada-runtime:801:19";
-    const diagnostic = runtimeOperatorDiagnostic(error, "session_start_failed");
-    const unrelated = await report({ stage: "harness_turn_failed", commandId: "foreign_command", diagnostic });
-    expect(unrelated?.status).toBe(400);
-    const harness = await report({ stage: "harness_turn_failed", commandId, diagnostic });
-    expect(harness?.status).toBe(200);
-    const boot = await report({ stage: "runtime_failed", reason: "artifact_preparation" });
-    expect(boot?.status).toBe(200);
-    expect(records.filter((record) => record.event === "operator_failure")).toMatchObject([
-      {
-        phase: "runtime.harness_turn_failed",
-        errorClass: "HarnessError",
-        message: "session_start_failed",
-        stack: ["main.js:701:12", "armada-runtime:801:19"],
-        requestId: send?.headers.get("x-request-id"),
-        sandboxId: f.id,
-      },
-      {
-        phase: "runtime.boot",
-        message: "artifact_preparation",
-        requestId: launch?.headers.get("x-request-id"),
-        sandboxId: f.id,
-      },
-    ]);
-    expect(JSON.stringify(records)).not.toContain("private_config_canary");
-    expect((await f.db.query("select status,status_reason from sandboxes where id=$1", [f.id])).rows).toEqual([
-      {
-        status: "failed",
-        status_reason:
-          "Runtime artifact preparation failed. Ask the server operator to check published harness artifacts and container filesystem access before launching again.",
-      },
-    ]);
-  } finally {
-    stageLog.mockRestore();
-  }
+    },
+    {
+      phase: "runtime.boot",
+      message: "artifact_preparation",
+      requestId: launch?.headers.get("x-request-id"),
+      sandboxId: f.id,
+    },
+  ]);
+  expect(JSON.stringify(records)).not.toContain("private_config_canary");
+  expect((await f.db.query("select status,status_reason from sandboxes where id=$1", [f.id])).rows).toEqual([
+    {
+      status: "failed",
+      status_reason:
+        "Runtime artifact preparation failed. Ask the server operator to check published harness artifacts and container filesystem access before launching again.",
+    },
+  ]);
 });

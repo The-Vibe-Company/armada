@@ -1345,7 +1345,7 @@
     "packages/mcp-server/test/request-timing.test.ts": 1,
     "packages/mcp-server/test/routine-scheduler.test.ts": 1,
     "packages/mcp-server/test/runtime-events.test.ts": 2,
-    "packages/mcp-server/test/runtime-progress.test.ts": 2,
+    "packages/mcp-server/test/runtime-progress.test.ts": 1,
     "packages/mcp-server/test/runtime-resume.test.ts": 1,
     "packages/mcp-server/test/sandbox-list-scope.test.ts": 2,
     "packages/mcp-server/test/sandbox-outputs.test.ts": 5,
