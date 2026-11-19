@@ -121,7 +121,7 @@ export function canManageRoutine(
 ) {
   return item.scope === "org" ? viewer.admin : item.ownerId === viewer.userId;
 }
-export const intervalLabel = (hours: number) => `Every ${hours} ${hours === 1 ? "hour" : "hours"}`;
+const intervalLabel = (hours: number) => `Every ${hours} ${hours === 1 ? "hour" : "hours"}`;
 /** Read compatibility while the cron picker ships in the next UI slice. */
 export const scheduleLabel = (item: Pick<RoutineItem, "intervalHours" | "scheduleDescription">) =>
   item.scheduleDescription ?? (item.intervalHours === null ? "Cron schedule" : intervalLabel(item.intervalHours));
