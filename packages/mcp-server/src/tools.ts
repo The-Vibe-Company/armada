@@ -55,6 +55,7 @@ import { type GoldenLaunchCredentials, prepareGoldenLaunchAccount } from "./laun
 import { publicLogEvents } from "./model-usage.ts";
 import type { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import { recordOperatorFailure } from "./request-observability.ts";
+import { observeGoldenLaunch } from "./request-timing.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
 import { appendConversation, sandboxActivity } from "./sandbox-activity.ts";
@@ -872,94 +873,102 @@ export function createArmadaServer(context: ToolContext, version: string, option
           ),
       },
     },
-    async (args) => {
-      // Refused before any lookup or allocation.
-      resolveModelChoice(args.harness, { model: args.model, reasoningEffort: args.reasoning_effort });
-      const actor = await launchActor(args.golden, args.org);
-      const chosen: GoldenRecord = await goldenForLaunch(data.goldens, actor, args.golden, args.provider);
-      resolveRepositoryDir(chosen, args.repo);
-      const prepare = async () => {
-        const account = await prepareGoldenLaunchAccount(
-          actor,
-          chosen,
-          args,
-          context.launchCredentials,
-          context.launch ?? {},
-        );
-        return { ...account, provider: await context.provider(chosen) };
-      };
-      let prepared: ReturnType<typeof prepare> | undefined;
-      const prepareOnce = () => (prepared ??= prepare());
-      const dispatch = async (receiptId?: string) => {
-        const { provider, credentials, options } = await prepareOnce();
-        const result = await launchSandbox(
-          provider,
-          {
-            ...(context.skillDefaults ? { skillDefaults: context.skillDefaults } : {}),
-            goldens: data.goldens,
-            sandboxes: data.sandboxes,
-            credentials,
-            ...(context.connections ? { connections: context.connections } : {}),
-          },
-          actor,
-          {
-            golden: args.golden,
-            ...(args.size === undefined ? {} : { size: args.size }),
-            provider: chosen.provider,
-            harness: args.harness,
-            ...(args.repo === undefined ? {} : { repo: args.repo }),
-            ...(args.model === undefined ? {} : { model: args.model }),
-            ...(args.visibility === undefined ? {} : { visibility: args.visibility }),
-            ...(args.skipSkillDefaults === undefined ? {} : { skipSkillDefaults: args.skipSkillDefaults }),
-            ...(args.skills === undefined ? {} : { skills: args.skills }),
-            ...(args.helperCapabilities === undefined ? {} : { helperCapabilities: args.helperCapabilities }),
-            ...(args.connections === undefined ? {} : { connections: args.connections }),
-            ...(args.credentialId ? { credentialId: args.credentialId } : {}),
-            ...(args.reasoning_effort === undefined ? {} : { reasoningEffort: args.reasoning_effort }),
-            ...(args.prompt === undefined ? {} : { prompt: args.prompt }),
-            ...(args.ttl_seconds === undefined ? {} : { ttlSeconds: args.ttl_seconds }),
-            ...(args.stopWhenWorkMerged === undefined ? {} : { stopWhenWorkMerged: args.stopWhenWorkMerged }),
-            ...(args.externalRef === undefined ? {} : { externalRef: args.externalRef }),
-          },
-          { ...options, ...(receiptId ? { newId: () => receiptId } : {}) },
-        );
-        return {
-          ...launchResponse(result),
-          helper: result.helper,
-          visibility: result.sandbox.visibility ?? result.golden.visibility,
+    (args) =>
+      observeGoldenLaunch("mcp", async (timing) => {
+        // Refused before any lookup or allocation.
+        resolveModelChoice(args.harness, { model: args.model, reasoningEffort: args.reasoning_effort });
+        const actor = await launchActor(args.golden, args.org);
+        const chosen: GoldenRecord = await goldenForLaunch(data.goldens, actor, args.golden, args.provider);
+        resolveRepositoryDir(chosen, args.repo);
+        timing.checkpoint("admission");
+        const prepare = async () => {
+          const account = await prepareGoldenLaunchAccount(
+            actor,
+            chosen,
+            args,
+            context.launchCredentials,
+            context.launch ?? {},
+          );
+          timing.checkpoint("account_resolution");
+          const provider = await context.provider(chosen);
+          timing.checkpoint("provider_resolution");
+          return { ...account, provider };
         };
-      };
-      if (!context.ordinaryLaunchReceipts) {
-        if (args.idempotencyKey) throw new ToolError("invalid", "Durable launch receipts are not configured.");
-        return dispatch();
-      }
-      const { provider } = await prepareOnce();
-      const authority = {
-        target: {
-          provider: chosen.provider,
-          orgId: chosen.orgId,
-          visibility: chosen.visibility,
-          modal: chosen.modal,
-        },
-        management:
-          (await provider.managementIdentity?.()) ??
-          (() => {
-            throw new ToolError("invalid", "Provider cannot pin management authority.");
-          })(),
-        backendId:
-          (await provider.backendIdentity?.())?.id ??
-          (() => {
-            throw new ToolError("invalid", "Provider cannot pin allocation authority.");
-          })(),
-      };
-      return context.ordinaryLaunchReceipts.run(
-        actor,
-        args.idempotencyKey ?? crypto.randomUUID(),
-        { ...args, goldenId: chosen.id },
-        dispatch,
-        authority,
-      );
-    },
+        let prepared: ReturnType<typeof prepare> | undefined;
+        const prepareOnce = () => (prepared ??= prepare());
+        const dispatch = async (receiptId?: string) => {
+          const { provider, credentials, options } = await prepareOnce();
+          timing.checkpoint("receipt_admission");
+          const result = await launchSandbox(
+            provider,
+            {
+              ...(context.skillDefaults ? { skillDefaults: context.skillDefaults } : {}),
+              goldens: data.goldens,
+              sandboxes: data.sandboxes,
+              credentials,
+              ...(context.connections ? { connections: context.connections } : {}),
+            },
+            actor,
+            {
+              golden: args.golden,
+              ...(args.size === undefined ? {} : { size: args.size }),
+              provider: chosen.provider,
+              harness: args.harness,
+              ...(args.repo === undefined ? {} : { repo: args.repo }),
+              ...(args.model === undefined ? {} : { model: args.model }),
+              ...(args.visibility === undefined ? {} : { visibility: args.visibility }),
+              ...(args.skipSkillDefaults === undefined ? {} : { skipSkillDefaults: args.skipSkillDefaults }),
+              ...(args.skills === undefined ? {} : { skills: args.skills }),
+              ...(args.helperCapabilities === undefined ? {} : { helperCapabilities: args.helperCapabilities }),
+              ...(args.connections === undefined ? {} : { connections: args.connections }),
+              ...(args.credentialId ? { credentialId: args.credentialId } : {}),
+              ...(args.reasoning_effort === undefined ? {} : { reasoningEffort: args.reasoning_effort }),
+              ...(args.prompt === undefined ? {} : { prompt: args.prompt }),
+              ...(args.ttl_seconds === undefined ? {} : { ttlSeconds: args.ttl_seconds }),
+              ...(args.stopWhenWorkMerged === undefined ? {} : { stopWhenWorkMerged: args.stopWhenWorkMerged }),
+              ...(args.externalRef === undefined ? {} : { externalRef: args.externalRef }),
+            },
+            { ...options, ...(receiptId ? { newId: () => receiptId } : {}) },
+          );
+          timing.checkpoint("shared_launcher");
+          timing.launched(result.sandbox);
+          return {
+            ...launchResponse(result),
+            helper: result.helper,
+            visibility: result.sandbox.visibility ?? result.golden.visibility,
+          };
+        };
+        if (!context.ordinaryLaunchReceipts) {
+          if (args.idempotencyKey) throw new ToolError("invalid", "Durable launch receipts are not configured.");
+          return dispatch();
+        }
+        const { provider } = await prepareOnce();
+        const authority = {
+          target: {
+            provider: chosen.provider,
+            orgId: chosen.orgId,
+            visibility: chosen.visibility,
+            modal: chosen.modal,
+          },
+          management:
+            (await provider.managementIdentity?.()) ??
+            (() => {
+              throw new ToolError("invalid", "Provider cannot pin management authority.");
+            })(),
+          backendId:
+            (await provider.backendIdentity?.())?.id ??
+            (() => {
+              throw new ToolError("invalid", "Provider cannot pin allocation authority.");
+            })(),
+        };
+        return context.ordinaryLaunchReceipts.run(
+          actor,
+          args.idempotencyKey ?? crypto.randomUUID(),
+          { ...args, goldenId: chosen.id },
+          dispatch,
+          authority,
+        );
+      }),
   );
 
   registerList();

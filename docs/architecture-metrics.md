@@ -82,7 +82,27 @@ For successful staging launches, record the deployed SHA, date, path, sample
 count, and workload. Calculate nearest-rank p50 and p95 from `totalMs` and
 compare the sum of `modal_launch_timing.stages[].ms` with an independently
 measured wall time using the same admission and readiness boundary. Report request-to-ready wall time
-separately to show work outside that boundary. Per-launch SQL counts are pending.
+separately to show work outside that boundary.
+
+### Ordinary golden launch admission and SQL
+
+Join `modal_golden_launch_timing` to `modal_launch_timing` by `sandboxId` for
+fresh successful REST and MCP golden launches. The outer sample covers the
+launch handler through response preparation, including receipt publication when
+used. Its consecutive intervals end after admission lookups, account resolution,
+provider resolution, receipt admission, the shared launcher, and response
+publication. The existing readiness and enrolled startup intervals overlap the
+outer `shared_launcher` interval. Use the outer intervals or their finer
+breakdown when comparing to wall time.
+
+The outer sample reports the number of server SQL adapter query attempts for
+the whole launch and each interval. This includes a query attempt that fails
+while obtaining a pooled connection. It excludes driver-managed transaction
+control and database calls from separate requests, such as runtime enrolment.
+Receipt replays and failed launches produce no outer sample. Template launches,
+scheduled routines, and child launches still need their own admission and SQL
+attribution. The outer sample starts after request routing and authentication
+and ends before transport serialization.
 
 ### Enrolled runtime timing
 
