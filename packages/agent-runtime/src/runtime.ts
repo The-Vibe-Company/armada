@@ -244,9 +244,12 @@ export class Runner {
           result = { acknowledged: true };
         }
         // Never put this private request/body or bearer in the replay cache.
-        return new Response(this.journal.redact(JSON.stringify({ version: 1, requestId: r.requestId, result })), {
-          headers: { "content-type": "application/json" },
-        });
+        return new Response(
+          this.journal.redact(JSON.stringify({ version: 1, requestId: r.requestId, result }), "requests"),
+          {
+            headers: { "content-type": "application/json" },
+          },
+        );
       }
       if (r.op === "testModelConnection") {
         if (
@@ -344,10 +347,11 @@ export class Runner {
       }
       return await executeWithReceipt(this.journal, r, () => this.dispatch(r, request.signal));
     } catch (error) {
-      return Response.json(
-        { error: this.journal.redact(error instanceof Error ? error.message : "runner_error") },
-        { status: error instanceof Error && error.message === "unauthorized" ? 401 : 409 },
-      );
+      const message = error instanceof Error ? error.message : "runner_error";
+      return new Response(this.journal.redact(JSON.stringify({ error: message }), "requests"), {
+        status: message === "unauthorized" ? 401 : 409,
+        headers: { "content-type": "application/json" },
+      });
     }
   }
   private configureMcp(value: unknown, epochControl = false): ConfigureMcpResult {
@@ -878,7 +882,7 @@ export class Runner {
     const save = (value: unknown) =>
       this.journal.db
         .query("INSERT OR REPLACE INTO processes VALUES(?,?)")
-        .run(pid, this.journal.redact(JSON.stringify(value)));
+        .run(pid, this.journal.redact(JSON.stringify(value), "processes"));
     const identity = processIdentity(pid);
     save({ pid, status: "running", identity });
     const timer = setTimeout(
