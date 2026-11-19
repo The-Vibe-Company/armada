@@ -400,7 +400,7 @@ test("Modal template selection rejects foreign provider/harness, invalid pins an
   expect(f.starts).toEqual([]);
 });
 
-function fakeBoatRuntimeSink(f: Awaited<ReturnType<typeof fixture>>) {
+function fakeBoatRuntimeSink(f: Awaited<ReturnType<typeof fixture>>, acknowledged = true) {
   f.options.launch!.boatRuntimeDefault!.policy = boatRuntimeLaunch({
     sql: f.sql,
     encryptionKey: ENCRYPTION_KEY,
@@ -419,6 +419,7 @@ function fakeBoatRuntimeSink(f: Awaited<ReturnType<typeof fixture>>) {
   const handled: RunnerRequest["op"][] = [];
   let unsubscribe = () => {};
   let work = Promise.resolve();
+  // oxlint-disable-next-line landmines-testing/no-test-doubles -- Replace only external Boat SSH bootstrap to exercise the real launch adapter without a provider or process.
   const bootstrap = spyOn(boatProvider, "startBoatRuntime").mockImplementation(async (_host, request) => {
     const active = await f.authority.enrol(request.enrolmentToken);
     expect(JSON.stringify(active.configuration).includes("APP_TOKEN")).toBe(false);
@@ -433,7 +434,7 @@ function fakeBoatRuntimeSink(f: Awaited<ReturnType<typeof fixture>>) {
             break;
           case "configureReadableVariables":
             f.deliveries.push(command);
-            result = { acknowledged: true };
+            result = { acknowledged };
             break;
           case "workspaceExec":
             result = { detached: false, exitCode: 0, stdout: "", stderr: "" };
@@ -548,6 +549,29 @@ test.each(["modal", "boat"] as const)(
     }
   },
 );
+
+test("Boat launch withholds the first prompt when the runtime rejects secret configuration", async () => {
+  const f = await fixture("codex", "boat");
+  const secret = (
+    await f.db.query<{ id: string }>(
+      "insert into application_secrets(org_id,owner_id,scope,name,value_enc) values($1,$2,'personal','APP_TOKEN',$3) returning id",
+      [f.people.org, f.people.owner, await encryptSecret(crypto.randomUUID(), ENCRYPTION_KEY)],
+    )
+  ).rows[0]!;
+  const template = await f.create({
+    ...f.definition,
+    secrets: [{ key: "APP_TOKEN", secretId: secret.id, version: 1 }],
+  });
+  const boat = fakeBoatRuntimeSink(f, false);
+  try {
+    const reply = await f.api(f.request(template.id));
+    expect(reply.status).toBe(200);
+    expect(await reply.json()).toMatchObject({ state: "reconciling", reason: "unavailable" });
+    expect(boat.handled).toEqual(["health", "configureReadableVariables"]);
+  } finally {
+    await boat.close();
+  }
+});
 
 test.each(["modal", "boat"] as const)(
   "%s uses the vault conflict refusal for a pinned secret that is no longer available to its launcher",

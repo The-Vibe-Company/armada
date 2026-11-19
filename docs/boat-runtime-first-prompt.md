@@ -614,8 +614,9 @@ Repeat for an existing routine referencing that template. Confirm launch logs
 are `source:armada-runtime`. For a separate template with an authorized
 disposable secret binding, verify the value in the selected harness by
 comparison without printing it. Check that the raw value is absent from launch
-receipts, logs and events. Revoke the binding and confirm a fresh launch returns
-the vault conflict before allocation. Use only existing authorized resources.
+receipts, logs and events. Revoke the disposable vault secret, then launch the
+same pinned template revision with a new request key and confirm the vault
+conflict before allocation. Use only existing authorized resources.
 Boat stays outside staging and release acceptance.
 
 ### Repeating launch settings on Boat follow-up
