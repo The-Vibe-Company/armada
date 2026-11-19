@@ -36,7 +36,6 @@ interface Candidate {
   state: string;
   sealed: boolean;
   delete_started: boolean;
-  claim_id: string | null;
 }
 interface ReviewProof {
   goldenId: string;
@@ -524,30 +523,54 @@ export class GoldenSnapshotRetirements {
     }
     return { provider, absent: false, currentSnapshot: g.provider_snapshot_id };
   }
-  async runOne(signal: AbortSignal = new AbortController().signal): Promise<boolean> {
-    if (signal.aborted) return false;
-    const sql = this.options.sql;
-    const claim = randomUUID();
-    let processed = false;
-    const row = await this.transaction(async (tx) => {
-      // Acquire the canonical golden first, without waiting behind an unrelated long
-      // publication. This preserves the publication lock order and bounded worker lane.
-      const pending = (
-        await tx.query<Candidate>(`select r.* from public.golden_snapshot_retirements r
-        join public.goldens g on g.id=r.golden_id where r.state<>'retired' and r.next_attempt_at<=clock_timestamp()
-        and (r.claim_until is null or r.claim_until<=clock_timestamp()) order by r.next_attempt_at,r.id
-        limit 1 for update of g skip locked`)
-      ).rows[0];
-      if (!pending) return null;
-      const c = (
-        await tx.query<Candidate>(
-          `select * from public.golden_snapshot_retirements where id=$1 and state<>'retired'
-        and (claim_until is null or claim_until<=clock_timestamp()) for update skip locked`,
-          [pending.id],
+  async runJob(
+    id: string,
+    { signal, canDispatch }: { signal: AbortSignal; canDispatch(tx?: Sql): Promise<boolean> },
+    now = Date.now,
+  ) {
+    const finish = (
+      state: "retired" | "deferred" | "uncertain",
+      reason: string,
+      retryDelete = false,
+      delay = 30_000,
+    ) => {
+      const commit = async (tx: Sql) => {
+        await tx.query(
+          `update public.golden_snapshot_retirements set state=$2,reason=$3,
+           delete_started=case when $4 then false else delete_started end where id=$1`,
+          [id, state, reason, retryDelete],
+        );
+      };
+      return state === "retired"
+        ? { status: "done" as const, commit }
+        : { status: "retry" as const, after: new Date(now() + delay), commit };
+    };
+    const prepared = await this.transaction(async (tx) => {
+      const candidate = (
+        await tx.query<Pick<Candidate, "provider" | "old_snapshot">>(
+          `select r.provider,r.old_snapshot from public.golden_snapshot_retirements r
+           join public.goldens g on g.id=r.golden_id where r.id=$1 and r.state<>'retired' for update of g skip locked`,
+          [id],
         )
       ).rows[0];
+      if (!candidate) {
+        const pending =
+          (await tx.query("select id from public.golden_snapshot_retirements where id=$1 and state<>'retired'", [id]))
+            .rows.length > 0;
+        return pending ? "handoff_pending" : null;
+      }
+      await tx.query("select public.lock_golden_snapshot($1,$2)", [candidate.provider, candidate.old_snapshot]);
+      if (!(await canDispatch(tx))) return "handoff_pending";
+      const adopted = (
+        await tx.query<{ adopted: boolean }>("select public.adopt_snapshot_retirement($1) as adopted", [id])
+      ).rows[0]?.adopted;
+      if (!adopted) return "handoff_pending";
+      const c = (
+        await tx.query<Candidate>("select * from public.golden_snapshot_retirements where id=$1 and state<>'retired'", [
+          id,
+        ])
+      ).rows[0];
       if (!c) return null;
-      processed = true;
       const proof = (
         await tx.query<Proof>("select * from public.golden_snapshot_publications where id=$1", [c.publication_id])
       ).rows[0];
@@ -570,77 +593,34 @@ export class GoldenSnapshotRetirements {
         replacement.golden_id !== c.golden_id ||
         !identityMatches(replacement.authority, proof.authority) ||
         !targetMatches(replacement.target, proof.target)
-      ) {
-        await tx.query(
-          "update public.golden_snapshot_retirements set state='deferred',reason='provenance_unavailable',next_attempt_at=clock_timestamp()+interval '30 seconds' where id=$1",
-          [c.id],
-        );
-        return null;
-      }
-      await tx.query("select public.lock_golden_snapshot($1,$2)", [c.provider, c.old_snapshot]);
+      )
+        return "provenance_unavailable";
       const protectedBy = await this.protection(tx, c);
-      if (protectedBy) {
-        await tx.query(
-          "update public.golden_snapshot_retirements set state='deferred',reason=$2,next_attempt_at=clock_timestamp()+interval '30 seconds' where id=$1",
-          [c.id, protectedBy],
-        );
-        return null;
-      }
-      await tx.query(
-        `update public.golden_snapshot_retirements set sealed=true,claim_id=$2,claim_until=clock_timestamp()+interval '60 seconds',attempts=attempts+1 where id=$1`,
-        [c.id, claim],
-      );
-      return c;
+      if (protectedBy) return protectedBy;
+      await tx.query("update public.golden_snapshot_retirements set sealed=true where id=$1", [id]);
+      return { row: c, proof };
     });
-    if (!row) return processed;
-    let started = row.delete_started;
+    if (!prepared) return { status: "done" as const };
+    if (prepared === "handoff_pending") return { status: "retry" as const, after: new Date(now() + 30_000) };
+    if (typeof prepared === "string") return finish("deferred", prepared);
+    const { row, proof } = prepared;
+
     let deleting = false;
-    const finish = async (state: string, reason: string, retryDelete = false, retryAfter = "30 seconds") => {
-      await sql.query(
-        `update public.golden_snapshot_retirements set state=$3,reason=$4,claim_until=null,claim_id=null,
-        delete_started=case when $5 then false else delete_started end,next_attempt_at=clock_timestamp()+$6::interval
-        where id=$1 and claim_id=$2`,
-        [row.id, claim, state, reason, retryDelete, retryAfter],
-      );
-    };
-    // A deleted snapshot is retired only once its provider artifact is gone. A Modal image stays a
-    // durable tombstone while a fork references it or its source is leased; this row is the
-    // server-owned retry that collects it, across restarts and without any user request.
     let collecting = false;
     let collects = false;
     const retire = async (provider: Provider, reason: string) => {
+      if (!(await canDispatch())) return finish("deferred", "artifact_collection_pending");
       collecting = true;
       const pending = (await provider.collectRetiredSnapshot?.(row.old_snapshot)) === "pending";
-      collecting = false;
-      if (pending) await finish("deferred", "artifact_collection_pending", false, "5 minutes");
-      else await finish("retired", reason);
+      return pending ? finish("deferred", "artifact_collection_pending", false, 300_000) : finish("retired", reason);
     };
     try {
-      const proof = (
-        await sql.query<Proof>("select * from public.golden_snapshot_publications where id=$1", [row.publication_id])
-      ).rows[0];
-      if (!proof) {
-        await finish("deferred", "provenance_unavailable");
-        return true;
-      }
       const checked = await this.inspect(row, proof, signal);
-      if (typeof checked === "string") {
-        await finish("deferred", checked);
-        return true;
-      }
-      if (signal.aborted) {
-        await finish(started ? "uncertain" : "deferred", "shutdown");
-        return true;
-      }
-      if (checked.absent) {
-        await retire(checked.provider, "already_absent");
-        return true;
-      }
-      if (started) {
-        await finish("uncertain", "delete_outcome_unknown");
-        return true;
-      }
-      // Permanent SQL barrier is already committed. All future pointer introductions are refused.
+      if (typeof checked === "string") return finish("deferred", checked);
+      if (checked.absent) return await retire(checked.provider, "already_absent");
+      if (row.delete_started) return finish("uncertain", "delete_outcome_unknown");
+
+      // The committed snapshot barrier forbids future pointer introductions.
       const begun = await this.transaction(async (tx) => {
         const current = (
           await tx.query<GoldenRow>("select * from public.goldens where id=$1 for update", [row.golden_id])
@@ -650,7 +630,7 @@ export class GoldenSnapshotRetirements {
           current.provider_snapshot_id !== checked.currentSnapshot ||
           !targetMatches(proof.target, goldenRowProviderTarget(current))
         )
-          return { rows: [] };
+          return false;
         const member = (
           await tx.query<{ role: string }>("select role from public.members where org_id=$1 and user_id=$2 for share", [
             proof.target.orgId,
@@ -662,34 +642,29 @@ export class GoldenSnapshotRetirements {
           (proof.target.visibility === "org" && member.role !== "admin") ||
           (await this.protection(tx, row))
         )
-          return { rows: [] };
-        return tx.query(
-          "update public.golden_snapshot_retirements set delete_started=true where id=$1 and claim_id=$2 and claim_until>clock_timestamp() returning id",
-          [row.id, claim],
+          return false;
+        if (!(await canDispatch(tx))) return false;
+        const { rows } = await tx.query(
+          "update public.golden_snapshot_retirements set delete_started=true where id=$1 and not delete_started returning id",
+          [id],
         );
+        return rows.length > 0;
       });
-      if (!begun.rows.length || signal.aborted) {
-        await finish("deferred", "authority_or_reference_changed");
-        return true;
-      }
-      started = true;
+      if (!begun) return finish("deferred", "authority_or_reference_changed");
+      if (signal.aborted) return finish("deferred", "provider_unavailable", true);
       deleting = true;
       collects = Boolean(checked.provider.collectRetiredSnapshot);
       await checked.provider.deleteSnapshot(row.old_snapshot);
-      // The snapshot is deleted; a collection failure after this point is retried, never re-deleted.
       deleting = false;
-      await retire(checked.provider, "deleted");
+      return await retire(checked.provider, "deleted");
     } catch (e) {
-      if (collecting) await finish("deferred", "artifact_collection_pending", false, "5 minutes");
-      // Absent at deletion: a provider that collects afterwards may still hold its tombstone, so
-      // the next attempt collects it (inspect sees the snapshot absent) before the row retires.
-      else if (deleting && notFound(e))
-        await (collects ? finish("deferred", "artifact_collection_pending") : finish("retired", "already_absent"));
-      else if (deleting && isNonMutatingProviderRefusal(e)) await finish("deferred", "provider_unavailable", true);
-      else if (started) await finish("uncertain", "delete_outcome_unknown");
-      else await finish("deferred", "provider_unavailable");
+      if (collecting) return finish("deferred", "artifact_collection_pending", false, 300_000);
+      if (deleting && notFound(e))
+        return collects ? finish("deferred", "artifact_collection_pending") : finish("retired", "already_absent");
+      if (deleting && isNonMutatingProviderRefusal(e)) return finish("deferred", "provider_unavailable", true);
+      if (deleting || row.delete_started) return finish("uncertain", "delete_outcome_unknown");
+      return finish("deferred", "provider_unavailable");
     }
-    return true;
   }
 
   /** Bounded, owner/admin authorized historical chain reconstruction. No provider mutations. */
@@ -897,7 +872,6 @@ export class GoldenSnapshotRetirements {
           state: "pending",
           sealed: false,
           delete_started: false,
-          claim_id: null,
         };
         const prior = (
           await sql.query<Proof>(

@@ -44,11 +44,9 @@ async function rows() {
 test("server lifecycle drains multiple rows while independent work is pending; stop drains all lanes", async () => {
   const { db, sql, ids } = await rows();
   const build = deferred<boolean>();
-  const retirement = deferred<boolean>();
   const exportJob = deferred<boolean>();
   const exportDrained = deferred<void>();
   let exportSignal: AbortSignal | undefined;
-  let retirementSignal: AbortSignal | undefined;
   const progress = deferred<void>();
   let buildRunning = false;
   let reconciled = 0;
@@ -63,46 +61,35 @@ test("server lifecycle drains multiple rows while independent work is pending; s
       })) as typeof fetch,
   });
   const lifecycle = createSandboxLifecycle(sql, async () => provider);
-  const workers = startServerWorkers(
-    [
-      {
-        drain: () => lifecycle.drain(),
-        reconcileOne: async (signal) => {
-          const result = await lifecycle.reconcileOne(signal);
-          if (++reconciled === 2) progress.resolve();
-          return result;
-        },
-      },
-    ],
-    () => {},
+  const workers = startServerWorkers([
     {
-      runOne: async (signal) => {
-        retirementSignal = signal;
-        return retirement.promise;
+      drain: () => lifecycle.drain(),
+      reconcileOne: async (signal) => {
+        const result = await lifecycle.reconcileOne(signal);
+        if (++reconciled === 2) progress.resolve();
+        return result;
       },
     },
-    [
-      {
-        async reconcileOne() {
-          buildRunning = true;
-          return build.promise;
-        },
-        async drain() {},
+  ], () => {}, [
+    {
+      async reconcileOne() {
+        buildRunning = true;
+        return build.promise;
       },
-      {
-        reconcileOne: async (signal) => {
-          exportSignal = signal;
-          return exportJob.promise;
-        },
-        async drain() {
-          exportDrained.resolve();
-        },
+      async drain() {},
+    },
+    {
+      reconcileOne: async (signal) => {
+        exportSignal = signal;
+        return exportJob.promise;
       },
-    ],
-  );
+      async drain() {
+        exportDrained.resolve();
+      },
+    },
+  ]);
   try {
     await progress.promise;
-    expect(retirementSignal).toBeDefined();
     expect(exportSignal).toBeDefined();
     expect(buildRunning).toBe(true);
     const records = await db.query<{ status: string }>("select status from sandboxes where id=any($1::uuid[])", [ids]);
@@ -114,11 +101,7 @@ test("server lifecycle drains multiple rows while independent work is pending; s
     });
     await Promise.resolve();
     expect(done).toBe(false);
-    expect(retirementSignal?.aborted).toBe(true);
     expect(exportSignal?.aborted).toBe(true);
-    expect(done).toBe(false);
-    retirement.resolve(false);
-    await workers.retirementWorker.done;
     expect(done).toBe(false);
     exportJob.resolve(false);
     await exportDrained.promise;
@@ -132,7 +115,6 @@ test("server lifecycle drains multiple rows while independent work is pending; s
   } finally {
     workers.stop();
     build.resolve(false);
-    retirement.resolve(false);
     exportJob.resolve(false);
     await workers.done;
   }

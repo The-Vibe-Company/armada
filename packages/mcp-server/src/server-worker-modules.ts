@@ -39,6 +39,7 @@ export type LaneFactory = (services: WorkerServices) => ServerLifecycleLane | un
 const jobsLane: LaneFactory = ({
   githubApp,
   goldenBuilds,
+  goldenRetirements,
   sql,
   jobs,
   store,
@@ -100,6 +101,11 @@ const jobsLane: LaneFactory = ({
       webhook: { concurrency: 1, run: webhooks.run },
       ...(prScan ? { pr_scan: prScan } : {}),
       ...(config.encryptionKey ? { [OUTPUTS_CAPTURE]: outputs.captureJob } : {}),
+      snapshot_retirement: {
+        concurrency: 4,
+        timeoutMs: 30_000,
+        run: (job, context) => goldenRetirements.runJob(job.id, context),
+      },
     },
     options.logError,
   );
