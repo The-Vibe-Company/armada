@@ -274,13 +274,14 @@ export function createRuntimeGitHub(options: {
       const capability = `armada_gh_${createHmac("sha256", Buffer.from(key, "base64"))
         .update(JSON.stringify(["armada/runtime/github/v1", now.binding, revision]))
         .digest("hex")}`;
+      const expiresAt = new Date(scope.commandGrantExpiresAt ?? now.expires_at);
       await tx.query(
         `insert into runtime_github_capabilities(sandbox_id,epoch,revision,hash,binding,expires_at) values($1,$2,$3,$4,$5::jsonb,$6)
     on conflict(sandbox_id,epoch) do update set revision=excluded.revision,hash=excluded.hash,binding=excluded.binding,expires_at=excluded.expires_at,delivered_at=null,acquisition_count=0,last_accessed_at=null`,
-        [id, scope.epoch, revision, hash(capability), JSON.stringify(now.binding), now.expires_at],
+        [id, scope.epoch, revision, hash(capability), JSON.stringify(now.binding), expiresAt],
       );
       await issued(tx, now.binding, capability);
-      return { revision, capability, epoch: scope.epoch, expiresAt: new Date(now.expires_at).getTime() };
+      return { revision, capability, epoch: scope.epoch, expiresAt: expiresAt.getTime() };
     });
     const history = (
       await sql.query<{ token_enc: Uint8Array<ArrayBuffer> }>(

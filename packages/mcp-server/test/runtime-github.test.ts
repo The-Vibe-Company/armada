@@ -9,8 +9,8 @@ import { ENCRYPTION_KEY } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
 
-async function fixture(provider: "boat" | "modal" = "boat") {
-  const f = await runtimeFixture(await sharedDatabase(), provider);
+async function fixture(provider: "boat" | "modal" = "boat", now = Date.now, commandGrantExpiresAt?: number) {
+  const f = await runtimeFixture(await sharedDatabase(), provider, "codex", false, commandGrantExpiresAt);
   await f.db.query("update goldens set provider_snapshot_id='offline-snapshot',config=$2::jsonb where id=$1", [
     f.row.goldenId,
     JSON.stringify({ repos: [{ url: "https://github.com/example/web.git", branch: "main", dir: "web" }], init: [] }),
@@ -48,6 +48,7 @@ async function fixture(provider: "boat" | "modal" = "boat") {
       (await service.route(
         url instanceof Request ? new Request(url, options) : new Request(url.toString(), options),
       )) ?? new Response(null, { status: 404 })) as unknown as typeof fetch,
+    now,
   );
   let configured: GitHubRuntimeConfiguration | undefined;
   f.github(async (value) => {
@@ -77,6 +78,26 @@ async function fixture(provider: "boat" | "modal" = "boat") {
     },
   };
 }
+
+test("Modal runtime GitHub credentials still work beyond the original deadline after extension", async () => {
+  let clock = Date.now();
+  const ceiling = new Date(clock + 20 * 60_000);
+  const x = await fixture("modal", () => clock, ceiling.getTime()),
+    { f, service } = x;
+  try {
+    const { initial } = (
+      await f.db.query<{ initial: Date }>("select expires_at as initial from sandboxes where id=$1", [f.row.id])
+    ).rows[0]!;
+    await service.prepare(f.caller, f.row.id);
+    await f.db.query("update sandboxes set expires_at=$2 where id=$1", [f.row.id, ceiling]);
+    clock = initial.getTime() + 1;
+    expect((await x.broker.acquire("example/web", "git")) === x.access).toBe(true);
+    await f.db.query("update sandboxes set expires_at=now()-interval '1 second' where id=$1", [f.row.id]);
+    await expect(x.broker.acquire("example/web", "git")).rejects.toThrow();
+  } finally {
+    await f.close();
+  }
+});
 
 // Shared reissue runs on Modal; runtime-checkpoint.test.ts owns the broader Boat checkpoint matrix.
 test.each(["modal"] as const)(
