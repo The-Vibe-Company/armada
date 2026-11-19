@@ -46,7 +46,7 @@ export function validApiReceipt(path: string, value: unknown): boolean {
           (row) =>
             record(row) &&
             typeof row.name === "string" &&
-            (row.provider === undefined || member(row.provider, ["boat", "modal", "docker"])) &&
+            member(row.provider, ["boat", "modal", "docker"]) &&
             (row.visibility === undefined || member(row.visibility, ["org", "private"])) &&
             record(row.config) &&
             Array.isArray(row.config.repos),
