@@ -1650,6 +1650,72 @@ export type Database = {
           },
         ];
       };
+      jobs: {
+        Row: {
+          id: string;
+          kind: string;
+          sandbox_id: string | null;
+          org_id: string;
+          generation: number | null;
+          idem_key: string;
+          request_owner_id: string | null;
+          request_digest: string | null;
+          state: string;
+          run_after: string;
+          deadline_at: string | null;
+          attempts: number;
+          max_attempts: number;
+          lease_owner: string | null;
+          lease_epoch: number;
+          lease_until: string | null;
+          payload_enc: string | null;
+          outcome: Json | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          kind: string;
+          sandbox_id?: string | null;
+          org_id: string;
+          generation?: number | null;
+          idem_key: string;
+          request_owner_id?: string | null;
+          request_digest?: string | null;
+          state?: string;
+          run_after?: string;
+          deadline_at?: string | null;
+          attempts?: number;
+          max_attempts: number;
+          lease_owner?: string | null;
+          lease_epoch?: number;
+          lease_until?: string | null;
+          payload_enc?: string | null;
+          outcome?: Json | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          kind?: string;
+          sandbox_id?: string | null;
+          org_id?: string;
+          generation?: number | null;
+          idem_key?: string;
+          request_owner_id?: string | null;
+          request_digest?: string | null;
+          state?: string;
+          run_after?: string;
+          deadline_at?: string | null;
+          attempts?: number;
+          max_attempts?: number;
+          lease_owner?: string | null;
+          lease_epoch?: number;
+          lease_until?: string | null;
+          payload_enc?: string | null;
+          outcome?: Json | null;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
       langfuse_turn_exports: {
         Row: {
           sandbox_id: string;
@@ -5241,6 +5307,7 @@ export type GoldenSkillDefaultsRow = Database["public"]["Tables"]["golden_skill_
 export type GoldenSnapshotPublication = Database["public"]["Tables"]["golden_snapshot_publications"]["Row"];
 export type GoldenSnapshotRetirement = Database["public"]["Tables"]["golden_snapshot_retirements"]["Row"];
 export type Golden = Database["public"]["Tables"]["goldens"]["Row"];
+export type JobRow = Database["public"]["Tables"]["jobs"]["Row"];
 export type LangfuseTurnExportRow = Database["public"]["Tables"]["langfuse_turn_exports"]["Row"];
 export type LaunchTemplateRevisionRow = Database["public"]["Tables"]["launch_template_revisions"]["Row"];
 export type LaunchTemplateRow = Database["public"]["Tables"]["launch_templates"]["Row"];
