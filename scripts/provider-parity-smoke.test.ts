@@ -1332,7 +1332,8 @@ for (const mode of [
         expect(report.features["prerequisite:launch"].modal.status).toBe("pass");
         expect(report.features.cleanup.modal.status).toBe("pass");
         expect(journalClaims).toEqual([recoveredSandbox]);
-        expect(modalJournalKeys).toEqual([modalLaunchKey]);
+        expect(modalJournalKeys).toHaveLength(1);
+        expect(modalJournalKeys[0]).toBe(modalLaunchKey);
         expect(lines.map((line) => (line.startsWith("{") ? JSON.parse(line) : null))).toContainEqual({
           step: "parity_modal_launch",
           provider: "modal",
