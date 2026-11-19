@@ -8,6 +8,7 @@ import {
   LAUNCH_TIMEOUT_MS,
   launchFailureMessage,
   launchSandbox,
+  postSandboxLaunch,
 } from "../src/lib/launch.ts";
 import { LAUNCH_KEY_FIELD, launchKeyFor } from "../src/lib/launch-key.ts";
 
@@ -21,6 +22,18 @@ const args = {
   visibility: "org" as const,
   connections: [],
 };
+const goldenReceipt = {
+  sandbox: { id: "s1", provider: "boat", providerSandboxId: "b1", status: "ready" },
+  golden: { id: "g1", name: "web" },
+  promptId: null,
+  conversationId: null,
+  ttlSeconds: 3600,
+  expiresAt: null,
+  github: { status: "not_connected" },
+  helper: null,
+  runtime: null,
+};
+
 const answering = (body: unknown, status = 200, seen: unknown[] = []) => ({
   serverUrl: "https://armada.test/mcp",
   token: "t",
@@ -39,12 +52,23 @@ const answeringAt = (routes: string[], body: unknown, status = 200) => ({
   }) as typeof fetch,
 });
 
+test("an unusable success receipt leaves the launch outcome unknown", async () => {
+  for (const payload of [{ sandbox: { id: "s1" } }, null]) {
+    await expect(launchSandbox(answering(payload), args)).rejects.toMatchObject({ outcomeUnknown: true });
+  }
+});
+
+test("a golden receipt in response to a Docker launch leaves its outcome unknown", async () => {
+  await expect(
+    postSandboxLaunch(answering(goldenReceipt), { provider: "docker" }, "launching on Docker hosts"),
+  ).rejects.toMatchObject({ outcomeUnknown: true });
+});
+
 test("an explicit size or stored defaults carry the sizing version on the canonical route", async () => {
   const routes: string[] = [];
-  const ok = { sandbox: { id: "s1" } };
-  expect(await launchSandbox(answeringAt(routes, ok), { ...args, size: "large" })).toEqual({ id: "s1" });
-  await launchSandbox(answeringAt(routes, ok), { ...args, sizePolicy: true });
-  await launchSandbox(answeringAt(routes, ok), args);
+  expect(await launchSandbox(answeringAt(routes, goldenReceipt), { ...args, size: "large" })).toEqual({ id: "s1" });
+  await launchSandbox(answeringAt(routes, goldenReceipt), { ...args, sizePolicy: true });
+  await launchSandbox(answeringAt(routes, goldenReceipt), args);
   expect(routes.map((route) => route.split(" ")[0])).toEqual([
     "/api/v1/sandbox/launch",
     "/api/v1/sandbox/launch",
@@ -90,12 +114,23 @@ test("a provider refusal keeps the server's code, whatever its status", async ()
 
 test("the chosen model account is pinned on each launch alongside the optional size", async () => {
   const routes: string[] = [];
-  const ok = { sandbox: { id: "s1" } };
   const credentialId = "00000000-0000-4000-8000-000000000041";
   const skills = ["review-code@2.0.0"];
-  await launchSandbox(answeringAt(routes, ok), { ...args, ttlSeconds: 3600, credentialId, skills, size: "large" });
-  await launchSandbox(answeringAt(routes, ok), { ...args, ttlSeconds: 3600, credentialId, skills, sizePolicy: true });
-  await launchSandbox(answeringAt(routes, ok), { ...args, ttlSeconds: 3600, credentialId, skills });
+  await launchSandbox(answeringAt(routes, goldenReceipt), {
+    ...args,
+    ttlSeconds: 3600,
+    credentialId,
+    skills,
+    size: "large",
+  });
+  await launchSandbox(answeringAt(routes, goldenReceipt), {
+    ...args,
+    ttlSeconds: 3600,
+    credentialId,
+    skills,
+    sizePolicy: true,
+  });
+  await launchSandbox(answeringAt(routes, goldenReceipt), { ...args, ttlSeconds: 3600, credentialId, skills });
   const sent = routes.map((route) => [route.split(" ")[0], JSON.parse(route.slice(route.indexOf(" ") + 1))]);
   expect(sent).toEqual([
     [
@@ -123,7 +158,7 @@ test("Armada access uses the canonical route and preserves all explicit launch c
     connections: ["selected-mcp"],
     prompt: "task",
   };
-  await launchSandbox(answeringAt(routes, { sandbox: { id: "s1" } }), chosen);
+  await launchSandbox(answeringAt(routes, goldenReceipt), chosen);
   const [path, ...body] = routes[0]!.split(" ");
   expect(path).toBe("/api/v1/sandbox/launch");
   expect(JSON.parse(body.join(" "))).toMatchObject({
@@ -148,7 +183,7 @@ test("Armada access uses the canonical route and preserves all explicit launch c
 
 test("crafted Armada access without an explicit Codex account is refused before transport", async () => {
   const routes: string[] = [];
-  const transport = answeringAt(routes, { sandbox: { id: "s1" } });
+  const transport = answeringAt(routes, goldenReceipt);
   for (const chosen of [
     { ...args, credentialId: "00000000-0000-4000-8000-000000000041" },
     { ...args, harness: "codex" as const },
@@ -169,7 +204,7 @@ test("a launch answered after 12 seconds is started, not an unanswered request",
       fetch: ((_input: RequestInfo | URL, init?: RequestInit) =>
         new Promise<Response>((resolve, reject) => {
           init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
-          setTimeout(() => resolve(Response.json({ sandbox: { id: "s1" } })), 12_000);
+          setTimeout(() => resolve(Response.json(goldenReceipt)), 12_000);
         })) as typeof fetch,
     };
     const launched = launchSandbox(slow, args);

@@ -1,6 +1,8 @@
 import { launchFailureHelp } from "@armada/core";
+import { launchEnvelope } from "@armada/core/contract";
 import { isUuid } from "./action.ts";
 import { type ArmadaApiOptions, ControlError, controlPost, LAUNCH_TIMEOUT_MS } from "./control.ts";
+import { launchedDockerSandbox } from "./docker-launch.ts";
 import type { LaunchArgs } from "./model-choice.ts";
 import { skillLaunchFailure } from "./skills";
 import { launchReason } from "./templates.ts";
@@ -14,7 +16,33 @@ import { launchReason } from "./templates.ts";
 export { LAUNCH_TIMEOUT_MS } from "./control.ts";
 
 /** The canonical sandbox launch route. */
-export const LAUNCH_PATH = "/api/v1/sandbox/launch";
+const LAUNCH_PATH = "/api/v1/sandbox/launch";
+
+/** A successful HTTP status with an unusable receipt leaves allocation uncertain. */
+export async function postSandboxLaunch(
+  options: ArmadaApiOptions,
+  body: { provider: string } & Record<string, unknown>,
+  feature: string,
+) {
+  const invalidReceipt = () =>
+    new ControlError("The Armada server sent an invalid launch response.", undefined, undefined, {
+      outcomeUnknown: true,
+    });
+  const payload = await controlPost(
+    { ...options, timeoutMs: options.timeoutMs ?? LAUNCH_TIMEOUT_MS },
+    LAUNCH_PATH,
+    body,
+    feature,
+  ).catch((error: unknown) => {
+    if (error instanceof ControlError && error.status !== undefined && error.status >= 200 && error.status < 300)
+      throw invalidReceipt();
+    throw error;
+  });
+  const receipt = launchEnvelope.safeParse(payload);
+  if (!receipt.success || !receipt.data.sandbox.id) throw invalidReceipt();
+  if (body.provider === "docker" && !launchedDockerSandbox(receipt.data)) throw invalidReceipt();
+  return receipt.data;
+}
 
 /**
  * Launches a sandbox as the signed-in viewer. The body carries what the person chose: golden, org, agent, model and
@@ -31,9 +59,8 @@ export async function launchSandbox(
   if (args.armadaAccess && (args.harness !== "codex" || !isUuid(args.credentialId)))
     throw new ControlError("Armada access requires an explicit named Codex account.");
   const sized = args.size !== undefined || args.sizePolicy === true;
-  const payload = await controlPost(
-    { ...options, timeoutMs: options.timeoutMs ?? LAUNCH_TIMEOUT_MS },
-    LAUNCH_PATH,
+  const receipt = await postSandboxLaunch(
+    options,
     {
       ...(args.armadaAccess ? { armadaAccessVersion: 1, armadaAccess: { maxActiveChildren: 3 } } : {}),
       golden: args.golden,
@@ -57,10 +84,7 @@ export async function launchSandbox(
         ? "launching with machine sizes"
         : "launching from the dashboard",
   );
-  const sandbox = payload.sandbox;
-  const id = typeof sandbox === "object" && sandbox !== null && "id" in sandbox ? sandbox.id : undefined;
-  if (typeof id !== "string" || !id) throw new ControlError("The Armada server sent no sandbox id.");
-  return { id };
+  return { id: receipt.sandbox.id };
 }
 
 /** One launch submission the dashboard already sent: its request key and when the server action first sent it. */
@@ -195,7 +219,6 @@ export async function followTemplateLaunch(deps: {
       throw new ControlError("Launch is still being confirmed.", undefined, "outcome_unknown");
     },
     created: async () => {
-      // A transport failure has no receipt. Replay the same frozen request, never a fresh launch.
       outcome ??= await deps.launch();
       if (outcome.state === "succeeded") return outcome.id;
       if (outcome.state === "failed") throw new ControlError(launchReason(outcome.reason), 400, outcome.reason);
