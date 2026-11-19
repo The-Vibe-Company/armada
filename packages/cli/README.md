@@ -33,8 +33,9 @@ Global options are read only up to `--` to preserve prompt and command payloads.
 Interactive launch discovery fills missing choices and leaves explicit placement
 and agent choices to the usual validation.
 
-Golden `--add-repo` validates the additions and appends on the server, preserving
-the stored repository list. `--setup` reads a local file to send as setup
+For Boat and Modal snapshots, `snapshot update --add-repo` validates the
+additions and appends on the server, preserving stored repositories and init
+commands. On create or update, `--setup` reads a local file to send as setup
 content. Use `--init` for literal initialization commands.
 
 Sandbox `wait` and `exec` requests get the server budget plus 15 seconds of
