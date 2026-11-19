@@ -2,7 +2,6 @@ import {
   AuthError,
   assertEmail,
   assertEmailCode,
-  assertProvider,
   BodyTooLargeError,
   exchangeSupabaseCode,
   refreshSupabaseSession,
@@ -11,7 +10,7 @@ import {
   supabaseAuthorizeUrl,
   verifyEmailCode,
 } from "@armada/auth";
-import { PUBLIC_CONTROL_ROUTES } from "@armada/core";
+import { controlRouteKey, publicAuthOperations, signInMethod } from "@armada/core/contract";
 import { LaunchError, ProviderRoutingError, VaultError } from "@armada/core/server";
 import type { ControlOptions } from "./control.ts";
 import { readBody } from "./control-body.ts";
@@ -31,7 +30,7 @@ async function authMethodsRoute(_request: Request, options: PublicAuthOptions): 
     if (!response.ok) throw new Error();
     const settings = (await response.json()) as { external?: Record<string, unknown> };
     if (!settings.external || typeof settings.external !== "object") throw new Error();
-    const methods = ["email", "github", "google"].filter((method) => settings.external?.[method] === true);
+    const methods = signInMethod.options.filter((method) => settings.external?.[method] === true);
     return Response.json({ methods }, { headers: { "cache-control": "no-store" } });
   } catch {
     return fail(503, "unavailable", "Sign-in methods are unavailable; try again later.");
@@ -67,24 +66,9 @@ async function emailStartRoute(request: Request, options: PublicAuthOptions): Pr
   try {
     const body = await readBody(request);
     const email = assertEmail(required(body, "email"));
-    const redirectTo = required(body, "redirect_uri");
-    const challenge = required(body, "code_challenge");
-    const state = required(body, "state");
-    const callback = new URL(redirectTo);
-    if (body.cli_email_link !== undefined && typeof body.cli_email_link !== "boolean") throw new Error();
-    const cliEmailLink = body.cli_email_link === true;
-    if (
-      callback.protocol !== "http:" ||
-      !["127.0.0.1", "localhost"].includes(callback.hostname) ||
-      !callback.port ||
-      callback.username ||
-      callback.password ||
-      callback.hash ||
-      (cliEmailLink && (callback.pathname !== "/callback" || callback.search)) ||
-      !/^[A-Za-z0-9._~-]{43,128}$/.test(challenge) ||
-      !/^[A-Za-z0-9._~-]{8,512}$/.test(state)
-    )
-      throw new Error();
+    const parsed = publicAuthOperations.authEmailStart.input.body.parse(body);
+    const { code_challenge: challenge, state, cli_email_link: cliEmailLink } = parsed;
+    const callback = new URL(parsed.redirect_uri);
     if (cliEmailLink) callback.searchParams.set("state", state);
     await sendEmailLink({
       fetch: options.supabase.fetch ?? fetch,
@@ -115,7 +99,7 @@ async function exchangeRoute(request: Request, options: PublicAuthOptions): Prom
     const body = await readBody(request);
     const code = required(body, "code");
     const verifier = required(body, "verifier");
-    if (code.length > 4096 || !/^[A-Za-z0-9._~-]{43,128}$/.test(verifier))
+    if (!publicAuthOperations.authExchange.input.body.safeParse({ code, verifier }).success)
       throw new VaultError("invalid", "Invalid login exchange.");
     const result = options.exchangeNative
       ? await options.exchangeNative(code, verifier)
@@ -152,27 +136,22 @@ async function nativeExchange(options: PublicAuthOptions, code: string, verifier
 
 function authorizeRoute(request: Request, options: PublicAuthOptions): Response {
   const url = new URL(request.url);
-  const provider = url.searchParams.get("provider") ?? "";
-  const redirectTo = url.searchParams.get("redirect_uri") ?? "";
-  const challenge = url.searchParams.get("code_challenge") ?? "";
-  const state = url.searchParams.get("state") ?? "";
   try {
-    assertProvider(provider);
-    if (!/^[A-Za-z0-9._~-]{43,128}$/.test(challenge) || !/^[A-Za-z0-9._~-]{8,512}$/.test(state)) throw new Error();
-    const callback = new URL(redirectTo);
-    if (
-      callback.protocol !== "http:" ||
-      !["127.0.0.1", "localhost"].includes(callback.hostname) ||
-      !callback.port ||
-      callback.username ||
-      callback.password ||
-      callback.hash
-    )
-      throw new Error();
+    const {
+      provider,
+      redirect_uri,
+      code_challenge: challenge,
+    } = publicAuthOperations.authAuthorize.input.query.parse({
+      provider: url.searchParams.get("provider"),
+      redirect_uri: url.searchParams.get("redirect_uri"),
+      code_challenge: url.searchParams.get("code_challenge"),
+      state: url.searchParams.get("state"),
+    });
+    const callback = new URL(redirect_uri);
     const location = supabaseAuthorizeUrl({
       supabaseUrl: options.supabase.supabaseUrl,
       anonKey: options.supabase.anonKey,
-      provider: assertProvider(provider),
+      provider,
       redirectTo: callback.toString(),
       challenge,
     });
@@ -223,11 +202,13 @@ async function nativeRefresh(options: PublicAuthOptions, refreshToken: string) {
   return { accessToken: next.accessToken, refreshToken: next.refreshToken, expiresAt: next.expiresAt };
 }
 
+const { authMethods, authAuthorize, authExchange, authEmailStart, authEmailVerify, authRefresh } = publicAuthOperations;
+
 export const publicAuthRoutes = defineRoutes("public-auth", {
-  "auth/methods": { methods: PUBLIC_CONTROL_ROUTES["auth/methods"], respond: authMethodsRoute },
-  "auth/authorize": { methods: PUBLIC_CONTROL_ROUTES["auth/authorize"], respond: authorizeRoute },
-  "auth/exchange": { methods: PUBLIC_CONTROL_ROUTES["auth/exchange"], respond: exchangeRoute },
-  "auth/email/start": { methods: PUBLIC_CONTROL_ROUTES["auth/email/start"], respond: emailStartRoute },
-  "auth/email/verify": { methods: PUBLIC_CONTROL_ROUTES["auth/email/verify"], respond: emailVerifyRoute },
-  "auth/refresh": { methods: PUBLIC_CONTROL_ROUTES["auth/refresh"], respond: refreshRoute },
+  [controlRouteKey(authMethods.route)]: { methods: [authMethods.route.method], respond: authMethodsRoute },
+  [controlRouteKey(authAuthorize.route)]: { methods: [authAuthorize.route.method], respond: authorizeRoute },
+  [controlRouteKey(authExchange.route)]: { methods: [authExchange.route.method], respond: exchangeRoute },
+  [controlRouteKey(authEmailStart.route)]: { methods: [authEmailStart.route.method], respond: emailStartRoute },
+  [controlRouteKey(authEmailVerify.route)]: { methods: [authEmailVerify.route.method], respond: emailVerifyRoute },
+  [controlRouteKey(authRefresh.route)]: { methods: [authRefresh.route.method], respond: refreshRoute },
 });

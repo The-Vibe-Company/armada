@@ -1,4 +1,4 @@
-import { PUBLIC_CONTROL_ROUTES } from "@armada/core";
+import { PUBLIC_CONTROL_ROUTES } from "@armada/core/contract";
 import {
   createSqlVaultStore,
   encryptSecret,

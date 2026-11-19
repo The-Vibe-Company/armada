@@ -6,15 +6,23 @@ import { callSharedTool } from "../src/tool-api.ts";
 import type { ToolContext } from "../src/tools.ts";
 import { bunLikeSql, database, fakeBoat } from "./support.ts";
 
-let fixture: Awaited<ReturnType<typeof database>>;
+let prepared: Promise<Awaited<ReturnType<typeof database>>> | undefined;
 beforeAll(async () => {
-  fixture = await database();
+  prepared = database();
+  await prepared;
 });
 afterAll(async () => {
-  await fixture.db.close();
+  const pending = prepared;
+  prepared = undefined;
+  await pending?.then(
+    ({ db }) => db.close(),
+    () => undefined,
+  );
 });
 
 test("MCP allocation before failed registration returns a receipt ID and fences replay", async () => {
+  const fixture = await prepared;
+  if (!fixture) throw Error("Launch recovery database is not open");
   const { db, people } = fixture;
   const sql = bunLikeSql(db);
   const caller = {
