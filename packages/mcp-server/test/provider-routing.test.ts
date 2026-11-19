@@ -5,9 +5,17 @@ import { createSqlVaultStore } from "@armada/core/server";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { createOrdinaryLaunchReceipts } from "../src/ordinary-launch-receipts.ts";
-import { sqlOver } from "../src/sql.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { call, ENCRYPTION_KEY, fakeBoat, harness, launchSandboxId, PUBLIC_URL, type TestServer } from "./support.ts";
+import {
+  bunLikeSql,
+  call,
+  ENCRYPTION_KEY,
+  fakeBoat,
+  harness,
+  launchSandboxId,
+  PUBLIC_URL,
+  type TestServer,
+} from "./support.ts";
 
 const database = rowOnlyDatabase();
 let pendingServer: Promise<TestServer> | undefined;
@@ -222,7 +230,7 @@ describe("provider routing", () => {
     await seedModal(server);
     const { db, people } = server;
     const token = await server.token(people.member);
-    const sql = sqlOver({ unsafe: async (query, params) => (await db.query(query, params)).rows });
+    const sql = bunLikeSql(db);
     const provider = {
       ...modal.provider,
       id: "modal" as const,

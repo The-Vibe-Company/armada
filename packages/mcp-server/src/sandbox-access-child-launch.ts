@@ -136,7 +136,15 @@ export async function launchSandboxChild(input: {
         if (key === "fork")
           return async (request: Parameters<Provider["fork"]>[0]) => {
             guard = "parent_authority";
-            await assertCurrent();
+            await assertCurrent().catch((cause) => {
+              throw new ProviderError({
+                provider: target.id,
+                code: "forbidden",
+                message: "Child launch authority could not be confirmed.",
+                retryable: false,
+                cause,
+              });
+            });
             guard = "provider_fork";
             allocationAttempted = true;
             const result = await target

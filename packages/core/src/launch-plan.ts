@@ -38,7 +38,7 @@ export async function resolveLaunchConnections(
   return ids;
 }
 
-/** Admit the selected account before any additional pre-allocation checks, under the caller's fence. */
+/** Admit the selected account before any additional pre-allocation checks, before dispatch. */
 export async function admitLaunchPlan(
   admitAccount: () => Promise<void> | undefined,
   beforeAllocation: () => Promise<void> | undefined,
@@ -47,12 +47,12 @@ export async function admitLaunchPlan(
   await beforeAllocation();
 }
 
-/** Placement owns the admission fence and the allocation performed under it. */
+/** Placement owns admission and allocation. */
 export interface LaunchPlacement<Resolved, Context, Allocation> {
   admit(plan: Resolved, context: Context): Promise<Allocation>;
 }
 
-/** Prepare without allocating. Callers can acquire their launch fence before admitting the resolved plan. */
+/** Prepare without allocating. Callers admit the resolved plan before dispatch. */
 export async function prepareLaunchPlan<Validated, Resolved, Context, Allocation>(
   validate: () => Validated | Promise<Validated>,
   resolve: (request: Validated) => Promise<Resolved>,
