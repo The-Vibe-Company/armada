@@ -12,7 +12,16 @@ interface Workflow {
 const release = Bun.YAML.parse(readFileSync(".github/workflows/release.yml", "utf8")) as {
   on: Workflow["on"];
   concurrency?: Concurrency;
-  jobs: Record<string, { concurrency?: Concurrency; if?: string; uses?: string }>;
+  jobs: Record<
+    string,
+    {
+      concurrency?: Concurrency;
+      if?: string;
+      needs?: string[];
+      uses?: string;
+      steps?: { env?: Record<string, string> }[];
+    }
+  >;
 };
 const staging = Bun.YAML.parse(readFileSync(".github/workflows/staging-gated-production.yml", "utf8")) as Workflow;
 
@@ -46,4 +55,25 @@ test("only the publishing call queues for the shared staging lock", () => {
       },
     }),
   );
+});
+
+test("a queued candidate can hand a published version back to preparation after releasing the lock", () => {
+  const pipeline = Bun.YAML.parse(readFileSync(".github/workflows/release-pipeline.yml", "utf8")) as {
+    on: { workflow_call: { outputs: Record<string, { value: string }> } };
+  };
+  const prep = release.jobs["release-please"];
+  expect(prep?.needs).toContain("release-pipeline");
+  expect(prep?.if).toContain(
+    "needs.release-pipeline.result == 'success' && needs.release-pipeline.outputs.mode == 'prepare'",
+  );
+  expect(pipeline.on.workflow_call.outputs.mode?.value).toBe(`\${{ jobs.release-metadata.outputs.mode }}`);
+  expect(pipeline.on.workflow_call.outputs.version?.value).toBe(`\${{ jobs.release-metadata.outputs.intent-version }}`);
+  expect(pipeline.on.workflow_call.outputs.sha?.value).toBe(`\${{ jobs.release-metadata.outputs.intent-sha }}`);
+  expect(
+    prep?.steps?.some(
+      ({ env }) =>
+        env?.VERSION?.includes("needs.release-pipeline.outputs.version") &&
+        env.RELEASE_SHA?.includes("needs.release-pipeline.outputs.sha"),
+    ),
+  ).toBe(true);
 });
