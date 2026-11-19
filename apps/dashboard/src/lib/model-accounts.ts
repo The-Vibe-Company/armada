@@ -16,11 +16,11 @@ import {
 
 export const ACCOUNT_KINDS = MODEL_CREDENTIAL_KINDS;
 /** #603's account statuses; any other value reads as `unknown` rather than as working. */
-export const ACCOUNT_STATUSES = ["active", "revoked", "deleted", "unknown"] as const;
-export const ACCOUNT_SCOPES = ["user", "org"] as const;
+const ACCOUNT_STATUSES = ["active", "revoked", "deleted", "unknown"] as const;
+const ACCOUNT_SCOPES = ["user", "org"] as const;
 
 export type AccountKind = (typeof ACCOUNT_KINDS)[number];
-export type AccountStatus = (typeof ACCOUNT_STATUSES)[number];
+type AccountStatus = (typeof ACCOUNT_STATUSES)[number];
 export type AccountScope = (typeof ACCOUNT_SCOPES)[number];
 
 type MonthlySpend = { periodStart: string; usd: string; unpricedTurns: number };
@@ -355,7 +355,7 @@ export function accountProblem(account: Pick<ModelAccount, "status" | "expiresAt
   return null;
 }
 
-export type AccountState = {
+type AccountState = {
   /** The state in plain words, as the row's state cell says it. */
   label: string;
   tone: "ok" | "warn" | "error";
@@ -414,9 +414,9 @@ export function checkDefaultChoice(
  * personal default, the only personal account, the org default, the only org account. Several candidates and no
  * default is `ambiguous`: the person chooses, so no billing account is ever picked for them.
  */
-export type LaunchWhy = "personal-default" | "personal-only" | "org-default" | "org-only";
+type LaunchWhy = "personal-default" | "personal-only" | "org-default" | "org-only";
 
-export type LaunchDefault =
+type LaunchDefault =
   | { state: "resolved"; account: ModelAccount; why: LaunchWhy }
   | { state: "unusable"; account: ModelAccount; why: LaunchWhy }
   | { state: "ambiguous" }
@@ -512,9 +512,9 @@ export function checkAccountChoice(
  * `fresh` or `stale` windows, or `unavailable` (the account reports none, such as a model-only token) or `error`
  * (the read failed). `version` is the secret version the report was observed under.
  */
-export const USAGE_STATUSES = ["fresh", "stale", "unavailable", "error"] as const;
+const USAGE_STATUSES = ["fresh", "stale", "unavailable", "error"] as const;
 /** A report the server sent but this dashboard cannot read (a newer shape): never a server status. */
-export type UsageReadStatus = (typeof USAGE_STATUSES)[number] | "unreadable";
+type UsageReadStatus = (typeof USAGE_STATUSES)[number] | "unreadable";
 /**
  * One allowance window, from #624's `Window {id, label, kind, usedPercent, resetsAt, sourceId?, observedAt?,
  * windowDurationMins?, ...}`. `id` is unique within a report; `usedPercent` null is a reading the provider reported
@@ -522,7 +522,7 @@ export type UsageReadStatus = (typeof USAGE_STATUSES)[number] | "unreadable";
  * identify itself) and `observedAt` when that window was last read: a sparse update keeps an older window with its
  * original time.
  */
-export type UsageWindow = {
+type UsageWindow = {
   id: string;
   label: string;
   usedPercent: number | null;
@@ -536,9 +536,9 @@ export type UsageWindow = {
  * A native credit snapshot (#624 v3 `{hasCredits, unlimited, balance}`). `balance` is the provider's exact decimal
  * string: it is never turned into a number, summed or given a currency.
  */
-export type CreditBalance = { hasCredits: boolean; unlimited: boolean; balance: string | null };
+type CreditBalance = { hasCredits: boolean; unlimited: boolean; balance: string | null };
 /** One meter's credits: which native meter reported it, under what name, and when. */
-export type CreditMeter = CreditBalance & {
+type CreditMeter = CreditBalance & {
   key: string;
   sourceId: string | null;
   label: string;
