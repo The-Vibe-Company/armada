@@ -131,8 +131,7 @@ ${sandboxUsage("invitations")}
                                            Endpoint prices: --price-model ID --price-input USD --price-output USD
                                            [--price-cached-input USD]; decimal USD per million tokens, omitted = unknown
                                            Replacing a connection replaces its prices too; re-enter all rates to keep them
-  armada routine --help                    Create, inspect, enable, pause and manage scheduled template launches
-  armada template --help                   Manage templates and launch published versions
+${sandboxUsage("automation")}
   armada vars --help                       Readable variables: set/list/read; stdin/file writes only
   armada secrets --help                    Write-only application secrets: set/list/rotate/revoke/delete
                                            Personal or --org scope. JSON includes values only for vars read; no sandbox delivery.
