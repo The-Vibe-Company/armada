@@ -742,13 +742,14 @@ export class GoldenBuildJobs {
             );
             if (!saved.rows.length) throw new GoldenError("build_failed", "Build lease is no longer owned.");
           },
-          builder: async (id) =>
-            this.transaction(async (sql) => {
-              await this.lock(sql, job, epoch, signal);
-              if (!(await this.ownsLease(sql, job.id, epoch)))
-                throw new GoldenError("build_failed", "Build lease is no longer owned.");
-              await sql.query("update public.golden_build_jobs set builder_id=$2 where id=$1", [job.id, id]);
-            }),
+          builder: async (id) => {
+            const saved = await this.options.sql.query(
+              "update public.golden_build_jobs set builder_id=$3 where id=$1 and fence=$2 and state in ('running','recovery_required') and (builder_id is null or builder_id=$3) returning id",
+              [job.id, job.fence, id],
+            );
+            if (!saved.rows.length) throw new GoldenError("build_failed", "Build attempt is no longer recoverable.");
+            await this.transaction((sql) => this.lock(sql, job, epoch, signal));
+          },
           lock: (sql) => this.lock(sql, job, epoch, signal),
           complete: async (sql, goldenId, snapshot, warnings) => {
             // Recheck with wall time at the final write: PostgreSQL now() is frozen at

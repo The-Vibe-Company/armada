@@ -193,11 +193,63 @@ test("losing the shared lease while recording builder intent prevents allocation
     const job = (await response.json()) as GoldenBuildStatus;
     await runGoldenBuildJob(s.db, s.builds);
     expect(await s.builds.status(s.people.admin, job.jobId)).toMatchObject({
-      state: "failed",
+      state: "recovery_required",
       phase: "authorization",
     });
     expect(s.allocations()).toBe(0);
   } finally {
+    await s.close();
+  }
+});
+
+test("a late builder identity remains recoverable after shutdown and a failed stop", async () => {
+  const s = await fixture();
+  const builderStarted = Promise.withResolvers<void>();
+  const builderResponse = Promise.withResolvers<void>();
+  const { provider } = s.boat;
+  const create = provider.createGolden!;
+  const stop = provider.stop;
+  provider.createGolden = async (request) => {
+    const builder = await create(request);
+    builderStarted.resolve();
+    await builderResponse.promise;
+    return builder;
+  };
+  provider.stop = async () => {
+    throw new Error("stop unavailable");
+  };
+  const runner = createJobsRunner(
+    createJobsStore(s.db),
+    { golden_build: createGoldenBuildJob(s.builds) },
+    () => {},
+    () => () => {},
+  );
+  try {
+    const response = await s.http(await s.token(s.people.admin), "golden/create", {
+      name: "late-builder",
+      org: s.people.org,
+      repos: ["acme/web"],
+      idempotencyKey: crypto.randomUUID(),
+    });
+    expect(response.status).toBe(202);
+    const job = (await response.json()) as GoldenBuildStatus;
+    expect(await runner.reconcileOne(new AbortController().signal)).toBe(true);
+    await builderStarted.promise;
+    runner.stopAdmission();
+    builderResponse.resolve();
+    await runner.drain();
+
+    expect(await s.builds.status(s.people.admin, job.jobId)).toMatchObject({ state: "recovery_required" });
+    provider.stop = stop;
+    await s.db.query("update public.jobs set lease_until='-infinity' where id=$1", [job.jobId]);
+    await runGoldenBuildJob(s.db, s.builds);
+    expect(await s.builds.status(s.people.admin, job.jobId)).toMatchObject({ state: "failed" });
+    expect(s.allocations()).toBe(1);
+    expect((await s.db.query("select 1 from golden_backend_slots")).rows).toEqual([]);
+  } finally {
+    runner.stopAdmission();
+    builderResponse.resolve();
+    await runner.drain();
     await s.close();
   }
 });
