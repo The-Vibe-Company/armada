@@ -477,7 +477,6 @@ export class Journal {
         scrubbed.data = maskShapedPayload(event.data, scrubbed.data, maskField, turnUsagePayload);
       } else if (Object.hasOwn(terminalDiagnosticShapes, event.type)) {
         scrubbed.data = maskShapedPayload(event.data, scrubbed.data, maskField, terminalDiagnosticShapes[event.type]);
-        // Consumers classify plan exhaustion using this closed protocol enum.
         if (event.type === "usage_limit") {
           const limit = planLimitData(event.data);
           if (limit) scrubbed.data.code = limit.code;
