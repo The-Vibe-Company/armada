@@ -5,7 +5,6 @@ import {
   type Machine,
   type MachineIdentity,
   type MachineIncarnation,
-  type MachineObservation,
   type RetainedMachine,
   runtimeBootstrapScript,
 } from "@armada/core/server";
@@ -35,7 +34,6 @@ type RecordEntry = {
   deleteScope?: Delete["scope"];
 };
 
-/** Durable job-owned storage. A failed CAS means another dispatch changed the receipt. */
 export interface ModalMachineJournal {
   read(key: string): Promise<RecordEntry | undefined>;
   compareAndSet(key: string, revision: number | undefined, next: RecordEntry): Promise<boolean>;
@@ -48,7 +46,6 @@ export interface ModalMachineOptions {
   deploymentId: string;
   journal: ModalMachineJournal;
   resolveRuntimeTicket(request: Bootstrap): Promise<RuntimeTicket>;
-  /** Idempotently quiesce the exact runtime and scrub transient access before snapshotting. */
   prepareCheckpoint(request: Stop, sandbox: Sandbox): Promise<void>;
 }
 
@@ -60,12 +57,12 @@ function conflict(message: string) {
   return refusal("conflict", message);
 }
 
-function retained(id: MachineIncarnation, ref: string): RetainedMachine {
-  return { sandboxId: id.sandboxId, generation: id.generation, kind: "image", ref };
+function retained(id: MachineIncarnation, ref: string) {
+  return { sandboxId: id.sandboxId, generation: id.generation, kind: "image", ref } satisfies RetainedMachine;
 }
 
-function identity(id: MachineIncarnation, machineId: string): MachineIdentity {
-  return { sandboxId: id.sandboxId, generation: id.generation, machineId };
+function identity(id: MachineIncarnation, machineId: string) {
+  return { sandboxId: id.sandboxId, generation: id.generation, machineId } satisfies MachineIdentity;
 }
 
 async function optional<T>(operation: () => Promise<T>) {
@@ -76,7 +73,7 @@ async function optional<T>(operation: () => Promise<T>) {
   }
 }
 
-export function createModalMachine(options: ModalMachineOptions): Machine {
+export function createModalMachine(options: ModalMachineOptions) {
   const { client, journal, binding, appName, deploymentId } = options;
   const bound = () => boundModalApp(client, appName, binding);
   const key = (id: MachineIncarnation) => digest([binding.appId, deploymentId, id.sandboxId, id.generation]);
@@ -151,7 +148,6 @@ export function createModalMachine(options: ModalMachineOptions): Machine {
       signal?.throwIfAborted();
       entry = await save(request, undefined, { operation, intent, phase: "creating" });
       signal?.throwIfAborted();
-      // V2 exact-name lookup can find a prior allocation even after it exits.
       sandbox = await client.sandboxes.experimentalCreate(app, image, {
         name: name(request),
         tags: tags(request),
@@ -201,7 +197,6 @@ export function createModalMachine(options: ModalMachineOptions): Machine {
           if ((await sb.poll()) !== null) throw conflict("Modal checkpoint source already exited.");
           await options.prepareCheckpoint(request, sb);
           request.signal?.throwIfAborted();
-          // Modal uses a new snapshot ID per SDK invocation. Unacknowledged images expire.
           const image = await sb.snapshotFilesystem();
           if (!image.imageId) throw refusal("unavailable", "Modal checkpoint returned no image.");
           entry = await save(request, entry, { ...entry, recoveryImageId: image.imageId });
@@ -248,7 +243,7 @@ export function createModalMachine(options: ModalMachineOptions): Machine {
       }
       await save(request, entry, { ...entry, phase: "deleted" });
     },
-    async observe(request): Promise<MachineObservation> {
+    async observe(request) {
       try {
         request.signal?.throwIfAborted();
         await bound();
@@ -314,7 +309,6 @@ async function bootstrapRuntime(sb: Sandbox, request: Bootstrap, ticket: Runtime
   )
     throw refusal("invalid_request", "Invalid enrolled Modal bootstrap.");
 
-  // Keep the guard in ephemeral, root-owned state, outside the retained workspace.
   const marker = `/run/armada-runtime-${digest(request.machineId)}`;
   const binding = digest(request.bindingRef);
   const baseScript = runtimeBootstrapScript(server.origin, ticket.artifact, ticket.cacheDir);

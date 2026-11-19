@@ -8,7 +8,7 @@ type SDK = ModalMachineOptions["client"];
 type CreateParams = NonNullable<Parameters<SDK["sandboxes"]["experimentalCreate"]>[2]>;
 type Scope = Parameters<MachineConformanceFixture["adapter"]>[0];
 
-function fixture(): MachineConformanceFixture {
+function fixture() {
   const entries = new Map<string, Entry>();
   const images = new Map<string, string>([["source", ""]]);
   const allocations = new Map<
@@ -209,7 +209,7 @@ function fixture(): MachineConformanceFixture {
     readWorkspace(machine) {
       return get(machine.machineId).workspace;
     },
-  };
+  } satisfies MachineConformanceFixture;
 }
 
 testMachineConformance("Modal machine", {
