@@ -489,7 +489,7 @@ test("native history fences every page and exports the receipt after an activity
       generations.push(generation);
       return { provider, providerSandboxId: "boat_export" };
     },
-    (async (_input: RequestInfo | URL) => {
+    (async (_input: Parameters<typeof fetch>[0]) => {
       sends++;
       return new Response();
     }) as typeof fetch,
