@@ -53,6 +53,7 @@ const jobsLane: LaneFactory = ({
           if (!target.runtime) {
             const provider = await lifecycleProvider(target.id);
             if (!(await canDispatch())) throw Error("PR scan generation changed.");
+            request.signal?.throwIfAborted();
             return provider.exec(request);
           }
           const epoch = target.runtime_epoch;

@@ -456,6 +456,7 @@ export function createPullRequestScanJob(
       const launchedAt = Date.parse(row.created_at);
       if (numbers.size || branchCount) {
         if (!(await canDispatch())) return;
+        signal.throwIfAborted();
         const request = github.fetch ?? fetch;
         const access = await resolveGitHubAccess({ ...github, caller: "managed_runtime" }, row.owner_id);
         if (
@@ -475,6 +476,7 @@ export function createPullRequestScanJob(
           nextScan = Math.max(nextScan, now() + ++requests * 1000);
           signal.throwIfAborted();
           if (!(await canDispatch())) throw Error("PR scan dispatch no longer authorized.");
+          signal.throwIfAborted();
           const response = await request(`https://api.github.com/repos/${repository}${path}`, {
             signal,
             redirect: "error",

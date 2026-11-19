@@ -479,6 +479,7 @@ test.each([
   "tainted after enqueue",
   "generation changed after refresh claim",
   "completion interrupted",
+  "activity started after enqueue",
   "open",
   "closed",
   "no push",
@@ -650,7 +651,7 @@ test.each([
     { preconnect: fetch.preconnect },
   );
   let interruptCompletion = state === "completion interrupted";
-  const observe = async (stdout: string) => {
+  const observe = async (stdout: string, activityStarted = false) => {
     const willInterrupt = interruptCompletion;
     const sql = sqlOver({
       unsafe: async (query, params) => (await f.db.query(query, params)).rows,
@@ -726,6 +727,13 @@ test.each([
       await handler.prepare();
       await f.db.query("update sandboxes set application_secret_tainted=true where id=$1", [f.id]);
     }
+    if (activityStarted) {
+      await handler.prepare();
+      await f.db.query(
+        "update sandboxes set activity_lease_id=$2,activity_until=now()+interval '1 minute' where id=$1",
+        [f.id, crypto.randomUUID()],
+      );
+    }
     const runner = createJobsRunner(jobs, { pr_scan: handler }, undefined, () => () => {});
     expect(await runner.reconcileOne(new AbortController().signal)).toBe(true);
     await runner.drain();
@@ -738,6 +746,10 @@ test.each([
             ? { state: "done", attempts: 1 }
             : { state: "queued", attempts: 0 },
     ]);
+    if (activityStarted) {
+      const { rows } = await f.db.query<{ run_after: Date }>("select run_after from jobs where sandbox_id=$1", [f.id]);
+      expect(rows[0]?.run_after).toEqual(new Date(at + 15_000));
+    }
   };
   // The lifecycle worker settles the finished turn before a scan may prove a
   // stop; its timer is not due yet, so this tick stops nothing.
@@ -774,7 +786,14 @@ test.each([
               ? Array.from({ length: 16 }, (_, i) => `topic\t${i.toString(16).padStart(40, "1")}\n`).join("")
               : ""
           }${state.startsWith("merged with") ? `scratch\t${"c".repeat(40)}\n` : ""}${state === "unmerged PR at attempt" ? `~\tother\t${"f".repeat(40)}\n` : ""}${state === "rejected attempt" ? `?\tmain\t${"9".repeat(40)}\n` : ""}`),
+    state === "activity started after enqueue",
   );
+  if (state === "activity started after enqueue") {
+    expect((await f.data.sandboxes.get(f.id))?.pullRequests).toEqual([]);
+    await f.db.query("update sandboxes set activity_lease_id=null,activity_until=null where id=$1", [f.id]);
+    await f.db.query("update jobs set run_after=now() where sandbox_id=$1", [f.id]);
+    await observe(`topic\t${sha}\n`);
+  }
   if (state === "completion interrupted") {
     expect((await f.data.sandboxes.get(f.id))?.pullRequests).toEqual([]);
     const [leased] = (await f.db.query<{ id: string }>("select id from jobs where sandbox_id=$1", [f.id])).rows;
@@ -804,6 +823,7 @@ test.each([
   const shouldStop =
     state === "merged" ||
     state === "completion interrupted" ||
+    state === "activity started after enqueue" ||
     state === "merged with scratch push" ||
     state === "merged with scratch PR closed before launch" ||
     state === "merged after head advanced" ||
