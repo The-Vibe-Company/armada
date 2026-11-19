@@ -31,7 +31,6 @@ export function codexTurnUsage(
   };
 }
 
-/** Incomplete turns cannot publish billable usage or seed a later prompt. */
 export function settleCodexTurnUsage({
   tokenTotals,
   threadId,
@@ -46,7 +45,7 @@ export function settleCodexTurnUsage({
   terminalObserved: boolean;
   latest: Record<string, unknown> | null;
   model: string | null;
-}): Record<string, unknown> | null {
+}) {
   if (dispatched && !terminalObserved) tokenTotals.delete(threadId);
   if (!latest) return null;
   if (terminalObserved) return { ...latest, model };
