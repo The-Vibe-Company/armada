@@ -7,8 +7,8 @@ import {
   OUTPUT_MAX_READ_BYTES,
   OUTPUT_MAX_SANDBOX_BYTES,
   type SandboxPlacementProviderId,
-  validOutputName,
 } from "@armada/core";
+import { sandboxOutputOperations } from "@armada/core/contract";
 import {
   admitOutputs,
   decryptSecret,
@@ -571,14 +571,21 @@ export function createSandboxOutputs(
       await Promise.allSettled([...writes]);
     },
     route(authenticate: (request: Request) => Promise<CallerResult>): Route {
+      const list = sandboxOutputOperations.listSandboxOutputs;
+      const read = sandboxOutputOperations.readSandboxOutput;
+      const pattern = (path: string) => new URLPattern({ pathname: path.replaceAll(/\{(\w+)\}/g, ":$1") });
+      const listPath = pattern(list.route.path);
+      const readPath = pattern(read.route.path);
       return async (request) => {
         const url = new URL(request.url);
-        const match =
-          /^\/api\/v1\/sandboxes\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/outputs(?:\/([^/]+))?$/.exec(
-            url.pathname,
-          );
+        const download = readPath.exec(url);
+        const match = download ?? listPath.exec(url);
         if (!match) return null;
-        if (request.method !== "GET") return Response.json({ error: "Use GET" }, { status: 405 });
+        const operation = download ? read : list;
+        const id = operation.input.path.id.safeParse(match.pathname.groups.id);
+        if (!id.success) return null;
+        if (request.method !== operation.route.method)
+          return Response.json({ error: `Use ${operation.route.method}` }, { status: 405 });
         const auth = await authenticate(request);
         if (!auth.ok) return Response.json({ error: "unauthorized" }, { status: 401 });
         const caller = auth.caller;
@@ -590,19 +597,13 @@ export function createSandboxOutputs(
               `select s.id,s.outputs_failure_reasons from public.sandboxes s join public.members m on m.org_id=s.org_id
           where s.id=$1 and s.status<>'deleted' and not s.application_secret_tainted and m.user_id=$2 and s.org_id=any($3::uuid[])
           and (s.owner_id=$2 or m.role='admin') and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)`,
-              [match[1], caller.userId, caller.orgs.map((o) => o.orgId)],
+              [id.data, caller.userId, caller.orgs.map((o) => o.orgId)],
             )
           ).rows[0];
         const notFound = () => Response.json({ error: "not_found" }, { status: 404 });
         const row = await authorize();
         if (!row) return Response.json({ error: "not_found" }, { status: 404 });
-        let name: string | null;
-        try {
-          name = match[2] ? decodeURIComponent(match[2]) : null;
-        } catch {
-          return Response.json({ error: "invalid_name" }, { status: 400 });
-        }
-        if (!name) {
+        if (!download) {
           const files = await sql.query<{
             name: string;
             size: number;
@@ -633,7 +634,15 @@ export function createSandboxOutputs(
             { headers: { "cache-control": "private, no-store" } },
           );
         }
-        if (!validOutputName(name)) return Response.json({ error: "invalid_name" }, { status: 400 });
+        let decodedName: string;
+        try {
+          decodedName = decodeURIComponent(download.pathname.groups.name ?? "");
+        } catch {
+          return Response.json({ error: "invalid_name" }, { status: 400 });
+        }
+        const nameResult = read.input.path.name.safeParse(decodedName);
+        if (!nameResult.success) return Response.json({ error: "invalid_name" }, { status: 400 });
+        const name = nameResult.data;
         const file = (
           await sql.query<{
             name: string;
@@ -694,7 +703,7 @@ export function createSandboxOutputs(
                 { highWaterMark: 0 },
               )
             : null;
-        const type = new Blob([], { type: Bun.file(file.name).type }).type || "application/octet-stream";
+        const type = new Blob([], { type: Bun.file(file.name).type }).type || read.outputMediaType;
         return new Response(bytes?.subarray(start, end) ?? stream, {
           status: requestedRange ? 206 : 200,
           headers: {
@@ -714,12 +723,13 @@ export function createSandboxOutputs(
 }
 
 function outputRange(header: string, size: number): { start: number; end: number } | null {
-  const match = /^bytes=(\d*)-(\d*)$/.exec(header);
-  if (!match || !size || (!match[1] && !match[2])) return null;
-  const first = Number(match[1]);
-  const last = Number(match[2]);
+  const parsed = sandboxOutputOperations.readSandboxOutput.input.headers.Range.safeParse(header);
+  if (!parsed.success || !size) return null;
+  const [start, end] = parsed.data.slice("bytes=".length).split("-");
+  const first = Number(start);
+  const last = Number(end);
   if (!Number.isSafeInteger(first) || !Number.isSafeInteger(last)) return null;
-  if (!match[1]) return last > 0 ? { start: Math.max(0, size - last), end: size } : null;
-  if (first >= size || (match[2] && last < first)) return null;
-  return { start: first, end: match[2] ? Math.min(size, last + 1) : size };
+  if (!start) return last > 0 ? { start: Math.max(0, size - last), end: size } : null;
+  if (first >= size || (end && last < first)) return null;
+  return { start: first, end: end ? Math.min(size, last + 1) : size };
 }
