@@ -1746,11 +1746,15 @@ test("an unrelated launch in flight never holds scoped child cleanup or the next
 });
 
 /** Fake expiry API for one 180 s sandbox per harness; `starting` decides a status poll still reports starting. */
+function expiryId(harness: unknown) {
+  return harness === "claude" ? "12345678-1234-1234-1234-123456789abc" : "12345678-1234-1234-1234-123456789abd";
+}
+
 function expiryApi(now: () => number, starting: (id: string) => boolean = () => false) {
   const expiries = new Map<string, number>();
   return (call: Call): Response | undefined => {
     if (call.path === "sandbox/launch" && call.body.ttlSeconds === 180) {
-      const id = `exp-${call.body.harness}`;
+      const id = expiryId(call.body.harness);
       expiries.set(id, now() + 180_000);
       return json({ sandbox: { id, provider: call.body.provider } });
     }
@@ -1758,7 +1762,7 @@ function expiryApi(now: () => number, starting: (id: string) => boolean = () => 
     const expiresMs = expiries.get(id);
     const listed = call.path === "sandbox/list" && call.body.status === undefined;
     if (expiresMs === undefined && !listed) return undefined;
-    const target = listed ? `exp-${call.body.harness}` : id;
+    const target = listed ? expiryId(call.body.harness) : id;
     const deadline = expiries.get(target)!;
     const expired = now() >= deadline;
     const expiresAt = new Date(deadline).toISOString();
@@ -1884,7 +1888,7 @@ test("lanes sharing a one-slot model account take turns, and the expiry wait sti
           conflicts++;
           return json({ error: { code: "conflict", message: "secret account at its limit" } }, 409);
         }
-        working.add(call.body.ttlSeconds === 180 ? `exp-${call.body.harness}` : `life-${++lifecycleLaunches}`);
+        working.add(call.body.ttlSeconds === 180 ? expiryId(call.body.harness) : `life-${++lifecycleLaunches}`);
       }
       if (call.path === "sandbox/stop") working.delete(String(call.body.id));
       return expiry(call);

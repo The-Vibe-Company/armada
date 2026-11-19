@@ -21,6 +21,7 @@ type Fault =
   | "late_launch"
   | "unreadable_launch"
   | "missing_launch_id"
+  | "malformed_launch_id"
   | "invalid_launch_receipt"
   | "cleanup_lost"
   | "cleanup_failed"
@@ -66,7 +67,10 @@ function fixture(provider: "modal", fault: Fault = "none") {
         }
         if (fault === "unreadable_launch") return new Response("{", { status: 200 });
         return Response.json({
-          sandbox: fault === "missing_launch_id" ? { id: "" } : { id: ownedWorker, provider },
+          sandbox:
+            fault === "missing_launch_id"
+              ? { id: "" }
+              : { id: fault === "malformed_launch_id" ? "bad-id" : ownedWorker, provider },
           ...(fault === "invalid_launch_receipt" ? { promptId: "unexpected" } : {}),
         });
       }
@@ -83,6 +87,7 @@ function fixture(provider: "modal", fault: Fault = "none") {
             fault === "late_launch" ||
             fault === "unreadable_launch" ||
             fault === "missing_launch_id" ||
+            fault === "malformed_launch_id" ||
             (fault === "recovered_launch" && lookups > 1);
           return Response.json({
             sandboxes: found
@@ -290,18 +295,21 @@ test("expiry reconciles an unreadable successful launch response", async () => {
   expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(1);
 });
 
-test("an empty launch receipt ID leaves the recovered staging journal clean", async () => {
-  const directory = mkdtempSync(join(tmpdir(), "expiry-smoke-"));
-  try {
-    const fake = fixture("modal", "missing_launch_id");
-    const journal = join(directory, "sandboxes.json");
-    expect(await postDeploySmoke({ ...fake.env, ARMADA_SMOKE_JOURNAL: journal }, ["--expiry"], fake.io)).toBe(true);
-    expect(await Bun.file(journal).json()).toEqual([]);
-    expect(fake.reports.find((line) => line.step === "smoke_cleanup_summary")).toMatchObject({
-      pass: true,
-      launchOutcomeUnknown: false,
-    });
-  } finally {
-    rmSync(directory, { recursive: true, force: true });
-  }
-});
+test.each(["missing_launch_id", "malformed_launch_id"] as const)(
+  "an invalid launch receipt ID leaves the recovered staging journal clean (%s)",
+  async (fault) => {
+    const directory = mkdtempSync(join(tmpdir(), "expiry-smoke-"));
+    try {
+      const fake = fixture("modal", fault);
+      const journal = join(directory, "sandboxes.json");
+      expect(await postDeploySmoke({ ...fake.env, ARMADA_SMOKE_JOURNAL: journal }, ["--expiry"], fake.io)).toBe(true);
+      expect(await Bun.file(journal).json()).toEqual([]);
+      expect(fake.reports.find((line) => line.step === "smoke_cleanup_summary")).toMatchObject({
+        pass: true,
+        launchOutcomeUnknown: false,
+      });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  },
+);

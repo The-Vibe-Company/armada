@@ -507,6 +507,7 @@ async function runPostDeploySmoke(
     key: string | undefined,
     timeoutMs: number,
     record: (receipt: unknown) => void,
+    requireSandboxUuid = false,
   ): Promise<T> {
     const remaining = (cleaning ? cleanupDeadline : deadline) - io.now();
     if (remaining <= 0) fail("poll_limit_exceeded");
@@ -562,6 +563,9 @@ async function runPostDeploySmoke(
           });
         throw new SmokeFailure("invalid_response", response.status, undefined, launchResponse);
       }
+      const id = result?.sandbox?.id;
+      if (requireSandboxUuid && (typeof id !== "string" || !SANDBOX_ID.test(id)))
+        throw new SmokeFailure("invalid_response", response.status, undefined, launchResponse);
       // Keep the handle before validating the receipt, as the cleanup journal does.
       record(result);
       if (sandboxLaunch) {
@@ -680,7 +684,7 @@ async function runPostDeploySmoke(
       return launches.track(path, async (record) => {
         const launchBody = { ...body, org: item.org, idempotencyKey: requestKey, externalRef: requestKey };
         try {
-          return await transport<T>(false, path, launchBody, undefined, timeoutMs, record);
+          return await transport<T>(false, path, launchBody, undefined, timeoutMs, record, true);
         } catch (error) {
           if (!(error instanceof SmokeFailure)) throw error;
           const lostReceipt = error.code === "invalid_response" && error.launchResponse !== undefined;
