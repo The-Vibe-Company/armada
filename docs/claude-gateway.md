@@ -49,7 +49,7 @@ and enter a name. Enter the base URL, select **Bearer (Authorization)** or
 **x-api-key** under **Sent as**, and enter the key. Save with **Add account**.
 
 To rotate a gateway key, open the account menu and choose **Replace key**.
-Select **Custom gateway (Modal)** and re-enter the URL, auth method, and key.
+Select **Custom gateway** and re-enter the URL, auth method, and key.
 Choose **Anthropic default endpoint** when switching to the vendor endpoint.
 
 Replacing a key creates a new account revision. Sandboxes bound to the previous
