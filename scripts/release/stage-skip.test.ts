@@ -46,7 +46,7 @@ test("a newer attempt that can replace binary artifacts invalidates the old rece
     conclusion: "success",
     steps: [{ name: `Record release/binaries success (${sha})`, conclusion: "success" }],
   };
-  const writer = { ...recorded, name: "Binary (linux-x64)", run_attempt: 2, steps: [] };
+  const writer = { ...recorded, name: "Release pipeline / Binary (linux-x64)", run_attempt: 2, steps: [] };
   expect(recordedStageSucceeded([recorded, writer], run, "binaries", sha)).toBe(false);
   expect(recordedStageSucceeded([recorded, { ...writer, conclusion: "skipped" }], run, "binaries", sha)).toBe(true);
 });
