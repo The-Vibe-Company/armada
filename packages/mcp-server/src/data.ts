@@ -60,6 +60,7 @@ export interface ServerSandboxPatch extends SandboxPatch {
   retainedRuntimeStop?: string;
   modalRuntimeExtensionTarget?: string;
   runtimeFailureFrom?: "ready" | "running";
+  turnActivity?: "claim" | "finish";
 }
 
 export interface ServerSandboxStore extends SandboxStore {
@@ -761,7 +762,7 @@ export function createSqlData(
           params.push(value);
           sets.push(`${column} = $${params.length}${cast}`);
         };
-        if (patch.advanceGeneration && patch.activityToken) {
+        if ((patch.advanceGeneration || patch.turnActivity === "claim") && patch.activityToken) {
           set("activity_lease_id", patch.activityToken, "::uuid");
           sets.push("activity_until = now() + interval '2 minutes'");
         }
@@ -780,12 +781,14 @@ export function createSqlData(
             );
         }
         if (patch.renewActivity) sets.push("activity_until = now() + interval '2 minutes'");
-        if (patch.finishActivity && patch.expectedGeneration !== undefined && patch.activityToken)
-          sets.push(
-            "activity_lease_id = null",
-            "activity_until = null",
-            "lifecycle_generation = s.lifecycle_generation + 1",
-          );
+        if (
+          (patch.finishActivity || patch.turnActivity === "finish") &&
+          patch.expectedGeneration !== undefined &&
+          patch.activityToken
+        ) {
+          sets.push("activity_lease_id = null", "activity_until = null");
+          if (patch.finishActivity) sets.push("lifecycle_generation = s.lifecycle_generation + 1");
+        }
         if (patch.advanceGeneration && !patch.renewLifecycle)
           sets.push("lifecycle_generation = s.lifecycle_generation + 1");
         if (patch.renewLifecycle) {
@@ -819,6 +822,9 @@ export function createSqlData(
         if (reason !== undefined) set("status_reason", reason, "::text");
         if (sets.length === 0) return;
         let fence = "";
+        if (patch.turnActivity !== undefined)
+          fence += " and s.status in ('ready','running') and s.stop_requested_at is null and s.deleted_at is null";
+        if (patch.turnActivity === "claim") fence += " and s.activity_lease_id is null";
         if (patch.modalRuntimeExtensionTarget !== undefined) {
           if (extensionDeadlineParam === undefined || patch.expectedGeneration === undefined)
             throw new DataError("Modal runtime extension requires a verified deadline and lifecycle generation.");
@@ -874,7 +880,8 @@ export function createSqlData(
           ? "(s.reconcile_lease_until is null or s.reconcile_lease_until < now() or (s.status in ('ready','running') and s.stop_requested_at is null and s.expires_at > clock_timestamp()))"
           : "(s.reconcile_lease_until is null or s.reconcile_lease_until < now())";
         if (supersedeObservation) sets.push("reconcile_lease = null", "reconcile_lease_until = null");
-        const ownsActivity = !!patch.activityToken && (patch.finishActivity || patch.renewActivity);
+        const ownsActivity =
+          !!patch.activityToken && (patch.finishActivity || patch.renewActivity || patch.turnActivity === "finish");
         if (ownsActivity) {
           params.push(patch.activityToken);
           fence += ` and s.activity_lease_id = $${params.length}::uuid`;
@@ -956,7 +963,7 @@ export function createSqlData(
         }
         // Names the writer behind any later refusal's activityLeaseId. Lease IDs are random
         // fences, not credentials.
-        if (admission)
+        if (admission || patch.turnActivity === "claim")
           console.info(
             JSON.stringify({
               event: "sandbox_activity_admitted",

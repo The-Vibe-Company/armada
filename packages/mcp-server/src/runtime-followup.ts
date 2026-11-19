@@ -127,6 +127,7 @@ export function createRuntimeFollowup(
         if (
           !current ||
           current.lifecycleGeneration === undefined ||
+          current.lifecycleGeneration !== found.lifecycleGeneration ||
           !lease ||
           lease.reconciling ||
           !["ready", "running"].includes(current.status) ||
@@ -183,9 +184,8 @@ export function createRuntimeFollowup(
         if (lease.activity_lease_id || saved)
           throw new VaultError("conflict", "Runtime admission is busy or uncertain; reuse the original request_id.");
         await createSqlData(locked)(caller).sandboxes.update(found.id, {
-          status: "running",
+          turnActivity: "claim",
           clearTaskOutcome: true,
-          advanceGeneration: true,
           queueRequestId: requestId,
           activityToken: requestId,
           expectedGeneration: current.lifecycleGeneration,
@@ -217,11 +217,14 @@ export function createRuntimeFollowup(
     if (admitted.replay) return receipt(await submit()); // Validates identical payload; never rewrites a newer task.
     const publishingStore = {
       ...store,
-      update: (id: string, patch: Parameters<typeof store.update>[1]) =>
+      update: (id: string, { finishActivity, ...patch }: Parameters<typeof store.update>[1]) =>
         authority.withOwner(found.id, caller.userId, async (tx, scope) => {
           if (scope.epoch !== admitted.epoch)
             throw new VaultError("conflict", "Runtime epoch changed before publication.");
-          await createSqlData(tx)(caller).sandboxes.update(id, patch);
+          await createSqlData(tx)(caller).sandboxes.update(id, {
+            ...patch,
+            ...(finishActivity ? { turnActivity: "finish" } : {}),
+          });
         }),
     };
     return sandboxActivity(
@@ -250,7 +253,6 @@ export function createRuntimeFollowup(
         return {
           result: receipt(accepted),
           patch: {
-            status: "running",
             taskPromptId: accepted.promptId,
             conversationIds: appendConversation(admitted.current.conversationIds, conversation),
             statusReason: null,
