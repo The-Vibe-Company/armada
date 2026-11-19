@@ -123,7 +123,7 @@ export async function callSharedTool(
     };
   });
   if (!invoke) throw new ToolApiError("internal", `Unknown sandbox tool ${name}.`);
-  const result = await measure("tool_call", invoke);
+  const result = await measure("tool_call", () => boundedToolCall(invoke));
   if (result.isError) {
     const block = (result.content as { type: string; text?: string }[]).find((item) => item.type === "text");
     const marker = (result.content as { type: string; text?: string }[]).find(
@@ -153,4 +153,18 @@ export async function callSharedTool(
   }
   const response: unknown = result.structuredContent;
   return response;
+}
+
+async function boundedToolCall(invoke: () => Promise<CallToolResult>) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      invoke(),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("Sandbox tool request timed out.")), 660_000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }

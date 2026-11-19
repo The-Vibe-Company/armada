@@ -305,6 +305,7 @@ function sandboxOperation<Input extends z.ZodRawShape, Output extends z.ZodRawSh
     output: Output;
     readOnly?: boolean;
     destructive?: boolean;
+    errors?: readonly string[];
   },
 ) {
   return {
@@ -318,19 +319,39 @@ function sandboxOperation<Input extends z.ZodRawShape, Output extends z.ZodRawSh
     destructive: tool.destructive ?? false,
     audience,
     description: tool.description,
-    errors: ["internal"],
+    errors: [
+      "unauthorized",
+      "dependency_unavailable",
+      "invalid",
+      "forbidden",
+      "unavailable",
+      "internal",
+      ...(tool.errors ?? []),
+    ],
   } satisfies Operation<z.ZodType, z.ZodType> & { toolName: string; tool: typeof tool };
 }
 
 export const sandboxOperations = {
   reportSandbox: sandboxOperation("reportSandbox", "/api/v1/sandbox/report", "report", "agent", {
     title: "Report a task outcome",
+    errors: ["not_found", "conflict"],
     description: `Explicit result for the latest finished turn. Call after status confirms settlement; never inferred from message text. A new send clears it. Only the sandbox owner or current org admin may report or read it.`,
     input: { id, prompt_id: z.string().min(1), outcome: taskOutcome },
     output: { id: z.string(), taskOutcome },
   }),
   sendPrompt: sandboxOperation("sendPrompt", "/api/v1/sandbox/send", "send", "agent", {
     title: "Send a prompt",
+    errors: [
+      "not_found",
+      "conflict",
+      "invalid_request",
+      "unsupported",
+      "credential_binding_required",
+      "sandbox_terminal",
+      "sandbox_retention_ended",
+      "rate_limited",
+      "outcome_unknown",
+    ],
     description:
       "Gives the agent its next instruction as a new turn. The first send of an idle sandbox opens its " +
       "conversation and later sends continue it. Launch another sandbox for a separate conversation. To redirect a turn that is " +
@@ -362,6 +383,18 @@ export const sandboxOperations = {
   }),
   steerSandbox: sandboxOperation("steerSandbox", "/api/v1/sandbox/steer", "steer", "public", {
     title: "Steer the running turn",
+    errors: [
+      "not_found",
+      "conflict",
+      "invalid_request",
+      "unsupported",
+      "credential_binding_required",
+      "sandbox_terminal",
+      "sandbox_retention_ended",
+      "no_running_turn",
+      "rate_limited",
+      "outcome_unknown",
+    ],
     description:
       "Redirects the turn that is running now. delivery says how: native joins the turn (Claude Code); " +
       "restart interrupts it and continues the same conversation with this text (Codex). Refused when no " +
@@ -387,6 +420,18 @@ export const sandboxOperations = {
   }),
   interruptSandbox: sandboxOperation("interruptSandbox", "/api/v1/sandbox/interrupt", "interrupt", "public", {
     title: "Interrupt the running turn",
+    errors: [
+      "not_found",
+      "conflict",
+      "invalid_request",
+      "unsupported",
+      "credential_binding_required",
+      "sandbox_terminal",
+      "sandbox_retention_ended",
+      "no_running_turn",
+      "rate_limited",
+      "outcome_unknown",
+    ],
     description: "Interrupts the sandbox's running turn. The sandbox stays up for the next send.",
     input: {
       id,
@@ -402,6 +447,17 @@ export const sandboxOperations = {
   }),
   execSandbox: sandboxOperation("execSandbox", "/api/v1/sandbox/exec", "exec", "agent", {
     title: "Run a command",
+    errors: [
+      "not_found",
+      "conflict",
+      "invalid_request",
+      "unsupported",
+      "credential_binding_required",
+      "sandbox_terminal",
+      "sandbox_retention_ended",
+      "rate_limited",
+      "outcome_unknown",
+    ],
     description:
       "Runs a shell command in the sandbox (cwd /home/user by default) and returns its output. Output that " +
       "contains the agent's credentials is redacted. Use it to inspect the repos, not to drive the agent.",
@@ -429,6 +485,7 @@ export const sandboxOperations = {
   }),
   stopSandbox: sandboxOperation("stopSandbox", "/api/v1/sandbox/stop", "stop", "agent", {
     title: "Stop a sandbox",
+    errors: ["not_found", "conflict", "rate_limited", "outcome_unknown"],
     description:
       "Stops the machine. Modal keeps its disk only if checkpoint succeeds; fallback termination returns " +
       "checkpoint_failed_disk_not_retained and cannot resume. Other retained stops can resume on send. Use it when the " +
@@ -455,6 +512,7 @@ export const sandboxOperations = {
   }),
   sandboxStatus: sandboxOperation("sandboxStatus", "/api/v1/sandbox/status", "status", "agent", {
     title: "Sandbox status",
+    errors: ["not_found", "conflict", "rate_limited"],
     description:
       "Where a sandbox and its latest turn are. Modal uses authorized stored observations; physical state is refreshed by the lifecycle worker. Boat is read live. prompt.state is " +
       "queued (accepted by a starting Docker sandbox, not yet admitted by its runtime), running, finished, interrupted or failed; failed includes a usage limit or an expired login, with " +
@@ -474,6 +532,7 @@ export const sandboxOperations = {
   }),
   waitSandbox: sandboxOperation("waitSandbox", "/api/v1/sandbox/wait", "wait", "public", {
     title: "Wait for the agent",
+    errors: ["not_found", "conflict", "rate_limited"],
     description:
       `Blocks until the agent settles (its turn finished, failed or was interrupted, or the machine stopped) ` +
       `or the timeout passes, then answers like status with timedOut. Default ${DEFAULT_WAIT_SECONDS}s, ` +

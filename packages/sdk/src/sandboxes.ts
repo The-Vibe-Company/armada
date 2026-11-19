@@ -26,9 +26,6 @@ export function sandboxClient(
     "bind-credential"<T>(body: unknown, options?: RequestOptions): Promise<T> {
       return post("sandbox/bind-credential", body, false, options);
     },
-    detail<T>(body: unknown, options?: RequestOptions): Promise<T> {
-      return post("sandbox/status", body, true, options);
-    },
     exec<T>(body: unknown, options?: RequestOptions): Promise<T> {
       return post("sandbox/exec", body, false, options);
     },
