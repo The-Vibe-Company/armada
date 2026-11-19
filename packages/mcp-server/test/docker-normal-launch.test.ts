@@ -3480,14 +3480,15 @@ test("snapshot admission requires a protocol-aware host poll", async () => {
   expect((await create())?.status).toBe(200);
 });
 
-test("a verified receipt reaches the snapshot through the daemon result route", async () => {
+test("a verified receipt publishes an organization snapshot through the daemon result route", async () => {
   const f = await snapshotFixture();
   const requestId = randomUUID();
-  await f.snapshots.command(f.caller, "create", {
+  await f.snapshots.command(f.adminCaller, "create", {
     org: f.actor.orgId,
     hostId: f.hostId,
     requestId,
     name: "mixed-replicas",
+    visibility: "org",
     config: f.config,
   });
   const job = await hosts.poll(f.hostToken, f.installationId);
@@ -3515,7 +3516,7 @@ test("a verified receipt reaches the snapshot through the daemon result route", 
     },
   );
   expect(await f.snapshots.command(f.caller, "get", { org: f.actor.orgId, id: requestId })).toMatchObject({
-    snapshot: { status: "ready", baselineVersion: 1 },
+    snapshot: { status: "ready", visibility: "org", baselineVersion: 1 },
   });
 });
 
