@@ -71,7 +71,8 @@ const idleLane: LaneFactory = ({ sql, config, runtimeCheckpoint, idleDelayMs, do
       : {}),
   });
 
-const jobsLane: LaneFactory = ({ jobs, options }) => createJobsRunner(jobs, {}, options.logError);
+const jobsLane: LaneFactory = ({ jobs, options, webhooks }) =>
+  createJobsRunner(jobs, { webhook: { concurrency: 1, run: webhooks.run } }, options.logError);
 const dockerCleanupLane: LaneFactory = ({ sql, config }) => createFinishedDockerCleanup(sql, config.encryptionKey);
 export const retentionWorker =
   ({ sql, control }: ServerServices) =>
@@ -104,7 +105,6 @@ export const jobsModule: ServerModule = ({ workers }) => {
 export const outputModule: ServerModule = ({ mounts, workers }) => {
   mounts.push(outputMounts);
   workers.managed.set("outputs", ({ outputs }) => outputs);
-  workers.managed.set("webhooks", ({ webhooks }) => webhooks);
 };
 export const nativeModule: ServerModule = ({ workers }) => {
   workers.managed.set("native-prompts", ({ nativePrompts }) => nativePrompts);
