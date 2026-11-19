@@ -210,6 +210,25 @@ test.each([
     },
   },
   {
+    type: "model/rerouted",
+    data: {
+      threadId: "thread-prefixvalue",
+      turnId: "turn-fixture",
+      fromModel: "prefixvalue",
+      toModel: "model-fixture",
+      reason: "prefixvalue",
+      prefixlongfixture: 3,
+    },
+    masked: {
+      threadId: "thread-prefix[REDACTED]",
+      turnId: "turn-fixture",
+      fromModel: "prefix[REDACTED]",
+      toModel: "model-fixture",
+      reason: "prefix[REDACTED]",
+      "prefix[REDACTED]": 3,
+    },
+  },
+  {
     type: "result",
     data: {
       subtype: "success",
