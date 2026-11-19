@@ -3,6 +3,7 @@ import { createdInboundTrigger, createInboundTriggerBody, createInboundTriggerQu
 import { launchInput } from "./launch.ts";
 import { launchOutput } from "./launch-response.ts";
 import { sandboxOperations } from "./sandbox.ts";
+import { sandboxCheckOperations } from "./sandbox-checks.ts";
 import { launchOptionsOperation, readLogsOperation } from "./sandbox-reads.ts";
 import { sandboxRestOperations } from "./sandbox-rest.ts";
 
@@ -18,6 +19,7 @@ export {
   sandboxOperations,
 } from "./sandbox.ts";
 
+export { sandboxCheckOperations } from "./sandbox-checks.ts";
 export { launchOptionsOperation, MAX_LOG_PAGES, readLogsOperation } from "./sandbox-reads.ts";
 export { sandboxExtensionLifetime, sandboxRestOperations } from "./sandbox-rest.ts";
 
@@ -64,6 +66,7 @@ export const operations = {
   createInboundTrigger,
   ...sandboxOperations,
   ...sandboxRestOperations,
+  ...sandboxCheckOperations,
   launchOptions: launchOptionsOperation,
   readLogs: readLogsOperation,
 } as const;
