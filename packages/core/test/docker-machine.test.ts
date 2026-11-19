@@ -71,7 +71,11 @@ function fixture(
         }
       });
       if (action === "ls") {
-        return { exitCode: 0, stdout: [...store.keys()].map((name) => JSON.stringify(name)).join("\n") };
+        const rows =
+          kind === "container" && value("--format") === "{{.ID}}"
+            ? [...containers.values()].map((container) => container.Id)
+            : [...store.keys()].map((name) => JSON.stringify(name));
+        return { exitCode: 0, stdout: rows.join("\n") };
       }
       if (action === "inspect") return { exitCode: store.has(last) ? 0 : 1, stdout: JSON.stringify([store.get(last)]) };
       if (action === "create" && kind === "volume") {
@@ -670,6 +674,7 @@ test("physical-only deletion preserves the workspace across replay and refuses a
   await f.executor.delete(request, target);
   expect(f.containers.has(containerName)).toBe(false);
   expect(f.volumes.has(volumeName)).toBe(true);
+  expect(f.calls.find(({ argv }) => argv[0] === "container" && argv[1] === "rm")?.argv.at(-1)).toBe(target.machineId);
 
   await f.executor.delete(request, target);
   expect(f.volumes.has(volumeName)).toBe(true);
@@ -677,5 +682,19 @@ test("physical-only deletion preserves the workspace across replay and refuses a
   await f.executor.create(request);
   await expect(f.executor.delete(request, target)).rejects.toMatchObject({ code: "ownership_mismatch" });
   expect(f.containers.has(containerName)).toBe(true);
+  expect(f.volumes.has(volumeName)).toBe(true);
+});
+
+test("physical-only deletion refuses to confirm absence when the target was renamed", async () => {
+  const f = fixture();
+  const { containerName, volumeName } = await f.executor.create(request);
+  const container = f.containers.get(containerName);
+  f.containers.delete(containerName);
+  f.containers.set("renamed", { ...container, Name: "/renamed" });
+
+  await expect(f.executor.delete(request, { scope: "physical-only", machineId: container.Id })).rejects.toMatchObject({
+    code: "ownership_mismatch",
+  });
+  expect(f.containers.has("renamed")).toBe(true);
   expect(f.volumes.has(volumeName)).toBe(true);
 });
