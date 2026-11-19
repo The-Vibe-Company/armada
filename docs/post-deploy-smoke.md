@@ -565,7 +565,7 @@ Use dedicated/exclusive staging smoke actors/cases, clean secretless snapshots,
 named account UUIDs, and a staging public MCP URL; no production origins/sessions.
 No migrations/new credentials/case fields. Offline tests are not live receipts.
 
-### Legacy GitHub repair
+### Runtime GitHub refresh
 
 Both staging entrypoints add `--github-refresh`, requiring `--lifecycle`
 and excluding managed-runtime test modes. It reuses the
@@ -574,11 +574,10 @@ recorded immediately before the new `github_launch_access` read-only git
 probe. This proves origin access before the first model turn or explicit
 repair, so a later repair cannot mask broken launch access.
 
-The Boat-only successful refresh/idempotency phase is deleted. Modal retains
-its existing unsupported-refusal check; its positive legacy-refresh proof is
-explicitly skipped with not_part_of_release_gate. Do not add a Boat worker to
-satisfy this phase. A new positive Modal refresh capability would require its
-own implementation/proof, not renaming the old Boat probe.
+The `github_refresh` step requires a successful Armada runtime configuration
+receipt for the same sandbox, with a GitHub login, runtime epoch and configuration
+revision. The smoke journal records only whether validation passed. Token
+renewal after expiry is covered separately from this receipt check.
 
 ### Ordinary expiry-as-stop
 
