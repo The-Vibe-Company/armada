@@ -211,8 +211,8 @@ export class Journal {
     return rows.map((r) => ({ sequence: r.seq, event: JSON.parse(r.body) as AgentEvent }));
   }
 
-  redactEvent(event: AgentEvent): AgentEvent {
-    return JSON.parse(this.eventBody(event, false));
+  redactEvent(event: AgentEvent) {
+    return JSON.parse(this.eventBody(event, false)) as AgentEvent;
   }
 
   highWatermark(): number {
