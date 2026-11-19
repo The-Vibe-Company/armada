@@ -282,8 +282,6 @@ export async function readStatus(
 
   const runtime = runtimeBridgeTarget(sandbox);
   const liveRuntime = runtime && (sandbox.status === "ready" || sandbox.status === "running");
-  // Only a terminal observation of an enrolled machine can publish here.
-  // Enrolment and the lifecycle worker own the other machine transitions.
   if (runtime && !(liveRuntime && (info.state === "failed" || info.state === "stopped"))) {
     const status = liveRuntime && info.state === "stopping" ? "stopping" : sandbox.status;
     return report(sandbox, status, info, prompt, info.expiresAt ?? null);
