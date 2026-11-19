@@ -170,6 +170,7 @@ test.each(["bash", "zsh", "fish"])(
     expect(completion([shell], f.auth)).toBe(0);
     expect(f.output()).toContain("armada");
     expect(f.output()).toContain("launch");
+    expect(f.output()).toContain("keep-after-merge");
     expect(f.paths).toEqual([]);
   },
 );

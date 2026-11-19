@@ -27,12 +27,34 @@ import { control } from "./control.ts";
 import { invitationCommand } from "./invitation-commands.ts";
 import { validateNativeCodexAuth } from "./native-login-protocol.ts";
 import { nativeCodexLogin } from "./native-model-login.ts";
+import type { Deps } from "./run.ts";
+import { promptSecret } from "./secret-input.ts";
 
 export interface VaultIo {
   auth: AuthIo;
   readFile: (path: string) => Promise<string>;
   /** The secret from piped stdin or a hidden terminal prompt. */
   readStdin: () => Promise<string>;
+}
+
+export function vaultIo(auth: AuthIo, deps: Pick<Deps, "readFile" | "readStdin">, strictUtf8 = false) {
+  return {
+    auth,
+    readFile:
+      deps.readFile ??
+      (async (path) =>
+        strictUtf8
+          ? new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(await Bun.file(path).arrayBuffer())
+          : Bun.file(path).text()),
+    readStdin:
+      deps.readStdin ??
+      (async () => {
+        if (process.stdin.isTTY) return promptSecret();
+        return strictUtf8
+          ? new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(await Bun.stdin.arrayBuffer())
+          : Bun.stdin.text();
+      }),
+  } satisfies VaultIo;
 }
 
 export async function orgCommand(argv: readonly string[], io: VaultIo): Promise<number> {
