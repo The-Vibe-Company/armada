@@ -1,4 +1,5 @@
 import type { ApplicationVaultActor } from "./application-vault.ts";
+import { skillDefaultOperations } from "./contract/skill-defaults.ts";
 import type { GoldenActor, GoldenRecord } from "./golden.ts";
 import type { Sql } from "./golden-store.ts";
 import { validateSkillPins } from "./skillpack.ts";
@@ -6,21 +7,8 @@ import { VaultError } from "./vault-error.ts";
 
 type Scope = "personal" | "org" | "golden";
 type GoldenAccess = { id: string; visibility: "private" | "org"; owner_id: string };
-const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function invalid(): never {
   throw new VaultError("invalid", "Invalid skill defaults request.");
-}
-function identifier(value: unknown): string {
-  if (typeof value !== "string" || !uuid.test(value)) invalid();
-  return value;
-}
-function pins(value: unknown): string[] {
-  try {
-    validateSkillPins(value);
-  } catch {
-    invalid();
-  }
-  return [...(value as string[])];
 }
 
 /** Service-owned writes; personal defaults belong to the user, not the selected organization. */
@@ -79,16 +67,14 @@ export function createSkillDefaultsService(sql: Sql) {
       operation: string,
       input: Record<string, unknown>,
     ): Promise<{ skills: string[] }> {
-      if (!input || typeof input !== "object" || Array.isArray(input)) invalid();
       if (operation !== "get" && operation !== "set") invalid();
-      const allowed = operation === "set" ? ["org", "scope", "goldenId", "skills"] : ["org", "scope", "goldenId"];
-      if (Object.keys(input).some((key) => !allowed.includes(key))) invalid();
-      const orgId = identifier(input.org);
-      const scope = input.scope;
-      if (scope !== "personal" && scope !== "org" && scope !== "golden") invalid();
-      if (scope !== "golden" && Object.hasOwn(input, "goldenId")) invalid();
-      const goldenId = scope === "golden" ? identifier(input.goldenId) : undefined;
-      const skills = operation === "set" ? pins(input.skills) : undefined;
+      const schema =
+        operation === "set" ? skillDefaultOperations.setSkillDefaults : skillDefaultOperations.readSkillDefaults;
+      const parsed = schema.input.body.safeParse(input);
+      if (!parsed.success) invalid();
+      const { org: orgId, scope } = parsed.data;
+      const goldenId = "goldenId" in parsed.data ? parsed.data.goldenId : undefined;
+      const skills = "skills" in parsed.data ? parsed.data.skills : undefined;
       if (!actor.orgs.some((org) => org.orgId === orgId))
         throw new VaultError("forbidden", "Skill defaults access denied.");
       return transaction(async (tx) => {
@@ -96,7 +82,7 @@ export function createSkillDefaultsService(sql: Sql) {
         const golden = goldenId ? await goldenAccess(tx, actor.userId, orgId, goldenId) : undefined;
         if (operation === "set" && (scope === "org" || golden?.visibility === "org") && role !== "admin")
           throw new VaultError("forbidden", "Skill defaults administrator permission required.");
-        const key = scope === "personal" ? actor.userId : scope === "org" ? orgId : identifier(goldenId);
+        const key = scope === "personal" ? actor.userId : (goldenId ?? orgId);
         if (skills) {
           const target = targets[scope];
           await tx.query(
