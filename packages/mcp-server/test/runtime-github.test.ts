@@ -4,7 +4,7 @@ import { GitHubBroker } from "../../agent-runtime/src/github-broker.ts";
 import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
 import { createRuntimeGitHub } from "../src/runtime-github.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { runtimeFixture } from "./runtime-fixture.ts";
+import { runtimeFixture } from "./runtime.fixture.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();

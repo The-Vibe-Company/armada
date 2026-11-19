@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
-import { runtimeFixture } from "./runtime-fixture.ts";
+import { runtimeFixture } from "./runtime.fixture.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
 let f: Awaited<ReturnType<typeof runtimeFixture>>;

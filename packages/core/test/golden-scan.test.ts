@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import type { ExecRequest, Provider } from "../src/server.ts";
 import { scanGoldenSandbox } from "../src/server.ts";
-import { capturedScript, provider } from "./golden-scan-fixture.ts";
+import { capturedScript, provider } from "./golden-scan.fixture.ts";
 
 test("execs one bounded, foreground command in the sandbox", async () => {
   const calls: ExecRequest[] = [];

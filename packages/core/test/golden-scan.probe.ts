@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExecRequest, Provider } from "../src/server.ts";
 import { goldenScript, scanGoldenSandbox, withGoldenDirs } from "../src/server.ts";
-import { capturedScript } from "./golden-scan-fixture.ts";
+import { capturedScript } from "./golden-scan.fixture.ts";
 
 // This is the actual remote Linux scanner: Bash 4+ associative arrays and GNU grep/find.
 // macOS Bash 3.2 cannot execute it; Linux CI retains every filesystem/history/diagnostic oracle.

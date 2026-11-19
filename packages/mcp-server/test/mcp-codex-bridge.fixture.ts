@@ -2,8 +2,6 @@ import { lstat, mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { nativeCwdCommand, nativeCwdInstallScript } from "../../provider-boat/src/native-cwd.ts";
 
-/** Same bounded privilege fixture as provider-boat/native-cwd: run only the expected sudo
- * shape against this test's owned temporary tree, without requesting host elevation. */
 export async function installEnvironment(home: string) {
   const bin = join(home, "fixture-bin");
   await mkdir(bin, { recursive: true });
@@ -25,8 +23,6 @@ exec /bin/bash -c "$4"
   };
 }
 
-/** The protocol bridge is portable; VM installer locking/atomic rename are Linux-only and
- * tested at their own boundary. macOS runs the real generated command in an owned fixture. */
 export async function installProtocolWrapper(path: string, install: (script: string) => Promise<void>) {
   if (process.platform === "linux") return install(nativeCwdInstallScript(path, nativeCwdCommand(path, "codex")));
   const original = `${path}.armada-original`;
