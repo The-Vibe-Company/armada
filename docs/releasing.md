@@ -90,15 +90,26 @@ If production Armada cannot launch a repair worker, use the
 `Actions → Release → Run workflow` defaults to a dry run from the selected ref. It builds,
 packs and smoke-tests every platform, then runs `npm publish --dry-run`.
 
-To recover a release, dispatch from `main` with the **version** and full **sha**.
-The workflow validates the source on main and reruns the release gates. For
-published versions, both inputs must match the latest stable tag and its commit.
-Recovery uses the executing workflow's tooling and the selected SHA's source.
-It skips npm versions already published. See [Tag last](#tag-last).
+Use **Re-run failed jobs** to resume the same workflow revision. If the workflow
+or its tooling needs a fix, dispatch from `main` with the **version** and full
+**sha** of the original release. Recovery uses the selected SHA's source and
+the dispatch revision's tooling. A tooling-only recovery of the same SHA
+reuses the version. Once a version is published, releasing changed source
+requires a new version. See [Tag last](#tag-last).
 
-The `npm-tarballs-<version>-<target>` Actions artifacts contain the exact packed packages and
-per-target `SHA256SUMS-<target>` manifests.
-Do not rebuild or substitute tarballs during a bootstrap or recovery.
+Each successful stage records its run URL as a commit status on the release SHA:
+`release/check`, `release/binaries`, `release/staging-smoke`,
+`release/production` and `release/npm`. Recovery logs the receipts it finds.
+A matching staging receipt also proves the immutable image digest. When the
+binary artifacts are still available, recovery downloads the original image
+pin and the smoke-tested npm tarballs and verifies the checksum manifests.
+If those artifacts have expired, recovery rebuilds and smoke-tests packages
+from the selected SHA before publishing them.
+
+When staging or production stopped mid-deploy, recovery keeps the exact-source
+migration checks. It reuses the server if the latest Railway deployment
+succeeded and live health reports the selected version and SHA. It reuses the
+dashboard if Vercel's ready production target reports the selected SHA.
 
 ## Installation and migration
 
@@ -543,7 +554,7 @@ The release sequence follows the design in [#2838](https://github.com/The-Vibe-C
    supplies the tag's commit SHA to the
    [commit scan](https://github.com/googleapis/release-please/blob/891bcf6253b390e39df9ff3e1c059a836bd39c98/src/manifest.ts#L541-L675).
 3. **Build and smoke before publishing.** Push the sandbox image as
-   `:<version>-rc.<sha7>`. Carry the full SHA and immutable registry digest
+   `:<version>-rc.<full-sha>` if it does not already exist. Carry the full SHA and immutable registry digest
    in workflow evidence. The binaries embed `<registry>@sha256:<digest>` via
    `official-sandbox-image.json`, and staging smokes that pin. After the smoke
    passes, promote from the tested digest with
@@ -598,14 +609,13 @@ Dispatch the **Release** workflow from main with `version` and a full commit
 [Actions dispatch](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow#running-a-workflow)
 selects the workflow ref independently of its input values. Validate the SHA
 belongs to main, contains the matching version PR merge and has that version
-in source. Use the selected SHA for source and builds. Continue the existing
-[workflow-revision checkout for recovery tooling](../.github/workflows/release.yml#L541-L546)
-so a tooling fix on main can recover an older source SHA. Before publication,
-repeat validation and exact-source smoke for the selected SHA. If a tag
-exists without a release, require that exact SHA and smoke it again before
-creating the release. If the release already exists, both inputs must match
-the latest stable tag and its peeled commit. Reuse its published image digest,
-repair any interrupted label update and retry the protected downstream steps.
+in source. Use the selected SHA for source and builds. The workflow reuses
+completed stages using the [release stage receipts](#dry-runs-and-recovery).
+If a tag exists without a release, require its exact SHA and ensure staging
+has passed for that SHA and image before creating the release. If the release
+already exists, both inputs must match the latest stable tag and its peeled
+commit. Verify its published image digest, repair any interrupted label
+update and resume the protected downstream steps.
 A different SHA after publication requires a new version.
 
 ### Tag-last acceptance ledger (#2839)

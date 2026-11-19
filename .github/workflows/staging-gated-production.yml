@@ -18,6 +18,11 @@ on:
         type: boolean
         default: false
 
+      image_digest:
+        description: Immutable image digest covered by the pinned release smoke
+        type: string
+        default: ""
+
 permissions:
   contents: read
   actions: read
@@ -75,6 +80,7 @@ jobs:
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
       ARMADA_SERVER_URL: ${{ secrets.ARMADA_SERVER_URL }}
       RELEASE_SHA: ${{ inputs.source_sha || github.sha }}
+      RELEASE_RESUME: ${{ inputs.source_sha != '' && 'true' || 'false' }}
       STAGING_FORWARD_HISTORY: 'true'
       STAGING_EXACT_HISTORY: ${{ inputs.source_sha != '' && 'true' || 'false' }}
       STAGING_LATEST_ONLY: ${{ inputs.source_sha == '' && 'true' || 'false' }}
@@ -239,3 +245,13 @@ jobs:
           fi
           bun .release-tools/scripts/release/staging-status.ts \
             "$RUNNER_TEMP/armada-smoke.jsonl" "$RUNNER_TEMP/dashboard-smoke.jsonl"
+
+      - name: Record release/staging-smoke success
+        if: inputs.source_sha != '' && steps.smoke.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_DIGEST: ${{ inputs.image_digest }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$RELEASE_SHA" -f state=success \
+            -f context=release/staging-smoke -f description="${IMAGE_DIGEST:-none}" \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"

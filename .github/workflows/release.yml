@@ -162,7 +162,16 @@ jobs:
     if: ${{ !cancelled() && needs.publication-intent.result == 'success' && (needs.publication-intent.outputs.mode == 'dry-run' || (needs.publication-intent.outputs.publish == 'true' && needs.release-configuration.result == 'success')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      statuses: read
     outputs:
+      check-run: ${{ steps.receipts.outputs.check }}
+      binary-run: ${{ steps.artifacts.outputs.run }}
+      staging-digest: ${{ steps.receipts.outputs.staging-digest }}
+      production-run: ${{ steps.receipts.outputs.production }}
+      npm-run: ${{ steps.receipts.outputs.npm }}
       version: ${{ steps.version.outputs.version }}
       dist_tag: ${{ steps.version.outputs.dist_tag }}
       publish: ${{ steps.version.outputs.publish }}
@@ -194,9 +203,59 @@ jobs:
             echo "publish=$PUBLISH"
           } >> "$GITHUB_OUTPUT"
 
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        if: steps.version.outputs.publish == 'true'
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .release-tools
+          sparse-checkout: scripts/release
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+        if: steps.version.outputs.publish == 'true'
+      - name: Read exact-source release stage receipts
+        id: receipts
+        if: steps.version.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ steps.version.outputs.sha }}
+        run: |
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/commits/$RELEASE_SHA/status?per_page=100" \
+            | jq -e --arg sha "$RELEASE_SHA" '
+                if length > 0 and all(.[]; .sha == $sha)
+                then {sha: $sha, statuses: [.[].statuses[]]}
+                else error("Release status response did not match source SHA") end' \
+            | bun .release-tools/scripts/release/stage-skip.ts receipts
+      - name: Check reusable binary artifacts
+        id: artifacts
+        if: steps.receipts.outputs.binaries != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BINARY_RUN: ${{ steps.receipts.outputs.binaries }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          artifacts=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BINARY_RUN/artifacts?per_page=100")
+          required=()
+          for target in darwin-arm64 darwin-x64 linux-arm64 linux-x64; do
+            required+=("armada-$target" "npm-tarballs-$VERSION-$target")
+          done
+          if [[ -f images/sandbox/Dockerfile ]]; then required+=(official-sandbox-image); fi
+          for name in "${required[@]}"; do
+            if ! jq -e --arg name "$name" 'any(.artifacts[]; .name == $name and .expired == false)' <<< "$artifacts" >/dev/null; then
+              echo "::notice::Binary receipt artifacts are unavailable; rebuilding binaries."
+              exit 0
+            fi
+          done
+          echo "::notice::Skipping release/binaries using artifacts from run $BINARY_RUN."
+          echo "run=$BINARY_RUN" >> "$GITHUB_OUTPUT"
+
   check:
     name: Check the release contracts
     needs: release-metadata
+    if: needs.release-metadata.outputs.check-run == ''
+    permissions:
+      contents: read
+      statuses: write
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
@@ -268,11 +327,21 @@ jobs:
           sudo unshare --pid --fork --mount-proc "$(which bun)" packages/provider-modal/test/checkpoint-process-conformance.ts
           sudo unshare --pid --fork --mount-proc "$(which bun)" packages/provider-modal/test/checkpoint-process-conformance.ts --native-pidfds
 
+      - name: Record release/check success
+        if: needs.release-metadata.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ needs.release-metadata.outputs.sha }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$RELEASE_SHA" -f state=success \
+            -f context=release/check -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
   sandbox-image:
     name: Build candidate sandbox image (linux/amd64)
     outputs:
       enabled: ${{ steps.foundation.outputs.enabled }}
       digest: ${{ steps.image.outputs.digest }}
+      staged: ${{ steps.staging-receipt.outputs.staged }}
       sha: ${{ needs.release-metadata.outputs.sha }}
       publish: ${{ needs.release-metadata.outputs.publish }}
     needs: [release-metadata, publication-intent]
@@ -280,6 +349,7 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+      actions: read
       packages: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -302,6 +372,13 @@ jobs:
           path: .release-tools
           sparse-checkout: scripts/release
           persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: steps.foundation.outputs.enabled == 'true' && needs.release-metadata.outputs.binary-run != ''
+        with:
+          name: official-sandbox-image
+          path: packages/core/src
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.release-metadata.outputs.binary-run }}
       - id: image
         name: Record the immutable candidate or published digest
         if: steps.foundation.outputs.enabled == 'true'
@@ -310,16 +387,25 @@ jobs:
           VERSION: ${{ needs.release-metadata.outputs.version }}
           SHA: ${{ needs.release-metadata.outputs.sha }}
           MODE: ${{ needs.publication-intent.outputs.mode }}
+          BINARY_RUN: ${{ needs.release-metadata.outputs.binary-run }}
         run: |
           set -euo pipefail
           registry=ghcr.io/the-vibe-company/armada-sandbox
-          if [[ "$MODE" == recover ]]; then
+          candidate="$VERSION-rc.$SHA"
+          if [[ -n "$BINARY_RUN" ]]; then
+            pin=$(jq -er --arg version "$VERSION" 'select(.version == $version) | .image' packages/core/src/official-sandbox-image.json)
+            [[ "$pin" == "$registry"@* ]]
+            digest="${pin#*@}"
+          elif [[ "$MODE" == recover ]]; then
             digest=$(IMAGE_TAG="$VERSION" python3 .release-tools/scripts/release/sandbox-image-digest.py)
           else
+            digest=$(IMAGE_TAG="$candidate" python3 .release-tools/scripts/release/sandbox-image-digest.py)
+          fi
+          if [[ "$MODE" != recover && -z "$BINARY_RUN" && -z "$digest" ]]; then
             echo "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
             trap 'docker logout ghcr.io' EXIT
             docker buildx build --platform linux/amd64 --file images/sandbox/Dockerfile \
-              --tag "$registry:$VERSION-rc.${SHA:0:7}" --push --metadata-file /tmp/sandbox-metadata.json .
+              --tag "$registry:$candidate" --push --metadata-file /tmp/sandbox-metadata.json .
             digest=$(jq -er '."containerimage.digest"' /tmp/sandbox-metadata.json)
           fi
           [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
@@ -334,10 +420,22 @@ jobs:
           if-no-files-found: error
           overwrite: true
 
+      - name: Check staging receipt against this run's image
+        id: staging-receipt
+        env:
+          RECORDED_DIGEST: ${{ needs.release-metadata.outputs.staging-digest }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          if [[ "$RECORDED_DIGEST" == "${IMAGE_DIGEST:-none}" ]]; then
+            echo "::notice::Skipping release/staging-smoke using the recorded success for this source and image."
+            echo "staged=true" >> "$GITHUB_OUTPUT"
+          fi
+
   # As in CI, each binary is compiled and run on its own platform (macOS signs it ad hoc there).
   binary:
     name: Binary (${{ matrix.target }})
     needs: [release-metadata, sandbox-image]
+    if: needs.release-metadata.outputs.binary-run == ''
     strategy:
       fail-fast: false
       matrix:
@@ -400,8 +498,25 @@ jobs:
           if-no-files-found: error
           overwrite: true
 
+  record-binaries:
+    name: Record the complete binary matrix
+    needs: [release-metadata, binary]
+    if: needs.release-metadata.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      statuses: write
+    steps:
+      - name: Record release/binaries success
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ needs.release-metadata.outputs.sha }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$RELEASE_SHA" -f state=success \
+            -f context=release/binaries -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
   staging-smoke:
-    # The reusable job declares these scopes. Its pinned path skips reporting.
+    # The reusable job declares these scopes and records pinned smoke separately.
     permissions:
       contents: read
       actions: read
@@ -409,17 +524,23 @@ jobs:
       statuses: write
     name: Smoke exact release commit on staging
     needs: sandbox-image
-    if: needs.sandbox-image.outputs.publish == 'true'
+    if: needs.sandbox-image.outputs.publish == 'true' && needs.sandbox-image.outputs.staged != 'true'
     uses: ./.github/workflows/staging-gated-production.yml
     with:
       source_sha: ${{ needs.sandbox-image.outputs.sha }}
       official_image: ${{ needs.sandbox-image.outputs.enabled == 'true' }}
+      image_digest: ${{ needs.sandbox-image.outputs.digest }}
     secrets: inherit
 
   finalize-release:
     name: Publish the smoked image, tag and GitHub release
-    needs: [release-metadata, check, sandbox-image, binary, staging-smoke]
-    if: needs.release-metadata.outputs.publish == 'true'
+    needs: [release-metadata, check, sandbox-image, record-binaries, staging-smoke]
+    if: >-
+      !cancelled() && needs.release-metadata.outputs.publish == 'true' &&
+      needs.sandbox-image.result == 'success' &&
+      (needs.check.result == 'success' || (needs.check.result == 'skipped' && needs.release-metadata.outputs.check-run != '')) &&
+      (needs.record-binaries.result == 'success' || (needs.record-binaries.result == 'skipped' && needs.release-metadata.outputs.binary-run != '')) &&
+      (needs.staging-smoke.result == 'success' || (needs.staging-smoke.result == 'skipped' && needs.sandbox-image.outputs.staged == 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -476,8 +597,9 @@ jobs:
     permissions:
       contents: read
       actions: read
+      statuses: write
     needs: [release-metadata, finalize-release]
-    if: needs.release-metadata.outputs.publish == 'true'
+    if: needs.release-metadata.outputs.publish == 'true' && needs.release-metadata.outputs.production-run == ''
     runs-on: ubuntu-latest
     timeout-minutes: 40
     environment: production
@@ -556,20 +678,34 @@ jobs:
       - name: Migrate, deploy server, wait healthy, then deploy prebuilt dashboard
         env:
           RELEASE_ENVIRONMENT: production
+          RELEASE_RESUME: 'true'
         run: bash .release-tools/scripts/release/deploy-production.sh
+      - name: Record release/production success
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ needs.release-metadata.outputs.sha }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$RELEASE_SHA" -f state=success \
+            -f context=release/production -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
       - name: Report stopped release
         if: failure()
         run: echo "::error::Release stopped; do not deploy later stages manually. See docs/releasing.md for partial-release recovery."
 
   publish:
     name: Publish to npm
-    needs: [release-metadata, check, binary, production]
-    if: ${{ !cancelled() && needs.release-metadata.result == 'success' && needs.check.result == 'success' && needs.binary.result == 'success' && (needs.production.result == 'success' || (needs.production.result == 'skipped' && needs.release-metadata.outputs.publish != 'true')) }}
+    needs: [release-metadata, check, binary, finalize-release, production]
+    if: >-
+      !cancelled() && needs.release-metadata.result == 'success' && needs.release-metadata.outputs.npm-run == '' &&
+      ((needs.finalize-release.result == 'success' &&
+        (needs.production.result == 'success' || (needs.production.result == 'skipped' && needs.release-metadata.outputs.production-run != ''))) ||
+       (needs.release-metadata.outputs.publish != 'true' && needs.check.result == 'success' && needs.binary.result == 'success'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: npm
     permissions:
       contents: read
+      actions: read
+      statuses: write
       id-token: write # npm Trusted Publishing and provenance
     env:
       VERSION: ${{ needs.release-metadata.outputs.version }}
@@ -591,6 +727,8 @@ jobs:
       - run: npm --version
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.release-metadata.outputs.binary-run || github.run_id }}
           pattern: npm-tarballs-${{ needs.release-metadata.outputs.version }}-*
           path: dist/tarballs
           merge-multiple: true
@@ -608,3 +746,12 @@ jobs:
           shasum -a 256 -- "$main" "$sdk" "${platforms[@]}" > SHA256SUMS.actual
           LC_ALL=C sort SHA256SUMS.actual | diff -u <(LC_ALL=C sort SHA256SUMS) -
           bash ../../.release-tools/scripts/publish-npm.sh "$main" "$sdk" "${platforms[@]}"
+
+      - name: Record release/npm success
+        if: needs.release-metadata.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ needs.release-metadata.outputs.sha }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$RELEASE_SHA" -f state=success \
+            -f context=release/npm -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
