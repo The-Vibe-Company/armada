@@ -26,3 +26,5 @@ exit in an admission test, plus a shell parameter expansion fixture. Other recom
 Fix meaningful diagnostics. For intentional patterns, use the narrowest exception
 and explain it; do not apply repository-wide unsafe fixes or introduce a new CI
 gate. Verify with the existing `bun run lint` command.
+
+Raising an AGENTS.md byte budget is the owner's decision.
