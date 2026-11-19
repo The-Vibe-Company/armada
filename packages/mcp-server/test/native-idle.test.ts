@@ -94,6 +94,7 @@ async function fixture(mode = "quiet") {
       name: "native",
       providerState: phase,
       ...(placement === "modal" ? { physicalGeneration: "1" } : {}),
+      ...(stopped && placement === "boat" && mode !== "lost-retention" ? { retainedSnapshot: "usable" as const } : {}),
       ...(stopped && mode === "lost-retention" ? { stopNote: "checkpoint_failed_disk_not_retained" as const } : {}),
       labels: {},
     }),

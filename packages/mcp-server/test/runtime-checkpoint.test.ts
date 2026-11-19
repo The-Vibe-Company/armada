@@ -22,7 +22,9 @@ function stopPort(f: Awaited<ReturnType<typeof runtimeFixture>>) {
   const host = {
     id: "boat",
     async get() {
-      return { id: "physical", state: stopped ? "stopped" : "running", stoppedAt: stopped ? new Date() : undefined };
+      return stopped
+        ? { id: "physical", state: "stopped", stoppedAt: new Date(), retainedSnapshot: "usable" }
+        : { id: "physical", state: "running" };
     },
     async stop() {
       calls++;

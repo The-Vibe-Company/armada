@@ -39,6 +39,7 @@ import {
   type SkillDefaultsService,
   VaultError,
 } from "@armada/core/server";
+import { BoatRetentionUnconfirmed } from "@armada/provider-boat";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod";
@@ -65,7 +66,7 @@ import {
   type StatusReport,
   waitSettled,
 } from "./turns.ts";
-import { recordStopDispatch } from "./work-preservation.ts";
+import { stopAndObserve } from "./work-preservation.ts";
 
 /** Everything a tool call may use, for one authenticated request. */
 export interface ToolContext {
@@ -1098,6 +1099,8 @@ export function createArmadaServer(context: ToolContext, version: string, option
         : resolveModelChoice(found.harness, { model: args.model, reasoningEffort: args.reasoning_effort }, stored);
     const conversation = args.conversation_id ?? found.conversationIds.at(-1);
     const machine = await measure("send_state", () => provider.get(found.providerSandboxId));
+    if (provider.id === "boat" && machine.state === "stopped" && machine.retainedSnapshot !== "usable")
+      throw new ToolError("conflict", "Boat retained data has not been verified.");
     if (machine.state === "stopped" && found.stoppedAt === null) {
       await data.sandboxes.update(found.id, {
         status: "stopped",
@@ -1162,7 +1165,19 @@ export function createArmadaServer(context: ToolContext, version: string, option
                   }
                 : {}),
             })
-            .catch(unknownMutationOutcome),
+            .catch(async (error: unknown) => {
+              if (error instanceof BoatRetentionUnconfirmed && generation !== undefined) {
+                await data.sandboxes.update(found.id, {
+                  status: "stopping",
+                  stoppedAt: null,
+                  stopRequested: true,
+                  finishActivity: true,
+                  activityToken,
+                  expectedGeneration: generation + 1,
+                });
+              }
+              return unknownMutationOutcome(error);
+            }),
         );
         acknowledged = true;
         await data.sandboxes.recordNativePrompt?.(found.id, found.providerSandboxId, receipt.promptId, args.request_id);
@@ -1548,16 +1563,15 @@ export function createArmadaServer(context: ToolContext, version: string, option
           try {
             if (provider.collectTurnUsage) await collectSandboxUsage(provider, data.sandboxes, found);
             signal.throwIfAborted();
-            recordStopDispatch(found.id, found.providerSandboxId, "user_stop");
-            await provider.stop({ sandboxId: found.providerSandboxId });
-            signal.throwIfAborted();
-            const observed = await provider.get(found.providerSandboxId);
-            terminal = observed.state === "stopped";
+            const observed = await stopAndObserve(provider, found.id, found.providerSandboxId, "user_stop", signal);
+            terminal =
+              observed.state === "stopped" &&
+              (provider.id !== "boat" || observed.retainedSnapshot === "usable" || found.status === "failed");
             stoppedAt = observed.stoppedAt;
             preservationNote = observed.stopNote;
           } catch (error) {
             if (!(error instanceof ProviderError && error.code === "not_found")) throw error;
-            terminal = true;
+            terminal = provider.id !== "boat";
           }
           signal.throwIfAborted();
           const status: SandboxStatus =

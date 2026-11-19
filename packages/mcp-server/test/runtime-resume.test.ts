@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { createMemoryAuthStore } from "@armada/auth";
 import { createSqlVaultStore, type Provider } from "@armada/core/server";
-import { fakeBoat, sandbox as sdkSandbox } from "../../provider-boat/test/support.ts";
+import { fakeBoat, retainedSandbox, sandbox as sdkSandbox } from "../../provider-boat/test/support.ts";
 import { boatRuntimeResume } from "../src/boat-runtime-resume.ts";
 import { dispatchControlCommand } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
@@ -233,11 +233,10 @@ test("activation uncertainty never dispatches again under another key or on retr
 test("an unenrolled Boat resume returns to a confirmed retained stop before another request can resume", async () => {
   const f = await stopped();
   try {
-    let state = "running";
     let retainedStops = 0;
     const host = {
       id: "boat",
-      get: async () => ({ id: "physical", state }),
+      get: async () => ({ id: "physical", state: "running" }),
       async stop() {
         retainedStops++;
       },
@@ -286,9 +285,26 @@ test("an unenrolled Boat resume returns to a confirmed retained stop before anot
     expect(retainedStops).toBe(1);
     expect((await callerStore.get(f.row.id))?.status).toBe("stopping");
 
-    state = "stopped";
+    const archivedWorker = createSandboxLifecycle(
+      f.sql,
+      async () => fakeBoat({ body: { sandbox: sdkSandbox(archive) } }).provider,
+    );
+    const archivedAt = "2026-11-19T00:00:00Z";
+    let archive = {
+      id: f.row.providerSandboxId,
+      state: "archived",
+      snapshotAvailable: false,
+      stoppedAt: archivedAt,
+      snapshotVerifiedAt: archivedAt,
+    };
     await f.db.query("update sandboxes set reconcile_lease_until=now()-interval '1 second' where id=$1", [f.row.id]);
-    expect(await worker.reconcileOne()).toBe(true);
+    expect(await archivedWorker.reconcileOne()).toBe(true);
+    expect((await callerStore.get(f.row.id))?.status).toBe("stopping");
+    await expect(resume(f.caller, input(f.row.id))).rejects.toMatchObject({ code: "conflict" });
+
+    archive = { ...archive, snapshotAvailable: true };
+    await f.db.query("update sandboxes set reconcile_lease_until=now()-interval '1 second' where id=$1", [f.row.id]);
+    expect(await archivedWorker.reconcileOne()).toBe(true);
     expect((await callerStore.get(f.row.id))?.status).toBe("stopped");
     await expect(resume(f.caller, first)).rejects.toMatchObject({ code: "conflict" });
     expect((await resume(f.caller, input(f.row.id))).sourceCheckpoint.epoch).toBe(f.cp.runtime.epoch);
@@ -298,7 +314,7 @@ test("an unenrolled Boat resume returns to a confirmed retained stop before anot
   }
 });
 
-test.each(["activation receipt", "pending ticket"])(
+test.each(["activation receipt", "pending ticket", "observed archive"])(
   "the worker recovers an interrupted Boat resume with %s evidence",
   async (proof) => {
     const f = await stopped();
@@ -311,7 +327,7 @@ test.each(["activation receipt", "pending ticket"])(
           if (started) return f.reboot(restore);
           started = true;
           if (proof === "activation receipt") await confirmActivation!();
-          else {
+          else if (proof === "pending ticket") {
             ticket = (await f.authority.issue({ sandboxId: f.row.id, ownerId: f.caller.userId, configuration: {} }))
               .enrolmentToken;
           }
@@ -325,9 +341,12 @@ test.each(["activation receipt", "pending ticket"])(
       await expect(resume(f.caller, first)).rejects.toMatchObject({ code: "conflict" });
       const store = createSqlData(f.sql)(f.caller).sandboxes;
       expect((await store.get(f.row.id))?.status).toBe("starting");
-      const { provider } = fakeBoat({
-        body: { sandbox: sdkSandbox({ id: f.row.providerSandboxId, state: "archived", snapshotAvailable: true }) },
-      });
+      const { provider } = fakeBoat(
+        ...(proof === "observed archive"
+          ? [{ body: { sandbox: retainedSandbox({ id: f.row.providerSandboxId, snapshotAvailable: false }) } }]
+          : []),
+        { body: { sandbox: retainedSandbox({ id: f.row.providerSandboxId }) } },
+      );
       const worker = createSandboxLifecycle(f.sql, async () => provider);
       expect(await worker.reconcileOne()).toBe(true);
       expect((await store.get(f.row.id))?.status).toBe("stopping");
@@ -455,11 +474,12 @@ test("an old runtime without verified restore health cannot receive a resumed pr
   }
 });
 
-test.each(["confirmed", "tainted", "lease expired"])(
+test.each(["confirmed", "tainted", "lease expired", "archive unverified"])(
   "Boat resume activation and recovery respect retained disk and lease authority (%s)",
   async (condition) => {
     const taint = condition === "tainted";
     const expired = condition === "lease expired";
+    const unverified = condition === "archive unverified";
     const f = await stopped();
     const requests: string[] = [];
     let activated = false;
@@ -475,7 +495,9 @@ test.each(["confirmed", "tainted", "lease expired"])(
       if (url.endsWith("/stop")) activated = false;
       return Response.json({
         ok: true,
-        sandbox: sdkSandbox({ id: "physical", state: activated ? "running" : "archived" }),
+        sandbox: activated
+          ? sdkSandbox({ id: "physical", state: "running" })
+          : retainedSandbox({ id: "physical", snapshotAvailable: !unverified }),
       });
     }) as typeof fetch);
     try {
@@ -495,7 +517,7 @@ test.each(["confirmed", "tainted", "lease expired"])(
       });
       const request = input(f.row.id);
       await expect(createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, prepare)(f.caller, request)).rejects.toThrow();
-      expect(canIssueTicket).toBe(!taint && !expired);
+      expect(canIssueTicket).toBe(!taint && !expired && !unverified);
       const { rows } = await f.db.query(
         `select l.stage, case when l.stage='accepted' then l.at=r.created_at else l.at>=r.created_at end as dated_correctly
            from public.sandbox_launch_stages l
@@ -505,20 +527,20 @@ test.each(["confirmed", "tainted", "lease expired"])(
       );
       expect(rows).toEqual([
         { stage: "accepted", dated_correctly: true },
-        ...(taint
+        ...(taint || unverified
           ? []
           : [
               ...(expired ? [] : [{ stage: "machine_started", dated_correctly: true }]),
               { stage: "provider_claimed", dated_correctly: true },
             ]),
       ]);
-      expect(requests.some((path) => path.endsWith("/resume"))).toBe(!taint);
+      expect(requests.some((path) => path.endsWith("/resume"))).toBe(!taint && !unverified);
       const store = createSqlData(f.sql)(f.caller).sandboxes;
       expect((await store.get(f.row.id))?.status).toBe(taint ? "failed" : expired ? "starting" : "stopping");
       if (!taint) expect(requests.some((path) => path.endsWith("/stop"))).toBe(false);
-      if (condition === "confirmed") {
+      if (condition === "confirmed" || unverified) {
         const { provider } = fakeBoat({
-          body: { sandbox: sdkSandbox({ id: f.row.providerSandboxId, state: "archived", snapshotAvailable: true }) },
+          body: { sandbox: retainedSandbox({ id: f.row.providerSandboxId }) },
         });
         const worker = createSandboxLifecycle(f.sql, async () => provider);
         expect(await worker.reconcileOne()).toBe(true);

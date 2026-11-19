@@ -64,7 +64,13 @@ export async function failDockerResumeActivation(
   );
 }
 
-async function recoverInterruptedBoatResume(tx: Sql, sandboxId: string, lease: string, generation: number) {
+async function recoverInterruptedBoatResume(
+  tx: Sql,
+  sandboxId: string,
+  lease: string,
+  generation: number,
+  archivedProviderId: string | null,
+) {
   const result = await tx.query(
     `with handoff as (
       update public.sandboxes s set status='stopping',
@@ -83,14 +89,15 @@ async function recoverInterruptedBoatResume(tx: Sql, sandboxId: string, lease: s
         and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id)
         and r.sandbox_id=s.id and r.request_id=s.activity_lease_id and r.phase='dispatched' and r.receipt is null
         and e.runtime_hash is null
-        and (r.activated_at is not null or (e.enrolment_hash is not null and e.lifecycle_generation=$3))
+        and (s.provider_sandbox_id=$5::text or r.activated_at is not null
+          or (e.enrolment_hash is not null and e.lifecycle_generation=$3))
         and c.watermark=r.watermark
         and c.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=s.id)
       returning s.id,r.request_id
     )
     update public.runtime_resumes r set phase='abandoned' from handoff
     where r.sandbox_id=handoff.id and r.request_id=handoff.request_id returning r.request_id`,
-    [sandboxId, lease, generation, UNENROLLED_RESUME_STOP],
+    [sandboxId, lease, generation, UNENROLLED_RESUME_STOP, archivedProviderId],
   );
   return result.rows.length > 0;
 }
@@ -188,20 +195,22 @@ export function createSandboxLifecycle(
         )
       ).rows[0];
       if (!row) return false;
-      if (row.interrupted_resume) {
+      const recoverInterruptedResume = async (archivedProviderId: string | null) => {
+        if (!row.interrupted_resume) return false;
         if (!sql.transaction) throw Error("Boat resume recovery requires a SQL transaction.");
-        const handedOff = await sql.transaction(async (tx) => {
+        return sql.transaction(async (tx) => {
           const owned = await tx.query(
             `select id from public.sandboxes where id=$1 and reconcile_lease=$2 and lifecycle_generation=$3
                and reconcile_lease_until>clock_timestamp() for update`,
             [row.id, token, row.lifecycle_generation],
           );
           return (
-            owned.rows.length > 0 && (await recoverInterruptedBoatResume(tx, row.id, token, row.lifecycle_generation))
+            owned.rows.length > 0 &&
+            (await recoverInterruptedBoatResume(tx, row.id, token, row.lifecycle_generation, archivedProviderId))
           );
         });
-        if (handedOff) return true;
-      }
+      };
+      if (await recoverInterruptedResume(null)) return true;
       // Only an already-requested stop may enter operator custody. This is not
       // provider authority: the worker never substitutes credentials or allocates.
       const operatorStop = row.status === "stopping" && row.stop_requested_at !== null;
@@ -242,6 +251,8 @@ export function createSandboxLifecycle(
       let physicalExit = false;
       let error: string | null = null;
       let resolved = false;
+      let observing = false;
+      let waitingForRetention = false;
       let stoppedAt: Date | undefined;
       const expired = new Date(row.expires_at).getTime() <= now();
       const retainedResume = row.retained_resume;
@@ -258,7 +269,15 @@ export function createSandboxLifecycle(
         // Uses persisted owner membership, source credential visibility and pinned Modal App.
         const provider = await operation(signal, () => providerFor(row.id));
         resolved = true;
-        let info = await operation(signal, () => provider.get(row.provider_sandbox_id));
+        const observe = async () => {
+          observing = true;
+          const info = await operation(signal, () => provider.get(row.provider_sandbox_id));
+          observing = false;
+          return info;
+        };
+        let info = await observe();
+        if (info.state === "stopped" && row.interrupted_resume && (await recoverInterruptedResume(info.id)))
+          return true;
         // Name the persisted selection and provider observation before any capture.
         // No secret values or provider error bodies enter this diagnostic.
         try {
@@ -278,6 +297,7 @@ export function createSandboxLifecycle(
               expired,
               stopRequested: row.stop_requested_at !== null,
               normalizedState: info.state,
+              retainedSnapshot: info.retainedSnapshot,
               terminal: info.physicalExitConfirmed === true || ["stopped", "deleted"].includes(info.state),
             }),
           );
@@ -432,13 +452,25 @@ export function createSandboxLifecycle(
               ...(requireRetention ? { requireRetention: true } : {}),
             }),
           );
-          info = await operation(signal, () => provider.get(row.provider_sandbox_id));
+          info = await observe();
         }
         signal?.throwIfAborted();
         physicalExit = info.physicalExitConfirmed === true || info.stopNote === "checkpoint_failed_disk_not_retained";
         stoppedAt = info.stoppedAt;
-        terminal = physicalExit || ["stopped", "deleted"].includes(info.state);
-        if (!terminal && (expired || row.status === "stopping" || row.stop_requested_at !== null))
+        waitingForRetention =
+          providerId === "boat" &&
+          info.state === "stopped" &&
+          info.retainedSnapshot !== "usable" &&
+          !physicalExit &&
+          row.status !== "failed" &&
+          row.status !== "starting";
+        terminal = !waitingForRetention && (physicalExit || ["stopped", "deleted"].includes(info.state));
+        if (waitingForRetention)
+          error =
+            info.retainedSnapshot === "pending"
+              ? "Boat snapshot is pending. Retrying without deleting retained data."
+              : "Boat archive has no verified retained snapshot. Retrying without deleting retained data.";
+        else if (!terminal && (expired || row.status === "stopping" || row.stop_requested_at !== null))
           error = "Provider stop is not yet confirmed. Retrying without deleting retained data.";
       } catch (caught) {
         const authorityLost =
@@ -451,9 +483,14 @@ export function createSandboxLifecycle(
         }
         // A definitive absence for the exact registered identity is terminal.
         // Never infer absence from transport errors or discover resources by name.
-        if (resolved && caught instanceof ProviderError && caught.code === "not_found") {
+        if (
+          resolved &&
+          (providerId !== "boat" || observing) &&
+          caught instanceof ProviderError &&
+          caught.code === "not_found"
+        ) {
           terminal = true;
-          if (retainedResume) physicalExit = true;
+          if (providerId === "boat") physicalExit = true;
         }
         // No provider exception text: SDK errors may contain credential-bearing requests.
         else error = "Provider lifecycle observation unavailable. Retrying without deleting retained data.";
@@ -461,14 +498,16 @@ export function createSandboxLifecycle(
       await sql.query(
         `update public.sandboxes set
         -- A failed launch keeps its diagnostic even after its machine is confirmed stopped.
-        status=case when $7 or status='starting' then 'failed'::public.sandbox_status when $4 and status <> 'failed' then 'stopped'::public.sandbox_status else status end,
+        status=case when $7 or status='starting' then 'failed'::public.sandbox_status when $4 and status <> 'failed' then 'stopped'::public.sandbox_status when $13 then 'stopping'::public.sandbox_status else status end,
         transition_context=jsonb_build_object('actor','reconciler','code',
           case when status='starting' then 'launch_interrupted'
             when $7 then 'provider_exit_without_checkpoint'
+            when $13 then 'stop_requested'
             when $10 and status_reason is distinct from 'work_merged' then 'expired'
             else 'provider_stopped' end),
         status_reason=case when status='starting' then coalesce(status_reason,$8::text) when $7 then coalesce(case when status_reason not in ('idle_paused','work_merged') then status_reason end,'Provider confirmed physical exit without a new verified recovery checkpoint.') when $4 and $10 and status<>'failed' and status_reason is distinct from 'work_merged' then 'expired' else status_reason end,
-        stop_requested_at=case when $4 then null when status='starting' then coalesce(stop_requested_at,now()) else stop_requested_at end,
+        stop_requested_at=case when $4 then null when $13 or status='starting' then coalesce(stop_requested_at,now()) else stop_requested_at end,
+        stop_generation=case when $13 and stop_requested_at is null then stop_generation+1 else stop_generation end,
         stopped_at=case when $4 then coalesce(stopped_at,$9::timestamptz,now()) else stopped_at end,
         last_observed_at=case when $5::text is null then now() else last_observed_at end,
         activity_lease_id=case when $11 and not $4 then activity_lease_id else null end,
@@ -494,6 +533,7 @@ export function createSandboxLifecycle(
           expired,
           retainUnknownActivity,
           retainedResume,
+          waitingForRetention,
         ],
       );
       return true;
