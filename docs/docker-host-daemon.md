@@ -1124,8 +1124,8 @@ ARMADA_SMOKE=create_real_compute bun scripts/post-deploy-smoke.ts --parity --onl
 ```
 
 The server must advertise its snapshot launch source and capability. The
-probe launches via normal `sandbox/launch` with only the selected `snapshotId`,
-not an image or explicit repository recipe. Require exact snapshot/host/image/
+probe launches via normal `sandbox/launch` with the selected `snapshotId` and
+`hostId`. Require exact snapshot/host/image/
 organization/owner identity in its receipt, a real finished answer, and confirmed
 stop/delete cleanup. Missing, unready or unavailable fixtures allocate nothing;
 malformed or mismatched identity cannot pass. A rejected receipt with a known

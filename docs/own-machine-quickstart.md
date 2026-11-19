@@ -100,7 +100,11 @@ armada host list --org ORG_UUID
 armada host show office --org ORG_UUID
 ```
 
-On the Linux machine, check the local installation with:
+Install the [Armada CLI](dave-onboarding.md#1-install-the-cli) on the Linux Docker
+machine as well if you registered it from a different computer. The host installer
+sets up the daemon. The commands below use the CLI and need no local Armada login.
+
+On the Docker machine, check the local installation with:
 
 ```sh
 armada host status
