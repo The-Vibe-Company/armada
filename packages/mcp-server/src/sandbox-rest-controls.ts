@@ -263,14 +263,22 @@ export async function dispatchSandboxRestControl(
   }
 }
 
-export const sandboxRestRoutes = defineRoutes(
-  "sandbox REST",
-  Object.fromEntries(
+export const sandboxRestRoutes = defineRoutes("sandbox REST", {
+  ...Object.fromEntries(
     Object.keys(SANDBOX_REST_CONTRACTS)
       .filter(isSandboxRestControl)
       .map((route) => [route, (context: ControlRouteContext) => sandboxRestRoute(route, context)]),
   ),
-);
+  "sandboxes/{id}": {
+    methods: ["DELETE"],
+    pattern: /^sandboxes\/[0-9a-f-]+$/i,
+    readBody(request) {
+      const url = new URL(request.url);
+      return { id: url.pathname.split("/").at(-1), org: url.searchParams.get("org") ?? undefined };
+    },
+    handler: (context) => sandboxRestRoute("sandbox/delete", context),
+  },
+});
 
 async function sandboxRestRoute(route: SandboxRestRoute, { caller, body, options }: ControlRouteContext) {
   if (route === "sandbox/extend") {

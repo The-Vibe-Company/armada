@@ -339,6 +339,10 @@ function modelChoice(
   }
 }
 
+function configureDockerLaunch(options: ControlOptions, request: Request | undefined) {
+  if (options.dockerLaunch && request) options.configureDockerLaunchRequest?.(request);
+}
+
 export const launchRoutes = defineRoutes("launch", {
   "launch/options": ({ options }) =>
     ({
@@ -402,7 +406,8 @@ export const launchRoutes = defineRoutes("launch", {
         enabled: Boolean(options.boatRuntimeLaunch && options.runtimeHostFor),
       },
     }) satisfies import("@armada/core").LaunchOptionsResponse,
-  "sandbox/launch": async ({ caller, body, options }) => {
+  "sandbox/launch": async ({ caller, body, options, request }) => {
+    if (body.provider === "docker") configureDockerLaunch(options, request);
     const { store, encryptionKey } = options;
     const userId = caller.userId;
     const parsed = launchOperation.input.body.safeParse(body);
@@ -484,7 +489,8 @@ export const launchRoutes = defineRoutes("launch", {
     }
     return canonicalLaunchResponse(await launchRoute(options, caller, launch));
   },
-  "templates/launch": ({ caller, body, options }) => {
+  "templates/launch": ({ caller, body, options, request }) => {
+    configureDockerLaunch(options, request);
     if (!options.templates) throw new VaultError("unavailable", "Templates unavailable.");
     return launchTemplate(options.templates, caller, body, templateRuntime(options, caller), "template_rest");
   },

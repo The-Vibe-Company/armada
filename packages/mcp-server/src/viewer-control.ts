@@ -2,6 +2,7 @@ import { decryptSecret, encryptSecret } from "@armada/core/server";
 import type { ControlOptions } from "./control.ts";
 import { readBody } from "./control-body.ts";
 import { authenticatedControlCaller } from "./control-caller.ts";
+import { defineRoutes } from "./routes.ts";
 
 type Dispatch = (request: Request) => Promise<Response | null>;
 const PREFIX = "armada_viewer_";
@@ -13,23 +14,46 @@ interface Grant {
   expires: number;
 }
 
-/** Separate from ordinary and machine authentication: these bearers are never principals. */
-export async function viewerControl(
+type ViewerAction = "mint" | "logs" | "status" | "send" | "events";
+
+function viewerRoute(action: ViewerAction, method: "GET" | "POST") {
+  return {
+    methods: [method],
+    earlyRespond: (request: Request, options: ControlOptions, dispatch: Dispatch) =>
+      viewerControl(request, options, dispatch, { action, method }),
+  };
+}
+
+export const viewerRoutes = defineRoutes("viewer", {
+  "sandbox/viewer-token": viewerRoute("mint", "POST"),
+  "viewer/logs": viewerRoute("logs", "POST"),
+  "viewer/status": viewerRoute("status", "POST"),
+  "viewer/send": viewerRoute("send", "POST"),
+  "viewer/events": viewerRoute("events", "GET"),
+});
+
+/** Viewer grants are never principals for ordinary control routes. */
+export function rejectUnroutedViewerRequest(request: Request, options: ControlOptions, dispatch: Dispatch) {
+  const path = new URL(request.url).pathname;
+  if (path.startsWith("/api/v1/viewer/") || request.headers.get("authorization")?.startsWith(`Bearer ${PREFIX}`))
+    return viewerControl(request, options, dispatch);
+}
+
+async function viewerControl(
   request: Request,
-  options: Pick<ControlOptions, "authStore" | "supabase" | "encryptionKey" | "now">,
+  options: ControlOptions,
   dispatch: Dispatch,
-): Promise<Response | null> {
+  route?: { action: ViewerAction; method: string },
+): Promise<Response> {
   const url = new URL(request.url);
-  const mint = url.pathname === "/api/v1/sandbox/viewer-token";
-  const viewer = url.pathname.startsWith("/api/v1/viewer/");
+  const action = route?.action;
   const authorization = request.headers.get("authorization") ?? "";
-  if (!mint && !viewer && !authorization.startsWith(`Bearer ${PREFIX}`)) return null;
   const fail = (status: number) =>
     Response.json({ error: "viewer_access_denied" }, { status, headers: { "cache-control": "no-store" } });
   const now = () => (options.now?.() ?? new Date()).getTime();
   try {
-    if (mint) {
-      if (request.method !== "POST") return fail(405);
+    if (route?.action === "mint") {
+      if (request.method !== route.method) return fail(405);
       const caller = await authenticatedControlCaller(request, options);
       if (caller?.via !== "service") return fail(403);
       const body = await readBody(request);
@@ -51,7 +75,12 @@ export async function viewerControl(
         { headers: { "cache-control": "no-store" } },
       );
     }
-    if (!viewer || !authorization.startsWith(`Bearer ${PREFIX}`) || authorization.length > 8192) return fail(403);
+    if (
+      !url.pathname.startsWith("/api/v1/viewer/") ||
+      !authorization.startsWith(`Bearer ${PREFIX}`) ||
+      authorization.length > 8192
+    )
+      return fail(403);
     let grant: Grant;
     try {
       grant = JSON.parse(
@@ -70,9 +99,8 @@ export async function viewerControl(
       grant.expires > now() + TTL
     )
       return fail(401);
-    const action = url.pathname.slice("/api/v1/viewer/".length);
-    if (!["logs", "status", "send", "events"].includes(action)) return fail(403);
-    if (request.method !== (action === "events" ? "GET" : "POST")) return fail(405);
+    if (!route) return fail(403);
+    if (request.method !== route.method) return fail(405);
     const body = action === "events" ? {} : await readBody(request, action === "logs" ? 512 * 1024 : undefined);
     // Explicit field selection prevents org, sandbox, lifecycle or tool overrides.
     const cursor =
