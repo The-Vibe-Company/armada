@@ -18,7 +18,6 @@ const pathToken = /^[\p{L}\p{N}_.*{(-][\p{L}\p{M}\p{N}_./*{},@()+-]*$/u;
 function hasKnownExtension(token: string) {
   if (fileExtension.test(token)) return true;
   if (!/[*{]/.test(token)) return false;
-  // A dot in a later brace alternative can occur after the extension starts.
   for (let dot = token.indexOf("."); dot !== -1; dot = token.indexOf(".", dot + 1)) {
     const glob = new Bun.Glob(token.slice(dot).toLowerCase());
     if (extensions.some((extension) => glob.match(`.${extension}`))) return true;
