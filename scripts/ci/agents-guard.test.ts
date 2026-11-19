@@ -28,13 +28,15 @@ test("validates repository path tokens and skips inline code that is not a path"
   const files = new Map([
     [
       "AGENTS.md",
-      "`docs/known.md` `missing.ts` `docs/*.{md,txt}` `src/*.ts` `bun run lint` `sandboxes.status` `@armada/core/contract`",
+      "`docs/known.md` `missing.ts` `docs/*.{md,txt}` `src/*.ts` `*.{ts,tsx}` `app/(group)/missing.ts` `bun run lint` `sandboxes.status` `@armada/core/contract`",
     ],
   ]);
   const existing = new Set(["docs/known.md", "docs/*.{md,txt}"]);
   expect(checkAgentsFiles(files, (path) => existing.has(path))).toEqual([
     "AGENTS.md: missing repository path: missing.ts",
     "AGENTS.md: missing repository path: src/*.ts",
+    "AGENTS.md: missing repository path: *.{ts,tsx}",
+    "AGENTS.md: missing repository path: app/(group)/missing.ts",
   ]);
 });
 
