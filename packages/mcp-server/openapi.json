@@ -7671,6 +7671,25 @@
                               "type": "null"
                             }
                           ]
+                        },
+                        "armadaAccess": {
+                          "type": "object",
+                          "properties": {
+                            "enabled": {
+                              "type": "boolean",
+                              "const": true
+                            },
+                            "maxActiveChildren": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "enabled",
+                            "maxActiveChildren"
+                          ],
+                          "additionalProperties": false
                         }
                       },
                       "required": [
@@ -7684,7 +7703,7 @@
                         "helper",
                         "runtime"
                       ],
-                      "additionalProperties": {}
+                      "additionalProperties": false
                     },
                     {
                       "anyOf": [

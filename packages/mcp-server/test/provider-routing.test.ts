@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { encryptSecret, type ModalBinding, type ModalTokenPair, type Provider } from "@armada/core";
+import { launchEnvelope } from "@armada/core/contract";
 import { createSqlVaultStore } from "@armada/core/server";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
@@ -235,7 +236,7 @@ describe("provider routing", () => {
     try {
       const fresh = await launch();
       expect(fresh?.status).toBe(200);
-      const response = (await fresh?.json()) as { sandbox: { id: string } };
+      const response = launchEnvelope.parse(await fresh?.json());
       const replay = await launch();
       expect(replay?.status).toBe(200);
       expect(await replay?.json()).toEqual(response);

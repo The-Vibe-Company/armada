@@ -55,6 +55,8 @@ any receipt UUID returned.
 - All launches through `POST /api/v1/sandbox/launch` require an explicit provider
   and harness. Personal sessions can select the organization by slug or UUID. For a scoped token, omit `org` or send its org UUID.
   A malformed request returns HTTP 400 with error code `invalid`.
+  For REST golden and Docker launches, read the Armada ID from `sandbox.id`.
+  Docker returns `golden: null`. Pinned template launches return a template receipt.
 - Choose the harness and a model/effort it supports. Launch selections persist
   for later turns. Do not assume provider sizes have equal price or performance.
 - If a runtime launch returns `credential_binding_required`, add the model account

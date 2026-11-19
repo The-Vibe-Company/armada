@@ -18,6 +18,7 @@ import {
   VaultError,
   VERSION,
 } from "@armada/core";
+import { launchEnvelope } from "@armada/core/contract";
 import {
   createApplicationVault,
   createSqlMcpLeasePort,
@@ -1007,7 +1008,7 @@ test("canonical Docker admission replays a scoped key and makes the external ref
   const body = { ...fields, idempotencyKey: "customer_launch_1", externalRef: "customer:42" };
   const { options, post } = restControl(f, { dockerLaunch: f.service(sql, true, 10000, officialImage, true) });
 
-  const admitted = (await post("sandbox/launch", body)) as DockerLaunchResult;
+  const admitted = launchEnvelope.parse(await post("sandbox/launch", body));
   try {
     expect(admitted.sandbox).toMatchObject({ status: "starting", externalRef: body.externalRef });
     expect(await post("sandbox/launch", { ...body, org: `normal-launch-${org}` })).toEqual(admitted);
