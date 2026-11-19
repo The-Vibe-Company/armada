@@ -41,7 +41,7 @@ Usage:
   armada host limits HOST [--cpus N] [--memory SIZE] [--max-sandboxes N | --auto] [--org UUID]
   armada host retention HOST --retention 24h [--org UUID]
   armada host revoke UUID [--org UUID]
-  armada launch [prompt] --provider docker [--host UUID|NAME | --golden snapshot-UUID] --agent claude|codex|opencode [--credential-id UUID] [--org NAME|UUID] [--repo owner/repo[@branch] ...] [--variable KEY:UUID:VERSION ...] [--secret KEY:UUID:VERSION ...] [--request-id UUID] [--json]
+  armada launch [prompt] --provider docker [--host UUID|NAME | --golden snapshot-UUID] --agent claude|codex|opencode [--credential-id UUID] [--org NAME|UUID] [--repo owner/repo[@branch] ...] [--variable KEY:UUID:VERSION ...] [--secret KEY:UUID:VERSION ...] [--idempotency-key KEY] [--json]
                                            Docker launch through the normal Armada API using the official Armada environment.
   armada doctor [--org UUID] [--json]      Check session, server, GitHub, hosts and model accounts
   armada completion bash|zsh|fish           Print a shell completion script
@@ -245,7 +245,7 @@ Docker form:
   armada launch [prompt] --provider docker --agent claude|codex|opencode [--org NAME|UUID]
     [--host UUID|NAME | --golden snapshot-UUID] [--credential-id UUID]
     [--repo owner/repo[@branch] ...] [--variable KEY:UUID:VERSION ...]
-    [--secret KEY:UUID:VERSION ...] [--request-id UUID] [--ttl <duration>] [--json]
+    [--secret KEY:UUID:VERSION ...] [--idempotency-key KEY] [--ttl <duration>] [--json]
     [--model <id>] [--reasoning-effort <level>] [--credential-version <version>]
     [--skill org/slug@version|slug@version ...] [--connections <id,...> | --no-connections]
 Uses the official Armada environment or an existing host-local snapshot.
@@ -253,7 +253,7 @@ A snapshot cannot be combined with --repo.
 Boat supports Claude/Codex natively and OpenCode when the server runtime is installed.
 OpenCode is also supported on Modal and Docker.
 --golden is the existing Docker snapshot selector, not a new snapshot command.
-Reuse a saved --request-id with identical input after an uncertain Docker outcome.
+Reuse a saved --idempotency-key with identical input after an uncertain Docker outcome.
 
 In an interactive terminal, bare armada launch opens the launcher.
 Use explicit arguments in scripts; bare noninteractive launch is not supported.

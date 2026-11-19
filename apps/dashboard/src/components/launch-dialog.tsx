@@ -24,6 +24,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogTrigger } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { CONNECTION_CHOICE_FIELD, type McpConnection } from "@/lib/connections";
+import { createDockerLaunchKey } from "@/lib/docker-launch";
 import { DOCKER_HOST_LABEL, dockerHostGroup } from "@/lib/labels";
 import { composerChips, launchHoldIds, MISSING_LAUNCH_START } from "@/lib/launch-composer";
 import { LAUNCH_KEY_FIELD, type LaunchKey, launchKeyFor } from "@/lib/launch-key";
@@ -581,7 +582,11 @@ function LaunchForm({
     // launch is followed to the sandbox it started instead of launching a second one.
     const keyed = (event: Event) => {
       if (!(event instanceof FormDataEvent)) return;
-      launchKey.current = launchKeyFor(launchKey.current, event.formData.entries());
+      launchKey.current = launchKeyFor(
+        launchKey.current,
+        event.formData.entries(),
+        provider === "docker" ? createDockerLaunchKey : undefined,
+      );
       event.formData.set(LAUNCH_KEY_FIELD, launchKey.current.key);
     };
     node.addEventListener("reset", keep, true);
@@ -590,7 +595,7 @@ function LaunchForm({
       node.removeEventListener("reset", keep, true);
       node.removeEventListener("formdata", keyed, true);
     };
-  }, []);
+  }, [provider]);
 
   // Going on without an unready default enables Launch: that is the next step, so focus follows.
   const focusLaunch = useRef(false);
