@@ -18,6 +18,7 @@ import {
   type TemplateRuntime,
   VaultError,
 } from "@armada/core/server";
+import { resetMigratedDatabaseRows } from "../../../scripts/test-support/migrated-database.ts";
 import { AUTH_HEADER, type Driver, Journal, Runner } from "../../agent-runtime/src/index.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
@@ -41,12 +42,17 @@ afterAll(async () => {
 // Primary contract owner: real migrations + service-role authorization/admission, fake physical provider only.
 async function fixture() {
   if (!database) throw new Error("Template database is not open");
-  // Revisions and the last org admin have delete guards, so truncate those tables.
-  await database.exec(`
+  await resetMigratedDatabaseRows(
+    database,
+    `
     reset role;
     reset all;
     set search_path=public;
-    truncate template_launch_requests, launch_template_revisions, launch_templates, members cascade;
+    delete from template_launch_requests;
+    alter table launch_template_revisions disable trigger immutable_template_revision;
+    delete from launch_template_revisions;
+    alter table launch_template_revisions enable trigger immutable_template_revision;
+    delete from launch_templates;
     delete from provider_launch_requests;
     delete from ordinary_launch_receipts;
     delete from sandboxes;
@@ -55,10 +61,14 @@ async function fixture() {
     delete from readable_variables;
     delete from application_secrets;
     delete from credentials;
+    alter table members disable trigger members_guard;
+    delete from members;
+    alter table members enable trigger members_guard;
     delete from orgs;
     delete from auth.users;
     delete from mcp_invalidations;
-  `);
+  `,
+  );
   const { db, people, sharedGoldenId: goldenId, openaiCredentialId: credential } = await seedDatabase(database);
   const queries: string[] = [];
   const sql: Sql = {
@@ -154,7 +164,7 @@ async function fixture() {
   };
 }
 
-test("Modal template placement retains the real golden snapshot fence and provider binding", async () => {
+test("Modal template placement uses the pinned provider binding", async () => {
   const f = await fixture();
   try {
     const goldenId = (
@@ -166,9 +176,6 @@ test("Modal template placement retains the real golden snapshot fence and provid
     if (!goldenId) throw Error("missing Modal golden");
     f.runtime.provider = async (golden) => {
       expect(golden.modal).toEqual({ workspace: "workspace", environment: "main", appId: "ap-template" });
-      expect(
-        (await f.db.query("select golden_id from golden_operation_fences where golden_id=$1", [goldenId])).rows,
-      ).toEqual([{ golden_id: goldenId }]);
       return { ...f.provider, id: "modal" };
     };
     const created = await f.create(undefined, undefined, {
@@ -180,14 +187,6 @@ test("Modal template placement retains the real golden snapshot fence and provid
     const result = await f.launch((created.item as LaunchTemplate).id);
     expect(result).toMatchObject({ state: "succeeded", provider: "modal" });
     publishedResponse("templates/launch").parse(result);
-    expect(
-      (
-        await f.db.query<{ golden_operation_fence_id: string }>(
-          "select golden_operation_fence_id from template_launch_requests where id=$1",
-          [result.requestId],
-        )
-      ).rows[0]?.golden_operation_fence_id,
-    ).toBeString();
   } finally {
     await f.close();
   }
@@ -402,12 +401,69 @@ for (const retained of [false, true]) {
       expect(await f.launch(t.id)).toEqual(result);
       expect(calls).toBe(1);
       expect((await f.db.query("select id from sandboxes")).rows).toHaveLength(0);
-      expect((await f.db.query("select id from golden_operation_fences")).rows).toHaveLength(retained ? 1 : 0);
+      expect((await f.db.query("select id from golden_operation_fences")).rows).toHaveLength(0);
     } finally {
       await f.close();
     }
   });
 }
+
+test("a lost allocation commit acknowledgement settles without dispatching the provider", async () => {
+  const f = await fixture();
+  const transaction = f.sql.transaction!.bind(f.sql);
+  let loseAcknowledgement = false;
+  let committedState: unknown;
+  f.sql.transaction = async (work) => {
+    const result = await transaction(work);
+    if (!loseAcknowledgement) return result;
+    loseAcknowledgement = false;
+    committedState = (await f.db.query("select state from template_launch_requests")).rows;
+    throw Error("allocation acknowledgement lost");
+  };
+  try {
+    const template = (await f.create()).item as LaunchTemplate;
+    f.runtime.options = {
+      ...f.runtime.options,
+      beforeFork: async () => {
+        loseAcknowledgement = true;
+      },
+    };
+    const result = await f.launch(template.id);
+    expect(committedState).toEqual([{ state: "allocating" }]);
+    expect(result.state).toBe("failed");
+    expect(await f.launch(template.id)).toEqual(result);
+    expect(f.boat.forks).toHaveLength(0);
+  } finally {
+    await f.close();
+  }
+});
+
+test.each(["deleted", "pending"] as const)(
+  "template registration failure releases the snapshot reference only after confirmed deletion (%s)",
+  async (deleteStatus) => {
+    const f = await fixture();
+    try {
+      const template = (await f.create()).item as LaunchTemplate;
+      f.runtime.stores.sandboxes.insert = async () => {
+        throw Error("registration failed");
+      };
+      f.provider.delete = async () => ({ status: deleteStatus });
+      await f.db.query("select set_config('request.jwt.claim.sub',$1,false)", [f.people.admin]);
+
+      const result = await f.launch(template.id);
+      expect(f.boat.forks).toHaveLength(1);
+      if (deleteStatus === "deleted") {
+        expect(result.state).toBe("failed");
+        await expect(f.db.query("select remove_golden($1)", [f.goldenId])).resolves.toBeDefined();
+      } else {
+        expect(result.state).toBe("reconciling");
+        await expect(f.db.query("select remove_golden($1)", [f.goldenId])).rejects.toThrow("unresolved");
+      }
+    } finally {
+      await f.close();
+    }
+  },
+);
 
 test("template launch records externalRef on the sandbox and keys it into the request fingerprint", async () => {
   const f = await fixture();
@@ -433,11 +489,18 @@ test("unknown provider outcomes remain durable reconciling across service restar
   try {
     const t = (await f.create()).item as LaunchTemplate;
     let calls = 0;
+    let durableIntent: unknown;
     f.provider.fork = async () => {
       calls++;
+      durableIntent = (
+        await f.db.query(
+          "select state, (select count(*)::int from golden_operation_fences) as fences from template_launch_requests",
+        )
+      ).rows;
       throw Error("transport lost after possible allocation");
     };
     const first = await f.launch(t.id);
+    expect(durableIntent).toEqual([{ state: "allocating", fences: 0 }]);
     expect(first.state).toBe("reconciling");
     const restarted = createTemplateService(f.sql);
     const retry = await restarted.command(
@@ -449,14 +512,7 @@ test("unknown provider outcomes remain durable reconciling across service restar
     expect(retry.state).toBe("reconciling");
     expect(calls).toBe(1);
     expect(f.boat.prompts).toHaveLength(0);
-    // Unknown allocation keeps the existing retirement barrier through process restart.
-    expect(
-      (
-        await f.db.query(
-          "select f.id from golden_operation_fences f join template_launch_requests r on r.golden_operation_fence_id=f.id",
-        )
-      ).rows,
-    ).toHaveLength(1);
+    expect((await f.db.query("select id from golden_operation_fences")).rows).toHaveLength(0);
   } finally {
     await f.close();
   }
@@ -717,18 +773,16 @@ test("reference revocation during initialization stops the allocated sandbox bef
   }
 });
 
-test("a rebuild published during provider selection cannot replace or invalidate the already claimed snapshot", async () => {
+test("a rebuild published during provider selection invalidates pre-dispatch admission", async () => {
   const f = await fixture();
   try {
     const template = (await f.create()).item as LaunchTemplate;
     const rebuilt = `a${"8".repeat(62)}`;
-    let frozen = "";
     let rebuild = true;
-    f.runtime.provider = async (golden) => {
+    f.runtime.provider = async () => {
       if (rebuild) {
         rebuild = false;
-        frozen = golden.providerSnapshotId ?? "";
-        // After immutable request claim, but BEFORE normal launch's beginOperation.
+        // The request is claimed, but the allocation intent has not committed.
         await f.db.query("update goldens set provider_snapshot_id=$2,boat_snapshot_id=$2 where id=$1", [
           f.goldenId,
           rebuilt,
@@ -737,12 +791,11 @@ test("a rebuild published during provider selection cannot replace or invalidate
       return f.provider;
     };
     const first = await f.launch(template.id);
-    expect(first.state).toBe("succeeded");
-    expect(f.boat.forks.map((fork) => fork.from)).toEqual([frozen]);
+    expect(first).toMatchObject({ state: "failed", reason: "environment_snapshot_unavailable" });
     expect(await f.launch(template.id)).toEqual(first);
-    expect(f.boat.forks).toHaveLength(1);
+    expect(f.boat.forks).toHaveLength(0);
     expect((await f.launch(template.id, "after-rebuild")).state).toBe("succeeded");
-    expect(f.boat.forks.map((fork) => fork.from)).toEqual([frozen, rebuilt]);
+    expect(f.boat.forks.map((fork) => fork.from)).toEqual([rebuilt]);
     expect((await f.db.query("select id from golden_operation_fences")).rows).toHaveLength(0);
     await expect(
       f.db.query("update template_launch_requests set golden_operation_fence_id=gen_random_uuid()"),
@@ -752,7 +805,7 @@ test("a rebuild published during provider selection cannot replace or invalidate
   }
 });
 
-test("claimed snapshot fences release on pre-adoption launch refusals without losing request tombstones", async () => {
+test("pre-dispatch launch refusals preserve idempotency without a snapshot reference", async () => {
   const f = await fixture();
   try {
     const template = (await f.create()).item as LaunchTemplate;

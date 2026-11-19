@@ -193,18 +193,22 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         );
         const locked = sandbox.rows[0];
         if (!locked) throw new VaultError("conflict", "Sandbox cannot accept a queued prompt.");
-        if (
-          locked.status !== "stopped" &&
-          (
-            await tx.query(
-              `select 1 from public.runtime_checkpoints p join public.runtime_enrolments r
-           on r.sandbox_id=p.sandbox_id and r.epoch=p.epoch
-           where p.sandbox_id=$1 and p.merge_stop`,
+        if (locked.status !== "stopped") {
+          const checkpoint = (
+            await tx.query<{ merge_stop: boolean }>(
+              `select p.merge_stop from public.runtime_checkpoints p join public.runtime_enrolments r
+               on r.sandbox_id=p.sandbox_id and r.epoch=p.epoch where p.sandbox_id=$1`,
               [input.id],
             )
-          ).rows.length
-        )
-          throw new VaultError("conflict", "Sandbox is stopping after its pull requests were merged.");
+          ).rows[0];
+          if (checkpoint)
+            throw new VaultError(
+              "conflict",
+              checkpoint.merge_stop
+                ? "Sandbox is stopping after its pull requests were merged."
+                : "Sandbox is checkpointing. Wait for a confirmed retained stop before sending.",
+            );
+        }
         const lockedRefusal = sandboxControlRefusal(
           {
             status: String(locked.status),

@@ -161,14 +161,14 @@ test("an expired observation lease cannot publish a delayed terminal result", as
     lifecycle = createSandboxLifecycle(
       {
         ...sql,
-        query: async <T>(text: string, params?: unknown[]) => {
-          // Queue the final publication before SQL executes, as with pool/lock delay.
-          if (hold && text.includes("last_observed_at=case")) {
+        transaction: async (work) => {
+          // Queue final publication before it acquires a connection.
+          if (hold) {
             hold = false;
             publishing.resolve();
             await release.promise;
           }
-          return sql.query<T>(text, params);
+          return sql.transaction!(work);
         },
       },
       async () => provider,
@@ -201,6 +201,59 @@ test("an expired observation lease cannot publish a delayed terminal result", as
     await lifecycle?.drain();
   }
 });
+
+for (const step of ["transition", "metadata", "lease expiry"] as const) {
+  test(`terminal settlement rolls back on ${step}`, async () => {
+    const { db, people } = await sharedDatabase();
+    const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0]!;
+    const id = crypto.randomUUID();
+    await db.query(
+      `insert into public.sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status)
+       values($1,'boat','bx_23456789',$2,$3,$4,'claude','running')`,
+      [id, golden.id, people.org, people.owner],
+    );
+    const base = bunLikeSql(db);
+    const sql: Sql = {
+      ...base,
+      transaction: (work) =>
+        base.transaction!((tx) =>
+          work({
+            async query<T>(query: string, params?: unknown[]) {
+              if (step === "transition" && query.includes("from public.sandbox_transition(")) {
+                throw new Error("injected transition failure");
+              }
+              if (query.includes("last_observed_at=case")) {
+                if (step === "metadata") throw new Error("injected metadata failure");
+                if (step === "lease expiry") {
+                  await tx.query("update public.sandboxes set reconcile_lease_until='-infinity' where id=$1", [id]);
+                }
+              }
+              return tx.query<T>(query, params);
+            },
+          }),
+        ),
+    };
+    const provider = createBoatProvider({
+      apiKey: "test-key",
+      fetch: (async (_input: Request | string | URL) =>
+        Response.json({ ok: true, sandbox: retainedSandbox() })) as typeof fetch,
+    });
+    const lifecycle = createSandboxLifecycle(sql, async () => provider);
+
+    if (step === "lease expiry") expect(await lifecycle.reconcileOne()).toBe(true);
+    else await expect(lifecycle.reconcileOne()).rejects.toThrow(`injected ${step} failure`);
+    expect(
+      (
+        await db.query(
+          `select status,stopped_at,last_observed_at,reconcile_lease is not null as claimed
+           from public.sandboxes where id=$1`,
+          [id],
+        )
+      ).rows,
+    ).toEqual([{ status: "running", stopped_at: null, last_observed_at: null, claimed: true }]);
+    expect((await db.query("select id from public.sandbox_transitions where sandbox_id=$1", [id])).rows).toEqual([]);
+  });
+}
 
 // Primary regression owner: actual SDK HTTP decoding plus migrated SQL persistence.
 for (const outcome of [
@@ -918,15 +971,17 @@ test.each(["queued", "dispatching", "acknowledged"])("idle-only stop preserves %
     via: "service",
   }).sandboxes;
   const id = crypto.randomUUID();
+  const runtime = state === "acknowledged";
+  const status = runtime ? "running" : "ready";
   await db.query(
-    `insert into sandboxes (id, provider, provider_sandbox_id, golden_id, org_id, owner_id, harness, status)
-     select $1,'boat','idle-stop-race',id,$2,$3,'claude','ready' from goldens where name='shared'`,
-    [id, people.org, people.owner],
+    `insert into sandboxes (id, provider, provider_sandbox_id, golden_id, org_id, owner_id, harness, status, boat_runtime)
+     select $1,'boat','idle-stop-race',id,$2,$3,'claude',$4::sandbox_status,$5 from goldens where name='shared'`,
+    [id, people.org, people.owner, status, runtime],
   );
   const idle = await store.get(id);
   if (!idle) throw Error("missing sandbox");
   const promptId = crypto.randomUUID();
-  if (state === "acknowledged") {
+  if (runtime) {
     await db.query(
       `insert into public.runtime_enrolments(sandbox_id,lifecycle_generation,epoch,runtime_hash)
        select id,lifecycle_generation,1,encode(sha256(uuid_send(id)),'hex')
@@ -949,20 +1004,23 @@ test.each(["queued", "dispatching", "acknowledged"])("idle-only stop preserves %
   }
 
   const admission = { status: "stopping", stopRequested: true, onlyIfIdle: true } as const;
-  const stop = (patch: typeof admission | Omit<typeof admission, "onlyIfIdle">) =>
-    sandboxActivity(store, idle, patch, async () => ({
+  const stop = (patch: typeof admission | Omit<typeof admission, "onlyIfIdle">, sandbox = idle) =>
+    sandboxActivity(store, sandbox, patch, async () => ({
       result: "stopped",
       patch: { status: "stopped", stoppedAt: new Date().toISOString(), stopRequested: false },
     }));
 
   await expect(stop(admission)).rejects.toThrow("The sandbox is busy");
-  expect(await store.get(id)).toMatchObject({ status: "ready", lifecycleGeneration: idle.lifecycleGeneration });
-  if (state === "acknowledged") {
+  expect(await store.get(id)).toMatchObject({ status, lifecycleGeneration: idle.lifecycleGeneration });
+  if (runtime) {
     await db.query("insert into public.runtime_idle_turns(sandbox_id,prompt_id,settled) values($1,$2,true)", [
       id,
       promptId,
     ]);
-    expect(await stop(admission)).toBe("stopped");
+    await db.query("update public.sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [id]);
+    await expect(stop(admission)).rejects.toMatchObject({ code: "sandbox_not_ready" });
+    const current = (await store.get(id))!;
+    expect(await stop(admission, current)).toBe("stopped");
     return;
   }
   expect((await db.query("select state from account_turn_queue where sandbox_id=$1", [id])).rows).toEqual([{ state }]);

@@ -7,16 +7,26 @@ import { createRuntimeServing } from "../src/runtime-serving.ts";
 import { createSandboxArmadaAccess } from "../src/sandbox-armada-access.ts";
 import { database, ENCRYPTION_KEY, fakeBoat, PUBLIC_URL } from "./support.ts";
 
-let prepared: Awaited<ReturnType<typeof database>>;
+let prepared: Promise<Awaited<ReturnType<typeof database>>> | undefined;
 beforeAll(async () => {
-  prepared = await database();
+  prepared = database();
+  await prepared;
 });
-afterAll(() => prepared?.db.close());
+afterAll(async () => {
+  const pending = prepared;
+  prepared = undefined;
+  await pending?.then(
+    ({ db }) => db.close(),
+    () => undefined,
+  );
+});
 
 // SQL is the owner of immutable routing, epoch handoff and stopped archive authority.
 // This protects Modal admission (previously Boat/Docker only), not provider inference.
 test("Modal OpenCode dial-out persists routing and retains enrolled authority through launch but not stop", async () => {
-  const { db, people } = prepared;
+  const fixture = await prepared;
+  if (!fixture) throw Error("Modal runtime database is not open");
+  const { db, people } = fixture;
   const sql: Sql = {
     query: (q, v) => db.query(q, v),
     transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
@@ -101,7 +111,9 @@ test("Modal OpenCode dial-out persists routing and retains enrolled authority th
 });
 
 test("enrolled Modal scoped parent cleanup requires a lifecycle fence and reaches compute without a native runner", async () => {
-  const { db, people } = prepared;
+  const fixture = await prepared;
+  if (!fixture) throw Error("Modal runtime database is not open");
+  const { db, people } = fixture;
   const sql: Sql = {
     query: (q, v) => db.query(q, v),
     transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),

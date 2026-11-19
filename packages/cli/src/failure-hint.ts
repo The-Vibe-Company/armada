@@ -1,7 +1,6 @@
 import { commandWords } from "./command-catalog.ts";
 import { focusedHelp } from "./commands/index.ts";
 
-/** Keep recovery instructions already supplied by the owning operation authoritative. */
 export function failureHint(error: unknown, argv: readonly string[], token: boolean): string {
   const failure = error as { code?: string; serverCode?: string; message?: string };
   const message = failure.message ?? "";

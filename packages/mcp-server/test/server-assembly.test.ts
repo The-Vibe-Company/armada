@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { assembleServer } from "../src/modules.ts";
 import type { ServerServices } from "../src/server-services.ts";
+import { jobsModule, type LaneFactory } from "../src/server-worker-modules.ts";
 
 test("server assembly preserves worker lane order and isolation", () => {
   const neverCall = async () => {
@@ -27,11 +28,11 @@ test("server assembly preserves worker lane order and isolation", () => {
     idleDelayMs: 100,
     control: { invitations: {} },
     githubApp: {},
-    outputs: passiveLane,
-    webhooks: passiveLane,
+    outputs: { captureJob: { concurrency: 4, run: neverCall } },
+    webhooks: { run: neverCall },
     delegatedAccess: { childWorker: passiveLane },
     accountTurns: passiveLane,
-    langfuse: passiveLane,
+    langfuse: { exportJob: { concurrency: 1 } },
     modal: { inventoryReaper: () => ({ ...passiveLane, isolatedSweep: true }) },
   } as unknown as ServerServices;
 
@@ -45,10 +46,6 @@ test("server assembly preserves worker lane order and isolation", () => {
         {
           "name": "golden-builds",
           "sweep": true,
-        },
-        {
-          "name": "langfuse",
-          "sweep": false,
         },
         {
           "name": "steer-recovery",
@@ -65,9 +62,7 @@ test("server assembly preserves worker lane order and isolation", () => {
       ],
       "managed": [
         "sandbox-lifecycle",
-        "pull-requests",
         "jobs",
-        "outputs",
         "native-prompts",
         "delegated-access",
         "docker-cleanup",
@@ -84,6 +79,42 @@ test("server assembly preserves worker lane order and isolation", () => {
     githubApp: null,
   }).planWorkers().description;
   expect(minimal.background).toEqual(["routines"]);
-  expect(minimal.managed).not.toContain("pull-requests");
+  expect(minimal.managed).toContain("jobs");
   expect(minimal.isolated.map(({ name }) => name)).not.toContain("docker-inventory:host-1");
+});
+
+test("the shared jobs lane claims only configured job kinds", async () => {
+  const neverCalled = async () => {
+    throw new Error("An empty claim must not run a job.");
+  };
+  const managed = new Map<string, LaneFactory>();
+  jobsModule({ workers: { managed } } as Parameters<typeof jobsModule>[0]);
+  const createLane = managed.get("jobs")!;
+  for (const { githubApp, encryptionKey, expected } of [
+    { githubApp: null, encryptionKey: undefined, expected: ["langfuse_export", "webhook"] },
+    { githubApp: {}, encryptionKey: undefined, expected: ["langfuse_export", "webhook", "pr_scan"] },
+    { githubApp: null, encryptionKey: "test", expected: ["langfuse_export", "webhook", "outputs_capture"] },
+    { githubApp: {}, encryptionKey: "test", expected: ["langfuse_export", "webhook", "pr_scan", "outputs_capture"] },
+  ]) {
+    const claimed = new Set<string>();
+    const lane = createLane({
+      githubApp,
+      options: {},
+      config: { encryptionKey },
+      sql: { query: async () => ({ rows: [] }) },
+      jobs: {
+        async claim(kind: string) {
+          claimed.add(kind);
+        },
+      },
+      langfuse: { exportJob: { concurrency: 1, run: neverCalled } },
+      webhooks: { run: async () => ({ status: "done" }) },
+      outputs: {
+        captureJob: { concurrency: 4, run: async () => ({ status: "done" }) },
+        enqueueCaptures: async () => {},
+      },
+    } as unknown as Parameters<LaneFactory>[0]);
+    await lane?.reconcileOne(new AbortController().signal);
+    expect(claimed).toEqual(new Set(expected));
+  }
 });

@@ -33,13 +33,11 @@ function helpRequested(argv: readonly string[]): boolean {
     const argument = argv[index] ?? "";
     if (argument === "--") return false;
     if (argument === "-h" || argument === "--help") return true;
-    // Option values are input, not help requests; the parser validates malformed values.
     if (VALUE_OPTIONS.includes(argument)) index += 1;
   }
   return false;
 }
 
-/** Application vault management stays separate from model-account credentials. */
 export async function applicationVaultCommand(
   resource: "vars" | "secrets",
   argv: readonly string[],
@@ -56,7 +54,6 @@ export async function applicationVaultCommand(
     body.name = input.target;
   } else if (input.action !== "list") body.id = input.target;
   if (input.version !== undefined) body.expectedVersion = input.version;
-  // Read before any API request. Input failures must never expose file paths or contents.
   if (input.action === "set" || input.action === "rotate") {
     try {
       body.value = await (input.file === undefined ? io.readStdin() : io.readFile(input.file));
@@ -142,7 +139,6 @@ function parseInput(resource: "vars" | "secrets", argv: readonly string[]) {
     };
   } catch (error) {
     if (error instanceof VaultError) throw error;
-    // Rejected arguments may themselves contain a value. Do not interpolate them.
     throw new VaultError(
       "invalid",
       "Invalid application vault command. Run armada vars --help or armada secrets --help. Values are accepted only on stdin or from --file, never as arguments.",
@@ -159,7 +155,6 @@ async function resolveOrganization(ref: string, io: VaultIo): Promise<string> {
   return matches[0].id;
 }
 
-/** Project only safe scalar metadata, never a future value/ciphertext field. */
 function metadata(row: Record<string, unknown>): Record<string, unknown> {
   const item: Record<string, unknown> = {};
   for (const key of [

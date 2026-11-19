@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, jest, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import type { AuthIo } from "../src/auth-commands.ts";
 import { emailLogin } from "../src/email-login.ts";
@@ -166,19 +166,16 @@ test.each([
 });
 
 test("email login timeout cancels code input and closes its listener", async () => {
-  let expire!: () => void;
+  const timeoutMs = 300_000;
   let aborted = false;
   let stops = 0;
-  const timer = spyOn(globalThis, "setTimeout").mockImplementation(((callback: () => void) => {
-    expire = callback;
-    return 1;
-  }) as unknown as typeof setTimeout);
   const listener = spyOn(Bun, "serve").mockReturnValue({
     port: 43123,
     stop: async () => {
       stops++;
     },
   } as never);
+  jest.useFakeTimers();
   try {
     await expect(
       emailLogin(
@@ -200,7 +197,7 @@ test("email login timeout cancels code input and closes its listener", async () 
                 },
                 { once: true },
               );
-              expire();
+              jest.advanceTimersByTime(timeoutMs);
             }),
         },
         "user@example.test",
@@ -210,7 +207,7 @@ test("email login timeout cancels code input and closes its listener", async () 
     expect(aborted).toBe(true);
     expect(stops).toBe(1);
   } finally {
-    timer.mockRestore();
+    jest.useRealTimers();
     listener.mockRestore();
   }
 });

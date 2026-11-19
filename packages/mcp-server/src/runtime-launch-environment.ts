@@ -5,7 +5,7 @@ import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.t
 
 type RuntimeClock = Parameters<typeof createRuntimeCommands>[2];
 
-export interface RuntimeEnvironmentSource {
+interface RuntimeEnvironmentSource {
   orgId: string;
   harness: Harness;
   variables: Record<string, string>;

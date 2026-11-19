@@ -1,24 +1,7 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { posix } from "node:path";
-import type {
-  CreateGoldenRequest,
-  ExecResult,
-  ForkRequest,
-  Harness,
-  Provider,
-  ResumeStageObserver,
-  SandboxInfo,
-  SnapshotInfo,
-} from "@armada/core";
-import {
-  HARNESSES,
-  isModelConnectionTestResult,
-  mapHarnesses,
-  OUTPUT_MAX_READ_BYTES,
-  ProviderError,
-  parseMachineSize,
-  resolveModelChoice,
-} from "@armada/core";
+import type { ExecResult, Harness, Provider, ResumeStageObserver, SandboxInfo } from "@armada/core";
+import { HARNESSES, isModelConnectionTestResult, OUTPUT_MAX_READ_BYTES, resolveModelChoice } from "@armada/core";
 import {
   OUTPUT_COLLECTOR,
   OUTPUT_COLLECTOR_PROBE,
@@ -34,6 +17,7 @@ import { abortable, boundModalApp, type ModalConnection, modalConnection } from 
 import { ModalOperationError, modalError, refusal } from "./errors.ts";
 import { executeGoldenCommand } from "./golden-exec.ts";
 import { createImageCollection, trackDetachedCollection } from "./image-collection.ts";
+import { createLaunchLifecycle } from "./launch-lifecycle.ts";
 import { createPhysicalLifecycle } from "./physical-lifecycle.ts";
 import type {
   Machine,
@@ -47,6 +31,8 @@ import type {
   SshPreparation,
 } from "./ports.ts";
 import { createRuntimeLifecycle } from "./runtime-lifecycle.ts";
+import { createSandboxInspection } from "./sandbox-inspection.ts";
+import { createSnapshotLifecycle } from "./snapshot-lifecycle.ts";
 import { createSnapshotTombstones } from "./snapshot-tombstones.ts";
 import { createSshPreparation } from "./ssh.ts";
 import { createStopDeleteLifecycle } from "./stop-delete-lifecycle.ts";
@@ -202,48 +188,18 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     if (origin !== scopeKey(source.scope))
       throw refusal("forbidden", "Machine source golden authority does not match this provider connection.");
   }
-  function sandboxInfo(row: Machine): SandboxInfo {
-    const { physicalGeneration: _ignored, ...info } = row.info;
-    return { ...info, ...(row.physicalId ? { physicalGeneration: String(row.generation) } : {}) };
-  }
-  async function resourceReceipt(observed: Machine): Promise<ModalResourceReceipt> {
-    const durable = await store.get(observed.info.id).catch(() => undefined);
-    const row = durable ?? observed;
-    const images = await store.images(row.info.id).catch(() => []);
-    const snapshots = [
-      ...(row.snapshotImages ?? []),
-      ...(observed.snapshotImages ?? []),
-      ...images.flatMap((x) => (x.imageId ? [{ name: x.info.name, imageId: x.imageId }] : [])),
-    ];
-    const snapshotImages = [
-      ...new Map(snapshots.map((x) => [`${x.name}:${x.imageId}`, { name: x.name, imageId: x.imageId }])).values(),
-    ];
-    const physicalId = row.physicalId ?? observed.physicalId,
-      imageId = row.imageId ?? observed.imageId;
-    return {
-      sandboxId: row.info.id,
-      phase: row.phase,
-      observedPhase: observed.phase,
-      registryConfirmed: !!durable,
-      generation: row.generation,
-      physicalName: row.physicalName,
-      ...(physicalId ? { physicalId } : {}),
-      ...(imageId ? { imageId } : {}),
-      recoveryImageIds: [
-        ...new Set([
-          ...(row.retainedRecoveryIds ?? []),
-          ...(observed.retainedRecoveryIds ?? []),
-          ...(row.recoveryImageId ? [row.recoveryImageId] : []),
-          ...(observed.recoveryImageId ? [observed.recoveryImageId] : []),
-        ]),
-      ],
-      snapshotImages,
-      ...(row.sourceImage ? { sourceImage: { ...row.sourceImage } } : {}),
-      ...(row.managementAuthority ? { managementAuthority: { ...row.managementAuthority } } : {}),
-      binding: { ...options.scope.binding },
-      appName: options.appName,
-    };
-  }
+  const { sandboxInfo, resourceReceipt, inspection } = createSandboxInspection({
+    store,
+    client,
+    runner,
+    bound,
+    assertMachineSource,
+    managementAuthority,
+    sourceScope: source.scope,
+    scope: options.scope,
+    appName: options.appName,
+    storedReads: options.storedReads ?? false,
+  });
   const physicalLifecycle = createPhysicalLifecycle({
     client,
     bound,
@@ -274,101 +230,6 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     detachCollection,
     cleanupSleep: options.cleanupSleep,
   });
-  async function launch(request: CreateGoldenRequest | ForkRequest, golden: boolean): Promise<SandboxInfo> {
-    let size: Machine["size"];
-    if ("size" in request && request.size !== undefined) {
-      try {
-        size = parseMachineSize(request.size);
-      } catch {
-        throw refusal("invalid_request", "Size must be small, medium, large or xlarge.");
-      }
-    }
-    await bound();
-    const ttl = request.ttlSeconds ?? 3600;
-    if (!Number.isInteger(ttl) || ttl < 1 || ttl > 86400)
-      throw refusal("invalid_request", "Modal machine TTL must be 1–86400 seconds (maximum 24 hours).");
-    let imageId: string | undefined;
-    let sourceImage: Machine["sourceImage"];
-    let runtimeSourceId: string | undefined;
-    if ("from" in request) {
-      const snapshot = await source.store.image(request.from);
-      assertAuthority(snapshot);
-      if (snapshot.info.status !== "ready" || !snapshot.imageId)
-        throw refusal("sandbox_not_ready", "Snapshot is not ready.");
-      if (options.commonRuntime) {
-        const sourceRow = await source.store.get(snapshot.sourceId);
-        if (sourceRow.commonRuntime) throw refusal("invalid_request", "Enrolled Modal forks are not enabled.");
-        runtimeSourceId = snapshot.sourceId;
-      }
-      imageId = snapshot.imageId;
-      sourceImage = { scopeKey: scopeKey(source.scope), name: request.from, imageId };
-    }
-    const key = request.idempotencyKey ?? randomUUID();
-    const id = `modal_${randomUUID()}`;
-    const row = await store.reserve(
-      key,
-      {
-        info: {
-          id,
-          name: request.name ?? id,
-          state: "starting",
-          providerState: "reserved",
-          labels: request.labels ?? {},
-          createdAt: new Date(),
-        },
-        generation: 1,
-        ...(!golden && options.commonRuntime ? { commonRuntime: true as const } : {}),
-        ...(!golden ? { runtimePolicy: "explicit-vm-v1" as const } : {}),
-        launchUserId: options.scope.userId,
-        managementAuthority: { ...managementAuthority },
-        modelDefaults: mapHarnesses((_, harness) => resolveModelChoice(harness, {})),
-        phase: "reserved",
-        golden,
-        ttlSeconds: ttl,
-        ...(size === undefined ? {} : { size }),
-        physicalName: `armada-${createHash("sha256").update(id).digest("hex").slice(0, 32)}-1`,
-        ...(imageId ? { imageId } : {}),
-        ...(sourceImage ? { sourceImage } : {}),
-      },
-      runtimeSourceId,
-    );
-    const needsBoot = (row: Machine) => {
-      if (
-        row.golden !== golden ||
-        (!golden && row.generation !== 1) ||
-        Boolean(row.commonRuntime) !== Boolean(!golden && options.commonRuntime) ||
-        row.size !== size ||
-        row.imageId !== imageId ||
-        row.sourceImage?.scopeKey !== sourceImage?.scopeKey ||
-        row.sourceImage?.name !== sourceImage?.name
-      )
-        throw refusal("conflict", "Idempotency key belongs to another launch or generation.");
-      assertMachineSource(row);
-      if (row.phase === "active" || row.phase === "stopped") return false;
-      if (!["reserved", "creating", "booting"].includes(row.phase))
-        throw refusal("conflict", "Launch is in a terminal or checkpoint phase.");
-      return true;
-    };
-    let observed = row;
-    try {
-      if (!needsBoot(row)) return sandboxInfo(row);
-      return await store.lease(row.info.id, async (current, save) => {
-        observed = current;
-        // A lifecycle operation may have changed the phase or generation before we acquired the lease.
-        if (!needsBoot(current)) return sandboxInfo(current);
-        return create(current, save, "env" in request ? (request.env ?? {}) : {});
-      });
-    } catch (error) {
-      if (
-        observed.phase === "deleted" &&
-        !observed.physicalId &&
-        error instanceof ProviderError &&
-        error.providerCode === "modal_builder_image_failed"
-      )
-        throw error;
-      throw new ModalOperationError(error, await resourceReceipt(observed));
-    }
-  }
   /** Caller holds the lifecycle lease through activation and the admitted operation. */
   async function readyLeased(
     row: Machine,
@@ -601,43 +462,19 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     }),
     harnesses: HARNESSES,
     capabilities: distribution.capabilities,
-    createGolden: (r) => {
-      if (source.scope.visibility !== options.scope.visibility)
-        throw refusal("forbidden", "Split source/target adapter is fork-only for golden creation.");
-      return launch(r, true);
-    },
-    async fork(r) {
-      if (r.size !== undefined) {
-        try {
-          parseMachineSize(r.size);
-        } catch {
-          throw refusal("invalid_request", "Size must be small, medium, large or xlarge.");
-        }
-      }
-      if (options.commonRuntime) return launch(r, false);
-      const snapshot = await source.store.image(r.from);
-      assertAuthority(snapshot);
-      let admitted = false;
-      try {
-        return await source.store.lease(snapshot.sourceId, async (sourceRow) => {
-          admitted = true;
-          if (sourceRow.commonRuntime) throw refusal("invalid_request", "Enrolled Modal forks are not enabled.");
-          return launch(r, false);
-        });
-      } catch (error) {
-        // Only acquisition refusal proves no child was reserved. Once entered,
-        // preserve launch receipts and uncertainty rather than permitting a replay.
-        if (!admitted && modalError(error).providerCode === "lifecycle_lease_busy")
-          throw new ProviderError({
-            provider: "modal",
-            code: "conflict",
-            providerCode: "fork_source_busy",
-            message: "The Modal snapshot source is busy. No sandbox was created; retry after the current operation.",
-            retryable: true,
-          });
-        throw error;
-      }
-    },
+    ...createLaunchLifecycle({
+      store,
+      source,
+      scope: options.scope,
+      commonRuntime: options.commonRuntime,
+      managementAuthority,
+      bound,
+      assertAuthority,
+      assertMachineSource,
+      create,
+      sandboxInfo,
+      resourceReceipt,
+    }),
     ...createRuntimeLifecycle({
       store,
       distribution,
@@ -664,86 +501,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       return (await collectOutputs(request, OUTPUT_COLLECTOR_PROBE, readCollectorProbeResult)) !== null;
     },
 
-    async observeResources(id) {
-      await bound();
-      return store.lease(id, async (row) => {
-        assertMachineSource(row);
-        const evidence = row.runtimeEvidence;
-        if (
-          row.golden ||
-          row.commonRuntime ||
-          row.phase !== "active" ||
-          !row.physicalId ||
-          row.runtimePolicy !== "explicit-vm-v1" ||
-          evidence?.version !== 1 ||
-          evidence.runtime !== "vm" ||
-          evidence.generation !== row.generation ||
-          evidence.physicalId !== row.physicalId
-        )
-          return null;
-        const reading = await runner.call<import("@armada/core").VmResourceReading | null>(
-          row,
-          "resourceObservation",
-          {},
-        );
-        if (!reading) return null;
-        return {
-          version: 1 as const,
-          providerSandboxId: id,
-          physicalId: row.physicalId,
-          generation: String(row.generation),
-          scope: "dedicated-vm" as const,
-          runtimeProvenance: "modal-explicit-vm-v1" as const,
-          reading,
-          limitations: ["sampled-memory-not-peak", "hypervisor-throttling-unavailable"] as const,
-        };
-      });
-    },
-    async get(id) {
-      if (!options.storedReads) await bound();
-      const row = await store.get(id);
-      assertMachineSource(row);
-      if (row.phase === "deleted") throw refusal("not_found", "Sandbox was deleted.");
-      // bound() and assertMachineSource above already verified this read. Do not
-      // repeat the remote App lookup through physical(); keep the live exit poll.
-      let exited = false;
-      if (row.phase === "active" && !options.storedReads) {
-        if (!row.physicalId) throw refusal("sandbox_not_ready", "No current physical machine.");
-        exited = (await (await client.sandboxes.fromId(row.physicalId)).poll()) !== null;
-      }
-      if (exited)
-        return {
-          ...sandboxInfo(row),
-          state: "failed",
-          providerState: "exited",
-          physicalExitConfirmed: true,
-          error: "Physical machine exited without a new verified checkpoint.",
-        };
-      return { ...sandboxInfo(row), providerState: row.phase };
-    },
-    async list(r = {}) {
-      await bound();
-      const limit = r.limit ?? 100;
-      if (!Number.isInteger(limit) || limit < 1 || limit > 1000)
-        throw refusal("invalid_request", "Invalid page limit.");
-      const candidates = (await store.list())
-        .filter(
-          (x) =>
-            x.phase !== "deleted" &&
-            matchesManagementAuthority(x.managementAuthority, managementAuthority) &&
-            (x.sourceImage?.scopeKey ?? scopeKey(options.scope)) === scopeKey(source.scope) &&
-            (!r.cursor || x.info.id > r.cursor) &&
-            Object.entries(r.labels ?? {}).every(([k, v]) => x.info.labels[k] === v),
-        )
-        .sort((a, b) => a.info.id.localeCompare(b.info.id));
-      const rows: SandboxInfo[] = [];
-      for (let offset = 0; offset < candidates.length; offset += 8) {
-        const batch = await Promise.all(candidates.slice(offset, offset + 8).map((x) => provider.get(x.info.id)));
-        rows.push(...batch.filter((x) => !r.states || r.states.includes(x.state)));
-        if (rows.length > limit) break;
-      }
-      return { items: rows.slice(0, limit), cursor: rows.length > limit ? (rows[limit - 1]?.id ?? null) : null };
-    },
+    ...inspection,
     async restoreGoldenMaster({ sandboxId: requestedSandboxId, snapshotId }) {
       if (scopeKey(source.scope) !== scopeKey(options.scope))
         throw refusal("forbidden", "Golden master restore requires a source-scoped provider connection.");
@@ -1160,84 +918,19 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       r.signal?.throwIfAborted();
       return page;
     },
-    async snapshot(r) {
-      await bound();
-      let observed: Machine | undefined;
-      try {
-        return await store.lease(r.sandboxId, async (row, save) => {
-          observed = row;
-          assertMachineSource(row);
-          if (!row.golden || row.phase !== "active")
-            throw refusal("conflict", "Only active credential-free builders can become golden snapshots.");
-          try {
-            await store.image(r.name);
-            throw refusal("conflict", "Snapshot name is immutable.");
-          } catch (e) {
-            if (!(e instanceof Error && "code" in e && e.code === "not_found")) throw e;
-          }
-          const info: SnapshotInfo = {
-            name: r.name,
-            status: "saving",
-            sourceSandboxId: r.sandboxId,
-            managementAuthority: {
-              scope: managementAuthority.credentialScope,
-              ownerId: managementAuthority.credentialOwnerId,
-            },
-            createdAt: new Date(),
-          };
-          await store.saveImage({ info, sourceId: r.sandboxId, managementAuthority: { ...managementAuthority } });
-          const sb = await physical(row);
-          row.phase = "checkpoint";
-          row.info.state = "stopping";
-          await save(row);
-          await checkpoint(row, save);
-          await distribution.prepareSnapshot(sb, row);
-          row.quiesced = true;
-          row.phase = "snapshot";
-          await save(row);
-          const image = await sb.snapshotFilesystem({ ttlMs: null });
-          row.snapshotImages = [...(row.snapshotImages ?? []), { name: r.name, imageId: image.imageId }];
-          await save(row);
-          info.status = "ready";
-          info.artifactId = image.imageId;
-          await store.saveImage({
-            info,
-            sourceId: r.sandboxId,
-            imageId: image.imageId,
-            goldenClean: true,
-            managementAuthority: { ...managementAuthority },
-          });
-          row.phase = "checkpoint";
-          row.info.state = "stopping";
-          await save(row);
-          return info;
-        });
-      } catch (error) {
-        if (observed) throw new ModalOperationError(error, await resourceReceipt(observed));
-        throw error;
-      }
-    },
-    async getSnapshot(name) {
-      await snapshotBackend();
-      const image = await source.store.image(name);
-      assertAuthority(image);
-      // Only canonical saved-image fields are provenance; cached optional info is not
-      // a substitute when an older/partial receipt lacks its artifact or authority.
-      const { artifactId: _artifact, managementAuthority: _authority, sourceSandboxId: _source, ...info } = image.info;
-      return {
-        ...info,
-        sourceSandboxId: image.sourceId,
-        ...(image.imageId ? { artifactId: image.imageId } : {}),
-        ...(image.managementAuthority
-          ? {
-              managementAuthority: {
-                scope: image.managementAuthority.credentialScope,
-                ownerId: image.managementAuthority.credentialOwnerId,
-              },
-            }
-          : {}),
-      };
-    },
+    ...createSnapshotLifecycle({
+      store,
+      sourceStore: source.store,
+      managementAuthority,
+      bound,
+      snapshotBackend,
+      assertAuthority,
+      assertMachineSource,
+      physical,
+      checkpoint,
+      distribution,
+      resourceReceipt,
+    }),
     ...snapshotTombstones,
     quiesce: (r) => call(r.sandboxId, "interrupt", r),
     async extendLifetime({ sandboxId, ttlSeconds }) {
@@ -1308,14 +1001,6 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       return { status: "deleted" };
     },
     delete: deleteSandbox,
-    async resourceReceipts() {
-      const rows = (await store.list()).filter(
-        (row) =>
-          matchesManagementAuthority(row.managementAuthority, managementAuthority) &&
-          (row.sourceImage?.scopeKey ?? scopeKey(options.scope)) === scopeKey(source.scope),
-      );
-      return Promise.all(rows.map(resourceReceipt));
-    },
     async collectGarbage() {
       await bound();
       await collectImages();

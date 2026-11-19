@@ -30,7 +30,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import { createSqlData } from "../src/data.ts";
 import { createHandler, type HandlerOptions, type Route } from "../src/http.ts";
-import { sqlOver } from "../src/sql.ts";
+import { type SqlDriver, sqlOver } from "../src/sql.ts";
 
 export const PUBLIC_URL = "https://armada.example.com";
 export const ENCRYPTION_KEY = btoa(String.fromCharCode(...new Uint8Array(32).map((_, index) => index + 1)));
@@ -392,17 +392,19 @@ function fakeGitHub(db: PGlite) {
  * adapter sent an array literal. Run the server on this and a raw array parameter fails as it did on Railway.
  */
 export function bunLikeSql(db: PGlite, onQuery?: (text: string) => void): Sql {
-  return sqlOver({
-    async unsafe(text, params) {
-      onQuery?.(text);
-      if (params.some((param) => Array.isArray(param))) {
-        throw new Error(
-          'invalid input syntax for type uuid[]: Array value must start with "{" or dimension information.',
-        );
-      }
-      return (await db.query(text, params as unknown[])).rows;
-    },
-  });
+  const driver = (connection: Pick<PGlite, "query">) =>
+    ({
+      async unsafe(text, params) {
+        onQuery?.(text);
+        if (params.some((param) => Array.isArray(param))) {
+          throw new Error(
+            'invalid input syntax for type uuid[]: Array value must start with "{" or dimension information.',
+          );
+        }
+        return (await connection.query(text, params as unknown[])).rows;
+      },
+    }) satisfies SqlDriver;
+  return sqlOver({ ...driver(db), begin: (work) => db.transaction((tx) => work(driver(tx))) });
 }
 
 export async function harness(

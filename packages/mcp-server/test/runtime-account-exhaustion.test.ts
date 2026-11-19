@@ -3,13 +3,21 @@ import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { runtimeFixture } from "./runtime.fixture.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
-let f: Awaited<ReturnType<typeof runtimeFixture>>;
+let prepared: Promise<Awaited<ReturnType<typeof runtimeFixture>>> | undefined;
 beforeAll(async () => {
-  f = await runtimeFixture(undefined, "boat", "codex", true);
+  prepared = runtimeFixture(undefined, "boat", "codex", true);
+  await prepared;
 });
-afterAll(async () => f?.close());
+afterAll(async () => {
+  const pending = prepared;
+  prepared = undefined;
+  await pending?.then(
+    (fixture) => fixture.close(),
+    () => undefined,
+  );
+});
 
-async function nextSequence() {
+async function nextSequence(f: Awaited<ReturnType<typeof runtimeFixture>>) {
   const { rows: archive } = await f.db.query<{ sequence: string }>(
     "select coalesce(max(sequence),0)::text as sequence from runtime_events where sandbox_id=$1",
     [f.row.id],
@@ -18,6 +26,8 @@ async function nextSequence() {
 }
 
 test("runtime ACK persists provider exhaustion for the pinned revision and ignores a late older fact", async () => {
+  const f = await prepared;
+  if (!f) throw Error("Runtime account fixture is not open");
   const { append } = createRuntimeEvents(f.authority, ENCRYPTION_KEY);
   const send = (sequence: number, at: number, data: unknown) =>
     append(f.active.runtimeToken, f.active.epoch, {
@@ -43,10 +53,12 @@ test("runtime ACK persists provider exhaustion for the pinned revision and ignor
 });
 
 test("a mid-turn provider retry leaves the account binding and health intact", async () => {
+  const f = await prepared;
+  if (!f) throw Error("Runtime account fixture is not open");
   const { append } = createRuntimeEvents(f.authority, ENCRYPTION_KEY);
   const readHealth = async () => (await f.db.query("select * from account_exhaustion")).rows;
   const before = await readHealth();
-  const sequence = await nextSequence();
+  const sequence = await nextSequence(f);
   const at = Date.now();
   await expect(
     append(f.active.runtimeToken, f.active.epoch, {
@@ -90,8 +102,10 @@ test("a mid-turn provider retry leaves the account binding and health intact", a
 });
 
 test("a provider reset outside PostgreSQL's ISO calendar still acknowledges the journal", async () => {
+  const f = await prepared;
+  if (!f) throw Error("Runtime account fixture is not open");
   const { append } = createRuntimeEvents(f.authority, ENCRYPTION_KEY);
-  const sequence = await nextSequence();
+  const sequence = await nextSequence(f);
   await expect(
     append(f.active.runtimeToken, f.active.epoch, {
       sandboxId: f.row.id,
