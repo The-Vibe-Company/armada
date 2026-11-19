@@ -992,9 +992,7 @@ test("worker shutdown finishes while a cancelled sample's provider read is still
     state.entered = resolve;
   });
   const idle = { reconcileOne: async () => false, drain: async () => {} };
-  const workers = startServerWorkers(idle, () => {}, undefined, undefined, [
-    outputJobFixture(sql, KEY, async () => provider),
-  ]);
+  const workers = startServerWorkers(idle, () => {}, undefined, [outputJobFixture(sql, KEY, async () => provider)]);
   await reading;
   workers.stop();
   // Resolves although the provider promise is still pending: the cancelled read is fenced.
