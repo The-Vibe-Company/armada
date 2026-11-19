@@ -41,7 +41,6 @@ const counters: Record<string, Counter | null> = {
     includes: (path) => serverSource.test(path),
     pattern: /(["'`])(?:deprecation|sunset)\1|\b(?:deprecation|sunset)\b(?=\s*:)/gi,
   },
-  // Activated by #2859 and #2860 respectively.
   "native-path": null,
   "append-point": null,
 };
@@ -49,7 +48,7 @@ const counters: Record<string, Counter | null> = {
 const activeCounters = Object.values(counters).filter((counter) => counter !== null);
 type Files = ReadonlyMap<string, string>;
 
-function inScope(path: string): boolean {
+function inScope(path: string) {
   return path.endsWith(".ts") && !testPaths.test(path);
 }
 
@@ -62,7 +61,7 @@ function* matches(counter: Counter, files: Files) {
   }
 }
 
-function count(counter: Counter, files: Files): number {
+function count(counter: Counter, files: Files) {
   let total = 0;
   for (const _match of matches(counter, files)) total++;
   return total;
@@ -74,7 +73,7 @@ function matchContext({ path, content, index, text }: { path: string; content: s
   return JSON.stringify([path, text, content.slice(from, to === -1 ? undefined : to).trim()]);
 }
 
-function take(counts: Map<string, number>, key: string): boolean {
+function take(counts: Map<string, number>, key: string) {
   const available = counts.get(key) ?? 0;
   if (available === 0) return false;
   counts.set(key, available - 1);
@@ -87,8 +86,6 @@ export function compare(base: Files | undefined, head: Files) {
     const after = count(counter, head);
     const added: { path: string; line: number; text: string }[] = [];
     if (base !== undefined && before !== undefined && after > before) {
-      // Pair unchanged lines first so an identical token added earlier in the
-      // tree does not steal the location of an existing match.
       const exact = new Map<string, number>();
       const remaining = new Map<string, number>();
       for (const match of matches(counter, base)) {
@@ -101,7 +98,6 @@ export function compare(base: Files | undefined, head: Files) {
         if (take(exact, matchContext(match))) take(remaining, match.text);
         else unmatched.push(match);
       }
-      // Pair the remaining tokens across paths, allowing moves and renames.
       for (const { path, content, index, text } of unmatched) {
         if (!take(remaining, text)) {
           added.push({ path, line: content.slice(0, index).split("\n").length, text });
@@ -112,7 +108,7 @@ export function compare(base: Files | undefined, head: Files) {
   });
 }
 
-function git(args: string[], options: { stdin?: string; exitOne?: boolean } = {}): Buffer {
+function git(args: string[], options: { stdin?: string; exitOne?: boolean } = {}) {
   const result = Bun.spawnSync(["git", ...args], {
     stdin: options.stdin === undefined ? undefined : Buffer.from(options.stdin),
     stderr: "pipe",
@@ -121,7 +117,7 @@ function git(args: string[], options: { stdin?: string; exitOne?: boolean } = {}
   throw new Error(`git ${args[0]} failed: ${result.stderr.toString().trim()}`);
 }
 
-function readHead(): Files {
+function readHead() {
   const paths = git(["ls-files", "--cached", "--others", "--exclude-standard", "-z"]).toString().split("\0");
   const files = new Map<string, string>();
   for (const path of paths) {
@@ -131,8 +127,7 @@ function readHead(): Files {
   return files;
 }
 
-function readBase(base: string): Files {
-  // Git prefilters candidate files. Both revisions use the same JS regexes over whole files.
+function readBase(base: string) {
   const objects = git(
     ["grep", "--text", "-ilz", "-E", "-e", "boat|modal|docker|switch|-v[0-9]|deprecation|sunset", base, "--", "*.ts"],
     { exitOne: true },
@@ -143,7 +138,6 @@ function readBase(base: string): Files {
   const files = new Map<string, string>();
   if (objects.length === 0) return files;
 
-  // NUL-delimited requests support paths with newlines on the minimum CI Git version.
   const output = git(["cat-file", "-z", "--batch"], { stdin: objects.join("\0") + "\0" });
   let offset = 0;
   for (const object of objects) {
@@ -160,9 +154,18 @@ function readBase(base: string): Files {
 
 if (import.meta.main) {
   const requestedBase = Bun.argv[2];
-  const base = git(["rev-parse", "--verify", "--quiet", `${requestedBase ?? "origin/main"}^{commit}`], {
-    exitOne: requestedBase === undefined,
-  })
+  const base = git(
+    [
+      "rev-parse",
+      "--verify",
+      ...(requestedBase === undefined ? ["--quiet"] : []),
+      "--end-of-options",
+      `${requestedBase ?? "origin/main"}^{commit}`,
+    ],
+    {
+      exitOne: requestedBase === undefined,
+    },
+  )
     .toString()
     .trim();
   if (!base) console.log("No origin/main available. Showing working-tree counts.");
