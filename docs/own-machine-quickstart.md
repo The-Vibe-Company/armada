@@ -30,8 +30,8 @@ An org admin registers hosts. Hosts and new Docker placements are separate serve
 opt-ins: a visible host list does not guarantee new launches are enabled.
 `armada host list --org ORG_UUID --json` reports `placement` and host states.
 
-If the Docker hosts tab is missing or Docker launches are disabled, confirm your org and admin
-role, then ask the Armada server operator whether host registration and Docker
+If the Docker hosts section is missing or Docker launches are disabled, confirm
+your org and admin role, then ask the Armada server operator whether host registration and Docker
 placement are enabled and whether your architecture is supported. Do not assume
 the public deployment enables them. Choose Boat/Modal in the meantime.
 Operators, not users, own the [deployment prerequisites](docker-host-daemon.md#staging-prerequisites-coordinator-only);
@@ -100,9 +100,9 @@ armada host list --org ORG_UUID
 armada host show office --org ORG_UUID
 ```
 
-Install the [Armada CLI](dave-onboarding.md#1-install-the-cli) on the Linux Docker
-machine as well if you registered it from a different computer. The host installer
-sets up the daemon. The commands below use the CLI and need no local Armada login.
+The host installer sets up the daemon. For the commands below, make sure the
+[Armada CLI](dave-onboarding.md#1-install-the-cli) is installed on the Docker
+machine. The local host commands need no Armada login.
 
 On the Docker machine, check the local installation with:
 
