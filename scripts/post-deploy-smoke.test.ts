@@ -2308,6 +2308,7 @@ test("the advertised smoke workflow invocation admits ordinary staging checks", 
         ARMADA_SMOKE_CASES: JSON.stringify([selected]),
         ARMADA_SMOKE: "create_real_compute",
         ARMADA_SMOKE_JOURNAL: join(directory, "sandboxes.json"),
+        REAPER_OUTCOME: "success",
       },
     });
     expect(command.exitCode).toBe(0);
