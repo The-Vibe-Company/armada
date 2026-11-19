@@ -12,10 +12,15 @@ test("a wake releases all waiters for the notified key only", async () => {
   const first = bus.wait("target", controller.signal, 1000, delay);
   const second = bus.wait("target", controller.signal, 1000, delay);
   const other = bus.wait("other", controller.signal, 1000, delay);
+  let unrelatedSettled = false;
+  void other.then(() => {
+    unrelatedSettled = true;
+  });
   try {
     bus.notify("target");
     expect(delays.map((signal) => signal.aborted)).toEqual([true, true, false]);
     await Promise.all([first, second]);
+    expect(unrelatedSettled).toBe(false);
   } finally {
     controller.abort();
     await Promise.all([first, second, other]);
