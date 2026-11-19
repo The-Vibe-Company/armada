@@ -1018,7 +1018,7 @@ test("webhook cutover backfills pending deliveries and honors a live legacy rece
     );
     expect(jobs.rows).toEqual([
       { id: pending!.id, run_after: pending!.next_attempt_at },
-      { id: inFlight!.id, run_after: inFlight!.lease_until },
+      { id: inFlight!.id, run_after: inFlight!.lease_until! },
     ]);
     const receipt = await f.db.query(
       `update outbound_webhook_deliveries set last_status=204,delivered_at=now(),lease_until=null
