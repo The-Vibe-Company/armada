@@ -124,25 +124,31 @@ export async function finishEnrolledRuntimeReadiness(
 ) {
   const {
     rows: [sandbox],
-  } = await tx.query<{ enrolled_path: boolean; eligible: boolean }>(
+  } = await tx.query<{ enrolled_path: boolean; owned: boolean }>(
     `select ((s.provider='boat' and s.boat_runtime) or
              (s.provider='modal' and s.runtime_transport is not distinct from 'dialout')) as enrolled_path,
-      (s.owner_id=$2 and s.activity_lease_id=$4 and s.activity_until>clock_timestamp()
-        and s.expires_at>clock_timestamp() and s.stopped_at is null and s.stop_requested_at is null
-        and s.deleted_at is null and not s.application_secret_tainted
-        and (s.reconcile_lease_until is null or s.reconcile_lease_until<=clock_timestamp())
-        and s.task_prompt_id is null and cardinality(s.conversation_ids)=0) as eligible
+      s.owner_id=$2 as owned
      from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE} for update of s`,
-    [...scope, sandboxId, activityToken],
+    [...scope, sandboxId],
   );
   if (sandbox && !sandbox.enrolled_path) return "other_path";
-  if (!sandbox?.eligible) return "conflict";
+  if (!sandbox?.owned) return "conflict";
   const live = await tx.query(
     `select 1 from public.runtime_enrolments where sandbox_id=$1 and lifecycle_generation=$2
       and runtime_hash is not null for update`,
     [sandboxId, generation],
   );
   if (!live.rows.length) return "conflict";
+  const eligible = await tx.query(
+    `select s.id from public.sandboxes s where s.id=$3 and ${SANDBOX_VISIBLE}
+      and s.activity_lease_id=$4 and s.activity_until>clock_timestamp() and s.expires_at>clock_timestamp()
+      and s.stopped_at is null and s.stop_requested_at is null and s.deleted_at is null
+      and not s.application_secret_tainted
+      and (s.reconcile_lease_until is null or s.reconcile_lease_until<=clock_timestamp())
+      and s.task_prompt_id is null and cardinality(s.conversation_ids)=0`,
+    [...scope, sandboxId, activityToken],
+  );
+  if (!eligible.rows.length) return "conflict";
   const result = await transitionSandbox(tx, {
     sandboxId,
     expectedGeneration: generation,
