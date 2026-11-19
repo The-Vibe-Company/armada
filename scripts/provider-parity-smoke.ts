@@ -374,7 +374,8 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       headers: { authorization: `Bearer ${env.ARMADA_TOKEN}`, "content-type": "application/json" },
       body: JSON.stringify(body),
     });
-    const requestId = path === "sandbox/launch" ? response.headers.get("x-request-id") : null;
+    const modalLaunch = path === "sandbox/launch" && (body as { provider?: unknown }).provider === "modal";
+    const requestId = modalLaunch ? response.headers.get("x-request-id") : null;
     const correlation = requestId && UUID.test(requestId) ? { requestId } : {};
     if (!response.ok) {
       const body = (await response.json().catch(() => null)) as {
@@ -405,7 +406,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       });
     }
     const result = (await response.json().catch((error: unknown) => {
-      if (path !== "sandbox/launch") throw error;
+      if (!modalLaunch) throw error;
       throw new ParityError({
         code: "launch_response_unreadable",
         httpStatus: response.status,
@@ -415,15 +416,19 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     })) as { sandbox?: { id?: unknown; provider?: unknown } } | null;
     if (path === "sandbox/launch") {
       const expected = (body as { provider?: unknown }).provider;
-      if (expected === "modal" && !result?.sandbox?.id)
+      if (modalLaunch && (typeof result?.sandbox?.id !== "string" || !UUID.test(result.sandbox.id)))
         throw new ParityError({
           code: "launch_response_unreadable",
           httpStatus: response.status,
-          message: "Launch response had no sandbox ID.",
+          message: "Launch response had no valid sandbox ID.",
           ...correlation,
         });
-      if (smokeReceiptProvider(result) !== expected)
-        throw new ParityError({ code: "invalid_launch_receipt", message: "Unexpected launch provider" });
+      if (smokeReceiptProvider(result) !== expected || (modalLaunch && result?.sandbox?.provider !== "modal"))
+        throw new ParityError({
+          code: "invalid_launch_receipt",
+          message: "Unexpected launch provider",
+          ...correlation,
+        });
     }
     return result as T;
   }
@@ -701,8 +706,6 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           }
         } else throw new ParityError({ ...detail, requestKey });
       }
-      if (typeof result.sandbox?.id !== "string" || !result.sandbox.id)
-        throw new ParityError({ code: "invalid_launch_receipt", message: "Invalid launch sandbox ID.", requestKey });
       if (!id) await claim(result.sandbox.id);
       io.out(
         JSON.stringify({ step: "parity_modal_launch", provider: "modal", pass: true, elapsedMs: io.now() - started }),

@@ -142,6 +142,7 @@ for (const mode of [
   "server_failure",
   "modal_launch_recovers",
   "modal_launch_unresolved",
+  "modal_launch_malformed",
   "delete_retry",
   "journal_failure",
   "stop_response_lost",
@@ -190,10 +191,14 @@ for (const mode of [
     const controlled = new Set<string>();
     const journaled: string[] = [];
     const journalClaims: string[] = [];
-    const modalLaunchScenario = mode === "modal_launch_recovers" || mode === "modal_launch_unresolved";
+    const modalLaunchScenario = mode.startsWith("modal_launch_");
+    const ordinaryModalId = "30000000-0000-4000-8000-000000000004";
     const recoveredSandbox = "30000000-0000-4000-8000-000000000005";
     const launchRequestId = "30000000-0000-4000-8000-000000000006";
     let modalLaunchKey: string | undefined;
+    let modalExternalRef: string | undefined;
+    const ordinaryIds = new Map<string, string>();
+    const sandboxId = (provider: string) => ordinaryIds.get(provider) ?? provider;
     const modalJournalKeys: string[] = [];
     let modalInventoryReads = 0;
 
@@ -223,14 +228,14 @@ for (const mode of [
     const clientAnswers = new Map<string, string>();
     const clientStops = new Map<string, number>();
     function acceptStop(provider: string, args: Record<string, unknown>) {
-      expect(args.id).toBe(provider);
+      expect(args.id).toBe(sandboxId(provider));
       expect(["ready", "running"]).toContain(states.get(provider)!);
       clientStops.set(provider, (clientStops.get(provider) ?? 0) + 1);
       states.set(provider, "stopped");
-      return { id: provider, status: "stopped" };
+      return { id: sandboxId(provider), status: "stopped" };
     }
     function acceptClient(provider: string, args: Record<string, unknown>) {
-      expect(args.id).toBe(provider);
+      expect(args.id).toBe(sandboxId(provider));
       expect(args.request_id).toMatch(/^[a-f0-9-]{36}$/);
       const marker = String(args.prompt).match(/PARITY_CLIENT_(?:DASHBOARD|CLI)_[a-f0-9-]{36}/)![0];
       const client = marker.includes("DASHBOARD") ? "dashboard" : "cli";
@@ -241,7 +246,7 @@ for (const mode of [
       const history = turns.get(provider) ?? [];
       history.push(promptId);
       turns.set(provider, history);
-      return { id: provider, promptId, conversationId: "client_conversation", status: "queued" };
+      return { id: sandboxId(provider), promptId, conversationId: "client_conversation", status: "queued" };
     }
 
     const deletes = new Map<string, number>();
@@ -366,7 +371,7 @@ for (const mode of [
                                             : ["--parity"],
       {
         now: () => clock,
-        ...(modalLaunchScenario ? { deadline: 3_000 } : {}),
+        ...(modalLaunchScenario ? { deadline: 3_500 } : {}),
         sleep: advance,
         out: (line) => lines.push(line),
         recordSandbox: async (org, _id, requestKey, provider) => {
@@ -382,7 +387,8 @@ for (const mode of [
           if (new URL(url).pathname === "/mcp") {
             expect(clientFull || clientStopFull).toBe(true);
             const rpc = JSON.parse(String(init.body));
-            const dashboardProvider = rpc.params?.arguments?.id ?? "initializing";
+            const target = rpc.params?.arguments?.id;
+            const dashboardProvider = target === ordinaryModalId ? "modal" : (target ?? "initializing");
             calls.push(`${dashboardProvider}:mcp:${rpc.method}`);
             if (rpc.method === "initialize")
               return Response.json({
@@ -398,7 +404,7 @@ for (const mode of [
             expect(rpc.method).toBe("tools/call");
             if (clientStopFull) {
               expect(rpc.params.name).toBe("stop");
-              expect(rpc.params.arguments).toEqual({ id: dashboardProvider });
+              expect(rpc.params.arguments).toEqual({ id: sandboxId(dashboardProvider) });
               return Response.json({
                 jsonrpc: "2.0",
                 id: rpc.id,
@@ -680,14 +686,20 @@ for (const mode of [
               modalInventoryReads++;
               result = {
                 sandboxes:
-                  mode === "modal_launch_recovers" && modalInventoryReads > 1
-                    ? [{ id: recoveredSandbox, provider: "modal", externalRef: modalLaunchKey, status: "ready" }]
+                  mode !== "modal_launch_unresolved" && modalInventoryReads > 1
+                    ? [{ id: recoveredSandbox, provider: "modal", externalRef: modalExternalRef, status: "ready" }]
                     : [],
               };
               break;
             case "sandbox/launch":
               if (modalLaunchScenario) {
-                modalLaunchKey = String(body.idempotencyKey);
+                modalLaunchKey = body.idempotencyKey;
+                modalExternalRef = body.externalRef;
+                await advance(500);
+                if (mode === "modal_launch_malformed") {
+                  states.set(p, "ready");
+                  return Response.json({ sandbox: { id: "malformed", provider: "modal" } });
+                }
                 if (mode === "modal_launch_recovers") {
                   states.set(p, "ready");
                   throw new DOMException("Timed out", "TimeoutError");
@@ -737,9 +749,10 @@ for (const mode of [
                 );
               if (mode === "client_send_full_slow" || mode === "client_stop_full_slow") await advance(110_001);
               states.set(p, "ready");
+              if (p === "modal") ordinaryIds.set(p, ordinaryModalId);
               result = {
                 sandbox: {
-                  id: p,
+                  id: sandboxId(p),
                   provider: p,
                   ...(p === "docker" && mode.startsWith("snapshot_")
                     ? {
@@ -782,12 +795,12 @@ for (const mode of [
                 );
               expect(body.text).toContain("Cancel the waiting task");
               controlMarkers.set(p, body.text.match(/PARITY_STEER_[a-z0-9]+/)[0]);
-              result = { id: p, promptId: "steer-record", delivery: "restart" };
+              result = { id: sandboxId(p), promptId: "steer-record", delivery: "restart" };
               break;
             case "sandbox/interrupt":
               if (mode.startsWith("control_queued_")) expect(controlActiveReads.get(p)).toBeGreaterThanOrEqual(2);
               controlled.add(p);
-              result = { id: p, interrupted: true };
+              result = { id: sandboxId(p), interrupted: true };
               break;
             case "mcp/list":
             case "mcp/sandbox-connections":
@@ -1065,7 +1078,7 @@ for (const mode of [
                 const paused = !woken.has(p) && n > 2;
                 if (paused) states.set(p, "stopped");
                 result = {
-                  id: p,
+                  id: sandboxId(p),
                   status: paused ? "stopped" : states.get(p),
                   idlePaused: paused,
                   statusReason: paused ? (mode === "idle_wrong_reason" ? "explicit_stop" : "idle_paused") : null,
@@ -1098,9 +1111,12 @@ for (const mode of [
               if (mode === "subscription_probe_budget") clock += 110_001;
               result = {
                 id:
-                  mode === "template_identity" || mode.startsWith("routine_") || deepFull || modalLaunchScenario
+                  ["template_identity", "template_full", "readable_full"].includes(mode) ||
+                  mode.startsWith("routine_") ||
+                  deepFull ||
+                  modalLaunchScenario
                     ? body.id
-                    : p,
+                    : sandboxId(p),
                 settled: true,
                 prompt: null,
                 status: states.get(p),
@@ -1194,7 +1210,7 @@ for (const mode of [
               break;
             case "sandbox/stop":
               if (clientStopFull && !body.request_id) {
-                expect(body).toEqual({ org: p, id: p });
+                expect(body).toEqual({ org: p, id: sandboxId(p) });
                 result = acceptStop(p, body);
                 break;
               }
@@ -1226,9 +1242,12 @@ for (const mode of [
                 id:
                   mode === "wrong_delete_id"
                     ? "another-sandbox"
-                    : mode === "template_identity" || mode.startsWith("routine_") || deepFull || modalLaunchScenario
+                    : ["template_identity", "template_full", "readable_full"].includes(mode) ||
+                        mode.startsWith("routine_") ||
+                        deepFull ||
+                        modalLaunchScenario
                       ? body.id
-                      : p,
+                      : sandboxId(p),
                 status: mode === "delete_failure" && p === "docker" ? "pending" : "deleted",
               };
               break;
@@ -1327,7 +1346,8 @@ for (const mode of [
     if (modalLaunchScenario) {
       expect(calls.filter((call) => call === "modal:sandbox/launch")).toHaveLength(1);
       expect(modalLaunchKey).toMatch(/^post-deploy-smoke:[0-9a-f-]{36}$/);
-      if (mode === "modal_launch_recovers") {
+      expect(modalExternalRef).toBe(modalLaunchKey);
+      if (mode !== "modal_launch_unresolved") {
         expect(passed).toBe(true);
         expect(report.features["prerequisite:launch"].modal.status).toBe("pass");
         expect(report.features.cleanup.modal.status).toBe("pass");
@@ -1338,7 +1358,7 @@ for (const mode of [
           step: "parity_modal_launch",
           provider: "modal",
           pass: true,
-          elapsedMs: 1_000,
+          elapsedMs: 1_500,
         });
       } else {
         expect(passed).toBe(false);
@@ -1349,7 +1369,7 @@ for (const mode of [
             message: "The launch may still be in flight.",
             requestId: launchRequestId,
             requestKey: modalLaunchKey,
-            elapsedMs: 3_000,
+            elapsedMs: 3_500,
           },
         });
         expect(modalInventoryReads).toBe(3);
@@ -1622,7 +1642,14 @@ for (const mode of [
       expect(passed).toBe(true);
       expect(report.starts).toBe(6);
       expect(new Set(journalClaims)).toEqual(
-        new Set(["modal", "docker", "modal-template-1", "docker-template-1", "modal-template-2", "docker-template-2"]),
+        new Set([
+          ordinaryModalId,
+          "docker",
+          "modal-template-1",
+          "docker-template-1",
+          "modal-template-2",
+          "docker-template-2",
+        ]),
       );
       for (const provider of ["modal", "docker"]) {
         expect(templateCalls.get(provider)).toBe(2);
