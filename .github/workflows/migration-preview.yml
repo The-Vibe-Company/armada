@@ -38,7 +38,8 @@ jobs:
           version: 2.75.0
       - name: Apply migrations with the release client on disposable Postgres
         env:
-          PGURL: postgresql://postgres@127.0.0.1:5432/postgres?sslmode=disable
+          PGSSLMODE: disable # Disposable service only.
+          PGURL: postgresql://postgres@127.0.0.1:5432/postgres
         run: |
           psql "$PGURL" -v ON_ERROR_STOP=1 -f scripts/db/supabase-prereq.sql
           supabase db push --db-url "$PGURL" --yes

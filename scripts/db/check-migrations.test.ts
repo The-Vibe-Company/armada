@@ -99,6 +99,7 @@ test("tracks real transaction boundaries and ignores SQL inside comments and bod
       start transaction;
       savepoint migration;
       rollback to migration;
+      prepare transaction as select 1;
       lock jobs;
       end and chain;
       lock jobs;
@@ -108,8 +109,8 @@ test("tracks real transaction boundaries and ignores SQL inside comments and bod
       declare migration cursor without hold for select 1;
     `),
   ).toEqual([
-    "Line 11: LOCK requires an explicit BEGIN transaction.",
-    "Line 13: DECLARE CURSOR requires an explicit BEGIN transaction.",
+    "Line 12: LOCK requires an explicit BEGIN transaction.",
+    "Line 14: DECLARE CURSOR requires an explicit BEGIN transaction.",
   ]);
 });
 

@@ -61,8 +61,8 @@ function* sqlStatements(sql: string) {
   if (tokens.length) yield { tokens, startsAt };
 }
 
-function transactionOnlyCommand(tokens: string[], rollbackTo: boolean) {
-  const [verb, keyword] = tokens;
+function transactionOnlyCommand(tokens: string[], rollbackTo: boolean, prepareTransaction: boolean) {
+  const [verb] = tokens;
   if (verb === "lock") return "LOCK";
   if (verb === "savepoint") return "SAVEPOINT";
   if (verb === "release") return "RELEASE SAVEPOINT";
@@ -71,7 +71,7 @@ function transactionOnlyCommand(tokens: string[], rollbackTo: boolean) {
     const queryStart = tokens.indexOf("for", 2);
     if (tokens[queryStart - 2] !== "with" || tokens[queryStart - 1] !== "hold") return "DECLARE CURSOR";
   }
-  if (verb === "prepare" && keyword === "transaction") return "PREPARE TRANSACTION";
+  if (prepareTransaction) return "PREPARE TRANSACTION";
   return undefined;
 }
 
@@ -82,18 +82,20 @@ export function transactionErrors(sql: string) {
     const [verb, keyword] = tokens;
     const transactionKeyword = keyword === "work" || keyword === "transaction" ? tokens[2] : keyword;
     const rollbackTo = verb === "rollback" && transactionKeyword === "to";
+    const prepareTransaction =
+      verb === "prepare" && keyword === "transaction" && tokens[2] !== "as" && tokens[2] !== "(";
     if (verb === "begin" || (verb === "start" && keyword === "transaction")) {
       explicitTransaction = true;
     } else if (["commit", "end", "rollback", "abort"].includes(verb ?? "") && !rollbackTo) {
       explicitTransaction &&= tokens.at(-2) === "and" && tokens.at(-1) === "chain";
     } else if (!explicitTransaction) {
-      const command = transactionOnlyCommand(tokens, rollbackTo);
+      const command = transactionOnlyCommand(tokens, rollbackTo, prepareTransaction);
       if (command) {
         const line = sql.slice(0, startsAt).split(/\r\n|\r|\n/).length;
         errors.push(`Line ${line}: ${command} requires an explicit BEGIN transaction.`);
       }
     }
-    if (verb === "prepare" && keyword === "transaction") explicitTransaction = false;
+    if (prepareTransaction) explicitTransaction = false;
   }
   return errors;
 }
