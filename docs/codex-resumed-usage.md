@@ -20,7 +20,7 @@ prompt's counters unknown, so process loss cannot seed a false next-turn delta.
 
 After normal runtime rollout on a Modal snapshot, launch and send again:
 
-Replace `MODAL_SNAPSHOT` with the snapshot name or ID, and `SANDBOX_UUID`
+Replace `MODAL_SNAPSHOT` with the snapshot name, and `SANDBOX_UUID`
 with the sandbox ID from the launch receipt.
 
 ```sh

@@ -64,7 +64,7 @@ Use a private file (mode 0600) containing the owner's working endpoint, key and
 prices for the model that endpoint actually reports. Never print or commit it.
 Pass the **whole JSON file**, without `--base-url` or endpoint-construction flags.
 
-Replace `MODAL_SNAPSHOT` with the snapshot name or ID, `MODEL_ACCOUNT_UUID`
+Replace `MODAL_SNAPSHOT` with the snapshot name, `MODEL_ACCOUNT_UUID`
 with the account ID from the list, `CODEX_DEPLOYMENT` with the deployment name
 from `models`, and `SANDBOX_UUID` with the sandbox ID from the launch receipt.
 

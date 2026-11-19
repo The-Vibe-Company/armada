@@ -102,7 +102,7 @@ Apply `20261112162000_sandbox_usage_pricing.sql` through the normal migration
 process before deploying the server. The worker never applies remote migrations.
 Launch on an existing Modal snapshot:
 
-Replace `MODAL_SNAPSHOT` with the snapshot name or ID, and `SANDBOX_UUID`
+Replace `MODAL_SNAPSHOT` with the snapshot name, and `SANDBOX_UUID`
 with the sandbox ID from the launch receipt.
 
 ```sh

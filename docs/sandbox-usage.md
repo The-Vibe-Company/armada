@@ -84,7 +84,7 @@ migration with the normal release process before running this server version.
 After the normal runtime deployment, launch on an existing Modal snapshot without
 `--model`, then with an explicit model (or configured Codex endpoint model):
 
-Replace `MODAL_SNAPSHOT` with the snapshot name or ID, and `SANDBOX_UUID`
+Replace `MODAL_SNAPSHOT` with the snapshot name, and `SANDBOX_UUID`
 with the sandbox ID from the launch receipt.
 
 ```sh

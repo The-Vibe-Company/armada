@@ -43,7 +43,7 @@ refreshing the catalog. Tokens remain visible independently of pricing coverage.
 After normal server rollout (the #1205 admission migration must already be in
 place), launch **new** Modal sessions, one Claude and one Codex:
 
-Replace `MODAL_SNAPSHOT` with the snapshot name or ID, and `SANDBOX_UUID`
+Replace `MODAL_SNAPSHOT` with the snapshot name, and `SANDBOX_UUID`
 with the sandbox ID from the launch receipt.
 
 ```sh

@@ -69,7 +69,7 @@ using only its stored witness/source and verifies an exact two-turn sum.
 After normal server rollout, the coordinator launches a new plain Modal Codex
 session (OpenAI API-key account, `gpt-6.1-sol`), waits and reads:
 
-Replace `MODAL_SNAPSHOT` with the snapshot name or ID, and `SANDBOX_UUID`
+Replace `MODAL_SNAPSHOT` with the snapshot name, and `SANDBOX_UUID`
 with the sandbox ID from the launch receipt.
 
 ```sh

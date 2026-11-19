@@ -68,7 +68,7 @@ or cross-UI acceptance; no automatic backfill/current-price lookup is performed.
 
 After normal server rollout, on a Modal snapshot:
 
-Replace `MODAL_SNAPSHOT` with the snapshot name or ID, and `SANDBOX_UUID`
+Replace `MODAL_SNAPSHOT` with the snapshot name, and `SANDBOX_UUID`
 with the sandbox ID from the launch receipt.
 
 ```sh
