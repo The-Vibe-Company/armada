@@ -237,7 +237,7 @@
     "packages/mcp-server/test/docker-host-install.test.ts": 0.228,
     "packages/mcp-server/test/docker-host-routes.test.ts": 1.617,
     "packages/mcp-server/test/docker-host-store.test.ts": 4.283,
-    "packages/mcp-server/test/docker-normal-launch.test.ts": 7.131,
+    "packages/mcp-server/test/docker-normal-launch.test.ts": 49.678,
     "packages/mcp-server/test/docker-runtime-lifecycle.test.ts": 5.336,
     "packages/mcp-server/test/docker-sandbox-controls.test.ts": 5.764,
     "packages/mcp-server/test/docker-sandbox-routes.test.ts": 2.79,
