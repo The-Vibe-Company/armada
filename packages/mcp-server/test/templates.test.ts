@@ -59,7 +59,7 @@ async function fixture() {
     delete from auth.users;
     delete from mcp_invalidations;
   `);
-  const { db, people } = await seedDatabase(database);
+  const { db, people, sharedGoldenId: goldenId, openaiCredentialId: credential } = await seedDatabase(database);
   const queries: string[] = [];
   const sql: Sql = {
     query: (s, p) => {
@@ -75,12 +75,6 @@ async function fixture() {
     orgs: [{ orgId: people.org, role: userId === people.admin ? ("admin" as const) : ("member" as const) }],
     via: "supabase" as const,
   });
-  const { goldenId, credential } = (
-    await db.query<{ goldenId: string; credential: string }>(
-      `select (select id from goldens where name='shared') as "goldenId",
-              (select id from credentials where kind='openai') as credential`,
-    )
-  ).rows[0]!;
   const v = await vault.command(actor(), "variable", "set", {
     org: people.org,
     scope: "personal",

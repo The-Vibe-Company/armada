@@ -78,7 +78,7 @@ test("unconfigured database returns unknown counts", async () => {
 });
 
 test("database failures identify the missing relation or connection setting without leaking values", async () => {
-  const log = spyOn(console, "error").mockImplementation(() => {});
+  const log = spyOn(console, "error");
   try {
     for (const [code, diagnostic] of [
       ["42P01", { relation: "auth.users" }],

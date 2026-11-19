@@ -58,7 +58,7 @@ export function createMcpGateway(options: GatewayOptions) {
       throw new GatewayError("denied", "Gateway lease expired. Request a new sandbox binding.");
     await auth.assertActive(lease);
   }
-  async function create(lease: GatewayLease): Promise<Session> {
+  async function create(lease: GatewayLease) {
     if (all.size >= (options.maxSessions ?? 1000)) throw new GatewayError("busy", "Gateway session capacity reached.");
     const url = endpoint(lease.url);
     // Legacy SSE may advertise a different message path, but never a different origin.
@@ -317,7 +317,7 @@ export function createMcpGateway(options: GatewayOptions) {
   }
   return {
     /** Mount on one dedicated gateway URL. Sticky routing is required; unknown sessions are never recreated. */
-    async handle(request: Request): Promise<Response> {
+    async handle(request: Request) {
       try {
         if (
           new URL(request.url).origin !== origin ||
@@ -371,15 +371,15 @@ export function createMcpGateway(options: GatewayOptions) {
       }
     },
     /** Registry must call this immediately on disable/revoke/stop; closes live streams, not just future requests. */
-    async invalidate(connectionId: string): Promise<void> {
+    async invalidate(connectionId: string) {
       await Promise.all(
         [...all].filter((session) => session.lease.connectionId === connectionId).map((session) => session.close()),
       );
     },
-    async invalidateLease(leaseId: string): Promise<void> {
+    async invalidateLease(leaseId: string) {
       await Promise.all([...all].filter((session) => session.lease.id === leaseId).map((session) => session.close()));
     },
-    async close(): Promise<void> {
+    async close() {
       await Promise.all([...all].map((session) => session.close()));
     },
   };
