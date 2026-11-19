@@ -9,7 +9,7 @@ import { observeRequest } from "../src/request-observability.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeSelfFinish, selfFinishToken } from "../src/sandbox-finish.ts";
-import { outputJobFixture } from "./output-job-fixture.ts";
+import { outputJobFixture } from "./output-job.fixture.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 

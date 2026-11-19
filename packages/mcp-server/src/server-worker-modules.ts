@@ -72,8 +72,9 @@ const idleLane: LaneFactory = ({ sql, config, runtimeCheckpoint, idleDelayMs, do
       : {}),
   });
 
-const jobsLane: LaneFactory = ({ jobs, options, outputs }) => {
-  const runner = createJobsRunner(jobs, { [OUTPUTS_CAPTURE]: outputs.captureJob }, options.logError);
+const jobsLane: LaneFactory = ({ jobs, options, outputs, config }) => {
+  const kinds = config.encryptionKey ? { [OUTPUTS_CAPTURE]: outputs.captureJob } : {};
+  const runner = createJobsRunner(jobs, kinds, options.logError);
   return {
     ...runner,
     async reconcileOne(signal) {

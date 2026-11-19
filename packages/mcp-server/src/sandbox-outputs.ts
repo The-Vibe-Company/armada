@@ -225,25 +225,23 @@ async function collect(
   },
 ) {
   const { signal, writes, job } = options;
-  const authorizeRead = async () => {
+  const admitRead = async () => {
     signal?.throwIfAborted();
-    if (options.canDispatch && !(await options.canDispatch())) throw new OutputCollectionError("output_unavailable");
-    signal?.throwIfAborted();
-  };
-  // A cancelled read never writes again (the worker's drain relies on it); readers stop at their next check.
-  signal?.throwIfAborted();
-  // Taint can commit after the scan claim (e.g. while the provider resolves): admit the read only
-  // against current taint, immediately before dispatch (the same check-then-act fence exec uses).
-  // Docker additionally refuses dispatch and redacts replies under the runtime session lock.
-  const admitted = (
-    await outputPhase("admit_read", () =>
+    if (options.canDispatch && !(await options.canDispatch())) return;
+    const { rows } = await outputPhase("admit_read", () =>
       sql.query<{ outputs_collector_supported: boolean }>(
         `select outputs_collector_supported from public.sandboxes where id=$1 and ${ELIGIBLE}
           and ($2::bigint is null or (lifecycle_generation=$2::bigint and provider_sandbox_id=$3 and ${LIVE_CANDIDATE}))`,
         [id, job?.generation ?? null, providerId],
       ),
-    )
-  ).rows[0];
+    );
+    signal?.throwIfAborted();
+    return rows[0];
+  };
+  const authorizeRead = async () => {
+    if (job && !(await admitRead())) throw new OutputCollectionError("output_unavailable");
+  };
+  const admitted = await admitRead();
   if (!admitted) return;
   // Final capture never probes first. Its bounded read is the last chance to collect a deliverable,
   // and the read's own exit status classifies an unsupported collector, so a transient or parallel
@@ -462,11 +460,15 @@ async function collectRetained(
   const fence = `id=$1 and lifecycle_generation=$2::bigint
     and provider_sandbox_id=$3 and not application_secret_tainted and ${BOAT_RETAINED_OUTPUT_STOP}`;
   const args = [row.id, job.generation, row.provider_sandbox_id];
-  const admitted = await outputPhase("admit_read", () =>
-    sql.query(`select 1 from public.sandboxes where ${fence}`, args),
-  );
-  if (!admitted.rows.length || !(await canDispatch())) return false;
-  signal.throwIfAborted();
+  const admitRead = async () => {
+    if (!(await canDispatch())) return false;
+    const admitted = await outputPhase("admit_read", () =>
+      sql.query(`select 1 from public.sandboxes where ${fence}`, args),
+    );
+    signal.throwIfAborted();
+    return admitted.rows.length > 0;
+  };
+  if (!(await admitRead())) return false;
   const snapshot = await outputPhase("open_retained_snapshot", async () =>
     provider.openRetainedOutputs?.({ sandboxId: row.provider_sandbox_id, signal }),
   );
@@ -505,8 +507,7 @@ async function collectRetained(
       outputReadBytes: OUTPUT_MAX_READ_BYTES,
       listOutputEntries: async () => snapshot.entries,
       readOutputChunk: async ({ chunk }) => {
-        if (!(await canDispatch())) return null;
-        signal.throwIfAborted();
+        if (!(await admitRead())) return null;
         return outputPhase("read_chunk", async () => snapshot.readChunk(chunk));
       },
     },
@@ -527,20 +528,22 @@ export function createSandboxOutputs(
   providerFor: (id: string) => Promise<OutputReader>,
   docker?: (id: string) => OutputReader,
 ) {
-  const pending = new Map<Promise<boolean>, SandboxPlacementProviderId>();
+  const pending = new Map<Promise<boolean>, { provider: SandboxPlacementProviderId; retained: boolean }>();
   const writes = new Set<Promise<unknown>>();
   return {
     async enqueueCaptures(jobs: Pick<ReturnType<typeof createJobsStore>, "enqueue">, signal: AbortSignal) {
       if (!key || signal.aborted) return;
-      const { rows } = await sql.query<{ id: string; org_id: string; generation: number }>(
-        `select id, org_id, lifecycle_generation as generation from public.sandboxes
+      const { rows } = await sql.query<{ id: string; org_id: string; generation: string }>(
+        `select id, org_id, lifecycle_generation::text as generation from public.sandboxes
          where ${CAPTURE_CANDIDATE} and not exists (
-           select 1 from public.jobs j where j.kind='outputs_capture' and j.sandbox_id=sandboxes.id and j.generation=sandboxes.lifecycle_generation
+           select 1 from public.jobs j where j.idem_key =
+             replace(json_build_array('internal',sandboxes.org_id,$1::text,sandboxes.id,sandboxes.lifecycle_generation,'periodic')::text, ', ', ',')
          ) order by created_at, id limit 1`,
+        [OUTPUTS_CAPTURE],
       );
       for (const row of rows) {
         if (signal.aborted) return;
-        await jobs.enqueue(OUTPUTS_CAPTURE, row.id, row.generation, "periodic", null, {
+        await jobs.enqueue(OUTPUTS_CAPTURE, row.id, Number(row.generation), "periodic", null, {
           orgId: row.org_id,
           // This recurring job uses run_after for cadence; attempts span the full generation.
           maxAttempts: 2_147_483_646,
@@ -553,6 +556,7 @@ export function createSandboxOutputs(
         if (!key || !job.sandbox_id || !job.generation) return { status: "done" };
         if (!(await context.canDispatch())) return { status: "fail", reason: "outputs_capture_dispatch_unavailable" };
         const id = job.sandbox_id;
+        const startedAt = Date.now();
         const row = (
           await sql.query<OutputAttempt & { id: string; provider_sandbox_id: string; scan: string; retained: boolean }>(
             `update public.sandboxes set outputs_attempt_count=outputs_attempt_count+1
@@ -563,17 +567,21 @@ export function createSandboxOutputs(
           )
         ).rows[0];
         // A Boat sandbox can become eligible for retained capture after the current stop completes.
-        const retry = (ms: number): JobResult => ({ status: "retry", after: new Date(Date.now() + ms) });
+        const retry = (ms: number): JobResult => ({ status: "retry", after: new Date(startedAt + ms) });
         if (!row) {
           const waiting = await sql.query(
             `select 1 from public.sandboxes where id=$1 and lifecycle_generation=$2::bigint
-             and status in ('starting','ready','running','stopping','failed') and stopped_at is null
-             and not application_secret_tainted and (provider='boat' or not ('collector_unsupported'=any(outputs_failure_reasons)))`,
+             and ((${CAPTURE_CANDIDATE}) or (
+               status in ('starting','ready','running','stopping','failed') and stopped_at is null
+               and not application_secret_tainted and (provider='boat' or not ('collector_unsupported'=any(outputs_failure_reasons)))
+             ))`,
             [id, job.generation],
           );
           return waiting.rows.length ? retry(30_000) : { status: "done" };
         }
-        if ([...pending.values()].filter((provider) => provider === row.provider).length >= OUTSTANDING_MAX)
+        const outstanding = [...pending.values()];
+        if (row.retained && outstanding.some(({ retained }) => retained)) return retry(120_000);
+        if (outstanding.filter(({ provider }) => provider === row.provider).length >= OUTSTANDING_MAX)
           return retry(30_000);
         const deadline = AbortSignal.any([context.signal, AbortSignal.timeout(SAMPLE_DEADLINE_MS)]);
         const work = (async () => {
@@ -596,7 +604,7 @@ export function createSandboxOutputs(
           }
           return false;
         })();
-        pending.set(work, row.provider);
+        pending.set(work, { provider: row.provider, retained: row.retained });
         void work.then(
           () => pending.delete(work),
           () => pending.delete(work),
@@ -773,7 +781,7 @@ export function createSandboxOutputs(
   };
 }
 
-function outputRange(header: string, size: number): { start: number; end: number } | null {
+function outputRange(header: string, size: number) {
   const parsed = sandboxOutputOperations.readSandboxOutput.input.headers.Range.safeParse(header);
   if (!parsed.success || !size) return null;
   const [start, end] = parsed.data.slice("bytes=".length).split("-");

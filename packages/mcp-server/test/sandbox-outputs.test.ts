@@ -9,7 +9,7 @@ import {
 import { captureFinalOutputs, createSandboxOutputs, drainFinalOutputs } from "../src/sandbox-outputs.ts";
 import { startServerWorkers } from "../src/server-workers.ts";
 import { preserveBeforeStop } from "../src/work-preservation.ts";
-import { outputJobFixture } from "./output-job-fixture.ts";
+import { outputJobFixture } from "./output-job.fixture.ts";
 import { publishedGetResponse } from "./published-response.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 
@@ -282,6 +282,39 @@ test("a transient retained read backs off, then publishes a file from the stoppe
   expect(attempts).toBe(2);
 });
 
+test("a stop settling during a capture job preserves the retained archive read", async () => {
+  const { db, id, sql } = await fixture();
+  let stopSettled = false;
+  const racing: Sql = {
+    ...sql,
+    async query(query, params) {
+      const result = await sql.query(query, params);
+      if (query.includes("set outputs_attempt_count=outputs_attempt_count+1") && result.rows.length === 0) {
+        await sql.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [id]);
+        stopSettled = true;
+      }
+      return result;
+    },
+  };
+  let retainedReads = 0;
+  const service = outputJobFixture(racing, KEY, async () => ({
+    readOutputs: async () => [],
+    async openRetainedOutputs() {
+      retainedReads++;
+      return "gone";
+    },
+  }));
+
+  expect(await sample(service)).toBe(true);
+  await db.query("update sandboxes set status='stopping' where id=$1", [id]);
+  await db.query("update jobs set run_after=now() where sandbox_id=$1", [id]);
+  expect(await sample(service)).toBe(true);
+  expect(stopSettled).toBe(true);
+  await db.query("update jobs set run_after=now() where sandbox_id=$1", [id]);
+  expect(await sample(service)).toBe(true);
+  expect(retainedReads).toBe(1);
+});
+
 test("a stalled retained read leaves capacity to collect live outputs", async () => {
   const { db, id, sql } = await fixture();
   await db.query(
@@ -292,8 +325,10 @@ test("a stalled retained read leaves capacity to collect live outputs", async ()
   );
   const hold = Promise.withResolvers<null>();
   const entered = Promise.withResolvers<void>();
+  let retainedReads = 0;
   const service = outputJobFixture(sql, KEY, async () => ({
     openRetainedOutputs() {
+      retainedReads++;
       entered.resolve();
       return hold.promise;
     },
@@ -307,6 +342,7 @@ test("a stalled retained read leaves capacity to collect live outputs", async ()
     hold.resolve(null);
     await service.drain();
   }
+  expect(retainedReads).toBe(1);
   expect((await db.query("select name from sandbox_outputs where sandbox_id=$1", [id])).rows).toEqual([
     { name: "live.txt" },
   ]);
@@ -604,18 +640,19 @@ test("expired Modal lookups leave sampling capacity for a healthy Boat sandbox",
     if (sandboxId === id) return provider;
     lookups++;
     onLookup();
-    return hold.promise;
+    return lookups <= 4 ? hold.promise : provider;
   });
   try {
-    for (const _ of stalled) {
+    for (const _ of stalled.slice(0, 4)) {
       const entered = Promise.withResolvers<void>();
       onLookup = entered.resolve;
       const deadline = new AbortController();
       expect(await service.reconcileOne(deadline.signal)).toBe(true);
-      if (_ !== stalled.at(-1)) await entered.promise;
+      await entered.promise;
       deadline.abort();
       await service.drain();
     }
+    expect(await sample(service)).toBe(true);
     expect(lookups).toBe(4);
     expect(await sample(service)).toBe(true);
     expect(await names()).toEqual([{ sandbox_id: id, name: "memo.txt" }]);
