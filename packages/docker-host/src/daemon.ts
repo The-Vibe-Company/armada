@@ -311,6 +311,7 @@ export type TickOptions = {
   sandboxes?: ReadonlySet<string>;
   /** Snapshot builds still executing in this process; when given, it replaces `skipSnapshots` after the poll. */
   snapshots?: ReadonlySet<string>;
+  deferRestores?: ReadonlySet<string>;
   /**
    * Receives an admitted machine operation instead of awaiting it, so the next
    * tick can take another sandbox's job. The durable receipt is already saved;
@@ -405,30 +406,28 @@ export async function runJobs(
   // Counts finished operations. If work finished after the tick refused a job
   // as busy (it is then no longer in `settled()`), the loop polls again at once.
   let finished = 0;
-  let restoreRetry = false;
+  let deferRestores = new Set<string>();
   const settled = () => Promise.race(running.values());
   try {
     while (!loop.stopping()) {
-      if (restoreRetry) {
-        restoreRetry = false;
-        await loop.sleep(DOCKER_HOST_IDLE_MS);
-        continue;
-      }
       await loop.beforeTick?.();
       if (running.size >= DOCKER_HOST_CONCURRENT_JOBS) {
         await settled();
         continue;
       }
       const finishedBefore = finished;
+      const deferred = deferRestores;
+      deferRestores = new Set();
       let outcome: TickOutcome;
       try {
         outcome = await tick(store, api, executor, live.snapshots.size > 0, loop.now ?? Date.now, {
           waitSeconds: DOCKER_HOST_POLL_WAIT_SECONDS,
           ...live,
+          deferRestores: deferred,
           dispatch(job, work) {
             const done = work
-              .catch(() => {
-                if (job.operation === "restore") restoreRetry = true;
+              .catch((error) => {
+                if (job.operation === "restore" && isUncertainDockerFailure(error)) deferRestores.add(job.requestId);
                 loop.failed?.("job");
               })
               .finally(() => {
@@ -590,7 +589,10 @@ async function admitLocked(
       skipSnapshots,
       ...(options.waitSeconds === undefined
         ? {}
-        : { waitSeconds: options.waitSeconds, running: [...(options.running ?? [])] }),
+        : {
+            waitSeconds: options.waitSeconds,
+            running: [...(options.running ?? []), ...(options.deferRestores ?? [])],
+          }),
     });
   } catch (error) {
     pollError = error;
@@ -965,8 +967,7 @@ async function admitLocked(
       }
       receipt.outcome = "completed";
     } catch (error) {
-      if (receipt.operation === "restore" && error instanceof DockerMachineError && error.code === "docker_failed")
-        throw error;
+      if (receipt.operation === "restore" && isUncertainDockerFailure(error)) throw error;
       receipt.outcome = "failed";
       if (error instanceof DockerDiskFloorError) receipt.reason = "disk_full";
       else if (receipt.operation === "buildSnapshot") {
@@ -1027,6 +1028,7 @@ async function admitLocked(
   // cancels queued work (revocation, owner removal, snapshot build expiry). So
   // this host keeps each sandbox, and snapshot builds, serial itself.
   if (
+    options.deferRestores?.has(job.requestId) ||
     heldByOtherRestore(machineKey) ||
     (restoreKey !== undefined && heldByOtherRestore(restoreKey)) ||
     options.running?.has(job.requestId) ||
@@ -1156,6 +1158,10 @@ async function admitLocked(
       await api.result(state, accepted);
     },
   };
+}
+
+function isUncertainDockerFailure(error: unknown) {
+  return error instanceof DockerMachineError && error.code === "docker_failed";
 }
 
 function digest(value: string): string {
