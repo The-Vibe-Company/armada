@@ -6,6 +6,7 @@ const org = "11111111-1111-4111-8111-111111111111";
 const host = "22222222-2222-4222-8222-222222222222";
 const credential = "33333333-3333-4333-8333-333333333333";
 const requestId = "44444444-4444-4444-8444-444444444444";
+const idempotencyKey = "Launch_Key_With_Case";
 const image = `worker@sha256:${"a".repeat(64)}`;
 const args = [
   "launch",
@@ -19,8 +20,8 @@ const args = [
   host,
   "--credential-id",
   credential,
-  "--request-id",
-  requestId,
+  "--idempotency-key",
+  idempotencyKey,
 ];
 async function capture(argv: string[], fetcher: (request: Request) => Promise<Response>, config?: unknown) {
   let out = "",
@@ -85,7 +86,7 @@ test.each(["codex", "claude", "opencode"] as const)(
       hostId: host,
       harness,
       credentialId: credential,
-      requestId,
+      idempotencyKey,
       ttlSeconds: 1800,
       prompt: "answer once",
     });
@@ -113,6 +114,7 @@ test("Docker incompatible or malformed options fail before HTTP", async () => {
   const calls: Request[] = [];
   for (const flags of [
     ["--agent", "unknown"],
+    ["--request-id", requestId],
     ["--variable", "PATH:33333333-3333-4333-8333-333333333333:1"],
     ["--variable", "APP_REGION:not-a-uuid:1"],
     ["--image", image],
@@ -145,7 +147,7 @@ test.each([
   expect(result.code).not.toBe(0);
   expect(result.out).toBe("");
   expect(result.err).toContain(message);
-  expect(result.err).not.toContain("Docker launch request ");
+  expect(result.err).not.toContain("Docker launch key ");
   expect(result.err).not.toContain("outcome is unknown");
 });
 
@@ -164,17 +166,18 @@ test("Docker routing refusals retain the server diagnosis in JSON", async () => 
   expect(result.err).not.toContain("Private image diagnostics");
 });
 
-test("unknown Docker launch outcome retains a stable request UUID for exact retry", async () => {
-  for (const mode of ["lost", "wrong-sandbox", "server-failure", "explicit-unknown"]) {
+test("unknown Docker launch outcome retains a stable replay key for exact retry", async () => {
+  for (const mode of ["lost", "missing-sandbox-id", "server-failure", "explicit-unknown"]) {
     const result = await capture(args, async () => {
       if (mode === "lost") throw Error("offline");
       if (mode === "server-failure") return new Response("Gateway unavailable", { status: 503 });
       if (mode === "explicit-unknown") return Response.json({ error: { code: "outcome_unknown" } }, { status: 409 });
-      return Response.json({ sandbox: { provider: "docker", id: host }, golden: null, runtime: { epoch: "1" } });
+      return Response.json({ sandbox: { provider: "docker" }, golden: null, runtime: { epoch: "1" } });
     });
     expect(result.code).not.toBe(0);
     expect(result.out).toBe("");
-    expect(result.err).toContain(`--request-id ${requestId}`);
+    expect(result.err).toContain(JSON.stringify(idempotencyKey));
+    expect(result.err).toContain("--idempotency-key");
     expect(result.err).toContain("do not create a replacement");
   }
 });

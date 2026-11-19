@@ -96,12 +96,12 @@ read -r -p 'Owner staging Docker host UUID: ' staging_host
 read -r -p 'Staging Codex account UUID: ' docker_account
 read -r -p 'Repository and ref (owner/repo@ref): ' worker_repo
 docker_prompt='Summarize the repository without changing any files.'
-docker_request_id="$(node -p 'require("node:crypto").randomUUID()')"
-printf '%s\n' "$docker_request_id" > "$break_glass_dir/docker-request-id"
+docker_launch_key="$(node -p 'require("node:crypto").randomUUID()')"
+printf '%s\n' "$docker_launch_key" > "$break_glass_dir/docker-launch-key"
 ```
 
 During an incident, set `docker_prompt` to the repair task before submitting
-the launch. Record the request ID, org, host, account UUID, repo and exact prompt in your
+the launch. Record the launch key, org, host, account UUID, repo and exact prompt in your
 incident notes so you can recover the submission if you lose the terminal.
 Keep credentials out of the prompt and notes.
 
@@ -109,19 +109,12 @@ Keep credentials out of the prompt and notes.
 staging_armada launch "$docker_prompt" \
   --provider docker --host "$staging_host" --org "$staging_org" \
   --agent codex --credential-id "$docker_account" --repo "$worker_repo" \
-  --request-id "$docker_request_id"
+  --idempotency-key "$docker_launch_key"
 ```
 
 Use the returned sandbox ID with the same status and logs commands. If the
-response was lost, check for the Docker sandbox using the request ID as its ID.
-
-```bash
-staging_armada status "$docker_request_id" --org "$staging_org"
-```
-
-If you still need the receipt, recover `docker_request_id` from the saved file
-or incident notes and rerun the exact launch command above with the original
-inputs and request ID. Keep that ID for this attempt.
+response was lost, recover `docker_launch_key` from the saved file or incident
+notes and rerun the exact launch command above with the original inputs and key.
 
 ## 3. Run a local Codex worker
 

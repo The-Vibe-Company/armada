@@ -36,6 +36,29 @@ export type ToolBinding = <In extends ToolInput, Out extends z.ZodRawShape>(
   invoke: (args: ToolArgs<In>) => Promise<CallToolResult>,
 ) => void;
 
+export function registerTool<In extends ToolInput, Out extends z.ZodRawShape>(
+  server: McpServer,
+  name: string,
+  config: ToolContract<In, Out>,
+  invoke: (args: ToolArgs<In>) => Promise<CallToolResult>,
+) {
+  server.registerTool(
+    name,
+    {
+      title: config.title,
+      description: config.description,
+      inputSchema: config.input,
+      outputSchema: config.output,
+      annotations: {
+        readOnlyHint: config.readOnly ?? false,
+        destructiveHint: config.destructive ?? false,
+        openWorldHint: true,
+      },
+    },
+    invoke as never,
+  );
+}
+
 export function createToolRegistration(
   server: McpServer | undefined,
   context: ToolContext,
@@ -50,21 +73,7 @@ export function createToolRegistration(
     invoke: (args: ToolArgs<In>) => Promise<CallToolResult>,
   ) => {
     bind?.(name, config, invoke);
-    server?.registerTool(
-      name,
-      {
-        title: config.title,
-        description: config.description,
-        inputSchema: config.input,
-        outputSchema: config.output,
-        annotations: {
-          readOnlyHint: config.readOnly ?? false,
-          destructiveHint: config.destructive ?? false,
-          openWorldHint: true,
-        },
-      },
-      invoke as never,
-    );
+    if (server) registerTool(server, name, config, invoke);
   };
 
   const tool = <In extends ToolInput, Out extends z.ZodRawShape>(

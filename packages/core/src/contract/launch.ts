@@ -118,6 +118,9 @@ const host = {
 };
 const snapshot = { snapshotId: uuid, hostId: uuid.optional() };
 
+export const dockerHostLaunchFields = z.strictObject({ ...docker, ...host });
+export const dockerSnapshotLaunchFields = z.strictObject({ ...docker, ...snapshot });
+
 // Each strict variant carries its provider literal. Providers with multiple
 // source and runtime forms use distinct objects so mixed fields are rejected.
 export const launchInput = z.union([
@@ -126,10 +129,8 @@ export const launchInput = z.union([
   z.strictObject({ ...modal, ...defaultRuntime }),
   z.strictObject({ ...modal, ...explicitRuntime, runtimeTransport: z.literal("dialout") }),
   pinnedModal,
-  z.strictObject({ ...docker, ...host, requestId: uuid }),
-  z.strictObject({ ...docker, ...snapshot, requestId: uuid }),
-  z.strictObject({ ...docker, ...host, idempotencyKey }),
-  z.strictObject({ ...docker, ...snapshot, idempotencyKey }),
+  dockerHostLaunchFields.extend({ idempotencyKey }),
+  dockerSnapshotLaunchFields.extend({ idempotencyKey }),
 ]);
 
 export type LaunchInput = z.input<typeof launchInput>;

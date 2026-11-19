@@ -11,7 +11,7 @@ import { sandboxRestOperations } from "./sandbox-rest.ts";
 import { sandboxViewerOperations } from "./sandbox-viewer.ts";
 
 export type { CreatedInboundTrigger } from "./inbound-trigger.ts";
-export type { LaunchInput } from "./launch.ts";
+export { dockerHostLaunchFields, dockerSnapshotLaunchFields, type LaunchInput } from "./launch.ts";
 export { type LaunchEnvelope, launchEnvelope, templateLaunchResponse } from "./launch-response.ts";
 export { githubOperations, goldenOperations, launchTemplateOperation } from "./resources.ts";
 export {
@@ -35,6 +35,8 @@ export { sandboxViewerOperations, VIEWER_ACCESS_DENIED } from "./sandbox-viewer.
 
 export interface Operation<Input extends z.ZodType, Output extends z.ZodType | undefined = undefined> {
   readonly name: string;
+  readonly toolName?: string;
+  readonly mcpDescription?: string;
   readonly route: { readonly method: string; readonly path: `/api/v1/${string}` };
   readonly input: {
     readonly body: Input;
@@ -56,6 +58,14 @@ export interface Operation<Input extends z.ZodType, Output extends z.ZodType | u
 
 export const launch = {
   name: "launch",
+  toolName: "launch",
+  mcpDescription:
+    "Forks a golden into a new sandbox, pulls its repos, runs its init commands, and starts the agent. " +
+    "With `prompt` the agent starts working at once (status running). Without it the sandbox is left ready " +
+    "and the conversation starts at the first `send`. The sandbox gets only your (or your org's) Armada " +
+    "credentials for this agent, never the boat.dev account's. When the caller connected GitHub, git and gh in " +
+    "the sandbox act as that person (8 hour token): see `github` in the answer. Setup can take a few minutes. " +
+    "Personal sessions may use an org slug or UUID. For scoped tokens, omit `org` or use the scoped org UUID.",
   route: { method: "POST", path: "/api/v1/sandbox/launch" },
   input: { body: launchInput },
   output: launchOutput,

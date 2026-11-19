@@ -141,7 +141,7 @@ test("published launch request keeps golden, pinned Modal template and Docker so
   const { org: _org, ...templateWithoutOrg } = template;
   expect(launch.safeParse(templateWithoutOrg).success).toBe(true);
   expect(launch.safeParse({ ...template, golden: "web" }).success).toBe(false);
-  const docker = { org, provider: "docker", hostId: org, harness: "codex", requestId: org };
+  const docker = { org, provider: "docker", hostId: org, harness: "codex", idempotencyKey: org };
   expect(launch.safeParse(docker).success).toBe(true);
   // The Docker handler refuses fields it does not know, including a golden or an image.
   expect(launch.safeParse({ ...docker, golden: "web" }).success).toBe(false);
@@ -149,7 +149,7 @@ test("published launch request keeps golden, pinned Modal template and Docker so
   expect(launch.safeParse({ golden: "web", harness: "codex", provider: "docker" }).success).toBe(false);
 });
 
-test("published Docker launch requests require exactly one replay key and validate external references", async () => {
+test("published Docker launch requests require an idempotency key and validate external references", async () => {
   const { publishedRequest } = await import("./published-response.ts");
   const launch = publishedRequest("sandbox/launch");
   const id = "11111111-1111-4111-8111-111111111111";
@@ -169,7 +169,7 @@ test("published Docker launch request accepts the mixed-case UUIDs launch admiss
   const launch = publishedRequest("sandbox/launch");
   // JSON Schema drops regex flags, so the published pattern itself must allow both cases.
   const id = "ABCDEF12-0000-4000-8000-00000000000a";
-  const base = { org: id, provider: "docker", harness: "codex", requestId: id };
+  const base = { org: id, provider: "docker", harness: "codex", idempotencyKey: id };
   expect(launch.safeParse({ ...base, hostId: id }).success).toBe(true);
   expect(launch.safeParse({ ...base, snapshotId: id }).success).toBe(true);
   expect(launch.safeParse({ ...base, hostId: "ABCDEF12-0000-4000-8000-00000000000g" }).success).toBe(false);

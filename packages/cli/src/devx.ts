@@ -21,7 +21,7 @@ export async function prepareLaunch(argv: readonly string[], auth: AuthIo): Prom
       "--host",
       "--golden",
       "--skill",
-      "--request-id",
+      "--idempotency-key",
       "--credential-version",
       "--variable",
       "--secret",

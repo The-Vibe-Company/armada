@@ -418,13 +418,15 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         message: "Launch response could not be read.",
         ...correlation,
       });
-    })) as { provider?: unknown; sandbox?: { id?: unknown; provider?: unknown } } | null;
+    })) as { provider?: unknown; sandbox?: { id?: unknown; provider?: unknown; externalRef?: unknown } } | null;
     if (path === "sandbox/launch") {
       const expected = (body as { provider?: unknown }).provider;
       if (
         (keyedDockerLaunch &&
-          (result?.sandbox?.id !== (body as { requestId?: unknown }).requestId ||
-            result?.sandbox?.provider !== "docker" ||
+          (typeof result?.sandbox?.id !== "string" ||
+            !UUID.test(result.sandbox.id) ||
+            result.sandbox.provider !== "docker" ||
+            result.sandbox.externalRef !== (body as { externalRef?: unknown }).externalRef ||
             smokeReceiptProvider(result) !== "docker")) ||
         (modalLaunch &&
           (typeof result?.sandbox?.id !== "string" ||
@@ -651,10 +653,9 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     let blockedDiagnostic: Diagnostic | undefined;
     let clientStopEligible = false;
     const api = <T>(path: string, body: object = {}) => request<T>(path, { org: c.org, ...body });
-    function dockerLaunchInput(requestId: string) {
+    function dockerLaunchInput() {
       return {
         hostId: c.hostId,
-        requestId,
         ...(dockerSnapshot ? { snapshotId: dockerSnapshot.id } : {}),
         ...(c.githubRepository && (!feature || feature === "github")
           ? {
@@ -672,8 +673,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
 
     async function launchWithObservation(provider: "modal" | "docker") {
       const started = io.now();
-      const launchId = crypto.randomUUID();
-      const requestKey = `post-deploy-smoke:${launchId}`;
+      const requestKey = `post-deploy-smoke:${crypto.randomUUID()}`;
       const step = dockerSnapshot ? "parity_docker_snapshot_launch" : `parity_${provider}_launch`;
       const timeoutMs = launchTimeouts[step] ?? 600_000;
       const budget = Math.min(deadline, requestDeadline ?? deadline);
@@ -697,9 +697,8 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             credentialId: c.modelAccountId,
             visibility: "private",
             ttlSeconds: 1800,
-            ...(provider === "docker"
-              ? dockerLaunchInput(launchId)
-              : { golden: c.golden, connections: [], idempotencyKey: requestKey }),
+            ...(provider === "docker" ? dockerLaunchInput() : { golden: c.golden, connections: [] }),
+            idempotencyKey: requestKey,
             externalRef: requestKey,
           },
           Math.min(timeoutMs, remaining),
@@ -725,8 +724,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
               row?.provider !== provider ||
               row.externalRef !== requestKey ||
               typeof row.id !== "string" ||
-              !UUID.test(row.id) ||
-              (provider === "docker" && row.id !== launchId)
+              !UUID.test(row.id)
             )
               return;
             if (!id) await claim(row.id);

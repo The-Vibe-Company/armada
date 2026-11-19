@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { relativeAge } from "../src/lib/relative-time.ts";
+import { relativeAge } from "./relative-time.ts";
 
 const NOW = Date.parse("2026-11-09T12:00:00Z");
 
@@ -14,7 +14,7 @@ test("a creation time reads as its age, never negative and never NaN", () => {
     ["2026-10-30T12:00:00Z", "10 days ago"],
     ["2026-09-10T12:00:00Z", "2 months ago"],
     ["2024-11-09T12:00:00Z", "2 years ago"],
-    // Clock skew: a time ahead of the viewer's clock is not an age below zero.
+
     ["2026-11-09T12:03:00Z", "just now"],
     ["not a date", null],
     ["", null],

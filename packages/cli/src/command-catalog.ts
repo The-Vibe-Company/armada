@@ -82,7 +82,7 @@ function optionFlags(help: string) {
   return [...help.matchAll(/--[a-z][a-z-]*/g)].map((match) => match[0]);
 }
 
-export const optionWords = [
+const optionWords = [
   ...new Set([
     ...commands
       .flatMap(({ help, subcommandHelp }) => [help, ...Object.values(subcommandHelp ?? {})])

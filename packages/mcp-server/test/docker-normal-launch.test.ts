@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createSqlAuthStore } from "@armada/auth";
 import {
   type AgentEvent,
@@ -45,6 +45,7 @@ import { createSqlData } from "../src/data.ts";
 import { createDockerBootstrapService } from "../src/docker-bootstrap-service.ts";
 import { createDockerHostRoutes } from "../src/docker-host-routes.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
+import { dockerLaunchRequestId } from "../src/docker-launch-identity.ts";
 import { createDockerNormalLaunch } from "../src/docker-normal-launch.ts";
 import { createDockerNormalSend } from "../src/docker-normal-send.ts";
 import { createDockerRuntimeLifecycle } from "../src/docker-runtime-lifecycle.ts";
@@ -123,20 +124,35 @@ async function fixture(
     adminId = randomUUID(),
     otherId = randomUUID(),
     credentialId = randomUUID();
-  await db.query(`insert into auth.users(id) values($1),($2),($3)`, [userId, adminId, otherId]);
-  await db.query(`insert into public.orgs(id,name) values($1,$2)`, [orgId, `normal-launch-${orgId}`]);
+  const installationId = randomUUID();
+  const host = { hostId: randomUUID(), hostToken: randomBytes(32).toString("hex") };
   await db.query(
-    `insert into public.members(org_id,user_id,role) values($1,$2,'member'),($1,$3,'admin'),($1,$4,'member')`,
-    [orgId, userId, adminId, otherId],
+    `with users as (
+       insert into auth.users(id) values($2),($3),($4)
+     ), org as (
+       insert into public.orgs(id,name) values($1,$5)
+     ), members as (
+       insert into public.members(org_id,user_id,role) values($1,$2,'member'),($1,$3,'admin'),($1,$4,'member')
+     )
+     insert into public.docker_hosts(
+       id,org_id,owner_id,registration_expires_at,installation_id,hash,last_seen_at,daemon_version,daemon_protocol
+     ) values($6,$1,$3,now()+interval '5 minutes',$7,$8,now(),$9,$10)`,
+    [
+      orgId,
+      userId,
+      adminId,
+      otherId,
+      `normal-launch-${orgId}`,
+      host.hostId,
+      installationId,
+      createHash("sha256").update(host.hostToken).digest("hex"),
+      options.daemonVersion ?? "2.28.0",
+      DOCKER_HOST_PROTOCOL - 1,
+    ],
   );
   const actor = { userId, orgId },
     admin = { userId: adminId, orgId };
   const caller: Caller = { userId, orgs: [{ orgId, role: "member" }], via: "supabase" };
-  const registration = await hosts.issueRegistration(admin),
-    installationId = randomUUID();
-  const host = await hosts.exchangeRegistration(registration.registrationToken, installationId);
-  await hosts.poll(host.hostToken, installationId, options.daemonVersion ?? "2.28.0");
-  await db.query("update docker_hosts set daemon_protocol=$2 where id=$1", [host.hostId, DOCKER_HOST_PROTOCOL - 1]);
   const secret = `offline-normal-launch-${randomUUID()}`;
   // Omitted version must select the current pin, not fabricate version one.
   await db.query(
@@ -663,8 +679,9 @@ test("normal admission rejects unsupported input before resolution, scopes owner
 test("the published Docker launch schema admits a first prompt exactly when launch admission does", async () => {
   const f = await fixture();
   const published = publishedRequest("sandbox/launch");
-  const { prompt: _prompt, ...base } = f.body;
-  const snapshot = { ...base, hostId: undefined, snapshotId: randomUUID() };
+  const { prompt: _prompt, requestId, hostId, ...fields } = f.body;
+  const base = { ...fields, hostId, idempotencyKey: requestId };
+  const snapshot = { ...fields, idempotencyKey: requestId, snapshotId: randomUUID() };
   const cases: [string | undefined, boolean][] = [
     [undefined, true],
     ["Fix the failing test.", true],
@@ -672,14 +689,17 @@ test("the published Docker launch schema admits a first prompt exactly when laun
     ["", false],
     ["   ", false],
     ["\t\n", false],
-    ["  ﻿", false],
+    ["\u00a0\u2028\ufeff", false],
   ];
   for (const [prompt, admitted] of cases) {
     const body = prompt === undefined ? base : { ...base, prompt };
     expect(published.safeParse(body).success).toBe(admitted);
     expect(published.safeParse(prompt === undefined ? snapshot : { ...snapshot, prompt }).success).toBe(admitted);
     // Normalization runs before the placement switch: a disabled service answers an admitted body with unavailable.
-    await rejected(f.service(sql, false).launch(f.caller, body), admitted ? "unavailable" : "invalid_request");
+    await rejected(
+      f.service(sql, false).launch(f.caller, { ...f.body, prompt }),
+      admitted ? "unavailable" : "invalid_request",
+    );
   }
   expect(await counts(f)).toEqual({ sandboxes: 0, claims: 0, jobs: 0, commands: 0 });
 });
@@ -789,13 +809,14 @@ test.each([
 
 test("prompt-free, image-free launch normalizes UUIDs, uses the default image, honors TTL and stops at runtime readiness", async () => {
   const f = await fixture({ daemonVersion: "2.27.0" });
-  const { prompt: _prompt, ...base } = f.body;
+  const { prompt: _prompt, requestId: idempotencyKey, ...base } = f.body;
+  f.body.requestId = dockerLaunchRequestId(key, f.actor.userId, f.actor.orgId, idempotencyKey);
   const body = {
     ...base,
     org: base.org.toUpperCase(),
     hostId: base.hostId.toUpperCase(),
     credentialId: base.credentialId.toUpperCase(),
-    requestId: base.requestId.toUpperCase(),
+    requestId: f.body.requestId.toUpperCase(),
     ttlSeconds: 3600,
   };
   const result = await f.service(sql, true, 10_000, null).launch(f.caller, body);
@@ -813,7 +834,7 @@ test("prompt-free, image-free launch normalizes UUIDs, uses the default image, h
   const { post } = restControl(f, {
     dockerLaunch: f.service(sql, true, 10_000, `ghcr.io/the-vibe-company/armada-sandbox@sha256:${"b".repeat(64)}`),
   });
-  const replay = await post("sandbox/launch", { ...base, ttlSeconds: 3600 });
+  const replay = await post("sandbox/launch", { ...base, idempotencyKey, ttlSeconds: 3600 });
   publishedResponse("sandbox/launch").parse(replay);
   expect(replay).toEqual({ ...result, promptId: null, conversationId: null });
   expect(await counts(f)).toEqual({ sandboxes: 1, claims: 1, jobs: 2, commands: 3 });
@@ -1048,12 +1069,14 @@ test("canonical Docker admission replays a scoped key and makes the external ref
 
 test("the normal HTTP route accepts the dashboard body and returns a launched sandbox readable through normal controls", async () => {
   const f = await fixture();
+  const idempotencyKey = `docker:${f.body.requestId}`;
+  f.body.requestId = dockerLaunchRequestId(key, f.actor.userId, f.actor.orgId, idempotencyKey);
   const body = dockerLaunchBody({
     org: f.actor.orgId,
     hostId: f.hostId,
     harness: "codex",
     credentialId: f.body.credentialId,
-    requestId: f.body.requestId,
+    idempotencyKey,
     model: "normal-http-model",
     reasoningEffort: "high",
     prompt: f.body.prompt,
@@ -2907,12 +2930,14 @@ test.each(["private", "org"] as const)(
     // The published launch contract and the handler agree on the Docker source shapes:
     // a snapshot body without hostId is valid; no source, or a snapshot with repos, is refused by both.
     const published = publishedRequest("sandbox/launch");
-    published.parse({ ...body, snapshotId: id });
-    published.parse({ ...f.body, snapshotId: id });
+    const { requestId: idempotencyKey, ...fields } = body;
+    published.parse({ ...fields, idempotencyKey, snapshotId: id });
+    published.parse({ ...fields, idempotencyKey, snapshotId: id, hostId: f.hostId });
     const repos = [{ url: "https://github.com/example/project.git" }];
     for (const refused of [body, { ...body, snapshotId: id, repos }, { ...f.body, snapshotId: id, repos }]) {
       const attempt = { ...refused, requestId: randomUUID() };
-      expect(published.safeParse(attempt).success).toBe(false);
+      const { requestId, ...publicFields } = attempt;
+      expect(published.safeParse({ ...publicFields, idempotencyKey: requestId }).success).toBe(false);
       await rejected(f.service().launch(f.caller, attempt), "invalid_request");
     }
     const launched = await f.service().launch(f.caller, { ...body, snapshotId: id });
