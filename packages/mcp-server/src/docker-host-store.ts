@@ -1686,12 +1686,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
         if (logical) {
           if (result.outcome === "completed") {
             await settleRefusedResume(tx, logical, job);
-          } else {
-            // The daemon persists its terminal receipt and clears the claim
-            // before reporting failure. A persisted server-side failure alone
-            // does not prove that the daemon released its claim.
-            const recovered = job.outcome === null && (await settleRefusedResume(tx, logical, job));
-            if (!recovered) await startupFailed(tx, logical, job, result.reason);
+          } else if (job.outcome !== null || !(await settleRefusedResume(tx, logical, job))) {
+            await startupFailed(tx, logical, job, result.reason);
           }
         }
         // Persist terminal receipts below, but never replay old stop/delete
