@@ -82,7 +82,7 @@ export function createSkillDefaultsService(sql: Sql) {
         const golden = scope === "golden" ? await goldenAccess(tx, actor.userId, orgId, target.goldenId) : undefined;
         if (operation === "set" && (scope === "org" || golden?.visibility === "org") && role !== "admin")
           throw new VaultError("forbidden", "Skill defaults administrator permission required.");
-        const key = scope === "personal" ? actor.userId : (goldenId ?? orgId);
+        const key = scope === "golden" ? target.goldenId : scope === "personal" ? actor.userId : orgId;
         if (skills) {
           const target = targets[scope];
           await tx.query(
