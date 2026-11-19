@@ -15,5 +15,5 @@ Browser checks publish successive revisions and verify all earlier pins remain u
 
 No migrations. Depends on the shared Launch picker/catalog slices. Coordinator
 staging: publish a public+private template revision, launch on Modal,
-check recorded receipts, edit the name without losing pins, then publish a
+check recorded receipts, change reasoning effort without losing pins, then publish a
 revision that removes them. Workers hold no staging credentials.
