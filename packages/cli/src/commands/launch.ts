@@ -42,9 +42,7 @@ const run: Command["run"] = async (argv, { io, deps, auth }) => {
     ],
     ["--armada-access", "--keep-after-merge"],
   );
-  const provider = providerFlag(args);
-  if (provider === undefined) throw new GoldenError("invalid_config", "Pass --provider boat, modal, or docker.");
-  if (provider === "docker") {
+  if (single(args, "--provider") === "docker") {
     return launchDocker(args, io, { ...auth, fetch: deps.fetch ?? auth.fetch });
   }
   if (
@@ -53,6 +51,8 @@ const run: Command["run"] = async (argv, { io, deps, auth }) => {
     )
   )
     throw new GoldenError("invalid_config", "Docker placement flags require --provider docker.");
+  const provider = providerFlag(args);
+  if (provider === undefined) throw new GoldenError("invalid_config", "Pass --provider boat, modal, or docker.");
   const maxActiveChildren = single(args, "--max-active-children");
   if (
     maxActiveChildren !== undefined &&

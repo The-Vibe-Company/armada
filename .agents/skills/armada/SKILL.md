@@ -49,12 +49,11 @@ any receipt UUID returned.
 - For MCP `launch`, choose `provider: "boat"` or `provider: "modal"` from discovery,
   specify `harness`, and use `ttlSeconds` and `reasoningEffort` for launch overrides.
   For scoped tokens, omit `org` or use the scoped org UUID.
-- Choose Boat or Modal explicitly when ambiguous. A golden built on one provider
+- Choose the provider that owns the golden. A golden built on one provider
   is not automatically available on the other. Check
   `armada snapshot capabilities --provider boat --json` (or substitute modal).
-- All launches through
-  `POST /api/v1/sandbox/launch` require an explicit provider and harness. Personal sessions can select the organization by
-  slug or UUID. For a scoped token, omit `org` or send its org UUID.
+- All launches through `POST /api/v1/sandbox/launch` require an explicit provider
+  and harness. Personal sessions can select the organization by slug or UUID. For a scoped token, omit `org` or send its org UUID.
   A malformed request returns HTTP 400 with error code `invalid`.
 - Choose the harness and a model/effort it supports. Launch selections persist
   for later turns. Do not assume provider sizes have equal price or performance.
