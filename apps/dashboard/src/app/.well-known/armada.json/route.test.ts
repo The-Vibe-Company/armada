@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { GET } from "../src/app/.well-known/armada.json/route.ts";
+import { GET } from "./route.ts";
 
 test("discovery exposes only public login settings and the configured control API", async () => {
   const keys = [

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { createElement, startTransition } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { useMutationState } from "../src/components/use-mutation-state";
+import { useMutationState } from "./use-mutation-state";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
