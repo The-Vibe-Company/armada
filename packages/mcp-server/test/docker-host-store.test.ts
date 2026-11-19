@@ -7,7 +7,7 @@ import {
   DOCKER_LAUNCH_FAILURE_MESSAGES,
   type Sql,
 } from "@armada/core";
-import { decryptSecret, encryptSecret } from "@armada/core/server";
+import { decryptSecret, encryptSecret, OutputCollectionError } from "@armada/core/server";
 import { admitDockerDisk, DockerHostDraining } from "../src/docker-capacity.ts";
 import { createDockerHostRoutes } from "../src/docker-host-routes.ts";
 import { createDockerHostStore, DockerHostDenied } from "../src/docker-host-store.ts";
@@ -928,6 +928,53 @@ test("a complete stopped Docker archive replaces the live sample, while a trunca
   if (!chunk) throw Error("missing encrypted output");
   expect(Buffer.from(await decryptSecret(chunk.content_enc, key), "base64").toString()).toBe("after the live sample");
   expect((await upload())?.status).toBe(204);
+});
+
+test("a mixed-release replica sees and can supersede a Docker upload before publication", async () => {
+  const a = await boundStartup("create");
+  await store.expired(a.hostToken, a.installationId, { requestId: a.startup.requestId });
+  const db = database();
+  let transactions = 0;
+  const probeAndAdmissionTransactions = 2;
+  const uploading = createDockerHostStore(
+    {
+      query: sql.query,
+      async transaction(work) {
+        const result = await db.transaction((tx) => work({ query: (query, params) => tx.query(query, params) }));
+        if (++transactions === probeAndAdmissionTransactions) {
+          const legacy = await db.query(
+            `update sandboxes set outputs_checked_at=outputs_checked_at + interval '1 microsecond'
+             where id=$1 and outputs_checked_at is not null returning id`,
+            [a.sandboxId],
+          );
+          expect(legacy.rows).toHaveLength(1);
+        }
+        return result;
+      },
+    },
+    key,
+  );
+  const archive = await stoppedOutputArchive();
+  const upload = (target: typeof store) =>
+    target.retainedOutputs(
+      a.hostToken,
+      a.installationId,
+      a.startup.requestId,
+      new Response(archive).body,
+      new AbortController().signal,
+    );
+  await expect(upload(uploading)).rejects.toBeInstanceOf(OutputCollectionError);
+  expect((await db.query("select 1 from sandbox_outputs where sandbox_id=$1", [a.sandboxId])).rows).toHaveLength(0);
+  expect(await upload(store)).toBe(204);
+  expect(
+    (
+      await db.query(
+        `select 1 from sandboxes where id=$1 and outputs_retained_generation=lifecycle_generation
+        and outputs_published_scan=outputs_checked_at`,
+        [a.sandboxId],
+      )
+    ).rows,
+  ).toHaveLength(1);
 });
 
 test("stopped Docker output admission refuses application-secret taint before reading", async () => {
