@@ -1,14 +1,18 @@
 import { idlePauseMessage } from "@armada/core";
-import { ProviderError, type SandboxStatus } from "@armada/core/server";
+import { type Provider, ProviderError, type SandboxStatus } from "@armada/core/server";
 import * as z from "zod";
 import type { SandboxView } from "./data.ts";
+import { MAX_LOG_PAGES, readEventPages } from "./event-pagination.ts";
+import { publicLogEvents } from "./model-usage.ts";
 import {
   sandboxIdInput as id,
+  LOGS_OUTPUT,
   SANDBOX_STATUSES,
   sandboxListInput,
   sandboxListMetadata,
   statusOutput,
 } from "./sandbox-tool-schemas.ts";
+import { ToolError } from "./tool-error.ts";
 import type { ToolRegistrar } from "./tool-registration.ts";
 import type { ToolContext } from "./tools.ts";
 import { isStatusReadFenced, readStatus, recordedStatus, type StatusReport, waitSettled } from "./turns.ts";
@@ -227,4 +231,90 @@ export function registerStatusTools(
   );
 
   return { statusOf, readStatusTool, waitTool };
+}
+
+export function registerLogsTool(
+  context: ToolContext,
+  tool: ToolRegistrar,
+  visible: VisibleSandbox,
+  surface: "mcp" | "rest",
+) {
+  tool(
+    "logs",
+    {
+      title: "Read events",
+      description:
+        "The agent's events oldest first: prompts (with status and failure reason), messages and tool calls, " +
+        "steers. The default is one bounded page (100 events). Set all to read every available page (up to " +
+        `${MAX_LOG_PAGES} pages) in one response. Pass the returned cursor as since_cursor to read only what is new. ` +
+        "An event read twice has the same id and the newer body; each id appears once per response.",
+      input: {
+        id,
+        since_cursor: z.string().min(1).optional().describe("The cursor of the previous page."),
+        limit: z.number().int().min(1).max(500).optional(),
+        all: z.boolean().optional().describe("Read up to 100 pages. Use forward direction only."),
+        direction: z.enum(["forward", "backward"]).optional(),
+        maxBytes: z.number().int().min(256).max(1048576).optional(),
+        coalesce: z.boolean().optional(),
+      },
+      output: {
+        ...LOGS_OUTPUT,
+        settled:
+          surface === "rest"
+            ? LOGS_OUTPUT.settled.describe("Docker only. Use status or wait to check whether a turn has settled.")
+            : LOGS_OUTPUT.settled.describe("Docker only. Use status to check whether a turn has settled."),
+      },
+      readOnly: true,
+    },
+    async (args) => {
+      const found = await visible(args.id);
+      if (found.status === "deleted") throw new ToolError("conflict", "Sandbox is deleted.");
+      const storedProvider = context.storedProviders?.[found.provider];
+      const provider = storedProvider ? await storedProvider(found) : await context.provider(found);
+      const page = await readLogs(provider, found.providerSandboxId, {
+        ...(args.since_cursor ? { since_cursor: args.since_cursor } : {}),
+        ...(args.limit ? { limit: args.limit } : {}),
+        ...(args.all ? { all: true } : {}),
+        ...(args.direction ? { direction: args.direction } : {}),
+        ...(args.maxBytes ? { maxBytes: args.maxBytes } : {}),
+        ...(args.coalesce !== undefined ? { coalesce: args.coalesce } : {}),
+      });
+      return { ...page, events: page.events.map((item) => ({ ...item })) };
+    },
+  );
+}
+
+async function readLogs(
+  provider: Provider,
+  sandboxId: string,
+  args: {
+    since_cursor?: string;
+    limit?: number;
+    all?: boolean;
+    direction?: "forward" | "backward";
+    maxBytes?: number;
+    coalesce?: boolean;
+  },
+) {
+  const { events, cursor, hasMore, olderCursor, source, runtimeFailure } = await readEventPages(
+    (cursor) =>
+      provider.events({
+        sandboxId,
+        ...(args.direction ? { direction: args.direction } : {}),
+        ...(args.maxBytes ? { maxBytes: args.maxBytes } : {}),
+        ...(args.coalesce !== undefined ? { coalesce: args.coalesce } : {}),
+        ...(cursor ? { cursor } : {}),
+        ...(args.limit ? { limit: args.limit } : {}),
+      }),
+    args.since_cursor,
+    args.all === true,
+  );
+  return {
+    ...(olderCursor ? { olderCursor } : {}),
+    ...(source ? { source } : {}),
+    ...(runtimeFailure ? { runtimeFailure } : {}),
+    events: publicLogEvents(events),
+    cursor,
+    hasMore,
+  };
 }

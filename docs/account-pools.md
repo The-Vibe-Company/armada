@@ -42,11 +42,13 @@ In-flight turns may finish. The accepted overrun is their unposted cost, includi
 
 ## Examples
 
-The issue references five owner examples in axis 3 §1. The cases below exercise the policy using public issue evidence and illustrative inputs where the original wording is unavailable.
+These examples show how pool order, admission limits and explicit placement interact.
 
 | Scenario | Result |
 | --- | --- |
+| A Codex pool lists an OpenAI API key first and a ChatGPT subscription second. | Use the API key while it is eligible. Try the subscription only when the API key is unusable, for example because it is at capacity, exhausted until reset or refused by its monthly budget. The subscription must pass its own eligibility checks for the same model. |
 | Morph has a two-agent limit and is running two agents ([#2069](https://github.com/The-Vibe-Company/armada/issues/2069)). | A compatible later pool member can take the launch. A launch explicitly pinned to Morph is refused before compute allocation. |
+| A Morph account allows at most two agents on model X and eight on model Y. Two agents are already using model X. | A third launch requesting X tries the next pool member with the same model, or is refused if pinned to Morph. A launch requesting Y can still use Morph if its own limit and the other admission checks allow it. |
 | Two Claude subscription accounts are ordered A then B. A reports exhaustion until 14:00 UTC ([#2816](https://github.com/The-Vibe-Company/armada/issues/2816)). | A new launch can use B. At 14:00 A is eligible again if its other checks pass. Existing sandboxes bound to A stay bound to A. |
 | An API key is capped at $500 per month ([#2818](https://github.com/The-Vibe-Company/armada/issues/2818)). | At $500 of recorded spend, launch and send admission for that binding refuse until the next UTC month. Pool selection can advance to another eligible account. Unknown pricing on the capped account also blocks admission. |
 | The personal pool is full and the org owns a compatible key. | Refuse the launch through the pool. An authorized caller can explicitly place it on the org account, subject to that account's limits. |

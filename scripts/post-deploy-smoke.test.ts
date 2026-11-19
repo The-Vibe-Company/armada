@@ -1476,6 +1476,10 @@ function lifecycleFixture(fault: LifecycleFault = "none", handler?: (call: Call)
       ["--lifecycle", ...extraArgs],
       {
         ...fake.io,
+        sleep: async (ms) => {
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          await fake.io.sleep(ms);
+        },
         fetch: (url, init) =>
           fake.io.fetch(url.replace("https://armada-mcp-staging.up.railway.app", env.ARMADA_URL), init),
       },
@@ -2368,7 +2372,7 @@ test("readiness timing excludes slow integrity probes and survives either probe 
 
 test("Modal smoke refuses a finished turn whose status never reports usage and still stops compute", async () => {
   const fake = fixture((call) =>
-    call.path === "sandbox/status"
+    call.path === "sandbox/status" && !fake.calls.some((entry) => entry.path === "sandbox/stop")
       ? json({
           status: "ready",
           providerState: "active",
@@ -2384,6 +2388,7 @@ test("Modal smoke refuses a finished turn whose status never reports usage and s
     ),
   ).toBe(false);
   expect(fake.receipts()).toContainEqual({ case: 0, step: "usage", pass: false, code: "poll_limit_exceeded" });
+  expect(fake.io.now()).toBe(deadlines.usage);
   expect(fake.calls.some((call) => call.path === "sandbox/stop")).toBe(true);
 });
 
@@ -2424,6 +2429,13 @@ test.each(["unknown", "missing", "old", "partial", "measured", "null-totals", "c
     });
     const accepted = mode === "measured";
     expect(await fake.run([{ ...selected, provider: "modal" }])).toBe(accepted);
+    if (!accepted) {
+      const usage = fake.lines
+        .slice(1)
+        .map((line) => JSON.parse(line))
+        .find((line) => line.step === "resume_usage");
+      expect(usage?.elapsedMs).toBe(deadlines.resume_usage);
+    }
     expect(fake.receipts()).toContainEqual(
       accepted
         ? { case: 0, step: "resume_usage", pass: true }
