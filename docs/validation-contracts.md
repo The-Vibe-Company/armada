@@ -8,7 +8,8 @@ A skipped declaration is not evidence of its contract.
 
 The existing publishing release `check` job owns a disposable PostgreSQL service
 and native build. It runs `scripts/validate-release-contracts.py` after migrations.
-Every selected file must report at least one testcase and zero skips/errors/failures.
+Each Bun test suite must report at least one testcase and zero skips, errors,
+or failures. Standalone probes must exit successfully.
 Missing PostgreSQL/native prerequisites fail closed. No PR job/service is added.
 
 | File under `packages/*/test` (now `.release.ts`) | Retained proof |
@@ -23,7 +24,6 @@ Missing PostgreSQL/native prerequisites fail closed. No PR job/service is added.
 | mcp-server/runtime-enrolment-postgres | membership revocation lock order |
 | mcp-server/runtime-native-auth-postgres | credential publication/lifecycle replacement |
 | mcp-server/sql | advisory lock exclusion across commit/rollback |
-| provider-modal/artifact | built native artifact bootstrap, checkpoint, journal reopening |
 | cli/binary | compiled CLI packaging and argument/environment boundaries |
 
 `scripts/build-migration.release.ts` retains the standalone compiled migration
@@ -140,7 +140,7 @@ staging-checker cases use local fixtures and make no calls to deployed services.
 
 Run the existing publishing release validation on the exact release SHA. Verify
 routed Bun suites print executed testcase counts with zero skips, the native
-Codex probe reports success, and native version
-validation and checkpoint process boundaries pass. No production action or
+Codex and Modal artifact probes report success, and native version validation
+and checkpoint process boundaries pass. No production action or
 Boat lifecycle is required for this test-routing change. OS/container checks
 remain separately opt-in, not an implied pass from green unit CI.

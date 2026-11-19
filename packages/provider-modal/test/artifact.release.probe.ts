@@ -165,6 +165,7 @@ Bun.serve = (options) => {
       grant: grant.token,
       expiresAt: grant.expiresAt,
     }));
+    await transport.call(row, "health", {});
     return { transport, url };
   }
   try {
