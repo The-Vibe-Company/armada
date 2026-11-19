@@ -1,4 +1,4 @@
-import { readBoundedText } from "@armada/auth";
+import { BodyTooLargeError, readBoundedText } from "@armada/auth";
 import {
   DOCKER_HOST_SNAPSHOT_BASELINE_HEADER,
   DOCKER_JOB_FAILURE_REASONS,
@@ -10,6 +10,7 @@ import { type DockerHostResources, validDockerAvailability } from "../../core/sr
 import { dockerResourceLimits } from "../../core/src/docker-resources.ts";
 import { VERSION } from "../../core/src/version.ts";
 import type { CallerResult } from "./caller.ts";
+import { fail } from "./control-response.ts";
 import { DockerHostDraining, DockerLimitsRefused } from "./docker-capacity.ts";
 import { type createDockerHostStore, DockerHostDenied } from "./docker-host-store.ts";
 import { dockerHostVersions } from "./docker-host-version.ts";
@@ -20,6 +21,8 @@ import { withRequestBodyCeiling } from "./request-body-ceiling.ts";
 import { runtimeWakes, waitForTimeout } from "./wake-bus.ts";
 
 const inventoryPath = "/api/docker-host/container-inventory";
+const inventoryMaxContainers = 4096;
+const inventoryMaxBytes = 5 * 1024 * 1024;
 const machinePaths = [
   inventoryPath,
   "/api/docker-host/register",
@@ -73,7 +76,7 @@ function deadlinesOf(value: unknown): { sandboxId: string; generation: string; d
 }
 
 function containersOf(value: unknown) {
-  if (!Array.isArray(value) || value.length > 4096) throw new InvalidInput();
+  if (!Array.isArray(value) || value.length > inventoryMaxContainers) throw new InvalidInput();
   return value.map((entry) => {
     if (!object(entry)) throw new InvalidInput();
     fields(entry, ["machineId", "sandboxId", "generation", "deploymentId", "createdAt", "containerName"]);
@@ -223,7 +226,7 @@ export function createDockerHostRoutes(
         }
       }
       if (path === inventoryPath) {
-        const body: unknown = JSON.parse(await readBoundedText(request, 2 * 1024 * 1024));
+        const body: unknown = JSON.parse(await readBoundedText(request, inventoryMaxBytes));
         if (!object(body)) throw new InvalidInput();
         fields(body, ["installationId", "containers"]);
         const installationId = string(body.installationId);
@@ -533,6 +536,7 @@ export function createDockerHostRoutes(
       });
       return Response.json({ requestId }, { headers });
     } catch (error) {
+      if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
       if (error instanceof DockerLimitsRefused)
         return Response.json(
           { error: { code: error.code, message: error.message } },
