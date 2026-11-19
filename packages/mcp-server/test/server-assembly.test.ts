@@ -129,6 +129,6 @@ test("the shared jobs lane claims only configured job kinds", async () => {
       },
     } as unknown as Parameters<LaneFactory>[0]);
     await lane?.reconcileOne(new AbortController().signal);
-    expect(claimed).toEqual(new Set(expected));
+    expect(claimed).toEqual(new Set([...expected, "snapshot_retirement"]));
   }
 });

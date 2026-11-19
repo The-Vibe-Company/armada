@@ -1,6 +1,5 @@
 import { CONTROL_BODY_MAX_BYTES } from "@armada/core";
 import { PUBLIC_CONTROL_ROUTES } from "@armada/core/contract";
-import { NextResponse } from "next/server";
 
 const CONTROL_PREFIX = "/api/v1/";
 const MAX_BODY_BYTES = CONTROL_BODY_MAX_BYTES;
@@ -161,7 +160,7 @@ const PROXY_FAILURE_CODE = {
 } as const;
 
 function fail(status: keyof typeof PROXY_FAILURE_CODE, message: string): Response {
-  return NextResponse.json(
+  return Response.json(
     { error: { code: PROXY_FAILURE_CODE[status], message: status === 404 ? "Unknown route." : message } },
     { status, headers: { "cache-control": "no-store" } },
   );
@@ -201,7 +200,7 @@ async function boundedBody(request: Request, maxBytes: number): Promise<ArrayBuf
 export async function forwardControl(
   request: Request,
   path: readonly string[],
-  fetchImpl: typeof fetch = fetch,
+  fetchImpl: (input: URL, init: RequestInit) => Promise<Response> = fetch,
 ): Promise<Response> {
   const upstream = controlOrigin(process.env.ARMADA_MCP_URL);
   if (!upstream) return fail(503, "Armada API is not configured.");

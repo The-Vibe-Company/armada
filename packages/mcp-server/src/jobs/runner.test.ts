@@ -67,10 +67,10 @@ function fixture(kind = "stop") {
     },
   };
   return {
-    runner(run: JobKind["run"], concurrency = 1, drain?: JobKind["drain"]) {
+    runner(run: JobKind["run"], concurrency = 1, options: Pick<JobKind, "drain" | "timeoutMs"> = {}) {
       return createJobsRunner(
         store,
-        { [kind]: { run, concurrency, ...(drain ? { drain } : {}) } },
+        { [kind]: { run, concurrency, ...options } },
         () => {},
         (ms, callback) => {
           timers.set(callback, now + ms);
@@ -168,6 +168,38 @@ test("a second runner respects the registered kind's capacity until the lease is
   expect(f.completed).toEqual(["one", "two"]);
 });
 
+test.each([false, true])("dispatch timeout fences late completion only on ownership loss (%s)", async (takeover) => {
+  const f = fixture();
+  const entered = Promise.withResolvers<AbortSignal>();
+  const finish = Promise.withResolvers<void>();
+  const first = f.runner(
+    async (_job, { signal }) => {
+      entered.resolve(signal);
+      await finish.promise;
+      return { status: "done" };
+    },
+    1,
+    { timeoutMs: 15_000 },
+  );
+  expect(await first.reconcileOne(tick)).toBe(true);
+  const signal = await entered.promise;
+  f.advance(10_000);
+  await Promise.resolve();
+  f.advance(5_000);
+  expect(signal.aborted).toBe(true);
+  if (takeover) {
+    const second = f.runner(async () => ({ status: "done" }));
+    f.advance(25_000);
+    expect(await first.reconcileOne(tick)).toBe(false);
+    expect(await second.reconcileOne(tick)).toBe(true);
+    await second.drain();
+    expect(f.completed).toEqual(["one"]);
+  }
+  finish.resolve();
+  await first.drain();
+  expect(f.completed).toEqual(["one"]);
+});
+
 test("shutdown drains an in-flight retention sweep without completing its lease", async () => {
   const f = fixture("maintenance");
   const entered = Promise.withResolvers<void>();
@@ -221,7 +253,7 @@ test("hung golden recovery yields its lease to the next build and stays tracked 
     () => 0,
     () => deadline.signal,
   );
-  const runner = f.runner(handler.run, handler.concurrency, handler.drain);
+  const runner = f.runner(handler.run, handler.concurrency, { drain: handler.drain });
   const recoveryRetried = f.settled("one");
   const nextBuildDone = f.settled("two");
   try {

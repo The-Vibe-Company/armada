@@ -228,15 +228,15 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
       const claimed = { ...job, payload };
       return kind === "turn_dispatch" ? reconcileTurnClaim(claimed, owner, "claim") : claimed;
     },
-    async inspect(job, owner) {
-      const { rows } = await sql.query<{ state: "dispatch" | "reconcile" | "stale" }>(
+    async inspect(job, owner, tx?: Sql) {
+      const { rows } = await (tx ?? sql).query<{ state: "dispatch" | "reconcile" | "stale" }>(
         `select case when j.generation is not null and s.lifecycle_generation is distinct from j.generation
                        then 'stale'
                      when j.attempts > j.max_attempts or j.deadline_at <= clock_timestamp()
                        then 'reconcile'
                      else 'dispatch' end as state
          from public.jobs j left join public.sandboxes s on s.id = j.sandbox_id
-         where ${fence} and (j.kind = 'turn_dispatch' or j.generation is not distinct from $4)`,
+         where ${fence} and (j.kind = 'turn_dispatch' or j.generation is not distinct from $4) ${tx ? "for update of j" : ""}`,
         claimKey(job, owner),
       );
       return rows[0]?.state ?? "lost";

@@ -53,7 +53,7 @@
     "apps/dashboard/src/lib/toast.test.ts": 0.006,
     "apps/dashboard/src/lib/variables.test.ts": 0.022,
     "apps/dashboard/test/client-bundle.test.ts": 0.024,
-    "apps/dashboard/test/control-proxy.test.ts": 0.052,
+    "apps/dashboard/src/app/api/v1/[...path]/control-proxy.test.ts": 0.052,
     "apps/dashboard/test/invitations.test.ts": 0.062,
     "apps/dashboard/test/proxy.test.ts": 0.088,
     "apps/dashboard/test/routine-staging-transport.test.ts": 0.104,
