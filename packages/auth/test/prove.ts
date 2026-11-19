@@ -13,10 +13,6 @@ export const ORG_ID = "00000000-0000-4000-8000-000000000010";
 const PUBLIC = "http://127.0.0.1:8080";
 const REDIRECT = "http://127.0.0.1:9999/callback";
 
-/**
- * The OAuth and service-token behaviour both stores must keep.
- * `snapshot` is everything persisted: it must contain hashes and never a raw token.
- */
 export async function proveAuth(options: {
   store: AuthStore;
   now: () => Date;

@@ -1,10 +1,6 @@
 const SCHEME = /^[a-z][a-z0-9+.-]*:\/\//;
 const BLOCKED = new Set(["javascript", "data", "file", "blob"]);
 
-/**
- * Loopback http, any https URL, or a native scheme such as `cursor://`.
- * The match is exact afterwards: a registered redirect is compared as a string.
- */
 export function isAllowedRedirect(uri: string): boolean {
   if (uri.length === 0 || uri.length > 2000 || !SCHEME.test(uri)) return false;
   if (/[\s#]/.test(uri) || uri.includes("@") || uri.includes("\\")) return false;

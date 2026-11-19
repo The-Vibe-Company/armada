@@ -22,14 +22,13 @@ test("SQL bearer verification uses one fresh read and refuses changed authorizat
     role: "admin",
     name: "Example",
   };
-  // Construct token-shaped bytes only at runtime.
   const bearer = `Bearer ${["armada", "sk", "a".repeat(43)].join("_")}`;
   rows = [row];
   expect((await authenticate(bearer, store, now)).ok).toBe(true);
   expect(queries).toBe(1);
   rows = [{ ...row, revoked_at: now.toISOString() }];
   expect((await authenticate(bearer, store, now)).ok).toBe(false);
-  rows = []; // Membership removed: the inner join no longer returns the token.
+  rows = [];
   expect((await authenticate(bearer, store, now)).ok).toBe(false);
   expect(queries).toBe(3);
 });

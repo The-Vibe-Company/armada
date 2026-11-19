@@ -1,7 +1,6 @@
 import { expect, test } from "bun:test";
 import { verifyEmailCode } from "../src/supabase-auth.ts";
 
-// The auth boundary owns safe diagnosis; upstream bodies must never become user messages.
 test("session failures distinguish refusal, service availability and invalid responses without leaking upstream text", async () => {
   const cases = [
     {
