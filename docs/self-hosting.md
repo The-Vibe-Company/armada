@@ -126,6 +126,34 @@ Optional:
 
 Boat and Modal keys are not server environment: org admins connect them (`armada org connect boat|modal`), and they are stored encrypted per org or per person.
 
+### Boat inventory reporting
+
+The Boat SDK lists logical sandboxes for the selected account. Armada requests
+the `armada.deployment` label using the SHA-256 digest of
+`ARMADA_BOAT_DEPLOYMENT_ID`, then verifies that label and `armada=sandbox` on
+each returned record. The report includes tagged managed sandboxes with a
+machine provider and a valid logical creation timestamp. Sandboxes launched
+without the deployment label are omitted.
+
+A coordinator can run the read-only report on demand from the repository root
+with the production deployment's `ARMADA_BOAT_DEPLOYMENT_ID`,
+`ARMADA_DATABASE_URL` and `ARMADA_ENCRYPTION_KEY` set:
+
+```sh
+bun packages/mcp-server/src/boat-inventory-report.ts --production-boat org <org-uuid>
+```
+
+Use `user <user-uuid>` in place of `org <org-uuid>` for a personal Boat
+account. The command counts logical sandboxes with and without matching
+Armada rows. A launch can appear unmatched until Armada records it.
+
+Boat resume can replace the underlying VM while retaining the sandbox ID and
+creation timestamp. The SDK exposes neither an immutable VM ID nor the VM's
+creation time, so Boat inventory remains report-only. Any future reaper
+deletion requires both fields and coordinator-only production evidence.
+Live Boat checks are reserved for the coordinator in production, outside CI
+and staging acceptance.
+
 ### Start a local development server
 
 From the repository root, run `bun install`, then load the required environment above
