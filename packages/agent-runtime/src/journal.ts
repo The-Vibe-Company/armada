@@ -97,6 +97,45 @@ type PayloadShape = {
   entries?: PayloadShape;
 };
 
+const claudeModelUsage = {
+  entries: {
+    fields: {
+      inputTokens: null,
+      outputTokens: null,
+      thinkingTokens: null,
+      reasoningTokens: null,
+      cacheReadInputTokens: null,
+      cacheCreationInputTokens: null,
+      cacheCreationEphemeral5mInputTokens: null,
+      cacheCreationEphemeral1hInputTokens: null,
+      webSearchRequests: null,
+      costUSD: null,
+      contextWindow: null,
+      maxOutputTokens: null,
+      canonicalModel: null,
+      provider: null,
+      costBasis: null,
+    },
+  },
+};
+
+const claudeUsage = {
+  fields: {
+    cache_creation: { fields: { ephemeral_5m_input_tokens: null, ephemeral_1h_input_tokens: null } },
+    cache_creation_input_tokens: null,
+    cache_read_input_tokens: null,
+    fallback_credit: null,
+    inference_geo: null,
+    input_tokens: null,
+    iterations: null,
+    output_tokens: null,
+    output_tokens_details: null,
+    server_tool_use: null,
+    service_tier: null,
+    speed: null,
+  },
+};
+
 const quotaWindow = { fields: { usedPercent: null, windowDurationMins: null, resetsAt: null } };
 const quotaSnapshot = {
   fields: {
@@ -117,14 +156,14 @@ const quotaPayload = {
   },
 };
 
-const maskQuotaFields: (
+const maskShapedPayload: (
   original: unknown,
   scrubbed: unknown,
   mask: (text: string) => string,
   shape?: PayloadShape | null,
 ) => unknown = (original, scrubbed, mask, shape) => {
   if (Array.isArray(original) && Array.isArray(scrubbed)) {
-    return original.map((item, index) => maskQuotaFields(item, scrubbed[index], mask));
+    return original.map((item, index) => maskShapedPayload(item, scrubbed[index], mask));
   }
   if (
     original &&
@@ -141,7 +180,7 @@ const maskQuotaFields: (
         const fixed = fields && Object.hasOwn(fields, key);
         return [
           fixed ? key : mask(key),
-          maskQuotaFields(value, values[key], mask, fixed ? fields[key] : shape?.entries),
+          maskShapedPayload(value, values[key], mask, fixed ? fields[key] : shape?.entries),
         ];
       }),
     );
@@ -289,8 +328,18 @@ export class Journal {
       };
       if (event.type === "result") {
         if (event.data && typeof event.data === "object" && scrubbed.data && typeof scrubbed.data === "object") {
-          for (const key of CLAUDE_RESULT_PAYLOAD_FIELDS)
-            maskPayloadField(event.data as Record<string, unknown>, scrubbed.data, key, maskField);
+          const source = event.data as Record<string, unknown>;
+          for (const key of CLAUDE_RESULT_PAYLOAD_FIELDS) maskPayloadField(source, scrubbed.data, key, maskField);
+          if (Object.hasOwn(source, "modelUsage"))
+            scrubbed.data.modelUsage = maskShapedPayload(
+              source.modelUsage,
+              scrubbed.data.modelUsage,
+              maskField,
+              claudeModelUsage,
+            );
+          if (Object.hasOwn(source, "usage"))
+            scrubbed.data.usage = maskShapedPayload(source.usage, scrubbed.data.usage, maskField, claudeUsage);
+          maskPayloadField(source, scrubbed.data, "total_cost_usd", maskField);
 
           const result = JSON.stringify(scrubbed);
           if (Buffer.byteLength(result) <= MAX_EVENT_BYTES) return result;
@@ -298,7 +347,7 @@ export class Journal {
           scrubbed.data.outputTruncated = true;
         }
       } else if (isCodexQuotaDiagnostic(event.type)) {
-        scrubbed.data = maskQuotaFields(event.data, scrubbed.data, maskField, quotaPayload);
+        scrubbed.data = maskShapedPayload(event.data, scrubbed.data, maskField, quotaPayload);
       } else if (event.type === "model/rerouted") {
         maskPayloadField({ data: event.data }, scrubbed, "data", maskField);
       } else {

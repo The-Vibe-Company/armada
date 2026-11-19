@@ -268,7 +268,11 @@ test.each([
       local_command: "prefixvalue",
       resume_reason: "prefixvalue",
       origin: { kind: "peer", from: "fixture", body: "prefixvalue" },
-      modelUsage: { fixture: { inputTokens: 3 } },
+      modelUsage: {
+        prefixvalue: { inputTokens: 3, outputTokens: 42, provider: "prefixlongfixture" },
+      },
+      usage: { input_tokens: 3, inference_geo: "prefixvalue" },
+      total_cost_usd: 0.15,
     },
     masked: {
       subtype: "success",
@@ -285,7 +289,11 @@ test.each([
       local_command: "prefix[REDACTED]",
       resume_reason: "prefix[REDACTED]",
       origin: { kind: "peer", from: "fixture", body: "prefix[REDACTED]" },
-      modelUsage: { fixture: { inputTokens: 3 } },
+      modelUsage: {
+        "prefix[REDACTED]": { inputTokens: 3, outputTokens: "[REDACTED]", provider: "prefix[REDACTED]" },
+      },
+      usage: { input_tokens: 3, inference_geo: "prefix[REDACTED]" },
+      total_cost_usd: 0.15,
     },
   },
 ])("masks typed $type output at each journal boundary", async ({ type, data, masked }) => {
@@ -300,6 +308,7 @@ test.each([
       "bash",
       "longfixture",
       ...(type.startsWith("account/") ? ["rateLimits", "42"] : []),
+      ...(type === "result" ? ["Tokens", "42"] : []),
     ]);
     journal.append({ ...event, id: "new-proof" });
     const expected = { ...event, data: masked };
@@ -324,12 +333,12 @@ test("expanding Claude result output is dropped while usage survives", () => {
       at: 1,
       kind: "other",
       type: "result",
-      data: { result: "x".repeat(30_000), modelUsage: { fixture: { inputTokens: 3 } } },
+      data: { result: "x".repeat(30_000), modelUsage: { "model-a": { inputTokens: 3 } } },
     } satisfies AgentEvent;
     journal.append(event);
     journal.registerApplicationSecrets(["x"]);
     journal.append(event);
-    const expected = { ...event, data: { modelUsage: { fixture: { inputTokens: 3 } }, outputTruncated: true } };
+    const expected = { ...event, data: { modelUsage: { "model-a": { inputTokens: 3 } }, outputTruncated: true } };
     expect(journal.redactEvent(journal.events()[0]!.event)).toEqual(expected);
     expect(journal.events()[1]!.event).toEqual(expected);
     journal.sanitize();
