@@ -205,6 +205,7 @@ for (const mode of [
     let dockerLaunchKey: string | undefined;
     let dockerInventoryReads = 0;
     const modalLaunchScenario = mode.startsWith("modal_launch_");
+    const ordinaryDockerId = "30000000-0000-4000-8000-000000000005";
     const ordinaryModalId = "30000000-0000-4000-8000-000000000004";
     const recoveredSandbox = "30000000-0000-4000-8000-000000000005";
     const launchRequestId = "30000000-0000-4000-8000-000000000006";
@@ -727,7 +728,8 @@ for (const mode of [
                           ? sandboxId(p)
                           : recoveredSandbox,
                       provider: "docker",
-                      externalRef: dockerLaunchKey,
+                      externalRef:
+                        dockerInventoryReads > 1 && mode !== "docker_launch_unresolved" ? dockerLaunchKey : "unrelated",
                       status: "ready",
                     },
                   ],
@@ -746,13 +748,15 @@ for (const mode of [
               break;
             case "sandbox/launch":
               if (dockerLaunchScenario) {
-                ordinaryIds.set(p, String(body.requestId));
-                dockerLaunchKey = body.externalRef;
+                ordinaryIds.set(p, ordinaryDockerId);
+                dockerLaunchKey = body.idempotencyKey;
+                expect(body.externalRef).toBe(dockerLaunchKey);
+                expect(body).not.toHaveProperty("requestId");
                 await advance(500);
                 if (mode !== "docker_launch_unresolved") {
                   states.set(p, "ready");
                   if (mode === "docker_launch_recovers") throw new DOMException("Timed out", "TimeoutError");
-                  return Response.json({ sandbox: { id: body.requestId }, provider: "docker" });
+                  return Response.json({ sandbox: { id: ordinaryDockerId }, provider: "docker" });
                 }
                 return Response.json(
                   { error: { code: "outcome_unknown", message: "The launch may still be in flight." } },
@@ -825,7 +829,7 @@ for (const mode of [
               if (mode === "client_send_full_slow" || mode === "client_stop_full_slow") await advance(110_001);
               states.set(p, "ready");
               if (p === "modal") ordinaryIds.set(p, ordinaryModalId);
-              else if (p === "docker" && body.externalRef) ordinaryIds.set(p, String(body.requestId));
+              else if (p === "docker" && body.externalRef) ordinaryIds.set(p, ordinaryDockerId);
               if (mode === "snapshot_lost_receipt" && p === "docker") {
                 dockerLaunchKey = body.externalRef;
                 throw new DOMException("Timed out", "TimeoutError");
@@ -834,6 +838,7 @@ for (const mode of [
                 sandbox: {
                   id: sandboxId(p),
                   provider: p,
+                  externalRef: body.externalRef,
                   ...(p === "docker" && mode.startsWith("snapshot_")
                     ? {
                         snapshotId: mode === "snapshot_wrong_receipt" ? "other-snapshot" : snapshotId,
@@ -1438,7 +1443,8 @@ for (const mode of [
     if (dockerLaunchScenario) {
       expect(calls.filter((call) => call === "docker:sandbox/launch")).toHaveLength(1);
       expect(sandboxId("docker")).toMatch(/^[0-9a-f-]{36}$/);
-      expect(dockerLaunchKey).toBe(`post-deploy-smoke:${sandboxId("docker")}`);
+      expect(dockerLaunchKey).toMatch(/^post-deploy-smoke:[0-9a-f-]{36}$/);
+      expect(dockerLaunchKey).not.toBe(`post-deploy-smoke:${sandboxId("docker")}`);
       if (mode !== "docker_launch_unresolved") {
         expect(passed).toBe(true);
         expect(report.features.cleanup.docker.status).toBe("pass");
