@@ -286,7 +286,7 @@ export class CodexDriver implements Driver {
                 turn: { id: terminal.turn.id, status: terminal.turn.status, error: terminal.turn.error },
               },
             });
-          } else c.emit({ kind: "other", type: m.method, data: m.params });
+          } else c.emit({ kind: "other", type: m.method, data: m.params, rawDiagnostic: true });
           if (
             typeof terminal.turn?.id !== "string" ||
             !["completed", "interrupted", "failed"].includes(terminal.turn.status)
@@ -349,8 +349,8 @@ export class CodexDriver implements Driver {
                 },
               ],
             });
-          else c.emit({ kind: "other", type: m.method, data: m.params });
-        } else c.emit({ kind: "other", type: m.method, data: m.params });
+          else c.emit({ kind: "other", type: m.method, data: m.params, rawDiagnostic: true });
+        } else c.emit({ kind: "other", type: m.method, data: m.params, rawDiagnostic: true });
       } catch {
         fail();
         child.kill("SIGKILL");

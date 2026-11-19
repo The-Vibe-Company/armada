@@ -47,6 +47,9 @@ export class Journal {
     for (const value of values) if (value.length > 0 && value.length < 8) this.applicationSecrets.add(value);
     this.redactShortApplicationText = createShortSecretTextRedactor([...this.applicationSecrets]);
   }
+  get hasShortApplicationSecrets() {
+    return this.applicationSecrets.size > 0;
+  }
   redactCommandOutput(capture: { text: string; truncated: boolean }, limit: number) {
     const mask = this.redactShortApplicationText;
     if (this.hasApplicationSecrets && capture.truncated) return { text: "[REDACTED]", truncated: true };
