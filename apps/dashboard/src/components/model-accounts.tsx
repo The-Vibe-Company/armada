@@ -99,7 +99,7 @@ import {
   usageView,
 } from "@/lib/model-accounts";
 import type { ConnectionTestChoices } from "@/lib/model-connection-check";
-import { modelsPageDefault, modelsPageModel, modelsPageStatus } from "@/lib/models-page";
+import { modelsPageDefault, modelsPageExhaustion, modelsPageModel, modelsPageStatus } from "@/lib/models-page";
 import { cn } from "@/lib/utils";
 
 type Action = (previous: ActionResult | null, data: FormData) => Promise<ActionResult>;
@@ -457,6 +457,7 @@ export function AccountRow({
   const opener = useRef<"menu" | "row">("menu");
   const info = KIND_INFO[account.kind];
   const state = modelsPageStatus(account, now);
+  const exhaustion = modelsPageExhaustion(account, now);
   const StateIcon = STATE_ICON[state.tone];
   const headingId = `account-${account.id}`;
   const expiry = account.expiresAt
@@ -499,6 +500,7 @@ export function AccountRow({
           <span className="block text-xs text-muted-foreground">
             {info.label} · {account.scope === "user" ? "Only you" : orgName}
           </span>
+          {exhaustion && <span className="block text-xs text-foreground">{exhaustion}</span>}
         </span>
         <span className={cn("shrink-0 text-xs", STATE_TONE[state.tone])}>
           {state.label === "Ready" ? "Connected" : state.label}
@@ -563,6 +565,7 @@ export function AccountRow({
               {state.label === "Ready" ? "Connected" : state.label === "Expired" ? "Sign-in expired" : state.label}
             </p>
           </div>
+          {exhaustion && <p className="text-sm text-foreground">{exhaustion}</p>}
           {canManage && <InlineDisplayName account={account} orgId={orgId} onResult={setResult} />}
           <div className="text-sm">
             <span className="text-muted-foreground">Works with: </span>

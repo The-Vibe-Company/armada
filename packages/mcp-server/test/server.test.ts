@@ -685,7 +685,7 @@ describe("tools", () => {
       status: "ready",
       prompt: {
         state: "failed",
-        reason: `Plan limit reached. Resets at ${resetsAt}. Wait for the limit to reset, or switch to another account before sending the prompt again.`,
+        reason: `Plan limit reached. Resets at ${resetsAt}.`,
         limit: { code: "usage_limit_exceeded", resetsAt },
       },
     });

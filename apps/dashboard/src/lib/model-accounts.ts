@@ -30,6 +30,7 @@ export interface ModelAccount {
   runningAgents?: number;
   waitingAgents?: number;
   rateLimited?: boolean;
+  exhaustedUntil?: string;
   id: string;
   scope: AccountScope;
   kind: AccountKind;
@@ -145,6 +146,7 @@ export function parseAccount(value: unknown): ModelAccount | null {
   if (!oneOf(ACCOUNT_SCOPES, value.scope) || !oneOf(ACCOUNT_KINDS, value.kind)) return null;
   const name = text(value.name, MAX_ACCOUNT_NAME);
   const expiresAt = isoOrNull(value.expiresAt);
+  const exhaustedUntil = isoOrNull(value.exhaustedUntil);
   const updatedAt = isoOrNull(value.updatedAt);
   if (!name || expiresAt === undefined || !updatedAt) return null;
   if (typeof value.version !== "number" || !Number.isInteger(value.version) || value.version < 0) return null;
@@ -156,6 +158,7 @@ export function parseAccount(value: unknown): ModelAccount | null {
     isDefault: value.isDefault === true,
     status: oneOf(ACCOUNT_STATUSES, value.status) ? value.status : "unknown",
     expiresAt,
+    ...(exhaustedUntil ? { exhaustedUntil } : {}),
     updatedAt,
     version: value.version,
     maxAgents: typeof value.maxAgents === "number" ? value.maxAgents : null,
