@@ -42,29 +42,34 @@ export async function requestSandboxFinish(sql: Sql, key: string, sandboxId: str
     )
   ).rows[0];
   if (!row) throw new DelegatedAuthorityDenied();
-  let preservationNote: string | undefined;
-  if (row.provider === "docker") {
-    preservationNote = `${await runtimePreservationNote(sql, row.id)} Unpushed Git work is not preserved; agent-declared completion permanently removes the Docker home volume.`;
-    await sql.query("update public.sandboxes set preservation_note=$2 where id=$1", [row.id, preservationNote]);
+  const admit = async () => {
+    const transition = await transitionSandbox(sql, {
+      sandboxId: row.id,
+      expectedGeneration: row.generation,
+      fromStates: ["ready", "running"],
+      toState: "stopping",
+      actor: "finish",
+      code: "agent_finished",
+      effects: [],
+    });
+    if (transition.kind === "conflict") throw new DelegatedAuthorityDenied();
+  };
+
+  const result = { id: row.id, status: "stopping" };
+  if (row.provider !== "docker") {
+    await admit();
+    return result;
   }
-  const transition = await transitionSandbox(sql, {
-    sandboxId: row.id,
-    expectedGeneration: row.generation,
-    fromStates: ["ready", "running"],
-    toState: "stopping",
-    actor: "finish",
-    code: "agent_finished",
-    effects: [],
-  });
-  if (transition.kind === "conflict") throw new DelegatedAuthorityDenied();
-  if (row.provider === "docker") {
-    await createDockerHostStore(scopedRuntimeSql(sql), key).enqueueSandbox(
-      { userId: ownerId, orgId: row.org_id },
-      row.id,
-      { requestId: crypto.randomUUID(), operation: "stop" },
-    );
-  }
-  return { id: row.id, status: "stopping", ...(preservationNote ? { preservationNote } : {}) };
+
+  const preservationNote = `${await runtimePreservationNote(sql, row.id)} Unpushed Git work is not preserved; agent-declared completion permanently removes the Docker home volume.`;
+  await sql.query("update public.sandboxes set preservation_note=$2 where id=$1", [row.id, preservationNote]);
+  await admit();
+  await createDockerHostStore(scopedRuntimeSql(sql), key).enqueueSandbox(
+    { userId: ownerId, orgId: row.org_id },
+    row.id,
+    { requestId: crypto.randomUUID(), operation: "stop" },
+  );
+  return { ...result, preservationNote };
 }
 
 export function createRuntimeSelfFinish(
