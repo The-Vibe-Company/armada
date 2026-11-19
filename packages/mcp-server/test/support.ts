@@ -22,6 +22,7 @@ import type {
   SteerRequest,
 } from "@armada/core";
 import { encryptSecret, ProviderError, type Sql } from "@armada/core";
+import { launchEnvelope } from "@armada/core/contract";
 import { createSqlVaultStore, GoldenBuildJobs, type GoldenCreateOptions } from "@armada/core/server";
 import type { PGlite } from "@electric-sql/pglite";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -556,4 +557,8 @@ export async function call(client: Client, name: string, args: Record<string, un
     text,
     data: (result.structuredContent ?? {}) as Record<string, unknown>,
   };
+}
+
+export function launchSandboxId(data: unknown) {
+  return launchEnvelope.parse(data).sandbox.id;
 }

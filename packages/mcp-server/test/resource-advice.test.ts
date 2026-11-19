@@ -3,7 +3,7 @@ import type { ProviderResourceObservation, ResourceAdviceResponse, ResourceProje
 import { createSqlVaultStore } from "@armada/core/server";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
-import { call, ENCRYPTION_KEY, harness, PUBLIC_URL } from "./support.ts";
+import { call, ENCRYPTION_KEY, harness, launchSandboxId, PUBLIC_URL } from "./support.ts";
 
 let fixture: Awaited<ReturnType<typeof harness>> | undefined;
 beforeAll(async () => {
@@ -29,7 +29,7 @@ test("The advice API collects bounded samples, pins project identity and abstain
     size: "small",
   });
   expect(launched.isError).toBe(false);
-  const id = launched.data.id as string;
+  const id = launchSandboxId(launched.data);
   const row = (
     await server.db.query<{ resource_project: ResourceProject | null; provider_sandbox_id: string }>(
       "select resource_project,provider_sandbox_id from sandboxes where id=$1",

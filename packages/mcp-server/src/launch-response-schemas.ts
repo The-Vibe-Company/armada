@@ -1,4 +1,6 @@
-import { SANDBOX_PROVIDERS } from "@armada/core";
+import { goldenCompatibilityIds, launchGitHubResponse, SANDBOX_PROVIDERS, sandboxIdentity } from "@armada/core";
+import type { LaunchEnvelope } from "@armada/core/contract";
+import type { LaunchResult } from "@armada/core/server";
 import { z } from "zod";
 import { LOGS_OUTPUT } from "./sandbox-tool-schemas.ts";
 
@@ -18,6 +20,26 @@ export function canonicalLaunchResponse<
     promptId: result.promptId ?? null,
     conversationId: result.conversationId ?? null,
   };
+}
+
+export function goldenLaunchResponse(result: LaunchResult) {
+  return {
+    runtime: result.runtime ?? null,
+    helper: result.helper,
+    sandbox: {
+      ...result.sandbox,
+      ...sandboxIdentity(result.sandbox),
+    },
+    golden: {
+      ...result.golden,
+      ...goldenCompatibilityIds(result.golden),
+    },
+    promptId: result.promptId ?? null,
+    conversationId: result.conversationId ?? null,
+    ttlSeconds: result.ttlSeconds,
+    expiresAt: result.expiresAt?.toISOString() ?? null,
+    github: launchGitHubResponse(result.github),
+  } satisfies LaunchEnvelope;
 }
 
 const GOLDEN_OUTPUT = z.object({

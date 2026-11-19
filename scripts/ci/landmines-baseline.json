@@ -710,7 +710,7 @@
     "packages/core/src/private-skill.ts": 3,
     "packages/core/src/provider-golden-target.ts": 1,
     "packages/core/src/provider-limit.ts": 2,
-    "packages/core/src/provider-response.ts": 2,
+    "packages/core/src/provider-response.ts": 1,
     "packages/core/src/provider.ts": 125,
     "packages/core/src/public-control-routes.ts": 5,
     "packages/core/src/readable-variables.ts": 3,
