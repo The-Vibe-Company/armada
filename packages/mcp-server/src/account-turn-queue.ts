@@ -43,6 +43,9 @@ type Entry = {
   result_enc: Uint8Array<ArrayBuffer> | null;
   conversation_id: string;
 };
+type DispatchJobEntry = Pick<Entry, "sandbox_id" | "request_id" | "org_id" | "queued_generation">;
+const DISPATCH_JOB_BACKFILL_BATCH = 20;
+
 const UNSETTLED_TASK = `s.task_prompt_id is not null
   and (s.status='running' or (s.status='ready' and ${RUNTIME_LANE} and s.provider<>'docker'))
   and not exists(select 1 from public.runtime_idle_turns t
@@ -56,11 +59,9 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
   const jobs = createJobsStore(sql, key);
   const pending = new Set<Promise<unknown>>();
   let scanAfter = "0";
+  let backfillAfter = "0";
   let dispatch: DispatchTurn | undefined;
-  function enqueueDispatchJob(
-    entry: Pick<Entry, "sandbox_id" | "request_id" | "org_id" | "queued_generation">,
-    tx?: Sql,
-  ) {
+  function enqueueDispatchJob(entry: DispatchJobEntry, tx?: Sql) {
     return jobs.enqueue(
       "turn_dispatch",
       entry.sandbox_id,
@@ -73,18 +74,22 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
   }
   async function backfillDispatchJobs(signal: AbortSignal) {
     // WARNING: Match the producer's compact key with queued_generation, since the job generation can advance.
-    const { rows } = await sql.query<Pick<Entry, "sandbox_id" | "request_id" | "org_id" | "queued_generation">>(
-      `select q.sandbox_id,q.request_id,q.org_id,q.queued_generation::text
-       from public.account_turn_queue q
-       where q.state in ('queued','dispatching') and not exists (
+    const { rows } = await sql.query<DispatchJobEntry & { sequence: string; missing_job: boolean }>(
+      `select q.sandbox_id,q.request_id,q.org_id,q.queued_generation::text,q.sequence::text,
+       case when q.state in ('queued','dispatching') then not exists (
          select 1 from public.jobs j where j.idem_key =
            format('["internal","%s","turn_dispatch","%s",%s,"%s"]',q.org_id,q.sandbox_id,q.queued_generation,q.request_id)
-       )
-       order by q.sequence limit 20`,
+       ) else false end as missing_job
+       from (
+         select sandbox_id,request_id,org_id,queued_generation,sequence,state
+         from public.account_turn_queue where sequence>$1::bigint order by sequence limit $2
+       ) q order by q.sequence`,
+      [backfillAfter, DISPATCH_JOB_BACKFILL_BATCH],
     );
+    backfillAfter = rows.length === DISPATCH_JOB_BACKFILL_BATCH ? rows.at(-1)!.sequence : "0";
     for (const entry of rows) {
       if (signal.aborted) return;
-      await enqueueDispatchJob(entry);
+      if (entry.missing_job) await enqueueDispatchJob(entry);
     }
   }
 

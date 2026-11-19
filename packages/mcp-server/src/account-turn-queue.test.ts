@@ -203,6 +203,33 @@ test("a failed backfill write does not stop the existing dispatcher", async () =
   }
 });
 
+test("backfill advances past a page of terminal history to reach a waiting request", async () => {
+  const history = { id: ids[0]!, request_id: requests[0]!, prompt: "earlier instruction" };
+  await queue.accept(caller, history);
+  await database().query(
+    `insert into public.account_turn_queue
+       (sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id,state)
+     select sandbox_id,gen_random_uuid(),account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id,'failed'
+     from public.account_turn_queue cross join generate_series(1,20) where sandbox_id=$1`,
+    [history.id],
+  );
+  await database().query("update public.account_turn_queue set state='failed' where sandbox_id=$1", [history.id]);
+  const waiting = { id: ids[1]!, request_id: requests[1]!, prompt: "next instruction" };
+  await queue.accept(caller, waiting);
+  await database().query("delete from public.jobs where sandbox_id=$1", [waiting.id]);
+  await database().exec("update public.credentials set max_agents=0");
+  const worker = createAccountTurnQueue(sql, btoa("x".repeat(32)));
+  worker.setDispatch(async () => ({}));
+  const signal = new AbortController().signal;
+  const jobsForWaiting = async () =>
+    (await database().query("select id from public.jobs where sandbox_id=$1", [waiting.id])).rows;
+
+  expect(await worker.reconcileOne(signal)).toBe(false);
+  expect(await jobsForWaiting()).toHaveLength(0);
+  expect(await worker.reconcileOne(signal)).toBe(false);
+  expect(await jobsForWaiting()).toHaveLength(1);
+});
+
 test("full-account prompts persist, dispatch FIFO after a turn settles, and queued IDs resolve to actual receipts", async () => {
   await database().query("update sandboxes set status='running',task_prompt_id='active_turn' where id=$1", [ids[0]]);
   const first = { id: ids[1]!, request_id: requests[0]!, prompt: "first instruction" };
