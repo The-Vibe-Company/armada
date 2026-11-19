@@ -34,8 +34,8 @@ With ARMADA_DOCKER_HOSTS=1, current owner/admin interior authorization:
   make a conversation permanently unsettled. Unknown/truncated evidence is not
   presented as settled. Retained archive reads survive stop/delete or host revoke.
 - POST /api/v1/logs/read keeps its normal cursor, direction, limit, maxBytes,
-  coalesce, conversationId/all/follow contract. MCP logs uses since_cursor and
-  conversation_id. Both reuse the existing archived-history paging and ar1 cursors,
+  coalesce, all, and follow options. MCP logs uses since_cursor.
+  Both read archived sandbox history using ar1 cursors,
   filter private model diagnostics after raw paging, and preserve forward progress
   through empty filtered pages. The shared SQL ordering is qualified numeric
   sequence order, not lexicographic ordering of its text output alias.

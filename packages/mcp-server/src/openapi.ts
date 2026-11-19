@@ -40,7 +40,7 @@ import { createArmadaServer, type ToolContext } from "./tools.ts";
 export const REST_FIELD_NAMES: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   "sandbox/launch": { ttl_seconds: "ttlSeconds", reasoning_effort: "reasoningEffort" },
   "sandbox/extend": { ttl_seconds: "ttlSeconds" },
-  "logs/read": { since_cursor: "cursor", conversation_id: "conversationId" },
+  "logs/read": { since_cursor: "cursor" },
 };
 /** REST routes whose contract is the named MCP tool, beyond the dispatcher's shared-tool table. */
 const REST_TOOL_ROUTES: Readonly<Record<string, string>> = {

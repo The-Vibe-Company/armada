@@ -379,19 +379,19 @@ test("logs remain available without reading the launch manifest", async () => {
   });
 });
 
-test("normal logs preserve raw cursors through private diagnostics and conversation filters, backward paging and all", async () => {
+test("normal logs preserve raw cursors through private diagnostics and historical events, backward paging and all", async () => {
   const f = await fixture(),
     session = await ready(f),
     who = caller(f.actor),
     conversationId = randomUUID();
   await publish(f, session, [
     { id: "private", at: 1, kind: "other", type: "account/updated", data: { secret: "not public" }, conversationId },
-    { id: "unrelated", at: 2, kind: "other", type: "notice", data: null, conversationId: randomUUID() },
+    { id: "historical", at: 2, kind: "other", type: "notice", data: null, conversationId: randomUUID() },
     { id: "visible", at: 3, kind: "message", text: "hello", partial: false, tools: [], conversationId },
     { id: "visible2", at: 4, kind: "message", text: "world", partial: false, tools: [], conversationId },
   ]);
   const prefix = `ar1_${f.sandbox.id}_`;
-  expect(await invoke(who, "logs", { id: f.sandbox.id, limit: 1, conversation_id: conversationId })).toMatchObject({
+  expect(await invoke(who, "logs", { id: f.sandbox.id, limit: 1 })).toMatchObject({
     events: [],
     cursor: `${prefix}1`,
     hasMore: true,
@@ -402,17 +402,14 @@ test("normal logs preserve raw cursors through private diagnostics and conversat
       id: f.sandbox.id,
       limit: 1,
       since_cursor: `${prefix}1`,
-      conversation_id: conversationId,
     }),
   ).toMatchObject({
-    events: [],
+    events: [{ id: "historical" }],
     cursor: `${prefix}2`,
     hasMore: true,
   });
-  expect(
-    await invoke(who, "logs", { id: f.sandbox.id, limit: 1, all: true, conversation_id: conversationId }),
-  ).toMatchObject({
-    events: [{ id: "visible" }, { id: "visible2" }],
+  expect(await invoke(who, "logs", { id: f.sandbox.id, limit: 1, all: true })).toMatchObject({
+    events: [{ id: "historical" }, { id: "visible" }, { id: "visible2" }],
     cursor: `${prefix}4`,
     hasMore: false,
   });

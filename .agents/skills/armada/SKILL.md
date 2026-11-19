@@ -149,7 +149,8 @@ accepts 0–600 and defaults to 60; the example waits at most 120 seconds. A
 still-running result can be waited on again, not relaunched. A wait response is
 an observation, not proof tests passed or work was pushed; inspect outcome and
 logs. If a send times out ambiguously, inspect detail, status and logs before
-considering another send; do not replay a possibly accepted instruction. For longer event inspection use
+considering another send; do not replay a possibly accepted instruction. Logs
+read the history for the entire sandbox. For longer event inspection use
 `armada logs SANDBOX --follow --json`; `armada logs SANDBOX --all --json`
 drains available pages. Keep output bounded with tail for routine diagnostics.
 Preserve returned cursors/identifiers in reports; do not fabricate a cursor flag.

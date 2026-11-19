@@ -1078,7 +1078,6 @@ export function createArmadaServer(context: ToolContext, version: string, option
       input: {
         id,
         since_cursor: z.string().min(1).optional().describe("The cursor of the previous page."),
-        conversation_id: conversationId,
         limit: z.number().int().min(1).max(500).optional(),
         all: z.boolean().optional().describe("Read up to 100 pages. Use forward direction only."),
         direction: z.enum(["forward", "backward"]).optional(),
@@ -1098,7 +1097,6 @@ export function createArmadaServer(context: ToolContext, version: string, option
       const provider = storedProvider ? await storedProvider(found) : await context.provider(found);
       const page = await readLogs(provider, found.providerSandboxId, {
         ...(args.since_cursor ? { since_cursor: args.since_cursor } : {}),
-        ...(args.conversation_id ? { conversation_id: args.conversation_id } : {}),
         ...(args.limit ? { limit: args.limit } : {}),
         ...(args.all ? { all: true } : {}),
         ...(args.direction ? { direction: args.direction } : {}),
@@ -1789,7 +1787,6 @@ async function readLogs(
   sandboxId: string,
   args: {
     since_cursor?: string;
-    conversation_id?: string;
     limit?: number;
     all?: boolean;
     direction?: "forward" | "backward";
@@ -1805,7 +1802,6 @@ async function readLogs(
         ...(args.maxBytes ? { maxBytes: args.maxBytes } : {}),
         ...(args.coalesce !== undefined ? { coalesce: args.coalesce } : {}),
         ...(cursor ? { cursor } : {}),
-        ...(args.conversation_id ? { conversationId: args.conversation_id } : {}),
         ...(args.limit ? { limit: args.limit } : {}),
       }),
     args.since_cursor,

@@ -37,7 +37,6 @@ export async function readLogs(
     const routed = await options.dockerControls.invoke(caller, "logs", {
       id,
       ...(body.cursor === undefined ? {} : { since_cursor: body.cursor }),
-      ...(body.conversationId === undefined ? {} : { conversation_id: body.conversationId }),
       ...Object.fromEntries(
         ["limit", "all", "direction", "maxBytes", "coalesce", "follow"]
           .filter((key) => body[key] !== undefined)
@@ -72,7 +71,6 @@ export async function readLogs(
           ...(typeof body.limit === "number" ? { limit: body.limit } : {}),
           ...(typeof body.maxBytes === "number" ? { maxBytes: body.maxBytes } : {}),
           ...(typeof body.coalesce === "boolean" ? { coalesce: body.coalesce } : {}),
-          ...(optional(body, "conversationId") ? { conversationId: optional(body, "conversationId")! } : {}),
         }),
       ),
     optional(body, "cursor"),

@@ -508,8 +508,7 @@ export function createDockerSandboxControls(
         (typeof args.limit !== "number" || !Number.isInteger(args.limit) || args.limit < 1 || args.limit > 500)) ||
       (args.coalesce !== undefined && typeof args.coalesce !== "boolean") ||
       (args.direction === "backward" && args.all) ||
-      (args.since_cursor !== undefined && typeof args.since_cursor !== "string") ||
-      (args.conversation_id !== undefined && (typeof args.conversation_id !== "string" || !args.conversation_id))
+      (args.since_cursor !== undefined && typeof args.since_cursor !== "string")
     )
       throw invalid();
     const snapshot: { row: Row; queued?: QueuedPrompt[]; final?: QueuedPrompt[] } = { row };
@@ -525,7 +524,6 @@ export function createDockerSandboxControls(
           row.id,
           {
             ...(cursor !== undefined ? { cursor } : {}),
-            ...(args.conversation_id !== undefined ? { conversationId: args.conversation_id as string } : {}),
             ...(args.limit !== undefined ? { limit: args.limit as number } : {}),
             ...(args.direction !== undefined ? { direction: args.direction as "forward" | "backward" } : {}),
             ...(args.maxBytes !== undefined ? { maxBytes: args.maxBytes as number } : {}),
