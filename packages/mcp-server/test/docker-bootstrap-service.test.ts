@@ -1091,9 +1091,11 @@ test.each(refusalOrders)(
       await expect(authority.withBootstrap(job.bootstrap.enrolmentToken, async () => {})).rejects.toThrow(
         "runtime_enrolment_denied",
       );
-      const failedStop = createRuntimeEnrolments(failWrite("insert into public.docker_host_jobs"), key);
-      expect((await refuse(failedStop))?.status).toBe(503);
-      expect((await reservations.get(f.actor, id)).status).toBe("failed");
+      for (const fragment of ["from public.sandbox_transition(", "insert into public.docker_host_jobs"]) {
+        const failedStop = createRuntimeEnrolments(failWrite(fragment), key);
+        expect((await refuse(failedStop))?.status).toBe(503);
+        expect((await reservations.get(f.actor, id)).status).toBe("failed");
+      }
     }
     const enrolmentDeadline = missingAck
       ? (
@@ -1278,6 +1280,25 @@ test.each(refusalOrders)(
       expect((await reservations.get(f.actor, id)).status).toBe("starting");
       expect((await service.resume(f.actor, id, resume.requestId)).state).toBe("failed");
     }
+    expect(
+      (
+        await database().query(
+          `select t.from_status,t.to_status,t.actor,
+              t.generation=resume.refused_resume_generation+$3::bigint as generation_fenced
+           from public.sandbox_transitions t
+           join public.docker_host_jobs resume on resume.request_id=$2
+           where t.sandbox_id=$1 and t.code='docker_resume_refusal_stop'`,
+          [id, job.requestId, failedAckFirst ? 2 : 1],
+        )
+      ).rows,
+    ).toEqual([
+      {
+        from_status: failedAckFirst ? "failed" : "starting",
+        to_status: "stopping",
+        actor: "docker_host",
+        generation_fenced: true,
+      },
+    ]);
     if (failedRetainedStop) {
       expect((await reportRetained(stop.requestId))?.status).toBe(200);
       expect((await reservations.get(f.actor, id)).status).toBe("starting");
