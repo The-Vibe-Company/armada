@@ -581,6 +581,7 @@ export async function collectSandboxUsage(
       targetPromptId ? 1 : 0,
       new Set([...rows.values()].map((r) => r.promptId)).size,
     );
+    const hasReliableCompletionTime = provider.id !== "boat" || sandbox.boatRuntime;
     await store.recordUsage(
       sandbox.id,
       {
@@ -589,8 +590,7 @@ export async function collectSandboxUsage(
       },
       {
         observations,
-        // Native Boat rewrites prompt status without a reliable completion timestamp.
-        ...(provider.id !== "boat" || sandbox.boatRuntime ? { completed: completedUsageTurns(events) } : {}),
+        ...(hasReliableCompletionTime ? { completed: completedUsageTurns(events) } : {}),
       },
     );
   } catch {
