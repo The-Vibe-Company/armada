@@ -121,3 +121,26 @@ test("same-generation native restore redacts retired authority text without its 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("checkpoint transcript copies mask embedded short application values and preserve native metadata", async () => {
+  const root = await mkdtemp(join(tmpdir(), "armada-short-checkpoint-"));
+  const journal = new Journal(":memory:", (text) => text);
+  const state = new HarnessState(root, journal.redact);
+  try {
+    journal.registerApplicationSecrets(["session", "value"]);
+    const dir = join(root, "codex/sessions");
+    await mkdir(dir, { recursive: true });
+    const file = join(dir, "fixture.jsonl");
+    const frame = { type: "session_meta", payload: { id: "session-fixture", text: "prefixvalue" } };
+    await writeFile(file, `${JSON.stringify(frame)}\n`);
+    await state.checkpoint();
+    await state.restore();
+    expect(JSON.parse(await readFile(file, "utf8"))).toEqual({
+      ...frame,
+      payload: { ...frame.payload, text: "prefix[REDACTED]" },
+    });
+  } finally {
+    journal.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});

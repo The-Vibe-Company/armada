@@ -39,7 +39,7 @@ export async function executeWithReceipt(
     body: string;
   } | null;
   if (old && request.op !== "checkpoint")
-    return new Response(old.body, {
+    return new Response(journal.redact(old.body), {
       status: replayStatus(old.body),
       headers: { "content-type": "application/json" },
     });
@@ -70,8 +70,12 @@ export async function executeWithReceipt(
   return new Response(body, { headers: { "content-type": "application/json" } });
 }
 
+function responseEnvelope(journal: Journal, requestId: string): { version: 1; requestId: string } {
+  return JSON.parse(journal.redact(JSON.stringify({ version: 1, requestId })));
+}
+
 function eventsResponse(journal: Journal, requestId: string, selection: EventSelection) {
-  const envelope = { version: 1, requestId: journal.redactLiteralText(requestId) };
+  const envelope = responseEnvelope(journal, requestId);
   const page = { events: [] as AgentEvent[], cursor: String(selection.after), hasMore: selection.hasMore };
   let eventsBytes = 0;
   for (const [index, row] of selection.rows.entries()) {
@@ -99,8 +103,7 @@ function workspaceReceipt(journal: Journal, requestId: string, output: Awaited<R
   const stdout = journal.redactCommandOutput(output.stdout, commandOutputLimit);
   const stderr = journal.redactCommandOutput(output.stderr, commandOutputLimit);
   return JSON.stringify({
-    version: 1,
-    requestId: journal.redactLiteralText(requestId),
+    ...responseEnvelope(journal, requestId),
     result: {
       detached: false,
       exitCode: output.exitCode,

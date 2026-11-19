@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import type { AgentEvent, PromptStatus } from "@armada/core";
-import { HARNESSES, isFinalPromptStatus, planLimitData } from "@armada/core";
+import { HARNESSES, isFinalPromptStatus, PROMPT_STATUSES, planLimitData } from "@armada/core";
 import { HarnessError } from "./errors.ts";
 import { checkpointIdentity, checkpointIdentityKey } from "./identity.ts";
 import type { CheckpointIdentity, StoredPrompt } from "./protocol.ts";
@@ -67,6 +67,53 @@ function maskText(original: string, scrubbed: string, mask: (text: string) => st
   const short = mask(original);
   if (short === original || short === scrubbed) return scrubbed;
   return original === scrubbed ? short : "[REDACTED]";
+}
+
+const protocolIdentityFields = new Set([
+  "id",
+  "uuid",
+  "sandboxId",
+  "conversationId",
+  "promptId",
+  "requestId",
+  "sessionId",
+  "session_id",
+  "threadId",
+  "thread_id",
+  "messageId",
+  "parentUuid",
+  "leafUuid",
+  "generation",
+  "epoch",
+]);
+const controlStatuses = new Set<string>([
+  ...PROMPT_STATUSES,
+  "running_after_restart",
+  "exited",
+  "unknown_after_restart",
+]);
+
+function maskJsonText(original: unknown, scrubbed: unknown, mask: (text: string) => string): unknown {
+  if (typeof original === "string" && typeof scrubbed === "string") return maskText(original, scrubbed, mask);
+  if (Array.isArray(original) && Array.isArray(scrubbed))
+    return scrubbed.map((value, index) => maskJsonText(original[index], value, mask));
+  if (!original || typeof original !== "object" || !scrubbed || typeof scrubbed !== "object") return scrubbed;
+  const source = original as Record<string, unknown>;
+  return Object.fromEntries(
+    Object.entries(scrubbed).map(([key, value]) => {
+      const before = source[key];
+      const processIdentity =
+        key === "identity" && typeof source.pid === "number" && controlStatuses.has(String(source.status));
+      const control =
+        protocolIdentityFields.has(key) ||
+        processIdentity ||
+        key === "type" ||
+        (key === "status" && typeof before === "string" && controlStatuses.has(before)) ||
+        (key === "harness" && (HARNESSES as readonly unknown[]).includes(before)) ||
+        (key === "error" && before === "request_outcome_unknown");
+      return [key, control ? value : maskJsonText(before, value, mask)];
+    }),
+  );
 }
 
 const maskPayload: (value: unknown, mask: (text: string) => string) => unknown = (value, mask) => {
@@ -331,6 +378,8 @@ export class Journal {
   readonly db: Database;
   readonly redact: (text: string) => string;
   private dynamicRedactor = createRedactor([]);
+  private shortWordRedactor = createRedactor([]);
+  private readonly redactProtocol: (text: string) => string;
   private applicationSecrets = new Set<string>();
   private hasApplicationSecrets = false;
   private redactShortApplicationText: ((text: string) => string) | undefined;
@@ -338,7 +387,8 @@ export class Journal {
     this.dynamicRedactor.register(values);
   }
   registerApplicationSecrets(values: readonly string[]) {
-    this.registerSecrets(values);
+    this.registerSecrets(values.filter((value) => value.length >= 8));
+    this.shortWordRedactor.register(values.filter((value) => value.length < 8));
     this.hasApplicationSecrets ||= values.some(Boolean);
     for (const value of values) if (value.length > 0 && value.length < 8) this.applicationSecrets.add(value);
     this.redactShortApplicationText = createShortSecretTextRedactor([...this.applicationSecrets]);
@@ -353,13 +403,26 @@ export class Journal {
   redactCommandOutput(capture: { text: string; truncated: boolean }, limit: number) {
     const mask = this.redactShortApplicationText;
     if (this.hasApplicationSecrets && capture.truncated) return { text: "[REDACTED]", truncated: true };
-    const scrubbed = this.redactLiteralText(this.redact(capture.text));
+    const scrubbed: string = JSON.parse(this.redactProtocol(JSON.stringify(this.redactProtocol(capture.text))));
     const text = mask ? maskText(capture.text, scrubbed, mask) : scrubbed;
     if (text.length > limit) return { text: "[REDACTED]", truncated: true };
     return { text, truncated: capture.truncated };
   }
   constructor(path: string, redact: (text: string) => string) {
-    this.redact = (text) => this.dynamicRedactor(redact(text));
+    this.redactProtocol = (text) => this.shortWordRedactor(this.dynamicRedactor(redact(text)));
+    this.redact = (text) => {
+      const scrubbed = this.dynamicRedactor(redact(text));
+      const mask = this.redactShortApplicationText;
+      if (!mask) return scrubbed;
+      if (!/^\s*["{[]/.test(text)) return maskText(text, scrubbed, mask);
+      let original: unknown;
+      try {
+        original = JSON.parse(text);
+      } catch {
+        return maskText(text, scrubbed, mask);
+      }
+      return JSON.stringify(maskJsonText(original, JSON.parse(scrubbed), mask));
+    };
     this.db = new Database(path, { create: true });
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA secure_delete=ON;
  CREATE TABLE IF NOT EXISTS prompts(id TEXT PRIMARY KEY, conversation TEXT NOT NULL,status TEXT NOT NULL,body TEXT NOT NULL);
@@ -396,7 +459,11 @@ export class Journal {
   }
   private eventBody(event: AgentEvent, appending: boolean) {
     const mask = this.redactShortApplicationText;
-    const body = this.redact(JSON.stringify(event));
+    const serialized = JSON.stringify(event);
+    const shaped =
+      event.kind === "message" ||
+      (event.kind === "other" && (event.type === "harness_stderr" || isStructuredDiagnostic(event.type)));
+    const body = shaped ? this.redactProtocol(serialized) : this.redact(serialized);
     if (event.kind === "prompt") return JSON.stringify({ ...JSON.parse(body), kind: event.kind, status: event.status });
     if (event.kind === "steer") return JSON.stringify({ ...JSON.parse(body), kind: event.kind });
     if (event.kind === "message") {
@@ -433,12 +500,20 @@ export class Journal {
     if (isStructuredDiagnostic(event.type)) {
       scrubbed.type = event.type;
       const maskField = (text: string) => {
-        const literal = this.redactLiteralText(text);
+        const literal: string = JSON.parse(this.redactProtocol(JSON.stringify(text)));
         return mask ? maskText(text, literal, mask) : literal;
       };
       if (event.type === "result") {
         if (event.data && typeof event.data === "object" && scrubbed.data && typeof scrubbed.data === "object") {
           const source = event.data as Record<string, unknown>;
+          const generic = JSON.parse(this.redact(serialized)).data;
+          const shapedFields = new Set<string>([
+            ...CLAUDE_RESULT_PAYLOAD_FIELDS,
+            "modelUsage",
+            "usage",
+            "total_cost_usd",
+          ]);
+          for (const [key, value] of Object.entries(generic)) if (!shapedFields.has(key)) scrubbed.data[key] = value;
           for (const key of CLAUDE_RESULT_PAYLOAD_FIELDS) maskPayloadField(source, scrubbed.data, key, maskField);
           if (Object.hasOwn(source, "modelUsage"))
             scrubbed.data.modelUsage = maskShapedPayload(
@@ -494,7 +569,16 @@ export class Journal {
         ? truncatedEvent(scrubbed, diagnostic.length)
         : diagnostic;
     }
-    return JSON.stringify(scrubbed);
+    if (event.type === "event_truncated") return JSON.stringify(scrubbed);
+    scrubbed.type = this.redactLiteralText(event.type);
+    if (mask) {
+      const baseline = JSON.parse(this.redactProtocol(serialized)).data;
+      scrubbed.data = maskShapedPayload(event.data, baseline, (text) => this.redactLiteralText(text));
+    }
+    const diagnostic = JSON.stringify(scrubbed);
+    return !appending && Buffer.byteLength(diagnostic) > MAX_EVENT_BYTES
+      ? truncatedEvent(scrubbed, diagnostic.length)
+      : diagnostic;
   }
   private sanitizeEvent(body: string) {
     let event: AgentEvent;
@@ -503,8 +587,7 @@ export class Journal {
     } catch {
       return this.redact(body);
     }
-    return event?.kind === "message" ||
-      (event?.kind === "other" && (event.type === "harness_stderr" || isStructuredDiagnostic(event.type)))
+    return event?.kind === "message" || event?.kind === "other" || event?.kind === "prompt" || event?.kind === "steer"
       ? this.eventBody(event, false)
       : this.redact(body);
   }
@@ -547,8 +630,8 @@ export class Journal {
       !session ||
       session.length > 256 ||
       !(HARNESSES as readonly string[]).includes(harness) ||
-      this.redact(conversation) !== conversation ||
-      this.redact(session) !== session
+      this.redact(JSON.stringify({ conversationId: conversation, sessionId: session })) !==
+        JSON.stringify({ conversationId: conversation, sessionId: session })
     )
       throw Error("invalid_native_session_identity");
     const saved = this.db
