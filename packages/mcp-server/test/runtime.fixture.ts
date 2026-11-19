@@ -67,7 +67,7 @@ export async function runtimeFixture(
   await using setup = new AsyncDisposableStack();
   const { db, people } = fixture ?? (await database());
   if (!fixture) setup.defer(() => db.close());
-  const root = await mkdtemp(join(tmpdir(), `runtime-followup-${process.pid}-`));
+  const root = await mkdtemp(join(tmpdir(), "runtime-followup-"));
   setup.defer(() => rm(root, { recursive: true, force: true }));
   let journal = new Journal(join(root, "journal"), (value) => value);
   setup.defer(() => journal.close());

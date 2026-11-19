@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
@@ -136,9 +136,10 @@ test("a provider reset outside PostgreSQL's ISO calendar still acknowledges the 
 test("failed runtime setup removes its journal directory and keeps the caller's database open", async () => {
   const f = await prepared;
   if (!f) throw Error("Runtime account fixture is not open");
-  const fixtureDirectories = async () =>
-    (await readdir(tmpdir())).filter((name) => name.startsWith(`runtime-followup-${process.pid}-`));
-  const before = new Set(await fixtureDirectories());
+  const root = await mkdtemp(join(tmpdir(), "runtime-setup-failure-"));
+  const tempKey = process.platform === "win32" ? "TEMP" : "TMPDIR";
+  const previous = process.env[tempKey];
+  process.env[tempKey] = root;
   try {
     await expect(
       runtimeFixture(f, "boat", "codex", true, undefined, {
@@ -146,11 +147,11 @@ test("failed runtime setup removes its journal directory and keeps the caller's 
         providerSandboxId: "missing-golden",
       }),
     ).rejects.toThrow("sandbox golden does not exist");
-    expect((await fixtureDirectories()).filter((name) => !before.has(name))).toEqual([]);
+    expect(await readdir(root)).toEqual([]);
     expect(f.db.closed).toBe(false);
   } finally {
-    for (const name of await fixtureDirectories()) {
-      if (!before.has(name)) await rm(join(tmpdir(), name), { recursive: true, force: true });
-    }
+    if (previous === undefined) delete process.env[tempKey];
+    else process.env[tempKey] = previous;
+    await rm(root, { recursive: true, force: true });
   }
 });
