@@ -67,21 +67,20 @@ export function useLaunchAccess(connections: LaunchConnections) {
     </>
   );
 
-  const fields = (idPrefix: string) =>
-    (
-      <ToolMenu
-        idPrefix={idPrefix}
-        tools={list}
-        unavailable={"unavailable" in connections}
-        chosen={chosen}
-        onChange={toggle}
-        changed={picked !== null}
-        onReset={() => {
-          setPicked(null);
-          setWaived([]);
-        }}
-      />
-    );
+  const fields = (idPrefix: string) => (
+    <ToolMenu
+      idPrefix={idPrefix}
+      tools={list}
+      unavailable={"unavailable" in connections}
+      chosen={chosen}
+      onChange={toggle}
+      changed={picked !== null}
+      onReset={() => {
+        setPicked(null);
+        setWaived([]);
+      }}
+    />
+  );
   const selectedTools = list.filter((connection) => chosen.includes(connection.id) && !launchBlocker(connection));
 
   return {

@@ -1,5 +1,6 @@
 import {
   accountBindingAvailability,
+  DOCKER_HOST_PROTOCOL,
   type Harness,
   harnessesForCredential,
   harnessForCredential,
@@ -663,6 +664,8 @@ function largeHosts(): Row[] {
     lastSeenAt: "2026-11-16T10:00:00.000Z",
     revokedAt: null,
     sandboxes: i === 0 ? 200 : 0,
+    protocol: DOCKER_HOST_PROTOCOL,
+    upgradeRequired: false,
     version: null,
   }));
 }
