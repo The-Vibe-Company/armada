@@ -36,11 +36,10 @@ export function scopedRuntimeFixture<T extends { close(): Promise<void> }>(
   };
 }
 
-/** Transfer cleanup to the caller only after its additional setup succeeds. */
 export async function configureRuntimeFixture<T>(
   fixture: Awaited<ReturnType<typeof runtimeFixture>>,
   configure: () => Promise<T>,
-): Promise<T> {
+) {
   try {
     return await configure();
   } catch (error) {
