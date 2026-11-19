@@ -496,11 +496,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     await bootStage("active_publication", () => save(row));
     return sandboxInfo(row);
   }
-  async function launch(
-    request: CreateGoldenRequest | ForkRequest,
-    golden: boolean,
-    admittedSnapshot?: SavedImage,
-  ): Promise<SandboxInfo> {
+  async function launch(request: CreateGoldenRequest | ForkRequest, golden: boolean): Promise<SandboxInfo> {
     let size: Machine["size"];
     if ("size" in request && request.size !== undefined) {
       try {
@@ -516,7 +512,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     let imageId: string | undefined;
     let sourceImage: Machine["sourceImage"];
     if ("from" in request) {
-      const snapshot = admittedSnapshot ?? (await source.store.image(request.from));
+      const snapshot = await source.store.image(request.from);
       assertAuthority(snapshot);
       if (snapshot.info.status !== "ready" || !snapshot.imageId)
         throw refusal("sandbox_not_ready", "Snapshot is not ready.");
@@ -1028,11 +1024,6 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       }
       const snapshot = await source.store.image(r.from);
       assertAuthority(snapshot);
-      if (options.commonRuntime) {
-        const sourceRow = await source.store.get(snapshot.sourceId);
-        if (sourceRow.commonRuntime) throw refusal("invalid_request", "Enrolled Modal forks are not enabled.");
-        return launch(r, false, snapshot);
-      }
       let admitted = false;
       try {
         return await source.store.lease(snapshot.sourceId, async (sourceRow) => {

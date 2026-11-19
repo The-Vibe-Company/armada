@@ -1046,31 +1046,6 @@ test("overlapping forks refuse source contention definitively before allocating"
     await first;
   }
 });
-test("enrolled Modal forks can boot concurrently from one saved snapshot", async () => {
-  const f = fixture(scope, fixtureSql, undefined, undefined, true);
-  const { name } = await savedGolden(f);
-  const entered = deferred();
-  const release = deferred();
-  const prepare = f.distribution.prepareFreshMachine!;
-  f.distribution.prepareFreshMachine = async (...args) => {
-    f.distribution.prepareFreshMachine = prepare;
-    entered.resolve();
-    await release.promise;
-    await prepare(...args);
-  };
-  const first = f.provider.fork({ from: name });
-  await Promise.race([entered.promise, first]);
-  try {
-    const second = await f.provider.fork({ from: name });
-    expect(second.state).toBe("ready");
-    release.resolve();
-    expect((await first).id).not.toBe(second.id);
-  } finally {
-    release.resolve();
-    await first;
-  }
-});
-
 test("snapshot retirement refuses a live enrolled Modal fork reference", async () => {
   const f = fixture(scope, fixtureSql, undefined, undefined, true);
   const { name } = await savedGolden(f);
@@ -1082,21 +1057,6 @@ test("snapshot retirement refuses a live enrolled Modal fork reference", async (
   await f.provider.delete({ sandboxId: child.id });
   await f.provider.deleteSnapshot(name);
   await expect(f.provider.getSnapshot(name)).rejects.toMatchObject({ code: "not_found" });
-});
-
-test("enrolled Modal fork refuses a snapshot retired after lookup and before reservation", async () => {
-  const f = fixture(scope, fixtureSql, undefined, undefined, true);
-  const { name } = await savedGolden(f);
-  const read = f.store.image.bind(f.store);
-  f.store.image = async (snapshot) => {
-    const image = await read(snapshot);
-    f.store.image = read;
-    await f.provider.deleteSnapshot(snapshot);
-    return image;
-  };
-  const creates = f.creates;
-  await expect(f.provider.fork({ from: name })).rejects.toMatchObject({ code: "not_found" });
-  expect(f.creates).toBe(creates);
 });
 
 test("enrolled Modal forks mount the environment artifact cache read-only", async () => {
