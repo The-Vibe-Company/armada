@@ -245,7 +245,7 @@ test("binary and publish jobs use the validated release version for npm artifact
   const collection = binary.steps.find((step) => step.name === "Collect smoke-tested npm tarballs");
   const artifact = binary.steps.find((step) => step.with?.path === "dist/npm-artifact");
   const download = publish.steps.find((step) => step.with?.path === "dist/tarballs");
-  const version = "${{ needs.release-metadata.outputs.version }}";
+  const version = `\${{ needs.release-metadata.outputs.version }}`;
 
   expect(workflow.jobs["release-metadata"]?.outputs?.version).toBeTruthy();
   expect(binary.needs).toContain("release-metadata");
