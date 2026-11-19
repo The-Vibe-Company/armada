@@ -3,6 +3,7 @@ import { type PromptReceipt, type Sql, sandboxActivity, VaultError } from "@arma
 import type { Caller } from "./caller.ts";
 import { createSqlData, type SandboxView } from "./data.ts";
 import { recordLaunchStageQuietly } from "./launch-stage-record.ts";
+import { createModalRuntimeEnvironment } from "./modal-runtime-environment.ts";
 import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 import { lockRuntimeAccount } from "./runtime-account-admission.ts";
 import { runtimeAgentFor } from "./runtime-agent.ts";
@@ -10,6 +11,7 @@ import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
+import { UNENROLLED_RESUME_STOP } from "./sandbox-lifecycle.ts";
 
 export interface RuntimeResumeInput {
   id: string;
@@ -64,6 +66,7 @@ export function createRuntimeResume(
   prepareGitHub?: RuntimeGitHub["prepareLaunch"],
 ) {
   const authority = createRuntimeEnrolments(sql, key);
+  const modalEnvironment = createModalRuntimeEnvironment(sql, key);
   const read = async (tx: Sql, id: string, request: string) =>
     (
       await tx.query<Operation>(
@@ -98,6 +101,8 @@ export function createRuntimeResume(
       if (!(await store.get(found.id))) throw new VaultError("not_found", "Runtime membership was revoked.");
       return prior.receipt;
     } // Historical accepted outcome, not a new activation.
+    const actor = { userId: caller.userId, orgId: found.orgId };
+    if (!prior && found.provider === "modal") await modalEnvironment.validate(actor, found.id);
     if (!sql.transaction) throw new VaultError("unavailable", "Runtime resume requires transactional admission.");
     const pricingContext = await store.captureUsagePricingContext?.(found.id);
     const admitted = await sql.transaction(async (tx) => {
@@ -277,6 +282,8 @@ export function createRuntimeResume(
           if (existing.state === "missing") {
             // Restored disk state carries revoked epoch authority. Reauthorize before
             // inference, never on a replay of an already dispatched prompt.
+            if (!admitted.first && found.provider === "modal")
+              await modalEnvironment.deliver(actor, found.id, admitted.op.target_epoch, signal);
             await prepareGitHub?.(caller, found.id);
             await prepareMcp?.(caller, found.id, signal);
           }
@@ -332,36 +339,59 @@ export function createRuntimeResume(
       const completed = await read(sql, found.id, requestId).catch(() => undefined);
       if (completed?.receipt && (await store.get(found.id))) return completed.receipt;
       // Preserve recoverable live-epoch uncertainty. Never re-activate or reissue a ticket.
-      const owned = await sql
+      const cleanup = await sql
         .transaction(async (tx) => {
-          await tx.query("select user_id from public.members where user_id=$1 and org_id=$2 for update", [
-            caller.userId,
-            found.orgId,
-          ]);
+          const member = await tx.query(
+            "select user_id from public.members where user_id=$1 and org_id=$2 for update",
+            [caller.userId, found.orgId],
+          );
+          if (!member.rows.length) return;
           await tx.query("select id from public.sandboxes where id=$1 for update", [found.id]);
-          const live = (
-            await tx.query<{ epoch: string; live: boolean }>(
-              "select epoch::text,(runtime_hash is not null) as live from public.runtime_enrolments where sandbox_id=$1 for update",
-              [found.id],
+          const runtime = (
+            await tx.query<{ epoch: string; live: boolean; pending: boolean }>(
+              `select epoch::text,(runtime_hash is not null) as live,
+                  (enrolment_hash is not null and lifecycle_generation=$2) as pending
+               from public.runtime_enrolments where sandbox_id=$1 for update`,
+              [found.id, admitted.current.lifecycleGeneration],
             )
           ).rows[0];
-          if (live?.live && live.epoch === admitted.op.target_epoch) return false;
-          const changed = await tx.query(
-            `update public.sandboxes set status='failed',
-          transition_context=jsonb_build_object('actor','runtime_resume','code','restore_unconfirmed'),
-          status_reason='Runtime resume failed before a restored worker was confirmed; cleanup requested.',stop_requested_at=coalesce(stop_requested_at,now()),activity_lease_id=null,activity_until=null,lifecycle_generation=lifecycle_generation+1,reconcile_after=now()
-          where id=$1 and activity_lease_id=$2 and lifecycle_generation=$3 and stop_requested_at is null returning id`,
-            [found.id, requestId, admitted.current.lifecycleGeneration],
+          if (runtime?.live && runtime.epoch === admitted.op.target_epoch) return;
+          const retained = Boolean(
+            found.provider === "boat" &&
+              runtime?.pending &&
+              !runtime.live &&
+              runtime.epoch === admitted.op.source_epoch,
           );
-          if (changed.rows.length)
+          const changed = await tx.query<{ status: "stopping" | "failed" }>(
+            `update public.sandboxes set
+          status=case when $4 and not application_secret_tainted then 'stopping'::public.sandbox_status else 'failed'::public.sandbox_status end,
+          transition_context=jsonb_build_object('actor','runtime_resume','code',
+            case when $4 and not application_secret_tainted then $5::text else 'restore_unconfirmed' end),
+          status_reason=case when $4 and not application_secret_tainted then null
+            else 'Runtime resume failed before a restored worker was confirmed; cleanup requested.' end,
+          stop_requested_at=now(),stop_generation=stop_generation+1,
+          activity_lease_id=null,activity_until=null,lifecycle_generation=lifecycle_generation+1,
+          reconcile_after=case when $4 and not application_secret_tainted then 'infinity'::timestamptz else now() end
+          where id=$1 and activity_lease_id=$2 and lifecycle_generation=$3
+            and stop_requested_at is null and deleted_at is null
+            and (reconcile_lease_until is null or reconcile_lease_until<now()) returning status`,
+            [found.id, requestId, admitted.current.lifecycleGeneration, retained, UNENROLLED_RESUME_STOP],
+          );
+          const status = changed.rows[0]?.status;
+          if (status)
             await tx.query(
-              "update public.runtime_resumes set phase='failed' where sandbox_id=$1 and request_id=$2 and receipt is null",
-              [found.id, requestId],
+              "update public.runtime_resumes set phase=$3 where sandbox_id=$1 and request_id=$2 and receipt is null",
+              [found.id, requestId, status === "stopping" ? "abandoned" : "failed"],
             );
-          return changed.rows.length > 0;
+          return status;
         })
-        .catch(() => false);
-      if (owned && placement) await placement.stop().catch(() => {});
+        .catch(() => undefined);
+      if (cleanup === "failed" && placement) await placement.stop().catch(() => {});
+      if (cleanup === "stopping")
+        throw new VaultError(
+          "conflict",
+          "Runtime did not enrol. Wait for a confirmed retained stop before resuming with a new request_id.",
+        );
       throw new VaultError(
         "conflict",
         "Runtime resume outcome is uncertain; retain the original request_id, inspect status/stop, and do not launch or activate again.",

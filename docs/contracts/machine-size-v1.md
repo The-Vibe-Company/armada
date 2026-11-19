@@ -8,7 +8,6 @@ Source of truth: browser-safe `@armada/core` exports from
 - POST `/api/v1/golden/size-policy`: `MachineSizePolicyRequest` -> `MachineSizePolicyResult`.
   Omit policy to read. Supply a complete version-1 policy to replace atomically.
   Clear with `{version:1,golden:null,repositories:{}}`.
-- MCP `golden_size_policy` uses the same fields and result.
 - HTTP launch accepts optional `size` and `repo` on `POST /api/v1/sandbox/launch`.
 - For MCP, use `launch` with optional `size`. The launch response records
   the applied policy in `machineSize`.

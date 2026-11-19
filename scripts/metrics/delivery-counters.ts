@@ -40,17 +40,24 @@ export const deliveryQueries = {
       ) as next_at
       from public.runtime_commands
       where created_at is not null
+    ), timeline as (
+      select sandbox_id, epoch, created_at, next_at, true as is_command
+      from commands
+      union all
+      select sandbox_id, epoch, created_at, null, false
+      from public.runtime_events
+      where created_at is not null
+    ), next_events as (
+      select *, min(created_at) filter (where not is_command) over (
+        partition by sandbox_id, epoch order by created_at desc
+        range between unbounded preceding and current row
+      ) as event_at
+      from timeline
     ), samples as (
-      select extract(epoch from (event.created_at - command.created_at)) * 1000 as ms
-      from commands command
-      cross join lateral (
-        select min(created_at) as created_at
-        from public.runtime_events event
-        where event.sandbox_id = command.sandbox_id and event.epoch = command.epoch
-          and event.created_at >= command.created_at
-          and (command.next_at is null or event.created_at < command.next_at)
-      ) event
-      where event.created_at is not null
+      select extract(epoch from (event_at - created_at)) * 1000 as ms
+      from next_events
+      where is_command and event_at is not null
+        and (next_at is null or event_at < next_at)
     )
     select count(*)::integer as samples,
       percentile_cont(0.50) within group (order by ms) as "p50Ms",

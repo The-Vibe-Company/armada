@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { HARNESS_CATALOG } from "@armada/core";
+import { MODEL_CATALOG } from "@armada/core";
 import { launchPickerGroups } from "./launch-picker";
 import type { ModelAccount } from "./model-accounts";
 
@@ -27,7 +27,7 @@ test("launch picker retains expired and full accounts with refusal reasons and c
         models: [{ model: "morph-custom", input: null, output: null }],
       },
     ],
-    HARNESS_CATALOG,
+    MODEL_CATALOG,
     "codex",
     Date.parse("2026-01-01"),
   );

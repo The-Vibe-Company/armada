@@ -1,7 +1,7 @@
 import type { Harness } from "./contract.ts";
 import type { CredentialKind } from "./database.types.ts";
 import type { ModelPriceOverrides } from "./model-price-overrides.ts";
-import table from "./pricing/models-dev.json";
+import catalog from "./pricing/model-catalog.json";
 import { type TokenRates, validRates } from "./pricing/rates.ts";
 import { costBasis } from "./sandbox-cost.ts";
 import type { TurnTokenUsage } from "./sandbox-usage.ts";
@@ -45,7 +45,7 @@ export function resolvePrice(context: PriceContext): PriceSnapshot | null {
   }
   if (context.customEndpoint) return null;
   const key = `${context.provider}/${context.model}`;
-  const models = table.models as Record<string, { rates: TokenRates; unsupported: boolean }>;
+  const models = catalog.snapshot.models as Record<string, { rates: TokenRates; unsupported: boolean }>;
   const entry = Object.hasOwn(models, key) ? models[key] : undefined;
   if (!entry) return null;
   return {
@@ -53,7 +53,7 @@ export function resolvePrice(context: PriceContext): PriceSnapshot | null {
     provider: context.provider,
     model: context.model,
     source: "models.dev",
-    revision: table.sha256,
+    revision: catalog.snapshot.sha256,
     connectionId: null,
     rates: {
       ...entry.rates,
@@ -158,7 +158,7 @@ export function createUsagePricingContext(input: {
   const provider = input.harness === "claude" ? "anthropic" : "openai";
   const prices: Record<string, PriceSnapshot> = {};
   if (!input.customEndpoint && input.harness !== "opencode") {
-    for (const key of Object.keys(table.models)) {
+    for (const key of Object.keys(catalog.snapshot.models)) {
       if (!key.startsWith(`${provider}/`)) continue;
       const model = key.slice(provider.length + 1);
       const snapshot = resolvePrice({ provider, model, customEndpoint: false });
@@ -180,7 +180,7 @@ export function createUsagePricingContext(input: {
   return {
     schemaVersion: 1,
     capturedAt: new Date().toISOString(),
-    catalogRevision: table.sha256,
+    catalogRevision: catalog.snapshot.sha256,
     provider,
     basis: input.harness === "opencode" && !input.customEndpoint ? "api_equivalent" : costBasis(input.credentialKind),
     ...(input.credentialKind === "codex_auth" || input.credentialKind === "claude_oauth"
