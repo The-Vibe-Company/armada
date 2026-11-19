@@ -39,21 +39,21 @@ export type Database = {
       account_exhaustion: {
         Row: {
           account_id: string;
-          credential_version: number;
+          account_version: number;
           code: string;
           resets_at: string | null;
           event_at: number;
         };
         Insert: {
           account_id: string;
-          credential_version: number;
+          account_version: number;
           code: string;
           resets_at?: string | null;
           event_at: number;
         };
         Update: {
           account_id?: string;
-          credential_version?: number;
+          account_version?: number;
           code?: string;
           resets_at?: string | null;
           event_at?: number;

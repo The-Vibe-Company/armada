@@ -32,12 +32,10 @@ test("runtime ACK persists provider exhaustion for the pinned revision and ignor
     acknowledgedSequence: 1,
   });
   await expect(send(2, 100, { code: "usage_limit_exceeded" })).resolves.toEqual({ acknowledgedSequence: 2 });
-  expect(
-    (await f.db.query("select account_id,credential_version,code,resets_at from account_exhaustion")).rows,
-  ).toEqual([
+  expect((await f.db.query("select account_id,account_version,code,resets_at from account_exhaustion")).rows).toEqual([
     {
       account_id: f.account.id,
-      credential_version: f.account.version,
+      account_version: f.account.version,
       code: "usage_limit_exceeded",
       resets_at: new Date(resetsAt),
     },
