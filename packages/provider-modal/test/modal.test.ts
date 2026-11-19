@@ -758,14 +758,14 @@ test("durable golden recovery persists an interrupted Modal builder before exact
     await db.query("update golden_build_jobs set fence=$2 where id=$1", [job.jobId, crypto.randomUUID()]);
     return found;
   };
-  await jobs.reconcileOne();
+  await dispatchGoldenBuild(db, jobs, job.jobId);
   expect((await row()).builder_id).toBeNull();
   expect(f.log).not.toContain("terminate");
   await db.query("update golden_build_jobs set fence=$2 where id=$1", [job.jobId, fence]);
   f.provider.findGoldenBuilder = discover;
   for (const phase of ["snapshot", "persist"]) {
     await db.query("update golden_build_jobs set phase=$2 where id=$1", [job.jobId, phase]);
-    await jobs.reconcileOne();
+    await dispatchGoldenBuild(db, jobs, job.jobId);
     expect((await row()).builder_id).toBeNull();
     expect(f.log).not.toContain("terminate");
   }
@@ -782,12 +782,12 @@ test("durable golden recovery persists an interrupted Modal builder before exact
   };
   concurrentAfterPersist = async () => {
     concurrentTicks++;
-    await jobs.reconcileOne();
+    await dispatchGoldenBuild(db, jobs, job.jobId);
   };
-  await jobs.reconcileOne();
-  await jobs.reconcileOne();
+  await dispatchGoldenBuild(db, jobs, job.jobId);
+  await dispatchGoldenBuild(db, jobs, job.jobId);
   expect(concurrentTicks).toBe(1);
-  expect(retainedDiscoveries).toBe(3);
+  expect(retainedDiscoveries).toBe(2);
   f.provider.findGoldenBuilder = discover;
   expect(await row()).toMatchObject({ builder_id: reserved.info.id, state: "recovery_required" });
   expect(f.log).not.toContain("terminate");
@@ -796,7 +796,7 @@ test("durable golden recovery persists an interrupted Modal builder before exact
     "update modal_machines set record=$2::jsonb,lease_id=$3,lease_until=now()+interval '15 minutes' where id=$1",
     [reserved.info.id, JSON.stringify(originalRecord), crypto.randomUUID()],
   );
-  await jobs.reconcileOne();
+  await dispatchGoldenBuild(db, jobs, job.jobId);
   expect((await row()).state).toBe("recovery_required");
   expect(f.log).not.toContain("terminate");
   await db.query("update modal_machines set lease_until=now()-interval '1 second' where id=$1", [reserved.info.id]);
@@ -808,7 +808,7 @@ test("durable golden recovery persists an interrupted Modal builder before exact
     ]);
     return found;
   };
-  await jobs.reconcileOne();
+  await dispatchGoldenBuild(db, jobs, job.jobId);
   expect((await row()).state).toBe("recovery_required");
   expect(f.log).not.toContain("terminate");
   expect(f.log).not.toContain("delete-image");
@@ -822,7 +822,7 @@ test("durable golden recovery persists an interrupted Modal builder before exact
   });
   for (const name of ["NotFoundError", "TimeoutError"]) {
     f.lookupError(Object.assign(new Error("synthetic SDK private payload"), { name }));
-    await jobs.reconcileOne();
+    await dispatchGoldenBuild(db, jobs, job.jobId);
     expect(await row()).toMatchObject({ builder_id: reserved.info.id, state: "recovery_required" });
     expect((await f.store.get(reserved.info.id)).phase).toBe("creating");
     expect(f.log).not.toContain("terminate");
@@ -855,20 +855,20 @@ test("durable golden recovery persists an interrupted Modal builder before exact
       armada_generation: "1",
       [tag]: "wrong",
     });
-    await jobs.reconcileOne();
+    await dispatchGoldenBuild(db, jobs, job.jobId);
     expect((await row()).state).toBe("recovery_required");
     expect(f.log).not.toContain("terminate");
   }
   f.ownership();
   // A later named lookup succeeds: cleanup only, no SDK create retry or command execution.
-  await jobs.reconcileOne();
+  await dispatchGoldenBuild(db, jobs, job.jobId);
   expect((await row()).state).toBe("failed");
   expect((await f.store.get(reserved.info.id)).phase).toBe("deleted");
   expect(f.creates).toBe(1);
   expect(f.log.filter((x) => x === "terminate")).toHaveLength(1);
   expect(f.log).not.toContain("root-exec");
   expect(f.log).not.toContain("snapshot");
-  await jobs.reconcileOne();
+  await dispatchGoldenBuild(db, jobs, job.jobId);
   expect(f.creates).toBe(1);
   expect(f.log.filter((x) => x === "terminate")).toHaveLength(1);
 });
@@ -954,13 +954,13 @@ test.each(["interrupted", "abandoned"] as const)(
     const state = async () =>
       (await db.query<{ state: string }>("select state from golden_build_jobs where id=$1", [job.jobId])).rows[0]
         ?.state;
-    await jobs.reconcileOne();
+    await dispatchGoldenBuild(db, jobs, job.jobId);
     expect(await state()).toBe("recovery_required");
     expect((await f.store.get(builder.id)).phase).toBe(parked);
     // Recovery itself retired a still-live artifact; only the image service blocks its collection.
     await expect(f.provider.getSnapshot(artifact)).rejects.toMatchObject({ code: "not_found" });
     f.onImageDelete(undefined);
-    await jobs.reconcileOne();
+    await dispatchGoldenBuild(db, jobs, job.jobId);
     expect(await state()).toBe("failed");
     expect(await f.provider.collectRetiredSnapshot(artifact)).toBe("collected");
     expect((await f.store.get(builder.id)).phase).toBe("deleted");

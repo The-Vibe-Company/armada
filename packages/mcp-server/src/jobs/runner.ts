@@ -41,6 +41,7 @@ interface JobContext {
 
 export interface JobKind {
   prepare?(): Promise<boolean>;
+  drain?(): Promise<void>;
   concurrency: number;
   run(job: Job, context: JobContext): Promise<JobResult>;
 }
@@ -160,6 +161,7 @@ export function createJobsRunner(
     stopAdmission: () => shutdown.abort(),
     async drain() {
       await Promise.allSettled(pending);
+      await Promise.all(registrations.map(({ handler }) => handler.drain?.()));
     },
   } satisfies ServerLifecycleLane;
 }
