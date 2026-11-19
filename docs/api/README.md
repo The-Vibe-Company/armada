@@ -187,8 +187,9 @@ details.
 | `send` | `steer: true`, with the instruction in `prompt` | Redirect the running turn. The receipt includes `delivery` and `mode`. |
 | `status` | `wait: true` | Wait for settlement and return status with `timedOut`. Omit `recorded` when waiting. |
 | `stop` | `turn: true` | Interrupt the turn and keep the machine up. The receipt includes `interrupted`. |
+| `stop` | `after: true` | Wait for settlement and then request an idle-only stop. On timeout the receipt contains the observed sandbox status and `timedOut: true`. Omit `turn` and `only_if_idle`. |
 
-The wait mode accepts `timeout_seconds` from 0 to 600 and defaults to 60.
+Both wait modes accept `timeout_seconds` from 0 to 600 and default to 60. For `stop` with `after: true`, zero seconds observes status without sending a stop request.
 Steer and interrupt target the sandbox by ID. The standalone steer, wait and
 interrupt operations are available through the REST API.
 

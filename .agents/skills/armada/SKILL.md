@@ -157,7 +157,9 @@ as a safe interruption mechanism. Capture returned prompt/turn identifiers.
 On MCP, use `send` with `steer: true` and the instruction in `prompt`,
 `status` with `wait: true` and optional `timeout_seconds`, or `stop` with
 `turn: true` to interrupt while keeping compute up. Steer and interrupt
-target the sandbox by ID.
+target the sandbox by ID. To wait for settlement and stop only if still idle,
+use `stop` with `after: true` and optional `timeout_seconds`. A receipt with
+`timedOut: true` means this call did not request a stop.
 
 Use blocking wait instead of tight status loops. --timeout is in seconds,
 accepts 0–600 and defaults to 60; the example waits at most 120 seconds. A
