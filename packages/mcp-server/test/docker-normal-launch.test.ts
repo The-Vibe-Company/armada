@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createSqlAuthStore } from "@armada/auth";
 import {
@@ -61,14 +61,10 @@ import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeGitHub } from "../src/runtime-github.ts";
 import { createRuntimeMcp } from "../src/runtime-mcp.ts";
 import { createArmadaServer } from "../src/tools.ts";
-import { migratedDatabase } from "./migrated-database.ts";
+import { useMigratedDatabase } from "./migrated-database.ts";
 import { publishedRequest, publishedResponse } from "./published-response.ts";
 
-let connection: Awaited<ReturnType<typeof migratedDatabase>> | undefined;
-function database() {
-  if (!connection) throw new Error("Database fixture is not open");
-  return connection;
-}
+const database = useMigratedDatabase();
 const sql: Sql = {
   query: (q, v) => database().query(q, v),
   transaction: (work) => database().transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
@@ -92,15 +88,6 @@ const bootstrap = createDockerBootstrapService(sql, key, {
   },
   credentials,
 });
-beforeAll(async () => {
-  connection = await migratedDatabase();
-});
-afterAll(async () => {
-  const db = connection;
-  connection = undefined;
-  await db?.close();
-});
-
 // The real migrated boundary owns normal-launch sequencing and durable retries.
 // Existing private-lane tests own the individual host/runtime protocol matrices.
 async function fixture(

@@ -1,17 +1,13 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import type { Sql } from "@armada/core";
 import { DockerHostDraining } from "../src/docker-capacity.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
 import type { dockerRuntimeConfiguration } from "../src/docker-runtime-configuration.ts";
 import { createDockerSandboxService, DockerSandboxDenied } from "../src/docker-sandbox-service.ts";
-import { migratedDatabase } from "./migrated-database.ts";
+import { useMigratedDatabase } from "./migrated-database.ts";
 
-let connection: Awaited<ReturnType<typeof migratedDatabase>> | undefined;
-function database() {
-  if (!connection) throw new Error("Database fixture is not open");
-  return connection;
-}
+const database = useMigratedDatabase();
 const sql: Sql = {
   query: (q, v) => database().query(q, v),
   transaction: (work) => database().transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
@@ -19,14 +15,6 @@ const sql: Sql = {
 const key = Buffer.alloc(32, 7).toString("base64");
 const hosts = createDockerHostStore(sql, key);
 const service = createDockerSandboxService(sql, key, { enabled: true });
-beforeAll(async () => {
-  connection = await migratedDatabase();
-});
-afterAll(async () => {
-  const db = connection;
-  connection = undefined;
-  await db?.close();
-});
 async function fixture(ttlSeconds?: number) {
   const db = database();
   const orgId = randomUUID(),
