@@ -651,7 +651,7 @@ export class Journal {
         ? truncatedEvent(scrubbed, diagnostic.length)
         : diagnostic;
     }
-    if (event.type === "event_truncated") return JSON.stringify(scrubbed);
+    if (event.type === "event_truncated") return JSON.stringify({ ...scrubbed, type: event.type });
     scrubbed.type = this.redactLiteralText(event.type);
     if (mask) {
       const baseline = JSON.parse(this.redactProtocol(serialized)).data;

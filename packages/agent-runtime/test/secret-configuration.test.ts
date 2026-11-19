@@ -617,7 +617,7 @@ test("proof truncation persists only scrubbed correlation metadata", () => {
       data: { tool: "bash", output: "x".repeat(30_000) },
     } satisfies AgentEvent;
     journal.append(event);
-    journal.registerApplicationSecrets(["x", "fixturevalue"]);
+    journal.registerApplicationSecrets(["x", "trunca", "fixturevalue"]);
     journal.append(event);
     expect(journal.events().at(-1)?.event).toMatchObject({
       kind: "other",
