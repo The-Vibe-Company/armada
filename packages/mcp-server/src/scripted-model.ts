@@ -7,6 +7,7 @@ import { withRequestBodyCeiling } from "./request-body-ceiling.ts";
 const path = "/internal/scripted-model/v1/responses";
 const stagingOrigin = "https://armada-mcp-staging.up.railway.app";
 const marker = "ARMADA_SCOPED_SMOKE_V1 ";
+const namespace = "mcp__armada_orchestrator";
 const smokeKey = z.string().regex(/^smoke-scoped-[a-f0-9-]{36}$/);
 const scriptSchema = z.discriminatedUnion("lane", [
   z.object({
@@ -35,12 +36,8 @@ function decoded(value: unknown) {
 
 function toolResult(value: unknown) {
   const output = decoded(value);
-  const envelope = row(output);
-  const parts = Array.isArray(output) ? rows(output) : rows(envelope.content);
-  const text = parts.find((part) => part.type === "text")?.text;
-  if (envelope.isError === true || text === "scoped_authority_denied")
-    return { result: {}, denied: text === "scoped_authority_denied" };
-  return { result: row(row(envelope.structuredContent ?? decoded(text) ?? output).result), denied: false };
+  const denied = rows(output).some((part) => part.type === "input_text" && part.text === "scoped_authority_denied");
+  return { result: row(row(output).result), denied };
 }
 
 function hasAnswer(events: unknown, answer: string) {
@@ -82,13 +79,11 @@ function nextItem(body: Row, id: string) {
   if (script.data.lane === "child") return reply(script.data.answer);
 
   const parent = script.data;
-  const tools = new Set(
-    rows(body.tools)
-      .filter((tool) => tool.type === "function")
-      .map((tool) => tool.name),
-  );
-  const toolName = (action: string) => `mcp__armada_orchestrator__${action}`;
-  if (!tools.has(toolName("launch"))) return reply(parent.noAccess);
+  const scopedTools = rows(body.tools)
+    .filter((tool) => tool.type === "namespace" && tool.name === namespace)
+    .flatMap((tool) => rows(tool.tools));
+  const tools = new Set(scopedTools.filter((tool) => tool.type === "function").map((tool) => tool.name));
+  if (!tools.has("launch")) return reply(parent.noAccess);
   const stopped = "Scripted smoke completed.";
   const failed = () => reply("Scripted smoke stopped before completing.");
   const outputs = new Map(
@@ -104,7 +99,8 @@ function nextItem(body: Row, id: string) {
       type: "function_call",
       status: "completed",
       call_id: callId,
-      name: toolName(action),
+      namespace,
+      name: action,
       arguments: JSON.stringify(args),
     };
   };

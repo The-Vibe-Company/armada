@@ -1996,7 +1996,7 @@ public origin. Leave the flag unset in production.
 
 Provision a staging named OpenAI API-key account using
 `armada creds set openai --name scripted --base-url
-https://armada-mcp-staging.up.railway.app/internal/scripted-model/v1`. Pass the
+https://armada-mcp-staging.up.railway.app/internal/scripted-model/v1 --models scripted`. Pass the
 same bearer privately on stdin. Keep the bearer out of the smoke configuration,
 logs and command arguments. The smoke case needs only the account identifier and
 its model selector.

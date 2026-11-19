@@ -46,25 +46,29 @@ test("returns plain text for an unrecognized marker", async () => {
   });
 });
 
-test("scripts scoped launch, message, read and stop using the actual child receipt and answer", async () => {
-  const send = await client();
-  const key = () => `smoke-scoped-${crypto.randomUUID()}`;
+const key = () => `smoke-scoped-${crypto.randomUUID()}`;
+const namespace = "mcp__armada_orchestrator";
+const tools = ["launch", "message", "read", "stop"].map((name) => ({
+  type: "namespace",
+  name: namespace,
+  tools: [{ type: "function", name }],
+}));
+
+function parentTurn() {
   const launch = { idempotencyKey: key(), selection: { harness: "codex", goldenId: crypto.randomUUID() } };
   const messageKey = key();
   const stopKey = key();
-  const sandboxId = crypto.randomUUID();
   const answer = `SCOPED_CHILD_${crypto.randomUUID()}`;
-  const prompt = `ARMADA_SCOPED_SMOKE_V1 ${JSON.stringify({
-    lane: "parent",
-    launch,
-    messageKey,
-    stopKey,
-    answer,
-    noAccess: `NO_ACCESS_${crypto.randomUUID()}`,
-  })}`;
-  const input: object[] = [{ role: "user", content: [{ type: "input_text", text: prompt }] }];
-  const toolName = (action: string) => `mcp__armada_orchestrator__${action}`;
-  const tools = ["launch", "message", "read", "stop"].map((action) => ({ type: "function", name: toolName(action) }));
+  const noAccess = `NO_ACCESS_${crypto.randomUUID()}`;
+  const text = `ARMADA_SCOPED_SMOKE_V1 ${JSON.stringify({ lane: "parent", launch, messageKey, stopKey, answer, noAccess })}`;
+  const input: object[] = [{ role: "user", content: [{ type: "input_text", text }] }];
+  return { input, launch, messageKey, stopKey, answer, noAccess };
+}
+
+test("scripts scoped launch, message, read and stop using the actual child receipt and answer", async () => {
+  const send = await client();
+  const { input, launch, messageKey, stopKey, answer } = parentTurn();
+  const sandboxId = crypto.randomUUID();
   async function next() {
     const response = await send({ input, tools, stream: true });
     expect(response?.headers.get("content-type")).toContain("text/event-stream");
@@ -78,35 +82,50 @@ test("scripts scoped launch, message, read and stop using the actual child recei
     input.push(call, {
       type: "function_call_output",
       call_id: call.call_id,
-      output: JSON.stringify([{ type: "text", text: JSON.stringify({ result }) }]),
+      output: JSON.stringify({ result }),
     });
   }
 
   const launchCall = await next();
-  expect(launchCall).toMatchObject({ type: "function_call", name: toolName("launch") });
+  expect(launchCall).toMatchObject({ type: "function_call", namespace, name: "launch" });
   expect(JSON.parse(launchCall.arguments)).toEqual(launch);
   receipt(launchCall, { state: "succeeded", sandboxId });
   const message = await next();
   const messageArgs = JSON.parse(message.arguments);
-  expect(message.name).toBe(toolName("message"));
+  expect(message.name).toBe("message");
   expect(messageArgs).toMatchObject({ sandboxId, idempotencyKey: messageKey });
   const child = await (await send({ input: messageArgs.text }))?.json();
-  expect(child.output[0].content[0].text).toBe(answer);
+  expect(child).toMatchObject({ output: [{ content: [{ text: answer }] }] });
   receipt(message, { state: "succeeded", sandboxId });
 
   const firstRead = await next();
-  expect(firstRead.name).toBe(toolName("read"));
+  expect(firstRead.name).toBe("read");
   expect(JSON.parse(firstRead.arguments)).toEqual({ sandboxId });
   receipt(firstRead, { id: sandboxId, events: [] });
   const secondRead = await next();
-  expect(secondRead.name).toBe(toolName("read"));
+  expect(secondRead.name).toBe("read");
   receipt(secondRead, {
     id: sandboxId,
     events: [{ id: "answer", kind: "message", text: answer, partial: false }],
   });
   const stop = await next();
-  expect(stop.name).toBe(toolName("stop"));
+  expect(stop.name).toBe("stop");
   expect(JSON.parse(stop.arguments)).toEqual({ sandboxId, idempotencyKey: stopKey });
   receipt(stop, { state: "succeeded", sandboxId });
   expect(await next()).toMatchObject({ type: "message", content: [{ text: "Scripted smoke completed." }] });
+});
+
+test("returns the no-access answer when the gateway denies scoped launch", async () => {
+  const send = await client();
+  const { input, noAccess } = parentTurn();
+  const response = (await (await send({ input, tools }))?.json()) as { output: [{ call_id: string }] };
+  const call = response.output[0];
+  input.push(call, {
+    type: "function_call_output",
+    call_id: call.call_id,
+    output: [{ type: "input_text", text: "scoped_authority_denied" }],
+  });
+  expect(await (await send({ input, tools }))?.json()).toMatchObject({
+    output: [{ type: "message", content: [{ text: noAccess }] }],
+  });
 });
