@@ -84,5 +84,21 @@ test("only templates whose snapshot contains the chosen repository are offered",
     },
   });
   const templates = [template("web"), template("api")];
-  expect(launchRepositoryTemplates(templates, [web, api], "acme/web", api).map(({ id }) => id)).toEqual(["web"]);
+  const host = { ...start("host", "", ""), provider: "docker" as const, hostId: "host", repositories: [] };
+  const snapshot = { ...web, id: "snapshot", provider: "docker" as const, snapshotId: "snapshot" };
+  const dockerTemplate = {
+    ...template("snapshot"),
+    definition: {
+      ...template("snapshot").definition,
+      provider: "docker" as const,
+      goldenId: null,
+      hostId: "host",
+      snapshotId: "snapshot",
+    },
+  };
+  expect(
+    launchRepositoryTemplates([...templates, dockerTemplate], [web, api, host, snapshot], "acme/web", api).map(
+      ({ id }) => id,
+    ),
+  ).toEqual(["web", "snapshot"]);
 });

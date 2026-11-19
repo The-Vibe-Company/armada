@@ -36,7 +36,7 @@ import {
   launchRepositoryTemplates,
 } from "@/lib/launch-repositories";
 import { accountProblem, accountsFor, type LaunchAccounts } from "@/lib/model-accounts";
-import type { TemplateLaunchTarget } from "@/lib/template-launch";
+import { type TemplateLaunchTarget, templatePlacementId } from "@/lib/template-launch";
 
 /** The selected org's connections for the launch dialog, or why they are not listed. */
 export type LaunchConnections = { connections: McpConnection[] } | { unavailable: string };
@@ -321,12 +321,7 @@ export function LaunchStart(
       : launchableTemplates;
   const template = templates.find((item) => item.id === templateId);
   const templateSource =
-    template &&
-    starts.find((source) =>
-      template.definition.provider === "docker"
-        ? template.definition.snapshotId === source.snapshotId && Boolean(source.snapshotId)
-        : (source.sourceId ?? source.id) === template.definition.goldenId,
-    );
+    template && starts.find((source) => (source.sourceId ?? source.id) === templatePlacementId(template.definition));
   const chooser = templates.length > 0 && (
     <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground" data-launch-start>
       <span>Or start from a template</span>

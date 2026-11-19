@@ -1,6 +1,6 @@
-import type { SandboxPlacementProviderId } from "@armada/core";
+import { isSandboxProvider, SANDBOX_PLACEMENT_LABELS, type SandboxPlacementProviderId } from "@armada/core";
 import type { LaunchStartTarget } from "./launch-picker";
-import type { TemplateLaunchTarget } from "./template-launch";
+import { type TemplateLaunchTarget, templatePlacementId } from "./template-launch";
 import { ttlOptions } from "./templates";
 
 export function composerChips(
@@ -9,7 +9,7 @@ export function composerChips(
   sizing: boolean,
   template = false,
 ) {
-  const cloud = provider !== "docker";
+  const cloud = isSandboxProvider(provider);
   return { folder: cloud && folders > 0, machine: cloud && sizing, access: cloud && !template, docker: !cloud };
 }
 
@@ -52,12 +52,12 @@ export const MISSING_LAUNCH_START = "This starting point is no longer available.
 
 export function templateStartAfterRemoval(template: TemplateLaunchTarget, starts: readonly LaunchStartTarget[]) {
   const { definition } = template;
-  const docker = definition.provider === "docker";
-  const id = (docker ? (definition.snapshotId ?? definition.hostId) : definition.goldenId) ?? template.id;
+  const docker = "hostId" in definition;
+  const id = templatePlacementId(definition);
   const current = starts.find((start) => start.id === id);
   if (current) return current;
 
-  const group = docker ? "Docker hosts" : definition.provider === "boat" ? "Boat cloud" : "Modal cloud";
+  const group = docker ? "Docker hosts" : `${SANDBOX_PLACEMENT_LABELS[definition.provider]} cloud`;
   return {
     id,
     golden: template.goldenName?.replace(/ · (Boat|Modal) cloud$/, "") ?? "Unavailable snapshot",

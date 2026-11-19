@@ -1,6 +1,6 @@
-import { repositoryIdentity } from "@armada/core";
+import { repositoryIdentity } from "@armada/core/launch-workdir";
 import type { LaunchStartTarget } from "./launch-picker";
-import type { TemplateLaunchTarget } from "./template-launch";
+import { type TemplateLaunchTarget, templatePlacementId } from "./template-launch";
 
 export function launchRepositoryChoices(starts: readonly LaunchStartTarget[]) {
   const choices = new Map<string, number>();
@@ -38,13 +38,9 @@ export function launchRepositoryTemplates(
   selected: LaunchStartTarget,
 ) {
   return templates.filter(({ definition }) => {
+    const placementId = templatePlacementId(definition);
     const matches = (start: LaunchStartTarget) =>
-      start.provider === definition.provider &&
-      (definition.provider === "docker"
-        ? definition.snapshotId
-          ? start.snapshotId === definition.snapshotId
-          : start.hostId === definition.hostId
-        : (start.sourceId ?? start.id) === definition.goldenId);
+      start.provider === definition.provider && (start.sourceId ?? start.id) === placementId;
     return repository
       ? starts.some((start) => matches(start) && launchRepositoryFolder(start, repository) !== undefined)
       : matches(selected);

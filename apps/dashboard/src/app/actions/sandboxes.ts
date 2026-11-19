@@ -461,6 +461,7 @@ export async function readLaunchDialogOptions(includeBuildCapacity = false) {
     if (golden.provider === "docker") return [];
     const repositories = goldenRepositoryDirs(golden.config);
     const sizing = goldenSizing(golden, repositories);
+    const group = `${PROVIDER_LABELS[golden.provider]} cloud`;
     const readiness = goldenLaunchReadiness({
       provider: golden.provider,
       hasSnapshot: Boolean(golden.provider_snapshot_id),
@@ -472,8 +473,8 @@ export async function readLaunchDialogOptions(includeBuildCapacity = false) {
         id: golden.id,
         golden: golden.name,
         provider: golden.provider,
-        label: `${golden.name} · ${golden.provider === "boat" ? "Boat" : "Modal"} cloud`,
-        group: `${golden.provider === "boat" ? "Boat" : "Modal"} cloud`,
+        label: `${golden.name} · ${group}`,
+        group,
         repositories: goldenRepositories(golden.config),
         createdAt: golden.created_at,
         ...(golden.provider_snapshot_id ? { snapshotRef: golden.provider_snapshot_id } : {}),

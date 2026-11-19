@@ -1,4 +1,4 @@
-import type { MachineSizePolicy } from "@armada/core";
+import { type MachineSizePolicy, SANDBOX_PLACEMENT_LABELS } from "@armada/core";
 import type { GoldenRow } from "./data/goldens.ts";
 import { DOCKER_HOST_LABEL } from "./labels.ts";
 import { goldenSizing } from "./machine-size.ts";
@@ -34,6 +34,10 @@ export type TemplateLaunchTarget = {
   agent: string;
 };
 
+export function templatePlacementId(definition: TemplateDefinition) {
+  return "hostId" in definition ? (definition.snapshotId ?? definition.hostId) : definition.goldenId;
+}
+
 /**
  * What the launch dialog needs, built on the server from the template and the environment it names. Null when its
  * revision could not be read: nothing is launched from choices the page cannot show.
@@ -47,8 +51,8 @@ export function launchTarget(
   const definition = item.revision.definition;
   const blocker = templateProblems(definition, lookups)[0]?.text ?? null;
   const golden = goldens.find((row) => row.id === definition.goldenId && row.provider === definition.provider);
-  const host =
-    definition.provider === "docker" ? lookups.hosts?.find((row) => row.id === definition.hostId) : undefined;
+  const onHost = "hostId" in definition;
+  const host = onHost ? lookups.hosts?.find((row) => row.id === definition.hostId) : undefined;
   const repositories = golden ? goldenRepositoryDirs(golden.config) : [];
   const sizing = golden ? goldenSizing(golden, repositories) : null;
   return {
@@ -58,13 +62,12 @@ export function launchTarget(
     revision: item.revision.revision,
     definition,
     ...(lookups.accounts ? { accounts: lookups.accounts } : {}),
-    goldenName:
-      definition.provider === "docker"
-        ? `${lookups.snapshots?.find((row) => row.id === definition.snapshotId && row.hostId === definition.hostId)?.name ?? (definition.snapshotId ? "Unavailable snapshot" : "Official image")} · ${host?.name ?? DOCKER_HOST_LABEL}`
-        : golden
-          ? `${golden.name} · ${definition.provider === "boat" ? "Boat" : "Modal"} cloud`
-          : null,
-    ...(definition.provider === "docker" ? { hostName: host?.name ?? DOCKER_HOST_LABEL } : {}),
+    goldenName: onHost
+      ? `${lookups.snapshots?.find((row) => row.id === definition.snapshotId && row.hostId === definition.hostId)?.name ?? (definition.snapshotId ? "Unavailable snapshot" : "Official image")} · ${host?.name ?? DOCKER_HOST_LABEL}`
+      : golden
+        ? `${golden.name} · ${SANDBOX_PLACEMENT_LABELS[definition.provider]} cloud`
+        : null,
+    ...(onHost ? { hostName: host?.name ?? DOCKER_HOST_LABEL } : {}),
     repositories,
     ...(sizing?.kind === "ready" ? { sizing: { policy: sizing.policy } } : {}),
     tools: definition.connections.map(
