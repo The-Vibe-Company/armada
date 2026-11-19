@@ -19,7 +19,7 @@ const existingProviderImports = new Set([
   "packages/mcp-server/test/lifecycle-driver-postgres.release.ts -> ../../provider-boat/test/support.ts",
   "packages/mcp-server/test/lifecycle-review.test.ts -> ../../provider-boat/test/support.ts",
   "packages/mcp-server/test/mcp-before-resume.test.ts -> ../../provider-boat/test/support.ts",
-  "packages/mcp-server/test/mcp-codex-bridge-fixture.ts -> ../../provider-boat/src/native-cwd.ts",
+  "packages/mcp-server/test/mcp-codex-bridge.fixture.ts -> ../../provider-boat/src/native-cwd.ts",
   "packages/mcp-server/test/runtime-resume.test.ts -> ../../provider-boat/test/support.ts",
   "packages/mcp-server/test/sandbox-activity.test.ts -> ../../provider-boat/test/support.ts",
   "packages/mcp-server/test/sandbox-lifecycle.test.ts -> ../../provider-boat/test/support.ts",

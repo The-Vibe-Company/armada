@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { runtimeFixture } from "./runtime-fixture.ts";
+import { runtimeFixture } from "./runtime.fixture.ts";
 
 const database = rowOnlyDatabase();
 for (const provider of ["boat", "modal"] as const)

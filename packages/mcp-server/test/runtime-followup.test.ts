@@ -3,7 +3,7 @@ import { createSqlData } from "../src/data.ts";
 import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import { callSharedTool } from "../src/tool-api.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { runtimeFixture as fixture } from "./runtime-fixture.ts";
+import { runtimeFixture as fixture } from "./runtime.fixture.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();

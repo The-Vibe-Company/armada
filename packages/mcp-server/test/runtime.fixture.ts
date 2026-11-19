@@ -12,7 +12,6 @@ import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import type { ToolContext } from "../src/tools.ts";
 import { database, ENCRYPTION_KEY } from "./support.ts";
 
-/** Caller-supplied seeded rows stay caller-owned; journal/outbox/root cleanup always stays here. */
 export async function runtimeFixture(
   fixture?: Awaited<ReturnType<typeof database>>,
   provider: "boat" | "modal" = "boat",
@@ -83,7 +82,6 @@ export async function runtimeFixture(
   let nextDone: Promise<"finished" | "interrupted"> | undefined;
   let checkpointFault: "generation" | "prefix" | "ack" | undefined;
   let afterProbe: (() => Promise<void>) | undefined;
-  // Ops whose runner reply is answered as an HTTP 503 refusal, as a failing guest would.
   const refused = new Set<RunnerRequest["op"]>();
   let githubConfiguration:
     | ((value: import("@armada/core").GitHubRuntimeConfiguration | null) => Promise<void>)
@@ -149,8 +147,6 @@ export async function runtimeFixture(
       now++;
       const command = (await bridge.next(active.runtimeToken, active.epoch)).command;
       if (!command) throw Error("Expected a durable command, not a timer wait");
-      // Fake guest mount maps /home/user to the fixture home; all request identity,
-      // Runner/session/journal/SQL/epoch behavior remains real. No host/provider I/O.
       const wire: RunnerRequest =
         command.op === "prompt" ? { ...command, input: { ...command.input, cwd: root } } : command;
       const reply = await runner.handle(
@@ -171,9 +167,6 @@ export async function runtimeFixture(
         }
         if (checkpointFault === "ack") responseBody.result.acknowledgedSequence--;
       }
-      // Inject faults after the real SQL commit and before this process can publish
-      // a wake. This models a lost notification or a competing caller that sees
-      // the committed result first, even with the local wake path enabled.
       const replyAuthority: typeof authority = {
         ...authority,
         async withSession(token, epoch, work, source) {
