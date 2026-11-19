@@ -118,14 +118,13 @@ No general repair/rebind service or native fallback is implied.
 
 ## GitHub refresh and automatic remote MCP
 
-After runtime readiness, the owner calls `github_refresh` /
-`POST /api/v1/github/refresh` with `{"id":"SANDBOX_UUID"}`. The private
+After runtime readiness, the owner calls `POST /api/v1/github/refresh` with `{"id":"SANDBOX_UUID"}`. The private
 `configureGitHub` command installs runtime-owned Git/gh identity and just-in-time
 helpers, scoped only to golden repositories and the connected owner's GitHub App
 access. No Boat prompt/exec/SSH credential setup is used. Private credential
 delivery rechecks current membership, connection and runtime epochs.
 
-`runtime_github_status` / `POST /api/v1/github/runtime-status` returns safe
+`POST /api/v1/github/runtime-status` returns safe
 epoch/revision/configured state and acquisition count, not GitHub connectivity.
 Checkpoint, stop, disconnect and new enrolment invalidate authority. **Refresh
 again after resume**; old wrappers are redaction-only before restore. A positive

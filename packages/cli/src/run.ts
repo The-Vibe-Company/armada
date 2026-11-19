@@ -1,4 +1,4 @@
-import { AuthError, assertProvider } from "@armada/auth";
+import { AuthError } from "@armada/auth";
 import {
   configFromFlags,
   type GoldenBuildStatus,
@@ -9,7 +9,6 @@ import {
   goldenResponse,
   isSandboxProvider,
   LaunchError,
-  type Provider,
   ProviderError,
   ProviderRoutingError,
   parseSnapshotConfig,
@@ -19,34 +18,23 @@ import {
 } from "@armada/core";
 import { accountCommand } from "./account-commands.ts";
 import { applicationVaultCommand } from "./application-vault-commands.ts";
-import { acceptedOptions, flag, parseArgs, providerFlag, single, values } from "./args.ts";
+import { acceptedOptions, flag, oneName, parseArgs, providerFlag, single, values } from "./args.ts";
 import { ArmadaApiError, createArmadaApiClient, resolveArmadaOrigin } from "./armada-api.ts";
-import {
-  type AuthIo,
-  loginCommand,
-  logoutCommand,
-  productionAuthIo,
-  tokenCreate,
-  tokenList,
-  tokenRevoke,
-} from "./auth-commands.ts";
-import { commandWords, completion, HELP, LOGS_HELP } from "./command-catalog.ts";
+import { type AuthIo, loginCommand, productionAuthIo } from "./auth-commands.ts";
+import { commandWords, HELP } from "./command-catalog.ts";
 import { findCommand } from "./commands/index.ts";
-import { doctor } from "./devx.ts";
 import { dockerSnapshotCommand } from "./docker-snapshots.ts";
 import { failureHint } from "./failure-hint.ts";
-import { hostCommand } from "./host-commands.ts";
 import { type LocalHostIo, localHostCommand, productionLocalHostIo } from "./local-host.ts";
 import { onboardingHelp } from "./onboarding-help.ts";
 import { operation } from "./operations.ts";
 import { profileStores, selectProfile } from "./profiles.ts";
 import { routineCommand } from "./routine-commands.ts";
-import { promptSecret } from "./secret-input.ts";
 import { sizePolicyCommand } from "./size-policy-command.ts";
 import { skillCommand } from "./skill-install.ts";
 import { snapshotText } from "./snapshot-text.ts";
 import { templateCommand } from "./template-commands.ts";
-import { credsCommand, orgCommand, type VaultIo } from "./vault-commands.ts";
+import { credsCommand, vaultIo } from "./vault-commands.ts";
 
 export interface Io {
   out(text: string): void;
@@ -88,30 +76,24 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
       );
     if (
       localArgs.length === 1 &&
-      [
-        "snapshot",
-        "golden",
-        "host",
-        "template",
-        "routine",
-        "vars",
-        "secrets",
-        "mcp",
-        "creds",
-        "org",
-        "account",
-        "github",
-        "token",
-        "skill",
-      ].includes(localArgs[0] ?? "")
+      ["snapshot", "golden", "template", "routine", "vars", "secrets", "mcp", "creds", "github", "skill"].includes(
+        localArgs[0] ?? "",
+      )
     ) {
       const family = localArgs[0] === "golden" ? "snapshot" : (localArgs[0] ?? "");
       if (family === "skill") return skillCommand(["--help"], io);
       io.out(onboardingHelp([family, "--help"]) ?? HELP);
       return 0;
     }
+    const bareCommand = localArgs.length === 1 ? findCommand(localArgs[0] ?? "") : undefined;
+    if (bareCommand?.helpWhenBare) {
+      io.out(bareCommand.help);
+      return 0;
+    }
     const focusedHelp = onboardingHelp(localArgs);
     if (focusedHelp) {
+      const registered = localArgs.length === 2 ? findCommand(localArgs[0] ?? "") : undefined;
+      if (registered?.validateProfileForHelp) selectProfile(argv, deps.env ?? deps.auth?.env ?? process.env);
       io.out(focusedHelp);
       return 0;
     }
@@ -150,6 +132,7 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
     } catch (error) {
       if (
         !sessionFailure(error) ||
+        argv[0] === "api" ||
         argv[0] === "login" ||
         argv[0] === "logout" ||
         (argv[0] === "account" && argv[1] === "logout") ||
@@ -239,21 +222,20 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
     original.length === 1 &&
     ["--help", "-h"].includes(original[0] ?? "")
   ) {
-    io.out(command === "logs" ? LOGS_HELP : HELP);
+    io.out(HELP);
     return 0;
   }
   const registered = command ? findCommand(command) : undefined;
   let rest = original;
   const terminator = rest.indexOf("--");
   const optionArgs = terminator < 0 ? rest : rest.slice(0, terminator);
-  const scoped = ["doctor", "host", "golden", "bind-credential", "logs", "mcp"];
+  const scoped = ["golden", "bind-credential", "mcp"];
+  const useSelectedOrg = registered?.useSelectedOrg;
+  const commandUsesSelection =
+    typeof useSelectedOrg === "function" ? useSelectedOrg(rest) : registered && useSelectedOrg !== false;
   if (
     command &&
-    ((registered && registered.useSelectedOrg !== false) ||
-      scoped.includes(command) ||
-      (command === "org" && ["members", "setup", "connect"].includes(rest[0] ?? "")) ||
-      (command === "creds" && rest[0] === "list") ||
-      (command === "token" && rest[0] === "create")) &&
+    (commandUsesSelection || scoped.includes(command) || (command === "creds" && rest[0] === "list")) &&
     !optionArgs.some((arg) => arg === "--org" || arg.startsWith("--org="))
   ) {
     const auth = authOf(io, deps);
@@ -276,12 +258,6 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
     case "help":
       io.out(HELP);
       return 0;
-    case "doctor":
-      return doctor(rest, { ...authOf(io, deps), ...io });
-    case "completion":
-      return completion(rest, io);
-    case "host":
-      return hostCommand(rest, { ...authOf(io, deps), ...io });
     case "golden":
       return golden(rest, io, deps);
     case "bind-credential":
@@ -299,28 +275,17 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
               )(),
         () => (deps.readStdin ? deps.readStdin() : process.stdin.isTTY ? Promise.resolve("") : Bun.stdin.text()),
       );
-    case "logs":
-      return logs(rest, io, deps);
     case "github":
-    case "account":
       return accountCommand(command, rest, authOf(io, deps));
-    case "login":
-      return login(rest, io, deps);
-    case "logout":
-      return logout(rest, io, deps);
-    case "org":
-      return orgCommand(rest, vaultIo(io, deps));
     case "routine":
-      return routineCommand(rest, vaultIo(io, deps, true));
+      return routineCommand(rest, vaultIo(authOf(io, deps), deps, true));
     case "template":
-      return templateCommand(rest, vaultIo(io, deps, true));
+      return templateCommand(rest, vaultIo(authOf(io, deps), deps, true));
     case "vars":
     case "secrets":
-      return applicationVaultCommand(command, rest, vaultIo(io, deps, true));
+      return applicationVaultCommand(command, rest, vaultIo(authOf(io, deps), deps, true));
     case "creds":
-      return credsCommand(rest, vaultIo(io, deps));
-    case "token":
-      return tokenCommand(parseAuth(rest), authOf(io, deps));
+      return credsCommand(rest, vaultIo(authOf(io, deps), deps));
     default:
       throw new AuthError(`unknown command '${command}'. Run 'armada --help'.`, "usage");
   }
@@ -803,94 +768,6 @@ async function list(args: ReturnType<typeof parseArgs>, io: Io, deps: Deps): Pro
   return 0;
 }
 
-const FOLLOW_DELAY_MS = 1_000;
-
-type LogsWireResult = {
-  events: Awaited<ReturnType<Provider["events"]>>["events"];
-  cursor: string | null;
-  hasMore: boolean;
-  settled: boolean;
-};
-
-async function logs(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
-  const normalized: string[] = [];
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i]!;
-    if (arg === "--tail") {
-      normalized.push("--tail", /^\d+$/.test(argv[i + 1] ?? "") ? argv[++i]! : "100");
-    } else normalized.push(arg);
-  }
-  const args = parseArgs(normalized, ["--tail"]);
-  const tail = single(args, "--tail");
-  const limit = tail === undefined ? undefined : Number(tail);
-  if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 1000))
-    throw new GoldenError("invalid_config", "--tail must be between 1 and 1000.");
-  if (tail !== undefined && (flag(args, "--all") || single(args, "--since")))
-    throw new GoldenError("invalid_config", "--tail cannot be combined with --all or --since.");
-  const org = single(args, "--org");
-  let firstTail = tail !== undefined;
-  const id = oneName(args.positionals);
-  const all = flag(args, "--all");
-  const follow = flag(args, "--follow");
-  const auth = authOf(io, deps);
-  const client = await createArmadaApiClient({
-    env: auth.env,
-    fetch: deps.fetch ?? auth.fetch,
-    session: auth.session,
-    ...(auth.timeoutMs === undefined ? {} : { timeoutMs: auth.timeoutMs }),
-  });
-  let settled = false;
-  let cursor: string | null = single(args, "--since") ?? null;
-
-  while (!settled) {
-    const result = await client.sandboxes.logs<LogsWireResult>(
-      {
-        id,
-        all,
-        follow,
-        ...(org === undefined ? {} : { org }),
-        ...(firstTail ? { direction: "backward", limit } : {}),
-        ...(cursor === null ? {} : { cursor }),
-      },
-      // A server-side follow/read may wait for provider events; keep a bounded, endpoint-specific limit.
-      { signal: AbortSignal.timeout(10 * 60_000) },
-    );
-    if (flag(args, "--json")) io.out(`${JSON.stringify(result, null, 2)}\n`);
-    else for (const event of result.events) io.out(`${eventText(event)}\n`);
-    if (firstTail) {
-      firstTail = false;
-      result.hasMore = false;
-    }
-    const nextCursor: string | null = result.cursor ?? cursor;
-    const progressed = nextCursor !== cursor;
-    if ((all || follow) && result.hasMore && !progressed) {
-      throw new GoldenError("invalid_config", "Armada logs response has more events but did not advance its cursor.");
-    }
-    cursor = nextCursor;
-    const drain = all || follow;
-    settled = !drain || (!result.hasMore && (!follow || result.settled));
-    // Pace only live polling, not pages the server already has available.
-    if (!settled && !result.hasMore)
-      await (deps.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms))))(FOLLOW_DELAY_MS);
-  }
-  return 0;
-}
-
-function eventText(event: Awaited<ReturnType<Provider["events"]>>["events"][number]): string {
-  if (event.kind === "message" || event.kind === "prompt" || event.kind === "steer") return event.text;
-  if (
-    event.kind === "other" &&
-    event.type === "armada/modelRateLimit" &&
-    event.data &&
-    typeof event.data === "object"
-  ) {
-    const data = event.data as Record<string, unknown>;
-    if (typeof data.message === "string")
-      return `${data.message} (retry ${data.retryCount}, total wait ${Number(data.totalWaitMs) / 1000} s)`;
-  }
-  return JSON.stringify(event);
-}
-
 function line(row: GoldenRecord): string {
   const snapshot = row.providerSnapshotId ? "snapshot" : "no snapshot";
   const repos = row.config.repos.length === 1 ? "1 repo" : `${row.config.repos.length} repos`;
@@ -929,133 +806,6 @@ async function readConfig(args: ReturnType<typeof parseArgs>, deps: Deps): Promi
   return configFromFlags(repos, init, "snapshot");
 }
 
-function oneName(positionals: string[]): string {
-  const name = positionals[0];
-  if (name === undefined || positionals.length !== 1) {
-    throw new GoldenError("invalid_config", "Give exactly one snapshot name.");
-  }
-  return name;
-}
-
-async function login(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
-  const parsed = parseAuth(argv);
-  rejectUnknown(parsed.flags, ["provider", "email", "url", "json"]);
-  if (parsed.position.length > 0) throw new AuthError("Run armada login --help.", "usage");
-  if (parsed.flags.has("provider") && parsed.flags.has("email")) {
-    throw new AuthError("Use --provider or --email, not both.", "usage");
-  }
-  const provider = parsed.flags.has("provider") ? assertProvider(authFlag(parsed.flags, "provider")) : undefined;
-  const email = parsed.flags.has("email") ? authFlag(parsed.flags, "email") : undefined;
-  await loginCommand(authOf(io, deps), {
-    provider,
-    email,
-    url: parsed.flags.get("url"),
-    json: parsed.flags.has("json"),
-  });
-  return 0;
-}
-
-async function logout(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
-  const parsed = parseAuth(argv);
-  rejectUnknown(parsed.flags, ["json"]);
-  if (parsed.position.length > 0) throw new AuthError("Run armada logout.", "usage");
-  await logoutCommand(authOf(io, deps), parsed.flags.has("json"));
-  return 0;
-}
-
-async function tokenCommand(parsed: AuthArgs, auth: AuthIo): Promise<number> {
-  const sub = parsed.position[0];
-  const extra = parsed.position[1];
-  switch (sub) {
-    case "create":
-      rejectUnknown(parsed.flags, ["org", "label", "json"]);
-      if (extra !== undefined) throw new AuthError("Run armada token create --org <name> --label <label>.", "usage");
-      await tokenCreate(auth, parsed.flags.get("org"), parsed.flags.get("label"), parsed.flags.has("json"));
-      return 0;
-    case "list":
-      rejectUnknown(parsed.flags, ["json"]);
-      if (extra !== undefined) throw new AuthError("Run armada token list.", "usage");
-      await tokenList(auth, parsed.flags.has("json"));
-      return 0;
-    case "revoke":
-      rejectUnknown(parsed.flags, ["json"]);
-      if (!extra || parsed.position.length > 2) throw new AuthError("Run armada token revoke <id>.", "usage");
-      await tokenRevoke(auth, extra, parsed.flags.has("json"));
-      return 0;
-    default:
-      throw new AuthError("Run armada token create, list, or revoke.", "usage");
-  }
-}
-
-interface AuthArgs {
-  position: string[];
-  flags: Map<string, string>;
-}
-
-function parseAuth(argv: readonly string[]): AuthArgs {
-  const position: string[] = [];
-  const flags = new Map<string, string>();
-  for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index];
-    if (arg === undefined) continue;
-    if (arg === "--") {
-      position.push(...argv.slice(index + 1));
-      break;
-    }
-    if (!arg.startsWith("--")) {
-      position.push(arg);
-      continue;
-    }
-    const eq = arg.indexOf("=");
-    const name = eq === -1 ? arg.slice(2) : arg.slice(2, eq);
-    if (name === "json" && eq === -1) {
-      flags.set("json", "true");
-      continue;
-    }
-    if (name.length === 0) throw new AuthError("Unknown flag.", "usage");
-    const value = eq === -1 ? argv[index + 1] : arg.slice(eq + 1);
-    if (eq === -1) {
-      if (value === undefined || value.startsWith("--")) throw new AuthError(`Missing value for --${name}.`, "usage");
-      index += 1;
-    }
-    if (value === undefined) throw new AuthError(`Missing value for --${name}.`, "usage");
-    flags.set(name, value);
-  }
-  return { position, flags };
-}
-
-function authFlag(flags: Map<string, string>, name: string): string {
-  const value = flags.get(name);
-  if (value === undefined) throw new AuthError(`Missing value for --${name}.`, "usage");
-  return value;
-}
-
-function rejectUnknown(flags: Map<string, string>, allowed: readonly string[]): void {
-  for (const name of flags.keys()) {
-    if (!allowed.includes(name)) throw new AuthError(`Unknown flag --${name}.`, "usage");
-  }
-}
-
 function authOf(io: Io, deps: Deps): AuthIo {
   return deps.auth ?? productionAuthIo(io, deps.env ?? process.env);
-}
-
-function vaultIo(io: Io, deps: Deps, strictUtf8 = false): VaultIo {
-  return {
-    auth: authOf(io, deps),
-    readFile:
-      deps.readFile ??
-      (async (path) =>
-        strictUtf8
-          ? new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(await Bun.file(path).arrayBuffer())
-          : Bun.file(path).text()),
-    readStdin:
-      deps.readStdin ??
-      (async () => {
-        if (process.stdin.isTTY) return promptSecret();
-        return strictUtf8
-          ? new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(await Bun.stdin.arrayBuffer())
-          : Bun.stdin.text();
-      }),
-  };
 }

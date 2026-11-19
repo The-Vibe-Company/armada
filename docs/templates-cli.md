@@ -120,8 +120,8 @@ for account capacity, dispatching FIFO per account. A queued receipt is not evid
 that the prompt ran; read its outcome with wait/logs. See the [account setup and limits](dave-onboarding.md). No arbitrary environment override exists.
 
 Authenticated no-store POST `/api/v1/templates/{create,list,get,publish,delete,launch}`
-is available directly or through the public dashboard proxy. MCP exposes
-`template_launch` for launching an existing template. Every body needs `org` UUID. Unknown
+is available directly or through the public dashboard proxy. Use the REST launch
+route or `armada template launch` for an existing template. Every body needs an `org` UUID. Unknown
 fields/query parameters refuse at direct control; the proxy strips query strings.
 
 | Operation | Additional fields |

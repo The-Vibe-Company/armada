@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { type Provider, ProviderError, type Sql, VaultError } from "@armada/core";
 import { createBoatProvider } from "@armada/provider-boat";
-import { sandbox } from "../../provider-boat/test/support.ts";
+import { retainedSandbox, sandbox } from "../../provider-boat/test/support.ts";
 import { createSqlData } from "../src/data.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
 import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
@@ -76,7 +76,7 @@ test("private Docker reservations remain untouched while the generic lifecycle r
   const provider = createBoatProvider({
     apiKey: "test-key",
     fetch: (async (_input: Request | string | URL) =>
-      Response.json({ ok: true, sandbox: sandbox({ state: "archived" }) })) as typeof fetch,
+      Response.json({ ok: true, sandbox: retainedSandbox() })) as typeof fetch,
   });
   const worker = createSandboxLifecycle(sql, async (id) => {
     resolutions.push(id);
@@ -149,7 +149,10 @@ test("an expired observation lease cannot publish a delayed terminal result", as
       fetch: (async (_input: Request | string | URL, init?: RequestInit) => {
         methods.push(init?.method ?? "GET");
         observations++;
-        return Response.json({ ok: true, sandbox: sandbox({ state: observations === 1 ? "archived" : "running" }) });
+        return Response.json({
+          ok: true,
+          sandbox: observations === 1 ? retainedSandbox() : sandbox({ state: "running" }),
+        });
       }) as typeof fetch,
     });
     let hold = true;
@@ -201,6 +204,7 @@ test("an expired observation lease cannot publish a delayed terminal result", as
 for (const outcome of [
   "external-stop",
   "invalid-stop-time",
+  "snapshot-pending",
   "expired",
   "expired-external-stop",
   "interrupt-pending",
@@ -209,7 +213,8 @@ for (const outcome of [
   "stale",
   "manual-stop",
 ] as const) {
-  const externalStop = outcome === "external-stop" || outcome === "invalid-stop-time";
+  const waitingForRetention = outcome === "invalid-stop-time" || outcome === "snapshot-pending";
+  const externalStop = outcome === "external-stop" || waitingForRetention;
   const validStoppedAt = "2026-11-11T00:00:00.000Z";
   test(`lifecycle reconciles Boat ${outcome} without deleting retained data`, async () => {
     const { db, people } = await sharedDatabase();
@@ -265,14 +270,14 @@ for (const outcome of [
           });
         return Response.json({
           ok: true,
-          sandbox: sandbox({
-            stoppedAt:
-              outcome === "external-stop" ? validStoppedAt : outcome === "invalid-stop-time" ? "not-a-date" : undefined,
-            state:
-              stopped || externalStop || outcome === "expired-external-stop" || outcome === "stale"
-                ? "archived"
-                : "running",
-          }),
+          sandbox:
+            stopped || externalStop || outcome === "expired-external-stop" || outcome === "stale"
+              ? retainedSandbox({
+                  stoppedAt: outcome === "invalid-stop-time" ? "not-a-date" : validStoppedAt,
+                  snapshotVerifiedAt: validStoppedAt,
+                  ...(outcome === "snapshot-pending" ? { lastSnapshotStatus: "in_progress" } : {}),
+                })
+              : sandbox({ state: "running" }),
         });
       }) as typeof fetch,
     });
@@ -293,7 +298,10 @@ for (const outcome of [
       )
     ).rows[0]!;
     expect(row.status).toBe(
-      externalStop || outcome === "expired" || outcome === "expired-external-stop" || outcome === "manual-stop"
+      outcome === "external-stop" ||
+        outcome === "expired" ||
+        outcome === "expired-external-stop" ||
+        outcome === "manual-stop"
         ? "stopped"
         : outcome === "stale"
           ? "running"
@@ -307,8 +315,13 @@ for (const outcome of [
     expect(row.effective_ttl_seconds).toBe(60);
     expect(row.requested_ttl_seconds).toBe(60);
     if (outcome === "external-stop") expect(row.provider_stop_retained).toBe(true);
-    // Confirmed stops close observed intervals; absent/bad timestamps fall back locally.
-    if (externalStop || ["expired", "expired-external-stop", "manual-stop"].includes(outcome)) {
+    if (waitingForRetention) {
+      expect(row.stop_time_finite).toBeNull();
+      expect(row.lifecycle_error).toContain(
+        outcome === "snapshot-pending" ? "snapshot is pending" : "no verified retained snapshot",
+      );
+    }
+    if (outcome === "external-stop" || ["expired", "expired-external-stop", "manual-stop"].includes(outcome)) {
       expect(row.stop_time_finite).toBe(true);
       expect(row.usage_runtime_seconds).not.toBeNull();
       expect(row.usage_runtime_seconds!).toBeGreaterThanOrEqual(0);
@@ -362,7 +375,7 @@ for (const observation of ["stopped", "expired", "unavailable"] as const) {
         }
         if (request.method === "POST") return Response.json({ ok: true });
         if (path.endsWith("/conversations")) return Response.json({ ok: true, conversations: [] });
-        return Response.json({ ok: true, sandbox: sandbox({ state: stopped ? "archived" : "running" }) });
+        return Response.json({ ok: true, sandbox: stopped ? retainedSandbox() : sandbox({ state: "running" }) });
       }) as typeof fetch,
     });
     let resolutions = 0;
@@ -499,7 +512,7 @@ test("replicas lease one observation and resume admission fences old writes whil
         observations++;
         entered?.();
         await gate.promise;
-        return Response.json({ ok: true, sandbox: sandbox({ state: "archived" }) });
+        return Response.json({ ok: true, sandbox: retainedSandbox() });
       }) as typeof fetch,
     });
     worker = createSandboxLifecycle(sql, async () => provider);
@@ -638,7 +651,7 @@ for (const blocked of ["boat", "modal"] as const) {
             const index = ids.indexOf(id);
             entered[index]!.resolve();
             await gates[index]!.promise;
-            return { state: "stopped" };
+            return { state: "stopped", retainedSnapshot: "usable" };
           },
         }) as unknown as import("@armada/core").Provider,
     );
@@ -727,7 +740,7 @@ test("runtime lifecycle stops compute with explicit no-checkpoint note, without 
         labels: {},
         state: stopped ? "stopped" : "ready",
         providerState: "x",
-        ...(stopped ? { stoppedAt: new Date() } : {}),
+        ...(stopped ? { stoppedAt: new Date(), retainedSnapshot: "usable" } : {}),
       };
     },
     async stop() {

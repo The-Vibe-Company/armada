@@ -24,6 +24,18 @@ User-facing saved environments are **snapshots**. Existing API/MCP names,
 case keys such as `golden`/`goldenId`, and flags/step identifiers such as
 `--golden-runtime` retain their wire spelling; do not rename them in smoke JSON.
 
+## Ordinary main smoke status
+
+A failed ordinary main smoke opens or updates the single `staging red` issue
+with the tested SHA range, failing smoke step codes and workflow run link. The
+range starts at the latest green status found within 50 first-parent main
+commits. The next passing ordinary smoke sets `staging/smoke` to `success`
+on the tested commit and closes the issue with a comment naming that SHA.
+Pinned release smokes skip this reporting.
+
+The coordinator cuts a train from a main commit with a green `staging/smoke`
+status and waits while `staging red` is open.
+
 ## Configure staging
 
 The GitHub environment **staging** uses the following exact configuration names.
@@ -1918,3 +1930,21 @@ control alias. Retired
 `sandbox/github-preflight-v1`) remain server-only;
 `sandbox/checkpoint-runtime-v1` and `sandbox/resume-runtime-v1` also remain
 experimental server-only routes; normal launch uses `sandbox/launch`. Runner secret callbacks remain excluded.
+
+### Refreshing measured step deadlines
+
+Collect the JSONL receipt streams from the latest 20 ordinary green staging
+runs. Use the `armada-smoke.jsonl` output from the smoke step and keep one file
+per run. Name the files with sortable UTC timestamps so the most recent run
+sorts last. Generate the configuration with this command.
+
+```sh
+bun scripts/smoke-deadlines.ts /path/to/green-journals > scripts/smoke-deadlines.json
+```
+
+The generator uses successful `elapsedMs` receipts and rounds up 1.5 times the
+nearest-rank p99. A step with fewer than 20 receipts keeps its existing default. The expiry lane uses `expiry_launch` for the initial response timeout
+and for a separate observation window capped by the overall smoke deadline.
+After an ambiguous response it reads sandbox inventory using the launch's
+unique reference. A recovered launch records the full elapsed time. An
+unresolved launch records the reference and any available server request ID.

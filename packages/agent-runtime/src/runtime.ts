@@ -463,6 +463,7 @@ export class Runner {
         ...(this.execution.restoredFrom ? { restoredFrom: this.execution.restoredFrom } : {}),
         generation: this.grant.generation,
         mcpVersion: 1,
+        stdioMcpEnv: true,
         skillsVersion: 1,
         workspaceVersion: 1,
         ready: !this.barrier,

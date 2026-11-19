@@ -37,6 +37,7 @@ interface ArmadaApiOptions {
   url?: string;
   /** Retain safe server error codes for versioned API clients. */
   preserveServerErrors?: boolean;
+  rawJson?: boolean;
 }
 
 export class ArmadaApiError extends AuthError {
@@ -85,15 +86,20 @@ export async function createArmadaApiClient(
   const timeoutMs = io.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   if (!environmentToken && saved && Date.parse(saved.expiresAt) - Date.now() <= 60_000) {
-    saved = await refresh(origin, io, saved.refreshToken, saved, timeoutMs);
+    saved = await refresh(origin, io, saved.refreshToken, saved, timeoutMs, undefined, options.rawJson);
     token = saved.accessToken;
   }
 
+  const rawResponses = options.rawJson ? new WeakMap<object, Pick<Response, "text">>() : undefined;
   return commandClient(
     origin,
     {
       // Bun has an independent idle deadline. The explicit signal owns the request budget.
-      fetch: (input, options) => io.fetch(input, { ...options, ...{ timeout: false } }),
+      fetch: async (input, options) => {
+        const response = await io.fetch(input, { ...options, ...{ timeout: false } });
+        if (rawResponses && response.ok && response.body) rawResponses.set(response, response.clone());
+        return response;
+      },
       token: () => token,
       timeoutMs,
       invalidPath: (error) => {
@@ -103,7 +109,7 @@ export async function createArmadaApiClient(
         ? {
             renewToken: async (signal?: AbortSignal) => {
               if (!saved) throw new Error("No saved login to refresh.");
-              saved = await refresh(origin, io, saved.refreshToken, saved, timeoutMs, signal);
+              saved = await refresh(origin, io, saved.refreshToken, saved, timeoutMs, signal, options.rawJson);
               token = saved.accessToken;
               return token;
             },
@@ -111,6 +117,23 @@ export async function createArmadaApiClient(
         : {}),
     },
     (result, path, url) => {
+      if (options.rawJson) {
+        if (result.kind === "transport")
+          throw new AuthError(
+            result.timedOut ? "Armada API request timed out." : "Armada could not reach the server.",
+            "unavailable",
+          );
+        const { response, payload, bodyReadFailed } = result;
+        if (!response.ok)
+          throw new ArmadaApiError(
+            "api_error",
+            response.status,
+            `Armada API request failed (HTTP ${response.status}).`,
+          );
+        if (bodyReadFailed) throw new AuthError("Armada API response could not be read.", "unavailable");
+        if (response.status === 204 || response.status === 205) return "";
+        return rawJsonText(rawResponses?.get(response), payload);
+      }
       if (result.kind === "transport") {
         throw new AuthError(
           path === "/api/v1/templates/launch"
@@ -370,6 +393,18 @@ export async function createArmadaApiClient(
   );
 }
 
+async function rawJsonText(response: Pick<Response, "text"> | undefined, payload: unknown) {
+  let text: string | undefined;
+  try {
+    text = await response?.text();
+  } catch {
+    throw new AuthError("Armada API response could not be read.", "unavailable");
+  }
+  if (!text || (payload === null && !/^[\t\n\r ]*null[\t\n\r ]*$/.test(text)))
+    throw new AuthError("Armada API response was not valid JSON.", "unavailable");
+  return text;
+}
+
 async function refresh(
   origin: string,
   io: ArmadaApiIo,
@@ -377,6 +412,7 @@ async function refresh(
   saved: NonNullable<Awaited<ReturnType<SessionStore["read"]>>>,
   timeoutMs: number,
   signal?: AbortSignal,
+  safeErrors = false,
 ): Promise<NonNullable<Awaited<ReturnType<SessionStore["read"]>>>> {
   const operation = async (store: SessionStore) => {
     // The caller may have loaded this token before another process rotated it.
@@ -393,7 +429,7 @@ async function refresh(
       Date.parse(current.expiresAt) - Date.now() > 60_000
     )
       return current;
-    return refreshLocked(origin, io, store, current, timeoutMs, signal);
+    return refreshLocked(origin, io, store, current, timeoutMs, signal, safeErrors);
   };
   return io.session.withLock ? io.session.withLock(operation) : operation(io.session);
 }
@@ -405,6 +441,7 @@ async function refreshLocked(
   saved: NonNullable<Awaited<ReturnType<SessionStore["read"]>>>,
   timeoutMs: number,
   signal?: AbortSignal,
+  safeErrors = false,
 ): Promise<NonNullable<Awaited<ReturnType<SessionStore["read"]>>>> {
   const result = await authClient(origin, (input, init) => io.fetch(input, init)).refresh(
     saved.refreshToken,
@@ -421,6 +458,7 @@ async function refreshLocked(
   } | null;
   if (!response.ok) {
     if (
+      !safeErrors &&
       value?.error &&
       typeof value.error.message === "string" &&
       ["usage", "unauthorized", "unavailable"].includes(value.error.code ?? "")

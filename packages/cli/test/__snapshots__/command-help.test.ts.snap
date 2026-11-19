@@ -122,6 +122,7 @@ Usage:
   armada send|steer|exec <sandbox-id> <text-or-command> [--model ID] [--reasoning-effort LEVEL]
                                            send accepts --request-id UUID to reuse an uncertain runtime instruction.
                                            Full-account follow-up sends can queue FIFO; queued is not completed.
+  armada api ROUTE [JSON|-]
   armada snapshot retirement dry-run|reconcile <snapshot-id> [--limit 1-50] [--org UUID]
   armada snapshot remove <name|snapshot-id> [--provider boat|modal] [--org UUID] [--json]
                                            Names must match one visible snapshot; use provider/org or snapshot list --json to disambiguate.
@@ -207,6 +208,16 @@ Environment:
   ARMADA_TOKEN                             API token for non-interactive authentication. Takes precedence over
                                            a saved login session.
   ARMADA_URL                               Armada API server (default: https://armada.thevibecompany.co).
+"
+`;
+
+exports[`armada api help preserves its output 1`] = `
+"Usage: armada api ROUTE [JSON|-]
+POST to /api/v1/ROUTE using the selected Armada login and print the JSON response.
+Pass the route relative to /api/v1/. With no body argument, send {}.
+Pass - to read JSON from a pipe or redirected file. Use stdin for bodies that contain secrets.
+Treat stdout as sensitive if the endpoint returns credentials.
+Example: armada api org/list
 "
 `;
 
@@ -412,5 +423,35 @@ Output is JSON with command exitCode, stdout/stderr and timeout/truncation infor
 Inspect exitCode and timedOut; a successful CLI request is not proof the shell command succeeded.
 Put options before -- so command flags are passed literally, not parsed as Armada options.
 Example: armada exec SANDBOX_UUID --org ORG_UUID -- "git status --short"
+"
+`;
+
+exports[`armada logs help preserves its output 1`] = `
+"Read agent events from a sandbox.
+
+Usage:
+  armada logs <sandbox-id> [--since <cursor>] [--all] [--follow] [--org <org>] [--json]
+  armada logs <sandbox-id> --tail [n] [--follow] [--org <org>] [--json]
+
+Options:
+  --since <cursor>  Resume after an opaque cursor returned by a JSON page.
+  --tail [n]        Last n events (1–1000; default 100). You cannot combine
+                    --tail with --all or --since. With --follow, tail is read once.
+  --all             Drain all currently available pages, without polling delays.
+  --follow          Drain pages, then poll while active until settled.
+                    Ctrl-C stops only this reader, not the agent.
+  --org <org>       Override the organization selected by armada org use.
+  --json            Stream page objects: events, cursor, hasMore, settled.
+                    Multiple pages are not one JSON array. Errors use stderr.
+
+Without --all, --follow or --tail, read one bounded page.
+Use armada list --json to find a visible sandbox ID.
+
+Examples:
+  armada logs SANDBOX_ID --tail 20
+  armada logs SANDBOX_ID --since CURSOR --follow
+  armada logs SANDBOX_ID --all --json | jq -c '.events[]'
+
+For other commands and authentication settings: armada --help.
 "
 `;

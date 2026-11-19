@@ -36,17 +36,9 @@ Quick start / common examples:
   eval "$(armada completion bash)"
 
 Usage:
-  armada host install --server HTTPS_ORIGIN   Install on the Docker machine; one-use token on stdin, no login
-  armada host status|uninstall [--server HTTPS_ORIGIN]  Local host wrappers; no login
-  armada host add [--name NAME] [--org UUID]
-  armada host list [--json] [--org UUID]
-  armada host show HOST [--json] [--org UUID]
-  armada host limits HOST [--cpus N] [--memory SIZE] [--max-sandboxes N | --auto] [--org UUID]
-  armada host retention HOST --retention 24h [--org UUID]
-  armada host revoke UUID [--org UUID]
+${sandboxUsage("host")}
 ${sandboxUsage("docker-launch")}
-  armada doctor [--org UUID] [--json]      Check session, server, GitHub, hosts and model accounts
-  armada completion bash|zsh|fish           Print a shell completion script
+${sandboxUsage("setup")}
   armada --version                         Print the version
   armada --help                            Show this help (also -h or help); no login required
   armada skill install (--project <directory> | --global) --yes [--revision <commit>]
@@ -107,37 +99,14 @@ ${sandboxUsage("sandbox")}
   armada mcp add NAME URL [--scope personal|org] [--org UUID]
                                            Public/OAuth URL shortcut; auto discovery, no secret argv
   armada mcp list|add|update|connect|status|reconnect|enable|disable|revoke|delete [id] [--org UUID] [--file JSON]
-  armada logs <sandbox-id> [--tail [n]] [--all] [--follow] [--json]
-                                           Read agent events; --all drains available pages, --follow waits for new pages until settled
-  armada login [--url <url>] [--provider github|google | --email <address>]
-                                           Discovers enabled methods; prompts for email when available.
-                                           --email: open the emailed link on this machine, or type its code (use one, not both)
-  armada logout
-  armada token create [--org <name>] [--label <label>]
-  armada token list
-  armada token revoke <id>
-  armada org create <name>                 Create an org; you are its first admin
-  armada org list
-  armada org setup [--org <name>]          Show organization provider setup status
-  armada org connect boat|modal [--org <name>] [--file <path>]
-                                           Connect an org provider using hidden input, stdin or a file
-  armada org use <name|UUID|none>           Persist selection for this Armada server
-  armada org current                        Show selected organization
-  armada account status|logout              Account identity / revoke current login session
+${sandboxUsage("logs")}
+${sandboxUsage("session")}
+${sandboxUsage("org")}
+${sandboxUsage("account")}
   armada github status|connect|reconnect|disconnect|install|manage [installation-id]
   armada github refresh <sandbox>
                                            Browser authorization waits for real completion; --no-browser prints URL
-  armada org invitations create <email> [--role admin|member] [--org <name|UUID>] [--json]
-  armada org invitations list [--org <name|UUID>] [--json]
-  armada org invitations resend|revoke <id> [--org <name|UUID>] [--json]
-                                           Admin invitation management; --org overrides org use selection.
-                                           Email sent means provider accepted, not confirmed inbox delivery.
-  armada org invitations accept [--file <path>] [--json]
-                                           Token from stdin/file only; log in personally with the matching
-                                           verified email first. Opening a link never joins an organization.
-  armada org members list|add|remove|role  [--org <name>] add <email> [--role admin|member]
-                                           Direct membership administration; add requires an existing account,
-                                           grants membership immediately and does not send an invitation.
+${sandboxUsage("invitations")}
   armada creds login codex --name <name> [--org <name>]
                                            Native local device login; up to 16 minutes after the device code.
                                            Keep this terminal open; Ctrl-C/shell exit cancels.
@@ -184,34 +153,6 @@ Environment:
   ARMADA_URL                               Armada API server (default: https://armada.thevibecompany.co).
 `;
 
-export const LOGS_HELP = `Read agent events from a sandbox.
-
-Usage:
-  armada logs <sandbox-id> [--since <cursor>] [--all] [--follow] [--org <org>] [--json]
-  armada logs <sandbox-id> --tail [n] [--follow] [--org <org>] [--json]
-
-Options:
-  --since <cursor>  Resume after an opaque cursor returned by a JSON page.
-  --tail [n]        Last n events (1–1000; default 100). You cannot combine
-                    --tail with --all or --since. With --follow, tail is read once.
-  --all             Drain all currently available pages, without polling delays.
-  --follow          Drain pages, then poll while active until settled.
-                    Ctrl-C stops only this reader, not the agent.
-  --org <org>       Override the organization selected by armada org use.
-  --json            Stream page objects: events, cursor, hasMore, settled.
-                    Multiple pages are not one JSON array. Errors use stderr.
-
-Without --all, --follow or --tail, read one bounded page.
-Use armada list --json to find a visible sandbox ID.
-
-Examples:
-  armada logs SANDBOX_ID --tail 20
-  armada logs SANDBOX_ID --since CURSOR --follow
-  armada logs SANDBOX_ID --all --json | jq -c '.events[]'
-
-For other commands and authentication settings: armada --help.
-`;
-
 export const commandWords = [
   ...new Set([
     ...[...HELP.matchAll(/armada ([a-z][a-z|-]*)/g)].flatMap((match) => match[1]!.split("|")),
@@ -219,10 +160,7 @@ export const commandWords = [
   ]),
 ];
 export const optionWords = [
-  ...new Set([
-    ...helpOptionWords,
-    ...[...`${HELP}\n${LOGS_HELP}`.matchAll(/--[a-z][a-z-]*/g)].map((match) => match[0]),
-  ]),
+  ...new Set([...helpOptionWords, ...[...HELP.matchAll(/--[a-z][a-z-]*/g)].map((match) => match[0])]),
 ];
 
 export function completion(argv: readonly string[], auth: Pick<AuthIo, "out">) {

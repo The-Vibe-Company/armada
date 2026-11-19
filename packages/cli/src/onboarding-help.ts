@@ -1,3 +1,4 @@
+import type { Command } from "./commands/command.ts";
 import { commands, findCommand } from "./commands/index.ts";
 
 // Exact command boundaries only: never interpret payload or remote arguments as help.
@@ -160,170 +161,6 @@ Definitions contain references to variables and secrets, not raw secret values.
 This reads a template; it does not publish, launch or resolve a frozen launch manifest.
 Example: armada template get TEMPLATE_UUID --revision 1 --org ORG_UUID --json
 `,
-  host: `Usage: armada host <command> [arguments]
-Manage Docker machines registered with Armada, not individual sandboxes.
-
-Account commands (Armada login or ARMADA_TOKEN required):
-  add      Register a machine and obtain a one-use installer command.
-  list     Inspect host IDs, names, state and resources; supports --json.
-  show     Inspect one host by UUID or exact name; supports --json.
-  limits   Update host resource limits by UUID or exact name.
-  revoke   Revoke a host registration by UUID.
-Select an organization with armada org use or --org UUID.
-Use UUIDs from host list when names are ambiguous.
-
-Local machine commands (run on the Docker machine; no Armada login):
-  install    Install/register the local host daemon using --server HTTPS_ORIGIN.
-  status     Inspect the local host daemon.
-  uninstall  Remove the local host installation.
-For CLI install, supply the one-use registration token on stdin, never in argv.
-Treat installer output as sensitive; do not paste it into shared logs.
-
-Inspect a command's options with armada host <command> --help.
-To launch on a registered host, use armada launch --provider docker.
-Example: armada host list --org ORG_UUID --json
-Example: armada host show workstation --org ORG_UUID
-`,
-  org: `Usage: armada org <command> [arguments]
-Manage organization selection, provider setup and membership.
-Use a leaf command with --help or -h for flags and authorization requirements.
-  list         List your organizations, roles and IDs.
-  use          Save a local default by name/UUID, or clear it with none.
-  current      Read the saved selection; not a current-membership check.
-  create       Create an organization and become its admin.
-  setup        Inspect provider configuration, not lifecycle readiness.
-  connect      Connect Boat/Modal as an organization admin.
-  members      List/add/change roles/remove members.
-  invitations  Create/list/resend/revoke/accept invitations.
-Explicit --org overrides a saved default on commands that consume it.
-Help does not sign in, change selection, read credentials or call the server.
-Example: armada org list --json
-Example: armada org invitations --help
-`,
-  "org members": `Usage: armada org members <command> [arguments]
-  list    List members and roles.
-  add     Add by email; --role defaults to member.
-  role    Change role using positional email and admin|member.
-  remove  Remove by email.
-Membership changes require an organization admin; server authorization still applies.
-Use leaf --help/-h for organization selection and exact flags.
-Example: armada org members list --org my-team --json
-`,
-  "org invitations": `Usage: armada org invitations <command> [arguments]
-  create  Invite by email with optional role (default member).
-  list    Read invitation metadata and IDs, never acceptance tokens.
-  resend  Resend by invitation ID.
-  revoke  Revoke by invitation ID.
-  accept  Read a token from stdin/private file, never command arguments.
-Management requires an organization admin and selected organization.
-Accept uses the signed-in identity, not --org. See leaf --help/-h for flags.
-Sent means email-provider acceptance, not confirmed inbox delivery.
-Example: armada org invitations list --org my-team --json
-`,
-  "org list": `Usage: armada org list [--json]
-List your organizations after Armada login, including their IDs and your roles.
-Use an exact organization name or UUID with armada org use.
-Example: armada org list --json
-`,
-  "org use": `Usage: armada org use <name|UUID|none>
-Save a default organization for this Armada server in local preferences.
-Selecting a name or UUID requires login and an exact, unambiguous organization match.
-Use none to clear the saved selection locally; this does not delete an organization.
-For commands that use the saved default, an explicit --org overrides it.
-Example: armada org use my-team
-Example: armada org use none
-`,
-  "org current": `Usage: armada org current
-Read the saved local organization selection for this Armada server, without a server request.
-Output is JSON: org is the saved UUID, or null when no selection is saved.
-This does not check current membership or access.
-Example: armada org current
-`,
-  "org create": `Usage: armada org create <name> [--json]
-Create an organization after Armada login; you become its admin.
-Next, configure its provider with armada org connect boat|modal --org <id>.
-Supply provider credentials through stdin/hidden input or a private file, never arguments.
-Example: armada org create my-team --json
-`,
-  "org members list": `Usage: armada org members list [--org <name>] [--json]
-List organization members and roles after Armada login and server authorization.
-Use --org to override a saved organization selection.
-Example: armada org members list --org my-team --json
-`,
-  "org members add": `Usage: armada org members add <email> [--role admin|member] [--org <name>] [--json]
-Add a member as an organization admin after Armada login; the default role is member.
-Use --org to override a saved organization selection.
-Example: armada org members add teammate@example.com --role member --org my-team
-`,
-  "org members role": `Usage: armada org members role <email> <admin|member> [--org <name>] [--json]
-Change a member's role as an organization admin after Armada login.
-The new role is positional, not a --role flag. Use --org to override a saved selection.
-Example: armada org members role teammate@example.com admin --org my-team
-`,
-  "org members remove": `Usage: armada org members remove <email> [--org <name>] [--json]
-Remove a member as an organization admin after Armada login.
-Use --org to override a saved organization selection.
-Example: armada org members remove teammate@example.com --org my-team
-`,
-  "org invitations create": `Usage: armada org invitations create <email> [--role admin|member] [--org <name|UUID>] [--json]
-Invite someone as an organization admin after Armada login; the default role is member.
-Select an organization with --org or armada org use.
-Sent means the email provider accepted delivery, not confirmed inbox receipt.
-Example: armada org invitations create teammate@example.com --org my-team
-`,
-  "org invitations list": `Usage: armada org invitations list [--org <name|UUID>] [--json]
-List invitation metadata as an organization admin after Armada login.
-Select an organization with --org or armada org use; output includes IDs, not tokens.
-Example: armada org invitations list --org my-team --json
-`,
-  "org invitations resend": `Usage: armada org invitations resend <id> [--org <name|UUID>] [--json]
-Resend an invitation as an organization admin after Armada login.
-Use an invitation ID from org invitations list, and select --org or armada org use.
-Sent means email-provider acceptance, not confirmed inbox receipt.
-Example: armada org invitations resend INVITATION_UUID --org my-team
-`,
-  "org invitations revoke": `Usage: armada org invitations revoke <id> [--org <name|UUID>] [--json]
-Revoke an invitation as an organization admin after Armada login.
-Use an invitation ID from org invitations list, and select --org or armada org use.
-Example: armada org invitations revoke INVITATION_UUID --org my-team
-`,
-  "org invitations accept": `Usage: armada org invitations accept [--file <path>] [--json]
-Accept an invitation after Armada login using a token from stdin or a private file.
-Never put the token in command arguments. --org is not accepted by this command.
-The server validates the invitation and signed-in identity; the token is not printed.
-Example: armada org invitations accept --file /private/invitation-token
-`,
-  token: `Usage: armada token <command> [arguments]
-Manage Armada service tokens for authenticated scripts, not model/provider keys.
-Use leaf --help/-h for exact flags and server authorization requirements.
-  create  Create a token; stdout contains the secret even with --json.
-  list    List metadata, IDs and revocation state, never secret values.
-  revoke  Revoke using the token ID from list, not the secret value.
-Store new tokens securely when printed; Armada stores only their hashes.
-Never commit tokens or send creation output to public logs.
-Supply ARMADA_TOKEN through a secure environment, never command arguments.
-Help does not create, list or revoke tokens.
-Example: armada token list --json
-Example: armada token create --help
-`,
-  "token create": `Usage: armada token create [--org <name>] [--label <label>] [--json]
-Create a service token with authenticated access and server authorization.
-An explicit --org overrides a saved organization selection.
-Warning: stdout contains the new secret, including with --json. Store it securely now;
-Armada stores only its hash. Never commit it or send output to public logs.
-Supply the token to scripts using ARMADA_TOKEN through a secure environment, not arguments.
-Example: armada token create --org my-team --label automation
-`,
-  "token list": `Usage: armada token list [--json]
-List service-token metadata with authenticated access and server authorization.
-Output includes IDs and revocation state, not token values. Use an ID with token revoke.
-Example: armada token list --json
-`,
-  "token revoke": `Usage: armada token revoke <id> [--json]
-Revoke a service token with authenticated access and server authorization.
-Use its ID from armada token list --json, never the secret token value.
-Example: armada token revoke TOKEN_UUID
-`,
   github: `Usage: armada github <command> [arguments]
 Manage your GitHub connection after Armada login.
 Use leaf --help/-h for exact flags, timeouts and server authorization requirements.
@@ -362,38 +199,6 @@ Example: armada github refresh SANDBOX_UUID --json
 Disconnect your GitHub connection after Armada login and server authorization.
 Output is JSON even without --json. To connect again, use armada github connect.
 Example: armada github disconnect
-`,
-  account: `Usage: armada account <command> [arguments]
-Inspect your Armada account or sign out a personal session remotely.
-Use leaf --help/-h for exact syntax and authorization requirements.
-  status  Read account status from the server as JSON.
-  logout  Sign out the current personal session remotely, then clear local login.
-For local-only session clearing, use armada logout instead.
-Account logout requires a personal session, not service-token authentication;
-remove ARMADA_TOKEN from that command's environment when using saved personal login.
-Help makes no server requests and does not sign anything out.
-Example: armada account status --json
-Example: armada account logout --help
-`,
-  "account status": `Usage: armada account status [--json]
-Read account status with authenticated access and server authorization.
-Output is JSON even without --json. This is not a local session-file inspection.
-Example: armada account status --json
-`,
-  "account logout": `Usage: armada account logout [--json]
-Sign out the current personal login session remotely, then clear its local session.
-Requires a personal login session; service-token authentication is not supported.
-If ARMADA_TOKEN is set, remove it from this command's environment to use your personal session.
-To clear only the saved local session, use armada logout.
---json returns {authenticated:false}.
-Example: armada account logout
-`,
-  logout: `Usage: armada logout [--json]
-Clear the saved local Armada login without a server request.
---json returns {authenticated:false}.
-This does not revoke service tokens or remove ARMADA_TOKEN from your environment.
-To sign out a personal session remotely first, use armada account logout.
-Example: armada logout
 `,
   mcp: `Usage: armada mcp <command> [arguments]
 Manage MCP registry connections and inspect sandbox bindings.
@@ -503,15 +308,6 @@ Read the object from stdin or --file. Keep authentication values out of command 
 Updates cannot change scope; --scope is not accepted. Output is always JSON.
 Example: armada mcp update CONNECTION_UUID --file /private/connection.json --org ORG_UUID
 `,
-  doctor: `Usage: armada doctor [--org UUID] [--json]
-Inspect setup metadata and report check statuses with next-step guidance.
-Checks include session/server, GitHub, organization selection, Docker-host and model-account metadata.
-Use --org to override a saved selection; a sole organization can be selected automatically.
-This is not a full provider lifecycle test or proof that a model request will work.
---json returns a checks array; otherwise output is a table.
-Exits 1 if any check is failed, otherwise 0; warnings and unknowns are not passes.
-Example: armada doctor --org ORG_UUID --json
-`,
   "bind-credential": `Usage: armada bind-credential <sandbox-id> --credential-id UUID [--org UUID] [--json]
 Owner-only legacy Modal credential-binding recovery after Armada login.
 Stop the sandbox safely before rebinding; this command does not restart it.
@@ -540,20 +336,6 @@ Server rechecks authority, history and references; eligible work is queued, not 
 Output is always JSON. Use the snapshot record UUID, not a provider artifact ID.
 Example: armada snapshot retirement reconcile SNAPSHOT_UUID --org ORG_UUID --file reviewed.json
 `,
-  login: `Usage: armada login [--json] [--email <address> | --provider github|google] [--url <server-origin>]
-Sign in to Armada, not directly to a sandbox provider.
-Use --email for email code/link sign-in; --provider chooses an enabled browser method.
-Do not combine --email and --provider. Without either, discover enabled server methods.
-Server selection: --url, then ARMADA_URL, then the default Armada API origin.
-Global --profile NAME (or ARMADA_PROFILE) isolates saved login and preferences;
-use login --url to configure a new profile's server.
-Keep the terminal open while completing sign-in. Use an interactive terminal for email code entry.
-ARMADA_TOKEN supplies service-token authentication to API commands; a saved login
-does not unset that environment variable. Keep tokens in a secure environment, never arguments.
---json returns {authenticated:true} on success; progress remains on stderr.
-Example: armada login --email you@example.com
-Example: armada --profile staging login --url https://staging.example.com --provider github
-`,
   snapshot: `Usage: armada snapshot <command> [arguments]
 Manage provider-scoped snapshots. Use a leaf command with --help or -h for syntax.
 Boat/Modal:
@@ -577,31 +359,6 @@ Operations require Armada login and server authorization; help does not.
 The legacy golden spelling is accepted; guidance uses snapshot.
 Example: armada snapshot list --provider modal --json
 Example: armada snapshot create --help
-`,
-  "org setup": `Usage: armada org setup [--org <name>] [--json]
-Show organization provider setup status. Sign in before running the operation.
-Use --org to override a saved selection. This reports configuration, not a live lifecycle test.
-Example: armada org setup --org my-team
-`,
-  "org connect": `Usage: armada org connect boat|modal [--org <name>] [--file <path>] [--json]
-Connect a provider as an organization admin after Armada login.
-Boat takes an API key; Modal takes a token pair. See org connect boat|modal --help.
-Read credentials from stdin/hidden input or a private file, never command arguments.
-Use --org to override a saved organization selection.
-Example: armada org connect modal --org my-team --file /private/modal.json
-`,
-  "org connect boat": `Usage: armada org connect boat [--org <name>] [--file <path>] [--json]
-Connect Boat as an organization admin after Armada login.
-Input: the Boat API key from stdin/hidden input or a private file, never command arguments.
-Use --org to override a saved organization selection.
-Example: armada org connect boat --org my-team --file /private/boat-key
-`,
-  "org connect modal": `Usage: armada org connect modal [--org <name>] [--file <path>] [--json]
-Connect a Modal workspace as an organization admin after armada login.
-Input: JSON with token_id and token_secret (from Modal), or a Modal token pair separated by whitespace.
-Keep real credentials in a private file or stdin/hidden input, never command arguments.
-Use --org to override a saved organization selection.
-Example: armada org connect modal --org my-team --file /private/modal.json
 `,
   creds: `Usage: armada creds <command> [arguments]
 Manage encrypted model/provider credentials, not application variables/secrets.
@@ -801,47 +558,6 @@ Output is JSON, including the version and configured repository selectors.
 Example: armada snapshot size-policy starter --provider modal --org my-team
 Example: armada snapshot size-policy starter --provider modal --file policy.json
 `,
-  "host list": `Usage: armada host list [--org UUID] [--json]
-List registered Docker hosts after Armada login and server authorization.
-Select an organization first or pass --org UUID. Use IDs/names with host show.
-Example: armada host list --org ORG_UUID --json
-`,
-  "host show": `Usage: armada host show <UUID|name> [--org UUID] [--json]
-Inspect one Docker host after Armada login and server authorization.
-Select an organization first or pass --org UUID. Names must match exactly and be unambiguous.
-A UUID can identify a revoked host; name lookup excludes revoked hosts.
-Example: armada host show workstation --org ORG_UUID --json
-`,
-  "host retention": `Usage: armada host retention <UUID|name> --retention <duration> [--org UUID] [--json]
-Only the member who added the Docker host can change retention.
-Use 0 for next-sweep removal, or seconds/minutes/hours/days (24h, 30m, 7d), maximum 365d.
-Applies at next check-in, including existing stopped sandbox deadlines.
---json returns {hostId, retentionSeconds}.
-Example: armada host retention workstation --retention 24h
-`,
-  "host limits": `Usage: armada host limits <UUID|name> [--org UUID] [--json]
-  [--cpus <N>] [--memory <size>] [--max-sandboxes <N>] [--auto]
-Update Docker host policy after Armada login and server authorization.
-Select an organization first or pass --org UUID. Supply at least one override or --auto.
-Combine overrides as needed:
---cpus must be at least 0.01; --max-sandboxes must be a positive integer.
---auto resets all limits and cannot be combined with overrides.
-Container changes apply on the next start or resume. Inspect with host show.
---json returns {hostId, ...requestedPolicy}.
-Example: armada host limits workstation --org ORG_UUID --cpus 2 --memory 4GiB
-`,
-  "host revoke": `Usage: armada host revoke <UUID> [--org UUID] [--json]
-Revoke a Docker host after Armada login and server authorization.
-Select an organization first or pass --org UUID. Use a host UUID from host list, not a name.
---json returns {hostId, revoked:true}.
-Example: armada host revoke HOST_UUID --org ORG_UUID
-`,
-  "host add": `Usage: armada host add [--name <name>] [--org <UUID>] [--json]
-Register your Docker machine after Armada login. Select an organization first or pass --org.
-Run the returned installer only on your intended host; its registration token is short-lived.
---json returns the registration receipt without waiting; protect its short-lived installer token.
-Example: armada host add --name workstation
-`,
 };
 
 function importHelp(harness?: string): string {
@@ -885,15 +601,6 @@ Opens a server-issued authorization URL when supplied; --no-browser prints it to
 Zero still starts authorization and checks status; a URL alone is not success.
 On timeout, inspect mcp status before retrying. Successful output is always JSON.
 Example: armada mcp ${action} CONNECTION_UUID --org ORG_UUID --no-browser --timeout 300
-`;
-}
-
-function completionHelp(shell?: "bash" | "zsh" | "fish"): string {
-  return `Usage: armada completion ${shell ?? "bash|zsh|fish"}
-Print a shell-completion script to stdout. No login or network request is needed.
-Choose the shell you actually use; inspect the generated script before sourcing it.
-This command does not install completion or modify your shell configuration.
-Example: armada completion ${shell ?? "bash"} > armada-completion.${shell ?? "bash"}
 `;
 }
 
@@ -1059,6 +766,8 @@ export function onboardingHelp(argv: readonly string[]): string | undefined {
   const command = parts.join(" ");
   const focused = findCommand(command);
   if (focused) return focused.help;
+  const nested = findCommand(command.split(" ", 1)[0] ?? "")?.subcommandHelp;
+  if (nested && Object.hasOwn(nested, command)) return nested[command];
   return Object.hasOwn(GENERATED_HELP, command)
     ? GENERATED_HELP[command]
     : Object.hasOwn(HELP, command)
@@ -1081,10 +790,6 @@ const GENERATED_HELP: Record<string, string> = {
   "secrets delete": secretLifecycleHelp("delete"),
   vars: vaultFamilyHelp("vars"),
   secrets: vaultFamilyHelp("secrets"),
-  completion: completionHelp(),
-  "completion bash": completionHelp("bash"),
-  "completion zsh": completionHelp("zsh"),
-  "completion fish": completionHelp("fish"),
   "mcp connect": mcpAuthorizationHelp("connect"),
   "mcp reconnect": mcpAuthorizationHelp("reconnect"),
   "github connect": githubAuthorizationHelp("connect"),
@@ -1095,16 +800,22 @@ const GENERATED_HELP: Record<string, string> = {
   "creds import codex": importHelp("codex"),
 };
 
+function commandHelp({ help, subcommandHelp }: Command): string[] {
+  return [help, ...Object.values(subcommandHelp ?? {})];
+}
+
 /** Flags from the command help registry also drive shell discovery. */
 export const helpOptionWords = [
   ...new Set(
     [
       ...Object.entries(HELP).flatMap(([key, help]) => [
-        ...commands.filter((command) => command.completionBefore === key).map((command) => command.help),
+        ...commands.filter((command) => command.completionBefore === key).flatMap(commandHelp),
         help,
       ]),
       ...Object.values(GENERATED_HELP),
-      ...commands.filter((command) => command.completionBefore === undefined).map((command) => command.help),
+      ...commands
+        .filter((command) => command.completionBefore === undefined || !Object.hasOwn(HELP, command.completionBefore))
+        .flatMap(commandHelp),
     ].flatMap((help) => [...help.matchAll(/--[a-z][a-z-]*/g)].map((match) => match[0])),
   ),
 ];

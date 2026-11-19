@@ -26,7 +26,11 @@ access needs an authorized admin, not a retry loop.
 Read [setup and configuration](references/setup.md) when connecting GitHub,
 selecting model accounts, creating goldens/templates, or configuring variables.
 Manage snapshots, templates, default skill pins, variables and application secrets through
-the dashboard or the authenticated REST API. MCP `template_launch` launches an existing template.
+the dashboard or the authenticated REST API. Launch an existing template with
+`armada template launch` or `POST /api/v1/templates/launch` and reuse its request key on retry.
+
+For GitHub repair, run `armada github refresh <sandbox>`. Read broker status via
+`POST /api/v1/github/runtime-status`.
 
 For MCP coordinator launches, call `launch` with optional `size`, a stable
 `idempotencyKey` and an `externalRef`. After an uncertain response, repeat the
@@ -45,8 +49,9 @@ any receipt UUID returned.
 - Choose Boat or Modal explicitly when ambiguous. A golden built on one provider
   is not automatically available on the other. Check
   `armada snapshot capabilities --provider boat --json` (or substitute modal).
-- Docker REST launch requires an explicit harness. Personal sessions can select
-  the organization by slug or UUID. For a scoped token, omit `org` or send its org UUID.
+- Docker and pinned Modal template launches through `POST /api/v1/sandbox/launch`
+  require an explicit harness. Personal sessions can select the organization by
+  slug or UUID. For a scoped token, omit `org` or send its org UUID.
   A malformed request returns HTTP 400 with error code `invalid`.
 - Choose the harness and a model/effort it supports. Launch selections persist
   for later turns. Do not assume provider sizes have equal price or performance.

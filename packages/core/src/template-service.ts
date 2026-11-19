@@ -9,7 +9,12 @@ import { GOLDEN_SELECT, type GoldenRow, mapGoldenRow, type Sql } from "./golden-
 import { isHarness } from "./harnesses.ts";
 import { type LaunchOptions, type LaunchStores, launchSandbox } from "./launch.ts";
 import { LaunchError } from "./launch-error.ts";
-import { assertLaunchSecretBindings, resolveLaunchSecrets } from "./launch-secrets.ts";
+import {
+  assertLaunchSecretBindings,
+  LaunchSecretRefusal,
+  ModalLaunchSecretRefusal,
+  resolveLaunchSecrets,
+} from "./launch-secrets.ts";
 import { resolveLaunchVariables } from "./launch-variables.ts";
 import { parseMachineSize } from "./machine-size.ts";
 import { MAX_MCP_CONNECTIONS } from "./mcp-launch-selection.ts";
@@ -837,10 +842,12 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       if (!fenceConsumed) await releaseFence();
       // Once dispatch might have occurred, no timeout/exception proves absence. Never resend.
       const refused = error instanceof ProviderError && isNonMutatingProviderRefusal(error);
-      const state = allocating && !refused ? "reconciling" : "failed";
+      const secretRefusal = error instanceof ModalLaunchSecretRefusal ? error.refusal : undefined;
+      const state = allocating && !refused && !secretRefusal ? "reconciling" : "failed";
       const safeReason = refused
         ? error.code
-        : (refusalReason(error) ??
+        : (secretRefusal?.reason ??
+          refusalReason(error) ??
           (error instanceof VaultError || error instanceof GoldenError || error instanceof ProviderRoutingError
             ? error.code
             : undefined) ??
@@ -868,6 +875,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
         id: request.sandbox_id,
         reason: safeReason,
         ...(message ? { message } : {}),
+        ...(secretRefusal ? { code: secretRefusal.code } : {}),
         manifest: m,
       };
       await sql.query(
@@ -879,6 +887,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
           state === "failed" || safeReason.startsWith("skillpack_") ? JSON.stringify(output) : null,
         ],
       );
+      if (secretRefusal) throw secretRefusal;
       return output;
     }
   }
@@ -892,6 +901,12 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     // Validate explicit selectors against the frozen definition without reading a live template
     // or changing historical request digests.
     await runtime.validateDefinition?.(row.manifest.definition);
+    if (
+      row.state === "failed" &&
+      row.result?.code === "conflict" &&
+      (row.reason === "secret_unavailable" || row.reason === "secret_version_changed")
+    )
+      throw new LaunchSecretRefusal(row.reason);
     const output = row.result ?? {
       requestId: row.id,
       state: row.state,

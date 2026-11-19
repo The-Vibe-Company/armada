@@ -20,6 +20,8 @@ import {
   resolveModelChoice,
   resolveOrg,
   resolveRepositoryDir,
+  type TemplateRuntime,
+  type TemplateService,
   VaultError,
 } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
@@ -30,6 +32,7 @@ import type { ScopedData } from "./data.ts";
 import { providerForGolden } from "./golden-control.ts";
 import { prepareGoldenLaunchAccount } from "./launch-account-admission.ts";
 import { launchCredentials } from "./launch-credentials.ts";
+import { type GoldenLaunchTiming, observeGoldenLaunch } from "./request-timing.ts";
 import { parseSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 
 type LaunchControlOptions = Pick<
@@ -54,11 +57,21 @@ type LaunchControlOptions = Pick<
   | "ordinaryLaunchReceipts"
 >;
 
-export async function launchRoute(
+export function launchRoute(
   options: LaunchControlOptions,
   caller: Caller,
   body: Record<string, unknown>,
   runtime: boolean | "modal" = false,
+) {
+  return observeGoldenLaunch("rest", (timing) => launchGolden(options, caller, body, runtime, timing));
+}
+
+async function launchGolden(
+  options: LaunchControlOptions,
+  caller: Caller,
+  body: Record<string, unknown>,
+  runtime: boolean | "modal",
+  timing: GoldenLaunchTiming,
 ) {
   const modalRuntime = runtime === "modal";
   const runtimePolicy = modalRuntime ? options.modalRuntimeLaunch : runtime ? options.boatRuntimeLaunch : undefined;
@@ -123,11 +136,13 @@ export async function launchRoute(
     options.modelAuth,
     runtime && options.github ? { ...options.github, store: options.store } : undefined,
   );
+  timing.checkpoint("admission");
   const prepare = async () => {
     const account =
       credentialId === undefined || typeof credentialId === "string"
         ? await prepareGoldenLaunchAccount(actor, golden, { harness, credentialId }, credentials, launchOptions)
         : { credentials, options: launchOptions };
+    timing.checkpoint("account_resolution");
     const provider = modalRuntime
       ? await options.modalRuntimeHostFor!({ ...golden, runtimeTransport: "dialout" }, caller)
       : runtimeHost
@@ -149,6 +164,7 @@ export async function launchRoute(
                 ? { ...golden, visibility: "private", sourceGoldenVisibility: golden.visibility }
                 : golden,
           );
+    timing.checkpoint("provider_resolution");
     return { ...account, provider };
   };
   let prepared: ReturnType<typeof prepare> | undefined;
@@ -157,6 +173,7 @@ export async function launchRoute(
   // The receipt id becomes the sandbox id, so a retried key answers with the same sandbox.
   const dispatch = async (receiptId?: string) => {
     const account = await prepareOnce();
+    timing.checkpoint("receipt_admission");
     const result = await launchSandbox(
       account.provider,
       {
@@ -199,6 +216,8 @@ export async function launchRoute(
           : {}),
       },
     );
+    timing.checkpoint("shared_launcher");
+    timing.launched(result.sandbox);
     return {
       ...launchJson(result),
       ...(armadaAccess
@@ -256,6 +275,41 @@ export async function launchActor(
   const member = caller.orgs.find((item) => item.orgId === (holders[0] ?? caller.orgs[0]?.orgId));
   if (!member) throw new VaultError("not_found", "You are not a member of an org.");
   return { userId: caller.userId, orgId: member.orgId, role: member.role };
+}
+
+export function launchTemplate(
+  templates: TemplateService,
+  caller: Caller,
+  input: Record<string, unknown>,
+  runtime: TemplateRuntime | undefined,
+  surface: "template_rest" | "routine",
+) {
+  return observeGoldenLaunch(
+    surface,
+    async (timing) => {
+      let freshModal = false;
+      const result = await templates.command(
+        caller,
+        "launch",
+        input,
+        runtime && {
+          ...runtime,
+          provider: async (golden) => {
+            timing.checkpoint("admission");
+            const provider = await runtime.provider(golden);
+            timing.checkpoint("provider_resolution");
+            freshModal = golden.provider === "modal";
+            return provider;
+          },
+        },
+      );
+      if (freshModal && result.state === "succeeded" && typeof result.id === "string") {
+        timing.launched({ provider: "modal", id: result.id });
+      }
+      return result;
+    },
+    "template_execution",
+  );
 }
 
 /** One launch path for interactive templates and unattended owner-scoped routines. */

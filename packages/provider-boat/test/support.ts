@@ -60,6 +60,17 @@ export function sandbox(overrides: Record<string, unknown> = {}) {
   };
 }
 
+export function retainedSandbox(overrides: Record<string, unknown> = {}) {
+  const stoppedAt = "2026-11-09T10:00:00Z";
+  return sandbox({
+    state: "archived",
+    snapshotAvailable: true,
+    stoppedAt,
+    snapshotVerifiedAt: stoppedAt,
+    ...overrides,
+  });
+}
+
 export function errorBody(
   status: number,
   code: string,

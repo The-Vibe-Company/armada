@@ -1,5 +1,4 @@
 import {
-  GITHUB_REFRESH_MODAL_NATIVE,
   GitHubHydrationError,
   idlePauseMessage,
   isExternalRef,
@@ -38,9 +37,9 @@ import {
   type SandboxProviderId,
   type SandboxStatus,
   type SkillDefaultsService,
-  type TemplateService,
   VaultError,
 } from "@armada/core/server";
+import { BoatRetentionUnconfirmed } from "@armada/provider-boat";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod";
@@ -54,8 +53,8 @@ import { type GoldenLaunchCredentials, prepareGoldenLaunchAccount } from "./laun
 import { publicLogEvents } from "./model-usage.ts";
 import type { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import { recordOperatorFailure } from "./request-observability.ts";
+import { observeGoldenLaunch } from "./request-timing.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
-import type { RuntimeGitHub } from "./runtime-github.ts";
 import { appendConversation, sandboxActivity } from "./sandbox-activity.ts";
 import { sandboxControlRefusal } from "./sandbox-control-refusal.ts";
 import {
@@ -67,18 +66,16 @@ import {
   type StatusReport,
   waitSettled,
 } from "./turns.ts";
-import { recordStopDispatch } from "./work-preservation.ts";
+import { stopAndObserve } from "./work-preservation.ts";
 
 /** Everything a tool call may use, for one authenticated request. */
 export interface ToolContext {
   accountTurns?: import("./account-turn-queue.ts").AccountTurnQueue;
   sandboxBillingAccount?: (id: string) => Promise<import("./sandbox-billing-account.ts").SandboxBillingAccount | null>;
   dockerControls?: import("./docker-sandbox-controls.ts").DockerSandboxControls;
-  runtimeGitHub?: RuntimeGitHub;
   runtimeSend?: RuntimeFollowup;
   measure?: import("./request-timing.ts").RequestTiming["measure"];
   storedProviders?: Partial<Record<SandboxProviderId, ToolContext["provider"]>>;
-  templates?: TemplateService;
   skillDefaults?: SkillDefaultsService;
   caller: Caller;
   data: ScopedData;
@@ -555,58 +552,6 @@ export function createArmadaServer(context: ToolContext, version: string, option
     return server;
   }
 
-  const templateInput = z
-    .object({
-      org: z.string().uuid(),
-      id: z.string().uuid(),
-      revision: z.number().int().positive().optional(),
-      requestKey: z.string(),
-      prompt: z.string().optional(),
-      ttlSeconds: z.number().int().positive().optional(),
-      size: z.enum(MACHINE_SIZES).optional(),
-      repo: z.string().optional(),
-      skills: z.array(z.string()).max(20).optional(),
-      skipSkillDefaults: z.boolean().optional(),
-      stopWhenWorkMerged: z.boolean().optional(),
-    })
-    .strict();
-  server.registerTool(
-    "template_launch",
-    {
-      description:
-        "Launch an immutable template revision. requestKey is required: same key/body returns the recorded request and never allocates twice. Readable variables are NOT secrets; no secret bindings or authority-enlarging overrides.",
-      inputSchema: templateInput,
-      outputSchema: z.object({}).passthrough(),
-    },
-    async (args: Record<string, unknown>) => {
-      try {
-        if (!context.templates) throw new VaultError("unavailable", "Templates unavailable.");
-        const result = await context.templates.command(caller, "launch", args, {
-          stores: {
-            goldens: data.goldens,
-            sandboxes: data.sandboxes,
-            credentials: context.launchCredentials,
-            ...(context.connections ? { connections: context.connections } : {}),
-          },
-          provider: context.provider,
-          ...(context.launch ? { options: context.launch } : {}),
-        });
-        return { structuredContent: result, content: [{ type: "text" as const, text: JSON.stringify(result) }] };
-      } catch (error) {
-        return {
-          isError: true,
-          content: [
-            { type: "text" as const, text: error instanceof VaultError ? error.message : "Templates unavailable." },
-            {
-              type: "text" as const,
-              text: `error code: ${error instanceof VaultError ? error.code : "unavailable"}`,
-            },
-          ],
-        };
-      }
-    },
-  );
-
   const visible = async (sandboxId: string): Promise<SandboxView> => {
     const found = await data.sandboxes.get(sandboxId);
     if (!found) throw new ToolError("not_found", `No sandbox with id '${sandboxId}' that you can see.`);
@@ -735,48 +680,6 @@ export function createArmadaServer(context: ToolContext, version: string, option
   };
 
   tool(
-    "github_refresh",
-    {
-      title: "Repair sandbox GitHub access",
-      description:
-        "Configure or refresh the owner's GitHub access in a running sandbox without relaunching. Enrolled Armada runtimes use current-epoch private RPC; native Boat keeps its existing setup. Reuses a validated unexpired token; rejection/expiry can require renewal. Only the sandbox owner may request this.",
-      input: { id },
-      output: {
-        id: z.string(),
-        login: z.string(),
-        status: z.literal("connected"),
-        runtime: z.object({ kind: z.literal("armada"), epoch: z.string() }).optional(),
-        revision: z.string().optional(),
-      },
-    },
-    async (args) => {
-      const selected = await visible(args.id);
-      if (selected.boatRuntime || selected.runtimeTransport === "dialout") {
-        if (!context.runtimeGitHub) throw new ToolError("unsupported", "Runtime GitHub is unavailable.");
-        return context.runtimeGitHub.prepare(caller, args.id);
-      }
-      const { sandbox: found, provider } = await live(args.id, false, selected);
-      if (found.ownerId !== caller.userId)
-        throw new ToolError("forbidden", "Only the sandbox owner may repair GitHub access.");
-      if (provider.id === "modal") throw new ToolError("unsupported", GITHUB_REFRESH_MODAL_NATIVE);
-      if (provider.id !== "boat")
-        throw new ToolError("unsupported", "Use the next prompt to reconcile this provider's managed GitHub runtime.");
-      const machine = await provider.get(found.providerSandboxId);
-      if (!["ready", "running"].includes(machine.state))
-        throw new ToolError("conflict", "GitHub repair requires a running sandbox.");
-      if (!context.launchCredentials.refreshGitHub)
-        throw new ToolError("unavailable", "GitHub repair is not configured.");
-      // Deliberately not the caller's role: only the verified owner identity is used for GitHub resolution.
-      const result = await context.launchCredentials.refreshGitHub(
-        { userId: found.ownerId, orgId: found.orgId, role: "member" },
-        provider,
-        found.providerSandboxId,
-      );
-      return { id: found.id, status: "connected" as const, login: result.login };
-    },
-  );
-
-  tool(
     "launch",
     {
       title: "Launch an agent",
@@ -868,94 +771,102 @@ export function createArmadaServer(context: ToolContext, version: string, option
           ),
       },
     },
-    async (args) => {
-      // Refused before any lookup or allocation.
-      resolveModelChoice(args.harness, { model: args.model, reasoningEffort: args.reasoning_effort });
-      const actor = await launchActor(args.golden, args.org);
-      const chosen: GoldenRecord = await goldenForLaunch(data.goldens, actor, args.golden, args.provider);
-      resolveRepositoryDir(chosen, args.repo);
-      const prepare = async () => {
-        const account = await prepareGoldenLaunchAccount(
-          actor,
-          chosen,
-          args,
-          context.launchCredentials,
-          context.launch ?? {},
-        );
-        return { ...account, provider: await context.provider(chosen) };
-      };
-      let prepared: ReturnType<typeof prepare> | undefined;
-      const prepareOnce = () => (prepared ??= prepare());
-      const dispatch = async (receiptId?: string) => {
-        const { provider, credentials, options } = await prepareOnce();
-        const result = await launchSandbox(
-          provider,
-          {
-            ...(context.skillDefaults ? { skillDefaults: context.skillDefaults } : {}),
-            goldens: data.goldens,
-            sandboxes: data.sandboxes,
-            credentials,
-            ...(context.connections ? { connections: context.connections } : {}),
-          },
-          actor,
-          {
-            golden: args.golden,
-            ...(args.size === undefined ? {} : { size: args.size }),
-            provider: chosen.provider,
-            harness: args.harness,
-            ...(args.repo === undefined ? {} : { repo: args.repo }),
-            ...(args.model === undefined ? {} : { model: args.model }),
-            ...(args.visibility === undefined ? {} : { visibility: args.visibility }),
-            ...(args.skipSkillDefaults === undefined ? {} : { skipSkillDefaults: args.skipSkillDefaults }),
-            ...(args.skills === undefined ? {} : { skills: args.skills }),
-            ...(args.helperCapabilities === undefined ? {} : { helperCapabilities: args.helperCapabilities }),
-            ...(args.connections === undefined ? {} : { connections: args.connections }),
-            ...(args.credentialId ? { credentialId: args.credentialId } : {}),
-            ...(args.reasoning_effort === undefined ? {} : { reasoningEffort: args.reasoning_effort }),
-            ...(args.prompt === undefined ? {} : { prompt: args.prompt }),
-            ...(args.ttl_seconds === undefined ? {} : { ttlSeconds: args.ttl_seconds }),
-            ...(args.stopWhenWorkMerged === undefined ? {} : { stopWhenWorkMerged: args.stopWhenWorkMerged }),
-            ...(args.externalRef === undefined ? {} : { externalRef: args.externalRef }),
-          },
-          { ...options, ...(receiptId ? { newId: () => receiptId } : {}) },
-        );
-        return {
-          ...launchResponse(result),
-          helper: result.helper,
-          visibility: result.sandbox.visibility ?? result.golden.visibility,
+    (args) =>
+      observeGoldenLaunch("mcp", async (timing) => {
+        // Refused before any lookup or allocation.
+        resolveModelChoice(args.harness, { model: args.model, reasoningEffort: args.reasoning_effort });
+        const actor = await launchActor(args.golden, args.org);
+        const chosen: GoldenRecord = await goldenForLaunch(data.goldens, actor, args.golden, args.provider);
+        resolveRepositoryDir(chosen, args.repo);
+        timing.checkpoint("admission");
+        const prepare = async () => {
+          const account = await prepareGoldenLaunchAccount(
+            actor,
+            chosen,
+            args,
+            context.launchCredentials,
+            context.launch ?? {},
+          );
+          timing.checkpoint("account_resolution");
+          const provider = await context.provider(chosen);
+          timing.checkpoint("provider_resolution");
+          return { ...account, provider };
         };
-      };
-      if (!context.ordinaryLaunchReceipts) {
-        if (args.idempotencyKey) throw new ToolError("invalid", "Durable launch receipts are not configured.");
-        return dispatch();
-      }
-      const { provider } = await prepareOnce();
-      const authority = {
-        target: {
-          provider: chosen.provider,
-          orgId: chosen.orgId,
-          visibility: chosen.visibility,
-          modal: chosen.modal,
-        },
-        management:
-          (await provider.managementIdentity?.()) ??
-          (() => {
-            throw new ToolError("invalid", "Provider cannot pin management authority.");
-          })(),
-        backendId:
-          (await provider.backendIdentity?.())?.id ??
-          (() => {
-            throw new ToolError("invalid", "Provider cannot pin allocation authority.");
-          })(),
-      };
-      return context.ordinaryLaunchReceipts.run(
-        actor,
-        args.idempotencyKey ?? crypto.randomUUID(),
-        { ...args, goldenId: chosen.id },
-        dispatch,
-        authority,
-      );
-    },
+        let prepared: ReturnType<typeof prepare> | undefined;
+        const prepareOnce = () => (prepared ??= prepare());
+        const dispatch = async (receiptId?: string) => {
+          const { provider, credentials, options } = await prepareOnce();
+          timing.checkpoint("receipt_admission");
+          const result = await launchSandbox(
+            provider,
+            {
+              ...(context.skillDefaults ? { skillDefaults: context.skillDefaults } : {}),
+              goldens: data.goldens,
+              sandboxes: data.sandboxes,
+              credentials,
+              ...(context.connections ? { connections: context.connections } : {}),
+            },
+            actor,
+            {
+              golden: args.golden,
+              ...(args.size === undefined ? {} : { size: args.size }),
+              provider: chosen.provider,
+              harness: args.harness,
+              ...(args.repo === undefined ? {} : { repo: args.repo }),
+              ...(args.model === undefined ? {} : { model: args.model }),
+              ...(args.visibility === undefined ? {} : { visibility: args.visibility }),
+              ...(args.skipSkillDefaults === undefined ? {} : { skipSkillDefaults: args.skipSkillDefaults }),
+              ...(args.skills === undefined ? {} : { skills: args.skills }),
+              ...(args.helperCapabilities === undefined ? {} : { helperCapabilities: args.helperCapabilities }),
+              ...(args.connections === undefined ? {} : { connections: args.connections }),
+              ...(args.credentialId ? { credentialId: args.credentialId } : {}),
+              ...(args.reasoning_effort === undefined ? {} : { reasoningEffort: args.reasoning_effort }),
+              ...(args.prompt === undefined ? {} : { prompt: args.prompt }),
+              ...(args.ttl_seconds === undefined ? {} : { ttlSeconds: args.ttl_seconds }),
+              ...(args.stopWhenWorkMerged === undefined ? {} : { stopWhenWorkMerged: args.stopWhenWorkMerged }),
+              ...(args.externalRef === undefined ? {} : { externalRef: args.externalRef }),
+            },
+            { ...options, ...(receiptId ? { newId: () => receiptId } : {}) },
+          );
+          timing.checkpoint("shared_launcher");
+          timing.launched(result.sandbox);
+          return {
+            ...launchResponse(result),
+            helper: result.helper,
+            visibility: result.sandbox.visibility ?? result.golden.visibility,
+          };
+        };
+        if (!context.ordinaryLaunchReceipts) {
+          if (args.idempotencyKey) throw new ToolError("invalid", "Durable launch receipts are not configured.");
+          return dispatch();
+        }
+        const { provider } = await prepareOnce();
+        const authority = {
+          target: {
+            provider: chosen.provider,
+            orgId: chosen.orgId,
+            visibility: chosen.visibility,
+            modal: chosen.modal,
+          },
+          management:
+            (await provider.managementIdentity?.()) ??
+            (() => {
+              throw new ToolError("invalid", "Provider cannot pin management authority.");
+            })(),
+          backendId:
+            (await provider.backendIdentity?.())?.id ??
+            (() => {
+              throw new ToolError("invalid", "Provider cannot pin allocation authority.");
+            })(),
+        };
+        return context.ordinaryLaunchReceipts.run(
+          actor,
+          args.idempotencyKey ?? crypto.randomUUID(),
+          { ...args, goldenId: chosen.id },
+          dispatch,
+          authority,
+        );
+      }),
   );
 
   registerList();
@@ -1139,29 +1050,6 @@ export function createArmadaServer(context: ToolContext, version: string, option
     },
   );
 
-  tool(
-    "runtime_github_status",
-    {
-      title: "Read runtime GitHub broker status",
-      description:
-        "Owner-only non-secret current-epoch configuration and credential-request count. Does not return credentials or probe GitHub.",
-      input: { id },
-      output: {
-        id: z.string(),
-        configured: z.boolean(),
-        revision: z.string().nullable(),
-        credentialRequests: z.number().int().nonnegative(),
-        lastAccessedAt: z.string().nullable(),
-        runtime: z.object({ kind: z.literal("armada"), epoch: z.string() }).optional(),
-      },
-      readOnly: true,
-    },
-    async (args) => {
-      if (!context.runtimeGitHub) throw new ToolError("unsupported", "Runtime GitHub is unavailable.");
-      return context.runtimeGitHub.status(caller, args.id);
-    },
-  );
-
   async function sendSandbox(args: import("./runtime-followup.ts").RuntimeFollowupInput) {
     if (context.accountTurns) {
       const queued = await context.accountTurns.accept(caller, args);
@@ -1209,6 +1097,8 @@ export function createArmadaServer(context: ToolContext, version: string, option
         : resolveModelChoice(found.harness, { model: args.model, reasoningEffort: args.reasoning_effort }, stored);
     const conversation = args.conversation_id ?? found.conversationIds.at(-1);
     const machine = await measure("send_state", () => provider.get(found.providerSandboxId));
+    if (provider.id === "boat" && machine.state === "stopped" && machine.retainedSnapshot !== "usable")
+      throw new ToolError("conflict", "Boat retained data has not been verified.");
     if (machine.state === "stopped" && found.stoppedAt === null) {
       await data.sandboxes.update(found.id, {
         status: "stopped",
@@ -1273,7 +1163,19 @@ export function createArmadaServer(context: ToolContext, version: string, option
                   }
                 : {}),
             })
-            .catch(unknownMutationOutcome),
+            .catch(async (error: unknown) => {
+              if (error instanceof BoatRetentionUnconfirmed && generation !== undefined) {
+                await data.sandboxes.update(found.id, {
+                  status: "stopping",
+                  stoppedAt: null,
+                  stopRequested: true,
+                  finishActivity: true,
+                  activityToken,
+                  expectedGeneration: generation + 1,
+                });
+              }
+              return unknownMutationOutcome(error);
+            }),
         );
         acknowledged = true;
         await data.sandboxes.recordNativePrompt?.(found.id, found.providerSandboxId, receipt.promptId, args.request_id);
@@ -1659,16 +1561,15 @@ export function createArmadaServer(context: ToolContext, version: string, option
           try {
             if (provider.collectTurnUsage) await collectSandboxUsage(provider, data.sandboxes, found);
             signal.throwIfAborted();
-            recordStopDispatch(found.id, found.providerSandboxId, "user_stop");
-            await provider.stop({ sandboxId: found.providerSandboxId });
-            signal.throwIfAborted();
-            const observed = await provider.get(found.providerSandboxId);
-            terminal = observed.state === "stopped";
+            const observed = await stopAndObserve(provider, found.id, found.providerSandboxId, "user_stop", signal);
+            terminal =
+              observed.state === "stopped" &&
+              (provider.id !== "boat" || observed.retainedSnapshot === "usable" || found.status === "failed");
             stoppedAt = observed.stoppedAt;
             preservationNote = observed.stopNote;
           } catch (error) {
             if (!(error instanceof ProviderError && error.code === "not_found")) throw error;
-            terminal = true;
+            terminal = provider.id !== "boat";
           }
           signal.throwIfAborted();
           const status: SandboxStatus =
@@ -1766,21 +1667,7 @@ async function readLogs(
 
 function errorResult(error: unknown, tool: string, logError: (line: string) => void): CallToolResult {
   const { code, message } = describeToolFailure(error);
-  if (
-    [
-      "internal",
-      "unavailable",
-      "provider_unavailable",
-      "dependency_unavailable",
-      "outcome_unknown",
-      "start_failed",
-    ].includes(code)
-  ) {
-    recordOperatorFailure(`tool.${tool}`, error, {
-      sandboxId: error instanceof LaunchError ? error.sandboxId : undefined,
-      log: logError,
-    });
-  }
+  logToolFailure(error, tool, code, logError);
   return {
     isError: true,
     ...(error instanceof LaunchError && error.reason
@@ -1814,6 +1701,24 @@ function errorResult(error: unknown, tool: string, logError: (line: string) => v
         : []),
     ],
   };
+}
+
+export function logToolFailure(error: unknown, tool: string, code: string, logError?: (line: string) => void) {
+  if (
+    [
+      "internal",
+      "unavailable",
+      "provider_unavailable",
+      "dependency_unavailable",
+      "outcome_unknown",
+      "start_failed",
+    ].includes(code)
+  ) {
+    recordOperatorFailure(`tool.${tool}`, error, {
+      sandboxId: error instanceof LaunchError ? error.sandboxId : undefined,
+      ...(logError ? { log: logError } : {}),
+    });
+  }
 }
 
 export function describeToolFailure(error: unknown): { code: string; message: string } {

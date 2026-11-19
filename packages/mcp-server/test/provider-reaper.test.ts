@@ -1,6 +1,11 @@
 import { expect, test } from "bun:test";
 import type { ProviderInventoryMachine } from "@armada/core";
-import { createProviderReaper, decideInventoryMachine, type ProviderReaperSource } from "../src/provider-reaper.ts";
+import {
+  createProviderReaper,
+  createProviderReaperLane,
+  decideInventoryMachine,
+  type ProviderReaperSource,
+} from "../src/provider-reaper.ts";
 
 const now = Date.UTC(2026, 10, 18);
 const grace = 15 * 60_000;
@@ -12,6 +17,29 @@ const oldMachine: ProviderInventoryMachine = {
   deploymentId,
   createdAt: new Date(now - grace - 1),
 };
+
+test("discovery failure emits incomplete sweep evidence and retries on schedule", async () => {
+  let time = now;
+  let attempts = 0;
+  const records: unknown[] = [];
+  const lane = createProviderReaperLane(
+    async () => {
+      if (++attempts === 1) throw new Error("registry unavailable");
+      return [];
+    },
+    (line) => records.push(JSON.parse(line)),
+    () => time,
+  );
+  const signal = new AbortController().signal;
+
+  await lane.reconcileOne(signal);
+  await lane.reconcileOne(signal);
+  expect(attempts).toBe(1);
+  time += 60_000;
+  await lane.reconcileOne(signal);
+  expect(attempts).toBe(2);
+  expect(records).toEqual([{ event: "provider_reaper_retry", phase: "discovery", errors: 1, complete: false }]);
+});
 
 test.each([
   ["old orphan", {}, { kind: "absent" }, "unknown"],
@@ -56,6 +84,7 @@ test("retries provider errors on the next sweep and counts confirmed deletes onc
     },
     async deleteMachine() {
       if (++attempts === 1) throw new Error("provider unavailable");
+      if (attempts === 2) return false;
       present = false;
       return true;
     },
@@ -74,9 +103,11 @@ test("retries provider errors on the next sweep and counts confirmed deletes onc
   await lane.reconcileOne(signal);
   time += 60_000;
   await lane.reconcileOne(signal);
+  time += 60_000;
+  await lane.reconcileOne(signal);
 
-  expect(reads).toBe(2);
-  expect(attempts).toBe(2);
+  expect(reads).toBe(3);
+  expect(attempts).toBe(3);
   expect(records).toContainEqual({
     metric: "reaper_unknown_machines",
     provider: "modal",
@@ -85,17 +116,49 @@ test("retries provider errors on the next sweep and counts confirmed deletes onc
     overdue: 1,
     complete: true,
   });
+  expect(records).toContainEqual({
+    metric: "reaper_deleted",
+    provider: "modal",
+    source: "account_a",
+    reason: "unknown",
+    candidates: 1,
+    count: 0,
+    reportOnly: false,
+    complete: false,
+  });
+  expect(records).toContainEqual({
+    metric: "reaper_deleted",
+    provider: "modal",
+    source: "account_a",
+    reason: "unknown",
+    candidates: 1,
+    count: 0,
+    reportOnly: false,
+    complete: true,
+  });
   expect(
     records.filter(
       (record) =>
         (record as { count?: number; metric?: string }).metric === "reaper_deleted" &&
         (record as { count?: number }).count === 1,
     ),
-  ).toEqual([{ metric: "reaper_deleted", provider: "modal", source: "account_a", reason: "unknown", count: 1 }]);
+  ).toEqual([
+    {
+      metric: "reaper_deleted",
+      provider: "modal",
+      source: "account_a",
+      reason: "unknown",
+      candidates: 1,
+      count: 1,
+      reportOnly: false,
+      complete: true,
+    },
+  ]);
 });
 
 test("cancellation during ownership lookup prevents deletion", async () => {
   const controller = new AbortController();
+  const records: unknown[] = [];
   let deletes = 0;
   const lane = createProviderReaper(
     {
@@ -116,17 +179,28 @@ test("cancellation during ownership lookup prevents deletion", async () => {
         return true;
       },
     },
-    () => {},
+    (line) => records.push(JSON.parse(line)),
     () => now,
   );
 
   await lane.reconcileOne(controller.signal);
 
   expect(deletes).toBe(0);
+  expect(records).toContainEqual({
+    metric: "reaper_deleted",
+    provider: "modal",
+    source: "account_a",
+    reason: "unknown",
+    candidates: 0,
+    count: 0,
+    reportOnly: false,
+    complete: false,
+  });
 });
 
 test("report-only sources emit distinguishable inventory counts", async () => {
   const records: unknown[] = [];
+  const terminal = { ...oldMachine, machineId: "machine_terminal", generation: "physical_terminal" };
   for (const sourceId of ["account_a", "account_b"]) {
     const lane = createProviderReaper(
       {
@@ -135,11 +209,16 @@ test("report-only sources emit distinguishable inventory counts", async () => {
         deploymentId,
         inventory: {
           async *listInventory() {
-            if (sourceId === "account_a") yield oldMachine;
+            if (sourceId === "account_a") {
+              yield oldMachine;
+              yield terminal;
+            }
           },
         },
-        async lookupOwnership() {
-          return { kind: "absent" };
+        async lookupOwnership(machine) {
+          return machine.machineId === terminal.machineId
+            ? { kind: "owned", status: "failed", generation: terminal.generation }
+            : { kind: "absent" };
         },
       },
       (line) => records.push(JSON.parse(line)),
@@ -161,6 +240,16 @@ test("report-only sources emit distinguishable inventory counts", async () => {
     source: "account_b",
     count: 0,
     overdue: 0,
+    complete: true,
+  });
+  expect(records).toContainEqual({
+    metric: "reaper_deleted",
+    provider: "modal",
+    source: "account_a",
+    reason: "terminal",
+    candidates: 1,
+    count: 0,
+    reportOnly: true,
     complete: true,
   });
 });

@@ -1,6 +1,6 @@
 ## Navigation clarity — first slice
 
-> Historical proposal, rejected by the owner on 2026-11-12. The recommendation and screenshots below describe #1040, not the current menu. See [the completion ledger](navigation-completion.md) and [the approved replacement](navigation-structure.md). Do not restore descriptive sidebar sentences.
+> Historical proposal, rejected by the owner on 2026-11-12. The recommendation below describes #1040, not the current menu. See [the completion ledger](navigation-completion.md) and [the approved replacement](navigation-structure.md). Do not restore descriptive sidebar sentences.
 Refs #1038. No closing keyword: cross-links and empty states remain follow-up slices.
 
 ### What connects
@@ -53,21 +53,3 @@ No changes to #970 visual pass, #1005 Sandboxes, #1007 skill pickers or #1006 Ro
 
 ### Validation
 Desktop and phone navigation tests cover grouping, active links, keyboard activation, phone collapse and width. Full verification, independent review and CI are recorded in the PR.
-
-### Rendered before / after (mock data)
-
-**Desktop before**
-
-![desktop before](navigation-clarity/navigation-before-desktop.png)
-
-**Desktop after**
-
-![desktop after](navigation-clarity/navigation-after-desktop.png)
-
-**Phone before**
-
-![phone before](navigation-clarity/navigation-before-phone.png)
-
-**Phone after**
-
-![phone after](navigation-clarity/navigation-after-phone.png)

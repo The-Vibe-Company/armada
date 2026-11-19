@@ -1,10 +1,23 @@
 import type { ApplicationSecretBinding } from "./application-secret-bindings.ts";
 import { decryptSecret } from "./crypto.ts";
 import type { Sql } from "./golden-store.ts";
+import { LaunchError } from "./launch-error.ts";
 import { VaultError } from "./vault-error.ts";
 
-const unavailable = () => new VaultError("conflict", "Template launch refused: secret_unavailable.");
-const changed = () => new VaultError("conflict", "Template launch refused: secret_version_changed.");
+export class LaunchSecretRefusal extends VaultError {
+  constructor(readonly reason: "secret_unavailable" | "secret_version_changed") {
+    super("conflict", `Template launch refused: ${reason}.`);
+  }
+}
+
+export class ModalLaunchSecretRefusal extends LaunchError {
+  constructor(
+    readonly refusal: LaunchSecretRefusal,
+    sandboxId: string,
+  ) {
+    super("start_failed", refusal.message, { cause: refusal, sandboxId });
+  }
+}
 
 /** Publication checks metadata only. Call under current membership/admission transaction. */
 export async function assertLaunchSecretBindings(
@@ -21,8 +34,8 @@ export async function assertLaunchSecretBindings(
         [binding.secretId, actor.orgId, actor.userId],
       )
     ).rows[0];
-    if (!row || (orgOnly && row.scope !== "org")) throw unavailable();
-    if (row.version !== binding.version) throw changed();
+    if (!row || (orgOnly && row.scope !== "org")) throw new LaunchSecretRefusal("secret_unavailable");
+    if (row.version !== binding.version) throw new LaunchSecretRefusal("secret_version_changed");
   }
 }
 
@@ -44,12 +57,12 @@ export async function resolveLaunchSecrets(
         [binding.secretId, actor.orgId, actor.userId],
       )
     ).rows[0];
-    if (!row) throw unavailable();
-    if (row.version !== binding.version) throw changed();
+    if (!row) throw new LaunchSecretRefusal("secret_unavailable");
+    if (row.version !== binding.version) throw new LaunchSecretRefusal("secret_version_changed");
     try {
       values[binding.key] = await decryptSecret(new Uint8Array(row.value_enc), key);
     } catch {
-      throw unavailable();
+      throw new LaunchSecretRefusal("secret_unavailable");
     }
   }
   return values;

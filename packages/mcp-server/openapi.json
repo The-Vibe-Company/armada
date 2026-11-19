@@ -844,6 +844,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
                 "type": "object",
                 "properties": {
                   "id": {
@@ -856,8 +857,7 @@
                 },
                 "required": [
                   "id"
-                ],
-                "$schema": "http://json-schema.org/draft-07/schema#"
+                ]
               }
             }
           }
@@ -868,6 +868,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
                   "type": "object",
                   "properties": {
                     "id": {
@@ -906,7 +907,6 @@
                     "login",
                     "status"
                   ],
-                  "$schema": "http://json-schema.org/draft-07/schema#",
                   "additionalProperties": false
                 }
               }
@@ -978,6 +978,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
                 "type": "object",
                 "properties": {
                   "id": {
@@ -990,8 +991,7 @@
                 },
                 "required": [
                   "id"
-                ],
-                "$schema": "http://json-schema.org/draft-07/schema#"
+                ]
               }
             }
           }
@@ -1002,6 +1002,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
                   "type": "object",
                   "properties": {
                     "id": {
@@ -1052,7 +1053,6 @@
                     "credentialRequests",
                     "lastAccessedAt"
                   ],
-                  "$schema": "http://json-schema.org/draft-07/schema#",
                   "additionalProperties": false
                 }
               }
@@ -6237,7 +6237,7 @@
     "/api/v1/sandbox/launch": {
       "post": {
         "operationId": "sandbox_launch",
-        "description": "Forks a golden into a new sandbox, pulls its repos, runs its init commands, and starts the agent. With `prompt` the agent starts working at once (status running). Without it the sandbox is left ready and the conversation starts at the first `send`. The sandbox gets only your (or your org's) Armada credentials for this agent, never the boat.dev account's. When the caller connected GitHub, git and gh in the sandbox act as that person (8 hour token): see `github` in the answer. Setup can take a few minutes. Docker uses the other request variants: provider \"docker\" with no golden, either on a hostId (optionally with repos) or from a snapshotId (no repos). launch/options reports each provider's launch sources. For Docker, personal sessions accept an org slug or UUID. Scoped tokens use their org UUID or omit org. Explicit pinned Modal template requests return a durable template launch receipt.",
+        "description": "Forks a golden into a new sandbox, pulls its repos, runs its init commands, and starts the agent. With `prompt` the agent starts working at once (status running). Without it the sandbox is left ready and the conversation starts at the first `send`. The sandbox gets only your (or your org's) Armada credentials for this agent, never the boat.dev account's. When the caller connected GitHub, git and gh in the sandbox act as that person (8 hour token): see `github` in the answer. Setup can take a few minutes. Docker uses the other request variants: provider \"docker\" with no golden, either on a hostId (optionally with repos) or from a snapshotId (no repos). launch/options reports each provider's launch sources. For Docker and pinned Modal template launches, personal sessions accept an org slug or UUID. Scoped tokens use their org UUID or omit org. Explicit pinned Modal template requests return a durable template launch receipt.",
         "security": [
           {
             "serviceToken": []
@@ -6697,8 +6697,57 @@
                     "type": "object",
                     "properties": {
                       "org": {
+                        "description": "Organization slug or UUID.",
                         "type": "string",
-                        "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$"
+                        "pattern": "\\S"
+                      },
+                      "harness": {
+                        "type": "string",
+                        "enum": [
+                          "claude",
+                          "codex",
+                          "opencode"
+                        ]
+                      },
+                      "skills": {
+                        "anyOf": [
+                          {
+                            "maxItems": 20,
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "maxLength": 256,
+                              "pattern": "^(?:[a-z0-9][a-z0-9-]*\\/)?[a-z0-9][a-z0-9-]*@[0-9]+\\.[0-9]+\\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$"
+                            }
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "skipSkillDefaults": {
+                        "type": "boolean"
+                      },
+                      "stopWhenWorkMerged": {
+                        "type": "boolean"
+                      },
+                      "externalRef": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 200,
+                        "pattern": "^[^\\x00-\\x1f\\x7f-\\x9f]+(?![\\s\\S])"
+                      },
+                      "provider": {
+                        "type": "string",
+                        "const": "modal"
+                      },
+                      "runtimeVersion": {
+                        "type": "number",
+                        "const": 1
+                      },
+                      "runtimeTransport": {
+                        "type": "string",
+                        "const": "dialout"
                       },
                       "id": {
                         "type": "string",
@@ -6716,13 +6765,13 @@
                       },
                       "prompt": {
                         "type": "string",
-                        "minLength": 1,
-                        "maxLength": 100000
+                        "maxLength": 100000,
+                        "pattern": "\\S"
                       },
                       "ttlSeconds": {
                         "type": "integer",
-                        "exclusiveMinimum": 0,
-                        "maximum": 9007199254740991
+                        "minimum": 1,
+                        "maximum": 86400
                       },
                       "size": {
                         "type": "string",
@@ -6735,69 +6784,20 @@
                       },
                       "repo": {
                         "type": "string",
-                        "minLength": 1,
-                        "maxLength": 200
-                      },
-                      "skills": {
-                        "anyOf": [
-                          {
-                            "maxItems": 20,
-                            "type": "array",
-                            "items": {
-                              "type": "string",
-                              "pattern": "^(?:[a-z0-9][a-z0-9-]*\\/)?[a-z0-9][a-z0-9-]*@[0-9]+\\.[0-9]+\\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$"
-                            }
-                          },
-                          {
-                            "type": "null"
-                          }
-                        ]
-                      },
-                      "skipSkillDefaults": {
-                        "type": "boolean"
-                      },
-                      "externalRef": {
-                        "type": "string",
-                        "minLength": 1,
                         "maxLength": 200,
-                        "pattern": "^[^\\x00-\\x1f\\x7f-\\x9f]+(?![\\s\\S])"
-                      },
-                      "stopWhenWorkMerged": {
-                        "type": "boolean"
-                      },
-                      "provider": {
-                        "type": "string",
-                        "const": "modal"
-                      },
-                      "harness": {
-                        "type": "string",
-                        "enum": [
-                          "claude",
-                          "codex",
-                          "opencode"
-                        ]
-                      },
-                      "runtimeVersion": {
-                        "type": "number",
-                        "const": 1
-                      },
-                      "runtimeTransport": {
-                        "type": "string",
-                        "const": "dialout"
+                        "pattern": "\\S"
                       }
                     },
                     "required": [
-                      "org",
+                      "harness",
+                      "provider",
+                      "runtimeVersion",
+                      "runtimeTransport",
                       "id",
                       "revision",
-                      "requestKey",
-                      "provider",
-                      "harness",
-                      "runtimeVersion",
-                      "runtimeTransport"
+                      "requestKey"
                     ],
-                    "additionalProperties": false,
-                    "description": "Launch a pinned Modal template revision with the template's model account and explicit dial-out."
+                    "additionalProperties": false
                   },
                   {
                     "type": "object",
@@ -7773,6 +7773,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
                 "type": "object",
                 "properties": {
                   "org": {
@@ -7857,7 +7858,6 @@
                   "id",
                   "requestKey"
                 ],
-                "$schema": "http://json-schema.org/draft-07/schema#",
                 "additionalProperties": false
               }
             }

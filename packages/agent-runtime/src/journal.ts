@@ -4,7 +4,7 @@ import { HARNESSES, isFinalPromptStatus } from "@armada/core";
 import { HarnessError } from "./errors.ts";
 import { checkpointIdentity, checkpointIdentityKey } from "./identity.ts";
 import type { CheckpointIdentity, StoredPrompt } from "./protocol.ts";
-import { createRedactor } from "./state.ts";
+import { createRedactor, createShortSecretTextRedactor } from "./state.ts";
 
 /** Cut a preview without splitting a surrogate pair into a lone UTF-16 code unit. */
 function boundedPreview(text: string, limit: number): string {
@@ -12,12 +12,38 @@ function boundedPreview(text: string, limit: number): string {
   const end = limit > 0 && /[\uD800-\uDBFF]/.test(text[limit - 1] ?? "") ? limit - 1 : limit;
   return text.slice(0, end);
 }
+function maskText(original: string, scrubbed: string, mask: (text: string) => string) {
+  const short = mask(original);
+  if (short === original || short === scrubbed) return scrubbed;
+  return original === scrubbed ? short : "[REDACTED]";
+}
+
+const maskPayload: (value: unknown, mask: (text: string) => string) => unknown = (value, mask) => {
+  if (typeof value === "string") return mask(value);
+  if (typeof value === "number" || typeof value === "boolean") {
+    const text = String(value);
+    const masked = mask(text);
+    return text === masked ? value : "[REDACTED]";
+  }
+  if (Array.isArray(value)) return value.map((item) => maskPayload(item, mask));
+  if (value && typeof value === "object")
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [mask(key), maskPayload(item, mask)]));
+  return value;
+};
+
 export class Journal {
   readonly db: Database;
   readonly redact: (text: string) => string;
   private dynamicRedactor = createRedactor([]);
+  private applicationSecrets = new Set<string>();
+  private redactShortApplicationText: ((text: string) => string) | undefined;
   registerSecrets(values: readonly string[]) {
     this.dynamicRedactor.register(values);
+  }
+  registerApplicationSecrets(values: readonly string[]) {
+    this.registerSecrets(values);
+    for (const value of values) if (value.length > 0 && value.length < 8) this.applicationSecrets.add(value);
+    this.redactShortApplicationText = createShortSecretTextRedactor([...this.applicationSecrets]);
   }
   constructor(path: string, redact: (text: string) => string) {
     this.redact = (text) => this.dynamicRedactor(redact(text));
@@ -42,7 +68,7 @@ export class Journal {
       Buffer.byteLength(this.redact(JSON.stringify(event))) > 262144
     )
       control = { ...event, text: `${boundedPreview(this.redact(event.text), 16000)}… [truncated]` };
-    let body = this.redact(JSON.stringify(control));
+    let body = this.eventBody(control, true);
     const oversized = Buffer.byteLength(body) > 262144;
     if (oversized)
       body = JSON.stringify({
@@ -60,6 +86,54 @@ export class Journal {
     // was replaced by a truncation marker (including size growth caused by secret redaction).
     if (oversized && terminalSnapshot) throw new HarnessError("invalid_harness_protocol");
     return sequence;
+  }
+  private eventBody(event: AgentEvent, appending: boolean) {
+    const mask = this.redactShortApplicationText;
+    const body = this.redact(JSON.stringify(event));
+    if (event.kind === "message") {
+      const scrubbed = JSON.parse(body) as typeof event;
+      scrubbed.kind = event.kind;
+      if (event.textMode !== undefined) scrubbed.textMode = event.textMode;
+      if (event.responseKind !== undefined) scrubbed.responseKind = event.responseKind;
+      if (!mask) return JSON.stringify(scrubbed);
+      return JSON.stringify({
+        ...scrubbed,
+        text: appending && event.textMode === "delta" ? "" : maskText(event.text, scrubbed.text, mask),
+        tools: scrubbed.tools.map((tool, index) => ({
+          ...tool,
+          name: maskText(event.tools[index]!.name, tool.name, mask),
+          ...(tool.server !== undefined ? { server: maskText(event.tools[index]!.server!, tool.server, mask) } : {}),
+          ...(tool.input !== undefined ? { input: maskPayload(tool.input, mask) } : {}),
+          ...(tool.result ? { result: { ...tool.result, output: maskPayload(tool.result.output, mask) } } : {}),
+        })),
+      });
+    }
+    if (!mask || event.kind !== "other") return body;
+    if (event.type === "armada/opencodeMcp") {
+      const proof = JSON.parse(body) as typeof event & {
+        data: { input?: unknown; result?: { output: unknown } };
+      };
+      if (proof.data?.input !== undefined) proof.data.input = maskPayload(proof.data.input, mask);
+      if (proof.data?.result) proof.data.result.output = maskPayload(proof.data.result.output, mask);
+      return JSON.stringify(proof);
+    }
+    if (event.type !== "harness_stderr") return body;
+    const masked = JSON.parse(body) as { data?: { text?: unknown } | null };
+    const original = (event.data as { text?: unknown } | null)?.text;
+    if (typeof original === "string" && typeof masked.data?.text === "string")
+      masked.data.text = maskText(original, masked.data.text, mask);
+    return JSON.stringify(masked);
+  }
+  private sanitizeEvent(body: string) {
+    let event: AgentEvent;
+    try {
+      event = JSON.parse(body);
+    } catch {
+      return this.redact(body);
+    }
+    return event?.kind === "message" || (event?.kind === "other" && event.type === "armada/opencodeMcp")
+      ? this.eventBody(event, false)
+      : this.redact(body);
   }
   transition(prompt: StoredPrompt, status: PromptStatus, reason?: string) {
     this.db.transaction(() => {
@@ -230,7 +304,7 @@ export class Journal {
             body: string;
           } | null;
           if (!row) break;
-          update.run(this.redact(row.body), row.recordId);
+          update.run(table === "events" ? this.sanitizeEvent(row.body) : this.redact(row.body), row.recordId);
           cursor = row.recordId;
         }
       }

@@ -11,7 +11,7 @@ import {
   scanGoldenSandbox,
 } from "@armada/core/server";
 import { BOAT_CAPABILITIES, createBoatProvider } from "../src/provider.ts";
-import { errorBody, fakeBoat, KEY, sandbox } from "./support.ts";
+import { errorBody, fakeBoat, KEY, retainedSandbox, sandbox } from "./support.ts";
 
 const ID = "bx_23456789";
 
@@ -695,7 +695,7 @@ test("native bootstrap follows actual resume readiness and precedes prompt; I/O 
         if (init?.method === "GET") {
           const state = ["archived", "provisioning", "ready"][gets++] ?? "ready";
           events.push(state);
-          return Response.json({ sandbox: sandbox({ state }) });
+          return Response.json({ sandbox: state === "archived" ? retainedSandbox() : sandbox({ state }) });
         }
         if (path.endsWith("/commands")) {
           events.push("bridge");
@@ -759,23 +759,26 @@ test("native bootstrap follows actual resume readiness and precedes prompt; I/O 
   }
 });
 
-test("a stopped-only beforeResume hook refuses the provider resume API on fence failure", async () => {
-  const methods: string[] = [];
-  const provider = createBoatProvider({
-    apiKey: KEY,
-    beforeResume: async () => {
-      throw Error("resume fence denied");
-    },
-    fetch: (async (_input, init) => {
-      methods.push(init?.method ?? "GET");
-      return Response.json({ sandbox: sandbox({ state: "archived" }) });
-    }) as typeof fetch,
-  });
-  await expect(provider.prompt({ sandboxId: ID, harness: "codex", text: "work" })).rejects.toThrow(
-    "resume fence denied",
-  );
-  expect(methods).toEqual(["GET"]);
-});
+test.each([true, false])(
+  "native resume requires verified retention before checking the owner fence (%s)",
+  async (usable) => {
+    const methods: string[] = [];
+    const provider = createBoatProvider({
+      apiKey: KEY,
+      beforeResume: async () => {
+        throw Error("resume fence denied");
+      },
+      fetch: (async (_input, init) => {
+        methods.push(init?.method ?? "GET");
+        return Response.json({ sandbox: retainedSandbox({ snapshotAvailable: usable }) });
+      }) as typeof fetch,
+    });
+    await expect(provider.prompt({ sandboxId: ID, harness: "codex", text: "work" })).rejects.toThrow(
+      usable ? "resume fence denied" : "Boat retained data has not been verified.",
+    );
+    expect(methods).toEqual(["GET"]);
+  },
+);
 
 test.each([true, false])("native private state ACK precedes Boat stop API (%s)", async (acknowledged) => {
   const order: string[] = [];

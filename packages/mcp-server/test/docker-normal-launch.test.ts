@@ -1990,10 +1990,18 @@ for (const checkoutExitCode of [0, 1])
     expect(f.native).toHaveLength(before);
     const controls = createDockerSandboxControls(sql, key, { clock: f.clock, resume: bootstrap, github: f.github });
     const oldCapability = (f.native[1] as { configuration: { capability: string } }).configuration.capability;
-    const refreshed = await controls.invoke(f.caller, "github_refresh", { id: f.body.requestId });
-    expect(refreshed).toMatchObject({
-      handled: true,
-      result: { status: "connected", login: "owner", runtime: { epoch: f.session()?.epoch } },
+    const rest = restControl(f, { dockerControls: controls, runtimeGitHub: f.github });
+    const gitHubRef = { id: f.body.requestId, org: f.actor.orgId };
+    const refreshed = await rest.post("github/refresh", gitHubRef);
+    expect(publishedResponse("github/refresh").parse(refreshed)).toMatchObject({
+      status: "connected",
+      login: "owner",
+      runtime: { epoch: f.session()?.epoch },
+    });
+    const runtimeStatus = await rest.post("github/runtime-status", gitHubRef);
+    expect(publishedResponse("github/runtime-status").parse(runtimeStatus)).toMatchObject({
+      configured: true,
+      runtime: { epoch: f.session()?.epoch },
     });
     await expect(f.github.status({ ...f.caller, orgs: [] }, f.body.requestId)).rejects.toThrow();
     const row = (
@@ -3648,6 +3656,41 @@ test("a snapshot build that fails on the disk floor persists the disk reason the
       )
     ).rows[0],
   ).toEqual({ status: "failed", failure_reason: DOCKER_LAUNCH_FAILURE_MESSAGES.disk });
+});
+
+test("Docker refuses models outside the Morph account and freezes its OpenCode default for replay", async () => {
+  const f = await fixture({ harness: "opencode" });
+  const body = { ...f.body, credentialId: randomUUID() };
+  await sql.query(
+    "insert into public.credentials(id,version,scope,owner_id,kind,value_enc) values($1,1,'user',$2,'morph',$3)",
+    [
+      body.credentialId,
+      f.actor.userId,
+      await encryptSecret(
+        JSON.stringify({ apiKey: f.secret, models: ["vendor/saved-model", "vendor/alternate"] }),
+        key,
+      ),
+    ],
+  );
+  const launcher = f.service(sql, true, 10000, officialImage, true);
+  await expect(launcher.launch(f.caller, { ...body, model: "vendor/unlisted" })).rejects.toMatchObject({
+    code: "invalid_request",
+    message: "Choose a Morph plan model configured on this account.",
+  });
+
+  const admitted = await launcher.launch(f.caller, body);
+  try {
+    expect(admitted.sandbox).toMatchObject({ status: "starting", model: "armada/vendor/saved-model" });
+    const resolutions = f.resolutions();
+    expect((await launcher.launch(f.caller, body)).sandbox.model).toBe(admitted.sandbox.model);
+    expect(f.resolutions()).toBe(resolutions);
+    await expect(launcher.launch(f.caller, { ...body, model: "armada/deepseek-flash" })).rejects.toMatchObject({
+      code: "conflict",
+    });
+  } finally {
+    const controls = createDockerSandboxControls(sql, key, { clock: f.clock });
+    await controls.invoke(f.caller, "stop", { id: admitted.sandbox.id });
+  }
 });
 
 test("Docker normal launch uses the saved model unless explicitly overridden", async () => {

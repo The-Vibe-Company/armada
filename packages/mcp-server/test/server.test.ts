@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { createSqlAuthStore } from "@armada/auth";
 import { createSqlVaultStore, mutateCredentialAccount, ProviderError, VaultError } from "@armada/core/server";
+import { BoatRetentionUnconfirmed } from "@armada/provider-boat";
 import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
 import helperManifest from "../../core/helper/manifest.json";
 import { handleControlRequest } from "../src/control.ts";
@@ -552,7 +553,7 @@ describe("tools", () => {
       expect(resent.isError).not.toBe(true);
       boat.finish("bx_1", "prompt_2", "failed");
       await db.query("update sandboxes set status='failed',status_reason=$2 where id=$1", [launched.data.id, message]);
-      boat.sandbox("bx_1").info.state = "stopped";
+      await boat.provider.stop({ sandboxId: "bx_1" });
       const stopped = await call(mcp, "status", { id: launched.data.id });
       expect(stopped.data.status).toBe("stopped");
       boat.sandbox("bx_1").info.state = "failed";
@@ -1152,7 +1153,7 @@ describe("tools", () => {
         const info = await boat.provider.get(id);
         observing.resolve();
         await release.promise;
-        return { ...info, state: "stopped" as const };
+        return { ...info, state: "stopped" as const, retainedSnapshot: "usable" as const };
       },
     }));
     const tick = lifecycle.reconcileOne();
@@ -1372,6 +1373,39 @@ describe("tools", () => {
     expect(boat.execs.filter((r) => r.preservationStage === "collect_exec")).toHaveLength(count + 1);
   });
 
+  test("native send hands a fresh pre-dispatch retention refusal to the stop reconciler", async () => {
+    const { token, client, people, boat, db } = await start();
+    const mcp = await client(await token(people.member));
+    const { data } = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    expect((await call(mcp, "stop", { id: data.id })).data.status).toBe("stopped");
+    boat.provider.prompt = async () => {
+      boat.sandbox("bx_1").info.retainedSnapshot = "unconfirmed";
+      throw new BoatRetentionUnconfirmed();
+    };
+    const refused = await call(mcp, "send", { id: data.id, prompt: "continue" });
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain("Boat retained data has not been verified");
+    const row = (
+      await db.query("select status, activity_lease_id, stop_requested_at from sandboxes where id=$1", [data.id])
+    ).rows[0];
+    expect(row).toMatchObject({ status: "stopping", activity_lease_id: null, stop_requested_at: expect.any(Date) });
+    boat.sandbox("bx_1").info.retainedSnapshot = "usable";
+    const lifecycle = createSandboxLifecycle(bunLikeSql(db), async () => boat.provider);
+    expect(await lifecycle.reconcileOne()).toBe(true);
+    expect((await call(mcp, "status", { id: data.id })).data.status).toBe("stopped");
+    expect(boat.stops).toHaveLength(1);
+  });
+
+  test("user stop leaves an unverified archive in worker custody without dispatching another stop", async () => {
+    const { token, client, people, boat } = await start();
+    const mcp = await client(await token(people.member));
+    const { data } = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    const machine = boat.sandbox("bx_1");
+    machine.info = { ...machine.info, state: "stopped", providerState: "archived", retainedSnapshot: "unconfirmed" };
+    expect((await call(mcp, "stop", { id: data.id })).data.status).toBe("stopping");
+    expect(boat.stops).toHaveLength(0);
+  });
+
   test.each(["preserved", "clean"] as const)("user stop then lifecycle stop reuses its %s capture", async (result) => {
     const oldKey = process.env.ARMADA_ENCRYPTION_KEY;
     process.env.ARMADA_ENCRYPTION_KEY = ENCRYPTION_KEY;
@@ -1402,8 +1436,9 @@ describe("tools", () => {
         if (boat.stops.length === 1)
           boat.sandbox(request.sandboxId).info = {
             ...boat.sandbox(request.sandboxId).info,
-            state: "stopping",
-            providerState: "archiving",
+            state: result === "preserved" ? "stopping" : "stopped",
+            providerState: result === "preserved" ? "archiving" : "archived",
+            retainedSnapshot: "pending",
           };
       };
       expect((await call(mcp, "stop", { id })).data.status).toBe("stopping");
@@ -1423,7 +1458,12 @@ describe("tools", () => {
       const lifecycle = createSandboxLifecycle(bunLikeSql(db), async () => boat.provider);
       expect(await lifecycle.reconcileOne()).toBe(true);
       expect(boat.stops).toHaveLength(1);
-      boat.sandbox("bx_1").info = { ...boat.sandbox("bx_1").info, state: "stopped", providerState: "archived" };
+      boat.sandbox("bx_1").info = {
+        ...boat.sandbox("bx_1").info,
+        state: "stopped",
+        providerState: "archived",
+        retainedSnapshot: "usable",
+      };
       await db.query("update sandboxes set reconcile_after=now() where id=$1", [id]);
       expect(await lifecycle.reconcileOne()).toBe(true);
       expect((await call(mcp, "stop", { id })).data.status).toBe("stopped");
@@ -1543,22 +1583,7 @@ test("public MCP inventory and schemas expose operation contracts", async () => 
   const mcp = await client(await token(people.member));
   const { tools } = await mcp.listTools();
   expect(tools.map((tool) => tool.name).sort()).toEqual(
-    [
-      "exec",
-      "github_refresh",
-      "interrupt",
-      "launch",
-      "list",
-      "logs",
-      "template_launch",
-      "report",
-      "send",
-      "runtime_github_status",
-      "status",
-      "steer",
-      "stop",
-      "wait",
-    ].sort(),
+    ["exec", "interrupt", "launch", "list", "logs", "report", "send", "status", "steer", "stop", "wait"].sort(),
   );
   for (const tool of tools) expect(tool.outputSchema).toBeDefined();
   const launch = tools.find((tool) => tool.name === "launch");

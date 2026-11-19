@@ -432,6 +432,12 @@ export type AccountList =
   | { state: "not-configured" }
   | { state: "error"; message: string };
 
+export function missingMorphModels(account: Pick<ModelAccount, "kind" | "models">) {
+  return account.kind === "morph" && !account.models?.length
+    ? "Morph models could not be loaded. Reload and try again."
+    : null;
+}
+
 /**
  * The account a launch request bills, as the server action decides it: `id` undefined only where no account is
  * sent (a server older than named accounts, or an agent with no account at all, which the server then refuses on
@@ -462,6 +468,8 @@ export function checkAccountChoice(
   if (!chosen) return { ok: false, error: "That account is not available for this agent. Reload and choose again." };
   const problem = accountProblem(chosen, now);
   if (problem) return { ok: false, error: `${chosen.name} is ${problem}. Replace its token or choose another.` };
+  const missingModels = missingMorphModels(chosen);
+  if (missingModels) return { ok: false, error: missingModels };
   return { ok: true, id: chosen.id };
 }
 

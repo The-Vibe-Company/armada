@@ -86,7 +86,38 @@ For successful staging launches, record the deployed SHA, date, path, sample
 count, and workload. Calculate nearest-rank p50 and p95 from `totalMs` and
 compare the sum of `modal_launch_timing.stages[].ms` with an independently
 measured wall time using the same admission and readiness boundary. Report request-to-ready wall time
-separately to show work outside that boundary. Per-launch SQL counts are pending.
+separately to show work outside that boundary.
+
+### Golden launch admission and SQL
+
+Join `modal_golden_launch_timing` to `modal_launch_timing` by `sandboxId` for
+fresh successful REST and MCP golden launches. The outer sample covers the
+launch handler through response preparation, including receipt publication when
+used. Its consecutive intervals end after admission lookups, account resolution,
+provider resolution, receipt admission, the shared launcher, and response
+publication. The existing readiness and enrolled startup intervals overlap the
+outer `shared_launcher` interval. Sum the outer intervals when comparing to
+wall time. Use the finer intervals to explain parts of `shared_launcher`, which
+also includes work after harness readiness.
+
+The outer sample reports the number of server SQL adapter query attempts for
+the whole launch and each interval. This includes a query attempt that fails
+while obtaining a pooled connection. It excludes driver-managed transaction
+control and database calls from separate requests, such as runtime enrolment.
+Receipt replays and failed launches produce no outer sample.
+
+The same event uses `template_rest` for both REST template launch routes and
+`routine` for template launches initiated by the routine worker. For these
+samples, `admission` includes template and account resolution and the request
+claim. `provider_resolution` ends when the template's provider resolver returns.
+`template_execution` includes the shared launcher and durable template receipt
+publication. Sum those three intervals for template launch wall time within that
+boundary. Join with the shared launcher sample for finer attribution.
+
+Template samples start at the template service call, after the routine worker
+has checked membership. Routine scheduling and run publication take place outside
+this sample. Child launch admission and SQL, REST routing and authentication,
+and transport serialization are still outside the measured boundaries.
 
 ### Enrolled runtime timing
 

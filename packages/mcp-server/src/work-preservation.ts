@@ -59,6 +59,24 @@ export async function runtimePreservationNote(sql: Sql, id: string, transport: s
 
 type StopSource = "user_stop" | "lifecycle_stop" | "managed_child_stop" | "unspecified";
 /** Mark dispatch at the caller, separately from Boat's beforeStop hook/API boundary. */
+export async function stopAndObserve(
+  provider: Provider,
+  sandboxId: string,
+  providerSandboxId: string,
+  source: StopSource,
+  signal: AbortSignal,
+) {
+  if (provider.id === "boat") {
+    const archived = await provider.get(providerSandboxId);
+    signal.throwIfAborted();
+    if (archived.state === "stopped") return archived;
+  }
+  recordStopDispatch(sandboxId, providerSandboxId, source);
+  await provider.stop({ sandboxId: providerSandboxId });
+  signal.throwIfAborted();
+  return provider.get(providerSandboxId);
+}
+
 export function recordStopDispatch(sandboxId: string, providerSandboxId: string, source: StopSource): void {
   try {
     console.info(JSON.stringify({ event: "sandbox_stop_dispatch", sandboxId, providerSandboxId, source }));

@@ -27,7 +27,7 @@ export class ReadableConfigurations {
     if (previous === digest) return;
     const bootstrap = this.drivers[harness]?.configureReadableVariables;
     if (!bootstrap) throw Error("invalid_request");
-    this.journal.registerSecrets(keys.map((key) => variables[key]!));
+    this.journal.registerApplicationSecrets(keys.map((key) => variables[key]!));
     bootstrap.call(this.drivers[harness], variables);
     this.digests.set(harness, digest);
   }

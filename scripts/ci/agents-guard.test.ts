@@ -41,6 +41,11 @@ test("validates repository path tokens and skips inline code that is not a path"
   ]);
 });
 
+test("validates a brace glob when another extension alternative contains a dot", () => {
+  const files = new Map([["AGENTS.md", "`missing.{json,json.example}`"]]);
+  expect(checkAgentsFiles(files, missing)).toEqual(["AGENTS.md: missing repository path: missing.{json,json.example}"]);
+});
+
 test("requires a nested sibling that redirects to AGENTS.md", () => {
   const files = new Map([["nested/AGENTS.md", "Rules"]]);
   expect(checkAgentsFiles(files, missing)).toEqual([

@@ -141,8 +141,26 @@ test("an authenticated Docker inventory report counts only unknown containers in
       overdue: 3,
       complete: true,
     },
-    { metric: "reaper_deleted", provider: "docker", source: host.hostId, reason: "unknown", count: 0 },
-    { metric: "reaper_deleted", provider: "docker", source: host.hostId, reason: "terminal", count: 0 },
+    {
+      metric: "reaper_deleted",
+      provider: "docker",
+      source: host.hostId,
+      reason: "unknown",
+      candidates: 3,
+      count: 0,
+      reportOnly: true,
+      complete: true,
+    },
+    {
+      metric: "reaper_deleted",
+      provider: "docker",
+      source: host.hostId,
+      reason: "terminal",
+      candidates: 0,
+      count: 0,
+      reportOnly: true,
+      complete: true,
+    },
   ]);
 });
 
