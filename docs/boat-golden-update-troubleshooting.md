@@ -37,7 +37,8 @@ Neither capacity nor a missing binding proves a GitHub authorization problem.
 
 ## Find active work when the receipt was lost
 
-A rebuild's current job can be found without the original admission key or URL. Replace `SNAPSHOT_NAME` with its name.
+You can find a rebuild without the original admission key or URL. Replace
+`SNAPSHOT_NAME` with the snapshot name.
 
     armada snapshot build-find "SNAPSHOT_NAME" --provider boat --org ORG_UUID
 
@@ -92,14 +93,16 @@ To append a repository, substitute your snapshot name and the new repository URL
 
     armada snapshot update two-repos-prod-test --provider boat --org ORG_UUID --add-repo https://github.com/new-owner/repo.git
 
-For intentional replacement with --repo or --config, supply the
-**complete desired repository list**, not just the new repository:
+For intentional replacement, supply the **complete desired repository list**.
+Before running this example, replace `two-repos-prod-test` with your snapshot name
+and supply one `--repo` for every desired repository, including those you want to keep.
 
 ```sh
 armada snapshot update two-repos-prod-test --provider boat --org ORG_UUID --replace --repo https://github.com/current-owner/repo-1.git --repo https://github.com/current-owner/repo-2.git --repo https://github.com/new-owner/repo.git
 ```
 
-Replace the example name and URLs with your snapshot name and repository URLs.
-Repeat `--repo` for every existing repository you want to keep; preserve required initialization
-commands using `--init`, or use the complete desired `--config` instead.
+Preserve any branch selections with `@branch` and repeat `--init` for each
+initialization command to keep. Use the full desired config with `--replace
+--config` if you need to retain repository settings such as custom checkout
+directories or history mode.
 No production rebuild was executed as part of this diagnosis.

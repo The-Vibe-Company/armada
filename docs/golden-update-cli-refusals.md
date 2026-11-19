@@ -34,8 +34,8 @@ organization UUID.
 
     armada snapshot update two-repos-prod-test --provider boat --org ORG_UUID --add-repo https://github.com/owner/new.git@main
 
-Repeat --add-repo for multiple additions. Do not combine it with --repo, --config,
---init or --setup. To change an existing branch, directory or init command, use a
+Repeat --add-repo for multiple additions. Do not combine it with --replace, --repo,
+--config, --init or --setup. To change an existing branch, directory or init command, use a
 complete --config with --replace intentionally. Re-adding the same canonical repository and
 branch is a no-op in the merged config, enabling idempotent receipt recovery.
 Conflicting branches/directories or exceeding the 16-repository total refuse

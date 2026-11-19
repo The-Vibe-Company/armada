@@ -48,7 +48,7 @@ remove/update any old Claude install in your saved config or setup script.
 
 ## Refresh snapshots after upgrading
 
-After releasing the rebuilt server/runtime, refresh **every provider-specific
+After releasing the rebuilt server/runtime, refresh **every Boat and Modal
 snapshot used for Claude launches**, including private and organization snapshots.
 Existing snapshots and already-running sandboxes are not upgraded by a release.
 Keep each snapshot's full repo/branch/init configuration (and original setup file,
@@ -70,11 +70,14 @@ runner and pinned image. Use the correct owner's session for private snapshots.
 Wait for each build to succeed; launch fresh sandboxes for validation.
 
 On each refreshed snapshot, replace `PROVIDER` with `boat` or `modal` to match
-the snapshot. Run Boat verification only on demand through the coordinator.
+the snapshot. Use `CLAUDE_ACCOUNT_UUID` for the UUID of a Claude account entitled to the
+requested model. Run Boat verification only on demand through the coordinator.
+For Fable on Boat, follow the [provider check](fable-provider-check.md): the
+native path is expected to refuse it.
 
 ```sh
-armada launch "SNAPSHOT_NAME" --provider PROVIDER --org ORG_UUID --agent claude --model claude-fable-5-2 "Which model are you running? Report your exact model ID."
-armada launch "SNAPSHOT_NAME" --provider PROVIDER --org ORG_UUID --agent claude --model claude-opus-5-5 "Which model are you running? Report your exact model ID."
+armada launch "SNAPSHOT_NAME" --provider PROVIDER --org ORG_UUID --agent claude --credential-id CLAUDE_ACCOUNT_UUID --model claude-fable-5-2 "Which model are you running? Report your exact model ID."
+armada launch "SNAPSHOT_NAME" --provider PROVIDER --org ORG_UUID --agent claude --credential-id CLAUDE_ACCOUNT_UUID --model claude-opus-5-5 "Which model are you running? Report your exact model ID."
 ```
 
 Inspect turn/model metadata as well as the response. Test with an entitled account;

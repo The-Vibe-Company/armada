@@ -1,8 +1,8 @@
 # Secure, server-orchestrated snapshots
 
 Snapshots (called golden in older versions) contain repositories, dependencies and non-secret configuration, **never secrets**.
-The CLI is an authenticated Armada API client: create, update, connect and snapshot all go
-through the server's authorization and provider routing. Callers need an Armada session
+The CLI sends create and update requests through the server’s authorization and
+provider routing. The REST maintenance routes below handle connect and manual snapshot saves. Callers need an Armada session
 (`armada login`) or `ARMADA_TOKEN`, and the appropriate `ARMADA_URL`, not provider keys.
 Connect is for non-secret maintenance, not for installing credentials or secret-bearing files.
 
@@ -10,11 +10,13 @@ Connect is for non-secret maintenance, not for installing credentials or secret-
 
 Replace `ORG_UUID` with the target organization UUID. Save separate idempotency keys
 for the create and update requests and substitute them for `CREATE_KEY` and `UPDATE_KEY`.
+Before updating, save the complete desired repository and initialization
+configuration in the local `snapshot.json` file.
 
 ```sh
 armada snapshot create web --repo https://github.com/acme/web --provider boat --org ORG_UUID \
   --idempotency-key CREATE_KEY --timeout 60
-armada snapshot update web --replace --config golden.json --provider boat --org ORG_UUID \
+armada snapshot update web --replace --config snapshot.json --provider boat --org ORG_UUID \
   --idempotency-key UPDATE_KEY --timeout 60
 ```
 
