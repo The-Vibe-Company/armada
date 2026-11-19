@@ -346,15 +346,20 @@ The server accepts three kinds of bearer on `/mcp`:
 claude mcp add --transport http armada https://armada-mcp-production.up.railway.app/mcp
 ```
 
-**A service token**, for a coordinator or a headless client. Replace `my-team` with your organization and `TOKEN_ID` with the ID from `armada token list`:
+**A service token**, for a coordinator or a headless client. Replace `my-team` with your organization.
 
 ```sh
 armada token create --org my-team --label coordinator    # prints the token once; Armada keeps only its hash
 armada token list
-armada token revoke TOKEN_ID                                # cuts it off at the next request
 ```
 
 Load the token into the client's environment as `ARMADA_TOKEN` through your secret store or CI secret injection. Do not type a literal token into a shell command, enable shell tracing (`set -x`), or pass a bearer header as a command argument: shell expansion exposes the value in argv even when history contains only a variable name.
+
+To revoke the token when it is no longer needed, replace `TOKEN_ID` with its ID from `armada token list`. Revocation takes effect on the next request.
+
+```sh
+armada token revoke TOKEN_ID
+```
 
 For **Claude Code**, edit the project's `.mcp.json` directly (merge this entry with any existing servers). Keep the variable reference literal in the file; Claude Code, not the shell, expands it:
 
