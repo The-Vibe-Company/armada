@@ -41,6 +41,47 @@ bypass. The initial migration commit uses a
 Version changes stay in the release PR; do not edit package versions or push release tags by hand
 for the normal flow. All root and workspace versions must match the CLI's version.
 
+## Production approval
+
+Before merging the workflow change, a repository admin must create the
+`production-deploy` environment under **Settings → Environments**. Set the
+coordinator's GitHub user as the sole required reviewer, leave **Prevent
+self-review** off, disable administrator bypass, and add no secrets. The
+`release-configuration` job, the standalone migrations workflow, and the
+production deployment job still use the existing `production` environment.
+
+For a publishing run, `production-approval` waits for checks, binaries, the
+exact-SHA staging smoke, and release finalization. The release holds the
+`release-production` lock while approval is pending, so ordinary staging deploys
+queue during the E2E window. Plan for at most 40 minutes from the approval
+request to the decision.
+
+The coordinator runs the [fixture E2E journeys](e2e-retirement.md) against the
+candidate SHA from release metadata. After the report is green, approve only
+`production-deploy` through the
+[pending deployments API](https://docs.github.com/en/rest/actions/workflow-runs#review-pending-deployments-for-a-workflow-run).
+Use the coordinator's authenticated GitHub CLI session. Set `run_id` to the
+numeric ID of the release run and `release_sha` to its tested candidate SHA.
+
+```bash
+pending="repos/The-Vibe-Company/armada/actions/runs/${run_id}/pending_deployments"
+environment_id=$(gh api "$pending" --jq \
+  '.[] | select(.environment.name == "production-deploy" and .current_user_can_approve) | .environment.id')
+if [[ "$environment_id" =~ ^[0-9]+$ && "$release_sha" =~ ^[0-9a-f]{40}$ ]]; then
+  printf '{"environment_ids":[%s],"state":"approved","comment":"E2E journeys green for %s"}\n' \
+    "$environment_id" "$release_sha" | gh api --method POST "$pending" --input -
+else
+  echo "Expected one approvable production-deploy environment and a full release SHA." >&2
+fi
+```
+
+Record the report and approval with the release run. If the journeys fail or
+the coordinator cannot approve within the window, cancel the run to release
+the lock and use the recovery procedure once the cause is resolved.
+For the first five releases using the gate, record the time from version PR
+merge to successful npm publication, including the approval window. The median
+target is at most 60 minutes.
+
 ## npm authentication and the first v2 release
 
 Publishing uses npm Trusted Publishing (GitHub OIDC), not a persistent `NPM_TOKEN`.
