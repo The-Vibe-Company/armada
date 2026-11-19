@@ -61,37 +61,33 @@ test("server lifecycle drains multiple rows while independent work is pending; s
       })) as typeof fetch,
   });
   const lifecycle = createSandboxLifecycle(sql, async () => provider);
-  const workers = startServerWorkers(
-    [
-      {
-        drain: () => lifecycle.drain(),
-        reconcileOne: async (signal) => {
-          const result = await lifecycle.reconcileOne(signal);
-          if (++reconciled === 2) progress.resolve();
-          return result;
-        },
+  const workers = startServerWorkers([
+    {
+      drain: () => lifecycle.drain(),
+      reconcileOne: async (signal) => {
+        const result = await lifecycle.reconcileOne(signal);
+        if (++reconciled === 2) progress.resolve();
+        return result;
       },
-    ],
-    () => {},
-    [
-      {
-        async reconcileOne() {
-          buildRunning = true;
-          return build.promise;
-        },
-        async drain() {},
+    },
+  ], () => {}, [
+    {
+      async reconcileOne() {
+        buildRunning = true;
+        return build.promise;
       },
-      {
-        reconcileOne: async (signal) => {
-          exportSignal = signal;
-          return exportJob.promise;
-        },
-        async drain() {
-          exportDrained.resolve();
-        },
+      async drain() {},
+    },
+    {
+      reconcileOne: async (signal) => {
+        exportSignal = signal;
+        return exportJob.promise;
       },
-    ],
-  );
+      async drain() {
+        exportDrained.resolve();
+      },
+    },
+  ]);
   try {
     await progress.promise;
     expect(exportSignal).toBeDefined();
