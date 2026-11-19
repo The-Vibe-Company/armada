@@ -34,8 +34,8 @@ export async function requestFailedRuntimeResumeStop(
     activity_lease_id=null,activity_until=null,lifecycle_generation=lifecycle_generation+1,
     reconcile_after=case when $4 and not application_secret_tainted then 'infinity'::timestamptz else now() end
     where id=$1 and status='starting' and activity_lease_id=$2 and lifecycle_generation=$3
-      and stop_requested_at is null and deleted_at is null
-      and (reconcile_lease_until is null or reconcile_lease_until<now()) returning status`,
+      and activity_until>clock_timestamp() and stop_requested_at is null and deleted_at is null
+      and (reconcile_lease_until is null or reconcile_lease_until<=clock_timestamp()) returning status`,
     [sandboxId, requestId, generation, retained, UNENROLLED_RESUME_STOP],
   );
   return changed.rows[0]?.status;

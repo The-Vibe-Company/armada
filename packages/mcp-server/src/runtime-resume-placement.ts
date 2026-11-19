@@ -69,7 +69,9 @@ export function runtimeResumePlacement<H extends Provider>(
                 `select s.id from public.sandboxes s join public.runtime_enrolments r on r.sandbox_id=s.id
              join public.credentials c on c.id=s.credential_id and c.version=s.credential_version
              where s.id=$1 and s.owner_id=$2 and s.lifecycle_generation=$3 and s.status='starting'
-             and s.activity_lease_id is not null and s.stop_requested_at is null and s.deleted_at is null and not s.application_secret_tainted
+             and s.activity_lease_id is not null and s.activity_until>clock_timestamp()
+             and (s.reconcile_lease_until is null or s.reconcile_lease_until<=clock_timestamp())
+             and s.stop_requested_at is null and s.deleted_at is null and not s.application_secret_tainted
              and s.expires_at>now() and r.epoch=$4 and c.status='active' and (c.expires_at is null or c.expires_at>now())
              and exists(select 1 from public.members m where m.user_id=s.owner_id and m.org_id=s.org_id)
              and ($5::text is null or s.provider::text=$5) and ($6::text is null or s.runtime_transport=$6)`,

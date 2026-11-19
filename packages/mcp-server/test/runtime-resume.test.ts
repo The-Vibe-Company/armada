@@ -411,16 +411,23 @@ test("an old runtime without verified restore health cannot receive a resumed pr
   }
 });
 
-test.each([false, true])(
-  "actual activation boundary dispatches only while retained disk remains untainted (%s)",
-  async (taint) => {
+test.each(["confirmed", "tainted", "lease expired"])(
+  "Boat resume activation and recovery respect retained disk and lease authority (%s)",
+  async (condition) => {
+    const taint = condition === "tainted";
+    const expired = condition === "lease expired";
     const f = await stopped();
     const requests: string[] = [];
     let activated = false;
+    let canIssueTicket = false;
     const network = spyOn(globalThis, "fetch").mockImplementation((async (value: Parameters<typeof fetch>[0]) => {
       const url = String(value instanceof Request ? value.url : value);
       requests.push(url);
-      if (url.endsWith("/resume")) activated = true;
+      if (url.endsWith("/resume")) {
+        activated = true;
+        if (expired)
+          await f.db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [f.row.id]);
+      }
       if (url.endsWith("/stop")) activated = false;
       return Response.json({
         ok: true,
@@ -437,12 +444,14 @@ test.each([false, true])(
           async start(value) {
             if (taint) await f.db.query("update sandboxes set application_secret_tainted=true where id=$1", [f.row.id]);
             await value.activate?.(value.signal);
-            throw Error("Fixture ends after activation boundary");
+            canIssueTicket = true;
+            throw Error("Fixture ends before ticket issuance");
           },
         },
       });
       const request = input(f.row.id);
       await expect(createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, prepare)(f.caller, request)).rejects.toThrow();
+      expect(canIssueTicket).toBe(!taint && !expired);
       const { rows } = await f.db.query(
         `select l.stage, case when l.stage='accepted' then l.at=r.created_at else l.at>=r.created_at end as dated_correctly
            from public.sandbox_launch_stages l
@@ -455,15 +464,15 @@ test.each([false, true])(
         ...(taint
           ? []
           : [
-              { stage: "machine_started", dated_correctly: true },
+              ...(expired ? [] : [{ stage: "machine_started", dated_correctly: true }]),
               { stage: "provider_claimed", dated_correctly: true },
             ]),
       ]);
       expect(requests.some((path) => path.endsWith("/resume"))).toBe(!taint);
       const store = createSqlData(f.sql)(f.caller).sandboxes;
-      expect((await store.get(f.row.id))?.status).toBe(taint ? "failed" : "stopping");
-      if (!taint) {
-        expect(requests.some((path) => path.endsWith("/stop"))).toBe(false);
+      expect((await store.get(f.row.id))?.status).toBe(taint ? "failed" : expired ? "starting" : "stopping");
+      if (!taint) expect(requests.some((path) => path.endsWith("/stop"))).toBe(false);
+      if (condition === "confirmed") {
         const { provider } = fakeBoat({
           body: { sandbox: sdkSandbox({ id: f.row.providerSandboxId, state: "archived", snapshotAvailable: true }) },
         });

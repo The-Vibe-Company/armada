@@ -269,7 +269,8 @@ export function createRuntimeResume(
                     const saved = await sql.query(
                       `with active as (
                   select id from public.sandboxes where id=$1 and status='starting'
-                    and activity_lease_id=$2 and lifecycle_generation=$3
+                    and activity_lease_id=$2 and lifecycle_generation=$3 and activity_until>clock_timestamp()
+                    and (reconcile_lease_until is null or reconcile_lease_until<=clock_timestamp())
                     and stop_requested_at is null and deleted_at is null for update
                 )
                 update public.runtime_resumes r set activated_at=coalesce(r.activated_at,clock_timestamp())
