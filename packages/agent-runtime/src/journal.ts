@@ -7,6 +7,7 @@ import type { CheckpointIdentity, StoredPrompt } from "./protocol.ts";
 import { createRedactor, createShortSecretTextRedactor } from "./state.ts";
 
 const MAX_EVENT_BYTES = 262144;
+const MAX_COLLISION_ALIASES = 4096;
 const CLAUDE_RESULT_PAYLOAD_FIELDS = [
   "result",
   "errors",
@@ -180,39 +181,40 @@ const maskShapedPayload: (
   ) {
     const fields = shape?.fields;
     const values = scrubbed as Record<string, unknown>;
+    const maskKey = shape?.entries ? (key: string) => mask(key).replace(/\[+REDACTED\]+/g, "[REDACTED]") : mask;
     const entries = Object.entries(original).map(([key, value]) => {
       const fixed = fields && Object.hasOwn(fields, key);
       return {
         key,
-        maskedKey: fixed ? key : mask(key),
+        maskedKey: fixed ? key : maskKey(key),
         value: maskShapedPayload(value, values[key], mask, fixed ? fields[key] : shape?.entries),
       };
     });
     if (!shape?.entries) return Object.fromEntries(entries.map(({ maskedKey, value }) => [maskedKey, value]));
 
-    // Reserve existing keys before assigning collision suffixes, so a masked
-    // identifier cannot overwrite an unchanged identifier or its usage counters.
     const reserved = new Set(entries.map(({ maskedKey }) => maskedKey));
-    const used = new Set(entries.filter(({ key, maskedKey }) => key === maskedKey).map(({ key }) => key));
-    const suffixes = new Map<string, number>();
-    return Object.fromEntries(
-      entries.map(({ key, maskedKey, value }) => {
-        if (key === maskedKey || !used.has(maskedKey)) {
-          used.add(maskedKey);
-          return [maskedKey, value];
-        }
-        const count = suffixes.get(maskedKey) ?? 0;
-        let suffix = count;
-        let unique = maskedKey;
-        do {
-          suffix += 1;
-          unique = maskedKey + "[REDACTED]".repeat(suffix);
-        } while (reserved.has(unique));
-        suffixes.set(maskedKey, suffix);
-        reserved.add(unique);
-        return [unique, value];
-      }),
+    const output = new Map(
+      entries.filter(({ key, maskedKey }) => key === maskedKey).map(({ key, value }) => [key, value]),
     );
+    let nextAlias = 0;
+    for (const { key, maskedKey, value } of entries) {
+      if (key === maskedKey) continue;
+      if (!output.has(maskedKey)) {
+        output.set(maskedKey, value);
+        continue;
+      }
+      let alias: string | undefined;
+      while (nextAlias < MAX_COLLISION_ALIASES && !alias) {
+        const ordinal = nextAlias++;
+        const candidates = [`[REDACTED]#${ordinal + 1}`, String.fromCodePoint(0xf0000 + ordinal)];
+        alias = candidates.find((candidate) => !reserved.has(candidate) && maskKey(candidate) === candidate);
+      }
+      if (alias !== undefined) {
+        reserved.add(alias);
+        output.set(alias, value);
+      }
+    }
+    return Object.fromEntries(output);
   }
   if (original !== scrubbed) {
     if (typeof original !== "string" || typeof scrubbed !== "string") return scrubbed;

@@ -297,7 +297,7 @@ test.each([
       origin: { kind: "peer", from: "fixture", body: "prefix[REDACTED]" },
       modelUsage: {
         "prefix[REDACTED]": { inputTokens: 3, outputTokens: "[REDACTED]", provider: "prefix[REDACTED]" },
-        "prefix[REDACTED][REDACTED]": { inputTokens: 5 },
+        "[REDACTED]#1": { inputTokens: 5 },
       },
       usage: {
         input_tokens: 3,
@@ -362,6 +362,42 @@ test.each([{ result: "x".repeat(30_000) }, { usage: { inference_geo: "x".repeat(
     }
   },
 );
+
+test("many colliding Claude usage keys stay bounded and stable after masking", () => {
+  const journal = new Journal(":memory:", (text) => text);
+  try {
+    const modelUsage = Object.fromEntries(
+      Array.from({ length: 230 }, (_, index) => [
+        index.toString(2).padStart(10, "0").replaceAll("0", "a").replaceAll("1", "b"),
+        { inputTokens: index + 1 },
+      ]),
+    );
+    const event = {
+      id: "result-event",
+      at: 1,
+      kind: "other",
+      type: "result",
+      data: { modelUsage: { model: { inputTokens: 300 }, ...modelUsage } },
+    } satisfies AgentEvent;
+    journal.append(event);
+    journal.registerApplicationSecrets(["a", "b", "REDACTED"]);
+    journal.append(event);
+
+    const stored = journal.events()[1]!.event;
+    expect(stored).toMatchObject({ type: "result", data: { modelUsage: { model: { inputTokens: 300 } } } });
+    if (stored.kind !== "other") throw Error("expected a result event");
+    const counterRows = Object.values((stored.data as typeof event.data).modelUsage);
+    expect(counterRows.map(({ inputTokens }) => inputTokens).sort((a, b) => a - b)).toEqual([
+      ...Array.from({ length: 230 }, (_, index) => index + 1),
+      300,
+    ]);
+    expect(journal.redactEvent(stored)).toEqual(stored);
+    journal.sanitize();
+    expect(journal.events().map(({ event }) => event)).toEqual([stored, stored]);
+  } finally {
+    journal.close();
+  }
+});
 
 test("proof truncation persists only scrubbed correlation metadata", () => {
   const journal = new Journal(":memory:", (text) => text);
