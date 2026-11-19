@@ -50,6 +50,31 @@ export const runtimeTransaction = (tx: Sql): Sql => ({
 /** Query-only reentry: preserve synchronous forwarding and pass the original owner-held transaction. */
 export const scopedRuntimeSql = (tx: Sql): Sql => ({ query: tx.query.bind(tx), transaction: (work) => work(tx) });
 
+/** Keep refusal authentication across the sandbox revocation trigger in the ACK transaction. */
+export async function preserveResumeRefusalTicket(
+  tx: Sql,
+  sandboxId: string,
+  generation: string,
+  enrolmentToken: string,
+  fail: () => Promise<boolean | undefined>,
+) {
+  const hash = await sha256Hex(enrolmentToken);
+  const pending = (
+    await tx.query<{ expires_at: string }>(
+      `select enrolment_expires_at::text as expires_at from public.runtime_enrolments
+       where sandbox_id=$1 and lifecycle_generation=$2 and enrolment_hash=$3
+         and configuration_enc is not null and enrolment_expires_at>now()`,
+      [sandboxId, generation, hash],
+    )
+  ).rows[0];
+  if ((await fail()) && pending) {
+    await tx.query(
+      `update public.runtime_enrolments set enrolment_hash=$2,enrolment_expires_at=$3 where sandbox_id=$1`,
+      [sandboxId, hash, pending.expires_at],
+    );
+  }
+}
+
 /** Internal launcher authority, never a user-facing configuration/credential API. */
 export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options: { allowDockerIssue?: boolean } = {}) {
   const token = (kind: "enrol" | "runtime") => `armada_${kind}_${randomBytes(32).toString("hex")}`;
@@ -130,7 +155,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
           candidate.provider,
           candidate.docker_host_id,
           candidate.docker_installation_id,
-          allowFailedRefusal && candidate.provider === "docker",
+          allowFailedRefusal && candidate.docker_issuer_fence !== null,
         ],
       )
     ).rows[0];

@@ -41,7 +41,7 @@ import { authorizeSnapshotBuild, resolveDockerSnapshot } from "./docker-snapshot
 import { recordLaunchStageForActivation } from "./launch-stage-record.ts";
 import { collectOutputTransfers, DOCKER_RETAINED_OUTPUT_STOP } from "./output-transfers.ts";
 import { noteAdmission } from "./request-observability.ts";
-import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
+import { createRuntimeEnrolments, preserveResumeRefusalTicket, scopedRuntimeSql } from "./runtime-enrolment.ts";
 import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
 import { failDockerResumeActivation, requestRefusedDockerResumeStop } from "./sandbox-lifecycle.ts";
 import { deferTransactionWake } from "./wake-bus.ts";
@@ -480,24 +480,12 @@ export function createDockerHostStore(sql: Sql, key: string) {
   async function failResumeAck(tx: Sql, row: Sandbox, job: StoredJob, reason?: DockerJobFailureReason) {
     const request = await readJob(job);
     if (request.operation !== "resume") deny();
-    const ticketHash = createHash("sha256").update(request.bootstrap.enrolmentToken).digest("hex");
-    const pending =
-      row.status === "starting"
-        ? (
-            await tx.query<{ expires_at: string }>(
-              `select enrolment_expires_at::text as expires_at from public.runtime_enrolments
-               where sandbox_id=$1 and lifecycle_generation=$2 and enrolment_hash=$3
-                 and configuration_enc is not null and enrolment_expires_at>now()`,
-              [row.id, row.lifecycle_generation, ticketHash],
-            )
-          ).rows[0]
-        : undefined;
-    if ((await startupFailed(tx, row, job, reason)) && pending) {
-      await tx.query(
-        `update public.runtime_enrolments set enrolment_hash=$2,enrolment_expires_at=$3 where sandbox_id=$1`,
-        [row.id, ticketHash, pending.expires_at],
-      );
+    const fail = () => startupFailed(tx, row, job, reason);
+    if (row.status !== "starting") {
+      await fail();
+      return;
     }
+    await preserveResumeRefusalTicket(tx, row.id, row.lifecycle_generation, request.bootstrap.enrolmentToken, fail);
   }
   /** Retire queued work the server can no longer dispatch. This is cancellation,
    * never physical evidence: a bound startup becomes failed without stopped_at,
