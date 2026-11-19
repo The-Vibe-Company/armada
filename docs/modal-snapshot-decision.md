@@ -23,7 +23,7 @@ through Modal and preparing a workspace from a fresh checkout.
    init command as a single argument.
 
    ```sh
-   bun scripts/perf/modal-cold-launch.ts \
+   bun packages/provider-modal/test/cold-launch-benchmark.ts \
      "$IMAGE_DIGEST_REF" "$ARMADA_REF" "$ARMADA_SHA" \
      "$SMALL_GITHUB_HTTPS_URL_ENDING_IN_DOT_GIT" "$SMALL_REF" "$SMALL_SHA" "$SMALL_INIT" \
      > modal-cold-launch.jsonl

@@ -1,7 +1,7 @@
-import { modalConnection } from "../../packages/provider-modal/src/client.ts";
+import { modalConnection } from "../src/client.ts";
 
 const usage =
-  "Usage: bun scripts/perf/modal-cold-launch.ts IMAGE ARMADA_REF ARMADA_SHA SMALL_URL SMALL_REF SMALL_SHA SMALL_INIT";
+  "Usage: bun packages/provider-modal/test/cold-launch-benchmark.ts IMAGE ARMADA_REF ARMADA_SHA SMALL_URL SMALL_REF SMALL_SHA SMALL_INIT";
 const checkout = "/tmp/armada-cold-launch";
 const sampleCount = 5;
 
