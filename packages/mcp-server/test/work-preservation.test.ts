@@ -488,7 +488,7 @@ test("a user JWT cannot forge stop receipts or write application-secret taint", 
 
 test("an unavailable receipt lookup defers stop without provider work", async () => {
   const sql = {
-    async query(): Promise<never> {
+    query: async () => {
       throw new Error("Synthetic receipt outage");
     },
   };
