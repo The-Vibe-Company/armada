@@ -1775,7 +1775,6 @@ test("failed bootstrap history cannot fence a newer Docker resume", async () => 
   expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
   expect((await lifecycle(a.sandboxId))?.status).toBe("stopped");
 
-  // Establish the durable resume admission before enqueuing its host job.
   await database().query(
     `update public.sandboxes set status='starting',stopped_at=null,stop_requested_at=null,
        lifecycle_generation=lifecycle_generation+1 where id=$1`,
