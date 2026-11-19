@@ -84,10 +84,10 @@ test("an explicit size or stored defaults carry the sizing version on the canoni
 
 test("a 404 for a sized launch fails once", async () => {
   const routes: string[] = [];
-  const unknown = { error: { code: "not_found", message: "Unknown route." } };
+  const unknown = { error: { code: "unknown_route", message: "Unknown route." } };
   const error = await launchSandbox(answeringAt(routes, unknown, 404), { ...args, size: "large" }).catch((e) => e);
   expect(error).toBeInstanceOf(ControlError);
-  expect(error.message).toBe("This Armada server does not offer launching with machine sizes yet.");
+  expect(launchFailureMessage(error)).toContain("does not offer launching with machine sizes yet");
   expect(routes).toHaveLength(1);
 });
 
@@ -175,9 +175,9 @@ test("Armada access uses the canonical route and preserves all explicit launch c
     prompt: "task",
   });
   routes.length = 0;
-  await expect(launchSandbox(answeringAt(routes, { error: { code: "not_found" } }, 404), chosen)).rejects.toThrow(
-    "does not offer launching with Armada access",
-  );
+  await expect(
+    launchSandbox(answeringAt(routes, { error: { code: "unknown_route", message: "Unknown route." } }, 404), chosen),
+  ).rejects.toThrow("does not offer launching with Armada access");
   expect(routes).toHaveLength(1);
 });
 

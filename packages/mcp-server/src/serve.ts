@@ -68,7 +68,7 @@ export async function startServer(env: Record<string, string | undefined>, optio
     requests,
   });
   // Expose the tracked task for hosts that gracefully drain before process termination.
-  Object.assign(server, { goldenWorker: workers.goldenWorker, lifecycleWorker: workers.lifecycleWorker });
+  Object.assign(server, { lifecycleWorker: workers.lifecycleWorker });
   server.workerDone = workers.done;
   (options.log ?? console.log)(`armada serve: listening on port ${server.port}, public URL ${config.publicUrl}`);
   return server;
