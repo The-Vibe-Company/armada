@@ -5,7 +5,7 @@ import { createJobsRunner } from "./jobs/runner.ts";
 import { createMcpSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
 import { createNativeWebhookPrompts } from "./native-webhook-prompts.ts";
 import { createProviderReaper } from "./provider-reaper.ts";
-import { pruneServerRetention } from "./retention-maintenance.ts";
+import { retentionMaintenanceJob, seedRetentionMaintenance } from "./retention-maintenance.ts";
 import { startRoutineWorker } from "./routine-worker.ts";
 import { createRuntimeAgent } from "./runtime-agent.ts";
 import { createRuntimeIdle } from "./runtime-idle.ts";
@@ -71,13 +71,25 @@ const idleLane: LaneFactory = ({ sql, config, runtimeCheckpoint, idleDelayMs, do
       : {}),
   });
 
-const jobsLane: LaneFactory = ({ jobs, options }) => createJobsRunner(jobs, {}, options.logError);
+const jobsLane: LaneFactory = ({ jobs, options, sql, control }) => {
+  const runner = createJobsRunner(
+    jobs,
+    { maintenance: retentionMaintenanceJob(sql, control.applicationVault, options.logError) },
+    options.logError,
+  );
+  let seeded = false;
+  return {
+    ...runner,
+    async reconcileOne(signal) {
+      if (!seeded && !signal.aborted) {
+        await seedRetentionMaintenance(jobs);
+        seeded = true;
+      }
+      return runner.reconcileOne(signal);
+    },
+  };
+};
 const dockerCleanupLane: LaneFactory = ({ sql, config }) => createFinishedDockerCleanup(sql, config.encryptionKey);
-export const retentionWorker =
-  ({ sql, control }: ServerServices) =>
-  () =>
-    pruneServerRetention(sql, control.applicationVault, new Date());
-
 const invitationWorker = ({ env, control }: ServerServices) => {
   const invitations = control.invitations;
   return env.ARMADA_INVITATION_MAIL === "supabase" && invitations

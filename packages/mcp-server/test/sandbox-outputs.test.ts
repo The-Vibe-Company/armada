@@ -914,7 +914,6 @@ test("worker shutdown finishes while a cancelled sample's provider read is still
     idle,
     () => {},
     undefined,
-    undefined,
     [createSandboxOutputs(sql, KEY, async () => provider)],
   );
   await reading;

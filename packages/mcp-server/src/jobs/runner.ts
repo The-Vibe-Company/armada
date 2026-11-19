@@ -15,7 +15,7 @@ export interface Job {
 
 export type JobResult = (
   | { status: "done"; outcome?: unknown }
-  | { status: "retry"; after: Date; outcome?: unknown }
+  | { status: "retry" | "reschedule"; after: Date; outcome?: unknown }
   | { status: "fail"; reason: string; outcome?: unknown }
 ) & { commit?: (tx: Sql) => Promise<void> };
 

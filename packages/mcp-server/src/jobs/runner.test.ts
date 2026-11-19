@@ -1,15 +1,16 @@
 import { expect, test } from "bun:test";
+import { retentionMaintenanceJob } from "../retention-maintenance.ts";
 import { createJobsRunner, type Job, type JobStore } from "./runner.ts";
 
-function fixture() {
+function fixture(kind = "stop") {
   let now = 0;
   let renewalUnavailable = false;
   const timers = new Map<() => void, number>();
   const rows = ["one", "two"].map((id) => ({
     id,
-    kind: "stop",
-    sandbox_id: id,
-    generation: "1",
+    kind,
+    sandbox_id: kind === "maintenance" ? null : id,
+    generation: kind === "maintenance" ? null : "1",
     lease_epoch: "0",
     attempts: 0,
     max_attempts: 2,
@@ -59,7 +60,7 @@ function fixture() {
     runner(run: Parameters<typeof createJobsRunner>[1][string]["run"], concurrency = 1) {
       return createJobsRunner(
         store,
-        { stop: { run, concurrency } },
+        { [kind]: { run, concurrency } },
         () => {},
         (ms, callback) => {
           timers.set(callback, now + ms);
@@ -150,4 +151,38 @@ test("a second runner respects the registered kind's capacity until the lease is
   expect(await second.reconcileOne(tick)).toBe(true);
   await second.drain();
   expect(f.completed).toEqual(["one", "two"]);
+});
+
+test("shutdown drains an in-flight retention sweep without completing its lease", async () => {
+  const f = fixture("maintenance");
+  const entered = Promise.withResolvers<void>();
+  const released = Promise.withResolvers<void>();
+  const handler = retentionMaintenanceJob(
+    {
+      async query() {
+        return { rows: [] };
+      },
+    },
+    {
+      async purgeExpired() {
+        entered.resolve();
+        await released.promise;
+      },
+    },
+    () => {},
+    () => new Date(0),
+  );
+  const runner = f.runner(handler.run, handler.concurrency);
+  expect(await runner.reconcileOne(tick)).toBe(true);
+  await entered.promise;
+  runner.stopAdmission();
+  const drained = runner.drain();
+  try {
+    const nextTurn = new Promise<string>((resolve) => setImmediate(() => resolve("pending")));
+    expect(await Promise.race([drained.then(() => "drained"), nextTurn])).toBe("pending");
+  } finally {
+    released.resolve();
+    await drained;
+  }
+  expect(f.completed).toEqual([]);
 });

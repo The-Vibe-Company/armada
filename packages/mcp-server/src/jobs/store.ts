@@ -123,7 +123,8 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
       return rows[0]?.renewed === true;
     },
     async complete(job, owner, result) {
-      const state = result.status === "retry" ? "queued" : result.status === "fail" ? "failed" : "done";
+      const nextRun = "after" in result ? result.after : null;
+      const state = nextRun ? "queued" : result.status === "fail" ? "failed" : "done";
       const outcome = result.outcome === undefined ? null : JSON.stringify(result.outcome);
       const complete = async (db: Sql) => {
         const { rows } = await db.query<{ completed: boolean }>(
@@ -131,18 +132,16 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
              case when $5 = 'failed' then jsonb_build_object('reason', $8::text, 'evidence', evidence)
                   else evidence end, $7) as completed
            from (select coalesce($6::jsonb, (select outcome from public.jobs where id = $1)) as evidence) data`,
-          [
-            ...claimKey(job, owner),
-            state,
-            outcome,
-            result.status === "retry" ? result.after : null,
-            result.status === "fail" ? result.reason : null,
-          ],
+          [...claimKey(job, owner), state, outcome, nextRun, result.status === "fail" ? result.reason : null],
         );
-        if (rows[0]?.completed) await result.commit?.(db);
+        if (rows[0]?.completed) {
+          if (result.status === "reschedule")
+            await db.query("update public.jobs set attempts = 0 where id = $1", [job.id]);
+          await result.commit?.(db);
+        }
         return rows[0]?.completed === true;
       };
-      if (result.commit) {
+      if (result.commit || result.status === "reschedule") {
         if (!sql.transaction) throw new Error("Job completion requires a transaction.");
         return sql.transaction(complete);
       }

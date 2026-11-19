@@ -2,7 +2,7 @@ import { settleDetachedModalCollections } from "@armada/provider-modal";
 import type { Route } from "./http.ts";
 import { type defineRoutes, registerRoutes } from "./routes.ts";
 import type { ServerServices } from "./server-services.ts";
-import { createWorkerServices, extraReaperLanes, type LaneFactory, retentionWorker } from "./server-worker-modules.ts";
+import { createWorkerServices, extraReaperLanes, type LaneFactory } from "./server-worker-modules.ts";
 import { startServerWorkers } from "./server-workers.ts";
 
 export type MountFactory = (
@@ -81,7 +81,6 @@ export function registerServer(modules: readonly ServerModule[]) {
                 context.lifecycle,
                 options.logError,
                 services.goldenRetirements,
-                retentionWorker(services),
                 managed.map(({ lane }) => lane),
                 isolated.map(({ lane }) => lane),
               );

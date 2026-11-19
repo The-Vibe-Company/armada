@@ -85,7 +85,6 @@ test("server lifecycle drains multiple rows while independent work is pending; s
         return retirement.promise;
       },
     },
-    undefined,
     [],
     [
       {
@@ -210,7 +209,6 @@ test("a ready ordinary backlog cannot starve orchestrator work and shutdown drai
     },
     () => {},
     undefined,
-    undefined,
     {
       reconcileOne: async () => {
         orchEntered.resolve("orchestrator");
@@ -248,38 +246,6 @@ test("a ready ordinary backlog cannot starve orchestrator work and shutdown drai
   }
 });
 
-test("retention maintenance runs independently and shutdown tracks an in-flight cleanup", async () => {
-  const entered = deferred<void>(),
-    release = deferred<void>();
-  const workers = startServerWorkers(
-    { runOne: async () => false, reconcileOne: async () => {} },
-    { reconcileOne: async () => false, drain: async () => {} },
-    () => {},
-    undefined,
-    async () => {
-      entered.resolve();
-      await release.promise;
-    },
-  );
-  try {
-    await entered.promise;
-    workers.stop();
-    let done = false;
-    workers.done.then(() => {
-      done = true;
-    });
-    await Promise.resolve();
-    expect(done).toBe(false);
-    release.resolve();
-    await workers.done;
-    expect(done).toBe(true);
-  } finally {
-    release.resolve();
-    workers.stop();
-    await workers.done;
-  }
-});
-
 test("managed reconciliation shares the existing lane fairly and shutdown drains every admitted SDK operation", async () => {
   const seen: string[] = [];
   const progressed = deferred<void>();
@@ -305,7 +271,6 @@ test("managed reconciliation shares the existing lane fairly and shutdown drains
     },
     lane("ordinary", async () => {}),
     () => {},
-    undefined,
     undefined,
     [lane("parent", async () => {}), lane("child-receipt", () => retained.promise)],
   );

@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { rowOnlyDatabase } from "../../test/row-only-database.ts";
+import { seedRetentionMaintenance } from "../retention-maintenance.ts";
 import { scopedRuntimeSql } from "../runtime-enrolment.ts";
 import { sqlOver } from "../sql.ts";
 import { runtimeWakes } from "../wake-bus.ts";
@@ -128,4 +129,18 @@ test("a failed completion transaction replays the same job and preserves its pri
   expect((await db.query("select state, outcome from jobs where id = $1", [id])).rows).toEqual([
     { state: "failed", outcome: { reason: "reconciled", evidence } },
   ]);
+});
+
+test("a recurring completion keeps one scheduled job across server restarts", async () => {
+  const { db, store } = await fixture();
+  const id = await seedRetentionMaintenance(store);
+  const owner = crypto.randomUUID();
+  const job = (await store.claim("maintenance", owner, 30, 1))!;
+  expect(job.id).toBe(id);
+  const after = new Date("2100-01-01T00:10:00Z");
+  expect(await store.complete(job, owner, { status: "reschedule", after })).toBe(true);
+  expect(await seedRetentionMaintenance(store)).toBe(id);
+  expect(await store.claim("maintenance", crypto.randomUUID(), 30, 1)).toBeUndefined();
+  const { rows } = await db.query("select state, attempts, run_after from jobs where kind = 'maintenance'");
+  expect(rows).toEqual([{ state: "queued", attempts: 0, run_after: after }]);
 });
