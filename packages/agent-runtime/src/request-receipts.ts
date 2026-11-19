@@ -70,19 +70,18 @@ export async function executeWithReceipt(
   return new Response(body, { headers: { "content-type": "application/json" } });
 }
 
-function eventsResponse(journal: Journal, requestId: string, selection: EventSelection): Response {
+function eventsResponse(journal: Journal, requestId: string, selection: EventSelection) {
   const envelope = { version: 1, requestId: journal.redactLiteralText(requestId) };
   const page = { events: [] as AgentEvent[], cursor: String(selection.after), hasMore: selection.hasMore };
   let eventsBytes = 0;
   for (const [index, row] of selection.rows.entries()) {
     const cursor = String(row.sequence);
-    // Reserve the longer boolean spelling, since the next row may exceed the budget.
-    const envelopeBytes = Buffer.byteLength(
+    const envelopeBytesWithFalseFlag = Buffer.byteLength(
       JSON.stringify({ ...envelope, result: { events: [], cursor, hasMore: false } }),
     );
     let event = journal.redactEvent(row.event);
     let bytes = Buffer.byteLength(JSON.stringify(event));
-    if (envelopeBytes + eventsBytes + bytes + page.events.length > MAX_COMMAND_RESPONSE_BYTES) {
+    if (envelopeBytesWithFalseFlag + eventsBytes + bytes + page.events.length > MAX_COMMAND_RESPONSE_BYTES) {
       if (page.events.length) break;
       event = truncateEvent(event, bytes);
       bytes = Buffer.byteLength(JSON.stringify(event));
