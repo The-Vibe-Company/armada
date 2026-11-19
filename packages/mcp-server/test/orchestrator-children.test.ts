@@ -893,14 +893,14 @@ test("production scoped MCP/API gateway uses epoch child authority and never own
     const denied = await api("read", { sandboxId: unrelated.id });
     expect(denied.status).toBe(403);
     expect((await denied.text()).includes(token)).toBe(false);
+    const oversizedSerializedPrompt = "\\".repeat(70_000);
     expect(
       (
         await route(
           new Request(`https://armada.example.com${ORCHESTRATOR_SCOPED_PATH}/launch`, {
             method: "POST",
             headers: { authorization: `Bearer ${token}`, "idempotency-key": "oversized-launch" },
-            // Escaping doubles the prompt's serialized length while the decoded prompt stays within its field limit.
-            body: JSON.stringify({ selection: { ...selection, prompt: "\\".repeat(70_000) } }),
+            body: JSON.stringify({ selection: { ...selection, prompt: oversizedSerializedPrompt } }),
           }),
         )
       )?.status,
