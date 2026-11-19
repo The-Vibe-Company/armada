@@ -116,7 +116,9 @@ test("a full Docker inventory with long container names reaches the reaper", asy
   }));
   const body = JSON.stringify({ installationId, containers });
   expect((await send(body))?.status).toBe(204);
-  expect(records[0]).toMatchObject({ metric: "reaper_unknown_machines", count: 4096, complete: true });
+  expect(records).toContainEqual(
+    expect.objectContaining({ metric: "reaper_unknown_machines", count: 4096, complete: true }),
+  );
 });
 
 test("an HTTPS alias poll supplies the deployment identity accepted by the inventory receiver", async () => {
@@ -246,6 +248,14 @@ test("an authenticated Docker inventory report counts only unknown containers in
       count: 0,
       reportOnly: true,
       complete: true,
+    },
+    {
+      event: "reaper_overdue_machines",
+      provider: "docker",
+      source: host.hostId,
+      deploymentId,
+      observedAt: Date.parse("2026-11-18T01:00:00.000Z"),
+      machineIds: [unknown.machineId, "e".repeat(64), "c".repeat(64)],
     },
   ]);
 });

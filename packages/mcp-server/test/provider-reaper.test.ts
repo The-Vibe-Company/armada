@@ -108,6 +108,16 @@ test("retries provider errors on the next sweep and counts confirmed deletes onc
 
   expect(reads).toBe(3);
   expect(attempts).toBe(3);
+  expect(records.filter((record) => (record as { event?: string }).event === "reaper_overdue_machines")).toEqual(
+    [now, now + 60_000, now + 120_000].map((observedAt) => ({
+      event: "reaper_overdue_machines",
+      provider: "modal",
+      source: "account_a",
+      deploymentId,
+      observedAt,
+      machineIds: [oldMachine.machineId],
+    })),
+  );
   expect(records).toContainEqual({
     metric: "reaper_unknown_machines",
     provider: "modal",

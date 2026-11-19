@@ -3,6 +3,7 @@ import type { ServerLifecycleLane } from "./server-workers.ts";
 
 const UNKNOWN_GRACE_MS = 15 * 60_000;
 const SWEEP_INTERVAL_MS = 60_000;
+const OVERDUE_LOG_BATCH_SIZE = 32;
 
 type Ownership =
   | { kind: "absent" }
@@ -82,9 +83,23 @@ export function createProviderReaperLane(
     const deleted: Record<DeleteReason, number> = { unknown: 0, terminal: 0 };
     let unknown = 0;
     let overdue = 0;
+    const overdueMachineIds: string[] = [];
     let errors = 0;
     let complete = false;
     const observedAt = now();
+    const reportOverdueMachines = () => {
+      if (overdueMachineIds.length === 0) return;
+      log(
+        JSON.stringify({
+          event: "reaper_overdue_machines",
+          ...labels,
+          deploymentId: source.deploymentId,
+          observedAt,
+          machineIds: overdueMachineIds,
+        }),
+      );
+      overdueMachineIds.length = 0;
+    };
     try {
       for await (const machine of source.inventory.listInventory(signal)) {
         if (signal.aborted) return;
@@ -95,7 +110,14 @@ export function createProviderReaperLane(
           if (signal.aborted) return;
           const decision = decideInventoryMachine(machine, source.deploymentId, ownership, observedAt);
           if (ownership.kind === "absent") unknown++;
-          if (decision === "unknown") overdue++;
+          if (decision === "unknown") {
+            overdue++;
+            if (source.provider === "modal" || source.provider === "docker") {
+              overdueMachineIds.push(machine.machineId);
+              // Preserve the observation even if deletion is interrupted.
+              if (source.deleteMachine || overdueMachineIds.length === OVERDUE_LOG_BATCH_SIZE) reportOverdueMachines();
+            }
+          }
           if (decision === "unknown" || decision === "terminal") {
             candidates[decision]++;
             if (await source.deleteMachine?.(machine, decision, signal)) deleted[decision]++;
@@ -132,6 +154,7 @@ export function createProviderReaperLane(
           }),
         );
       }
+      reportOverdueMachines();
       if (errors > 0) {
         log(JSON.stringify({ event: "provider_reaper_retry", ...labels, errors }));
       }
