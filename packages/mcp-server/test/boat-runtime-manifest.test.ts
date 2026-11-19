@@ -4,14 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readBoatRuntimeManifest } from "../src/boat-runtime-manifest.ts";
 
-test("runtime default requires installed metadata, while native rollback survives missing/corrupt runtime artifacts", async () => {
+test("runtime default requires installed metadata and artifacts, while native rollback survives missing/corrupt runtime artifacts", async () => {
   const root = await mkdtemp(join(tmpdir(), "boat-mode-")),
     path = join(root, "manifest.json");
   try {
     for (const contents of [undefined, "{not-json", JSON.stringify({ protocol: 0 })]) {
       if (contents !== undefined) await writeFile(path, contents);
-      expect(await readBoatRuntimeManifest(path, "native")).toBeUndefined();
-      await expect(readBoatRuntimeManifest(path, "runtime")).rejects.toThrow("no native fallback");
+      expect(await readBoatRuntimeManifest(path, "native", root)).toBeUndefined();
+      await expect(readBoatRuntimeManifest(path, "runtime", root)).rejects.toThrow("no native fallback");
     }
     const manifest = {
       protocol: 1,
@@ -19,11 +19,16 @@ test("runtime default requires installed metadata, while native rollback survive
       libc: "glibc",
       architecture: "x64",
       runtime: { sha256: "a".repeat(64), bytes: 10 },
-      harnesses: { codex: { receipt: "preserved" } },
+      harnesses: { codex: { archive: { sha256: "b".repeat(64), bytes: 5 } } },
     };
     await writeFile(path, JSON.stringify(manifest));
+    await expect(readBoatRuntimeManifest(path, "runtime", root)).rejects.toThrow("ARMADA_RUNTIME_ARTIFACT_DIR");
+    await writeFile(join(root, manifest.runtime.sha256), new Uint8Array(manifest.runtime.bytes));
+    await expect(readBoatRuntimeManifest(path, "runtime", root)).rejects.toThrow("ARMADA_RUNTIME_ARTIFACT_DIR");
+    const archive = manifest.harnesses.codex.archive;
+    await writeFile(join(root, archive.sha256), new Uint8Array(archive.bytes));
     for (const mode of ["native", "runtime"] as const)
-      expect(await readBoatRuntimeManifest(path, mode)).toEqual({ manifest, architecture: "x64" });
+      expect(await readBoatRuntimeManifest(path, mode, root)).toEqual({ manifest, architecture: "x64" });
   } finally {
     await rm(root, { recursive: true, force: true });
   }

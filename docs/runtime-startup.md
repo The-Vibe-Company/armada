@@ -4,9 +4,10 @@ The shared runtime owns harness commands, journal events and private model
 configuration. Codex uses app-server; Claude uses the Agent SDK;
 [OpenCode](runtime/opencode-modal.md) uses ACP v1 on Modal, Docker hosts and
 the shared Boat runtime. The enrolled dial-out path selects the admitted
-Claude Code, Codex or OpenCode harness. [Boat runtime](boat-runtime-first-prompt.md) is
-experimental and default off; [Docker placement](docker-host-daemon.md) supports normal host-bound launches
-and retained lifecycle controls behind its server opt-ins. Modal retains its existing bootstrap/listener/authenticated tunnel.
+Claude Code, Codex or OpenCode harness. [Boat](boat-runtime-first-prompt.md) and
+[Modal](modal-runtime-first-prompt.md) default to the enrolled runtime.
+[Docker placement](docker-host-daemon.md) supports normal host-bound launches
+and retained lifecycle controls behind its server opt-ins.
 Neither a successful build nor a synthetic protocol check proves real-provider
 lifecycle acceptance.
 

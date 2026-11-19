@@ -28,7 +28,7 @@ Choose a starting point below; these are selected guides, not an inventory of ev
 ## Runtime and hosts
 
 - [Runtime](runtime-startup.md): artifacts, verified caches, private enrolment/epochs, dial-out commands and journal reconciliation.
-- [Boat runtime](boat-runtime-first-prompt.md): default-off Codex lifecycle, checkpoint/resume, explicit GitHub, automatic MCP and staged acceptance.
+- [Boat runtime](boat-runtime-first-prompt.md): runtime default, checkpoint/resume, explicit GitHub, automatic MCP and coordinator-only production checks.
 - [Docker hosts](docker-host-daemon.md): daemon installation, registration, ownership/TTL, API preview and cleanup limits.
 - [OpenCode](runtime/opencode-modal.md): ACP harness on Modal, Docker hosts and runtime-backed Boat, accounts, portable state and lifecycle checks.
 
