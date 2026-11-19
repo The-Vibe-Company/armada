@@ -413,13 +413,13 @@ test("a lost allocation commit acknowledgement settles without dispatching the p
   const transaction = f.sql.transaction!.bind(f.sql);
   let loseAcknowledgement = false;
   let committedState: unknown;
-  const injected = spyOn(f.sql, "transaction").mockImplementation(async (work) => {
+  f.sql.transaction = async (work) => {
     const result = await transaction(work);
     if (!loseAcknowledgement) return result;
     loseAcknowledgement = false;
     committedState = (await f.db.query("select state from template_launch_requests")).rows;
     throw Error("allocation acknowledgement lost");
-  });
+  };
   try {
     const template = (await f.create()).item as LaunchTemplate;
     f.runtime.options = {
@@ -434,7 +434,6 @@ test("a lost allocation commit acknowledgement settles without dispatching the p
     expect(await f.launch(template.id)).toEqual(result);
     expect(f.boat.forks).toHaveLength(0);
   } finally {
-    injected.mockRestore();
     await f.close();
   }
 });
