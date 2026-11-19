@@ -104,7 +104,11 @@ export async function publishDockerRuntimeReadiness(
      and $2::boolean = exists(
        select 1 from public.docker_resume_claims c where c.sandbox_id=s.id
        and c.lifecycle_generation=s.lifecycle_generation-1 and c.accepted
-     )`,
+     )
+     and ($2::boolean or exists(
+       select 1 from public.docker_host_jobs j where j.bound_sandbox_id=s.id
+       and j.bound_operation='create' and j.outcome='completed'
+     ))`,
     [sandboxId, evidence === "resume_health"],
   );
   if (!starting) return true;
