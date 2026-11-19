@@ -1,9 +1,9 @@
-# Default skill pins — API slice (#1007)
+# Default Skillpack pins
 
-Defaults are non-secret exact Skillpack pins, not packages baked into a golden.
+Defaults are non-secret exact Skillpack pins, not packages baked into a snapshot.
 They install on each new sandbox through the existing public/private installer,
 under the launching user's Skillpack key (personal key, else organization key).
-They do not apply retroactively on send/resume or modify the golden snapshot.
+They do not apply retroactively on send/resume or modify the snapshot.
 
 ## Management API
 
@@ -19,9 +19,10 @@ Bodies are strict JSON; query parameters are rejected.
 - `personal`: global to this user across organizations; current membership in
   the selected organization is still required to manage or launch.
 - `org`: members read; only current admins write.
-- `golden`: also requires `goldenId`; visible golden access to read, owner
-  to write private goldens, admin to write organization goldens. Admins cannot
-  see another user's private golden. Removed goldens cannot be managed.
+- `golden`: also requires `goldenId`; read access to the snapshot to view defaults,
+  ownership to edit private snapshot defaults, and organization admin access to
+  edit organization snapshot defaults. Admins cannot see another user's private
+  snapshot. Removed snapshots cannot be managed.
 
 User JWTs have read-only table grants, never direct writes. Server operations
 recheck live membership/visibility, not just bearer claims. Lists accept at most
@@ -32,7 +33,7 @@ recheck live membership/visibility, not just bearer claims. Lists accept at most
 
 Low to high priority:
 
-1. Environment/golden defaults
+1. Snapshot defaults
 2. Organization defaults
 3. Personal defaults of the launching actor
 4. Template revision pins, for template launches
@@ -71,7 +72,7 @@ process before running the new server. Workers do not apply it to staging or
 production. No new credentials or Skillpack changes are needed.
 
 On **Boat and Modal**, coordinator:
-1. Set a personal and golden default, plain-launch and inspect both receipts.
+1. Set a personal and snapshot default, plain-launch and inspect both receipts.
 2. Add conflicting org/personal/template/explicit versions of the same slug;
    verify the documented winner, including a public/private slug collision.
 3. Launch with opt-out: only template/explicit pins remain; saved defaults
@@ -79,7 +80,7 @@ On **Boat and Modal**, coordinator:
 4. Template launch, change defaults, replay same key after restart: identical
    frozen effective list/receipts, no new install or sandbox.
 5. Missing personal and org Skillpack key with private defaults: existing readable
-   missing-key refusal, no prompt. Admin/member/private-golden access checks.
+   missing-key refusal, no prompt. Admin/member/private snapshot access checks.
 6. More than 20 effective distinct slugs: refusal before allocation.
 
-CLI and dashboard controls remain separate follow-up PRs.
+Use the management API to edit saved default pins.
