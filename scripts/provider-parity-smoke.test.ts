@@ -145,6 +145,7 @@ for (const mode of [
   "server_failure",
   "docker_launch_recovers",
   "docker_launch_unresolved",
+  "docker_launch_incomplete",
   "modal_launch_recovers",
   "modal_launch_unresolved",
   "modal_launch_malformed",
@@ -704,7 +705,9 @@ for (const mode of [
                   sandboxes: [
                     {
                       id:
-                        mode === "docker_launch_recovers" && dockerInventoryReads > 1 ? sandboxId(p) : recoveredSandbox,
+                        mode !== "docker_launch_unresolved" && dockerInventoryReads > 1
+                          ? sandboxId(p)
+                          : recoveredSandbox,
                       provider: "docker",
                       externalRef: dockerLaunchKey,
                       status: "ready",
@@ -728,9 +731,10 @@ for (const mode of [
                 ordinaryIds.set(p, String(body.requestId));
                 dockerLaunchKey = body.externalRef;
                 await advance(500);
-                if (mode === "docker_launch_recovers") {
+                if (mode !== "docker_launch_unresolved") {
                   states.set(p, "ready");
-                  throw new DOMException("Timed out", "TimeoutError");
+                  if (mode === "docker_launch_recovers") throw new DOMException("Timed out", "TimeoutError");
+                  return Response.json({ sandbox: { id: body.requestId }, provider: "docker" });
                 }
                 return Response.json(
                   { error: { code: "outcome_unknown", message: "The launch may still be in flight." } },
@@ -1414,7 +1418,7 @@ for (const mode of [
       expect(calls.filter((call) => call === "docker:sandbox/launch")).toHaveLength(1);
       expect(sandboxId("docker")).toMatch(/^[0-9a-f-]{36}$/);
       expect(dockerLaunchKey).toBe(`post-deploy-smoke:${sandboxId("docker")}`);
-      if (mode === "docker_launch_recovers") {
+      if (mode !== "docker_launch_unresolved") {
         expect(passed).toBe(true);
         expect(report.features.cleanup.docker.status).toBe("pass");
         expect(journalClaims).toEqual([sandboxId("docker")]);

@@ -419,7 +419,10 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     if (path === "sandbox/launch") {
       const expected = (body as { provider?: unknown }).provider;
       if (
-        (keyedDockerLaunch && result?.sandbox?.id !== (body as { requestId?: unknown }).requestId) ||
+        (keyedDockerLaunch &&
+          (result?.sandbox?.id !== (body as { requestId?: unknown }).requestId ||
+            result?.sandbox?.provider !== "docker" ||
+            smokeReceiptProvider(result) !== "docker")) ||
         (modalLaunch &&
           (typeof result?.sandbox?.id !== "string" ||
             !UUID.test(result.sandbox.id) ||
