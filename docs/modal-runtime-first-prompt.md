@@ -138,8 +138,9 @@ ARMADA_RUNTIME_SMOKE=one_real_modal_launch bun scripts/check-modal-runtime.ts --
 
 Still ONE allocation, ONE restore activation and TWO stops. Before the initial
 follow-up it delivers GitHub configuration via the existing common private RPC.
-The follow-up must actually run `gh api "repos/$GITHUB_REPOSITORY" --jq .full_name`, with
-`GITHUB_REPOSITORY` set to the expected `owner/repo`:
+The checker substitutes the configured repository from
+`ARMADA_RUNTIME_GITHUB_REPOSITORY` into the literal follow-up command, for
+example `gh api repos/owner/repo --jq .full_name`:
 archived successful command provenance AND current-epoch broker acquisition count
 with the same delivered revision are required. A literal answer or a configured
 receipt alone is not proof. After restore, the old configuration must be absent;

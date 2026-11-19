@@ -590,8 +590,9 @@ also refuse.
 Coordinator-only production acceptance after normal release: use the existing
 Boat runtime-default server deployment and an existing Boat Codex or Claude
 template with a non-secret readable binding (no secret bindings). Launch through
-`armada template launch TEMPLATE_NAME_OR_ID --request-key probe_run_1` (substitute
-the existing template name or ID and a key unique to this launch attempt). Use ordinary send/exec to read the bound key
+`armada template launch TEMPLATE_NAME_OR_ID --request-key probe_run_1 --org ORG_UUID`.
+Substitute the template name or ID, a request key unique to this attempt, and the
+organization UUID. Use ordinary send/exec to read the bound key
 and confirm the exact admitted value. Change the source variable, stop the
 sandbox, and wake it through ordinary send: the admitted value must be preserved.
 Repeat for an existing routine referencing that template. Confirm launch logs
@@ -660,17 +661,12 @@ release migration path and deploy matching server/runtime artifacts first.
 Use `sandbox/launch` with `runtimeVersion:1`, `boatRuntime:true`,
 `provider:"boat"`, `harness:"opencode"` and an authorized OpenCode account/model.
 `launch/options.boatRuntime.opencodeVersion:1` advertises explicit runtime support.
-Ordinary launches also work when the operator has already selected the Boat runtime
-default; only then does the Boat provider option advertise OpenCode. This does not
-change the default or invent native support. The dashboard snapshot launch form
-now offers Boat OpenCode only when ordinary Boat provider discovery advertises
-that harness and the installed runtime reports its enabled runtime default and
-OpenCode v1 support. Missing, older, unavailable or native-default discovery keeps
-the choice disabled with an explanation. The launch action rereads trusted server
-options rather than accepting an availability field from the form. It uses the
-existing ordinary/sized route; it does not select or flip the runtime path.
-Default-off deployments can still use the explicit versioned runtime API when
-installed.
+Ordinary launches also select the shared runtime when OpenCode support is
+installed, including deployments with the native Boat default. The dashboard
+offers OpenCode when launch discovery advertises the harness and OpenCode runtime
+support. Missing or older runtime support disables the choice with an
+explanation. The launch action rereads server options before submitting the
+ordinary launch, and the server enforces runtime admission.
 
 Coordinator-only production verification after normal release: use an existing
 OpenCode account and Boat snapshot, launch one runtime sandbox, send a prompt and a
@@ -713,12 +709,13 @@ and Docker keep their existing staging acceptance.
 ### Boat OpenCode dashboard acceptance (#2052)
 
 Coordinator-only production check after normal dashboard/server release, using
-existing authorized resources: on a server already configured with the Boat
-runtime default, open a ready Boat snapshot, choose OpenCode and its usable
+existing authorized resources: on a server with OpenCode runtime support,
+open a ready Boat snapshot, choose OpenCode and its usable
 account/model, then launch. Require persisted `boatRuntime:true`, an archived
 runtime answer and normal follow-up. No default flip is authorized by this check.
-On an existing native-default or older/unavailable server, verify OpenCode is
-disabled with its reason. A stale open form or forged availability field must not
+A native-default deployment with current OpenCode runtime support also offers
+the harness. On an older or unavailable runtime, verify OpenCode is disabled
+with its reason. A stale open form or forged availability field must not
 bypass the action's new discovery read; the server still enforces native refusal
 and never falls back. Boat remains outside staging and the release gate. No real
 launch, provider call or deployment was performed by this worker.

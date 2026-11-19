@@ -7,8 +7,8 @@ cwd wrapper preserves argv. The captured first main API request already selected
 Sonnet: no evidence establishes an Armada rewrite, entitlement failure or refusal
 fallback. See [the investigation](model-selection-investigation.md) and its
 unchanged recording. The remaining mapping boundary is upstream Boat; guessing a
-native override would not establish fidelity. The Boat native prompt adapter refuses explicit Fable before dispatch, including
-send overrides, with readable mismatch terminology.
+native override would not establish fidelity. The Boat native prompt adapter refuses explicit Fable
+before dispatch, including send overrides, with readable mismatch terminology.
 
 Armada's shared Claude runtime passes the requested model into SDK query options
 (packages/agent-runtime/src/claude.ts). This proves forwarding, not live execution.
@@ -21,20 +21,24 @@ is needed. Existing mismatch reporting remains unchanged for other models.
 
 Use Claude Code 2.1.322 or newer and a ready snapshot for each provider in
 the selected organization. Set `ORG_UUID` to that organization's UUID,
-`CLAUDE_ACCOUNT_UUID` to an entitled Claude account's UUID, and
+`CLAUDE_ACCOUNT_UUID` to the UUID of an entitled direct Claude account (a
+standard Anthropic API key or Claude subscription), and
 `BOAT_SNAPSHOT_NAME` and `MODAL_SNAPSHOT_NAME` to the corresponding snapshot
 names. The Boat probe checks the native path. Confirm that the existing
-deployment and selected account use that path before running it.
+deployment and selected account use that path before running it. In
+`POST /api/v1/launch/options`, confirm `boatRuntime.defaultPath: "native"`
+and `modalRuntime.defaultPath: "runtime"` for the selected organization.
 
 ```sh
 armada launch "$BOAT_SNAPSHOT_NAME" --agent claude --provider boat --org "$ORG_UUID" --credential-id "$CLAUDE_ACCOUNT_UUID" --model claude-fable-5-2 "Reply with probe only. Do not use tools."
-armada launch "$MODAL_SNAPSHOT_NAME" --agent claude --provider modal --org "$ORG_UUID" --credential-id "$CLAUDE_ACCOUNT_UUID" --model claude-fable-5-2 "Reply with probe only. Do not use tools."
+armada launch "$MODAL_SNAPSHOT_NAME" --agent claude --provider modal --org "$ORG_UUID" --credential-id "$CLAUDE_ACCOUNT_UUID" --model claude-fable-5-2 --json "Reply with probe only. Do not use tools."
 ```
 
 The Boat native prompt must reject with the readable model_selection_mismatch
-explanation. If launch allocated a sandbox, retain its failure ID. Set
-`MODAL_SANDBOX_UUID` to the Armada sandbox UUID returned by the Modal launch,
-then run:
+explanation. If launch allocated a sandbox, retain its failure ID. The Modal
+JSON receipt must show `sandbox.runtimeTransport: "dialout"` and
+`runtime.kind: "armada"`. Set `MODAL_SANDBOX_UUID` to the returned
+`sandbox.id`, then run:
 
 ```sh
 armada wait "$MODAL_SANDBOX_UUID" --timeout 300 --org "$ORG_UUID"
