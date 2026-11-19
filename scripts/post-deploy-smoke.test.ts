@@ -1069,7 +1069,7 @@ test("template/skill smoke validates the entire staging case configuration befor
   }
 });
 
-test.each(["configured", "no_pins", "refused"])(
+test.each(["configured", "no_pins", "refused", "late_wait"])(
   "template transport %s cleans workers and reports closed verdicts",
   async (mode) => {
     let value = "";
@@ -1081,7 +1081,7 @@ test.each(["configured", "no_pins", "refused"])(
       checksum: `sha256:${"a".repeat(64)}`,
       origin: "https://skillpack.app/v1",
     };
-    const fake = fixture((call) => {
+    const fake = fixture(async (call) => {
       switch (call.path) {
         case "creds/list":
           return json({
@@ -1111,6 +1111,9 @@ test.each(["configured", "no_pins", "refused"])(
             promptId: "prompt-id",
             manifest: { skillReceipts: [receipt] },
           });
+        case "sandbox/wait":
+          if (mode === "late_wait") await fake.io.sleep(deadlines.template_wait + 1);
+          return json({ prompt: { promptId: "prompt-id", state: "finished" } });
         case "logs/read":
           return json({
             events: [
@@ -1159,13 +1162,23 @@ test.each(["configured", "no_pins", "refused"])(
           fetch: (url, init) => fake.io.fetch(url.replace(staging, env.ARMADA_URL), init),
         },
       ),
-    ).toBe(mode !== "refused");
+    ).toBe(mode !== "refused" && mode !== "late_wait");
     expect(fake.calls.some((call) => call.path === "sandbox/launch")).toBe(false);
     expect(fake.calls.map((call) => call.path).slice(-3)).toEqual([
       "sandbox/status",
       "templates/delete",
       "variables/delete",
     ]);
+    if (mode === "late_wait") {
+      expect(fake.receipts()).toContainEqual({
+        case: 0,
+        step: "template_wait",
+        pass: false,
+        code: "poll_limit_exceeded",
+      });
+      expect(fake.calls.some((call) => call.path === "logs/read")).toBe(false);
+      return;
+    }
     if (mode === "refused")
       expect(fake.receipts()).toContainEqual({
         case: 0,

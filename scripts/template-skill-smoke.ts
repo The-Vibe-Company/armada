@@ -64,7 +64,11 @@ export interface TemplateSkillIo {
   ): Promise<T>;
   recordSandbox?(id: string, requestKey: string): Promise<void>;
   isAmbiguousLaunch(error: unknown): boolean;
-  poll<T>(read: () => Promise<T>, done: (value: T) => boolean): Promise<T>;
+  poll<T>(
+    read: (remainingMs?: number) => Promise<T>,
+    done: (value: T) => boolean,
+    options: { step: string },
+  ): Promise<T>;
   step<T>(name: string, action: () => Promise<T>): Promise<T>;
   out(line: string): void;
   stopSandbox(id: string): Promise<void>;
@@ -123,7 +127,8 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
     uncertain: boolean;
     stopConfirmed: boolean;
   }[] = [];
-  const api = <T>(path: string, body: object = {}) => io.request<T>(path, { org: item.org, ...body });
+  const api = <T>(path: string, body: object = {}, timeoutMs?: number) =>
+    io.request<T>(path, { org: item.org, ...body }, timeoutMs);
   async function cleanup(name: string, action: () => Promise<void>) {
     try {
       await io.step(name, action);
@@ -275,18 +280,19 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
         });
       await io.step(`${label}_wait`, () =>
         io.poll(
-          () =>
-            api<{ prompt: { promptId: string; state: string } | null }>("sandbox/wait", {
-              id: record.sandboxId,
-              prompt_id: result.promptId,
-              timeout_seconds: 0,
-            }),
+          (remainingMs) =>
+            api<{ prompt: { promptId: string; state: string } | null }>(
+              "sandbox/wait",
+              { id: record.sandboxId, prompt_id: result.promptId, timeout_seconds: 0 },
+              remainingMs,
+            ),
           (status) => {
             if (!status?.prompt || status.prompt.promptId !== result.promptId) fail("invalid_response");
             if (status.prompt.state === "failed" || status.prompt.state === "interrupted") fail("turn_failed");
             if (status.prompt.state !== "running" && status.prompt.state !== "finished") fail("invalid_response");
             return status.prompt.state === "finished";
           },
+          { step: `${label}_wait` },
         ),
       );
       await io.step(`${label}_answer`, async () => {
