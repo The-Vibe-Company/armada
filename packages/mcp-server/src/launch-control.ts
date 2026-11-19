@@ -1,5 +1,6 @@
 import type { Harness, VaultStore } from "@armada/core";
 import type { LaunchInput } from "@armada/core/contract";
+import { launch as launchOperation } from "@armada/core/contract";
 import {
   type GoldenActor,
   type GoldenRecord,
@@ -19,14 +20,16 @@ import {
 import type { Caller } from "./caller.ts";
 import type { ControlOptions } from "./control.ts";
 import { scopedOrg } from "./control-caller.ts";
-import { UUID } from "./control-input.ts";
+import { optional, UUID } from "./control-input.ts";
 import type { ScopedData } from "./data.ts";
+import { dockerLaunchRequestId } from "./docker-launch-identity.ts";
 import { providerForGolden } from "./golden-control.ts";
 import { prepareGoldenLaunchAccount } from "./launch-account-admission.ts";
 import { launchCredentials } from "./launch-credentials.ts";
-import { goldenLaunchResponse } from "./launch-response-schemas.ts";
-
+import { launchOptions, launchProviderOptions } from "./launch-options.ts";
+import { canonicalLaunchResponse, goldenLaunchResponse } from "./launch-response-schemas.ts";
 import { type GoldenLaunchTiming, observeGoldenLaunch } from "./request-timing.ts";
+import { defineRoutes } from "./routes.ts";
 
 type LaunchControlOptions = Pick<
   ControlOptions,
@@ -335,3 +338,158 @@ function modelChoice(
     throw error;
   }
 }
+
+export const launchRoutes = defineRoutes("launch", {
+  "launch/options": ({ options }) =>
+    ({
+      ...launchOptions,
+      providers: launchProviderOptions(
+        options.docker,
+        Boolean(options.launch?.boatRuntimeDefault || options.launch?.boatEndpointRuntime),
+      ),
+      modalRuntime: {
+        defaultPath: options.launch?.modalRuntimeDefault ? "runtime" : "native",
+        enabled: Boolean(options.modalRuntimeLaunch),
+        followupVersion: options.runtimeSend ? 1 : 0,
+        idleLaunchVersion: options.modalRuntimeLaunch && options.runtimeSend ? 1 : 0,
+        emptyResumeVersion: options.modalRuntimeLaunch && options.runtimeResume && options.runtimeSend ? 1 : 0,
+        idleTemplateVersion:
+          options.templates && options.modalRuntimeLaunch && options.modalRuntimeHostFor && options.runtimeSend ? 1 : 0,
+        resumeVersion: options.runtimeResume && options.modalRuntimeLaunch ? 1 : 0,
+        mcpVersion: options.runtimeMcp ? 2 : 0,
+        skillsVersion: options.modalRuntimeLaunch ? 1 : 0,
+        usageVersion: options.modalRuntimeLaunch ? 1 : 0,
+        claudeVersion: options.modalRuntimeLaunch ? 1 : 0,
+        opencodeVersion: options.modalRuntimeLaunch ? 1 : 0,
+        opencodeShellProofVersion: options.modalRuntimeLaunch ? 1 : 0,
+        opencodeMcpProofVersion: options.modalRuntimeLaunch && options.runtimeMcp ? 1 : 0,
+        variablesVersion: options.templates && options.modalRuntimeLaunch && options.modalRuntimeHostFor ? 1 : 0,
+      },
+      dockerRuntime: {
+        opencodeMcpProofVersion:
+          options.docker?.hosts &&
+          options.docker.placement &&
+          options.docker.normalApi &&
+          options.docker.normalLaunch &&
+          options.docker.normalSend &&
+          options.dockerLaunch &&
+          options.dockerControls &&
+          options.runtimeMcp
+            ? 1
+            : 0,
+      },
+      boatRuntime: {
+        defaultPath: options.launch?.boatRuntimeDefault ? "runtime" : "native",
+        diagnosticsVersion: 1,
+        followupVersion: options.runtimeSend ? 1 : 0,
+        checkpointVersion: options.runtimeCheckpoint ? 1 : 0,
+        resumeVersion: options.runtimeResume ? 1 : 0,
+        githubVersion: options.runtimeGitHub ? 1 : 0,
+        mcpVersion: options.runtimeMcp ? 2 : 0,
+        skillsVersion: options.boatRuntimeLaunch ? 1 : 0,
+        workspaceVersion: options.boatRuntimeLaunch ? 1 : 0,
+        controlsVersion: options.runtimeHostFor ? 1 : 0,
+        opencodeVersion: options.boatRuntimeLaunch && options.runtimeHostFor ? 1 : 0,
+        opencodeMcpProofVersion:
+          options.templates &&
+          options.launch?.boatRuntimeDefault &&
+          options.boatRuntimeLaunch &&
+          options.runtimeHostFor &&
+          options.runtimeMcp &&
+          options.runtimeSend
+            ? 1
+            : 0,
+        enabled: Boolean(options.boatRuntimeLaunch && options.runtimeHostFor),
+      },
+    }) satisfies import("@armada/core").LaunchOptionsResponse,
+  "sandbox/launch": async ({ caller, body, options }) => {
+    const { store, encryptionKey } = options;
+    const userId = caller.userId;
+    const parsed = launchOperation.input.body.safeParse(body);
+    if (!parsed.success)
+      throw new VaultError(
+        "invalid",
+        body.provider === "docker" && Object.hasOwn(body, "image")
+          ? "Remove the image field and retry. Armada chooses the Docker environment automatically."
+          : "Invalid launch request. See the sandbox/launch request schema.",
+      );
+    const launch = parsed.data;
+    if (launch.provider === "docker") {
+      const org = scopedOrg(caller, launch.org);
+      const dockerLaunch = options.dockerLaunch;
+      if (!dockerLaunch) throw new VaultError("unavailable", "Normal Docker launch is not configured.");
+      const organization = await resolveOrg(store, userId, org);
+      const selected = { ...caller, orgs: caller.orgs.filter((item) => item.orgId === organization.id) };
+      const launchDocker = (request: Record<string, unknown>) =>
+        dockerLaunch.launch(selected, { ...request, org: organization.id });
+      if ("idempotencyKey" in launch) {
+        if (!encryptionKey) throw new VaultError("unavailable", "Docker launch replay keys are unavailable.");
+        const { idempotencyKey, ...request } = launch;
+        const requestId = dockerLaunchRequestId(encryptionKey, userId, organization.id, idempotencyKey);
+        return canonicalLaunchResponse(await launchDocker({ ...request, requestId }));
+      }
+      return canonicalLaunchResponse(await launchDocker(launch));
+    }
+    if ("id" in launch) {
+      const template = launch;
+      const templateOrg = scopedOrg(caller, template.org);
+      if (!options.modalRuntimeLaunch || !options.modalRuntimeHostFor)
+        throw new VaultError("unavailable", "Modal runtime staging opt-in is disabled.");
+      if (template.prompt === undefined && !options.runtimeSend)
+        throw new VaultError("unavailable", "Modal runtime idle first send is unavailable.");
+      if (!options.templates) throw new VaultError("unavailable", "Templates unavailable.");
+      const base = templateRuntime(options, caller);
+      if (!base) throw new VaultError("unavailable", "Template launching unavailable.");
+      const { provider, harness, runtimeVersion: _runtimeVersion, runtimeTransport, org: _org, ...input } = template;
+      const organization = await resolveOrg(store, userId, templateOrg);
+      return launchTemplate(
+        options.templates,
+        caller,
+        { ...input, org: organization.id },
+        {
+          validateDefinition: (definition) => {
+            if (definition.provider !== provider || definition.harness !== harness)
+              throw new VaultError("invalid", "Modal runtime templates require the selected Modal harness.");
+          },
+          stores: {
+            goldens: base.stores.goldens,
+            sandboxes: base.stores.sandboxes,
+            credentials: launchCredentials(
+              options.store,
+              options.encryptionKey,
+              undefined,
+              options.modelAuth,
+              options.github ? { ...options.github, store: options.store } : undefined,
+            ),
+            ...(options.runtimeMcp ? { connections: options.runtimeMcp.connections } : {}),
+          },
+          provider: (golden) => options.modalRuntimeHostFor!({ ...golden, runtimeTransport }, caller),
+          options: { ...base.options, runtime: options.modalRuntimeLaunch },
+        },
+        "template_rest",
+      );
+    }
+    scopedOrg(caller, launch.org);
+    if ("runtimeVersion" in launch) {
+      if ("runtimeTransport" in launch) {
+        if (!options.modalRuntimeLaunch || !options.modalRuntimeHostFor)
+          throw new VaultError("unavailable", "Modal runtime staging opt-in is disabled.");
+        if (launch.prompt === undefined && !options.runtimeSend)
+          throw new VaultError("unavailable", "Modal runtime idle first send is unavailable.");
+        return canonicalLaunchResponse(await launchRoute(options, caller, launch, "modal"));
+      }
+      if (!options.boatRuntimeLaunch || !options.runtimeHostFor)
+        throw new VaultError("unavailable", "Experimental Boat runtime launch is not configured.");
+      return canonicalLaunchResponse(await launchRoute(options, caller, launch, true));
+    }
+    return canonicalLaunchResponse(await launchRoute(options, caller, launch));
+  },
+  "templates/launch": ({ caller, body, options }) => {
+    if (!options.templates) throw new VaultError("unavailable", "Templates unavailable.");
+    return launchTemplate(options.templates, caller, body, templateRuntime(options, caller), "template_rest");
+  },
+  "launch/resolve": ({ caller, body }) => {
+    scopedOrg(caller, optional(body, "org"));
+    throw new VaultError("unavailable", "Client-side credential resolution is retired; use sandbox/launch.");
+  },
+});

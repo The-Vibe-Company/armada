@@ -1,16 +1,12 @@
 import type { AuthStore } from "@armada/auth";
 import {
   goldenForSettings,
-  isModelConnectionTestResult,
-  MAX_SANDBOX_EXTENSION_TTL_SECONDS,
-  OPENCODE_ENDPOINT_ENV,
   PUBLIC_CONTROL_ROUTES,
   parseMachineSizePolicy,
   providerRateLimitDetails,
   VERSION,
   vaultControlRoute,
 } from "@armada/core";
-import { launch as launchOperation } from "@armada/core/contract";
 import {
   type ApplicationVault,
   addMember,
@@ -18,7 +14,6 @@ import {
   createOrg,
   createSkillCatalog,
   type GitHubApp,
-  type GoldenActor,
   type GoldenBuildJobs,
   GoldenError,
   type GoldenRecord,
@@ -45,7 +40,6 @@ import {
   resolveSkillpackCredential,
   retainFailureDiagnostic,
   type SkillDefaultsService,
-  sandboxActivity,
   setCredential,
   setMemberRole,
   type TemplateService,
@@ -55,17 +49,16 @@ import {
 import { validateAzureModelAccount } from "./azure-model-account.ts";
 import type { Caller, SupabaseProject } from "./caller.ts";
 import { readBody, readVaultBody } from "./control-body.ts";
-import { authenticatedCaller, scopedOrg } from "./control-caller.ts";
+import { authenticatedCaller, scopedOrg, selectedCaller } from "./control-caller.ts";
 import { controlFailureResponse } from "./control-errors.ts";
 import { optional, required, requiredNumber, UUID } from "./control-input.ts";
 import { readLogs } from "./control-logs.ts";
 import { fail } from "./control-response.ts";
-import { CONTROL_TOOL_ROUTES } from "./control-tool-routes.ts";
+import { sandboxToolContext } from "./control-tool-routes.ts";
 import type { CredentialBindingRecovery } from "./credential-binding-recovery.ts";
 import { listControlCredentials } from "./credential-list.ts";
 import type { createSqlCredentialList } from "./credential-list-sql.ts";
 import type { DataSource, ScopedData } from "./data.ts";
-import { dockerLaunchRequestId } from "./docker-launch-identity.ts";
 import type { GitHubAccountApi } from "./github-account.ts";
 import { dispatchGitHubRestControl, isGitHubRestControl } from "./github-rest-controls.ts";
 import {
@@ -78,13 +71,11 @@ import {
 } from "./golden-control.ts";
 import { GOLDEN_ADOPTION_REQUEST } from "./golden-rest-schemas.ts";
 import type { Invitations } from "./invitations.ts";
-import { launchActor, launchRoute, launchTemplate, templateRuntime } from "./launch-control.ts";
-import { exposedSecrets, launchCredentials } from "./launch-credentials.ts";
-import { launchOptions, launchProviderOptions } from "./launch-options.ts";
-import { canonicalLaunchResponse } from "./launch-response-schemas.ts";
+import { launchActor, templateRuntime } from "./launch-control.ts";
 import { dispatchMcp, type McpControlOptions } from "./mcp-control.ts";
 import { type ModelAuthOwnership, modelAuthCapabilities } from "./model-auth.ts";
 import type { ModelUsageApi } from "./model-usage.ts";
+import { controlRoutes } from "./modules.ts";
 import type { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import {
   connectOrgProvider,
@@ -110,12 +101,9 @@ import type { RuntimeGitHub } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
 import type { RuntimeResume } from "./runtime-resume.ts";
 import type { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
-import { dispatchSandboxRestControl, isSandboxRestControl } from "./sandbox-rest-controls.ts";
-import { sandboxListInput } from "./sandbox-tool-schemas.ts";
 import { tokenCreateRoute, tokenListRoute, tokenRevokeRoute } from "./token-control.ts";
-import { callSharedTool, ToolApiError } from "./tool-api.ts";
+import { ToolApiError } from "./tool-api.ts";
 import { describeToolFailure } from "./tool-failure.ts";
-import type { ToolContext } from "./tools.ts";
 
 import { viewerControl } from "./viewer-control.ts";
 
@@ -265,8 +253,8 @@ async function timedControlRequest(
   if (route === "token/create") return tokenCreateRoute(request, options);
   if (route === "token/revoke") return tokenRevokeRoute(request, options);
   const deletion = /^sandboxes\/([0-9a-f-]+)$/i.exec(route);
-  if (deletion ? request.method !== "DELETE" : request.method !== "POST")
-    return fail(405, "invalid", deletion ? "Use DELETE." : "Use POST.");
+  const method = deletion ? "DELETE" : (controlRoutes.get(route)?.method ?? "POST");
+  if (request.method !== method) return fail(405, "invalid", `Use ${method}.`);
   try {
     const caller = await timing.measure("auth", () => authenticatedCaller(request, options));
     if (vaultControlRoute(route) && url.search)
@@ -339,6 +327,8 @@ export async function dispatchControlCommand(
   body: Record<string, unknown>,
   options: ControlOptions,
 ): Promise<unknown> {
+  const registered = controlRoutes.get(route);
+  if (registered) return registered.handler({ route, caller, body, options });
   if (route.startsWith("skills/defaults/")) {
     if (!options.skillDefaults) throw new VaultError("unavailable", "Skill defaults unavailable.");
     return options.skillDefaults.command(caller, route.slice("skills/defaults/".length), body);
@@ -350,7 +340,6 @@ export async function dispatchControlCommand(
   if (route.startsWith("templates/")) {
     if (!options.templates) throw new VaultError("unavailable", "Templates unavailable.");
     const runtime = templateRuntime(options, caller);
-    if (route === "templates/launch") return launchTemplate(options.templates, caller, body, runtime, "template_rest");
     return options.templates.command(caller, route.slice(10), body, runtime);
   }
 
@@ -368,68 +357,6 @@ export async function dispatchControlCommand(
   }
   if (route === "creds/accounts/auth-capabilities")
     return { ...modelAuthCapabilities, nativeSubscriptionParallelSandboxes: Boolean(options.modelAuth?.broker) };
-  if (route === "launch/options")
-    return {
-      ...launchOptions,
-      providers: launchProviderOptions(
-        options.docker,
-        Boolean(options.launch?.boatRuntimeDefault || options.launch?.boatEndpointRuntime),
-      ),
-      modalRuntime: {
-        defaultPath: options.launch?.modalRuntimeDefault ? "runtime" : "native",
-        enabled: Boolean(options.modalRuntimeLaunch),
-        followupVersion: options.runtimeSend ? 1 : 0,
-        idleLaunchVersion: options.modalRuntimeLaunch && options.runtimeSend ? 1 : 0,
-        emptyResumeVersion: options.modalRuntimeLaunch && options.runtimeResume && options.runtimeSend ? 1 : 0,
-        idleTemplateVersion:
-          options.templates && options.modalRuntimeLaunch && options.modalRuntimeHostFor && options.runtimeSend ? 1 : 0,
-        resumeVersion: options.runtimeResume && options.modalRuntimeLaunch ? 1 : 0,
-        mcpVersion: options.runtimeMcp ? 2 : 0,
-        skillsVersion: options.modalRuntimeLaunch ? 1 : 0,
-        usageVersion: options.modalRuntimeLaunch ? 1 : 0,
-        claudeVersion: options.modalRuntimeLaunch ? 1 : 0,
-        opencodeVersion: options.modalRuntimeLaunch ? 1 : 0,
-        opencodeShellProofVersion: options.modalRuntimeLaunch ? 1 : 0,
-        opencodeMcpProofVersion: options.modalRuntimeLaunch && options.runtimeMcp ? 1 : 0,
-        variablesVersion: options.templates && options.modalRuntimeLaunch && options.modalRuntimeHostFor ? 1 : 0,
-      },
-      dockerRuntime: {
-        opencodeMcpProofVersion:
-          options.docker?.hosts &&
-          options.docker.placement &&
-          options.docker.normalApi &&
-          options.docker.normalLaunch &&
-          options.docker.normalSend &&
-          options.dockerLaunch &&
-          options.dockerControls &&
-          options.runtimeMcp
-            ? 1
-            : 0,
-      },
-      boatRuntime: {
-        defaultPath: options.launch?.boatRuntimeDefault ? "runtime" : "native",
-        diagnosticsVersion: 1,
-        followupVersion: options.runtimeSend ? 1 : 0,
-        checkpointVersion: options.runtimeCheckpoint ? 1 : 0,
-        resumeVersion: options.runtimeResume ? 1 : 0,
-        githubVersion: options.runtimeGitHub ? 1 : 0,
-        mcpVersion: options.runtimeMcp ? 2 : 0,
-        skillsVersion: options.boatRuntimeLaunch ? 1 : 0,
-        workspaceVersion: options.boatRuntimeLaunch ? 1 : 0,
-        controlsVersion: options.runtimeHostFor ? 1 : 0,
-        opencodeVersion: options.boatRuntimeLaunch && options.runtimeHostFor ? 1 : 0,
-        opencodeMcpProofVersion:
-          options.templates &&
-          options.launch?.boatRuntimeDefault &&
-          options.boatRuntimeLaunch &&
-          options.runtimeHostFor &&
-          options.runtimeMcp &&
-          options.runtimeSend
-            ? 1
-            : 0,
-        enabled: Boolean(options.boatRuntimeLaunch && options.runtimeHostFor),
-      },
-    } satisfies import("@armada/core").LaunchOptionsResponse;
   if (route === "creds/accounts/usage") {
     if (!options.modelUsage || !options.logs) throw new VaultError("unavailable", "Model usage is not configured.");
     const id = required(body, "id"),
@@ -507,157 +434,13 @@ export async function dispatchControlCommand(
       throw retainFailureDiagnostic(new ToolApiError(code, message, details), error);
     }
   }
-  if (route === "sandbox/test-model-connection") {
-    if (Object.keys(body).some((key) => !["id", "model", "org"].includes(key)))
-      throw new VaultError("invalid", "Connection checks accept only id, model and org.");
-    const id = required(body, "id");
-    if (!UUID.test(id)) throw new VaultError("invalid", "id must be an Armada sandbox UUID.");
-    if (!options.data || !options.providers) throw new VaultError("unavailable", "Sandbox control is not configured.");
-    const scoped = await selectedCaller(options, caller, optional(body, "org"));
-    const data = options.data(scoped);
-    const found = await data.sandboxes.get(id);
-    if (!found) throw new VaultError("not_found", "Sandbox not found.");
-    if (found.ownerId !== caller.userId)
-      throw new VaultError("forbidden", "Only the sandbox owner may test its model connection.");
-    if (
-      !(found.provider === "modal" || (found.provider === "boat" && found.boatRuntime)) ||
-      !["ready", "running"].includes(found.status) ||
-      found.stopRequestedAt ||
-      !found.credentialId ||
-      !found.credentialVersion
-    )
-      throw new VaultError(
-        "conflict",
-        "Connection checks require a running, bound Modal or Boat shared-runtime sandbox; no resume is performed.",
-      );
-    const harness = found.harness;
-    if (harness !== "claude" && harness !== "codex" && harness !== "opencode")
-      throw new VaultError("invalid", "Connection checks support Claude, Codex and custom OpenCode connections only.");
-    const model = resolveModelChoice(harness, { model: required(body, "model") }).model;
-    const credentials = launchCredentials(options.store, options.encryptionKey, undefined, options.modelAuth);
-    const actor: GoldenActor = { userId: found.ownerId, orgId: found.orgId, role: "member" };
-    const bound = await credentials.resolve(actor, found.harness, found.credentialId, found.credentialVersion);
-    if (harness === "opencode") {
-      if (!bound.env[OPENCODE_ENDPOINT_ENV] || !bound.env.OPENCODE_API_KEY)
-        throw new VaultError("invalid", "OpenCode checks require a custom connection, not a plan key.");
-    } else {
-      const apiKey =
-        harness === "codex"
-          ? bound.env.OPENAI_API_KEY
-          : (bound.env.ANTHROPIC_AUTH_TOKEN ?? bound.env.ANTHROPIC_API_KEY);
-      if (!apiKey) throw new VaultError("invalid", "This check requires an API-key account, not a subscription.");
-    }
-    await credentials.assertTurn?.(actor, found.id, false);
-    const provider = await options.providers.resolve(found, scoped);
-    if (!provider.testModelConnection)
-      throw new VaultError("unavailable", "Runtime connection checks are unavailable.");
-    const testConnection = async (signal?: AbortSignal) => {
-      const result = await provider.testModelConnection!({
-        sandboxId: found.providerSandboxId,
-        harness,
-        model,
-        ...(signal ? { signal } : {}),
-      });
-      if (!isModelConnectionTestResult(result)) throw new VaultError("unavailable", "Invalid connection-test receipt.");
-      return result;
-    };
-    if (found.provider === "boat" && found.boatRuntime) {
-      // Enqueued commands already fence idle checkpoint/stop under the owner/current epoch.
-      // Generic activity generation handoffs would revoke this non-prompt runtime session.
-      const test = await testConnection(AbortSignal.timeout(30000));
-      return { id: found.id, test };
-    }
-    const machine = await provider.get(found.providerSandboxId);
-    if (!["ready", "running"].includes(machine.state))
-      throw new VaultError("conflict", "Sandbox must already be running.");
-    const test = await sandboxActivity(
-      data.sandboxes,
-      found,
-      {},
-      async () => ({ result: await testConnection(), patch: {} }),
-      { deadlineMs: 30000, failurePatch: () => ({}) },
+  if (isGitHubRestControl(route)) {
+    const context = await sandboxToolContext({ route, caller, body, options });
+    return dispatchGitHubRestControl(
+      { ...context, ...(options.runtimeGitHub ? { runtimeGitHub: options.runtimeGitHub } : {}) },
+      route,
+      body,
     );
-    return { id: found.id, test };
-  }
-  if (isSandboxRestControl(route)) {
-    if (route === "sandbox/extend") {
-      if (Object.hasOwn(body, "ttlSeconds") && Object.hasOwn(body, "ttl_seconds"))
-        throw new VaultError("invalid", "Send one lifetime field: ttlSeconds.");
-      const ttl = Object.hasOwn(body, "ttlSeconds") ? body.ttlSeconds : body.ttl_seconds;
-      if (Number.isSafeInteger(ttl) && Number(ttl) > MAX_SANDBOX_EXTENSION_TTL_SECONDS)
-        throw new ToolApiError("extension_maximum", "Requested lifetime exceeds the server maximum.");
-      if (!Number.isSafeInteger(ttl) || Number(ttl) < 1)
-        throw new VaultError(
-          "invalid",
-          "ttlSeconds must be a positive whole number of seconds within the server maximum.",
-        );
-      body = { ...body, ttlSeconds: ttl };
-    }
-    const { data, providers } = options;
-    if (!data || !providers) throw new VaultError("unavailable", "Sandbox control is not configured.");
-    const scopedCaller = await selectedCaller(options, caller, optional(body, "org"));
-    return dispatchSandboxRestControl(route, scopedCaller, body, { ...options, data, providers });
-  }
-  const toolName = CONTROL_TOOL_ROUTES[route];
-  if (toolName || isGitHubRestControl(route)) {
-    if (!options.data || !options.providers) throw new VaultError("unavailable", "Sandbox control is not configured.");
-    const ref = optional(body, "org");
-    const listRef =
-      route === "sandbox/list" &&
-      options.scopedSandboxData &&
-      ref !== undefined &&
-      sandboxListInput.safeParse(body).success
-        ? scopedOrg(caller, ref)
-        : undefined;
-    const listOrgId = listRef && UUID.test(listRef.trim()) ? listRef.trim().toLowerCase() : undefined;
-    const scopedCaller =
-      listRef !== undefined
-        ? listOrgId
-          ? { ...caller, orgs: caller.orgs.filter((org) => org.orgId === listOrgId) }
-          : caller
-        : await selectedCaller(options, caller, ref);
-    const context: ToolContext = {
-      caller: scopedCaller,
-      ...(options.sandboxBillingAccount
-        ? { sandboxBillingAccount: (id: string) => options.sandboxBillingAccount!(scopedCaller, id) }
-        : {}),
-      ...(options.dockerControls ? { dockerControls: options.dockerControls } : {}),
-      ...(options.runtimeSend ? { runtimeSend: options.runtimeSend } : {}),
-      ...(options.accountTurns ? { accountTurns: options.accountTurns } : {}),
-      ...(options.connections ? { connections: options.connections } : {}),
-      data: listRef !== undefined ? options.scopedSandboxData!(scopedCaller, listRef) : options.data(scopedCaller),
-      measure: (phase, work) => measureRequestPhase(options.timing, phase, work),
-      storedProviders: options.storedProviderFor
-        ? {
-            modal: (target) =>
-              measureRequestPhase(options.timing, "stored_provider", () =>
-                options.storedProviderFor!(target, scopedCaller),
-              ),
-          }
-        : {},
-      provider: (target) =>
-        measureRequestPhase(options.timing, "provider", () =>
-          options.providers
-            ? options.providers.resolve(target, scopedCaller)
-            : Promise.reject(new VaultError("unavailable", "Resource providers are not configured.")),
-        ),
-      launchCredentials: launchCredentials(
-        options.store,
-        options.encryptionKey,
-        options.github ? { ...options.github, store: options.store } : undefined,
-        options.modelAuth,
-      ),
-      exposedSecrets: (orgId) => exposedSecrets(options.store, options.encryptionKey, { userId: caller.userId, orgId }),
-      now: options.now ?? (() => new Date()),
-      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-    };
-    if (isGitHubRestControl(route))
-      return dispatchGitHubRestControl(
-        { ...context, ...(options.runtimeGitHub ? { runtimeGitHub: options.runtimeGitHub } : {}) },
-        route,
-        body,
-      );
-    return callSharedTool(context, toolName!, body);
   }
   const { store, encryptionKey } = options;
   const userId = caller.userId;
@@ -674,86 +457,6 @@ export async function dispatchControlCommand(
     );
   if (route === "org/provider/disconnect")
     return disconnectOrgProvider(store, caller, optional(body, "org"), required(body, "provider"));
-  if (route === "sandbox/launch") {
-    const parsed = launchOperation.input.body.safeParse(body);
-    if (!parsed.success)
-      throw new VaultError(
-        "invalid",
-        body.provider === "docker" && Object.hasOwn(body, "image")
-          ? "Remove the image field and retry. Armada chooses the Docker environment automatically."
-          : "Invalid launch request. See the sandbox/launch request schema.",
-      );
-    const launch = parsed.data;
-    if (launch.provider === "docker") {
-      const org = scopedOrg(caller, launch.org);
-      const dockerLaunch = options.dockerLaunch;
-      if (!dockerLaunch) throw new VaultError("unavailable", "Normal Docker launch is not configured.");
-      const organization = await resolveOrg(store, userId, org);
-      const selected = { ...caller, orgs: caller.orgs.filter((item) => item.orgId === organization.id) };
-      const launchDocker = (request: Record<string, unknown>) =>
-        dockerLaunch.launch(selected, { ...request, org: organization.id });
-      if ("idempotencyKey" in launch) {
-        if (!encryptionKey) throw new VaultError("unavailable", "Docker launch replay keys are unavailable.");
-        const { idempotencyKey, ...request } = launch;
-        const requestId = dockerLaunchRequestId(encryptionKey, userId, organization.id, idempotencyKey);
-        return canonicalLaunchResponse(await launchDocker({ ...request, requestId }));
-      }
-      return canonicalLaunchResponse(await launchDocker(launch));
-    }
-    if ("id" in launch) {
-      const template = launch;
-      const templateOrg = scopedOrg(caller, template.org);
-      if (!options.modalRuntimeLaunch || !options.modalRuntimeHostFor)
-        throw new VaultError("unavailable", "Modal runtime staging opt-in is disabled.");
-      if (template.prompt === undefined && !options.runtimeSend)
-        throw new VaultError("unavailable", "Modal runtime idle first send is unavailable.");
-      if (!options.templates) throw new VaultError("unavailable", "Templates unavailable.");
-      const base = templateRuntime(options, caller);
-      if (!base) throw new VaultError("unavailable", "Template launching unavailable.");
-      const { provider, harness, runtimeVersion: _runtimeVersion, runtimeTransport, org: _org, ...input } = template;
-      const organization = await resolveOrg(store, userId, templateOrg);
-      return launchTemplate(
-        options.templates,
-        caller,
-        { ...input, org: organization.id },
-        {
-          validateDefinition: (definition) => {
-            if (definition.provider !== provider || definition.harness !== harness)
-              throw new VaultError("invalid", "Modal runtime templates require the selected Modal harness.");
-          },
-          stores: {
-            goldens: base.stores.goldens,
-            sandboxes: base.stores.sandboxes,
-            credentials: launchCredentials(
-              options.store,
-              options.encryptionKey,
-              undefined,
-              options.modelAuth,
-              options.github ? { ...options.github, store: options.store } : undefined,
-            ),
-            ...(options.runtimeMcp ? { connections: options.runtimeMcp.connections } : {}),
-          },
-          provider: (golden) => options.modalRuntimeHostFor!({ ...golden, runtimeTransport }, caller),
-          options: { ...base.options, runtime: options.modalRuntimeLaunch },
-        },
-        "template_rest",
-      );
-    }
-    scopedOrg(caller, launch.org);
-    if ("runtimeVersion" in launch) {
-      if ("runtimeTransport" in launch) {
-        if (!options.modalRuntimeLaunch || !options.modalRuntimeHostFor)
-          throw new VaultError("unavailable", "Modal runtime staging opt-in is disabled.");
-        if (launch.prompt === undefined && !options.runtimeSend)
-          throw new VaultError("unavailable", "Modal runtime idle first send is unavailable.");
-        return canonicalLaunchResponse(await launchRoute(options, caller, launch, "modal"));
-      }
-      if (!options.boatRuntimeLaunch || !options.runtimeHostFor)
-        throw new VaultError("unavailable", "Experimental Boat runtime launch is not configured.");
-      return canonicalLaunchResponse(await launchRoute(options, caller, launch, true));
-    }
-    return canonicalLaunchResponse(await launchRoute(options, caller, launch));
-  }
   const org = scopedOrg(caller, optional(body, "org"));
   switch (route) {
     case "skillpack/catalog":
@@ -903,36 +606,6 @@ export async function dispatchControlCommand(
         kind: parseCredentialKind(required(body, "kind")),
       });
       return { ok: true };
-    case "sandbox/bind-credential":
-      if (!options.credentialBindingRecovery)
-        throw new VaultError("unavailable", "Binding recovery is not configured.");
-      return options.credentialBindingRecovery(
-        caller,
-        {
-          id: required(body, "id"),
-          credentialId: required(body, "credentialId"),
-          // An org name or ID, resolved against fresh memberships like every other sandbox route.
-          ...(org ? { org: (await resolveOrg(store, userId, org)).id } : {}),
-        },
-        async (id, sandboxOrg) => {
-          const stopped = await dispatchControlCommand(
-            "sandbox/stop",
-            caller,
-            { id, org: sandboxOrg, only_if_idle: true, request_id: crypto.randomUUID() },
-            options,
-          );
-          if (!stopped || typeof stopped !== "object" || !("status" in stopped) || stopped.status !== "stopped")
-            throw new VaultError(
-              "credential_binding_unsafe",
-              "Stop is still pending; wait for stopped and retry. The account is unchanged.",
-            );
-          if ("preservationNote" in stopped && stopped.preservationNote === "checkpoint_failed_disk_not_retained")
-            throw new VaultError(
-              "credential_binding_unsafe",
-              "Checkpointing failed and retained compute cannot resume. The account is unchanged; inspect preserved work.",
-            );
-        },
-      );
     case "golden/size-policy": {
       if (!options.data) throw new VaultError("unavailable", "Golden policies are not configured.");
       const data = options.data(caller);
@@ -960,26 +633,6 @@ export async function dispatchControlCommand(
         policy: golden.sizePolicy ?? null,
       };
     }
-    case "sandbox/mcp-preflight-v1":
-      if (body.runtimeVersion !== 1 || !options.runtimeMcp)
-        throw new VaultError("unavailable", "Runtime MCP v1 is unavailable.");
-      if (body.toolInventory !== undefined && typeof body.toolInventory !== "boolean")
-        throw new VaultError("invalid", "toolInventory must be boolean.");
-      return options.runtimeMcp.preflight(caller, {
-        org: required(body, "org"),
-        connections: body.connections as string[],
-        ...(body.toolInventory === true ? { toolInventory: true } : {}),
-      });
-    case "sandbox/github-preflight-v1":
-      if (body.runtimeVersion !== 1 || !options.runtimeGitHub)
-        throw new VaultError("unavailable", "Runtime GitHub v1 is unavailable.");
-      return options.runtimeGitHub.preflight(caller, {
-        org: required(body, "org"),
-        golden: required(body, "golden"),
-        repository: required(body, "repository"),
-      });
-    case "launch/resolve":
-      throw new VaultError("unavailable", "Client-side credential resolution is retired; use sandbox/launch.");
     case "logs/read":
       return readLogs(
         options,
@@ -1072,12 +725,6 @@ function scope(body: Record<string, unknown>): "user" | "org" {
   const value = required(body, "scope");
   if (value === "user" || value === "org") return value;
   throw new VaultError("invalid", "scope is user or org.");
-}
-
-async function selectedCaller(options: ControlOptions, caller: Caller, ref: string | undefined): Promise<Caller> {
-  if (ref === undefined) return caller;
-  const org = await resolveOrg(options.store, caller.userId, scopedOrg(caller, ref));
-  return { ...caller, orgs: caller.orgs.filter((item) => item.orgId === org.id) };
 }
 
 export { authenticatedControlCaller } from "./control-caller.ts";
