@@ -6,6 +6,8 @@ const token = "armada_sk_fixture_token";
 const response = {
   sandbox: {
     id: "11111111-1111-4111-8111-111111111111",
+    provider: "boat",
+    providerSandboxId: "bx_server",
     boatId: "bx_server",
     goldenId: "golden",
     orgId: "org",
@@ -30,6 +32,8 @@ const response = {
     config: { repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }], init: [] },
     createdAt: "2026-01-01T00:00:00.000Z",
   },
+  runtime: null,
+  helper: null,
   promptId: "prompt",
   conversationId: "conversation",
   ttlSeconds: 1800,
@@ -89,14 +93,7 @@ describe("launch through the Armada API", () => {
               fetch: async (input, init) => {
                 const request = input instanceof Request ? input : new Request(String(input), init);
                 calls.push(request);
-                return Response.json({
-                  ...response,
-                  sandbox: {
-                    ...response.sandbox,
-                    machineSize,
-                    ...(repo === undefined ? {} : { provider: "boat", providerSandboxId: "bx_server" }),
-                  },
-                });
+                return Response.json({ ...response, sandbox: { ...response.sandbox, machineSize } });
               },
               now: () => new Date(),
               open: () => undefined,
@@ -105,20 +102,7 @@ describe("launch through the Armada API", () => {
           },
         );
         expect(code).toBe(0);
-        expect(JSON.parse(out)).toMatchObject({
-          machineSize,
-          golden: "web",
-          sandbox: { id: "11111111-1111-4111-8111-111111111111", provider: "boat" },
-          credentialId: "33333333-3333-4333-8333-333333333333",
-          credentialVersion: 7,
-          harness: "codex",
-          promptId: "prompt",
-          provider: "boat",
-          providerSandboxId: "bx_server",
-          boatId: "bx_server",
-          id: "11111111-1111-4111-8111-111111111111",
-          expiresAt: "2026-11-08T16:00:00.000Z",
-        });
+        expect(JSON.parse(out)).toEqual({ ...response, sandbox: { ...response.sandbox, machineSize } });
         expect(calls).toHaveLength(1);
         const launchRequest = calls.at(-1);
         expect(launchRequest?.url).toBe(`https://armada.thevibecompany.co/api/v1/sandbox/launch`);
@@ -137,6 +121,33 @@ describe("launch through the Armada API", () => {
       });
     }
   }
+
+  test("keeps delegated access in the Modal JSON envelope", async () => {
+    const receipt = {
+      ...response,
+      sandbox: { ...response.sandbox, provider: "modal", providerSandboxId: "sb-server", boatId: null },
+      runtime: { kind: "armada", epoch: "1" },
+      armadaAccess: { enabled: true, maxActiveChildren: 2 },
+    };
+    let out = "";
+    const code = await run(
+      ["launch", "web", "--provider", "modal", "--agent", "codex", "--armada-access", "--json"],
+      { out: (text) => (out += text), err: () => undefined },
+      {
+        auth: {
+          out: () => undefined,
+          err: () => undefined,
+          env: { ARMADA_TOKEN: token },
+          fetch: async () => Response.json(receipt),
+          now: () => new Date(),
+          open: () => undefined,
+          session: memorySessionStore(),
+        },
+      },
+    );
+    expect(code).toBe(0);
+    expect(JSON.parse(out)).toEqual(receipt);
+  });
 
   test("decodes serialized expiry for text output without hiding a created sandbox", async () => {
     let out = "";

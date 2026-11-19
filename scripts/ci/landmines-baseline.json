@@ -1646,7 +1646,7 @@
     "packages/cli/src/api-receipts.ts": 4,
     "packages/cli/src/application-vault-commands.ts": 5,
     "packages/cli/src/args.ts": 6,
-    "packages/cli/src/armada-api.ts": 11,
+    "packages/cli/src/armada-api.ts": 10,
     "packages/cli/src/auth-commands.ts": 9,
     "packages/cli/src/browser-login.ts": 1,
     "packages/cli/src/commands/index.ts": 1,
