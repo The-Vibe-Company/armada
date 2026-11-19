@@ -21,6 +21,28 @@ provider-specific GitHub refresh refusal. Typed commands validate success receip
 before reporting success. Their control routes use JSON objects, including `{}`
 for empty acknowledgements.
 
+## Command dispatch
+
+Help and command discovery work before login and organization selection.
+Native Docker host commands do not require an Armada API session. Interactive
+session recovery can retry a command once after sign-in. API passthrough,
+explicit login and logout, JSON mode, and explicit API tokens do not trigger
+an interactive recovery prompt.
+
+Global options are read only up to `--` to preserve prompt and command payloads.
+Interactive launch discovery fills missing choices and leaves explicit placement
+and agent choices to the usual validation.
+
+For Boat and Modal snapshots, `snapshot update --add-repo` validates the
+additions and appends on the server, preserving stored repositories and init
+commands. On create or update, `--setup` reads a local file to send as setup
+content. Use `--init` for literal initialization commands.
+
+Sandbox `wait` and `exec` requests get the server budget plus 15 seconds of
+transport grace. `send`, `stop`, and `bind-credential` use a 660-second
+request deadline. That budget gives `send` time to restore paused compute
+before admitting the turn. A transport timeout does not trigger a write retry.
+
 ## Login and session storage
 
 Armada browser sign-in uses PKCE through the Armada server and keeps provider
