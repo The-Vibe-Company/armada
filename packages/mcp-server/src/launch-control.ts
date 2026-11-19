@@ -8,7 +8,6 @@ import {
   LaunchError,
   launchSandbox,
   type ModelChoice,
-  type Provider,
   resolveBoatKey,
   resolveModelChoice,
   resolveOrg,
@@ -93,6 +92,9 @@ async function launchGolden(
     throw new VaultError("unavailable", "Sandbox Armada access is unavailable for this provider/harness.");
   if (runtime && golden.provider !== (modalRuntime ? "modal" : "boat"))
     throw new VaultError("invalid", "Runtime v1 requires a Boat golden.");
+  const target = armadaAccess
+    ? { ...golden, visibility: "private" as const, sourceGoldenVisibility: golden.visibility }
+    : golden;
   const launchOptions: import("@armada/core").LaunchOptions = {
     ...options.launch,
     ...(runtimePolicy ? (modalRuntime ? { runtime: runtimePolicy } : { boatRuntime: runtimePolicy }) : {}),
@@ -121,8 +123,25 @@ async function launchGolden(
       launchOptions,
     );
     timing.checkpoint("account_resolution");
+    const scopedModalDefault =
+      armadaAccess && !runtime && golden.provider === "modal" ? account.options.modalRuntimeDefault : undefined;
+    if (scopedModalDefault) {
+      const provider = await scopedModalDefault.provider(actor, target);
+      if (provider.id !== golden.provider)
+        throw new LaunchError(
+          "invalid_request",
+          "Runtime default must retain the golden provider; no native fallback.",
+        );
+      timing.checkpoint("provider_resolution");
+      return {
+        provider,
+        credentials: scopedModalDefault.credentials,
+        options: { ...account.options, runtime: scopedModalDefault.policy },
+        connections: scopedModalDefault.connections,
+      };
+    }
     const provider = modalRuntime
-      ? await options.modalRuntimeHostFor!({ ...golden, runtimeTransport: "dialout" }, caller)
+      ? await options.modalRuntimeHostFor!({ ...target, runtimeTransport: "dialout" }, caller)
       : runtimeHost
         ? runtimeHost(
             (
@@ -133,24 +152,17 @@ async function launchGolden(
               })
             ).key,
           )
-        : await providerForGolden(
-            options,
-            caller,
-            modalRuntime
-              ? { ...golden, runtimeTransport: "dialout" }
-              : armadaAccess
-                ? { ...golden, visibility: "private", sourceGoldenVisibility: golden.visibility }
-                : golden,
-          );
+        : await providerForGolden(options, caller, target);
     timing.checkpoint("provider_resolution");
     return { ...account, provider };
   };
   let prepared: ReturnType<typeof prepare> | undefined;
   const prepareOnce = () => (prepared ??= prepare());
-  const connectionLifecycle = runtime ? options.runtimeMcp?.connections : options.connections;
   // The receipt id becomes the sandbox id, so a retried key answers with the same sandbox.
   const dispatch = async (receiptId?: string) => {
     const account = await prepareOnce();
+    const connectionLifecycle =
+      account.connections ?? (runtime ? options.runtimeMcp?.connections : options.connections);
     timing.checkpoint("receipt_admission");
     const result = await launchSandbox(
       account.provider,
@@ -186,9 +198,9 @@ async function launchGolden(
         ...(armadaAccess
           ? {
               privateVisibility: true as const,
-              beforeStart: async (provider: Provider, sandbox: import("@armada/core").SandboxRecord) => {
-                await options.launch?.beforeStart?.(provider, sandbox);
-                await options.sandboxArmadaAccess?.prepare(provider, sandbox, actor, armadaAccess);
+              beforeStart: async (provider, sandbox, enrolled) => {
+                await options.launch?.beforeStart?.(provider, sandbox, enrolled);
+                await options.sandboxArmadaAccess?.prepare(provider, sandbox, actor, armadaAccess, enrolled);
               },
             }
           : {}),
@@ -204,7 +216,6 @@ async function launchGolden(
     };
   };
   if (idempotencyKey === undefined) return dispatch();
-  const target = armadaAccess ? { ...golden, visibility: "private" as const } : golden;
   const { provider } = await prepareOnce();
   const management = await provider.managementIdentity?.();
   const backendId = (await provider.backendIdentity?.())?.id;

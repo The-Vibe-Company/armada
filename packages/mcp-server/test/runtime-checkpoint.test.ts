@@ -151,6 +151,10 @@ test.each(["acknowledged", "refused", "reply lost", "epoch replaced"])(
       row,
       { userId: people.owner, orgId: people.org, role: "member" },
       { maxActiveChildren: 1 },
+      {
+        epoch,
+        exec: async () => ({ detached: false, exitCode: 0, stdout: "", stderr: "", timedOut: false, truncated: false }),
+      },
     );
     if (outcome === "acknowledged") {
       await prepare;

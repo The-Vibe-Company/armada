@@ -49,7 +49,13 @@ export function runtimeLaunch(runtime: NonNullable<LaunchOptions["runtime"]>): L
         await stores.sandboxes.recordSkills!(record.id, record.skills);
       }
       await stores.connections?.prepare?.(provider, record, actor, signal);
-      await options.beforeStart?.(provider, record);
+      if (options.privateVisibility && options.beforeStart && !agent.installScopedReference)
+        throw new LaunchError("start_failed", "Scoped access requires an enrolled workspace executor.");
+      await options.beforeStart?.(
+        provider,
+        record,
+        agent.installScopedReference ? { epoch: agent.epoch, exec: agent.installScopedReference } : undefined,
+      );
       reportGitHub(github);
       return { github, prompt: (request) => agent.prompt(request), runtime: { kind: "armada", epoch: agent.epoch } };
     },

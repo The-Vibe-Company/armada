@@ -213,6 +213,7 @@ export interface LaunchOptions extends GoldenLimits {
         progress: (stage: LaunchInitializationStage) => void,
         sleep?: (ms: number) => Promise<void>,
       ) => Promise<GitHubLaunchInfo>;
+      installScopedReference?: Provider["exec"];
       installSkills?: (
         references: string[],
         key: string | null,
@@ -228,7 +229,11 @@ export interface LaunchOptions extends GoldenLimits {
   /** Confirmed registration handoff; errors use the recorded initialization cleanup. */
   onRegistered?: (sandbox: SandboxRecord) => Promise<void>;
   /** Trusted final-start admission/bootstrap, after all repository and init work. */
-  beforeStart?: (provider: Provider, sandbox: SandboxRecord) => Promise<void>;
+  beforeStart?: (
+    provider: Provider,
+    sandbox: SandboxRecord,
+    runtime?: { epoch: string; exec: Provider["exec"] },
+  ) => Promise<void>;
   /** Trusted server-only narrowing for private sandbox parents. Not a public launch field. */
   privateParent?: true;
   /** Trusted narrowing for ordinary sandboxes with owner-scoped access. Keeps normal TTL policy. */
@@ -338,7 +343,7 @@ async function resolveGoldenLaunch(
       "invalid_request",
       "The experimental runtime supports ordinary Boat or Modal Codex/Claude/OpenCode workers only.",
     );
-  if (runtime && options.privateVisibility && options.beforeStart)
+  if (runtime && provider.id !== "modal" && options.privateVisibility && options.beforeStart)
     throw new LaunchError("invalid_request", "Scoped access requires grant delivery over the enrolled runtime.");
   const prompt = checkPrompt(request.prompt);
   request = applyLaunchAccountDefaults(request, await stores.credentials.defaults?.(actor, harness));

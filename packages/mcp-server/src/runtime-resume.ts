@@ -12,6 +12,7 @@ import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
+import type { RestoreScopedRuntimeAccess } from "./sandbox-armada-access.ts";
 import { refuseConversationSelector, SINGLE_CONVERSATION_GUIDANCE } from "./sandbox-conversation.ts";
 import {
   confirmRuntimeResumeActivation,
@@ -77,6 +78,7 @@ export function createRuntimeResume(
   prepare?: RuntimeResumePrepare,
   prepareMcp?: RuntimeMcp["prepare"],
   prepareGitHub?: RuntimeGitHub["prepareLaunch"],
+  restoreScopedAccess?: RestoreScopedRuntimeAccess,
 ) {
   const authority = createRuntimeEnrolments(sql, key);
   const environment = createGoldenRuntimeEnvironment(sql, key);
@@ -308,6 +310,13 @@ export function createRuntimeResume(
               await environment.deliver(found.provider, actor, found.id, admitted.op.target_epoch, signal);
             await prepareGitHub?.(caller, found.id);
             await prepareMcp?.(caller, found.id, signal);
+            if (found.provider === "modal")
+              await restoreScopedAccess?.(
+                caller.userId,
+                found.id,
+                admitted.op.target_epoch,
+                String(admitted.current.lifecycleGeneration),
+              );
           }
           // #2560: restored, verified and reauthorized; the resume prompt's dispatch is not launch time.
           await recordLaunchStageQuietly(sql, found.id, "harness_ready", admitted.current.lifecycleGeneration);
