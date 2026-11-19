@@ -279,7 +279,7 @@ export async function failDockerStartup(
     [sandboxId, expectedGeneration, [...dockerStartupStates]],
   );
   const activation = fenced.rows[0];
-  if (!activation) return;
+  if (!activation) return false;
 
   const result = await transitionSandbox(tx, {
     sandboxId,
@@ -292,6 +292,7 @@ export async function failDockerStartup(
   });
   if (result.kind === "conflict") throw new Error("Docker startup changed while settling its failure.");
   await tx.query("update public.sandboxes set status_reason=$2 where id=$1", [sandboxId, message]);
+  return true;
 }
 
 export async function failDockerResumeActivation(

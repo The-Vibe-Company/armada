@@ -1631,9 +1631,12 @@ test("removing the host owner retires queued startup before the denied poll", as
   expect((await store.list({ ...a.actor, userId: a.backupAdmin }))[0]?.running).toBe(0);
 });
 
-test("revoking a host terminalizes a queued snapshot build without a machine fact", async () => {
+test("revocation rolls back queued startups, snapshot and mailbox cancellation together before commit", async () => {
   const db = database();
-  const a = await fixture();
+  const a = await boundFixture();
+  const second = await boundFixture(a);
+  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+  await store.enqueueSandbox(second.owner, second.sandboxId, second.create);
   const snapshotId = randomUUID(),
     ownerId = a.memberId,
     generation = randomUUID(),
@@ -1676,7 +1679,31 @@ test("revoking a host terminalizes a queued snapshot build without a machine fac
       bound_actor_epoch,bound_operation,snapshot_id) values($1,$2,$3,null,$4,1,'buildSnapshot',$5)`,
     [requestId, a.hostId, await encryptSecret(JSON.stringify({ bound: 1, job }), key), ownerId, snapshotId],
   );
+  const { faultingStore, failure } = failDockerJobCommit(a.create.requestId, "failed");
+  await expect(faultingStore.revoke(a.actor, a.hostId)).rejects.toMatchObject({ cause: failure });
+  for (const startup of [a, second]) {
+    expect((await lifecycle(startup.sandboxId))?.status).toBe("starting");
+    expect(await failureJournal(startup.sandboxId)).toEqual([]);
+  }
+  expect(
+    (
+      await db.query(`select count(*)::int as pending from docker_host_jobs where host_id=$1 and outcome is null`, [
+        a.hostId,
+      ])
+    ).rows[0],
+  ).toEqual({ pending: 3 });
+  expect((await db.query("select status from docker_snapshots where id=$1", [snapshotId])).rows[0]).toEqual({
+    status: "building",
+  });
+  expect((await db.query("select revoked_at from docker_hosts where id=$1", [a.hostId])).rows[0]).toEqual({
+    revoked_at: null,
+  });
+
   await store.revoke(a.actor, a.hostId);
+  for (const startup of [a, second]) {
+    expect((await lifecycle(startup.sandboxId))?.status).toBe("failed");
+    expect(await failureJournal(startup.sandboxId)).toHaveLength(1);
+  }
   expect(
     (
       await db.query<{ status: string; failure_reason: string | null }>(
@@ -1738,6 +1765,37 @@ test("retirement cancels undispatchable startup without claiming physical cleanu
       await store.complete(a.hostToken, a.installationId, { requestId: job.request_id, outcome: "completed" });
     expect(await store.unregister(a.hostToken, a.installationId)).toBe(true);
   }
+});
+
+test("failed bootstrap history cannot fence a newer Docker resume", async () => {
+  const a = await boundStartup("bootstrap");
+  const stop = { requestId: randomUUID(), operation: "stop" as const };
+  await store.enqueueSandbox(a.owner, a.sandboxId, stop);
+  await store.complete(a.hostToken, a.installationId, { requestId: stop.requestId, outcome: "completed" });
+  expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
+  expect((await lifecycle(a.sandboxId))?.status).toBe("stopped");
+
+  // Establish the durable resume admission before enqueuing its host job.
+  await database().query(
+    `update public.sandboxes set status='starting',stopped_at=null,stop_requested_at=null,
+       lifecycle_generation=lifecycle_generation+1 where id=$1`,
+    [a.sandboxId],
+  );
+  const ticket = await a.authority.issue({ sandboxId: a.sandboxId, ownerId: a.owner.userId, configuration: {} });
+  const resume = { requestId: randomUUID(), operation: "resume" as const };
+  await store.enqueueSandbox(a.owner, a.sandboxId, {
+    ...resume,
+    bootstrapDescriptor: {
+      serverUrl: "https://armada.example",
+      artifact: { sha256: "b".repeat(64), bytes: 123 },
+      enrolmentToken: ticket.enrolmentToken,
+    },
+  });
+
+  const admitted = await lifecycle(a.sandboxId);
+  expect((await store.poll(a.hostToken, a.installationId))?.requestId).toBe(resume.requestId);
+  expect(await lifecycle(a.sandboxId)).toEqual(admitted);
+  expect(await failureJournal(a.sandboxId)).toEqual([]);
 });
 
 test("a stale cleaned ACK cannot delete a sandbox with a later admitted resume", async () => {
