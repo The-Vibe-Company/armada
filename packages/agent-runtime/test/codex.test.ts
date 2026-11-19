@@ -159,6 +159,32 @@ nativeTest.each([
   }
 });
 
+nativeTest("Codex reports malformed JSON buffered after a terminal notification", async () => {
+  const driver = new CodexDriver({
+    executable: `${import.meta.dir}/fixtures/app-server.ts`,
+    cwd: import.meta.dir,
+    env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+  });
+  const events: DriverEvent[] = [];
+  try {
+    const turn = driver.start({
+      request: { sandboxId: "s", harness: "codex", text: "malformed-protocol" },
+      signal: new AbortController().signal,
+      session: () => {},
+      emit: (event) => events.push(event),
+    });
+    await expect(turn.done).rejects.toMatchObject({
+      code: "invalid_harness_protocol",
+      cause: expect.any(SyntaxError),
+    });
+    expect(events.find((event) => event.kind === "other" && event.type === "harness_stderr")).toMatchObject({
+      data: { exitCode: null, signal: "SIGKILL", text: "fixture diagnostic\n" },
+    });
+  } finally {
+    await driver.close();
+  }
+});
+
 // JSONL process boundary is independent of the Claude SDK's argv serialization risk.
 nativeTest(
   "Codex delivers MCP header and stdio env only through private JSONL, not native argv or global env",

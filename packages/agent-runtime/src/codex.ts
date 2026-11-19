@@ -135,6 +135,7 @@ export class CodexDriver implements Driver {
     let terminalResolve: ((value: TurnCompletedNotification) => void) | undefined;
     let terminalReject: ((error: Error) => void) | undefined;
     let failure: Error | undefined;
+    let lineFailure: Error | undefined;
     const rpc = <T>(method: string, params: unknown, timeoutMs = 30000, fatal = true): Promise<T> =>
       new Promise((resolve, reject) => {
         if (failure) {
@@ -169,10 +170,11 @@ export class CodexDriver implements Driver {
     let stderrTruncated = false;
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk: string) => {
+      if (stderrTruncated) return;
       stderrTail += chunk;
       if (stderrTail.length > 2048) {
         stderrTruncated = true;
-        stderrTail = stderrTail.slice(-2048);
+        stderrTail = "";
       }
     });
     const handleLine = (line: string) => {
@@ -372,7 +374,8 @@ export class CodexDriver implements Driver {
           else c.emit({ kind: "other", type: m.method, data: m.params, rawDiagnostic: true });
         } else c.emit({ kind: "other", type: m.method, data: m.params, rawDiagnostic: true });
       } catch (error) {
-        fail(error instanceof Error ? error : new Error("codex_line_handler_failed", { cause: error }));
+        lineFailure = error instanceof Error ? error : new Error("codex_line_handler_failed", { cause: error });
+        fail(lineFailure);
         child.kill("SIGKILL");
       }
     };
@@ -540,21 +543,20 @@ export class CodexDriver implements Driver {
     let totalWaitMs = 0;
     const emitDiagnostics = (turnFailed: boolean, snapshot: ReturnType<typeof settleCodexTurnUsage>) => {
       try {
-        if (turnFailed || child.exitCode || child.signalCode || stderrTail) {
+        if (snapshot) c.emit({ kind: "other", type: "armada/turnUsage", data: snapshot });
+        if (turnFailed || child.exitCode || child.signalCode || stderrTail || stderrTruncated) {
           if (stderrTail) this.options.refreshSecrets?.();
-          const start = stderrTruncated ? stderrTail.indexOf("\n") + 1 : 0;
           c.emit({
             kind: "other",
             type: "harness_stderr",
             data: {
               exitCode: child.exitCode,
               signal: child.signalCode,
-              text: stderrTruncated && !start ? "" : stderrTail.slice(start),
+              ...(stderrTruncated ? {} : { text: stderrTail }),
               truncated: stderrTruncated,
             },
           });
         }
-        if (snapshot) c.emit({ kind: "other", type: "armada/turnUsage", data: snapshot });
       } catch (error) {
         if (!turnFailed) throw error;
       }
@@ -570,6 +572,7 @@ export class CodexDriver implements Driver {
           const active: Promise<{ terminal: Promise<TurnCompletedNotification> }> = current;
           const { terminal } = await active;
           const result = await terminal;
+          if (lineFailure) throw lineFailure;
           if (steering) {
             await steerFinished;
             continue;

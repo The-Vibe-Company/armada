@@ -190,6 +190,15 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       });
       return;
     }
+    if (params.input[0]?.type === "text" && params.input[0].text === "malformed-protocol") {
+      process.stderr.write("fixture diagnostic\n");
+      const terminal = {
+        method: "turn/completed",
+        params: { threadId: thread, turn: { id: `turn-${turn}`, status: "completed", items: [], error: null } },
+      };
+      process.stdout.write(`${JSON.stringify(terminal)}\n{\n`);
+      return;
+    }
     if (params.input[0]?.type === "text" && params.input[0].text === "message-semantics") {
       notify("item/agentMessage/delta", {
         threadId: "reviewer-thread",
