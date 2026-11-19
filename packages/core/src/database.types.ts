@@ -5541,7 +5541,6 @@ export type ModalMachineRow = Database["public"]["Tables"]["modal_machines"]["Ro
 export type ModalServerAppRow = Database["public"]["Tables"]["modal_server_apps"]["Row"];
 export type ModalServerHarnessRow = Database["public"]["Tables"]["modal_server_harnesses"]["Row"];
 export type ModalServerScopeRow = Database["public"]["Tables"]["modal_server_scopes"]["Row"];
-export type ModelAuthOwnershipRow = Database["public"]["Tables"]["model_auth_ownership"]["Row"];
 export type ModelAuthStateRow = Database["public"]["Tables"]["model_auth_state"]["Row"];
 export type NativeSteerCursorRow = Database["public"]["Tables"]["native_steer_cursors"]["Row"];
 export type NativeWebhookPromptRow = Database["public"]["Tables"]["native_webhook_prompts"]["Row"];
