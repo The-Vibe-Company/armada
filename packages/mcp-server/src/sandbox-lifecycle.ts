@@ -16,7 +16,6 @@ import { preserveBeforeStop, recordStopDispatch } from "./work-preservation.ts";
 export const UNENROLLED_RESUME_STOP = "runtime_resume_unenrolled";
 const OPERATOR_CLEANUP_PREFIX = "Operator cleanup required:";
 
-/** Retire an unsuccessful resume under its original activity and generation fence. */
 export async function requestFailedRuntimeResumeStop(
   tx: Sql,
   sandboxId: string,
