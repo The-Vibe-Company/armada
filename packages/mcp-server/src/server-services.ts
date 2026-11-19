@@ -562,7 +562,7 @@ export async function createServerServices(env: Record<string, string | undefine
   const nativeHistoryFor = createHistoricalSandboxProviderResolver({
     resolve: (target, caller) => logProviders[target.provider](target, caller),
   });
-  const langfuse = createLangfuse(sql, config.encryptionKey, (id) => nativeHistoryFor(sql, id));
+  const langfuse = createLangfuse(sql, config.encryptionKey, (id, generation) => nativeHistoryFor(sql, id, generation));
   const runtimeEvents = createRuntimeEvents(
     runtimeEnrolments,
     config.encryptionKey,

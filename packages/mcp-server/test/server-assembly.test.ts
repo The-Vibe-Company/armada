@@ -31,7 +31,7 @@ test("server assembly preserves worker lane order and isolation", () => {
     webhooks: passiveLane,
     delegatedAccess: { childWorker: passiveLane },
     accountTurns: passiveLane,
-    langfuse: passiveLane,
+    langfuse: { exportJob: { concurrency: 1 } },
     modal: { inventoryReaper: () => ({ ...passiveLane, isolatedSweep: true }) },
   } as unknown as ServerServices;
 
@@ -42,10 +42,6 @@ test("server assembly preserves worker lane order and isolation", () => {
         "routines",
       ],
       "isolated": [
-        {
-          "name": "langfuse",
-          "sweep": false,
-        },
         {
           "name": "steer-recovery",
           "sweep": false,

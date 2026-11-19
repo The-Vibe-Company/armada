@@ -71,7 +71,8 @@ const idleLane: LaneFactory = ({ sql, config, runtimeCheckpoint, idleDelayMs, do
       : {}),
   });
 
-const jobsLane: LaneFactory = ({ jobs, options }) => createJobsRunner(jobs, {}, options.logError);
+const jobsLane: LaneFactory = ({ jobs, langfuse, options }) =>
+  createJobsRunner(jobs, { langfuse_export: langfuse.exportJob }, options.logError);
 const dockerCleanupLane: LaneFactory = ({ sql, config }) => createFinishedDockerCleanup(sql, config.encryptionKey);
 export const retentionWorker =
   ({ sql, control }: ServerServices) =>
@@ -120,7 +121,6 @@ export const runtimeModule: ServerModule = ({ mounts, workers, shutdown }) => {
   mounts.push(runtimeMounts);
   workers.managed.set("account-turns", ({ accountTurns }) => accountTurns);
   workers.managed.set("runtime-idle", idleLane);
-  workers.isolated.set("langfuse", ({ langfuse }) => langfuse);
   workers.isolated.set("steer-recovery", ({ nativePrompts }) => nativePrompts.steerRecovery);
   shutdown.stopSockets = ({ runtimeSockets }) => runtimeSockets.stop();
 };
