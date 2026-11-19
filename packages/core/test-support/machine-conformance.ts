@@ -14,16 +14,10 @@ type Scope = { deploymentId: string; bindingId: string };
 type LiveMachine = MachineInventoryEntry & { bindingId: string };
 type FaultHook = (step: string) => void;
 
-/**
- * Each fixture owns a fresh fake backend. Rebuilding an adapter must preserve
- * backend state and any adapter receipts that would survive a restart.
- * The hook trips at actual fake I/O boundaries, including before a mutation
- * and after its effect but before the reply. List every reachable boundary
- * for each mutation in the retained lifecycle exercised here.
- */
 export interface MachineConformanceFixture {
   adapter(scope: Scope, fault?: FaultHook): Machine;
   liveMachines(): readonly LiveMachine[];
+  committedRetention(scope: Scope, machine: MachineIncarnation): RetainedMachine | undefined;
   runtimeBindings(machine: MachineIdentity): readonly string[];
   writeWorkspace(machine: MachineIdentity, content: string): void;
   readWorkspace(machine: MachineIdentity): string | undefined;
@@ -33,7 +27,6 @@ export interface MachineConformanceOptions {
   capabilities: MachineCapabilities;
   inventory: boolean;
   faultSteps: Readonly<Record<Mutation, readonly [string, ...string[]]>>;
-  /** A create hook after allocation commits and before its response. */
   lostCreateResponseStep: string;
   fixture(): MachineConformanceFixture;
 }
@@ -58,17 +51,20 @@ function expectExited(observation: MachineObservation) {
   }
 }
 
-function expectAllocation(fixture: MachineConformanceFixture, machine: MachineIdentity) {
-  const matching = fixture
+function physicalMachines(fixture: MachineConformanceFixture, incarnation: MachineIncarnation) {
+  return fixture
     .liveMachines()
     .filter(
       (entry) =>
         entry.bindingId === scope.bindingId &&
         entry.deploymentId === scope.deploymentId &&
-        entry.sandboxId === machine.sandboxId &&
-        entry.generation === machine.generation,
+        entry.sandboxId === incarnation.sandboxId &&
+        entry.generation === incarnation.generation,
     );
-  expect(matching.map((entry) => entry.machineId)).toEqual([machine.machineId]);
+}
+
+function expectAllocation(fixture: MachineConformanceFixture, machine: MachineIdentity) {
+  expect(physicalMachines(fixture, machine).map((entry) => entry.machineId)).toEqual([machine.machineId]);
 }
 
 function expectRetention(retained: RetainedMachine | null, kind: MachineCapabilities["stopRetention"]) {
@@ -77,8 +73,7 @@ function expectRetention(retained: RetainedMachine | null, kind: MachineCapabili
   return retained;
 }
 
-/** Return named, independently runnable cases for an adapter. */
-export function machineConformanceCases(options: MachineConformanceOptions): ConformanceCase[] {
+export function machineConformanceCases(options: MachineConformanceOptions) {
   const { capabilities } = options;
   const allocation = {
     size: capabilities.sizes[0] ?? null,
@@ -111,7 +106,9 @@ export function machineConformanceCases(options: MachineConformanceOptions): Con
         const fixture = options.fixture();
         const machine = await fixture.adapter(scope).create(createRequest(incarnation));
         await remove(fixture.adapter(scope), machine);
+        expect(physicalMachines(fixture, machine)).toEqual([]);
         await remove(fixture.adapter(scope), machine);
+        expect(physicalMachines(fixture, machine)).toEqual([]);
         expect(await fixture.adapter(scope).observe(machine)).toMatchObject({ kind: "absent" });
       },
     },
@@ -160,24 +157,15 @@ export function machineConformanceCases(options: MachineConformanceOptions): Con
         const adapter = fixture.adapter(scope);
         const replacement = await adapter.resume({ ...next, ...allocation, predecessor: retained });
         await adapter.bootstrap({ ...replacement, bindingRef: "replacement-binding" });
-        const before = await adapter.observe(replacement);
-        expectPresent(before, replacement);
-        try {
-          switch (operation) {
-            case "bootstrap":
-              await bootstrap(adapter, machine);
-              break;
-            case "stop":
-              await adapter.stop({ ...machine, retain: true });
-              break;
-            case "delete":
-              await remove(adapter, machine);
-              break;
-          }
-        } catch {
-          // A stale mutation may be refused or restricted to its original incarnation.
-        }
-        expect(await adapter.observe(replacement)).toEqual(before);
+        expectPresent(await adapter.observe(replacement), replacement);
+        const stale = { ...machine, machineId: replacement.machineId };
+        const staleOperation = {
+          bootstrap: () => bootstrap(adapter, stale),
+          stop: () => adapter.stop({ ...stale, retain: true }),
+          delete: () => remove(adapter, stale),
+        }[operation];
+        await staleOperation().catch(() => undefined);
+        expectPresent(await adapter.observe(replacement), replacement);
         expectAllocation(fixture, replacement);
         expect(fixture.runtimeBindings(replacement)).toEqual(["replacement-binding"]);
         expect(fixture.readWorkspace(replacement)).toBe(workspace);
@@ -233,7 +221,9 @@ export function machineConformanceCases(options: MachineConformanceOptions): Con
         return {
           invoke: (adapter) => adapter.stop(request),
           async recover(adapter) {
+            const committed = fixture.committedRetention(scope, machine);
             const retained = expectRetention(await adapter.stop(request), capabilities.stopRetention);
+            if (committed) expect(retained).toEqual(committed);
             expectExited(await adapter.observe(machine));
             const restored = await adapter.resume({ ...next, ...allocation, predecessor: retained });
             expect(fixture.readWorkspace(restored)).toBe(workspace);
@@ -248,7 +238,10 @@ export function machineConformanceCases(options: MachineConformanceOptions): Con
         return {
           invoke: (adapter) => adapter.resume(request),
           async recover(adapter) {
+            const committed = physicalMachines(fixture, next);
             const restored = await adapter.resume(request);
+            expect(restored).toMatchObject(next);
+            for (const prior of committed) expect(restored.machineId).toBe(prior.machineId);
             expectPresent(await adapter.observe(next), restored);
             expectAllocation(fixture, restored);
             expect(fixture.readWorkspace(restored)).toBe(workspace);
@@ -263,6 +256,7 @@ export function machineConformanceCases(options: MachineConformanceOptions): Con
           invoke: (adapter) => remove(adapter, machine),
           async recover(adapter) {
             await remove(adapter, machine);
+            expect(physicalMachines(fixture, machine)).toEqual([]);
             expect(await adapter.observe(machine)).toMatchObject({ kind: "absent" });
           },
         };
@@ -285,7 +279,6 @@ export function machineConformanceCases(options: MachineConformanceOptions): Con
             tripped = true;
             throw new Error(`Injected fault at ${step}`);
           });
-          // The adapter may reconcile the transport fault itself or surface it.
           await invoke(adapter).catch(() => undefined);
           expect(tripped).toBe(true);
           await recover(fixture.adapter(scope), step);
@@ -319,8 +312,8 @@ export function machineConformanceCases(options: MachineConformanceOptions): Con
   return cases;
 }
 
-export function testMachineConformance(name: string, options: MachineConformanceOptions): void {
+export function testMachineConformance(name: string, options: MachineConformanceOptions) {
   for (const scenario of machineConformanceCases(options)) {
-    test(`${name}: ${scenario.name}`, scenario.run, 1000);
+    test(`${name}: ${scenario.name}`, scenario.run);
   }
 }

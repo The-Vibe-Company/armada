@@ -1,5 +1,11 @@
 import { expect, test } from "bun:test";
-import { capabilities, type MachineIdentity, type MachineObservation, type RetainedMachine } from "../src/machine.ts";
+import {
+  capabilities,
+  type MachineIdentity,
+  type MachineIncarnation,
+  type MachineObservation,
+  type RetainedMachine,
+} from "../src/machine.ts";
 import {
   type MachineConformanceFixture,
   type MachineConformanceOptions,
@@ -9,7 +15,7 @@ import {
 
 const stopRetention = capabilities("modal").stopRetention;
 
-function referenceFixture(loseCreateDeduplication = false): MachineConformanceFixture {
+function referenceFixture(loseCreateDeduplication = false) {
   const live = new Map<string, ReturnType<MachineConformanceFixture["liveMachines"]>[number]>();
   const allocations = new Map<string, MachineIdentity>();
   const bindings = new Map<string, string>();
@@ -17,8 +23,13 @@ function referenceFixture(loseCreateDeduplication = false): MachineConformanceFi
   const checkpoints = new Map<string, { retained: RetainedMachine; content: string }>();
   let sequence = 0;
 
+  function scopedKey(scope: Parameters<MachineConformanceFixture["adapter"]>[0], id: MachineIncarnation) {
+    return JSON.stringify([scope.bindingId, scope.deploymentId, id.sandboxId, id.generation]);
+  }
+
   return {
     liveMachines: () => [...live.values()],
+    committedRetention: (scope, machine) => checkpoints.get(scopedKey(scope, machine))?.retained,
     runtimeBindings: (machine) => {
       const binding = bindings.get(machine.machineId);
       return binding === undefined ? [] : [binding];
@@ -28,11 +39,11 @@ function referenceFixture(loseCreateDeduplication = false): MachineConformanceFi
     },
     readWorkspace: (machine) => workspaces.get(machine.machineId),
     adapter(scope, fault) {
-      function key({ sandboxId, generation }: MachineIdentity | Pick<MachineIdentity, "sandboxId" | "generation">) {
-        return JSON.stringify([scope.bindingId, scope.deploymentId, sandboxId, generation]);
+      function key(id: MachineIncarnation) {
+        return scopedKey(scope, id);
       }
 
-      function allocate({ sandboxId, generation }: Pick<MachineIdentity, "sandboxId" | "generation">) {
+      function allocate({ sandboxId, generation }: MachineIncarnation) {
         const machine = { sandboxId, generation, machineId: `machine-${++sequence}` };
         live.set(machine.machineId, { ...scope, ...machine, createdAt: new Date(0) });
         allocations.set(key(machine), machine);
@@ -99,12 +110,16 @@ function referenceFixture(loseCreateDeduplication = false): MachineConformanceFi
           if (request.scope === "physical-and-retained") checkpoints.delete(key(request));
           fault?.("delete reply lost");
         },
-        async observe(request): Promise<MachineObservation> {
+        async observe(request) {
           const machine = allocations.get(key(request));
           if (!machine || (request.machineId && request.machineId !== machine.machineId) || !matching(machine)) {
-            return { kind: "absent" };
+            return { kind: "absent" } satisfies MachineObservation;
           }
-          return { kind: "present", machine, phase: bindings.has(machine.machineId) ? "running" : "starting" };
+          return {
+            kind: "present",
+            machine,
+            phase: bindings.has(machine.machineId) ? "running" : "starting",
+          } satisfies MachineObservation;
         },
         async *listInventory() {
           for (const { bindingId, ...entry } of live.values()) {
@@ -113,7 +128,7 @@ function referenceFixture(loseCreateDeduplication = false): MachineConformanceFi
         },
       };
     },
-  };
+  } satisfies MachineConformanceFixture;
 }
 
 const options = {
