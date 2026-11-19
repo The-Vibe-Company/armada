@@ -23,7 +23,12 @@ import {
 import type { Caller, CallerResult } from "./caller.ts";
 import type { Job, JobResult } from "./jobs/runner.ts";
 import type { createJobsStore } from "./jobs/store.ts";
-import { BOAT_RETAINED_OUTPUT_STOP, collectOutputTransfers, remainingOutputOrgBytes } from "./output-transfers.ts";
+import {
+  BOAT_RETAINED_OUTPUT_STOP,
+  CAN_WRITE_LIVE,
+  collectOutputTransfers,
+  remainingOutputOrgBytes,
+} from "./output-transfers.ts";
 
 // Native and enrolled-runtime Boat/Modal sandboxes: providers read the declared directory through
 // their own fixed channel (Provider.readOutputs), never caller commands or the agent runtime.
@@ -224,13 +229,13 @@ async function collect(
   },
 ) {
   const { signal, writes, job } = options;
-  const admitRead = async () => {
+  const admitRead = async (eligibility: string) => {
     signal?.throwIfAborted();
     if (options.canDispatch && !(await options.canDispatch())) return;
     const { rows } = await outputPhase("admit_read", () =>
       sql.query<{ outputs_collector_supported: boolean }>(
         `select outputs_collector_supported from public.sandboxes where id=$1 and ${ELIGIBLE}
-          and ($2::bigint is null or (lifecycle_generation=$2::bigint and provider_sandbox_id=$3 and ${LIVE_CANDIDATE}))`,
+          and ($2::bigint is null or (lifecycle_generation=$2::bigint and provider_sandbox_id=$3 and (${eligibility})))`,
         [id, job?.generation ?? null, providerId],
       ),
     );
@@ -238,9 +243,9 @@ async function collect(
     return rows[0];
   };
   const authorizeRead = async () => {
-    if (job && !(await admitRead())) throw new OutputCollectionError("output_unavailable");
+    if (job && !(await admitRead(CAN_WRITE_LIVE))) throw new OutputCollectionError("output_unavailable");
   };
-  const admitted = await admitRead();
+  const admitted = await admitRead(LIVE_CANDIDATE);
   if (!admitted) return;
   // Final capture never probes first. Its bounded read is the last chance to collect a deliverable,
   // and the read's own exit status classifies an unsupported collector, so a transient or parallel

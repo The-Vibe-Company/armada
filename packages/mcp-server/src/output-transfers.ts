@@ -13,7 +13,7 @@ import type { Job } from "./jobs/runner.ts";
 type ChunkedOutputReader = Required<Pick<Provider, "listOutputEntries" | "readOutputChunk">> &
   Pick<Provider, "outputReadBytes" | "outputReadConcurrency">;
 
-const CAN_WRITE_LIVE = `status in ('ready','running','stopping')
+export const CAN_WRITE_LIVE = `status in ('ready','running','stopping')
           or (status='failed' and stop_requested_at is not null and stopped_at is null)`;
 
 export const BOAT_RETAINED_OUTPUT_STOP = `provider='boat' and status in ('stopped','failed') and stopped_at is not null

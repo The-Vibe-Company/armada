@@ -287,8 +287,8 @@ test("a stop settling during a capture job preserves the retained archive read",
   let stopSettled = false;
   const racing: Sql = {
     ...sql,
-    async query(query, params) {
-      const result = await sql.query(query, params);
+    async query<T>(query: string, params?: unknown[]) {
+      const result = await sql.query<T>(query, params);
       if (query.includes("set outputs_attempt_count=outputs_attempt_count+1") && result.rows.length === 0) {
         await sql.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [id]);
         stopSettled = true;
@@ -325,12 +325,15 @@ test("a stalled retained read leaves capacity to collect live outputs", async ()
   );
   const hold = Promise.withResolvers<null>();
   const entered = Promise.withResolvers<void>();
+  const {
+    rows: [second],
+  } = await db.query<{ id: string }>("select id from sandboxes where boat_id='archive_2'");
   let retainedReads = 0;
   const service = outputJobFixture(sql, KEY, async () => ({
     openRetainedOutputs() {
       retainedReads++;
       entered.resolve();
-      return hold.promise;
+      return retainedReads === 1 ? hold.promise : Promise.resolve("gone" as const);
     },
     readOutputs: async () => [file("live.txt", "still running")],
   }));
@@ -338,6 +341,20 @@ test("a stalled retained read leaves capacity to collect live outputs", async ()
     expect(await service.reconcileOne(signal())).toBe(true);
     await entered.promise;
     expect(await service.reconcileOne(signal())).toBe(true);
+    const archiveJob = {
+      id: crypto.randomUUID(),
+      kind: "outputs_capture",
+      sandbox_id: second!.id,
+      generation: "1",
+      lease_epoch: "1",
+      attempts: 1,
+      max_attempts: 3,
+      payload: null,
+      outcome: null,
+    };
+    expect((await service.captureJob.run(archiveJob, { signal: signal(), canDispatch: async () => true })).status).toBe(
+      "retry",
+    );
   } finally {
     hold.resolve(null);
     await service.drain();
@@ -882,25 +899,26 @@ test("an in-flight sample publishes unless a newer final capture commits first",
 
 test("an in-flight sample still publishes when the newer final capture fails", async () => {
   const { people, id, sql } = await fixture({ boatId: "sample_after_failed_final" });
-  const periodic = disks();
-  let release = () => {};
-  periodic.state.hold = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const entered = new Promise<void>((resolve) => {
-    periodic.state.entered = resolve;
-  });
-  const service = outputJobFixture(sql, KEY, async () => periodic.provider);
+  const hold = Promise.withResolvers<void>();
+  const entered = Promise.withResolvers<void>();
+  const service = outputJobFixture(sql, KEY, async () => ({
+    async listOutputEntries() {
+      entered.resolve();
+      await hold.promise;
+      return [{ name: "memo.txt", size: 5, revision: "1:2:3:4" }];
+    },
+    readOutputChunk: async () => Buffer.from("draft"),
+  }));
   expect(await service.reconcileOne(signal())).toBe(true);
-  await entered;
+  await entered.promise;
   // The newer pre-stop capture claims a later scan but its read fails.
   const final = disks();
   final.state.stopped = true;
   await expect(captureFinalOutputs(sql, final.provider, id, { key: KEY, signal: signal() })).rejects.toThrow(
     "output_unavailable",
   );
-  periodic.state.live = [file("memo.txt", "draft")];
-  release();
+  await sql.query("update sandboxes set status='stopping',stop_requested_at=now() where id=$1", [id]);
+  hold.resolve();
   await service.drain();
   const url = `https://armada.example/api/v1/sandboxes/${id}/outputs/memo.txt`;
   const response = await routeFor(service, people.owner, people.org)(new Request(url));
