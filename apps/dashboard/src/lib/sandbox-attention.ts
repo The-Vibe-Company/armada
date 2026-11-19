@@ -9,10 +9,10 @@ import { parsePullRequests } from "./pull-requests.ts";
 
 /** Existing attention and recovery semantics, now shown on the authorized sandbox detail rather than a separate board. */
 /** Under this much time left, a live sandbox's deadline is highlighted and its unfinished work needs the operator. */
-export const EXPIRY_WARNING_SECONDS = 30 * 60;
+const EXPIRY_WARNING_SECONDS = 30 * 60;
 
 /** A prompt longer than this is not carried to the page for a one-click resend: it is resent from its conversation. */
-export const RESEND_MAX_CHARS = 16_000;
+const RESEND_MAX_CHARS = 16_000;
 
 /** What a one-click "Continue" sends to an agent that finished without reporting an outcome. */
 export const CONTINUE_PROMPT =
@@ -64,7 +64,7 @@ export function summarizeEvents(events: readonly ChatEvent[], currentConversatio
  * The state column. `kind` orders and colours the row; `label` is what it reads. The structured outcome the agent
  * reported for its latest finished turn (#742) refines that turn into `ready` (to merge) or `blocked`.
  */
-export type AttentionStateKind =
+type AttentionStateKind =
   | "failed"
   | "blocked"
   | "ready"
@@ -74,7 +74,7 @@ export type AttentionStateKind =
   | "working"
   | "stopped";
 
-export type AttentionState = {
+type AttentionState = {
   kind: AttentionStateKind;
   label: string;
   /** For a failure: the known explanation's title and hint, or the reason as reported. */
@@ -101,7 +101,7 @@ export function isRecoverableReason(reason: string | null | undefined): boolean 
 }
 
 /** What is recorded on the sandbox row itself, beside its status. */
-export type Recorded = {
+type Recorded = {
   statusReason: string | null;
   lifecycleError: string | null;
 };
@@ -180,7 +180,7 @@ function failed(reason: string | null, fallback: string): AttentionState {
 }
 
 /** The time left before the deadline Armada holds a live sandbox to. */
-export type ExpiryView = { text: string; urgent: boolean; seconds: number };
+type ExpiryView = { text: string; urgent: boolean; seconds: number };
 
 export function expiryView(status: SandboxStatus, expiresAt: string | null, now: Date): ExpiryView | null {
   if (!isActiveStatus(status) || !expiresAt) return null;
@@ -196,15 +196,6 @@ export function expiryView(status: SandboxStatus, expiresAt: string | null, now:
  * waiting for its first prompt, or an ended sandbox with nothing left in it.
  */
 export type Attention = "ready" | "blocked" | "failed" | "interrupted" | "unconcluded" | "expiring";
-
-export const ATTENTION_TITLES: Record<Attention, string> = {
-  ready: "Ready to merge",
-  blocked: "Blocked",
-  failed: "Failed",
-  interrupted: "Interrupted",
-  unconcluded: "Finished without an outcome",
-  expiring: "Expiring with unfinished work",
-};
 
 /**
  * - ready, blocked: the agent reported it (#742), on a live or a stopped machine;
@@ -246,14 +237,6 @@ export function attentionOf(
   }
 }
 
-/** The label a row's badge reads for what it needs. */
-export function attentionLabel(attention: Attention, status: SandboxStatus): string {
-  if (attention === "unconcluded") return isActiveStatus(status) ? "No outcome reported" : "Stopped mid-work";
-  if (attention === "interrupted") return "Interrupted — resend";
-  if (attention === "expiring") return "Expiring soon";
-  return ATTENTION_TITLES[attention];
-}
-
 export function sandboxAttention(
   sandbox: Pick<Sandbox, "id" | "status"> &
     Partial<
@@ -292,7 +275,7 @@ export function sandboxAttention(
 }
 
 /** `<sandbox id>.<8 hex>`: the sandbox and a short fingerprint of the state an acknowledgement covers. */
-export function ackKey(sandboxId: string, parts: readonly string[]): string {
+function ackKey(sandboxId: string, parts: readonly string[]): string {
   let hash = 0x811c9dc5;
   for (const char of parts.join("\u0000")) {
     hash ^= char.codePointAt(0) ?? 0;
