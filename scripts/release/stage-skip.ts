@@ -78,11 +78,27 @@ export function canReuseServer(
   );
 }
 
-export function canReuseDashboard(project: unknown, sha: string) {
-  const production = (
-    project as { targets?: { production?: { readyState?: string; meta?: { githubCommitSha?: string } } } } | null
+function productionDashboard(project: unknown) {
+  return (
+    project as {
+      targets?: {
+        production?: { id?: string; url?: string; readyState?: string; meta?: { githubCommitSha?: string } };
+      };
+    } | null
   )?.targets?.production;
+}
+
+export function canReuseDashboard(project: unknown, sha: string) {
+  const production = productionDashboard(project);
   return /^[a-f0-9]{40}$/.test(sha) && production?.readyState === "READY" && production.meta?.githubCommitSha === sha;
+}
+
+export function productionDashboardId(project: unknown, sha: string, expectedUrl?: string) {
+  if (!canReuseDashboard(project, sha)) return;
+  const production = productionDashboard(project);
+  if (expectedUrl !== undefined && expectedUrl !== `https://${production?.url}`) return;
+  const id = production?.id;
+  return typeof id === "string" && /^dpl_[A-Za-z0-9]+$/.test(id) ? id : undefined;
 }
 
 if (import.meta.main) {
@@ -93,7 +109,7 @@ if (import.meta.main) {
     const health: unknown = await Bun.stdin.json().catch(() => null);
     process.exit(canReuseServer(deployment, message ?? "", health, RELEASE_VERSION, RELEASE_SHA) ? 0 : 1);
   }
-  if (mode === "dashboard") {
+  if (mode === "dashboard" || mode === "dashboard-id") {
     const { VERCEL_TOKEN, VERCEL_ORG_ID, VERCEL_PROJECT_ID } = process.env;
     const url = new URL(`/v9/projects/${encodeURIComponent(VERCEL_PROJECT_ID ?? "")}`, "https://api.vercel.com");
     if (VERCEL_ORG_ID?.startsWith("team_")) url.searchParams.set("teamId", VERCEL_ORG_ID);
@@ -102,7 +118,11 @@ if (import.meta.main) {
       signal: AbortSignal.timeout(15_000),
     }).catch(() => null);
     const project: unknown = response?.ok ? await response.json().catch(() => null) : null;
-    process.exit(canReuseDashboard(project, RELEASE_SHA) ? 0 : 1);
+    if (mode === "dashboard") process.exit(canReuseDashboard(project, RELEASE_SHA) ? 0 : 1);
+    const id = productionDashboardId(project, RELEASE_SHA, latestDeployment);
+    if (!id) throw new Error("Could not identify the expected ready Vercel production deployment");
+    console.log(id);
+    process.exit(0);
   }
 
   if (mode !== "receipts" || !GITHUB_OUTPUT || !GITHUB_SERVER_URL || !GITHUB_REPOSITORY) {

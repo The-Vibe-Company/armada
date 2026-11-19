@@ -612,7 +612,7 @@ jobs:
   production:
     name: Release migrations, server and dashboard
     permissions:
-      contents: read
+      contents: write
       actions: read
       statuses: write
     needs: [release-metadata, production-approval]
@@ -695,7 +695,18 @@ jobs:
         env:
           RELEASE_ENVIRONMENT: production
           RELEASE_RESUME: 'true'
-        run: bash .release-tools/scripts/release/deploy-production.sh
+          RELEASE_RECEIPT_DIR: ${{ runner.temp }}/armada-release-receipt
+        run: |
+          mkdir -p "$RELEASE_RECEIPT_DIR"
+          bash .release-tools/scripts/release/deploy-production.sh
+      - name: Upload the production release receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_RECEIPT_DIR: ${{ runner.temp }}/armada-release-receipt
+        run: |
+          bun .release-tools/scripts/release/receipt.ts
+          gh release upload "v$RELEASE_VERSION" "$RELEASE_RECEIPT_DIR/release-receipt.json" --clobber
       - name: Record release/production success (${{ needs.release-metadata.outputs.sha }})
         env:
           GH_TOKEN: ${{ github.token }}

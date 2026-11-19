@@ -1,5 +1,11 @@
 import { expect, test } from "bun:test";
-import { canReuseDashboard, canReuseServer, completedStages, recordedStageSucceeded } from "./stage-skip";
+import {
+  canReuseDashboard,
+  canReuseServer,
+  completedStages,
+  productionDashboardId,
+  recordedStageSucceeded,
+} from "./stage-skip";
 
 const sha = "a".repeat(40);
 const otherSha = "b".repeat(40);
@@ -61,4 +67,13 @@ test("only the ready production dashboard at the requested SHA is reusable", () 
   expect(canReuseDashboard({ targets: { production } }, otherSha)).toBe(false);
   expect(canReuseDashboard({ targets: { preview: production } }, sha)).toBe(false);
   expect(canReuseDashboard({ targets: { production: { ...production, readyState: "ERROR" } } }, sha)).toBe(false);
+});
+
+test("the dashboard receipt identifies the deployed URL even when two deployments share a SHA", () => {
+  const url = "armada-release-fixture.vercel.app";
+  const project = {
+    targets: { production: { id: "dpl_Fixture", url, readyState: "READY", meta: { githubCommitSha: sha } } },
+  };
+  expect(productionDashboardId(project, sha, `https://${url}`)).toBe("dpl_Fixture");
+  expect(productionDashboardId(project, sha, "https://another-release-fixture.vercel.app")).toBeUndefined();
 });

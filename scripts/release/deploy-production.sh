@@ -69,7 +69,11 @@ if [[ "${STAGING_FORWARD_HISTORY:-}" == true ]]; then
   rm -f "$history_file" "$main_file"
 else
   decision=apply
-  supabase migration list --linked
+  if [[ -n "${RELEASE_RECEIPT_DIR:-}" ]]; then
+    supabase migration list --linked | tee "$RELEASE_RECEIPT_DIR/history-before"
+  else
+    supabase migration list --linked
+  fi
 fi
 if [[ "$decision" == apply ]]; then
   supabase db push --linked --dry-run
@@ -79,7 +83,11 @@ elif [[ "$decision" == skip ]]; then
 else
   fail 'Invalid staging migration decision.'
 fi
-supabase migration list --linked
+if [[ -n "${RELEASE_RECEIPT_DIR:-}" ]]; then
+  supabase migration list --linked | tee "$RELEASE_RECEIPT_DIR/history-after"
+else
+  supabase migration list --linked
+fi
 # Discard CLI link metadata before either provider uploads the source tree.
 rm -rf supabase/.temp
 
@@ -91,15 +99,19 @@ list_deployments() {
 deployment_message="Release $RELEASE_VERSION ($RELEASE_SHA), sandbox image: $pin_image"
 server_done=false
 dashboard_done=false
+dashboard_id=
+dashboard_mode=dashboard
+if [[ -n "${RELEASE_RECEIPT_DIR:-}" ]]; then dashboard_mode=dashboard-id; fi
 if [[ "${RELEASE_RESUME:-}" == true ]]; then
   if deployments=$(list_deployments) \
-      && latest_deployment=$(jq -ce '.[0] | select(. != null) | {status, meta: {commitMessage: .meta.commitMessage}}' <<< "$deployments") \
+      && latest_deployment=$(jq -ce '.[0] | select(. != null) | {id, status, meta: {commitMessage: .meta.commitMessage}}' <<< "$deployments") \
       && curl --fail --silent --show-error --max-time 15 "${ARMADA_SERVER_URL%/}/healthz" \
         | bun "$skip_tool" server "$latest_deployment" "$deployment_message"; then
+    deployment_id=$(jq -er '.id | select(type == "string" and length > 0)' <<< "$latest_deployment")
     server_done=true
     echo "::notice::Skipping Railway upload: latest deployment succeeded and health reports $RELEASE_SHA."
   fi
-  if bun "$skip_tool" dashboard; then
+  if dashboard_id=$(bun "$skip_tool" "$dashboard_mode"); then
     dashboard_done=true
     echo "::notice::Skipping Vercel build and deploy: ready production dashboard reports $RELEASE_SHA."
   fi
@@ -164,7 +176,16 @@ else
 fi
 # Wait for Ready; upload only the output, with no remote Vercel build.
 if [[ "$dashboard_done" == false ]]; then
-  vercel deploy --prebuilt --prod --yes \
-    --meta "githubCommitSha=$RELEASE_SHA" --meta "armadaVersion=$RELEASE_VERSION"
+  dashboard_url=$(vercel deploy --prebuilt --prod --yes \
+    --meta "githubCommitSha=$RELEASE_SHA" --meta "armadaVersion=$RELEASE_VERSION")
+  if [[ -n "${RELEASE_RECEIPT_DIR:-}" ]]; then
+    [[ "$dashboard_url" == https://* ]] || fail 'Missing Vercel deployment URL.'
+    dashboard_id=$(bun "$skip_tool" dashboard-id "$dashboard_url")
+  fi
+fi
+if [[ -n "${RELEASE_RECEIPT_DIR:-}" ]]; then
+  printf '%s\n' "$deployment_id" > "$RELEASE_RECEIPT_DIR/server"
+  printf '%s\n' "$pin_image" > "$RELEASE_RECEIPT_DIR/image"
+  printf '%s\n' "$dashboard_id" > "$RELEASE_RECEIPT_DIR/dashboard"
 fi
 echo "Released server and dashboard $RELEASE_VERSION from $RELEASE_SHA" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"

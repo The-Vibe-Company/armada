@@ -404,8 +404,14 @@ hotfix for a superseded version.
 Older tags can still fail staging on unknown or non-forward migration history;
 never repair history to force them through. Known forward main history is handled
 by the staging-only check described below. A failed smoke has no variable-based emergency bypass.
-Owner incident rollback requires schema-compatible known-good host deployments
-and recorded approval; prefer a new reviewed forward fix/revert release.
+Roll forward by default with a reviewed fix or revert release. A successful
+production release attaches `release-receipt.json` to its GitHub release. The
+receipt records the deployed source, provider deployment IDs, sandbox image
+digest, migration changes, protocol values at both tags and detected surface
+breaks. Migration evidence combines production history with the prior receipt and tag diff so that a retry still
+records SQL applied during an earlier attempt. Missing prior production history,
+protocol or API evidence prevents a reliable rollback comparison. Host rollback
+requires schema-compatible known-good deployments and recorded approval.
 Production history/confirmed repair and dry-run remain explicit manual operator
 tools, not a release authorization or application SQL apply path.
 
