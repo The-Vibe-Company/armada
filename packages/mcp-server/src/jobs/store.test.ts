@@ -144,6 +144,72 @@ test("transactional enqueue wakes after commit and replays the encrypted job by 
   }
 });
 
+test("a second generation advance before inspection requeues the same pending send", async () => {
+  const f = await fixture();
+  const { db, people, store } = f;
+  const sandboxId = await sandbox(f);
+  const requestId = crypto.randomUUID();
+  await seedTurn(f, sandboxId, requestId);
+  const id = await store.enqueue(
+    "turn_dispatch",
+    sandboxId,
+    2,
+    requestId,
+    { requestId },
+    {
+      orgId: people.org,
+      maxAttempts: 3,
+    },
+  );
+  await db.query("update sandboxes set lifecycle_generation=3 where id=$1", [sandboxId]);
+  const owner = crypto.randomUUID();
+  const job = (await store.claim("turn_dispatch", owner, 30, 1))!;
+  expect(job.generation).toBe("3");
+  await db.query("update sandboxes set lifecycle_generation=4 where id=$1", [sandboxId]);
+  expect(await store.inspect(job, owner)).toBe("stale");
+  await store.retireStale(job, owner);
+  const successor = (await store.claim("turn_dispatch", crypto.randomUUID(), 30, 1))!;
+  expect(successor).toMatchObject({ id, generation: "4", attempts: 2, payload: { requestId } });
+});
+
+test("receipt lock contention releases the claim without spending a dispatch attempt", async () => {
+  const f = await fixture();
+  const { db, people, sql, store } = f;
+  const sandboxId = await sandbox(f);
+  const requestId = crypto.randomUUID();
+  await seedTurn(f, sandboxId, requestId);
+  const id = await store.enqueue(
+    "turn_dispatch",
+    sandboxId,
+    2,
+    requestId,
+    { requestId },
+    {
+      orgId: people.org,
+      maxAttempts: 1,
+    },
+  );
+  const contended = createJobsStore(
+    {
+      ...sql,
+      transaction: async () => {
+        throw Object.assign(new Error("Receipt lock unavailable"), { code: "55P03" });
+      },
+    },
+    btoa("\0".repeat(32)),
+  );
+  const owner = crypto.randomUUID();
+  const job = (await contended.claim("turn_dispatch", owner, 30, 1))!;
+  expect(await store.inspect(job, owner)).toBe("lost");
+  expect(
+    (await db.query("select state, attempts, run_after > created_at as delayed from jobs where id=$1", [id])).rows,
+  ).toEqual([{ state: "queued", attempts: 0, delayed: true }]);
+  await db.query("update jobs set run_after='-infinity' where id=$1", [id]);
+  const successorOwner = crypto.randomUUID();
+  const successor = (await store.claim("turn_dispatch", successorOwner, 30, 1))!;
+  expect(await store.inspect(successor, successorOwner)).toBe("dispatch");
+});
+
 test.each([1, 2])("a stale lifecycle lease is retired from claim generation %i", async (generation) => {
   const f = await fixture();
   const { db, people, store } = f;
@@ -209,6 +275,7 @@ test.each([
             },
             async advance(tx) {
               if (scenario === "not advanced") return;
+              await tx.query("update account_turn_queue set state='dispatching' where sandbox_id=$1", [sandboxId]);
               await tx.query(advance, [sandboxId]);
               if (scenario === "interrupted") throw new Error("Admission interrupted.");
               if (scenario === "expired")

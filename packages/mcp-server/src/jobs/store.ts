@@ -40,8 +40,7 @@ interface EnqueueOptions {
 }
 
 export function createJobsStore(sql: Sql, encryptionKey?: string) {
-  async function reconcileTurnClaim(job: Job, owner: string) {
-    if (job.kind !== "turn_dispatch") return job;
+  async function reconcileTurnClaim(job: Job, owner: string, retiring: boolean) {
     if (
       !job.payload ||
       typeof job.payload !== "object" ||
@@ -51,40 +50,76 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
       throw new Error("Turn job is missing its request ID.");
     if (!sql.transaction) throw new Error("Turn claim reconciliation requires a transaction.");
     const requestId = job.payload.requestId;
-    return sql.transaction(async (tx) => {
-      const {
-        rows: [receipt],
-      } = await tx.query<{ state: string }>(
-        `select state from public.account_turn_queue
-         where sandbox_id = $1 and request_id = $2 for update nowait`,
-        [job.sandbox_id, requestId],
-      );
-      if (!receipt || receipt.state === "admitted" || receipt.state === "failed") {
-        await tx.query(
-          `update public.jobs j set state = 'done', lease_owner = null, lease_until = null
-           where ${fence} and j.generation = $4`,
-          claimKey(job, owner),
-        );
-      } else if (receipt.state === "queued") {
-        // WARNING: Do not wait for the sandbox lock while owner stop may hold it and wait for the receipt.
-        await tx.query("select id from public.sandboxes where id = $1 for update nowait", [job.sandbox_id]);
+    const claim = claimKey(job, owner);
+    try {
+      return await sql.transaction(async (tx) => {
         const {
-          rows: [updated],
-        } = await tx.query<{ generation: string }>(
-          `update public.jobs j set generation = s.lifecycle_generation
-           from public.sandboxes s join public.account_turn_queue q on q.sandbox_id = s.id
-           where ${fence} and j.generation = $4 and q.request_id = $5 and s.id = j.sandbox_id
-             and s.lifecycle_generation > j.generation and s.status in ('ready','running')
-             and s.deleted_at is null and s.stop_requested_at is null and s.expires_at > now()
-             and q.native_prompt_id is null and s.task_prompt_id is distinct from q.request_id::text
-             and not coalesce(${RUNTIME_REQUEST_EVIDENCE}, false)
-           returning j.generation::text`,
-          [...claimKey(job, owner), requestId],
+          rows: [receipt],
+        } = await tx.query<{ state: string }>(
+          `select state from public.account_turn_queue
+           where sandbox_id = $1 and request_id = $2 for update nowait`,
+          [job.sandbox_id, requestId],
         );
-        if (updated) return { ...job, generation: updated.generation };
-      }
+        if (!receipt || receipt.state === "admitted" || receipt.state === "failed") {
+          await tx.query(
+            `update public.jobs j set state = 'done', lease_owner = null, lease_until = null
+             where ${fence} and (j.generation = $4 or $5::boolean)`,
+            [...claim, retiring],
+          );
+          return job;
+        }
+        if (receipt.state !== "queued" && !retiring) return job;
+        // WARNING: Owner stop can hold the sandbox lock while waiting for the receipt.
+        const {
+          rows: [sandbox],
+        } = await tx.query<{ generation: string }>(
+          "select lifecycle_generation::text as generation from public.sandboxes where id = $1 for update nowait",
+          [job.sandbox_id],
+        );
+        if (receipt.state === "queued") {
+          const {
+            rows: [updated],
+          } = await tx.query<{ generation: string }>(
+            `update public.jobs j set generation = s.lifecycle_generation,
+               state = case when $6::boolean then 'queued' else j.state end,
+               lease_owner = case when $6 then null else j.lease_owner end,
+               lease_until = case when $6 then null else j.lease_until end
+             from public.sandboxes s join public.account_turn_queue q on q.sandbox_id = s.id
+             where ${fence} and (j.generation = $4 or $6) and q.request_id = $5 and s.id = j.sandbox_id
+               and s.lifecycle_generation > j.generation and s.status in ('ready','running')
+               and s.deleted_at is null and s.stop_requested_at is null and s.expires_at > now()
+               and q.native_prompt_id is null and s.task_prompt_id is distinct from q.request_id::text
+               and not coalesce(${RUNTIME_REQUEST_EVIDENCE}, false)
+             returning j.generation::text`,
+            [...claim, requestId, retiring],
+          );
+          if (updated) return { ...job, generation: updated.generation };
+        }
+        if (retiring) await failStale(tx, job, owner, sandbox?.generation ?? null);
+        return job;
+      });
+    } catch (error) {
+      const fields = error as { errno?: string; code?: string } | null;
+      if ((fields?.errno ?? fields?.code) !== "55P03") throw error;
+      if (!retiring)
+        await sql.query(
+          `update public.jobs j set state = 'queued', lease_owner = null, lease_until = null,
+             attempts = attempts - 1, run_after = clock_timestamp() + interval '1 second'
+           where ${fence} and j.generation = $4`,
+          claim,
+        );
       return job;
-    });
+    }
+  }
+
+  async function failStale(tx: Sql, job: Job, owner: string, generation: string | null) {
+    await tx.query(
+      `update public.jobs j set state = 'failed', lease_owner = null, lease_until = null,
+         outcome = coalesce(outcome, '{}'::jsonb) || '{"reason":"stale_generation"}'::jsonb
+       where ${fence} and (j.kind = 'turn_dispatch' or j.generation = $4)
+         and j.generation is distinct from $5`,
+      [...claimKey(job, owner), generation],
+    );
   }
 
   async function withLockedTurnGeneration<T>(
@@ -175,7 +210,8 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
         payload_enc === null
           ? null
           : JSON.parse(await decryptSecret(Uint8Array.from(Buffer.from(payload_enc, "hex")), encryptionKey));
-      return reconcileTurnClaim({ ...job, payload }, owner);
+      const claimed = { ...job, payload };
+      return kind === "turn_dispatch" ? reconcileTurnClaim(claimed, owner, false) : claimed;
     },
     async inspect(job, owner) {
       const { rows } = await sql.query<{ state: "dispatch" | "reconcile" | "stale" }>(
@@ -192,19 +228,17 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
     },
     async retireStale(job, owner) {
       if (job.generation === null) return;
+      if (job.kind === "turn_dispatch") {
+        await reconcileTurnClaim(job, owner, true);
+        return;
+      }
       if (!sql.transaction) throw new Error("Job retirement requires a transaction.");
       await sql.transaction(async (tx) => {
         const { rows: sandboxRows } = await tx.query<{ generation: string }>(
           "select lifecycle_generation::text as generation from public.sandboxes where id = $1 for update",
           [job.sandbox_id],
         );
-        await tx.query(
-          `update public.jobs j set state = 'failed', lease_owner = null, lease_until = null,
-             outcome = coalesce(outcome, '{}'::jsonb) || '{"reason":"stale_generation"}'::jsonb
-           where ${fence} and (j.kind = 'turn_dispatch' or j.generation = $4)
-             and j.generation is distinct from $5`,
-          [...claimKey(job, owner), sandboxRows[0]?.generation ?? null],
-        );
+        await failStale(tx, job, owner, sandboxRows[0]?.generation ?? null);
       });
     },
     async handoffGeneration(job, owner, handoff) {
