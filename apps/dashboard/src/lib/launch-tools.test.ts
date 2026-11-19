@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { McpConnection } from "./connections";
-import { launchToolGroups } from "./launch-tools";
+import { launchToolGroups, rememberLaunchToolSelection } from "./launch-tools";
 
 const tool: McpConnection = {
   id: "selected",
@@ -21,11 +21,22 @@ test("the Tools menu separates blocked, selected and available connections on op
         { ...tool, id: "blocked", status: "needs_reconnect" },
         { ...tool, id: "available", defaultForLaunch: false },
       ],
-      ["blocked", "selected"],
-    ),
+      new Map([
+        ["blocked", true],
+        ["selected", true],
+      ]),
+    ).map(({ title, tools }) => [title, tools.map(({ id }) => id)]),
   ).toEqual([
-    { title: "Needs attention", ids: ["blocked"] },
-    { title: "On for this launch", ids: ["selected"] },
-    { title: "Available", ids: ["available"] },
+    ["Needs attention", ["blocked"]],
+    ["On for this launch", ["selected"]],
+    ["Available", ["available"]],
   ]);
+});
+
+test("tools discovered while the menu is open join it and keep their initial group after a toggle", () => {
+  const empty = rememberLaunchToolSelection(new Map(), [], []);
+  const loaded = rememberLaunchToolSelection(empty, [tool], [tool.id]);
+  const afterToggle = rememberLaunchToolSelection(loaded, [tool], []);
+  const [, onForThisLaunch] = launchToolGroups([tool], afterToggle);
+  expect(onForThisLaunch.tools.map(({ id }) => id)).toEqual([tool.id]);
 });

@@ -2,7 +2,7 @@
 
 import { ChevronDownIcon, CircleAlertIcon } from "lucide-react";
 import Link from "next/link";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { ConnectionStatusBadge } from "@/components/connections";
 import type { useLaunchAccess } from "@/components/launch-dialog";
 import { useLaunchPhone } from "@/components/launch-surface";
@@ -11,8 +11,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
-import { launchBlocker, type McpConnection } from "@/lib/connections";
-import { launchToolGroups, toolInitials } from "@/lib/launch-tools";
+import { connectAction, launchBlocker, type McpConnection } from "@/lib/connections";
+import { launchToolGroups, rememberLaunchToolSelection, toolInitials } from "@/lib/launch-tools";
 
 export function LaunchTools({ access, idPrefix }: { access: ReturnType<typeof useLaunchAccess>; idPrefix: string }) {
   const phone = useLaunchPhone();
@@ -89,23 +89,24 @@ function ToolMenu({
   onReset: () => void;
 }) {
   const [query, setQuery] = useState("");
-  const [groupsOnOpen] = useState(() => launchToolGroups(tools, chosen));
+  const searchInput = useRef<HTMLInputElement>(null);
+  const [initialSelection, setInitialSelection] = useState<ReadonlyMap<string, boolean>>(() => new Map());
+  const selectionWithNewTools = rememberLaunchToolSelection(initialSelection, tools, chosen);
+  if (selectionWithNewTools !== initialSelection) setInitialSelection(selectionWithNewTools);
   const search = query.trim().toLowerCase();
-  const visible = groupsOnOpen
-    .map(({ title, ids }) => ({
+  const visible = launchToolGroups(tools, initialSelection)
+    .map(({ title, tools: entries }) => ({
       title,
-      tools: ids.flatMap((id) => {
-        const tool = tools.find((entry) => entry.id === id);
-        return tool && `${tool.name} ${tool.scope} ${tool.accountLabel ?? ""}`.toLowerCase().includes(search)
-          ? [tool]
-          : [];
-      }),
+      tools: entries.filter((tool) =>
+        `${tool.name} ${tool.scope} ${tool.accountLabel ?? ""}`.toLowerCase().includes(search),
+      ),
     }))
     .filter((group) => group.tools.length > 0);
   return (
     <div className="space-y-3">
       {tools.length > 0 ? (
         <Input
+          ref={searchInput}
           aria-label="Search tools"
           placeholder="Search tools"
           value={query}
@@ -142,7 +143,15 @@ function ToolMenu({
       )}
       <div className="flex flex-wrap items-center justify-between gap-1 border-t pt-2">
         {changed && (
-          <Button type="button" variant="ghost" size="sm" onClick={onReset}>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              searchInput.current?.focus();
+              onReset();
+            }}
+          >
             Back to your defaults
           </Button>
         )}
@@ -180,8 +189,7 @@ function ConnectionOption({
     ]
       .filter(Boolean)
       .join(" · ");
-  const recovery =
-    connection.transport === "stdio" ? "Configure" : connection.status === "disabled" ? "Enable" : "Reconnect";
+  const recovery = connectAction(connection) ?? "Enable";
   return (
     <li className="flex min-h-11 items-center gap-2 px-2 py-2">
       <span
