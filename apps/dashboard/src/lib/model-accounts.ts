@@ -141,7 +141,7 @@ function text(value: unknown, max: number): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim().slice(0, max) : undefined;
 }
 
-function parseMonthlySpend(value: unknown): MonthlySpend | undefined {
+function parseMonthlySpend(value: unknown) {
   if (!isRow(value)) return;
   const { periodStart, usd, unpricedTurns } = value;
   if (
@@ -157,7 +157,7 @@ function parseMonthlySpend(value: unknown): MonthlySpend | undefined {
   return { periodStart, usd, unpricedTurns };
 }
 
-export function monthlyApiSpendLabel({ kind, monthlySpend }: ModelAccount): string | null {
+export function monthlyApiSpendLabel({ kind, monthlySpend }: ModelAccount) {
   if (kind !== "openai" && kind !== "anthropic" && kind !== "opencode") return null;
   const unpriced = monthlySpend?.unpricedTurns ?? 0;
   const usd = monthlySpend && (monthlySpend.usd !== "0" || unpriced === 0) ? monthlySpend.usd : "—";
