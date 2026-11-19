@@ -53,6 +53,7 @@ export function embeddedSnapshotParams(org: string, repository: string) {
     cloudScope: `composer.${scope}`,
     cloudJob: `build.composer.${scope}`,
     cloudKey: `build-key.composer.${scope}`,
+    cloudProvider: `build-provider.composer.${scope}`,
     dockerKey: `composer-docker-build-key.${scope}`,
     dockerReceipt: `composer-docker-build-id.${scope}`,
   };

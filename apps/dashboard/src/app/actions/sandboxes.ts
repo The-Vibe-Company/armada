@@ -504,14 +504,16 @@ export async function readLaunchDialogOptions(includeBuildCapacity = false) {
       if (snapshotRead.state === "ready") {
         for (const snapshot of snapshotRead.snapshots.filter((snapshot) => snapshot.hostId === host.id)) {
           const blocked =
-            reason ??
-            (snapshot.status !== "ready"
-              ? "Not built yet. Open Snapshots to build it."
-              : !snapshot.hostAvailable
-                ? "This Docker host is unavailable."
-                : !snapshotLaunchEnabled(dockerOption, hostRead.list.placement)
-                  ? "This Docker host does not support snapshot launches."
-                  : null);
+            snapshot.status === "failed"
+              ? (snapshot.failureReason ?? "The build did not publish a snapshot.")
+              : (reason ??
+                (snapshot.status !== "ready"
+                  ? "Not built yet. Open Snapshots to build it."
+                  : !snapshot.hostAvailable
+                    ? "This Docker host is unavailable."
+                    : !snapshotLaunchEnabled(dockerOption, hostRead.list.placement)
+                      ? "This Docker host does not support snapshot launches."
+                      : null));
           targets.push({
             id: snapshot.id,
             golden: snapshot.name,

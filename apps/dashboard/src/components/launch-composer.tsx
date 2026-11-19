@@ -288,7 +288,9 @@ export function ComposerStop({
   provider: SandboxPlacementProviderId;
   idleDelaySeconds?: number | undefined;
 }) {
-  const [ttl, setTtl] = useState("");
+  const [choice, setTtl] = useState("");
+  const options = ttlOptions(provider);
+  const ttl = options.some((option) => option.value === choice) ? choice : "";
   return (
     <>
       <input type="hidden" name="ttl" value={ttl} />
@@ -296,7 +298,7 @@ export function ComposerStop({
         title="Stops after"
         label={launchStopLabel(provider, ttl)}
         value={ttl}
-        options={ttlOptions(provider)}
+        options={options}
         onChange={setTtl}
       >
         <p className="border-t p-2 text-sm text-muted-foreground">

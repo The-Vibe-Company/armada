@@ -326,25 +326,23 @@ function ScopedGoldenForm({
   const reported = useRef("");
   const [completionError, setCompletionError] = useState("");
   useEffect(() => {
-    if (!embedded || !observed || reported.current === observed.jobId) return;
+    if (!embedded || !observed || reported.current === observed.jobId || completionError) return;
     if (observed.state === "failed" || observed.state === "recovery_required") {
-      reported.current = observed.jobId;
       embedded.onBuilding("");
     } else if (observed.state === "succeeded" && observed.result) {
       const actualProvider = observed.provider ?? admittedProvider ?? chosenProvider;
       if (!actualProvider) return;
       reported.current = observed.jobId;
-      const url = new URL(window.location.href);
-      for (const param of [keyParam, jobParam, providerParam]) url.searchParams.delete(param);
-      replaceResourceUrl(url);
+      const epoch = statusReadEpoch.current;
       void embedded.onSaved(observed.result, actualProvider).catch(() => {
-        setCompletionError("The snapshot was saved. Open Snapshots to locate it.");
-        embedded.onBuilding("");
+        if (epoch !== statusReadEpoch.current) return;
+        reported.current = "";
+        setCompletionError("The snapshot was saved. Try selecting it again or locate it in Snapshots.");
       });
     } else {
       embedded.onBuilding(goldenName);
     }
-  }, [embedded, observed, admittedProvider, chosenProvider, goldenName, keyParam, jobParam, providerParam]);
+  }, [embedded, observed, admittedProvider, chosenProvider, goldenName, completionError]);
 
   if (observed?.state === "succeeded" && observed.result) {
     return (
@@ -352,6 +350,11 @@ function ScopedGoldenForm({
         <p className="font-medium">{observed.result.name} is ready</p>
         {completionError && <p role="alert">{completionError}</p>}
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          {completionError && (
+            <Button type="button" variant="outline" onClick={() => setCompletionError("")}>
+              Select saved snapshot
+            </Button>
+          )}
           <Button variant="ghost" asChild>
             <a href="/snapshots">View snapshots</a>
           </Button>

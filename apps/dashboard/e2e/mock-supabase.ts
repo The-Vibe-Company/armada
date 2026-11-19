@@ -60,6 +60,7 @@ type State = {
   langfuse: Map<string, Row>;
   members: Row[];
   goldens: Row[];
+  hiddenSnapshot: string;
   sandboxes: Row[];
   credentials: Row[];
   github_connections: Row[];
@@ -107,6 +108,7 @@ function seed(): State {
       { org_id: ACME, user_id: ALICE, role: "admin", created_at: now },
       { org_id: ACME, user_id: BOB, role: "member", created_at: now },
     ],
+    hiddenSnapshot: "",
     goldens: [
       {
         ...golden(id(20), "shared-golden", "org", ALICE, "snap-shared"),
@@ -695,7 +697,13 @@ function largeHostSnapshots(): Row[] {
       image: status === "ready" ? `sha256:${"b".repeat(64)}` : null,
       builtOnVersion: "2.46.4",
       failureReason: status === "failed" ? "Fixture build failed: repository checkout unavailable." : null,
-      config: largeGoldenConfig(),
+      config:
+        status === "failed"
+          ? {
+              ...largeGoldenConfig(),
+              repos: [{ url: "https://github.com/example/failed-fixture.git", dir: "fixture" }],
+            }
+          : largeGoldenConfig(),
       createdAt: "2026-11-16T10:00:00.000Z",
     }))
     .map((row) => ({ ...parseDockerSnapshotRecord(row) }));
@@ -780,7 +788,7 @@ function visibleRows(table: string, userId: string): Row[] {
     case "goldens":
       // As in the #566 migration, a removed golden stays readable (a tombstone its sandboxes still join to); a list
       // that should not show it filters `removed_at=is.null` itself.
-      return state.goldens.filter((row) => canReadGolden(row, userId));
+      return state.goldens.filter((row) => row.name !== state.hiddenSnapshot && canReadGolden(row, userId));
     case "sandboxes":
       // As in the #680 contract: the raw row is the interior, read only by its owner or a current admin. Legacy
       // visibility and the source golden take no part.
@@ -2895,6 +2903,10 @@ function control(url: URL, body: Row): Response {
     pendingOAuth.clear();
     sessions.clear();
     goldenJobs.clear();
+    return json({ ok: true });
+  }
+  if (url.pathname === "/__test/snapshot-visibility") {
+    state.hiddenSnapshot = String(body.hidden ?? "");
     return json({ ok: true });
   }
   if (url.pathname === "/__test/capabilities") {

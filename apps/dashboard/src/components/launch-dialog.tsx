@@ -64,7 +64,7 @@ export type LaunchProps = {
   /** The golden config's `repos[].dir`, in order. */
   repositories: readonly string[];
   repositoryFolder?: string | undefined;
-  repositoryFirst?: boolean;
+  useDefaultFolder?: boolean;
   snapshotRepositories?: LaunchStartTarget["repositories"] | undefined;
   sizing?: LaunchSizing;
   /** The templates that start from this environment: choosing one preselects everything but the run (#949). */
@@ -212,20 +212,36 @@ export function LaunchStart(
       };
   const fallbackId = fallback.id;
   const [selected, setSelected] = useState(fallbackId);
+  const [formKey, setFormKey] = useState(fallbackId);
   const selectedTarget = useRef(fallback);
   const startRoot = useRef<HTMLDivElement>(null);
   const focusStart = useRef(false);
+  const focusedTask = useRef<HTMLTextAreaElement | null>(null);
   const focusTaskOnMount = Boolean(props.initialOptions);
   useLayoutEffect(() => {
     if (focusTaskOnMount) startRoot.current?.querySelector<HTMLTextAreaElement>('textarea[name="prompt"]')?.focus();
   }, [focusTaskOnMount]);
   useLayoutEffect(() => {
+    const previousTask = focusedTask.current;
+    if (previousTask) {
+      focusedTask.current = null;
+      const nextTask = startRoot.current?.querySelector<HTMLTextAreaElement>('textarea[name="prompt"]');
+      if (nextTask && nextTask !== previousTask) {
+        nextTask.focus({ preventScroll: true });
+        nextTask.setSelectionRange(
+          previousTask.selectionStart,
+          previousTask.selectionEnd,
+          previousTask.selectionDirection,
+        );
+      }
+    }
     if (!focusStart.current) return;
     focusStart.current = false;
     startRoot.current?.querySelector<HTMLButtonElement>('[data-launch-chip="From"]')?.focus();
   });
   const [templateId, setTemplateId] = useState(props.initialTemplate?.id ?? "");
   const [repository, setRepository] = useState("");
+  const [useDefaultFolder, setUseDefaultFolder] = useState(true);
   const [fromOpen, setFromOpen] = useState(false);
   const [othersOpen, setOthersOpen] = useState(false);
   const [showBuild, setShowBuild] = useState(false);
@@ -233,6 +249,8 @@ export function LaunchStart(
   const [announcement, setAnnouncement] = useState("");
   const onSaved = useCallback(
     (source: LaunchStartTarget, next: Awaited<ReturnType<typeof readLaunchDialogOptions>>) => {
+      const task = startRoot.current?.querySelector<HTMLTextAreaElement>('textarea[name="prompt"]');
+      if (task && document.activeElement === task) focusedTask.current = task;
       optionsRevision.current++;
       setOptions(next);
       selectedTarget.current = source;
@@ -293,6 +311,7 @@ export function LaunchStart(
   const target = preferred && !matches.includes(pinnedTarget) ? preferred : pinnedTarget;
   const noSnapshot = Boolean(repository && !preferred);
   function chooseRepository(value: string) {
+    if (!value) setUseDefaultFolder(false);
     if (value === repository) return;
     setRepository(value);
     setTemplateId("");
@@ -307,6 +326,7 @@ export function LaunchStart(
     if (next) {
       selectedTarget.current = next;
       setSelected(next.id);
+      setFormKey(next.id);
     }
   }
   const discoveredTemplates = options?.templates ?? (!host ? (props.templates ?? []) : []);
@@ -346,12 +366,16 @@ export function LaunchStart(
     onStart: (id: string) => {
       const next = starts.find((item) => item.id === id);
       if (!next || building || (id === target.id && !noSnapshot)) return;
-      if (repository && launchRepositoryFolder(next, repository) === undefined) setRepository("");
+      if (repository && launchRepositoryFolder(next, repository) === undefined) {
+        setRepository("");
+        setUseDefaultFolder(false);
+      }
       setShowBuild(false);
       setOthersOpen(false);
       selectedTarget.current = next;
       focusStart.current = true;
       setSelected(id);
+      setFormKey(id);
       setTemplateId("");
     },
     idleDelaySeconds: options?.idleDelaySeconds,
@@ -418,6 +442,7 @@ export function LaunchStart(
             task={task}
             onTask={setTask}
             repositoryFolder={templateSource && launchRepositoryFolder(templateSource, repository)}
+            useDefaultFolder={useDefaultFolder}
             loadingError={loadingError}
             idleDelaySeconds={options?.idleDelaySeconds}
             dockerLimits={props.dockerLimits}
@@ -425,7 +450,7 @@ export function LaunchStart(
           />
         ) : target.hostId ? (
           <DockerLaunchForm
-            key={target.id}
+            key={formKey}
             orgId={props.orgId}
             hostId={target.hostId}
             hostName={target.hostName ?? DOCKER_HOST_LABEL}
@@ -442,7 +467,7 @@ export function LaunchStart(
           />
         ) : (
           <LaunchForm
-            key={target.id}
+            key={formKey}
             golden={target.golden}
             provider={target.provider}
             hostName={target.hostName ?? DOCKER_HOST_LABEL}
@@ -459,7 +484,7 @@ export function LaunchStart(
                   : []
             }
             repositoryFolder={launchRepositoryFolder(target, repository)}
-            repositoryFirst
+            useDefaultFolder={useDefaultFolder}
             {...(target.sizing ? { sizing: target.sizing } : {})}
             accounts={options?.accounts ?? props.accounts}
             catalog={options?.catalog ?? (!host ? props.catalog : MODEL_CATALOG)}
@@ -504,7 +529,7 @@ function LaunchForm({
   accounts,
   repositories,
   repositoryFolder,
-  repositoryFirst = false,
+  useDefaultFolder = true,
   sizing,
   starts,
   selectedStart,
@@ -573,16 +598,10 @@ function LaunchForm({
     root.current?.querySelector<HTMLButtonElement>('button[type="submit"]')?.focus();
   }, [access.held]);
 
-  // The selected project: the machine size default follows it, and a single repository's choice is summarized.
-  const [manualProject, setProject] = useState(
-    !repositoryFirst && repositories.length === 1 ? (repositories[0] ?? "") : "",
-  );
-  const project = repositoryFolder ?? manualProject;
-  const chips = composerChips(
-    provider,
-    repositoryFirst && repositories.length < 2 ? 0 : repositories.length,
-    Boolean(sizing),
-  );
+  const [manualProject, setProject] = useState("");
+  const defaultProject = useDefaultFolder && repositories.length === 1 ? repositories[0] : "";
+  const project = repositoryFolder ?? (repositories.includes(manualProject) ? manualProject : (defaultProject ?? ""));
+  const chips = composerChips(provider, repositories.length, Boolean(sizing));
   const holds = launchHoldIds(id, {
     source: Boolean(launchBlockedReason),
     account: accountBlocked || accounts.state === "unavailable",
@@ -683,7 +702,12 @@ function LaunchForm({
                     onProject={setProject}
                   />
                   {provider !== "docker" && chips.machine && sizing && (
-                    <MachineSizeField provider={provider} policy={sizing.policy} repositoryDir={project} />
+                    <MachineSizeField
+                      key={provider}
+                      provider={provider}
+                      policy={sizing.policy}
+                      repositoryDir={project}
+                    />
                   )}
                 </>
               }

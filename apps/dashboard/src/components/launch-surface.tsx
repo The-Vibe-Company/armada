@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
+import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { isSubmitShortcut } from "@/lib/shortcut";
 import { cn } from "@/lib/utils";
 
@@ -97,6 +97,7 @@ export function LaunchChoice({
 }) {
   const [open, setOpen] = useState(false);
   const [phone, setPhone] = useState(false);
+  const sheetRef = useLaunchViewport(true);
   useEffect(() => {
     const media = matchMedia("(max-width: 639px)");
     const update = () => setPhone(media.matches);
@@ -111,7 +112,6 @@ export function LaunchChoice({
       disabled={disabled}
       aria-label={`${label}: ${selected?.label ?? value}`}
       className={`${inline ? "inline-flex max-w-full min-h-8 items-center justify-between gap-2 rounded-md border bg-background px-2 py-0.5" : "grid w-full min-h-[52px] grid-cols-[84px_minmax(0,1fr)_auto] items-center gap-3 px-3.5 py-2 text-left"} text-[13px] hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60 ${tone === "destructive" ? "text-destructive" : tone === "warning" ? "text-warning" : "text-foreground"}`}
-      onClick={() => setOpen(true)}
     >
       {!inline && <span className="text-muted-foreground">{label}</span>}
       <span className="min-w-0 truncate font-medium">{selected?.label ?? value}</span>
@@ -180,15 +180,18 @@ export function LaunchChoice({
     );
   if (phone)
     return (
-      <>
-        <span className={inline ? "inline" : "block border-b last:border-b-0"}>{trigger}</span>
-        <Sheet open={open} onOpenChange={setOpen}>
-          <SheetContent side="bottom" className="max-h-[85dvh] overflow-y-auto">
-            <SheetTitle>{label}</SheetTitle>
-            {choices}
-          </SheetContent>
-        </Sheet>
-      </>
+      <Sheet open={open} onOpenChange={setOpen}>
+        <SheetTrigger asChild>{trigger}</SheetTrigger>
+        <SheetContent
+          ref={sheetRef}
+          side="bottom"
+          aria-describedby={undefined}
+          className="max-h-[85dvh] overflow-y-auto [&_[cmdk-item]]:min-h-11 [&_[data-slot=sheet-close]]:pointer-coarse:grid [&_[data-slot=sheet-close]]:pointer-coarse:size-11 [&_[data-slot=sheet-close]]:pointer-coarse:place-items-center"
+        >
+          <SheetTitle>{label}</SheetTitle>
+          {choices}
+        </SheetContent>
+      </Sheet>
     );
   return (
     <Popover open={open} onOpenChange={setOpen}>

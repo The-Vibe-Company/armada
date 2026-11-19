@@ -4,9 +4,23 @@ import { e2eFixture, fixtureOrigin } from "../../scripts/fixture-ports.ts";
 
 const mock = fixtureOrigin(e2eFixture.mockPort);
 
+async function configureFixture(path: string, body: object) {
+  const response = await fetch(`${mock}/__test/${path}`, { method: "POST", body: JSON.stringify(body) });
+  if (!response.ok) throw new Error(`Fixture configuration failed: ${path}`);
+}
+
+async function ensureFixtureGitHub() {
+  const user = "00000000-0000-4000-8000-000000000001";
+  const response = await fetch(`${mock}/__test/github-connections`);
+  if (!response.ok) throw new Error("Could not read the fixture GitHub connection");
+  const accounts: { user_id: string }[] = await response.json();
+  if (!accounts.some((account) => account.user_id === user))
+    await configureFixture("github-connect", { user, login: "fixture_user" });
+}
+
 for (const organization of [
   { session: "alice", name: "Acme", source: "shared-golden", folder: "web", repository: "acme/web" },
-  { session: "large", name: "Large", source: "snapshot-002", folder: "fixture", repository: "example/fixture" },
+  { session: "large", name: "Large", source: "snapshot-002", folder: "fixture" },
 ]) {
   test(`${organization.name}: launch a task from the single dialog`, { session: organization.session }, async ({
     app,
@@ -16,9 +30,11 @@ for (const organization of [
     await app.open("/sandboxes");
     await screen.getByRole("button", "Launch a sandbox").tap();
     await screen.getByLabel("Task").fill(`Inspect the ${organization.name} fixture`);
-    await screen.getByRole("button", "No repository", { exact: true }).tap();
-    await screen.getByPlaceholder("Search or type owner/repo").fill(organization.repository);
-    await screen.getByRole("option", new RegExp(organization.repository)).tap();
+    if (organization.repository) {
+      await screen.getByRole("button", "No repository", { exact: true }).tap();
+      await screen.getByPlaceholder("Search or type owner/repo").fill(organization.repository);
+      await screen.getByRole("option", new RegExp(organization.repository)).tap();
+    }
     await screen.getByRole("button", /^From ·/).tap();
     await screen.getByPlaceholder("Search from").fill(organization.source);
     await screen.getByRole("option", new RegExp(organization.source)).tap();
@@ -118,11 +134,7 @@ test("Large: build a Docker snapshot in the composer and launch with the same ta
   screen,
   browser,
 }) => {
-  const github = await fetch(`${mock}/__test/github-connect`, {
-    method: "POST",
-    body: JSON.stringify({ user: "00000000-0000-4000-8000-000000000001", login: "fixture_user" }),
-  });
-  if (!github.ok) throw new Error("Could not connect the fixture GitHub account");
+  await ensureFixtureGitHub();
   await app.open("/sandboxes");
   await screen.getByRole("button", "Launch a sandbox").tap();
   const task = screen.getByLabel("Task");
@@ -157,4 +169,58 @@ test("Large: build a Docker snapshot in the composer and launch with the same ta
     prompt: "Inspect the new Docker repository",
   });
   expect(state.launches.at(-1)).not.toHaveProperty("repo");
+});
+
+test("Acme: recover a saved inline cloud snapshot when launch discovery is delayed", { session: "alice" }, async ({
+  app,
+  screen,
+  browser,
+}) => {
+  const name = "composer-cloud-recovery";
+  await ensureFixtureGitHub();
+  await configureFixture("capabilities", { provider: "boat", maxGoldens: null });
+  await configureFixture("snapshot-visibility", { hidden: name });
+  try {
+    await app.open("/sandboxes");
+    await screen.getByRole("button", "Launch a sandbox").tap();
+    const task = screen.getByLabel("Task");
+    await task.fill("Review the new cloud repository");
+    await screen.getByRole("button", /^Stops in /).tap();
+    await screen.getByRole("option", "1 hour").tap();
+    await screen.getByRole("button", "No repository", { exact: true }).tap();
+    await screen.getByPlaceholder("Search or type owner/repo").fill(`example/${name}`);
+    await screen.getByRole("option", new RegExp(`Use example/${name}`)).tap();
+    await screen.getByRole("button", "Create a snapshot", { exact: true }).tap();
+    const build = screen.getByRole("region", "Snapshot build");
+    await expect(build.getByRole("textbox", "Snapshot name")).toHaveValue(name);
+    await build.getByRole("button", "Build snapshot", { exact: true }).tap();
+    const retry = build.getByRole("button", "Select saved snapshot");
+    await expect(retry).toBeVisible();
+    await expect(browser).toHaveURL(/build-key\.composer/);
+    await configureFixture("snapshot-visibility", {});
+    await retry.tap();
+    await expect(screen.getByText(`${name} is ready and selected.`, { exact: true })).toBeVisible();
+    await expect(browser).toHaveURL("/sandboxes");
+    await expect(task).toHaveValue("Review the new cloud repository");
+    await expect(screen.getByRole("button", "Stops in 1 hour")).toBeVisible();
+  } finally {
+    await configureFixture("snapshot-visibility", {});
+    await configureFixture("capabilities", { provider: "boat", maxGoldens: 1 });
+  }
+});
+
+test("Large: a repository with only a failed Docker snapshot explains why launch is held", {
+  session: "large",
+}, async ({ app, screen, browser }) => {
+  await app.open("/sandboxes");
+  await screen.getByRole("button", "Launch a sandbox").tap();
+  await screen.getByRole("button", "No repository", { exact: true }).tap();
+  await screen.getByPlaceholder("Search or type owner/repo").fill("example/failed-fixture");
+  await screen.getByRole("option", /^example\/failed-fixture/).tap();
+  await expect(screen.getByRole("button", /^From · host-snapshot-2/)).toBeVisible();
+  await expect(
+    screen.getByRole("alert").filter({ hasText: "Fixture build failed: repository checkout unavailable." }),
+  ).toBeVisible();
+  await expect(screen.getByRole("link", "Open Snapshots")).toBeVisible();
+  await expect(browser.locator("[data-launch-send]")).toHaveAttribute("aria-disabled", "true");
 });

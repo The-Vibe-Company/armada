@@ -6,6 +6,7 @@ import { type EmbeddedSnapshotBuild, SnapshotCreateChoice } from "@/components/d
 import { GoldenForm } from "@/components/golden-form";
 import type { LaunchStartTarget } from "@/lib/launch-picker";
 import { embeddedSnapshotParams } from "@/lib/launch-repositories";
+import { replaceResourceUrl } from "@/lib/resource-history";
 
 type Options = Awaited<ReturnType<typeof readLaunchDialogOptions>>;
 
@@ -102,7 +103,11 @@ export const LaunchSnapshotBuild = memo(function LaunchSnapshotBuild({
               (item) => item.provider === actualProvider && item.snapshotRef === result.snapshot,
             );
             if (!target) throw new Error("The snapshot was saved. Open Snapshots to locate it.");
-            if (mounted.current) onSaved(target, next);
+            if (!mounted.current) return;
+            const url = new URL(window.location.href);
+            for (const param of [keys.cloudKey, keys.cloudJob, keys.cloudProvider]) url.searchParams.delete(param);
+            replaceResourceUrl(url);
+            onSaved(target, next);
           },
         }}
       />,

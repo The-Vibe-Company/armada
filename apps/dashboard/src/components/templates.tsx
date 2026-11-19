@@ -724,6 +724,7 @@ export function TemplateLaunchForm({
   idleDelaySeconds,
   dockerLimits,
   repositoryFolder,
+  useDefaultFolder = true,
 }: {
   target: TemplateLaunchTarget;
   task: string;
@@ -733,6 +734,7 @@ export function TemplateLaunchForm({
   idleDelaySeconds?: number | undefined;
   dockerLimits?: ReactNode;
   repositoryFolder?: string | undefined;
+  useDefaultFolder?: boolean;
 }) {
   const id = useId();
   const [requestKey, setRequestKey] = useState(newRequestKey);
@@ -742,8 +744,9 @@ export function TemplateLaunchForm({
     return result;
   }, []);
   const [state, formAction] = useMutationState(run);
-  const [manualProject, setProject] = useState(target.repositories.length === 1 ? (target.repositories[0] ?? "") : "");
-  const project = repositoryFolder ?? manualProject;
+  const [manualProject, setProject] = useState("");
+  const defaultProject = useDefaultFolder && target.repositories.length === 1 ? target.repositories[0] : "";
+  const project = repositoryFolder ?? (manualProject || defaultProject || "");
   const root = useRef<HTMLFormElement>(null);
   useKeepOnReset(root);
   const error = useRef<HTMLParagraphElement>(null);
