@@ -338,6 +338,43 @@ test("retirement preserves the exact source snapshot of a registered ordinary la
   expect(f.deleted).toEqual([f.old]);
 });
 
+async function ordinarySnapshotIntent(db: Sql, f: Awaited<ReturnType<typeof fixture>>, snapshot: string) {
+  const sandbox = crypto.randomUUID();
+  await db.query(
+    "insert into ordinary_launch_snapshot_intents (sandbox_id,golden_id,provider,snapshot_id) values($1,$2,$3,$4)",
+    [sandbox, f.golden.id, f.golden.provider, snapshot],
+  );
+  return sandbox;
+}
+
+test("retirement defers for the exact unresolved ordinary snapshot", async () => {
+  const db = database();
+  const f = await fixture(db);
+  const sandbox = await ordinarySnapshotIntent(db, f, f.old);
+  await f.publish();
+  await ordinarySnapshotIntent(db, f, f.next);
+
+  await runRetirementJob(f.sql, f.retirement, f.now);
+  expect(f.deleted).toEqual([]);
+
+  await db.query("delete from ordinary_launch_snapshot_intents where sandbox_id=$1", [sandbox]);
+  await f.due();
+  await runRetirementJob(f.sql, f.retirement, f.now);
+  expect(f.deleted).toEqual([f.old]);
+});
+
+test("golden removal refuses while an ordinary snapshot allocation is unresolved", async () => {
+  const db = database();
+  const f = await fixture(db);
+  const sandbox = await ordinarySnapshotIntent(db, f, f.old);
+  await db.query("select set_config('request.jwt.claim.sub',$1,false)", [f.actor.userId]);
+
+  await expect(db.query("select remove_golden($1)", [f.golden.id])).rejects.toThrow("unresolved");
+
+  await db.query("delete from ordinary_launch_snapshot_intents where sandbox_id=$1", [sandbox]);
+  await expect(db.query("select remove_golden($1)", [f.golden.id])).resolves.toBeDefined();
+});
+
 async function templateReference(
   db: Sql,
   f: Awaited<ReturnType<typeof fixture>>,

@@ -360,7 +360,7 @@ export class GoldenSnapshotRetirements {
       ).rows.length
     )
       return "operation_unresolved";
-    // WARNING: Read sandbox and template references after fences so registration and fence release cannot hide a child.
+    // WARNING: Read pending and registered references after fences so registration and fence release cannot hide a child.
     if (
       (
         await sql.query(
@@ -378,6 +378,9 @@ export class GoldenSnapshotRetirements {
            join public.sandboxes s on s.id=pin.sandbox_id
            where s.provider=$1::public.sandbox_provider and pin.snapshot_id=$2
              and s.status<>'deleted' and (s.status<>'failed' or s.stopped_at is null)
+           union all
+           select 1 from public.ordinary_launch_snapshot_intents
+           where provider=$1::public.sandbox_provider and snapshot_id=$2
            limit 1`,
           [c.provider, c.old_snapshot],
         )

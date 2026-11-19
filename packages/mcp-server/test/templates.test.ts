@@ -70,6 +70,12 @@ async function fixture() {
   `,
   );
   const { db, people, sharedGoldenId: goldenId, openaiCredentialId: credential } = await seedDatabase(database);
+  const variableId = crypto.randomUUID();
+  await db.query(
+    `insert into public.readable_variables(id,org_id,owner_id,scope,name,value)
+     values($1,$2,$3,'personal','APP_REGION',$4)`,
+    [variableId, people.org, people.owner, "europe\n$(not-a-command)"],
+  );
   const queries: string[] = [];
   const sql: Sql = {
     query: (s, p) => {
@@ -85,13 +91,6 @@ async function fixture() {
     orgs: [{ orgId: people.org, role: userId === people.admin ? ("admin" as const) : ("member" as const) }],
     via: "supabase" as const,
   });
-  const v = await vault.command(actor(), "variable", "set", {
-    org: people.org,
-    scope: "personal",
-    name: "APP_REGION",
-    value: "europe\n$(not-a-command)",
-  });
-  const variableId = (v.item as { id: string }).id;
   const definition = {
     goldenId,
     provider: "boat",

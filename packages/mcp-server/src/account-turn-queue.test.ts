@@ -134,6 +134,132 @@ test("dispatch job insertion failure rolls back the queued prompt", async () => 
   expect(await queue.accept(caller, input)).toMatchObject({ status: "queued" });
 });
 
+test("the worker seeds missing nonterminal dispatch jobs using their original generation", async () => {
+  const callerRequest = requests[0]!;
+  const legacy = ids[0]!;
+  const existing = ids[1]!;
+  const terminal = ids[2]!;
+  const dispatchingRequest = requests[1]!;
+  for (const [id, request_id] of [
+    [legacy, callerRequest],
+    [legacy, dispatchingRequest],
+    [existing, callerRequest],
+    [terminal, callerRequest],
+  ])
+    await queue.accept(caller, { id: id!, request_id, prompt: "next instruction" });
+  await database().query("delete from public.jobs where sandbox_id <> $1", [existing]);
+  await database().query("update public.account_turn_queue set state='failed' where sandbox_id=$1", [terminal]);
+  await database().query(
+    "update public.account_turn_queue set state='dispatching',dispatch_generation=2,dispatch_until='infinity' where sandbox_id=$1 and request_id=$2",
+    [legacy, dispatchingRequest],
+  );
+  await database().query("update public.sandboxes set lifecycle_generation=2 where id=$1", [legacy]);
+  await database().exec("update public.credentials set max_agents=0");
+  const dispatch = spyOn({ send: async () => ({}) }, "send");
+  queue.setDispatch(dispatch);
+
+  const readJobs = () =>
+    database().query<{ id: string; sandbox_id: string; generation: string; payload_enc: Uint8Array<ArrayBuffer> }>(
+      "select id,sandbox_id,generation::text,payload_enc from public.jobs order by id",
+    );
+  const [existingJob] = (await readJobs()).rows;
+  const signal = new AbortController().signal;
+  expect(await queue.reconcileOne(signal)).toBe(false);
+  const { rows } = await readJobs();
+  expect(await queue.reconcileOne(signal)).toBe(false);
+  expect((await readJobs()).rows).toEqual(rows);
+  expect(rows.find((job) => job.sandbox_id === existing)).toEqual(existingJob);
+  expect(rows).toHaveLength(3);
+  const recovered = await Promise.all(
+    rows
+      .filter((job) => job.sandbox_id === legacy)
+      .map(async (job) => ({
+        generation: job.generation,
+        payload: JSON.parse(await decryptSecret(job.payload_enc, btoa("x".repeat(32)))),
+      })),
+  );
+  expect(recovered).toEqual(
+    expect.arrayContaining([
+      { generation: "1", payload: { requestId: callerRequest } },
+      { generation: "1", payload: { requestId: dispatchingRequest } },
+    ]),
+  );
+  expect(dispatch).not.toHaveBeenCalled();
+});
+
+test("a failed backfill write does not stop the existing dispatcher", async () => {
+  const input = { id: ids[0]!, request_id: requests[0]!, prompt: "next instruction" };
+  await queue.accept(caller, input);
+  await database().query("delete from public.jobs where sandbox_id=$1", [input.id]);
+  await database().exec("alter table public.jobs add constraint reject_dispatch check (kind <> 'turn_dispatch')");
+  const receipt = { promptId: "accepted", conversationId: "history", status: "running" };
+  queue.setDispatch(async () => receipt);
+  try {
+    expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
+    await queue.drain();
+    expect(await queue.accept(caller, input)).toEqual(receipt);
+  } finally {
+    await database().exec("alter table public.jobs drop constraint reject_dispatch");
+  }
+});
+
+test("backfill advances past a page of terminal history to reach a waiting request", async () => {
+  const history = { id: ids[0]!, request_id: requests[0]!, prompt: "earlier instruction" };
+  await queue.accept(caller, history);
+  await database().query(
+    `insert into public.account_turn_queue
+       (sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id,state)
+     select sandbox_id,gen_random_uuid(),account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id,'failed'
+     from public.account_turn_queue cross join generate_series(1,20) where sandbox_id=$1`,
+    [history.id],
+  );
+  await database().query("update public.account_turn_queue set state='failed' where sandbox_id=$1", [history.id]);
+  const waiting = { id: ids[1]!, request_id: requests[1]!, prompt: "next instruction" };
+  await queue.accept(caller, waiting);
+  await database().query("delete from public.jobs where sandbox_id=$1", [waiting.id]);
+  await database().exec("update public.credentials set max_agents=0");
+  const worker = createAccountTurnQueue(sql, btoa("x".repeat(32)));
+  worker.setDispatch(async () => ({}));
+  const signal = new AbortController().signal;
+  const jobsForWaiting = async () =>
+    (await database().query("select id from public.jobs where sandbox_id=$1", [waiting.id])).rows;
+
+  expect(await worker.reconcileOne(signal)).toBe(false);
+  expect(await jobsForWaiting()).toHaveLength(0);
+  expect(await worker.reconcileOne(signal)).toBe(false);
+  expect(await jobsForWaiting()).toHaveLength(1);
+});
+
+test("a backfill sweep wraps to retry a failed insert while newer rows are arriving", async () => {
+  const waiting = { id: ids[0]!, request_id: requests[0]!, prompt: "next instruction" };
+  await queue.accept(caller, waiting);
+  const addHistory = () =>
+    database().query(
+      `insert into public.account_turn_queue
+         (sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id,state)
+       select sandbox_id,gen_random_uuid(),account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id,'failed'
+       from public.account_turn_queue cross join generate_series(1,20) where sandbox_id=$1 and request_id=$2`,
+      [waiting.id, waiting.request_id],
+    );
+  await addHistory();
+  await database().exec("update public.credentials set max_agents=0; delete from public.jobs");
+  const worker = createAccountTurnQueue(sql, btoa("x".repeat(32)));
+  worker.setDispatch(async () => ({}));
+  const signal = new AbortController().signal;
+  await database().exec("alter table public.jobs add constraint reject_dispatch check (kind <> 'turn_dispatch')");
+  try {
+    expect(await worker.reconcileOne(signal)).toBe(false);
+  } finally {
+    await database().exec("alter table public.jobs drop constraint reject_dispatch");
+  }
+
+  for (let pass = 0; pass < 2; pass++) {
+    await addHistory();
+    expect(await worker.reconcileOne(signal)).toBe(false);
+  }
+  expect((await database().query("select id from public.jobs where sandbox_id=$1", [waiting.id])).rows).toHaveLength(1);
+});
+
 test("full-account prompts persist, dispatch FIFO after a turn settles, and queued IDs resolve to actual receipts", async () => {
   await database().query("update sandboxes set status='running',task_prompt_id='active_turn' where id=$1", [ids[0]]);
   const first = { id: ids[1]!, request_id: requests[0]!, prompt: "first instruction" };
