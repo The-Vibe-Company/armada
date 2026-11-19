@@ -33,7 +33,6 @@ import { promptSecret } from "./secret-input.ts";
 export interface VaultIo {
   auth: AuthIo;
   readFile: (path: string) => Promise<string>;
-  /** The secret from piped stdin or a hidden terminal prompt. */
   readStdin: () => Promise<string>;
 }
 
@@ -346,8 +345,6 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
       } else raw = await readValue(args, io);
       const value = parseCredentialValue(kind, raw);
       if (kind === "codex_auth") validateNativeCodexAuth(value, false);
-      // Native consent occurs locally before import. Only the Armada API receives
-      // this secret; never print its response, which must not become a secret sink.
       await control(io.auth, "creds/accounts/set", {
         scope,
         org,
@@ -579,7 +576,6 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
   }
 }
 
-/** The value comes from a file or from stdin, never from an argument: arguments end up in shell history. */
 async function readValue(args: ReturnType<typeof parseArgs>, io: VaultIo): Promise<string> {
   const file = single(args, "--file");
   if (file !== undefined) {
