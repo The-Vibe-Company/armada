@@ -54,9 +54,9 @@ configuration, without credentials or request-selected redirect targets.
 `OAuthStore` must persist **only vault ciphertext** and state hashes. Implement
 `SecretBox` using the existing core `encryptSecret`/`decryptSecret` scheme; encode
 ciphertext bytes for the string port. No new encryption key or plaintext column.
-`readGrant` returns the ciphertext record. Enforce connection ownership and
-membership separately in `OAuthBrokerOptions.authorize`, which must also check
-whether the connection is disabled or revoked. A null expected version in
+`readGrant` returns the ciphertext record. In `OAuthBrokerOptions.authorize`,
+check organization membership, enforce ownership for private connections, and
+reject disabled or revoked connections. A null expected version in
 `saveGrant` is for initial creation only.
 
 `generation(connectionId)` snapshots the connect generation even before any grant
@@ -128,8 +128,8 @@ Explicit downstream DELETE attempts upstream HTTP `terminateSession` before loca
 close; upstream 405 or unavailable/revoked credentials do not prevent local cleanup.
 The attempt has a cleanup-owned AbortController and deadline, independent of caller
 request disconnects. The SDK has no per-termination signal parameter, so the
-gateway scopes the cleanup signal to the authenticated DELETE fetch. `GatewayOptions.cleanupTimeoutMs` defaults to 5000ms and accepts
-integers 1..30000. Cleanup uses ordinary setTimeout/clearTimeout with no exported
+gateway scopes the cleanup signal to the authenticated DELETE fetch.
+`GatewayOptions.cleanupTimeoutMs` defaults to 5000ms and accepts integers 1..30000. Cleanup uses ordinary setTimeout/clearTimeout with no exported
 timer-injection port. The deadline also bounds credential lookup and
 an injected fetch that ignores abort. Local session deregistration and both transport
 closes run in finally; late attempt rejection remains observed. The scheduled deadline
@@ -191,6 +191,10 @@ not automated. No third-party grant was created during development.
 
 Tests use an actual SDK client through the gateway to an independent SDK server,
 including HTTP and an injected legacy SSE wire, plus injected OAuth HTTP fixtures.
+The POST-only correlation test returns a tool result to end the finite POST
+stream before awaiting sampling and elicitation replies. Its client drains the
+stream before sending those replies, so waiting for them inside the stream
+would hang the fixture.
 No external network or wall sleeps. The malformed-status regression uses a raw
 loopback HTTP peer and a process-isolated test dial override, exercising the native
 Node HTTPS response callback with HTTP status 600. It does not mock Response and
