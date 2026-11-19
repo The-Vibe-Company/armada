@@ -1,7 +1,7 @@
 import type { ModalBinding, Sql } from "@armada/core";
 import { modalDeploymentId } from "@armada/provider-modal";
 import { createModalReaperOwnership } from "./modal-reaper-ownership.ts";
-import { createProviderReaperLane, type ProviderReaperSource } from "./provider-reaper.ts";
+import { createProviderReaperLane, decideInventoryMachine, type ProviderReaperSource } from "./provider-reaper.ts";
 
 interface ModalInventoryRegistration {
   app_id: string;
@@ -11,12 +11,16 @@ interface ModalInventoryRegistration {
   authority_owner_id: string;
 }
 
+type ModalReaperConnection = ProviderReaperSource["inventory"] & {
+  terminate(machineId: string, signal: AbortSignal): Promise<void>;
+};
+
 type OpenInventory = (
   registration: ModalInventoryRegistration,
   binding: ModalBinding,
   deploymentId: string,
   signal: AbortSignal,
-) => Promise<ProviderReaperSource["inventory"]>;
+) => Promise<ModalReaperConnection>;
 
 export function modalReaperSql(sql: Sql) {
   return {
@@ -40,6 +44,8 @@ export function createModalReaper(
     onRegistrations?: (registrations: readonly ModalInventoryRegistration[]) => void;
   } = {},
 ) {
+  const now = options.now ?? Date.now;
+  const log = options.log ?? console.log;
   return createProviderReaperLane(
     async (signal) => {
       const { rows } = await sql.query<ModalInventoryRegistration>(
@@ -53,6 +59,8 @@ export function createModalReaper(
         const { app_id: appId, environment } = registration;
         const binding: ModalBinding = { workspace: `app:${appId}`, appId, environment };
         const deploymentId = modalDeploymentId(environment, publicUrl);
+        const lookupBeforeDelete = createModalReaperOwnership(sql, binding, true);
+        let connection: ModalReaperConnection;
         return {
           provider: "modal",
           sourceId: appId,
@@ -60,16 +68,40 @@ export function createModalReaper(
           inventory: {
             async *listInventory() {
               signal.throwIfAborted();
-              const connection = await openInventory(registration, binding, deploymentId, signal);
+              connection = await openInventory(registration, binding, deploymentId, signal);
               signal.throwIfAborted();
               yield* connection.listInventory(signal);
             },
           },
           lookupOwnership: createModalReaperOwnership(sql, binding),
+          async deleteMachine(machine, reason, signal) {
+            if (reason !== "unknown") return false;
+            const ownership = await lookupBeforeDelete(machine, signal);
+            const checkedAt = now();
+            if (decideInventoryMachine(machine, deploymentId, ownership, checkedAt) !== "unknown") return false;
+            signal.throwIfAborted();
+            const event = {
+              event: "provider_reaper_delete",
+              provider: "modal",
+              source: appId,
+              reason,
+              machineId: machine.machineId,
+              ageMs: checkedAt - machine.createdAt.getTime(),
+            };
+            log(JSON.stringify({ ...event, outcome: "attempt" }));
+            try {
+              await connection.terminate(machine.machineId, signal);
+            } catch (error) {
+              log(JSON.stringify({ ...event, outcome: "retry" }));
+              throw error;
+            }
+            log(JSON.stringify({ ...event, outcome: "confirmed" }));
+            return true;
+          },
         } satisfies ProviderReaperSource;
       });
     },
-    options.log,
-    options.now,
+    log,
+    now,
   );
 }

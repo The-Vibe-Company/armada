@@ -24,9 +24,10 @@ export interface ProviderReaperSource {
   /** Check authoritative ownership by tagged sandbox and physical identity in this source.
    * Ambiguous ownership is unresolved. Errors must never be translated to absence. */
   lookupOwnership(machine: ProviderInventoryMachine, signal: AbortSignal): Promise<Ownership>;
-  /** Omitted for report-only rollout. Fence admission and resume and revalidate ownership
-   * while deleting this immutable physical machine. Preserve retained data. A lost race,
-   * already absent machine or unavailable fence returns false. */
+  /** Omitted for report-only sources. Revalidate ownership and apply the provider's
+   * admission/resume safeguards before deleting this immutable physical machine.
+   * Preserve retained data. Return false when deletion is disallowed, true on confirmed
+   * absence (including already gone), and throw on unknown outcomes. */
   deleteMachine?(machine: ProviderInventoryMachine, reason: DeleteReason, signal: AbortSignal): Promise<boolean>;
 }
 

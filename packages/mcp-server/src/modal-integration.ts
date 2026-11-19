@@ -25,7 +25,7 @@ import {
   scopeKey,
 } from "@armada/provider-modal";
 import { loadEmbeddedRunnerArtifact } from "@armada/provider-modal/embedded";
-import { ModalClient } from "modal";
+import { ModalClient, NotFoundError } from "modal";
 import type { HandlerOptions } from "./http.ts";
 import type { GitHubLaunchOptions } from "./launch-credentials.ts";
 import { observeNativeFirstToken } from "./launch-stage-record.ts";
@@ -325,7 +325,23 @@ export async function createModalIntegration(options: {
           });
           clients.set(slot, client);
         }
-        return createModalInventory(client, registration.app_name, binding, deploymentId);
+        const inventoryClient = client;
+        return {
+          ...createModalInventory(inventoryClient, registration.app_name, binding, deploymentId),
+          async terminate(machineId, signal) {
+            const sandbox = await inventoryClient.sandboxes.fromId(machineId);
+            signal.throwIfAborted();
+            try {
+              await observeProviderCall("modal", "sandbox.terminate", () => sandbox.terminate({ wait: true }));
+            } catch (error) {
+              if (
+                !(error instanceof NotFoundError) &&
+                !(error instanceof Error && error.name === "ClientError" && Reflect.get(error, "code") === 5)
+              )
+                throw error;
+            }
+          },
+        };
       },
       {
         log,

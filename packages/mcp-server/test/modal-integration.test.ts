@@ -332,7 +332,7 @@ test("scoped golden CAS supports NULL masters without broadening private-owner o
   expect(row).toEqual({ provider_sandbox_id: null, provider_snapshot_id: "new-image" });
 });
 
-test("the Modal reaper discovers bound Apps and reports only machines without a durable sandbox owner", async () => {
+test("the Modal reaper only terminates unreferenced VMs and retries a failed termination on the next sweep", async () => {
   const { db, people } = await sharedDatabase();
   const binding = { workspace: "app:ap-inventory", appId: "ap-inventory", environment: "main" };
   await db.query(
@@ -362,32 +362,96 @@ test("the Modal reaper discovers bound Apps and reports only machines without a 
     grantExpiresAt: 0,
   });
 
+  await db.query("insert into public.modal_server_scopes(scope,context) values($1,$2::jsonb)", [
+    scopeKey(scope),
+    JSON.stringify({ binding }),
+  ]);
+  const receiptId = crypto.randomUUID();
+  await db.query(
+    `insert into public.ordinary_launch_receipts(id,org_id,owner_id,request_key,fingerprint)
+     values ($1,$2,$3,'pending-inventory-receipt','fingerprint')`,
+    [receiptId, people.org, people.owner],
+  );
+  for (const [logicalId, physicalId, key] of [
+    ["pending-admission", "physical-pending", receiptId],
+    ["leased-admission", "physical-leased", "leased-inventory-request"],
+  ] as const) {
+    await createSqlModalStore(db, scope).reserve(key, {
+      info: { id: logicalId, name: "inventory", state: "starting", providerState: "booting", labels: {} },
+      phase: "booting",
+      generation: 1,
+      golden: false,
+      ttlSeconds: 3600,
+      physicalId,
+      physicalName: logicalId,
+      grantExpiresAt: 0,
+    });
+  }
+  await db.query("update public.modal_machines set lease_until='infinity' where id='leased-admission'");
   const logs: unknown[] = [];
+  const terminated: string[] = [];
+  let now = 16 * 60_000;
+  let retry = false;
+  let lateAdmission = false;
   const lane = createModalReaper(
-    db,
+    {
+      async query<T>(statement: string, params?: unknown[]) {
+        const result = await db.query<T>(statement, params);
+        if (!lateAdmission && params?.[0] === "late-admission") {
+          lateAdmission = true;
+          await db.query(
+            `insert into public.sandboxes(golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status)
+             select id,org_id,owner_id,'modal','late-admission','claude','ready' from public.goldens where name='inventory'`,
+          );
+        }
+        return result;
+      },
+    },
     "https://armada.test",
     async (registration, target, deploymentId) => {
       expect(registration.authority_owner_id).toBe(people.org);
       expect(target).toEqual(binding);
       const base = { deploymentId, generation: "1", createdAt: new Date(0) };
       return {
+        async terminate(machineId) {
+          terminated.push(machineId);
+          if (!retry) throw new Error("provider timeout");
+        },
         async *listInventory() {
+          if (!retry) yield { ...base, sandboxId: "late-admission", machineId: "physical-late" };
+          yield { ...base, sandboxId: "pending-admission", machineId: "physical-pending" };
+          yield { ...base, sandboxId: "leased-admission", machineId: "physical-leased" };
           yield { ...base, sandboxId: "conflicting-tag", machineId: "physical-admitted" };
           yield { ...base, sandboxId: "admitted", machineId: "physical-current" };
           yield { ...base, sandboxId: "lost-admission", machineId: "physical-orphan" };
         },
       };
     },
-    { log: (line) => logs.push(JSON.parse(line)), now: () => 16 * 60_000 },
+    { log: (line) => logs.push(JSON.parse(line)), now: () => now },
   );
 
-  await lane.reconcileOne(new AbortController().signal);
+  const signal = new AbortController().signal;
+  await lane.reconcileOne(signal);
+  expect(terminated).toEqual(["physical-orphan"]);
+  expect(logs).toContainEqual(expect.objectContaining({ event: "provider_reaper_retry", errors: 1 }));
+  retry = true;
+  now += 60_000;
+  await lane.reconcileOne(signal);
+  expect(terminated).toEqual(["physical-orphan", "physical-orphan"]);
+  expect(logs).toContainEqual(
+    expect.objectContaining({
+      event: "provider_reaper_delete",
+      outcome: "confirmed",
+      machineId: "physical-orphan",
+      ageMs: now,
+    }),
+  );
   expect(logs).toContainEqual({
     metric: "reaper_unknown_machines",
     provider: "modal",
     source: binding.appId,
-    count: 1,
-    overdue: 1,
+    count: 3,
+    overdue: 3,
     complete: true,
   });
 });
