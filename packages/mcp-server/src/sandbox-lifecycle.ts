@@ -252,6 +252,7 @@ export function createSandboxLifecycle(
       let error: string | null = null;
       let resolved = false;
       let observing = false;
+      let handingOffArchivedResume = false;
       let waitingForRetention = false;
       let stoppedAt: Date | undefined;
       const expired = new Date(row.expires_at).getTime() <= now();
@@ -276,8 +277,11 @@ export function createSandboxLifecycle(
           return info;
         };
         let info = await observe();
-        if (info.state === "stopped" && row.interrupted_resume && (await recoverInterruptedResume(info.id)))
-          return true;
+        if (info.state === "stopped" && row.interrupted_resume) {
+          handingOffArchivedResume = true;
+          if (await recoverInterruptedResume(info.id)) return true;
+          handingOffArchivedResume = false;
+        }
         // Name the persisted selection and provider observation before any capture.
         // No secret values or provider error bodies enter this diagnostic.
         try {
@@ -473,6 +477,7 @@ export function createSandboxLifecycle(
         else if (!terminal && (expired || row.status === "stopping" || row.stop_requested_at !== null))
           error = "Provider stop is not yet confirmed. Retrying without deleting retained data.";
       } catch (caught) {
+        if (handingOffArchivedResume) throw caught;
         const authorityLost =
           (caught instanceof VaultError &&
             ["missing_credential", "forbidden", "not_found", "credential_refused"].includes(caught.code)) ||
