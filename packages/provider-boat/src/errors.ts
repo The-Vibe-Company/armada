@@ -161,6 +161,17 @@ export async function toProviderError(error: unknown): Promise<ProviderError> {
   return new ProviderError({ provider: PROVIDER_ID, code: "unknown", message, retryable: false, cause: error });
 }
 
+export class BoatRetentionUnconfirmed extends ProviderError {
+  constructor() {
+    super({
+      provider: PROVIDER_ID,
+      code: "conflict",
+      message: "Boat retained data has not been verified.",
+      retryable: true,
+    });
+  }
+}
+
 export function invalidRequest(message: string): ProviderError {
   return new ProviderError({ provider: PROVIDER_ID, code: "invalid_request", message, retryable: false });
 }

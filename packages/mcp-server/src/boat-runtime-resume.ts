@@ -1,7 +1,7 @@
 import { PROVIDER_LIMITS, resolveBoatKey } from "@armada/core/server";
+import { BoatRetentionUnconfirmed } from "@armada/provider-boat";
 import type { ModelAuthOwnership } from "./model-auth.ts";
 import { createObservedBoatProvider } from "./observed-boat.ts";
-import { BoatResumeRetentionUnconfirmed } from "./runtime-resume.ts";
 import { type RuntimeResumeOptions, runtimeResumePlacement } from "./runtime-resume-placement.ts";
 
 /** Compute activation is isolated from legacy native harness/GitHub/MCP hooks. */
@@ -18,7 +18,7 @@ export function boatRuntimeResume(options: RuntimeResumeOptions & { modelAuth: M
     retained(current) {
       if (current.state !== "stopped" || current.physicalExitConfirmed)
         throw Error("runtime_resume_requires_stopped_compute");
-      if (current.retainedSnapshot !== "usable") throw new BoatResumeRetentionUnconfirmed();
+      if (current.retainedSnapshot !== "usable") throw new BoatRetentionUnconfirmed();
     },
     admissionError: "runtime_resume_admission_changed",
     maxTtlSeconds: PROVIDER_LIMITS.boat.maxTtlSeconds,

@@ -39,6 +39,7 @@ import {
   type SkillDefaultsService,
   VaultError,
 } from "@armada/core/server";
+import { BoatRetentionUnconfirmed } from "@armada/provider-boat";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod";
@@ -1164,7 +1165,19 @@ export function createArmadaServer(context: ToolContext, version: string, option
                   }
                 : {}),
             })
-            .catch(unknownMutationOutcome),
+            .catch(async (error: unknown) => {
+              if (error instanceof BoatRetentionUnconfirmed && generation !== undefined) {
+                await data.sandboxes.update(found.id, {
+                  status: "stopping",
+                  stoppedAt: null,
+                  stopRequested: true,
+                  finishActivity: true,
+                  activityToken,
+                  expectedGeneration: generation + 1,
+                });
+              }
+              return unknownMutationOutcome(error);
+            }),
         );
         acknowledged = true;
         await data.sandboxes.recordNativePrompt?.(found.id, found.providerSandboxId, receipt.promptId, args.request_id);

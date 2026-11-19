@@ -1,5 +1,6 @@
 import { sha256Hex } from "@armada/auth";
 import { type PromptReceipt, type Sql, sandboxActivity, VaultError } from "@armada/core/server";
+import { BoatRetentionUnconfirmed } from "@armada/provider-boat";
 import type { Caller } from "./caller.ts";
 import { createSqlData, type SandboxView } from "./data.ts";
 import { recordLaunchStageQuietly } from "./launch-stage-record.ts";
@@ -43,8 +44,6 @@ interface Operation {
   verified_at: string | null;
   receipt: RuntimeResumeReceipt | null;
 }
-export class BoatResumeRetentionUnconfirmed extends Error {}
-
 export interface RuntimeResumePlacement {
   start(
     signal: AbortSignal,
@@ -357,7 +356,7 @@ export function createRuntimeResume(
         { initialLeaseId: requestId, deadlineMs: 600_000 },
       );
     } catch (error) {
-      const preActivationArchive = error instanceof BoatResumeRetentionUnconfirmed;
+      const preActivationArchive = error instanceof BoatRetentionUnconfirmed;
       const completed = await read(sql, found.id, requestId).catch(() => undefined);
       if (completed?.receipt && (await store.get(found.id))) return completed.receipt;
       // Preserve recoverable live-epoch uncertainty. Never re-activate or reissue a ticket.

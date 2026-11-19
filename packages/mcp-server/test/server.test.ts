@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { createSqlAuthStore } from "@armada/auth";
 import { createSqlVaultStore, mutateCredentialAccount, ProviderError, VaultError } from "@armada/core/server";
+import { BoatRetentionUnconfirmed } from "@armada/provider-boat";
 import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
 import helperManifest from "../../core/helper/manifest.json";
 import { handleControlRequest } from "../src/control.ts";
@@ -1370,6 +1371,29 @@ describe("tools", () => {
     const count = boat.execs.filter((r) => r.preservationStage === "collect_exec").length;
     expect((await call(mcp, "stop", { id })).isError).not.toBe(true);
     expect(boat.execs.filter((r) => r.preservationStage === "collect_exec")).toHaveLength(count + 1);
+  });
+
+  test("native send hands a fresh pre-dispatch retention refusal to the stop reconciler", async () => {
+    const { token, client, people, boat, db } = await start();
+    const mcp = await client(await token(people.member));
+    const { data } = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    expect((await call(mcp, "stop", { id: data.id })).data.status).toBe("stopped");
+    boat.provider.prompt = async () => {
+      boat.sandbox("bx_1").info.retainedSnapshot = "unconfirmed";
+      throw new BoatRetentionUnconfirmed();
+    };
+    const refused = await call(mcp, "send", { id: data.id, prompt: "continue" });
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain("Boat retained data has not been verified");
+    const row = (
+      await db.query("select status, activity_lease_id, stop_requested_at from sandboxes where id=$1", [data.id])
+    ).rows[0];
+    expect(row).toMatchObject({ status: "stopping", activity_lease_id: null, stop_requested_at: expect.any(Date) });
+    boat.sandbox("bx_1").info.retainedSnapshot = "usable";
+    const lifecycle = createSandboxLifecycle(bunLikeSql(db), async () => boat.provider);
+    expect(await lifecycle.reconcileOne()).toBe(true);
+    expect((await call(mcp, "status", { id: data.id })).data.status).toBe("stopped");
+    expect(boat.stops).toHaveLength(1);
   });
 
   test("user stop leaves an unverified archive in worker custody without dispatching another stop", async () => {

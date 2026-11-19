@@ -41,7 +41,13 @@ export async function requestFailedRuntimeResumeStop(
   return changed.rows[0]?.status;
 }
 
-async function recoverInterruptedBoatResume(tx: Sql, sandboxId: string, lease: string, generation: number) {
+async function recoverInterruptedBoatResume(
+  tx: Sql,
+  sandboxId: string,
+  lease: string,
+  generation: number,
+  archivedProviderId: string | null,
+) {
   const result = await tx.query(
     `with handoff as (
       update public.sandboxes s set status='stopping',
@@ -60,14 +66,15 @@ async function recoverInterruptedBoatResume(tx: Sql, sandboxId: string, lease: s
         and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id)
         and r.sandbox_id=s.id and r.request_id=s.activity_lease_id and r.phase='dispatched' and r.receipt is null
         and e.runtime_hash is null
-        and (r.activated_at is not null or (e.enrolment_hash is not null and e.lifecycle_generation=$3))
+        and (s.provider_sandbox_id=$5::text or r.activated_at is not null
+          or (e.enrolment_hash is not null and e.lifecycle_generation=$3))
         and c.watermark=r.watermark
         and c.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=s.id)
       returning s.id,r.request_id
     )
     update public.runtime_resumes r set phase='abandoned' from handoff
     where r.sandbox_id=handoff.id and r.request_id=handoff.request_id returning r.request_id`,
-    [sandboxId, lease, generation, UNENROLLED_RESUME_STOP],
+    [sandboxId, lease, generation, UNENROLLED_RESUME_STOP, archivedProviderId],
   );
   return result.rows.length > 0;
 }
@@ -165,20 +172,22 @@ export function createSandboxLifecycle(
         )
       ).rows[0];
       if (!row) return false;
-      if (row.interrupted_resume) {
+      const recoverInterruptedResume = async (archivedProviderId: string | null) => {
+        if (!row.interrupted_resume) return false;
         if (!sql.transaction) throw Error("Boat resume recovery requires a SQL transaction.");
-        const handedOff = await sql.transaction(async (tx) => {
+        return sql.transaction(async (tx) => {
           const owned = await tx.query(
             `select id from public.sandboxes where id=$1 and reconcile_lease=$2 and lifecycle_generation=$3
                and reconcile_lease_until>clock_timestamp() for update`,
             [row.id, token, row.lifecycle_generation],
           );
           return (
-            owned.rows.length > 0 && (await recoverInterruptedBoatResume(tx, row.id, token, row.lifecycle_generation))
+            owned.rows.length > 0 &&
+            (await recoverInterruptedBoatResume(tx, row.id, token, row.lifecycle_generation, archivedProviderId))
           );
         });
-        if (handedOff) return true;
-      }
+      };
+      if (await recoverInterruptedResume(null)) return true;
       // Only an already-requested stop may enter operator custody. This is not
       // provider authority: the worker never substitutes credentials or allocates.
       const operatorStop = row.status === "stopping" && row.stop_requested_at !== null;
@@ -244,6 +253,8 @@ export function createSandboxLifecycle(
           return info;
         };
         let info = await observe();
+        if (info.state === "stopped" && row.interrupted_resume && (await recoverInterruptedResume(info.id)))
+          return true;
         // Name the persisted selection and provider observation before any capture.
         // No secret values or provider error bodies enter this diagnostic.
         try {

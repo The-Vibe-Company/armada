@@ -68,7 +68,7 @@ import {
   VM_RESOURCE_MAX_FILE_BYTES,
   VM_RESOURCE_PATHS,
 } from "../../core/src/vm-resource-reading.ts";
-import { invalidRequest, PROVIDER_ID, toProviderError, unexpectedAnswer } from "./errors.ts";
+import { BoatRetentionUnconfirmed, invalidRequest, PROVIDER_ID, toProviderError, unexpectedAnswer } from "./errors.ts";
 import { readEventCursor, writeEventCursor } from "./event-cursor.ts";
 import { eventCursor, normalizeEvent, promptStatus } from "./events.ts";
 import { installNativeCwdWrapper, type NATIVE_HARNESS_PATHS } from "./native-cwd.ts";
@@ -759,7 +759,7 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       if (options.beforePrompt || options.beforeResume) {
         let info = await provider.get(request.sandboxId, { signal });
         if (info.state === "stopped") {
-          if (info.retainedSnapshot !== "usable") throw invalidRequest("Boat retained data has not been verified.");
+          if (info.retainedSnapshot !== "usable") throw new BoatRetentionUnconfirmed();
           await request.onResumeStage?.("accepted");
           const shouldResume = await options.beforeResume?.(provider, request.sandboxId);
           if (shouldResume !== false) {
