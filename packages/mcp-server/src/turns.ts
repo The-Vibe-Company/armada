@@ -280,12 +280,12 @@ export async function readStatus(
     if (refreshed?.usage) sandbox = { ...sandbox, usage: refreshed.usage };
   }
 
-  if (
-    runtimeBridgeTarget(sandbox) &&
-    (sandbox.status === "ready" || sandbox.status === "running") &&
-    (info.state === "ready" || info.state === "running")
-  )
-    return report(sandbox, sandbox.status, info, prompt, info.expiresAt ?? null);
+  const runtime = runtimeBridgeTarget(sandbox);
+  const liveRuntime = runtime && (sandbox.status === "ready" || sandbox.status === "running");
+  if (runtime && !(liveRuntime && (info.state === "failed" || info.state === "stopped"))) {
+    const status = liveRuntime && info.state === "stopping" ? "stopping" : sandbox.status;
+    return report(sandbox, status, info, prompt, info.expiresAt ?? null);
+  }
 
   const next = nextStatus(sandbox.status, info, prompt);
   const reason =
@@ -312,7 +312,7 @@ export async function readStatus(
     if (
       (next === "failed" || next === "stopped") &&
       (sandbox.status === "ready" || sandbox.status === "running") &&
-      runtimeBridgeTarget(sandbox)
+      runtime
     )
       patch.runtimeObservationFrom = sandbox.status;
     try {

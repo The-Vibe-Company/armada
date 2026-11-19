@@ -88,6 +88,44 @@ test.each([
 });
 
 test.each([
+  { recorded: "ready", observed: "starting", reported: "ready" },
+  { recorded: "running", observed: "stopping", reported: "stopping" },
+  { recorded: "failed", observed: "running", reported: "failed" },
+  { recorded: "stopped", observed: "running", reported: "stopped" },
+] as const)("runtime $recorded with provider $observed does not publish a machine change", async (scenario) => {
+  const boat = fakeBoat();
+  const machine = await boat.provider.fork({ from: "snapshot" });
+  const turn = await boat.provider.prompt({ sandboxId: machine.id, harness: "codex", text: "work" });
+  boat.sandbox(machine.id).info.state = scenario.observed;
+  const sandbox = {
+    id: "sandbox",
+    provider: "boat",
+    boatRuntime: true,
+    harness: "codex",
+    providerSandboxId: machine.id,
+    status: scenario.recorded,
+    statusReason: scenario.recorded === "failed" ? "Machine failed." : null,
+    lifecycleGeneration: 2,
+    stoppedAt: scenario.recorded === "stopped" ? new Date(1000).toISOString() : null,
+    taskPromptId: turn.promptId,
+    conversationIds: [],
+  } as unknown as SandboxView;
+  const updates: SandboxPatch[] = [];
+  const store = {
+    update: async (_id: string, patch: SandboxPatch) => {
+      updates.push(patch);
+    },
+  } as unknown as ServerSandboxStore;
+
+  expect(await readStatus(boat.provider, store, sandbox, { now: new Date(2000) })).toMatchObject({
+    status: scenario.reported,
+    statusReason: sandbox.statusReason,
+    ...(scenario.reported === "stopping" ? { settled: false } : {}),
+  });
+  expect(updates).toEqual([]);
+});
+
+test.each([
   { outcome: "applied", confirmed: true },
   { outcome: "applied", confirmed: false },
   { outcome: "stale", confirmed: true },
