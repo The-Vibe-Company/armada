@@ -11,7 +11,7 @@ import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "@
 import { Input } from "@/components/ui/input";
 import { EFFORT_LABEL, HARNESS_LABELS } from "@/lib/labels";
 import { launchAgentSummary } from "@/lib/launch-composer";
-import { initialLaunchSelection, launchPickerGroups } from "@/lib/launch-picker";
+import { initialLaunchSelection, launchHarnessBlocker, launchPickerGroups } from "@/lib/launch-picker";
 import { accountProblem, accountsFor, KIND_INFO, type LaunchAccounts } from "@/lib/model-accounts";
 import { cn } from "@/lib/utils";
 
@@ -24,7 +24,7 @@ export function LaunchSentence({
   accounts,
   catalog,
   boatOpenCodeDisabled,
-  allowedHarnesses = ["claude", "codex", "opencode"],
+  allowedHarnesses,
   open,
   onOpenChange: setOpen,
 }: {
@@ -177,11 +177,7 @@ export function LaunchSentence({
         <fieldset className="flex flex-wrap gap-1 border-b p-2 text-sm">
           <legend className="sr-only">Agent</legend>
           {(["claude", "codex", "opencode"] as const).map((agent) => {
-            const reason = !allowedHarnesses.includes(agent)
-              ? "This agent is not available on this server."
-              : agent === "opencode" && boatOpenCodeDisabled
-                ? "OpenCode is not available on this snapshot."
-                : null;
+            const reason = launchHarnessBlocker(agent, allowedHarnesses, boatOpenCodeDisabled);
             return (
               <label
                 key={agent}

@@ -1,7 +1,28 @@
-import { type Harness, harnessesForCredential } from "@armada/core";
+import { HARNESSES, type Harness, harnessesForCredential } from "@armada/core";
 import type { ModelCatalog } from "@/components/model-fields";
 import { accountProblem, type LaunchAccounts, type ModelAccount, missingMorphModels } from "@/lib/model-accounts";
 import { modelsPageDefault } from "@/lib/models-page";
+
+export function launchHarnessBlocker(
+  harness: Harness,
+  offered: readonly Harness[] | undefined,
+  boatOpenCodeDisabled: boolean,
+) {
+  if (offered && !offered.includes(harness)) return "This agent is not available on this server.";
+  if (harness === "opencode" && boatOpenCodeDisabled) return "OpenCode is not available on this snapshot.";
+  return null;
+}
+
+export function launchHarnessForSource(
+  current: Harness,
+  offered: readonly Harness[] | undefined,
+  boatOpenCodeDisabled: boolean,
+) {
+  if (!launchHarnessBlocker(current, offered, boatOpenCodeDisabled)) return current;
+  return (
+    (offered ?? HARNESSES).find((harness) => !launchHarnessBlocker(harness, offered, boatOpenCodeDisabled)) ?? current
+  );
+}
 
 /** Keep unusable accounts in the picker: refusing selection must never hide the explanation. */
 export function launchPickerGroups(

@@ -27,7 +27,7 @@ import { CONNECTION_CHOICE_FIELD, type McpConnection } from "@/lib/connections";
 import { DOCKER_HOST_LABEL, dockerHostGroup } from "@/lib/labels";
 import { composerChips, launchHoldIds, MISSING_LAUNCH_START } from "@/lib/launch-composer";
 import { LAUNCH_KEY_FIELD, type LaunchKey, launchKeyFor } from "@/lib/launch-key";
-import { initialLaunchSelection, type LaunchStartTarget } from "@/lib/launch-picker";
+import { initialLaunchSelection, type LaunchStartTarget, launchHarnessForSource } from "@/lib/launch-picker";
 import {
   embeddedSnapshotParams,
   launchRepositoryChoices,
@@ -548,9 +548,11 @@ function LaunchForm({
   const [credential, setCredential] = useState(() => initialLaunchSelection(accounts, catalog, harness).credentialId);
   const [accountBlocked, setAccountBlocked] = useState(false);
   // Late discovery can rule out the initial snapshot agent. Preserve the form and its retry key.
-  if (harnesses?.[0] && !harnesses.includes(harness)) {
-    setHarness(harnesses[0]);
-    setCredential(initialLaunchSelection(accounts, catalog, harnesses[0]).credentialId);
+  const boatOpenCodeDisabled = provider === "boat" && !boatOpenCodeAvailable;
+  const nextHarness = launchHarnessForSource(harness, harnesses, boatOpenCodeDisabled);
+  if (nextHarness !== harness) {
+    setHarness(nextHarness);
+    setCredential(initialLaunchSelection(accounts, catalog, nextHarness).credentialId);
   }
   const [armadaAccess, setArmadaAccess] = useState(false);
   const usableCodexAccount = (value: string) =>
@@ -661,7 +663,7 @@ function LaunchForm({
                   accounts={accounts}
                   catalog={catalog}
                   allowedHarnesses={harnesses}
-                  boatOpenCodeDisabled={provider === "boat" && !boatOpenCodeAvailable}
+                  boatOpenCodeDisabled={boatOpenCodeDisabled}
                   open={modelOpen}
                   onOpenChange={setModelOpen}
                 />
