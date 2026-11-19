@@ -1,8 +1,11 @@
 import { expect, test } from "bun:test";
 import type { SandboxPatch } from "@armada/core";
-import type { SandboxView, ServerSandboxStore } from "../src/data.ts";
+import { createSqlData, type SandboxView, type ServerSandboxStore } from "../src/data.ts";
 import { readStatus } from "../src/turns.ts";
+import { rowOnlyDatabase } from "./row-only-database.ts";
 import { fakeBoat } from "./support.ts";
+
+const failureDatabase = rowOnlyDatabase();
 
 test.each([
   { usable: true, runtime: false },
@@ -82,4 +85,94 @@ test.each([
     prompt: { state: scenario.prompt },
   });
   expect(updates).toEqual([]);
+});
+
+test.each([
+  { outcome: "applied", confirmed: true },
+  { outcome: "applied", confirmed: false },
+  { outcome: "stale", confirmed: true },
+  { outcome: "rollback", confirmed: true },
+  { outcome: "release_failed", confirmed: true },
+] as const)("runtime physical failure ($outcome, exit confirmed=$confirmed)", async ({ outcome, confirmed }) => {
+  const { db, people, sharedGoldenId, openaiCredentialId } = await failureDatabase();
+  const boat = fakeBoat();
+  const machine = await boat.provider.fork({ from: "snapshot" });
+  const id = crypto.randomUUID();
+  const now = new Date("2026-01-01T00:00:00Z");
+  await db.query(
+    `insert into sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,boat_runtime)
+     values ($1,'boat',$2,$3,$4,$5,'codex','ready',true)`,
+    [id, machine.id, sharedGoldenId, people.org, people.owner],
+  );
+  const store = createSqlData(db)({
+    userId: people.owner,
+    orgs: [{ orgId: people.org, role: "member" }],
+    via: "service",
+  }).sandboxes;
+  const sandbox = (await store.get(id))!;
+  const diagnostic = confirmed ? "Provider reported a runtime failure. ".repeat(100) : "";
+  await db.query(
+    `insert into account_turn_queue(sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,
+      input_hash,input_enc,conversation_id,state,dispatch_generation)
+     values ($1,$2,$3,$4,$5,1,1,'hash','data','conversation','dispatching',$6)`,
+    [id, crypto.randomUUID(), openaiCredentialId, people.owner, people.org, sandbox.lifecycleGeneration],
+  );
+  await db.query("insert into account_agent_reservations(sandbox_id,account_id) values ($1,$2)", [
+    id,
+    openaiCredentialId,
+  ]);
+  Object.assign(boat.sandbox(machine.id).info, {
+    state: "failed",
+    providerState: "failed",
+    error: diagnostic,
+    physicalExitConfirmed: confirmed,
+  });
+  if (outcome === "stale")
+    await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [id]);
+  if (outcome === "rollback")
+    await db.exec("alter table sandboxes add constraint reject_observed_exit check (stopped_at is null)");
+  if (outcome === "release_failed")
+    await db.exec(`create function reject_reservation_release() returns trigger language plpgsql as $$
+      begin raise exception 'Reservation release failed'; end $$;
+      create trigger reject_reservation_release before delete on account_agent_reservations
+      for each row execute function reject_reservation_release();`);
+  try {
+    const read = readStatus(boat.provider, store, sandbox, { now });
+    if (outcome === "rollback") await expect(read).rejects.toThrow("reject_observed_exit");
+    else if (outcome === "release_failed") await expect(read).rejects.toThrow("Reservation release failed");
+    else expect(await read).toMatchObject({ status: outcome === "applied" ? "failed" : "ready" });
+
+    const journal = await db.query(
+      "select from_status,to_status,actor,code,generation::int from sandbox_transitions where sandbox_id=$1",
+      [id],
+    );
+    const row = await store.get(id);
+    const reservation = await db.query("select sandbox_id from account_agent_reservations where sandbox_id=$1", [id]);
+    expect(reservation.rows).toEqual(outcome === "applied" && confirmed ? [] : [{ sandbox_id: id }]);
+    if (outcome === "applied") {
+      expect(journal.rows).toEqual([
+        {
+          from_status: "ready",
+          to_status: "failed",
+          actor: "lifecycle_runner",
+          code: "runtime_provider_failure",
+          generation: sandbox.lifecycleGeneration,
+        },
+      ]);
+      expect(row).toMatchObject({
+        status: "failed",
+        statusReason: confirmed ? diagnostic.slice(0, 2000) : null,
+        stoppedAt: confirmed ? now.toISOString() : null,
+      });
+    } else {
+      expect(journal.rows).toEqual([]);
+      expect(row).toMatchObject({ status: "ready", stoppedAt: null });
+    }
+  } finally {
+    if (outcome === "rollback") await db.exec("alter table sandboxes drop constraint reject_observed_exit");
+    if (outcome === "release_failed")
+      await db.exec(
+        "drop trigger reject_reservation_release on account_agent_reservations; drop function reject_reservation_release()",
+      );
+  }
 });

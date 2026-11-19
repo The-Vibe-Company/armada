@@ -35,3 +35,19 @@ list and write responses. Only an explicit variable read prints a value.
 
 Native model login obtains consent locally before import. The CLI sends the
 credential to the Armada API and prints a fixed confirmation after the write.
+
+## Sandbox command output
+
+For sandbox failures, HTTP 401 goes through shared login recovery. Other
+failures use recognised codes or complete, fixed binding and policy messages.
+Arbitrary provider and guest text stays out of diagnostics. The terminal list
+renders the safe list response without looking up sandbox internals and
+replaces control characters in labels and owners before displaying them.
+
+After a successful Boat or Modal launch in text mode, the CLI looks up
+optional resource advice with a two-second budget and quietly omits it when
+the route or evidence is unavailable.
+
+A closed stdout pipe ends the CLI with status zero, including during a follow
+operation. Check a submitted mutation's outcome before retrying it. The exit
+status in this case only describes the pipe.

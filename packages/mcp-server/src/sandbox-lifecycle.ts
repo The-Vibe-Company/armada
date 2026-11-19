@@ -9,9 +9,11 @@ import {
   VaultError,
 } from "@armada/core/server";
 import type { ModalProvider } from "@armada/provider-modal";
+import { releaseAccountCapacity } from "./account-capacity.ts";
 import { mergedWorkProof } from "./merged-work.ts";
 
 import { nativeIdleDue, nativeQuiescent } from "./native-idle.ts";
+import { SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 import { INTERRUPTED_LAUNCH_REASON } from "./turns.ts";
 import { preserveBeforeStop, recordStopDispatch } from "./work-preservation.ts";
 
@@ -96,6 +98,51 @@ export async function recordRuntimeStartupFailure(
     ]);
   }
   return result;
+}
+
+export async function recordObservedRuntimeFailure(
+  sql: Sql,
+  scope: [string[], string],
+  observation: {
+    sandboxId: string;
+    generation: number;
+    fromState: "ready" | "running";
+    reason: string | null;
+    stoppedAt: string | null;
+  },
+) {
+  if (!sql.transaction) throw new Error("Runtime failure publication requires a transaction.");
+  const { sandboxId, generation, fromState, reason, stoppedAt } = observation;
+  return sql.transaction(async (tx) => {
+    const eligible = await tx.query(
+      `select s.id from public.sandboxes s
+       where s.id=$3::uuid and ${SANDBOX_VISIBLE}
+         and ((s.provider='boat' and s.boat_runtime) or (s.provider='modal' and s.runtime_transport='dialout'))
+         and s.stop_requested_at is null and s.deleted_at is null
+         and (s.activity_until is null or s.activity_until<now())
+         and (s.reconcile_lease_until is null or s.reconcile_lease_until<now())
+       for update of s`,
+      [...scope, sandboxId],
+    );
+    if (!eligible.rows.length) return { kind: "conflict" } satisfies SandboxTransitionResult;
+    const result = await transitionSandbox(tx, {
+      sandboxId,
+      expectedGeneration: generation,
+      fromStates: [fromState],
+      toState: "failed",
+      actor: "lifecycle_runner",
+      code: "runtime_provider_failure",
+      effects: [],
+    });
+    if (result.kind === "applied") {
+      await tx.query(
+        "update public.sandboxes set status_reason=$2,stopped_at=coalesce($3::timestamptz,stopped_at) where id=$1",
+        [sandboxId, reason, stoppedAt],
+      );
+      if (stoppedAt !== null) await releaseAccountCapacity(tx, sandboxId);
+    }
+    return result;
+  });
 }
 
 export async function deferAmbiguousBoatResume(
