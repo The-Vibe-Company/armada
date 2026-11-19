@@ -3,10 +3,11 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-type Step = { id?: string; name?: string; run?: string };
+type Step = { id?: string; name?: string; run?: string; env?: Record<string, string>; with?: Record<string, string> };
+type Job = { steps: Step[]; needs?: string | string[]; outputs?: Record<string, string> };
 const workflow = Bun.YAML.parse(
   readFileSync(resolve(import.meta.dir, "../../.github/workflows/release.yml"), "utf8"),
-) as { jobs: Record<string, { steps: Step[] }> };
+) as { jobs: Record<string, Job> };
 
 function script(step: Step | undefined): string {
   if (!step?.run) throw new Error("The selected workflow step must execute its preflight");
@@ -234,6 +235,24 @@ test("the production consumer rechecks its configuration in its actual first ste
     expect(result.output).toBe("");
     expect(result.calls).toEqual([]);
   }
+});
+
+test("binary and publish jobs use the validated release version for npm artifacts", () => {
+  const binary = workflow.jobs.binary;
+  const publish = workflow.jobs.publish;
+  if (!binary || !publish) throw new Error("Missing binary or publish job");
+
+  const collection = binary.steps.find((step) => step.name === "Collect smoke-tested npm tarballs");
+  const artifact = binary.steps.find((step) => step.with?.path === "dist/npm-artifact");
+  const download = publish.steps.find((step) => step.with?.path === "dist/tarballs");
+  const version = "${{ needs.release-metadata.outputs.version }}";
+
+  expect(workflow.jobs["release-metadata"]?.outputs?.version).toBeTruthy();
+  expect(binary.needs).toContain("release-metadata");
+  expect(publish.needs).toContain("release-metadata");
+  expect(collection?.env?.VERSION).toBe(version);
+  expect(artifact?.with?.name).toBe(`npm-tarballs-${version}-\${{ matrix.target }}`);
+  expect(download?.with?.pattern).toBe(`npm-tarballs-${version}-*`);
 });
 
 const verifiedPublish = workflow.jobs.publish?.steps.find((step) => step.id === "verified-npm-publish");
