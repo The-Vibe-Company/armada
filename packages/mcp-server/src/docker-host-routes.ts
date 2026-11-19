@@ -349,7 +349,6 @@ export function createDockerHostRoutes(
         // A daemon may opt into a held poll: the response waits until a job or an
         // unacknowledged resume claim exists, so a launch never waits out the
         // daemon's idle period, and the host still needs no inbound port (#2561).
-        // Validated before any write, as a daemon retries a refused poll without them.
         const wait = body.waitSeconds;
         if (wait !== undefined && (!Number.isSafeInteger(wait) || Number(wait) < 1)) throw new InvalidInput();
         const holdUntil = clock.now() + Math.min(Number(wait ?? 0), DOCKER_HOST_POLL_HOLD_SECONDS) * 1000;
