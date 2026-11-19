@@ -11,7 +11,7 @@ import { refuseConversationSelector } from "./sandbox-conversation.ts";
 import { extendSandbox } from "./sandbox-extend.ts";
 import { ToolApiError } from "./tool-api.ts";
 import { ToolError } from "./tool-error.ts";
-import { describeToolFailure } from "./tools.ts";
+import { describeToolFailure } from "./tool-failure.ts";
 
 const id = z.string().describe("Armada's sandbox id (a uuid, as returned by launch and list).");
 const runtimeRequest = z.object({ id, request_id: z.string().uuid(), runtimeVersion: z.literal(1) });

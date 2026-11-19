@@ -1,7 +1,4 @@
-import { GitHubHydrationError, launchFailureHelp, providerRateLimitDetails } from "@armada/core";
 import {
-  EncryptionKeyError,
-  GoldenError,
   LaunchError,
   type LaunchOptions,
   type LaunchStores,
@@ -9,7 +6,6 @@ import {
   MODEL_CATALOG,
   type Provider,
   ProviderError,
-  ProviderRoutingError,
   type ProviderTarget,
   redact,
   resolveModelChoice,
@@ -20,23 +16,19 @@ import {
 } from "@armada/core/server";
 import { BoatRetentionUnconfirmed } from "@armada/provider-boat";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod";
-import { apiFailureCode } from "./api-failure.ts";
 import type { Caller } from "./caller.ts";
-import { INTERNAL_FAILURE_MESSAGE } from "./control-response.ts";
 import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
-import { DataError, type SandboxView, type ScopedData } from "./data.ts";
-import { MAX_LOG_PAGES, readEventPages, validateLogPagination } from "./event-pagination.ts";
+import type { SandboxView, ScopedData } from "./data.ts";
+import { MAX_LOG_PAGES, readEventPages } from "./event-pagination.ts";
 import type { GoldenLaunchCredentials } from "./launch-account-admission.ts";
 import { mcpLaunchContract, runMcpLaunch } from "./mcp-launch-tool.ts";
-import { logicalExpiry, registerListTool, registerStatusTools } from "./mcp-read-tools.ts";
+import { registerListTool, registerStatusTools } from "./mcp-read-tools.ts";
 import { publicLogEvents } from "./model-usage.ts";
 import type { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import { recordOperatorFailure } from "./request-observability.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
 import { appendConversation, sandboxActivity } from "./sandbox-activity.ts";
-import { sandboxControlRefusal } from "./sandbox-control-refusal.ts";
 import { refuseConversationSelector } from "./sandbox-conversation.ts";
 import {
   sandboxIdInput as id,
@@ -46,6 +38,8 @@ import {
   taskOutcome,
 } from "./sandbox-tool-schemas.ts";
 import { ToolError } from "./tool-error.ts";
+import { errorResult, publicationFailure, unknownMutationOutcome } from "./tool-failure.ts";
+import { createToolRegistration } from "./tool-registration.ts";
 import { collectSandboxUsage, latestPrompt, readStatus } from "./turns.ts";
 import { stopAndObserve } from "./work-preservation.ts";
 
@@ -99,25 +93,6 @@ export function createRestToolServer(context: ToolContext, version: string, only
   return createToolServer(context, version, "rest", onlyTool);
 }
 
-type ToolInput = z.ZodRawShape | z.ZodObject;
-type ToolArgs<In extends ToolInput> = z.infer<In extends z.ZodRawShape ? z.ZodObject<In> : In>;
-
-type ToolContract<In extends ToolInput, Out extends z.ZodRawShape> = {
-  title: string;
-  description: string;
-  input: In;
-  output: Out;
-  readOnly?: boolean;
-  destructive?: boolean;
-};
-
-export type ToolRegistrar = <In extends ToolInput, Out extends z.ZodRawShape>(
-  name: string,
-  config: ToolContract<In, Out>,
-  run: (args: ToolArgs<In>) => Promise<z.infer<z.ZodObject<Out>>>,
-  restOnly?: boolean,
-) => ToolContract<In, Out> & { invoke: (args: ToolArgs<In>) => Promise<CallToolResult> };
-
 function createToolServer(
   context: ToolContext,
   version: string,
@@ -136,122 +111,12 @@ function createToolServer(
   );
   const { caller, data } = context;
 
-  const register = <In extends ToolInput, Out extends z.ZodRawShape>(
-    name: string,
-    config: ToolContract<In, Out>,
-    invoke: (args: ToolArgs<In>) => Promise<CallToolResult>,
-  ) => {
-    server.registerTool(
-      name,
-      {
-        title: config.title,
-        description: config.description,
-        inputSchema: config.input,
-        outputSchema: config.output,
-        annotations: {
-          readOnlyHint: config.readOnly ?? false,
-          destructiveHint: config.destructive ?? false,
-          openWorldHint: true,
-        },
-      },
-      invoke as never,
-    );
+  const visible = async (sandboxId: string): Promise<SandboxView> => {
+    const found = await data.sandboxes.get(sandboxId);
+    if (!found) throw new ToolError("not_found", `No sandbox with id '${sandboxId}' that you can see.`);
+    return found;
   };
-
-  const tool = <In extends ToolInput, Out extends z.ZodRawShape>(
-    name: string,
-    config: ToolContract<In, Out>,
-    run: (args: ToolArgs<In>) => Promise<z.infer<z.ZodObject<Out>>>,
-    restOnly = false,
-  ) => {
-    const invoke: (args: ToolArgs<In>) => Promise<CallToolResult> = async (args) => {
-      try {
-        if (["send", "steer", "exec", "interrupt"].includes(name)) {
-          const input = args as Record<string, unknown>;
-          const found = data.sandboxes.controlState
-            ? await data.sandboxes.controlState(input.id as string)
-            : await visible(input.id as string);
-          if (!found) throw new ToolError("not_found", `No sandbox with id '${input.id}' that you can see.`);
-          // A retained legacy Modal workspace needs its owner's explicit account binding
-          // before any control, including controls that require running compute.
-          if (found.provider === "modal" && !found.credentialId && !sandboxControlRefusal(found, context.now(), "send"))
-            throw new VaultError("credential_binding_required", CREDENTIAL_BINDING_GUIDANCE);
-          const refusal = sandboxControlRefusal(found, context.now(), name);
-          if (refusal) throw new ToolError("sandbox_terminal", refusal);
-        }
-        if (
-          name === "stop" &&
-          !(args as Record<string, unknown>).only_if_idle &&
-          typeof (args as Record<string, unknown>).id === "string"
-        )
-          await context.accountTurns?.cancelQueued(caller, (args as Record<string, unknown>).id as string);
-        if (name === "report") {
-          const input = args as Record<string, unknown>;
-          const queued = await context.accountTurns?.status(caller, input.id as string, input.prompt_id as string);
-          if (queued && "nativePromptId" in queued) input.prompt_id = queued.nativePromptId;
-        }
-        if (name === "logs") validateLogPagination(args as Record<string, unknown>);
-        const routed = ["send", "status", "wait"].includes(name)
-          ? undefined
-          : await context.dockerControls?.invoke(caller, name, args);
-        const raw = routed?.handled ? routed.result : await run(args);
-        if (["logs", "status", "wait", "list"].includes(name) && context.accountTurns?.publicPromptIds) {
-          type PublicReport = {
-            id?: string;
-            sandboxes?: PublicReport[];
-            events?: { promptId?: string }[];
-            prompt?: { promptId: string };
-            usage?: { turns: { promptId: string }[] };
-          };
-          const root = raw as PublicReport;
-          const reports = (name === "list" ? (root.sandboxes ?? []) : [root]).map((report) => {
-            const items = [
-              ...(report.events ?? []),
-              ...(report.prompt ? [report.prompt] : []),
-              ...(report.usage?.turns ?? []),
-            ];
-            return { sandboxId: report.id ?? ((args as Record<string, unknown>).id as string), items };
-          });
-          const aliases = await context.accountTurns.publicPromptIdsBatch(
-            caller,
-            reports.map(({ sandboxId, items }) => ({
-              sandboxId,
-              nativeIds: items.flatMap((item) => (item.promptId ? [item.promptId] : [])),
-            })),
-          );
-          for (const { sandboxId, items } of reports) {
-            const ids = aliases.get(sandboxId);
-            for (const item of items)
-              if (item.promptId && ids?.has(item.promptId)) item.promptId = ids.get(item.promptId)!;
-          }
-        }
-        const value =
-          routed?.handled && (name === "status" || name === "wait")
-            ? {
-                ...(raw as Record<string, unknown>),
-                ...logicalExpiry((raw as { expiresAt: string | null }).expiresAt, context.now()),
-                providerExpiresAt: null,
-              }
-            : raw;
-        const sandboxId = (args as Record<string, unknown>).id;
-        const result =
-          (name === "status" || name === "wait") && context.sandboxBillingAccount && typeof sandboxId === "string"
-            ? {
-                ...(value as Record<string, unknown>),
-                billingAccount: await context.sandboxBillingAccount(sandboxId),
-              }
-            : value;
-        return {
-          structuredContent: result as Record<string, unknown>,
-          content: [{ type: "text", text: JSON.stringify(result) }],
-        };
-      } catch (error) {
-        return errorResult(error, name, context.logError ?? ((line) => console.error(line)));
-      }
-    };
-    if (!restOnly || surface === "rest") register(name, config, invoke);
-    return { ...config, invoke };
-  };
+  const { register, tool } = createToolRegistration(server, context, surface, visible);
 
   // HTTP list calls keep the same handler and SDK validation without building unrelated tools.
   if (onlyTool === "list") {
@@ -259,11 +124,6 @@ function createToolServer(
     return server;
   }
 
-  const visible = async (sandboxId: string): Promise<SandboxView> => {
-    const found = await data.sandboxes.get(sandboxId);
-    if (!found) throw new ToolError("not_found", `No sandbox with id '${sandboxId}' that you can see.`);
-    return found;
-  };
   const live = async (sandboxId: string, allowUnbound = false, known?: SandboxView, runtimeControl = false) => {
     const found = known ?? (await visible(sandboxId));
     if ((found.boatRuntime || found.runtimeTransport === "dialout") && !allowUnbound && !runtimeControl)
@@ -1049,121 +909,6 @@ async function readLogs(
     cursor,
     hasMore,
   };
-}
-
-function errorResult(error: unknown, tool: string, logError: (line: string) => void): CallToolResult {
-  const { code, message } = describeToolFailure(error);
-  logToolFailure(error, tool, code, logError);
-  return {
-    isError: true,
-    ...(error instanceof LaunchError && error.reason
-      ? {
-          structuredContent: {
-            error: {
-              code,
-              message,
-              details: { reason: error.reason, action: error.action, ...(error.stage ? { stage: error.stage } : {}) },
-            },
-          },
-        }
-      : {}),
-    ...(error instanceof ProviderError && code === "rate_limited"
-      ? {
-          structuredContent: {
-            error: {
-              code,
-              message,
-              details: providerRateLimitDetails({ ...error.details, retryAfterSeconds: error.retryAfterSeconds }),
-            },
-          },
-        }
-      : {}),
-    ...(error instanceof GitHubHydrationError ? { _meta: { error: { code, message, details: error.details } } } : {}),
-    content: [
-      { type: "text", text: message },
-      { type: "text", text: `error code: ${code}` },
-      ...(error instanceof GitHubHydrationError
-        ? [{ type: "text" as const, text: JSON.stringify({ error: { code, message, details: error.details } }) }]
-        : []),
-    ],
-  };
-}
-
-export function logToolFailure(error: unknown, tool: string, code: string, logError?: (line: string) => void) {
-  if (
-    [
-      "internal",
-      "unavailable",
-      "provider_unavailable",
-      "dependency_unavailable",
-      "outcome_unknown",
-      "start_failed",
-    ].includes(code)
-  ) {
-    recordOperatorFailure(`tool.${tool}`, error, {
-      sandboxId: error instanceof LaunchError ? error.sandboxId : undefined,
-      ...(logError ? { log: logError } : {}),
-    });
-  }
-}
-
-export function describeToolFailure(error: unknown): { code: string; message: string } {
-  const failure = apiFailureCode(error);
-  if (failure) return { code: failure, message: error instanceof Error ? error.message : failure };
-  if (error instanceof ToolError) return { code: error.code, message: error.message };
-  if (error instanceof LaunchError) {
-    const tail = error.sandboxId ? ` Sandbox ${error.sandboxId} is recorded as failed and its machine is stopped.` : "";
-    return {
-      code: error.code,
-      message: `${launchFailureHelp(error.code, undefined, error.message) ?? error.message}${tail}`,
-    };
-  }
-  if (error instanceof GoldenError) return { code: error.code, message: error.message };
-  if (error instanceof ProviderRoutingError)
-    return { code: error.code, message: launchFailureHelp(error.code, undefined, error.message) ?? error.message };
-  if (error instanceof ProviderError) {
-    if (error.code === "no_running_turn") {
-      return { code: error.code, message: "No turn is running. Use send to start one." };
-    }
-    return {
-      code: error.code,
-      message:
-        launchFailureHelp(error.code, { ...error.details, retryAfterSeconds: error.retryAfterSeconds }) ??
-        error.message,
-    };
-  }
-  if (error instanceof VaultError)
-    return {
-      // Shared typed classification above handles unavailable and credential refusal.
-      // All remaining vault codes already match the public HTTP categories.
-      code: error.code,
-      message: error.message,
-    };
-  if (error instanceof EncryptionKeyError) return { code: "dependency_unavailable", message: error.message };
-  if (error instanceof DataError)
-    return { code: error.code === "unavailable" ? "dependency_unavailable" : error.code, message: error.message };
-  return { code: "internal", message: INTERNAL_FAILURE_MESSAGE };
-}
-
-/** This catch belongs on the dispatch itself, never on preparation or provider reads. */
-function unknownMutationOutcome(error: unknown): never {
-  if (!(error instanceof ProviderError) || error.code === "unavailable" || error.code === "unknown")
-    throw new LaunchError(
-      "outcome_unknown",
-      "The operation outcome is unknown. Check sandbox status before retrying.",
-      { cause: error },
-    );
-  throw error;
-}
-
-function publicationFailure(error: unknown, acknowledged: boolean): never {
-  if (acknowledged)
-    throw new LaunchError(
-      "outcome_unknown",
-      "The operation was accepted but its result could not be published. Check sandbox status before retrying.",
-      { cause: error },
-    );
-  throw error;
 }
 
 /** The run a successful steer left in progress, or "" when it cannot be proven.
