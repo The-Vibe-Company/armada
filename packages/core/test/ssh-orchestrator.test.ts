@@ -53,7 +53,7 @@ test("private SSH pins the host, keeps secrets private, and cleans up before run
   expect(response.authorityInstalled).toBe(true);
   const ssh = calls.find((call) => call.file === "ssh");
   expect(ssh?.args).toContain("StrictHostKeyChecking=yes");
-  expect(ssh?.args.at(-1)).toMatch(/ARMADA_PRIVATE_KEY_CLEANUP[\s\S]*public-code-only/);
+  expect(ssh?.stdin).toMatch(/ARMADA_PRIVATE_KEY_CLEANUP[\s\S]*public-code-only/);
   expect(JSON.stringify(calls.map((c) => c.args))).not.toContain(token);
   expect(writes.join("")).not.toContain(token);
   expect(ssh?.stdin).toContain(token + "\n");
