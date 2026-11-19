@@ -76,6 +76,16 @@ Before opening a PR, and again against current main before merge:
   [operator-only reconciliation runbook](#reconcile-hand-applied-history-operator-only),
   not an author-side repair or automatic replay.
 
+At most one migration per PR. Never hand-merge `packages/core/src/database.types.ts`.
+If that file conflicts while merging current main, take main's generated file,
+complete the merge, and regenerate from the combined SQL. Before queueing a
+migration PR, fetch and merge current `origin/main`, confirm the branch-only
+migration is unapplied with an authorized operator, and work from a clean,
+full checkout. Run `bun scripts/db/renumber-pending.ts origin/main` to assign a fresh
+version, update tracked text references to the filename, and regenerate database types.
+Append `--dry-run` to preview the plan. Review and commit the result, then run
+`bun scripts/db/check-migrations.ts origin/main` against the new commit.
+
 After regenerating types, run `bun test ./packages/core/test/database-types.probe.ts`.
 This fresh-schema parity probe gates publishing, not ordinary PR unit discovery.
 
