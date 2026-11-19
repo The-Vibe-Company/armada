@@ -270,10 +270,14 @@ armada-docker-host run --state-dir /absolute/private/armada-host
 Jobs persist before side effects and redeliver the original request ID until
 completion. Changed input under that ID refuses. After restart, pending work
 requires current server redelivery; offline/revoked hosts may sweep TTL but cannot
-start pending creates. A stale exclusive `daemon.lock` must be removed only after
-verifying no daemon remains; never remove it to force concurrent startup. Receipts
+start pending creates. On Linux, the daemon takes an OS flock on a file named for
+the current boot. The locking process holds it while the daemon's private stdin
+pipe is open. Process death closes the pipe, including after SIGKILL. A legacy
+`daemon.lock` requires operator inspection. Remove it only after verifying no
+daemon remains. Receipts
 are not pruned automatically. Upgrade the host binary before sending new job
 formats; old strict binaries refuse unknown bootstrap/deadline envelopes safely.
+State writes validate existing configuration before replacing it.
 Upgrade **all server replicas before creating bound work**. Do not roll back
 while bound work remains queued: old readers deliberately refuse its envelope.
 
@@ -290,6 +294,8 @@ descriptor, never extend it. Expired creates/install/bootstrap refuse, but exact
 stop/delete remain possible. Host UTC clock and a running daemon are required for
 local TTL enforcement; this is not a guaranteed scheduler during host/daemon loss.
 An offline host means unknown/pending cleanup, not a fictional deletion receipt.
+The host enforces deadlines per generation. Expiry and mailbox work for unrelated
+generations may proceed concurrently.
 
 The fixed runtime archive initializes `/home/user` volume ownership as uid/gid
 1000:1000, modes 0700, without privileged guest exec. Installation/start is only
@@ -391,6 +397,12 @@ sandbox/request IDs. A successful smoke removes its sandbox/container/workspace
 volume, **not** the host registration, daemon or shared pulled image.
 
 ## HTTP contract / reconciliation
+
+The daemon sends authenticated requests over HTTPS and rejects redirects.
+Protocol responses and Docker inspection output are bounded. Raw parser,
+transport, and Docker diagnostics can contain private data and are kept out
+of command error output. The server checks retained-output admission before
+the daemon reads or uploads the archive, fencing tainted or superseded work.
 
 Bearer-only POST JSON under `/api/v1/docker/sandboxes/`; no browser Origin/cookie
 authority. Every body has `org`; all except launch have `sandboxId`.
@@ -759,6 +771,13 @@ an exact manifest version and verify the artifact before execution.
 The updater can execute release code as the Docker service account.
 Detached signing and staged rollout are follow-ups.
 
+The managed manual upgrade runs from the verified downloaded executable with
+the saved registration. It stops the user service before taking the exclusive
+daemon lock and attempts to restart the service even if the upgrade fails.
+The updater syncs the pending digest before replacing the binary and commits
+the new digest afterward. Temporary marker files live beside the state directory
+so an interrupted write cannot leave an unknown file inside it.
+
 Daemon requests carry the integer `x-armada-docker-host-protocol` header.
 Protocol 1 is the first published protocol. The server accepts its current
 protocol and the preceding integer. Missing, older, or newer protocols receive
@@ -799,6 +818,8 @@ and a working systemd user session. The binary is verified before execution,
 registered over stdin and installed as a user service with linger. If the user
 cannot enable linger or use Docker, an administrator must configure linger and
 rootless Docker (or explicitly grant powerful Docker access). No sudo is run.
+Registration is persisted and the installer releases its lock before systemd
+starts the daemon under a separate lock owner.
 Use the current CLI installer below to safely upgrade an existing registration.
 Failed or uncertain registration must be inspected, never blindly replayed.
 
@@ -815,6 +836,9 @@ issuer must retain cleanup authority (current admin for other owners' sandboxes)
 Offline/uncertain cleanup, unknown labelled resources and changed managed files
 refuse removal, preserving state for reconciliation. Shared images, other workloads
 and account-wide linger are preserved. Failure is not deletion.
+Removal clears daemon-owned artifact caches. If removal fails before the binary
+is deleted, the daemon command remains available and uninstall attempts to
+restore the saved unit, registration, and ownership marker.
 A drain has no deadline: the host stays draining until the uninstall completes, so
 an interrupted uninstall cannot re-admit work while its cleanup may still be queued.
 Retrying the uninstall continues the same drain. An abandoned drain has no cancel
@@ -935,6 +959,11 @@ Snapshot builds use a request-scoped Buildx docker-container builder with the
 same CPU/memory/swap budget; its process cap is applied before build work.
 The builder is removed after each attempt; shared builders/images are untouched.
 Buildx with the docker-container driver is required for snapshot builds.
+The Docker client is invoked directly with captured output. The snapshot GitHub
+credential reaches BuildKit as a scoped build secret sourced from the client
+environment. Buildx's separate client process may receive stdin as a socket
+that it cannot reopen as `/dev/stdin`. The daemon keeps only a bounded tail of
+build stderr in memory and extracts fixed tool names for errors.
 
 This first slice does not persist resource reports, enforce host admission or
 provide overrides/UI. Those are subsequent #1773 slices; do not treat this as
@@ -1226,6 +1255,7 @@ Registry provenance identifies these shared release images, which do not carry
 per-registration container labels. Unproven dangling images are left alone.
 There is no global prune, forced removal, snapshot deletion or foreign-image
 cleanup. Docker's non-forced removal provides the final concurrent-use guard.
+If a sweep fails, the daemon waits until the next hourly sweep to try again.
 
 ### Retention controls and visibility
 
