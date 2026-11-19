@@ -8083,7 +8083,7 @@
             "schema": {
               "$schema": "http://json-schema.org/draft-07/schema#",
               "type": "string",
-              "pattern": "^[0-9a-f-]+$",
+              "pattern": "^[0-9a-fA-F-]+$",
               "description": "Armada's sandbox id (a uuid, as returned by launch and list)."
             }
           },

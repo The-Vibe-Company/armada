@@ -595,14 +595,17 @@ test("normal API and MCP accept Docker list/status/logs rows and acknowledge cle
     },
   ]);
   let now = 0;
+  let acknowledgeCleanup = true;
   const cleanup = createDockerSandboxControls(sql, key, {
+    timeoutMs: 1,
     clock: {
       now: () => now,
       async wait(ms) {
+        now += ms;
+        if (!acknowledgeCleanup) return;
         const job = await hosts.poll(f.hostToken, f.installationId);
         if (!job || !["stop", "delete"].includes(job.operation)) throw Error("Expected bound cleanup job");
         await hosts.complete(f.hostToken, f.installationId, { requestId: job.requestId, outcome: "completed" });
-        now += ms;
       },
     },
   });
@@ -699,11 +702,11 @@ test("normal API and MCP accept Docker list/status/logs rows and acknowledge cle
     resume: false,
   });
   expect(await post("sandbox/stop", { id: f.sandbox.id })).toEqual({ id: f.sandbox.id, status: "stopped" });
-  const requestId = randomUUID();
+  const requestId = `a${randomUUID().slice(1)}`;
   const remove = () =>
     handleControlRequest(
       new Request(
-        `https://armada.example/api/v1/sandboxes/${f.sandbox.id}?org=${f.actor.orgId}&requestId=${requestId}`,
+        `https://armada.example/api/v1/sandboxes/${f.sandbox.id.toUpperCase()}?org=${f.actor.orgId}&requestId=${requestId.toUpperCase()}`,
         {
           method: "DELETE",
           headers: { authorization: `Bearer ${bearer}` },
@@ -711,14 +714,17 @@ test("normal API and MCP accept Docker list/status/logs rows and acknowledge cle
       ),
       options,
     );
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const response = await remove();
-    expect(response?.status).toBe(200);
-    expect(publishedResponse("sandboxes/{id}", "delete").parse(await response?.json())).toEqual({
-      id: f.sandbox.id,
-      status: "deleted",
-    });
-  }
+  acknowledgeCleanup = false;
+  const pending = await remove();
+  expect(pending?.status).toBe(409);
+  expect(await pending?.json()).toMatchObject({ error: { code: "conflict" } });
+  acknowledgeCleanup = true;
+  const response = await remove();
+  expect(response?.status).toBe(200);
+  expect(publishedResponse("sandboxes/{id}", "delete").parse(await response?.json())).toEqual({
+    id: f.sandbox.id,
+    status: "deleted",
+  });
   expect(
     (
       await sql.query(

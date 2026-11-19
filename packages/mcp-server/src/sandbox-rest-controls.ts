@@ -94,7 +94,7 @@ async function dispatchSandboxRestControl(
       case "deleteSandbox": {
         const { input } = contracts[name];
         const { id, requestId } = parseControl("delete", input.query.extend(input.path));
-        const args = { id, ...(requestId === undefined ? {} : { request_id: requestId }) };
+        const args = { id, request_id: requestId?.toLowerCase() };
         const routed = await options.dockerControls?.invoke(caller, "delete", args);
         if (routed?.handled) return routed.result;
         if (!data.sandboxes.assertDeletionAllowed)
