@@ -1,11 +1,21 @@
 import type { ApplicationSecretBinding } from "./application-secret-bindings.ts";
 import { decryptSecret } from "./crypto.ts";
 import type { Sql } from "./golden-store.ts";
+import { LaunchError } from "./launch-error.ts";
 import { VaultError } from "./vault-error.ts";
 
 export class LaunchSecretRefusal extends VaultError {
   constructor(readonly reason: "secret_unavailable" | "secret_version_changed") {
     super("conflict", `Template launch refused: ${reason}.`);
+  }
+}
+
+export class ModalLaunchSecretRefusal extends LaunchError {
+  constructor(
+    readonly refusal: LaunchSecretRefusal,
+    sandboxId: string,
+  ) {
+    super("start_failed", refusal.message, { cause: refusal, sandboxId });
   }
 }
 

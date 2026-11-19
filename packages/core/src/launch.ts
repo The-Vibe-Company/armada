@@ -25,7 +25,7 @@ import {
   resolveLaunchSkills,
 } from "./launch-plan.ts";
 import { runtimeLaunch } from "./launch-runtime.ts";
-import { LaunchSecretRefusal } from "./launch-secrets.ts";
+import { LaunchSecretRefusal, ModalLaunchSecretRefusal } from "./launch-secrets.ts";
 import type { LaunchStage } from "./launch-stages.ts";
 import { isLaunchTtlSeconds, validateLaunchSkillPins } from "./launch-validation.ts";
 import { type MachineSize, resolveMachineSize } from "./machine-size.ts";
@@ -652,10 +652,6 @@ export async function launchSandbox(
         /* Best effort only. */
       }
     };
-    const startFailure = (error: unknown) =>
-      record.runtimeTransport === "dialout" && provider.id === "modal" && error instanceof LaunchSecretRefusal
-        ? new LaunchError("conflict", error.message, { cause: error, sandboxId: record.id })
-        : withSandbox(error, record.id, secrets);
     const start = async (signal: AbortSignal) => {
       if ((record.boatRuntime === true || record.runtimeTransport === "dialout") !== (strategy.kind === "enrolled"))
         throw new LaunchError("start_failed", "The sandbox runtime selection was not persisted; no agent was started.");
@@ -683,37 +679,43 @@ export async function launchSandbox(
         github: launchGithub,
         prompt: dispatchPrompt,
         runtime: provenance,
-      } = await strategy.initialize(plan, {
-        actor,
-        launchId: id,
-        record,
-        providerSandboxId: ready.id,
-        signal,
-        progress,
-        runtimeStarted: () => timing.mark("runtime_startup"),
-        mark: async (stage) => {
-          await mark(stage);
-          if (stage === "checkout_done") timing.mark("workspace_preparation");
-        },
-        reportGitHub: (launchGithub) => {
-          try {
-            console.error(
-              JSON.stringify({
-                event: "launch_github_prepared",
-                sandboxId: record.id,
-                goldenId: golden.id,
-                provider: provider.id,
-                path: strategy.kind,
-                status: launchGithub.status,
-                repositorySelected: repositoryDir !== null,
-                configuredRepositories: golden.config.repos.length,
-              }),
-            );
-          } catch {
-            // Safe diagnostics must not change launch outcomes. Never include tokens or helper contents.
-          }
-        },
-      });
+      } = await strategy
+        .initialize(plan, {
+          actor,
+          launchId: id,
+          record,
+          providerSandboxId: ready.id,
+          signal,
+          progress,
+          runtimeStarted: () => timing.mark("runtime_startup"),
+          mark: async (stage) => {
+            await mark(stage);
+            if (stage === "checkout_done") timing.mark("workspace_preparation");
+          },
+          reportGitHub: (launchGithub) => {
+            try {
+              console.error(
+                JSON.stringify({
+                  event: "launch_github_prepared",
+                  sandboxId: record.id,
+                  goldenId: golden.id,
+                  provider: provider.id,
+                  path: strategy.kind,
+                  status: launchGithub.status,
+                  repositorySelected: repositoryDir !== null,
+                  configuredRepositories: golden.config.repos.length,
+                }),
+              );
+            } catch {
+              // Safe diagnostics must not change launch outcomes. Never include tokens or helper contents.
+            }
+          },
+        })
+        .catch((error: unknown) => {
+          if (provider.id === "modal" && strategy.kind === "enrolled" && error instanceof LaunchSecretRefusal)
+            throw new ModalLaunchSecretRefusal(error, record.id);
+          throw error;
+        });
       timing.mark("finish_initialization");
       progress("initialization_publish");
       // Every harness and path is ready for a prompt here; a launch prompt's dispatch is not launch time.
@@ -804,7 +806,7 @@ export async function launchSandbox(
                   golden.config.init.reduce((sum, command) => sum + initCommand(command).timeoutSeconds, 0)),
             failurePatch: (error) => ({
               status: "failed",
-              statusReason: startFailure(error).message,
+              statusReason: withSandbox(error, record.id, secrets).message,
             }),
           }),
         );
@@ -814,7 +816,7 @@ export async function launchSandbox(
       await stores.sandboxes.update(record.id, completed.patch);
       return reportTiming(completed.result);
     } catch (error) {
-      const failure = startFailure(error);
+      const failure = withSandbox(error, record.id, secrets);
       if (!activityLeaseId)
         await quietly(() => stores.sandboxes.update(record.id, { status: "failed", statusReason: failure.message }));
       await quietly(() => provider.stop({ sandboxId: forked.id }));

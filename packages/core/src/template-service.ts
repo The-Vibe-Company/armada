@@ -9,7 +9,12 @@ import { GOLDEN_SELECT, type GoldenRow, mapGoldenRow, type Sql } from "./golden-
 import { isHarness } from "./harnesses.ts";
 import { type LaunchOptions, type LaunchStores, launchSandbox } from "./launch.ts";
 import { LaunchError } from "./launch-error.ts";
-import { assertLaunchSecretBindings, LaunchSecretRefusal, resolveLaunchSecrets } from "./launch-secrets.ts";
+import {
+  assertLaunchSecretBindings,
+  LaunchSecretRefusal,
+  ModalLaunchSecretRefusal,
+  resolveLaunchSecrets,
+} from "./launch-secrets.ts";
 import { resolveLaunchVariables } from "./launch-variables.ts";
 import { parseMachineSize } from "./machine-size.ts";
 import { MAX_MCP_CONNECTIONS } from "./mcp-launch-selection.ts";
@@ -837,10 +842,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       if (!fenceConsumed) await releaseFence();
       // Once dispatch might have occurred, no timeout/exception proves absence. Never resend.
       const refused = error instanceof ProviderError && isNonMutatingProviderRefusal(error);
-      const secretRefusal =
-        error instanceof LaunchError && error.code === "conflict" && error.cause instanceof LaunchSecretRefusal
-          ? error.cause
-          : undefined;
+      const secretRefusal = error instanceof ModalLaunchSecretRefusal ? error.refusal : undefined;
       const state = allocating && !refused && !secretRefusal ? "reconciling" : "failed";
       const safeReason = refused
         ? error.code

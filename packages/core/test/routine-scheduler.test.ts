@@ -14,7 +14,12 @@ const run = {
 };
 
 // Recover one durable occurrence, then exercise real dispatch/settlement without timers or providers.
-async function failure(error?: unknown, savedReason?: string, result?: Record<string, unknown>) {
+async function failure(
+  error?: unknown,
+  savedReason?: string,
+  result?: Record<string, unknown>,
+  registeredSandboxId: string | null = null,
+) {
   let recovered = false;
   let settled: unknown[] = [];
   const sql = {
@@ -26,7 +31,7 @@ async function failure(error?: unknown, savedReason?: string, result?: Record<st
         rows = [run];
       } else if (query.startsWith("update public.routine_runs set lease_id")) rows = [run];
       else if (query.includes("from public.template_launch_requests") && savedReason)
-        rows = [{ id: "claim", state: "failed", reason: savedReason }];
+        rows = [{ id: "claim", state: "failed", reason: savedReason, sandbox_id: registeredSandboxId }];
       else if (query.includes("from public.routine_run_inputs where"))
         rows = [{ template_id: "template", template_revision: 1, prompt: "hello", ttl_seconds: 60 }];
       else if (query.includes("select m.role,r.scope")) rows = [{ role: "admin", scope: "personal" }];
@@ -46,13 +51,14 @@ async function failure(error?: unknown, savedReason?: string, result?: Record<st
   });
   await scheduler.tick();
   await scheduler.drain();
-  return { reason: settled[3], claim: settled[4], refusal: settled[8] };
+  return { reason: settled[3], claim: settled[4], sandbox: settled[5], refusal: settled[8] };
 }
 
 test("pre-claim admission refusal is retained without arbitrary exception text", async () => {
   expect(await failure(new VaultError("conflict", "Template launch refused: variable_version_changed."))).toEqual({
     reason: "launch_failed",
     claim: null,
+    sandbox: null,
     refusal: "variable_version_changed",
   });
   for (const code of ["missing_credential", "credential_refused", "credential_busy"] as const)
@@ -68,6 +74,7 @@ test("failed durable claims retain the allowlisted refusal during recovery", asy
   expect(await failure(undefined, "secret_version_changed")).toEqual({
     reason: "launch_failed",
     claim: "claim",
+    sandbox: null,
     refusal: "secret_version_changed",
   });
   expect((await failure(undefined, "private_value")).refusal).toBeNull();
@@ -75,10 +82,17 @@ test("failed durable claims retain the allowlisted refusal during recovery", asy
     expect((await failure(undefined, reason)).refusal).toBe(reason);
 });
 
+test("failed durable claim retains its registered sandbox for the next occurrence's admission", async () => {
+  expect(await failure(undefined, "secret_version_changed", undefined, "registered-sandbox")).toMatchObject({
+    reason: "launch_failed",
+    sandbox: "registered-sandbox",
+  });
+});
+
 test("returned pre-claim refusals are terminal and sanitized", async () => {
   expect(
     await failure(undefined, undefined, { state: "failed", reason: "no_credentials", message: "private_value" }),
-  ).toEqual({ reason: "launch_failed", claim: null, refusal: "no_credentials" });
+  ).toEqual({ reason: "launch_failed", claim: null, sandbox: null, refusal: "no_credentials" });
 });
 
 test("authorized history retains refusal for paused routines and denies nonmembers", async () => {

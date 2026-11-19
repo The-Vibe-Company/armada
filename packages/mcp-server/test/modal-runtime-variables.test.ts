@@ -471,23 +471,35 @@ test.each([
     ...f.definition,
     secrets: [{ key: "APP_TOKEN", secretId: secret.id, version: 1 }],
   });
-  const resolveHost = f.options.modalRuntimeHostFor!;
-  f.options.modalRuntimeHostFor = async (golden, caller) => {
-    const host = await resolveHost(golden, caller);
-    return {
-      ...host,
-      async fork(request) {
-        const child = await host.fork(request);
-        await f.db.query(
-          entry === "explicit"
-            ? "update application_secrets set version=2 where id=$1"
-            : "update application_secrets set status='revoked',value_enc=null where id=$1",
-          [secret.id],
-        );
-        return child;
+  if (entry === "explicit") {
+    const resolveHost = f.options.modalRuntimeHostFor!;
+    f.options.modalRuntimeHostFor = async (golden, caller) => {
+      const host = await resolveHost(golden, caller);
+      return {
+        ...host,
+        async fork(request) {
+          const child = await host.fork(request);
+          await f.db.query("update application_secrets set version=2 where id=$1", [secret.id]);
+          return child;
+        },
+      };
+    };
+  } else {
+    const policy = f.options.modalRuntimeLaunch!;
+    f.options.modalRuntimeLaunch = {
+      async start(input) {
+        const agent = await policy.start(input);
+        return {
+          ...agent,
+          async prepareWorkspace() {
+            await f.db.query("update application_secrets set status='revoked',value_enc=null where id=$1", [secret.id]);
+            return { status: "not_connected" };
+          },
+        };
       },
     };
-  };
+    f.enableDefault();
+  }
   const request = f.request(template.id);
   for (let attempt = 0; attempt < 2; attempt++) {
     const response = await f.api(request);
@@ -498,7 +510,7 @@ test.each([
   }
   expect(f.physical.forks).toHaveLength(1);
   expect(f.physical.stops).toHaveLength(1);
-  expect(f.deliveries).toHaveLength(0);
+  expect(f.deliveries).toHaveLength(entry === "explicit" ? 0 : 1);
   expect(f.prompts()).toBe(0);
 });
 
