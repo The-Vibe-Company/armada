@@ -40,8 +40,7 @@ test("only the publishing call queues for the shared staging lock", () => {
       if: "needs.publication-intent.outputs.publish == 'true' || needs.publication-intent.outputs.mode == 'dry-run'",
       uses: "./.github/workflows/release-pipeline.yml",
       concurrency: {
-        group:
-          `\${{ needs.publication-intent.outputs.publish == 'true' && 'release-production' || format('release-dry-run-{0}', github.run_id) }}`,
+        group: `\${{ needs.publication-intent.outputs.publish == 'true' && 'release-production' || format('release-dry-run-{0}', github.run_id) }}`,
         queue: "max",
         "cancel-in-progress": false,
       },
