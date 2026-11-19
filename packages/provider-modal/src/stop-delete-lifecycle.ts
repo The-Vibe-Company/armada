@@ -18,7 +18,7 @@ export function createStopDeleteLifecycle(deps: {
   resourceReceipt(row: Machine): Promise<ModalResourceReceipt>;
   collectImages: ReturnType<typeof createImageCollection>["collectImages"];
   detachCollection(work: () => Promise<void>): void;
-  cleanupSleep?(milliseconds: number): Promise<void>;
+  cleanupSleep: ((milliseconds: number) => Promise<void>) | undefined;
 }) {
   const {
     client,
