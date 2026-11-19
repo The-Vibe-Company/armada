@@ -1,4 +1,5 @@
 import type { z } from "zod";
+import { accountOperations } from "./accounts.ts";
 import { createdInboundTrigger, createInboundTriggerBody, createInboundTriggerQuery } from "./inbound-trigger.ts";
 import { launchInput } from "./launch.ts";
 import { launchEnvelope } from "./launch-response.ts";
@@ -14,6 +15,7 @@ import { sandboxViewerOperations } from "./sandbox-viewer.ts";
 import { scopedRestOperations } from "./scoped.ts";
 import { tokenOperations } from "./tokens.ts";
 
+export { accountOperations } from "./accounts.ts";
 export type { CreatedInboundTrigger } from "./inbound-trigger.ts";
 export {
   dockerHostLaunchFields,
@@ -123,6 +125,7 @@ export const operations = {
   ...goldenOperations,
   ...githubOperations,
   ...tokenOperations,
+  ...accountOperations,
   launchTemplate: launchTemplateOperation,
   createInboundTrigger,
   ...sandboxOperations,

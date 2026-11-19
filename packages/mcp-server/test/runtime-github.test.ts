@@ -6,7 +6,7 @@ import { type ControlOptions, dispatchControlCommand } from "../src/control.ts";
 import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
 import { createRuntimeGitHub } from "../src/runtime-github.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { runtimeFixture, scopedRuntimeFixture } from "./runtime.fixture.ts";
+import { configureRuntimeFixture, runtimeFixture, scopedRuntimeFixture } from "./runtime.fixture.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
@@ -22,73 +22,75 @@ async function fixture(
     options.idle,
     options.commandGrantExpiresAt,
   );
-  await f.db.query("update goldens set provider_snapshot_id='offline-snapshot',config=$2::jsonb where id=$1", [
-    f.row.goldenId,
-    JSON.stringify({ repos: [{ url: "https://github.com/example/web.git", branch: "main", dir: "web" }], init: [] }),
-  ]);
-  await f.db.query("update sandboxes set expires_at=now()+interval '45 seconds' where id=$1", [f.row.id]);
-  const access = `ghu_offline_${crypto.randomUUID().replaceAll("-", "")}`;
-  await f.db.query(
-    "insert into github_connections(user_id,github_id,login,name,refresh_token_enc,access_token_enc,access_expires_at) values($1,123,'owner','Owner',$2,$3,now()+interval '1 hour')",
-    [
-      f.people.owner,
-      await encryptSecret("offline-refresh", ENCRYPTION_KEY),
-      await encryptSecret(access, ENCRYPTION_KEY),
-    ],
-  );
-  let githubRequests = 0;
-  const service = createRuntimeGitHub({
-    sql: f.sql,
-    key: ENCRYPTION_KEY,
-    origin: "https://armada.test",
-    commands: f.bridge,
-    github: {
-      store: createSqlVaultStore(f.sql),
-      encryptionKey: ENCRYPTION_KEY,
-      app: { clientId: "app", clientSecret: "offline-app-secret" },
-      fetch: (async (url: string | URL | Request) => {
-        githubRequests++;
-        if (String(url).includes("/repos/")) return Response.json({ full_name: "example/web" });
-        return Response.json({ id: 123, login: "owner", name: "Owner" });
-      }) as unknown as typeof fetch,
-    },
+  return configureRuntimeFixture(f, async () => {
+    await f.db.query("update goldens set provider_snapshot_id='offline-snapshot',config=$2::jsonb where id=$1", [
+      f.row.goldenId,
+      JSON.stringify({ repos: [{ url: "https://github.com/example/web.git", branch: "main", dir: "web" }], init: [] }),
+    ]);
+    await f.db.query("update sandboxes set expires_at=now()+interval '45 seconds' where id=$1", [f.row.id]);
+    const access = `ghu_offline_${crypto.randomUUID().replaceAll("-", "")}`;
+    await f.db.query(
+      "insert into github_connections(user_id,github_id,login,name,refresh_token_enc,access_token_enc,access_expires_at) values($1,123,'owner','Owner',$2,$3,now()+interval '1 hour')",
+      [
+        f.people.owner,
+        await encryptSecret("offline-refresh", ENCRYPTION_KEY),
+        await encryptSecret(access, ENCRYPTION_KEY),
+      ],
+    );
+    let githubRequests = 0;
+    const service = createRuntimeGitHub({
+      sql: f.sql,
+      key: ENCRYPTION_KEY,
+      origin: "https://armada.test",
+      commands: f.bridge,
+      github: {
+        store: createSqlVaultStore(f.sql),
+        encryptionKey: ENCRYPTION_KEY,
+        app: { clientId: "app", clientSecret: "offline-app-secret" },
+        fetch: (async (url: string | URL | Request) => {
+          githubRequests++;
+          if (String(url).includes("/repos/")) return Response.json({ full_name: "example/web" });
+          return Response.json({ id: 123, login: "owner", name: "Owner" });
+        }) as unknown as typeof fetch,
+      },
+    });
+    let broker = new GitHubBroker(
+      (values) => f.journal.registerSecrets(values),
+      (async (url: Parameters<typeof fetch>[0], options?: RequestInit) =>
+        (await service.route(
+          url instanceof Request ? new Request(url, options) : new Request(url.toString(), options),
+        )) ?? new Response(null, { status: 404 })) as unknown as typeof fetch,
+      options.now,
+    );
+    let configured: GitHubRuntimeConfiguration | undefined;
+    f.github(async (value) => {
+      broker.configure(value);
+      configured = value ?? undefined;
+    });
+    return {
+      close: () => f.close(),
+      requests: () => githubRequests,
+      f,
+      service,
+      access,
+      get broker() {
+        return broker;
+      },
+      config: () => {
+        if (!configured) throw Error("Missing private configuration");
+        return configured;
+      },
+      reset() {
+        broker = new GitHubBroker(
+          (values) => f.journal.registerSecrets(values),
+          (async (url: Parameters<typeof fetch>[0], options?: RequestInit) =>
+            (await service.route(
+              url instanceof Request ? new Request(url, options) : new Request(url.toString(), options),
+            )) ?? new Response(null, { status: 404 })) as unknown as typeof fetch,
+        );
+      },
+    };
   });
-  let broker = new GitHubBroker(
-    (values) => f.journal.registerSecrets(values),
-    (async (url: Parameters<typeof fetch>[0], options?: RequestInit) =>
-      (await service.route(
-        url instanceof Request ? new Request(url, options) : new Request(url.toString(), options),
-      )) ?? new Response(null, { status: 404 })) as unknown as typeof fetch,
-    options.now,
-  );
-  let configured: GitHubRuntimeConfiguration | undefined;
-  f.github(async (value) => {
-    broker.configure(value);
-    configured = value ?? undefined;
-  });
-  return {
-    close: () => f.close(),
-    requests: () => githubRequests,
-    f,
-    service,
-    access,
-    get broker() {
-      return broker;
-    },
-    config: () => {
-      if (!configured) throw Error("Missing private configuration");
-      return configured;
-    },
-    reset() {
-      broker = new GitHubBroker(
-        (values) => f.journal.registerSecrets(values),
-        (async (url: Parameters<typeof fetch>[0], options?: RequestInit) =>
-          (await service.route(
-            url instanceof Request ? new Request(url, options) : new Request(url.toString(), options),
-          )) ?? new Response(null, { status: 404 })) as unknown as typeof fetch,
-      );
-    },
-  };
 }
 
 test("Modal runtime GitHub credentials still work beyond the original deadline after extension", async () => {

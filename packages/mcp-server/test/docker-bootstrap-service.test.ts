@@ -181,7 +181,7 @@ test("bootstrap is literal opt-in, owner-only and waits for create ACK before re
   expect(resolutions).toBe(1);
 });
 
-test("sealed account configuration is delivered only by enrolment, host gets ticket and artifact, neither ACK means readiness", async () => {
+test("sealed account configuration is delivered only by enrolment, host ACK leaves readiness to enrolment", async () => {
   const f = await fixture();
   const result = await service.bootstrap(f.actor, f.sandbox.id, f.requestId);
   expect(Object.keys(result).sort()).toEqual(["operation", "requestId", "state"]);
@@ -198,10 +198,50 @@ test("sealed account configuration is delivered only by enrolment, host gets tic
     enrolmentToken: expect.stringMatching(/^armada_enrol_[a-f0-9]{64}$/),
   });
   expect(JSON.stringify(delivery)).not.toContain(f.secret);
-  const enrolled = await createRuntimeEnrolments(sql, key).enrol(delivery.bootstrap.enrolmentToken);
-  expect(enrolled.configuration).toEqual(configuration);
   await hosts.complete(f.hostToken, f.installationId, { requestId: f.requestId, outcome: "completed" });
   expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("starting");
+  const enrolled = await createRuntimeEnrolments(sql, key).enrol(delivery.bootstrap.enrolmentToken);
+  expect(enrolled.configuration).toEqual(configuration);
+  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("ready");
+  expect(
+    (
+      await database().query(
+        `select t.actor,t.code,t.generation=s.lifecycle_generation as current_generation
+         from sandbox_transitions t join sandboxes s on s.id=t.sandbox_id
+         where t.sandbox_id=$1 and t.from_status='starting' and t.to_status='ready'`,
+        [f.sandbox.id],
+      )
+    ).rows,
+  ).toEqual([{ actor: "runtime_enrolment", code: "runtime_enrolled", current_generation: true }]);
+});
+
+test("a conflicting Docker readiness CAS rolls back ticket consumption and leaves enrolment retryable", async () => {
+  const f = await fixture();
+  await service.bootstrap(f.actor, f.sandbox.id, f.requestId);
+  const delivery = await hosts.poll(f.hostToken, f.installationId);
+  if (delivery?.operation !== "bootstrap") throw Error("missing bootstrap delivery");
+  const ticket = delivery.bootstrap.enrolmentToken;
+  const before = await pending(f.sandbox.id);
+  let reachedTransition = false;
+  const stale: Sql = {
+    ...sql,
+    transaction: (work) =>
+      sql.transaction!((tx) =>
+        work({
+          query: (statement, params) => {
+            if (!statement.includes("public.sandbox_transition(")) return tx.query(statement, params);
+            reachedTransition = true;
+            return tx.query(statement, [params?.[0], "0", ...(params?.slice(2) ?? [])]);
+          },
+        }),
+      ),
+  };
+  await expect(createRuntimeEnrolments(stale, key).enrol(ticket)).rejects.toThrow("runtime_enrolment_denied");
+  expect(reachedTransition).toBe(true);
+  expect(await pending(f.sandbox.id)).toEqual(before);
+  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("starting");
+  await createRuntimeEnrolments(sql, key).enrol(ticket);
+  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("ready");
 });
 
 test("bootstrap and resume on a draining host name the uninstall, not a permission failure", async () => {
@@ -667,6 +707,7 @@ test.each([false, true])("idle checkpoint fences Docker stop and retained restor
     body: { version: 1, requestId: health.requestId, result: { ready: true, generation: resumed.epoch } },
   });
   await expect(runtime.ready(f.actor, f.sandbox.id, healthId)).rejects.toThrow();
+  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("starting");
   const verifiedId = randomUUID();
   await runtime.ready(f.actor, f.sandbox.id, verifiedId);
   const verified = (await commands.next(resumed.runtimeToken, resumed.epoch)).command;
@@ -682,7 +723,10 @@ test.each([false, true])("idle checkpoint fences Docker stop and retained restor
     },
   });
   expect(await runtime.ready(f.actor, f.sandbox.id, verifiedId)).toEqual({ state: "ready", epoch: resumed.epoch });
-  expect((await reservations.get(f.actor, f.sandbox.id)).expiresAt).toBe(new Date(stored.expires_at).toISOString());
+  expect(await reservations.get(f.actor, f.sandbox.id)).toMatchObject({
+    status: "ready",
+    expiresAt: new Date(stored.expires_at).toISOString(),
+  });
 });
 
 test.each(["cleanup", "claim"] as const)(

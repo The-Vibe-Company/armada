@@ -4,7 +4,6 @@
  * one, so a new route there must be published or given a reason.
  */
 export const UNPUBLISHED_REST_ROUTES: Readonly<Record<string, string>> = {
-  "account/": "Signed-in account session management.",
   "org/": "Organization administration.",
   "members/": "Organization membership administration.",
   "creds/": "Model credential administration.",
