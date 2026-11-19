@@ -8,7 +8,6 @@ import {
   LaunchError,
   launchSandbox,
   type ModelChoice,
-  type Provider,
   resolveBoatKey,
   resolveModelChoice,
   resolveOrg,
@@ -26,7 +25,7 @@ import { dockerLaunchRequestId } from "./docker-launch-identity.ts";
 import { providerForGolden } from "./golden-control.ts";
 import { prepareGoldenLaunchAccount } from "./launch-account-admission.ts";
 import { launchCredentials } from "./launch-credentials.ts";
-import { launchOptions, launchProviderOptions } from "./launch-options.ts";
+import { readLaunchOptions } from "./launch-options.ts";
 import { canonicalLaunchResponse, goldenLaunchResponse } from "./launch-response-schemas.ts";
 import { type GoldenLaunchTiming, observeGoldenLaunch } from "./request-timing.ts";
 import { defineRoutes } from "./routes.ts";
@@ -93,6 +92,9 @@ async function launchGolden(
     throw new VaultError("unavailable", "Sandbox Armada access is unavailable for this provider/harness.");
   if (runtime && golden.provider !== (modalRuntime ? "modal" : "boat"))
     throw new VaultError("invalid", "Runtime v1 requires a Boat golden.");
+  const target = armadaAccess
+    ? { ...golden, visibility: "private" as const, sourceGoldenVisibility: golden.visibility }
+    : golden;
   const launchOptions: import("@armada/core").LaunchOptions = {
     ...options.launch,
     ...(runtimePolicy ? (modalRuntime ? { runtime: runtimePolicy } : { boatRuntime: runtimePolicy }) : {}),
@@ -121,8 +123,25 @@ async function launchGolden(
       launchOptions,
     );
     timing.checkpoint("account_resolution");
+    const scopedModalDefault =
+      armadaAccess && account.runtimeDefault?.policy.supportsScopedAccess ? account.runtimeDefault : undefined;
+    if (scopedModalDefault) {
+      const provider = await scopedModalDefault.provider(actor, target);
+      if (provider.id !== golden.provider)
+        throw new LaunchError(
+          "invalid_request",
+          "Runtime default must retain the golden provider; no native fallback.",
+        );
+      timing.checkpoint("provider_resolution");
+      return {
+        provider,
+        credentials: scopedModalDefault.credentials,
+        options: { ...account.options, runtime: scopedModalDefault.policy },
+        connections: scopedModalDefault.connections,
+      };
+    }
     const provider = modalRuntime
-      ? await options.modalRuntimeHostFor!({ ...golden, runtimeTransport: "dialout" }, caller)
+      ? await options.modalRuntimeHostFor!({ ...target, runtimeTransport: "dialout" }, caller)
       : runtimeHost
         ? runtimeHost(
             (
@@ -133,24 +152,17 @@ async function launchGolden(
               })
             ).key,
           )
-        : await providerForGolden(
-            options,
-            caller,
-            modalRuntime
-              ? { ...golden, runtimeTransport: "dialout" }
-              : armadaAccess
-                ? { ...golden, visibility: "private", sourceGoldenVisibility: golden.visibility }
-                : golden,
-          );
+        : await providerForGolden(options, caller, target);
     timing.checkpoint("provider_resolution");
     return { ...account, provider };
   };
   let prepared: ReturnType<typeof prepare> | undefined;
   const prepareOnce = () => (prepared ??= prepare());
-  const connectionLifecycle = runtime ? options.runtimeMcp?.connections : options.connections;
   // The receipt id becomes the sandbox id, so a retried key answers with the same sandbox.
   const dispatch = async (receiptId?: string) => {
     const account = await prepareOnce();
+    const connectionLifecycle =
+      account.connections ?? (runtime ? options.runtimeMcp?.connections : options.connections);
     timing.checkpoint("receipt_admission");
     const result = await launchSandbox(
       account.provider,
@@ -186,9 +198,9 @@ async function launchGolden(
         ...(armadaAccess
           ? {
               privateVisibility: true as const,
-              beforeStart: async (provider: Provider, sandbox: import("@armada/core").SandboxRecord) => {
-                await options.launch?.beforeStart?.(provider, sandbox);
-                await options.sandboxArmadaAccess?.prepare(provider, sandbox, actor, armadaAccess);
+              beforeStart: async (provider, sandbox, enrolled) => {
+                await options.launch?.beforeStart?.(provider, sandbox, enrolled);
+                await options.sandboxArmadaAccess?.prepare(provider, sandbox, actor, armadaAccess, enrolled);
               },
             }
           : {}),
@@ -204,7 +216,6 @@ async function launchGolden(
     };
   };
   if (idempotencyKey === undefined) return dispatch();
-  const target = armadaAccess ? { ...golden, visibility: "private" as const } : golden;
   const { provider } = await prepareOnce();
   const management = await provider.managementIdentity?.();
   const backendId = (await provider.backendIdentity?.())?.id;
@@ -349,69 +360,7 @@ export const launchRoutes = defineRoutes("launch", {
     handler: ({ body, options }) => {
       if (!launchOptionsOperation.input.body.safeParse(body).success)
         throw new VaultError("invalid", "The request is not a JSON object.");
-      return {
-        ...launchOptions,
-        providers: launchProviderOptions(
-          options.docker,
-          Boolean(options.launch?.boatRuntimeDefault || options.launch?.boatEndpointRuntime),
-        ),
-        modalRuntime: {
-          defaultPath: options.launch?.modalRuntimeDefault ? "runtime" : "native",
-          enabled: Boolean(options.modalRuntimeLaunch),
-          followupVersion: options.runtimeSend ? 1 : 0,
-          idleLaunchVersion: options.modalRuntimeLaunch && options.runtimeSend ? 1 : 0,
-          emptyResumeVersion: options.modalRuntimeLaunch && options.runtimeResume && options.runtimeSend ? 1 : 0,
-          idleTemplateVersion:
-            options.templates && options.modalRuntimeLaunch && options.modalRuntimeHostFor && options.runtimeSend
-              ? 1
-              : 0,
-          resumeVersion: options.runtimeResume && options.modalRuntimeLaunch ? 1 : 0,
-          mcpVersion: options.runtimeMcp ? 2 : 0,
-          skillsVersion: options.modalRuntimeLaunch ? 1 : 0,
-          usageVersion: options.modalRuntimeLaunch ? 1 : 0,
-          claudeVersion: options.modalRuntimeLaunch ? 1 : 0,
-          opencodeVersion: options.modalRuntimeLaunch ? 1 : 0,
-          opencodeShellProofVersion: options.modalRuntimeLaunch ? 1 : 0,
-          opencodeMcpProofVersion: options.modalRuntimeLaunch && options.runtimeMcp ? 1 : 0,
-          variablesVersion: options.templates && options.modalRuntimeLaunch && options.modalRuntimeHostFor ? 1 : 0,
-        },
-        dockerRuntime: {
-          opencodeMcpProofVersion:
-            options.docker?.hosts &&
-            options.docker.placement &&
-            options.docker.normalApi &&
-            options.docker.normalLaunch &&
-            options.docker.normalSend &&
-            options.dockerLaunch &&
-            options.dockerControls &&
-            options.runtimeMcp
-              ? 1
-              : 0,
-        },
-        boatRuntime: {
-          defaultPath: options.launch?.boatRuntimeDefault ? "runtime" : "native",
-          diagnosticsVersion: 1,
-          followupVersion: options.runtimeSend ? 1 : 0,
-          checkpointVersion: options.runtimeCheckpoint ? 1 : 0,
-          resumeVersion: options.runtimeResume ? 1 : 0,
-          githubVersion: options.runtimeGitHub ? 1 : 0,
-          mcpVersion: options.runtimeMcp ? 2 : 0,
-          skillsVersion: options.boatRuntimeLaunch ? 1 : 0,
-          workspaceVersion: options.boatRuntimeLaunch ? 1 : 0,
-          controlsVersion: options.runtimeHostFor ? 1 : 0,
-          opencodeVersion: options.boatRuntimeLaunch && options.runtimeHostFor ? 1 : 0,
-          opencodeMcpProofVersion:
-            options.templates &&
-            options.launch?.boatRuntimeDefault &&
-            options.boatRuntimeLaunch &&
-            options.runtimeHostFor &&
-            options.runtimeMcp &&
-            options.runtimeSend
-              ? 1
-              : 0,
-          enabled: Boolean(options.boatRuntimeLaunch && options.runtimeHostFor),
-        },
-      } satisfies import("@armada/core").LaunchOptionsResponse;
+      return readLaunchOptions(options);
     },
   },
   "sandbox/launch": async ({ caller, body, options, request }) => {

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { operations } from "@armada/core/contract";
+import { launchOptionsOperation, operations } from "@armada/core/contract";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createArmadaServer, createRestToolServer, type ToolContext } from "../src/tools.ts";
@@ -53,7 +53,7 @@ test("list-only registration retains SDK validation and listing while normal MCP
 
 test("owner MCP publishes the bound agent operations and their descriptions", async () => {
   const context = { caller: { userId: "owner", orgs: [] }, data: {} } as unknown as ToolContext;
-  const server = createArmadaServer(context, "test");
+  const server = createArmadaServer(context, "test", { docker: { hosts: true } });
   const client = new Client({ name: "test", version: "test" });
   const [a, b] = InMemoryTransport.createLinkedPair();
   try {
@@ -63,6 +63,7 @@ test("owner MCP publishes the bound agent operations and their descriptions", as
     expect(tools.map((tool) => tool.name).sort()).toEqual([
       "exec",
       "launch",
+      "launch_options",
       "list",
       "logs",
       "report",
@@ -71,6 +72,14 @@ test("owner MCP publishes the bound agent operations and their descriptions", as
       "stop",
     ]);
     for (const tool of tools) expect(tool.outputSchema).toBeDefined();
+    const result = await client.callTool({ name: "launch_options", arguments: {} });
+    expect(result.isError).not.toBe(true);
+    const discovery = launchOptionsOperation.output.parse(result.structuredContent);
+    expect(discovery.providers.find(({ id }) => id === "docker")).toMatchObject({
+      enabled: true,
+      capabilities: { launch: false },
+    });
+    expect(discovery.harnesses).toContainEqual(expect.objectContaining({ id: "codex" }));
     const launch = tools.find((tool) => tool.name === "launch");
     expect(launch?.inputSchema.anyOf).toEqual(
       ["boat", "modal"].map((provider) =>

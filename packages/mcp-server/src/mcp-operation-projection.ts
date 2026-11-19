@@ -1,10 +1,11 @@
-import { operations } from "@armada/core/contract";
+import { launchOptionsOperation, operations } from "@armada/core/contract";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { type LaunchDiscoveryOptions, readLaunchOptions } from "./launch-options.ts";
 import { configureTools } from "./sandbox-tool-handlers.ts";
 import { registerTool, type ToolBinding } from "./tool-registration.ts";
 import type { ToolContext } from "./tools.ts";
 
-export function registerAgentTools(server: McpServer, context: ToolContext) {
+export function registerAgentTools(server: McpServer, context: ToolContext, launchDiscovery: LaunchDiscoveryOptions) {
   const handlers = new Map<
     string,
     (operation: { description: string; mcpDescription?: string; readOnly: boolean; destructive: boolean }) => void
@@ -21,6 +22,19 @@ export function registerAgentTools(server: McpServer, context: ToolContext) {
     });
   };
   configureTools(context, "mcp", undefined, undefined, bind);
+  bind(
+    launchOptionsOperation.toolName,
+    {
+      title: "Launch options",
+      description: launchOptionsOperation.description,
+      input: launchOptionsOperation.input.body,
+      output: launchOptionsOperation.output.shape,
+    },
+    async () => {
+      const result = readLaunchOptions(launchDiscovery);
+      return { structuredContent: result, content: [{ type: "text", text: JSON.stringify(result) }] };
+    },
+  );
   for (const operation of Object.values(operations)) {
     if (operation.audience !== "agent" || !("toolName" in operation)) continue;
     const bindHandler = handlers.get(operation.toolName);

@@ -88,7 +88,7 @@ async function enrolledCheckpointTarget() {
   };
 }
 
-test.each(["acknowledged", "refused", "reply lost", "epoch replaced"])(
+test.each(["acknowledged", "refused", "reply lost", "epoch replaced", "cancelled before ACK"])(
   "enrolled scoped grant admission after delivery: %s",
   async (outcome) => {
     const {
@@ -98,6 +98,7 @@ test.each(["acknowledged", "refused", "reply lost", "epoch replaced"])(
       account,
       row,
       issue,
+      enrolments,
       active: { epoch },
     } = await enrolledCheckpointTarget();
     const authority = new DelegatedAuthority(sql, async () => {});
@@ -115,25 +116,27 @@ test.each(["acknowledged", "refused", "reply lost", "epoch replaced"])(
         async (_tx, principal) => principal.ownerId,
       );
     const dispatched: string[] = [];
+    const cancellation = new AbortController();
     let admittedBeforeAcknowledgement: boolean | undefined;
     const access = createSandboxArmadaAccess({
       sql,
       encryptionKey: ENCRYPTION_KEY,
       publicUrl: PUBLIC_URL,
       commands: {
-        async call(_owner, command) {
+        enqueue: createRuntimeCommands(enrolments, ENCRYPTION_KEY).enqueue,
+        async call(_owner, command, options) {
           dispatched.push(command.op);
-          const installing = command.op === "installOrchestratorEpoch";
-          if (installing) {
-            token = command.token;
-            admittedBeforeAcknowledgement = await admit().then(
-              () => true,
-              () => false,
-            );
-            if (outcome === "reply lost") throw Error("Guest reply lost before completion");
-            if (outcome === "epoch replaced") await issue();
-          }
-          const acknowledged = !installing || outcome !== "refused";
+          if (command.op !== "installOrchestratorEpoch") throw Error("Unexpected awaited runtime operation");
+          expect(options?.signal).toBe(cancellation.signal);
+          token = command.token;
+          admittedBeforeAcknowledgement = await admit().then(
+            () => true,
+            () => false,
+          );
+          if (outcome === "reply lost") throw Error("Guest reply lost before completion");
+          if (outcome === "epoch replaced") await issue();
+          if (outcome === "cancelled before ACK") cancellation.abort();
+          const acknowledged = outcome !== "refused";
           return {
             status: acknowledged ? 200 : 503,
             epoch,
@@ -151,6 +154,11 @@ test.each(["acknowledged", "refused", "reply lost", "epoch replaced"])(
       row,
       { userId: people.owner, orgId: people.org, role: "member" },
       { maxActiveChildren: 1 },
+      {
+        epoch,
+        signal: cancellation.signal,
+        exec: async () => ({ detached: false, exitCode: 0, stdout: "", stderr: "", timedOut: false, truncated: false }),
+      },
     );
     if (outcome === "acknowledged") {
       await prepare;
@@ -163,7 +171,9 @@ test.each(["acknowledged", "refused", "reply lost", "epoch replaced"])(
     } else {
       await expect(prepare).rejects.toThrow("denied");
       await expect(admit()).rejects.toThrow("denied");
-      expect(dispatched).toEqual(["installOrchestratorEpoch", "scrubOrchestratorEpoch"]);
+      expect(dispatched).toEqual(["installOrchestratorEpoch"]);
+      const scrub = await db.query("select request_id from runtime_commands where sandbox_id=$1", [row.id]);
+      expect(scrub.rows).toHaveLength(outcome === "epoch replaced" ? 0 : 1);
     }
     expect(admittedBeforeAcknowledgement).toBe(false);
   },
