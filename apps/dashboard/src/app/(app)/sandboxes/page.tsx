@@ -12,6 +12,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { Suspense } from "react";
+import { DockerLaunchLimitList } from "@/components/docker-launch-limit-list";
 import { LinkPendingIcon } from "@/components/link-pending";
 import { Empty, PageHeader } from "@/components/page-header";
 import { ProviderMark } from "@/components/provider-mark";
@@ -159,7 +160,7 @@ async function SandboxesContent({ searchParams }: Props) {
       <Link href={CLOUD_PROVIDERS_PATH}>Connect a provider</Link>
     </Button>
   ) : selected ? (
-    <SandboxLaunchAction key={selected.org.id} />
+    <SandboxLaunchAction key={selected.org.id} dockerLimits={<DockerLaunchLimitList />} />
   ) : null;
 
   return (

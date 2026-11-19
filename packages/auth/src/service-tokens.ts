@@ -7,11 +7,9 @@ interface CreatedServiceToken {
   id: string;
   label: string;
   orgName: string;
-  /** Shown once. Only the sha-256 hex of this string is stored. */
   token: string;
 }
 
-/** Mints a service token for a bot. The caller must already be a member of the org. */
 export async function createServiceToken(
   store: AuthStore,
   input: { userId: string; orgName?: string; label?: string; now: Date },
