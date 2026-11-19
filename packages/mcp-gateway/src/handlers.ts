@@ -1,4 +1,3 @@
-/** Public, static CIMD document: no credentials or request-selected redirect targets. */
 export function createClientMetadataHandler(options: { clientMetadataUrl: string; redirectUri: string }) {
   const clientId = new URL(options.clientMetadataUrl).href;
   return (request: Request) => {

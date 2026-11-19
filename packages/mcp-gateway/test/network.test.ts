@@ -85,9 +85,6 @@ test("issuer discovery rejects query-bearing issuer identifiers while resource q
 });
 
 test("malformed peer status rejects safely instead of escaping the HTTPS response callback", async () => {
-  // Isolated test-only dial replacement routes the real HTTPS request/parser to
-  // a raw local HTTP peer. Production DNS policy and Response are not mocked.
-  // Isolation lets the parent observe a callback crash without killing the suite.
   const { mkdtemp, writeFile, rm } = await import("node:fs/promises");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
