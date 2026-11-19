@@ -42,7 +42,7 @@ export interface Grant {
 export type CheckpointIdentity = Pick<Grant, "sandboxId" | "generation">;
 export type DriverEvent =
   | Omit<Extract<AgentEvent, { kind: "message" }>, "id" | "at" | "conversationId" | "promptId">
-  | { kind: "other"; type: string; data: unknown };
+  | { kind: "other"; type: string; data: unknown; rawDiagnostic?: true };
 export interface RuntimePromptRequest extends PromptRequest {
   /** Private native cwd supplied by the provider after server-side repository validation. */
   cwd?: string;
