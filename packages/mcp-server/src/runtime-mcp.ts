@@ -31,7 +31,7 @@ function pinnedServer(definition: ConnectionDefinition) {
   }
 }
 const launcherEnvironment =
-  /^(?:PATH|HOME|USERPROFILE|SHELL|ENV|BASH_ENV|NODE(?:JS)?_.+|NPM_.+|NPX_.+|UV_.+|UVX_.+|PYTHON.*|PIP_.+|VIRTUAL_ENV.*|CONDA_.+|LD_.+|DYLD_.+|XDG_.+|GIT_.+|(?:ALL|HTTP|HTTPS|NO)_PROXY|SSL_CERT_.+|CURL_CA_BUNDLE|REQUESTS_CA_BUNDLE)$/i;
+  /^(?:PATH|HOME|USERPROFILE|PREFIX|DESTDIR|SHELL|ENV|BASH_ENV|BASHOPTS|SHELLOPTS|ZDOTDIR|COREPACK_.+|NODE(?:JS)?_.+|NPM_.+|NPX_.+|UV_.+|UVX_.+|PYTHON.*|PIP_.+|VIRTUAL_ENV.*|CONDA_.+|LD_.+|DYLD_.+|XDG_.+|GIT_.+|(?:ALL|HTTP|HTTPS|NO)_PROXY|SSL_CERT_.+|CURL_CA_BUNDLE|REQUESTS_CA_BUNDLE)$/i;
 
 async function boundStdioServer(
   definition: ConnectionDefinition & { value_enc: Uint8Array<ArrayBuffer> | null },
@@ -279,6 +279,7 @@ export function createRuntimeMcp(options: {
       !accept(reply)
     )
       throw new VaultError("unavailable", failure);
+    return reply;
   };
   async function prepare(caller: Caller, id: string, signal?: AbortSignal) {
     signal?.throwIfAborted();
@@ -304,7 +305,7 @@ export function createRuntimeMcp(options: {
     if (!initial || initial.cached) return initial?.cached;
     // Feature evidence is bound to this epoch before any private configuration.
     const healthCommand = { version: 1 as const, sandboxId: s.id, requestId: randomUUID(), op: "health" as const };
-    await call(
+    const health = await call(
       s,
       healthCommand,
       initial.epoch,
@@ -322,11 +323,17 @@ export function createRuntimeMcp(options: {
         );
       },
     );
+    const features = health.body.result as { stdioMcpEnv?: unknown };
     const prepareConfiguration = () => authority.withOwner(s.id, s.ownerId, configure);
     async function configure(tx: Sql, live: { epoch: string }) {
       if (live.epoch !== initial.epoch) return deny();
-      const p = await plan(tx, caller, s, live.epoch, initial.selection),
-        leases = createSqlMcpLeasePort(tx);
+      const p = await plan(tx, caller, s, live.epoch, initial.selection);
+      if (
+        features.stdioMcpEnv !== true &&
+        Object.values(p.configuration.servers).some((server) => server.type === "stdio" && server.env !== undefined)
+      )
+        throw new VaultError("unavailable", "Stdio MCP environment requires an updated runtime artifact.");
+      const leases = createSqlMcpLeasePort(tx);
       for (const { connectionId, tokenHash, generation } of p.gatewayLeases) {
         const existing = (await tx.query("select id from public.mcp_leases where hash=$1", [tokenHash])).rows.length;
         if (!existing)

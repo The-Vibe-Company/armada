@@ -35,6 +35,11 @@ export function recordMcpRevision(
   if (Date.now() >= grant.expiresAt) throw Error("unauthorized");
   // Register before SQL metadata, snapshot replacement, events, native stderr or any acknowledgement.
   journal.registerSecrets(values);
+  journal.registerApplicationSecrets(
+    Object.values(configuration.servers).flatMap((server) =>
+      server.type === "stdio" ? Object.values(server.env ?? {}) : [],
+    ),
+  );
   journal.db.transaction(() => {
     journal.db.query("INSERT OR REPLACE INTO metadata VALUES(?,?)").run(key, digest);
     journal.db.query("INSERT OR REPLACE INTO metadata VALUES(?,?)").run(`${prefix}current`, key);
