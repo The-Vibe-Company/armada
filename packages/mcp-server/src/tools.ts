@@ -1,4 +1,4 @@
-import { GitHubHydrationError, idlePauseMessage, launchFailureHelp, providerRateLimitDetails } from "@armada/core";
+import { GitHubHydrationError, launchFailureHelp, providerRateLimitDetails } from "@armada/core";
 import {
   EncryptionKeyError,
   GoldenError,
@@ -30,6 +30,7 @@ import { DataError, type SandboxView, type ScopedData } from "./data.ts";
 import { MAX_LOG_PAGES, readEventPages, validateLogPagination } from "./event-pagination.ts";
 import type { GoldenLaunchCredentials } from "./launch-account-admission.ts";
 import { mcpLaunchContract, runMcpLaunch } from "./mcp-launch-tool.ts";
+import { logicalExpiry, registerListTool, registerStatusTools } from "./mcp-read-tools.ts";
 import { publicLogEvents } from "./model-usage.ts";
 import type { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import { recordOperatorFailure } from "./request-observability.ts";
@@ -38,23 +39,14 @@ import { appendConversation, sandboxActivity } from "./sandbox-activity.ts";
 import { sandboxControlRefusal } from "./sandbox-control-refusal.ts";
 import { refuseConversationSelector } from "./sandbox-conversation.ts";
 import {
+  sandboxIdInput as id,
   LOGS_OUTPUT,
   SANDBOX_STATUSES,
-  sandboxListInput,
-  sandboxListMetadata,
   statusOutput,
   taskOutcome,
 } from "./sandbox-tool-schemas.ts";
 import { ToolError } from "./tool-error.ts";
-import {
-  collectSandboxUsage,
-  isStatusReadFenced,
-  latestPrompt,
-  readStatus,
-  recordedStatus,
-  type StatusReport,
-  waitSettled,
-} from "./turns.ts";
+import { collectSandboxUsage, latestPrompt, readStatus } from "./turns.ts";
 import { stopAndObserve } from "./work-preservation.ts";
 
 /** Everything a tool call may use, for one authenticated request. */
@@ -84,13 +76,9 @@ export interface ToolContext {
   logError?: (line: string) => void;
 }
 
-export const DEFAULT_WAIT_SECONDS = 60;
-export const MAX_WAIT_SECONDS = 600;
 const OUTPUT_LIMIT = 20_000;
 
 export const serverInfo = { name: "armada" } as const;
-
-const id = z.string().describe("Armada's sandbox id (a uuid, as returned by launch and list).");
 
 const modelCatalogText = Object.entries(MODEL_CATALOG)
   .map(
@@ -101,17 +89,6 @@ const modelCatalogText = Object.entries(MODEL_CATALOG)
   .join(". ");
 const modelInput = z.string().min(1).optional().describe(`The model, by id. ${modelCatalogText}.`);
 const effortInput = z.string().min(1).optional().describe("The reasoning effort; one the model accepts (see model).");
-// Logical Armada lifetime only; provider deadlines never drive this warning.
-function logicalExpiry(expiresAt: string | null | undefined, now: Date) {
-  const deadline = expiresAt ? Date.parse(expiresAt) : Number.NaN;
-  const timeLeftSeconds = Number.isFinite(deadline) ? Math.max(0, Math.ceil((deadline - now.getTime()) / 1000)) : null;
-  return {
-    expiresAt: expiresAt ?? null,
-    timeLeftSeconds,
-    expiringSoon: timeLeftSeconds !== null && timeLeftSeconds <= 300,
-  };
-}
-
 /** One MCP server per request: the principal is fixed for its whole life, and nothing outlives the request. */
 export function createArmadaServer(context: ToolContext, version: string) {
   return createToolServer(context, version, "mcp");
@@ -133,6 +110,13 @@ type ToolContract<In extends ToolInput, Out extends z.ZodRawShape> = {
   readOnly?: boolean;
   destructive?: boolean;
 };
+
+export type ToolRegistrar = <In extends ToolInput, Out extends z.ZodRawShape>(
+  name: string,
+  config: ToolContract<In, Out>,
+  run: (args: ToolArgs<In>) => Promise<z.infer<z.ZodObject<Out>>>,
+  restOnly?: boolean,
+) => ToolContract<In, Out> & { invoke: (args: ToolArgs<In>) => Promise<CallToolResult> };
 
 function createToolServer(
   context: ToolContext,
@@ -271,7 +255,7 @@ function createToolServer(
 
   // HTTP list calls keep the same handler and SDK validation without building unrelated tools.
   if (onlyTool === "list") {
-    registerList();
+    registerListTool(context, tool);
     return server;
   }
 
@@ -314,201 +298,11 @@ function createToolServer(
     return { ...target, enrolled };
   };
   const measure: NonNullable<ToolContext["measure"]> = context.measure ?? ((_phase, work) => work());
-  const statusOf = async (
-    sandboxId: string,
-    promptId: string | undefined,
-    stored = false,
-    allowRecordedFallback = false,
-    recorded = false,
-  ): Promise<StatusReport & ReturnType<typeof logicalExpiry>> => {
-    const queued = await context.accountTurns?.status(caller, sandboxId, promptId);
-    // Route reads with the native ID, but keep the receipt identity stable for clients.
-    const publicPromptId = queued && "nativePromptId" in queued ? (promptId ?? queued.publicPromptId) : undefined;
-    const publicReport = (report: StatusReport): StatusReport =>
-      publicPromptId
-        ? {
-            ...report,
-            ...(report.prompt ? { prompt: { ...report.prompt, promptId: publicPromptId } } : {}),
-            ...(report.usage
-              ? {
-                  usage: {
-                    ...report.usage,
-                    turns: report.usage.turns.map((turn) =>
-                      turn.promptId === promptId ? { ...turn, promptId: publicPromptId } : turn,
-                    ),
-                  },
-                }
-              : {}),
-          }
-        : report;
-    if (queued && "nativePromptId" in queued) promptId = queued.nativePromptId;
-    const waiting = queued && !("nativePromptId" in queued) ? queued : undefined;
-    const routed = await context.dockerControls?.invoke(caller, "status", {
-      id: sandboxId,
-      ...(promptId && !waiting ? { prompt_id: promptId } : {}),
-      ...(recorded ? { recorded: true } : {}),
-    });
-    const queuePatch = waiting
-      ? {
-          statusMessage: waiting.message,
-          settled: waiting.failed ?? false,
-          prompt: {
-            promptId: waiting.requestId!,
-            conversationId: waiting.conversationId!,
-            state: waiting.failed ? ("failed" as const) : ("running" as const),
-            reason: waiting.message,
-          },
-        }
-      : {};
-    if (routed?.handled) {
-      const report = publicReport(routed.result as StatusReport);
-      return { ...report, ...logicalExpiry(report.expiresAt, context.now()), providerExpiresAt: null, ...queuePatch };
-    }
-    const found = await measure("sandbox_read", () => visible(sandboxId));
-    if (waiting) return { ...recordedStatus(found), ...logicalExpiry(found.expiresAt, context.now()), ...queuePatch };
-    if (recorded)
-      return {
-        ...publicReport(recordedStatus(found)),
-        ...logicalExpiry(found.expiresAt, context.now()),
-        statusMessage: `Recorded state only; use armada status ${sandboxId} --live for provider and prompt details.`,
-      };
-    try {
-      const storedProvider = stored ? context.storedProviders?.[found.provider] : undefined;
-      const provider =
-        found.status === "deleted" || isStatusReadFenced(found)
-          ? null
-          : storedProvider
-            ? await storedProvider(found)
-            : await context.provider(found);
-      const result = await measure("state", () =>
-        readStatus(provider, data.sandboxes, found, {
-          stored: storedProvider !== undefined,
-          ...(promptId ? { promptId } : {}),
-          now: context.now(),
-        }),
-      );
-      return {
-        ...publicReport(result),
-        ...logicalExpiry(result.expiresAt, context.now()),
-        statusMessage: idlePauseMessage(result, context.now()),
-      };
-    } catch (error) {
-      if (!allowRecordedFallback || !(error instanceof ProviderError)) throw error;
-      return {
-        ...publicReport(recordedStatus(found)),
-        ...logicalExpiry(found.expiresAt, context.now()),
-        statusMessage: "Provider observation unavailable; showing recorded state.",
-      };
-    }
-  };
-
   tool("launch", mcpLaunchContract, (input) => runMcpLaunch(context, input));
 
-  registerList();
+  registerListTool(context, tool);
 
-  function registerList() {
-    tool(
-      "list",
-      {
-        title: "List sandboxes",
-        description:
-          "Allowlisted metadata of sandboxes in your current organizations, newest first. Interior is owner/admin only. " +
-          "Deleted ones are left out unless asked for. Statuses are as recorded; call status for a fresh read.",
-        input: sandboxListInput.shape,
-        output: {
-          sandboxes: z.array(sandboxListMetadata),
-          total: z.number().int(),
-          page: z.number().int(),
-          limit: z.number().int(),
-          hasMore: z.boolean(),
-          nextPage: z.number().int().nullable(),
-        },
-        readOnly: true,
-      },
-      async (args) => {
-        const statuses: readonly SandboxStatus[] = args.status ?? SANDBOX_STATUSES.filter((name) => name !== "deleted");
-        const limit = args.limit ?? 25;
-        const page = args.page ?? 1;
-        const { rows, total } = await data.sandboxes.list({
-          statuses,
-          limit,
-          page,
-          ...(args.harness === undefined ? {} : { harness: args.harness }),
-          ...(args.golden === undefined ? {} : { goldenId: args.golden }),
-          ...(args.owner === undefined ? {} : { ownerId: args.owner === "me" ? caller.userId : args.owner }),
-          ...(args.externalRef === undefined ? {} : { externalRef: args.externalRef }),
-        });
-        const hasMore = page * limit < total;
-        return {
-          total,
-          page,
-          limit,
-          hasMore,
-          nextPage: hasMore && page < 1_000_000 ? page + 1 : null,
-          sandboxes: rows.map((row) => ({
-            ...row,
-            ...logicalExpiry(row.expiresAt, context.now()),
-            statusMessage: idlePauseMessage(row, context.now()),
-          })),
-        };
-      },
-    );
-  }
-
-  const readStatusTool = tool(
-    "status",
-    {
-      title: "Sandbox status",
-      description:
-        "Where a sandbox and its latest turn are. Modal uses authorized stored observations; physical state is refreshed by the lifecycle worker. Boat is read live. prompt.state is " +
-        "queued (accepted by a starting Docker sandbox, not yet admitted by its runtime), running, finished, interrupted or failed; failed includes a usage limit or an expired login, with " +
-        "the reason. settled is true when the agent is not working.",
-      input: {
-        id,
-        prompt_id: z.string().min(1).optional().describe("A specific turn. Default: the latest."),
-        recorded: z
-          .boolean()
-          .optional()
-          .describe(
-            "True: database-only state. False: live provider probe. Omitted: provider-specific detail read. CLI defaults to true; --live sets false.",
-          ),
-      },
-      output: statusOutput,
-      readOnly: true,
-    },
-    async (args) => {
-      const report = await statusOf(args.id, args.prompt_id, args.recorded === undefined, true, args.recorded === true);
-      // Read after statusOf so an invisible sandbox has already been refused.
-      const launch = data.sandboxes.launchTiming ? await data.sandboxes.launchTiming(report.id) : undefined;
-      return launch === undefined ? report : { ...report, launch };
-    },
-    true,
-  );
-
-  const waitTool = tool(
-    "wait",
-    {
-      title: "Wait for the agent",
-      description:
-        `Blocks until the agent settles (its turn finished, failed or was interrupted, or the machine stopped) ` +
-        `or the timeout passes, then answers like status with timedOut. Default ${DEFAULT_WAIT_SECONDS}s, ` +
-        `at most ${MAX_WAIT_SECONDS}s: call again to keep waiting.`,
-      input: {
-        id,
-        timeout_seconds: z.number().int().min(0).max(MAX_WAIT_SECONDS).optional(),
-        prompt_id: z.string().min(1).optional().describe("A specific turn. Default: the latest."),
-      },
-      output: { ...statusOutput, timedOut: z.boolean() },
-      readOnly: true,
-    },
-    (args) =>
-      waitSettled(() => statusOf(args.id, args.prompt_id), {
-        timeoutMs: (args.timeout_seconds ?? DEFAULT_WAIT_SECONDS) * 1000,
-        now: context.now,
-        sleep: context.sleep,
-      }),
-    true,
-  );
+  const { statusOf, readStatusTool, waitTool } = registerStatusTools(context, tool, visible, measure);
 
   tool(
     "logs",

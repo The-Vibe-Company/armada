@@ -2,6 +2,8 @@ import { isExternalRef, LAUNCH_STAGES, SANDBOX_PLACEMENT_PROVIDERS, USAGE_UNAVAI
 import { HARNESSES } from "@armada/core/server";
 import * as z from "zod";
 
+export const sandboxIdInput = z.string().describe("Armada's sandbox id (a uuid, as returned by launch and list).");
+
 export const SANDBOX_STATUSES = ["starting", "ready", "running", "stopping", "stopped", "failed", "deleted"] as const;
 
 export const modelOutput = {

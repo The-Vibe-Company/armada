@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import type { ExecResult } from "@armada/core";
+import { captureCommandOutput } from "./command-output.ts";
 import { validateHarnessCwd } from "./cwd.ts";
 import { RequestRefused } from "./errors.ts";
 import type { Journal } from "./journal.ts";
@@ -56,7 +56,7 @@ export async function executeWorkspace(
   env: Readonly<Record<string, string>>,
   signal: AbortSignal,
   host: WorkspaceExecutionHost = defaultHost,
-): Promise<Extract<ExecResult, { detached: false }>> {
+) {
   const { cwd } = validateWorkspaceExec(input);
   signal.throwIfAborted();
   const child = host.spawn("/bin/bash", ["-s"], {
@@ -66,18 +66,9 @@ export async function executeWorkspace(
     stdio: ["pipe", "pipe", "pipe"],
   });
   child.stdin.on("error", () => {});
-  let stdout = "",
-    stderr = "",
-    truncated = false,
-    timedOut = false;
-  const collect = (channel: "stdout" | "stderr", chunk: Buffer) => {
-    const value = (channel === "stdout" ? stdout : stderr) + chunk.toString();
-    if (value.length > 65536) truncated = true;
-    if (channel === "stdout") stdout = value.slice(0, 65536);
-    else stderr = value.slice(0, 65536);
-  };
-  child.stdout.on("data", (c) => collect("stdout", c));
-  child.stderr.on("data", (c) => collect("stderr", c));
+  const stdout = captureCommandOutput(child.stdout);
+  const stderr = captureCommandOutput(child.stderr);
+  let timedOut = false;
   const closed = new Promise<number | null>((resolve) => {
     child.once("close", resolve);
     child.once("error", () => resolve(null));
@@ -116,11 +107,9 @@ export async function executeWorkspace(
       throw Error("workspace_writers_remain");
     }
     return {
-      detached: false,
       exitCode,
-      stdout: journal.redact(stdout),
-      stderr: journal.redact(stderr),
-      truncated,
+      stdout,
+      stderr,
       timedOut,
     };
   } catch (error) {
