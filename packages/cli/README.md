@@ -21,6 +21,34 @@ provider-specific GitHub refresh refusal. Typed commands validate success receip
 before reporting success. Their control routes use JSON objects, including `{}`
 for empty acknowledgements.
 
+## Login and session storage
+
+Armada browser sign-in uses PKCE through the Armada server and keeps provider
+details out of the CLI. Email links carry only a state-bound PKCE code. Sign-in
+prefers email when the CLI remembers an address and email is enabled. Otherwise
+it prefers an enabled browser method. Interactive prompts read from the
+terminal so the login flow does not consume piped input.
+
+The saved Armada API session is local, holds no provider configuration and
+uses file mode `0600`. Its login ID identifies the sign-in across token
+rotations. The SQLite lock serializes session updates across processes and
+releases on process exit, including a crash. It stores no tokens. Keep the
+lock file in place because another CLI process may already have it open.
+
+MCP connection authorization opens only a backend-issued HTTPS URL. After one
+browser handoff, the CLI checks the requested connection's server-side status
+before reporting success.
+
+Native Codex model login runs in the foreground. The CLI withholds native
+output and raw errors because provider responses may contain credentials. The
+16-minute approval budget covers Codex 0.166's 15-minute device approval
+window plus completion and authentication-file flush. The CLI checks the
+initialization and login requests for errors, including connection-level
+parse errors, and requires a matching login ID on completion. An import
+requires a stable account ID for refresh and binding, even though native
+Codex accepts a null ID. Temporary native credentials are removed during
+cleanup.
+
 ## Vault input and output
 
 Application variables and secrets use separate commands from model-account

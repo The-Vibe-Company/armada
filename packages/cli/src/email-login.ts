@@ -6,7 +6,6 @@ import type { SessionDto } from "./browser-login.ts";
 const CODE_REFUSAL =
   "Could not verify this code. It may be incorrect, expired, or already used. Opening the email link uses up the code. Request a new code and enter it without opening the link.";
 
-/** A link carries only a state-bound PKCE code, never tokens or a browser session. */
 export async function emailLogin(io: AuthIo, email: string, origin: string): Promise<SessionDto> {
   const pkce = await createPkce();
   const state = crypto.randomUUID().replaceAll("-", "");
