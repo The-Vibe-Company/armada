@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createSqlAuthStore } from "@armada/auth";
 import {
   type AgentEvent,
@@ -132,11 +132,23 @@ async function fixture(
   const actor = { userId, orgId },
     admin = { userId: adminId, orgId };
   const caller: Caller = { userId, orgs: [{ orgId, role: "member" }], via: "supabase" };
-  const registration = await hosts.issueRegistration(admin),
-    installationId = randomUUID();
-  const host = await hosts.exchangeRegistration(registration.registrationToken, installationId);
-  await hosts.poll(host.hostToken, installationId, options.daemonVersion ?? "2.28.0");
-  await db.query("update docker_hosts set daemon_protocol=$2 where id=$1", [host.hostId, DOCKER_HOST_PROTOCOL - 1]);
+  const installationId = randomUUID();
+  const host = { hostId: randomUUID(), hostToken: randomBytes(32).toString("hex") };
+  const daemonVersion = options.daemonVersion ?? "2.28.0";
+  await db.query(
+    `insert into public.docker_hosts
+      (id,org_id,owner_id,installation_id,hash,registration_expires_at,last_seen_at,daemon_version,daemon_protocol)
+      values($1,$2,$3,$4,$5,now()+interval '5 minutes',now(),$6,$7)`,
+    [
+      host.hostId,
+      orgId,
+      adminId,
+      installationId,
+      createHash("sha256").update(host.hostToken).digest("hex"),
+      daemonVersion,
+      DOCKER_HOST_PROTOCOL - 1,
+    ],
+  );
   const secret = `offline-normal-launch-${randomUUID()}`;
   // Omitted version must select the current pin, not fabricate version one.
   await db.query(
@@ -189,7 +201,7 @@ async function fixture(
     if (await hosts.mayHaveWork(host.hostToken, installationId, false, [], true)) {
       for (const claim of await hosts.resumeClaimsForHost(host.hostToken, installationId))
         await hosts.claimResume(host.hostToken, installationId, claim.requestId, true);
-      job = await hosts.poll(host.hostToken, installationId, options.daemonVersion ?? "2.28.0");
+      job = await hosts.poll(host.hostToken, installationId, daemonVersion);
     }
     if (job) {
       jobs.push(job);
