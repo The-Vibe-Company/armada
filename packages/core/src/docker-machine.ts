@@ -433,15 +433,23 @@ export function createDockerMachineExecutor(options: {
     if (state.container) await checked(["container", "stop", "--time", "10", state.containerName]);
   }
 
-  async function remove(request: DockerMachineRequest): Promise<void> {
+  async function remove(
+    request: DockerMachineRequest,
+    target: { scope: "physical-only"; machineId: string } | { scope: "physical-and-retained" } = {
+      scope: "physical-and-retained",
+    },
+  ): Promise<void> {
+    const physicalOnly = target.scope === "physical-only";
+    if (physicalOnly && !/^[a-f0-9]{64}$/.test(target.machineId)) fail("invalid_request");
     let state = await owned(request);
     if (state.container) {
-      await checked(["container", "rm", "--force", state.containerName]);
+      if (physicalOnly && state.container.Id !== target.machineId) fail("ownership_mismatch");
+      await checked(["container", "rm", "--force", physicalOnly ? target.machineId : state.containerName]);
       state = await owned(request);
       if (state.container) fail("docker_failed");
     }
     // Successful exact absence observation is required before deleting the exact owned volume.
-    if (state.volume) await checked(["volume", "rm", state.volumeName]);
+    if (!physicalOnly && state.volume) await checked(["volume", "rm", state.volumeName]);
   }
 
   async function stopIfExpired(request: DockerMachineRequest): Promise<boolean> {
