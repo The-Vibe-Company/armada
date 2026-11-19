@@ -309,10 +309,11 @@ export function createSandboxLifecycle(
         await sql.query(
           `update public.sandboxes set
             lifecycle_error='Cleanup blocked: removed-owner authority is unavailable. Automatic cleanup requires service-owned worker authority.',
-            reconcile_after=now()+interval '1 minute',reconcile_lease=null,reconcile_lease_until=null
+            reconcile_after=case when $4 then 'infinity'::timestamptz else now()+interval '1 minute' end,
+            reconcile_lease=null,reconcile_lease_until=case when $4 then now()+interval '1 minute' end
           where id=$1::uuid and reconcile_lease=$2::uuid and lifecycle_generation=$3
             and reconcile_lease_until>now() and (activity_until is null or activity_until<now())`,
-          [row.id, token, row.lifecycle_generation],
+          [row.id, token, row.lifecycle_generation, providerId === "modal" && row.interrupted_resume],
         );
         return true;
       }
