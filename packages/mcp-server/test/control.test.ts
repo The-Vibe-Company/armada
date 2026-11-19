@@ -3490,8 +3490,10 @@ test("pinned Modal launch resolves personal org references and respects scoped t
     expect(await byName?.json()).toEqual(await byId?.json());
     expect((await launch(service, {}))?.status).toBe(404);
     expect((await launch(service, { org: other.id }))?.status).toBe(403);
-    const malformed = await launch(personal, { org: org.name, golden: "mixed-source" });
-    expect(malformed?.status).toBe(400);
-    expect(await malformed?.json()).toMatchObject({ error: { code: "invalid" } });
+    for (const malformed of [{ golden: "mixed-source" }, { ttlSeconds: PROVIDER_LIMITS.modal.maxTtlSeconds + 1 }]) {
+      const refused = await launch(personal, { org: org.name, ...malformed });
+      expect(refused?.status).toBe(400);
+      expect(await refused?.json()).toMatchObject({ error: { code: "invalid" } });
+    }
   });
 });

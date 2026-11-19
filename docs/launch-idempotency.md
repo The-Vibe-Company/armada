@@ -142,9 +142,13 @@ providers. The CLI's `golden` field remains a name or null.
 
 For explicit runtime launches from a golden, send the selectors to `POST /api/v1/sandbox/launch`.
 Use `runtimeVersion: 1` and `boatRuntime: true` for Boat. Use `runtimeVersion: 1`,
-`provider: "modal"` and `runtimeTransport: "dialout"` for Modal. Runtime admission checks and server opt-ins apply. For a pinned Modal template, send the same Modal selectors
-with `org` (UUID), `id`, `revision`, `requestKey` and the template's `harness` to
-`sandbox/launch`. When admission records a request, it returns a durable template
+`provider: "modal"` and `runtimeTransport: "dialout"` for Modal. Runtime admission checks
+and server opt-ins apply. For a pinned Modal template, send the same Modal selectors
+with `id`, `revision`, `requestKey` and the template's `harness` to `sandbox/launch`.
+Personal sessions can provide an org slug or UUID. Scoped tokens can omit `org`
+or send their scoped UUID. The shared schema refuses TTLs above 86,400 seconds
+before template admission or replay lookup. When admission records a request,
+it returns a durable template
 launch receipt, including the frozen manifest on success. Replay the same body
 and request key to recover that receipt, and use its top-level `id` for sandbox
 operations. A pre-admission refusal has no request ID or sandbox ID. Ordinary
