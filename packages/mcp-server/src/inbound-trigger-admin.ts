@@ -2,7 +2,6 @@ import type { Sql } from "@armada/core/server";
 import type { CallerResult } from "./caller.ts";
 import { UUID } from "./control-input.ts";
 import { fail } from "./control-response.ts";
-import type { Route } from "./http.ts";
 
 interface TriggerSummary {
   id: string;
@@ -24,7 +23,7 @@ const basePath = "/api/v1/triggers";
 const deliveriesPath = /^\/api\/v1\/triggers\/([^/]+)\/deliveries$/;
 const noStore = { "cache-control": "no-store" };
 
-export function inboundTriggerAdminRoute(sql: Sql, authenticate: (request: Request) => Promise<CallerResult>): Route {
+export function inboundTriggerAdminRoute(sql: Sql, authenticate: (request: Request) => Promise<CallerResult>) {
   return async (request) => {
     const url = new URL(request.url);
     const deliveryMatch = deliveriesPath.exec(url.pathname);
