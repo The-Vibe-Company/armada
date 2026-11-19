@@ -53,26 +53,6 @@ async function fixture(
     parent.id,
   ]);
   await db.query(
-    `insert into orchestrator_runtime(orchestrator_id,configuration,skill_revision,conversation_id,continuity)
-    values($1,$2::jsonb,$3,$4,$5)`,
-    [
-      id,
-      JSON.stringify({
-        version: 1,
-        orgId: p.org,
-        name: "existing coordinator",
-        goldenId: golden.id,
-        provider: "boat",
-        harness: "codex",
-        model: "m",
-        modelAccountId: crypto.randomUUID(),
-      }),
-      "78884de87066851b75e09cbda134606c0a8bc6d7",
-      parentState === "ready" ? null : "existing-native-conversation",
-      parentState === "ready" ? "not_started" : "native",
-    ],
-  );
-  await db.query(
     `insert into credentials(id,scope,owner_id,kind,value_enc,name) values($1,'user',$2,$4,$3,'Child test account')`,
     [
       account,
