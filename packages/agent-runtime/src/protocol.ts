@@ -1,6 +1,8 @@
 import type { AgentEvent, ExecRequest, Harness, OutputChunkRequest, PromptRequest, PromptStatus } from "@armada/core";
 import type { GitHubBrokerConfiguration } from "./github-broker.ts";
 import type { ModelConnectionTestResult } from "./model-connection-test.ts";
+export const MAX_COMMAND_RESPONSE_BYTES = 1_048_576;
+
 export const PROTOCOL_VERSION = 1;
 export const AUTH_HEADER = "x-armada-runner-grant";
 export type McpConnection =

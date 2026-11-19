@@ -873,7 +873,7 @@ for (const loss of ["membership", "credential", "credential_stale_generation", "
   });
 }
 
-test.each(["queued", "dispatching"])("idle-only stop preserves %s account work", async (state) => {
+test.each(["queued", "dispatching", "acknowledged"])("idle-only stop preserves %s work", async (state) => {
   const { db, people } = await sharedDatabase();
   const sql: Sql = {
     query: (q, v) => db.query(q, v),
@@ -892,13 +892,28 @@ test.each(["queued", "dispatching"])("idle-only stop preserves %s account work",
   );
   const idle = await store.get(id);
   if (!idle) throw Error("missing sandbox");
-  await db.query(
-    `insert into account_turn_queue
-       (sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id,state)
-     select $1,gen_random_uuid(),id,$2,$3,1,1,'hash',decode('00','hex'),'conversation',$4
-     from credentials where scope='org' and owner_id=$3 and kind='openai'`,
-    [id, people.owner, people.org, state],
-  );
+  const promptId = crypto.randomUUID();
+  if (state === "acknowledged") {
+    await db.query(
+      `insert into public.runtime_enrolments(sandbox_id,lifecycle_generation,epoch,runtime_hash)
+       select id,lifecycle_generation,1,encode(sha256(uuid_send(id)),'hex')
+       from public.sandboxes where id=$1`,
+      [id],
+    );
+    await db.query(
+      `insert into public.runtime_commands(sandbox_id,request_id,epoch,request_enc,result_enc,accepted_prompt_id)
+       values($1,$2,1,decode('00','hex'),decode('00','hex'),$2::text::uuid)`,
+      [id, promptId],
+    );
+  } else {
+    await db.query(
+      `insert into account_turn_queue
+         (sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id,state)
+       select $1,gen_random_uuid(),id,$2,$3,1,1,'hash',decode('00','hex'),'conversation',$4
+       from credentials where scope='org' and owner_id=$3 and kind='openai'`,
+      [id, people.owner, people.org, state],
+    );
+  }
 
   const admission = { status: "stopping", stopRequested: true, onlyIfIdle: true } as const;
   const stop = (patch: typeof admission | Omit<typeof admission, "onlyIfIdle">) =>
@@ -909,6 +924,14 @@ test.each(["queued", "dispatching"])("idle-only stop preserves %s account work",
 
   await expect(stop(admission)).rejects.toThrow("The sandbox is busy");
   expect(await store.get(id)).toMatchObject({ status: "ready", lifecycleGeneration: idle.lifecycleGeneration });
+  if (state === "acknowledged") {
+    await db.query("insert into public.runtime_idle_turns(sandbox_id,prompt_id,settled) values($1,$2,true)", [
+      id,
+      promptId,
+    ]);
+    expect(await stop(admission)).toBe("stopped");
+    return;
+  }
   expect((await db.query("select state from account_turn_queue where sandbox_id=$1", [id])).rows).toEqual([{ state }]);
 
   expect(await stop({ status: "stopping", stopRequested: true })).toBe("stopped");

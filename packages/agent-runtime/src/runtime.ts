@@ -31,7 +31,7 @@ import {
 } from "./protocol.ts";
 import { ReadableConfigurations } from "./readable-configurations.ts";
 import { readRuntimeJson } from "./request-framing.ts";
-import { executeWithReceipt } from "./request-receipts.ts";
+import { type EventSelection, executeWithReceipt } from "./request-receipts.ts";
 import { sampleVmResources } from "./resource-sampler.ts";
 import { installRuntimeSkills } from "./skills.ts";
 import { executeWorkspace, validateWorkspaceExec } from "./workspace-exec.ts";
@@ -485,12 +485,7 @@ export class Runner {
       if (!Number.isSafeInteger(after) || after < 0) throw Error("invalid_cursor");
       const limit = Math.max(1, Math.min(r.limit ?? 100, 1000));
       const rows = this.journal.events(after, limit + 1, r.conversationId);
-      const page = rows.slice(0, limit);
-      return {
-        events: page.map((x) => x.event),
-        cursor: String(page.at(-1)?.sequence ?? after),
-        hasMore: rows.length > limit,
-      };
+      return { after, rows: rows.slice(0, limit), hasMore: rows.length > limit } satisfies EventSelection;
     }
     if (r.op === "getExec") {
       const row = this.journal.db.query("SELECT body FROM processes WHERE pid=?").get(r.processId) as {

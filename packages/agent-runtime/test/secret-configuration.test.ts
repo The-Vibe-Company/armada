@@ -235,6 +235,16 @@ test.each([
       result: "prefixvalue",
       errors: ["prefixvalue"],
       structured_output: { prefixlongfixture: "prefixvalue" },
+      permission_denials: [{ tool_name: "prefixvalue", tool_input: { prefixlongfixture: "prefixvalue" } }],
+      session_id: "prefixvalue",
+      uuid: "prefixvalue",
+      user_message_uuid: "prefixvalue",
+      user_message_uuids: ["prefixvalue"],
+      stop_reason: "prefixvalue",
+      deferred_tool_use: { id: "tool", name: "fixture", input: { valueText: "prefixvalue" } },
+      local_command: "prefixvalue",
+      resume_reason: "prefixvalue",
+      origin: { kind: "peer", from: "fixture", body: "prefixvalue" },
       modelUsage: { fixture: { inputTokens: 3 } },
     },
     masked: {
@@ -242,6 +252,16 @@ test.each([
       result: "prefix[REDACTED]",
       errors: ["prefix[REDACTED]"],
       structured_output: { "prefix[REDACTED]": "prefix[REDACTED]" },
+      permission_denials: [{ tool_name: "prefix[REDACTED]", tool_input: { "prefix[REDACTED]": "prefix[REDACTED]" } }],
+      session_id: "prefix[REDACTED]",
+      uuid: "prefix[REDACTED]",
+      user_message_uuid: "prefix[REDACTED]",
+      user_message_uuids: ["prefix[REDACTED]"],
+      stop_reason: "prefix[REDACTED]",
+      deferred_tool_use: { id: "tool", name: "fixture", input: { "[REDACTED]Text": "prefix[REDACTED]" } },
+      local_command: "prefix[REDACTED]",
+      resume_reason: "prefix[REDACTED]",
+      origin: { kind: "peer", from: "fixture", body: "prefix[REDACTED]" },
       modelUsage: { fixture: { inputTokens: 3 } },
     },
   },
@@ -315,6 +335,118 @@ test("proof truncation persists only scrubbed correlation metadata", () => {
       { type: "event_truncated", conversationId: "conversation-[REDACTED]" },
     ]);
   } finally {
+    journal.close();
+  }
+});
+
+test("an event expanded beyond the dialout limit is truncated and its cursor advances", async () => {
+  const journal = new Journal(":memory:", (text) => text);
+  const runner = new Runner(journal, grant, {});
+  try {
+    const message = {
+      id: "large-answer",
+      at: 1,
+      kind: "message",
+      textMode: "snapshot",
+      text: "x".repeat(120_000),
+      partial: false,
+      tools: [],
+    } satisfies AgentEvent;
+    journal.append(message);
+    const next = { ...message, id: "next-answer", text: "done" };
+    journal.append(next);
+    journal.registerApplicationSecrets(["x"]);
+
+    const response = await runner.handleDialout({ ...command, op: "events", limit: 1 });
+    const body = await response.text();
+    expect(response.status).toBe(200);
+    expect(Buffer.byteLength(body)).toBeLessThanOrEqual(1_048_576);
+    const { result } = JSON.parse(body);
+    expect(result).toMatchObject({
+      cursor: "1",
+      hasMore: true,
+      events: [{ id: message.id, kind: "other", type: "event_truncated" }],
+    });
+    const following = await runner.handleDialout({ ...command, op: "events", cursor: result.cursor });
+    expect(await following.json()).toMatchObject({
+      result: { cursor: "2", hasMore: false, events: [next] },
+    });
+    expect(journal.events()[0]?.event).toEqual(message);
+  } finally {
+    await runner.close();
+    journal.close();
+  }
+});
+
+test("event pages stop at the UTF-8 byte limit and resume at the first omitted row", async () => {
+  const journal = new Journal(":memory:", (text) => text);
+  const runner = new Runner(journal, grant, {});
+  try {
+    for (let index = 1; index <= 5; index++) {
+      journal.append({
+        id: String(index),
+        at: index,
+        kind: "message",
+        textMode: "snapshot",
+        text: "界".repeat(80_000),
+        partial: false,
+        tools: [],
+      });
+    }
+    const response = await runner.handleDialout({ ...command, op: "events" });
+    const body = await response.text();
+    expect(response.status).toBe(200);
+    expect(Buffer.byteLength(body)).toBeLessThanOrEqual(1_048_576);
+    const { result } = JSON.parse(body);
+    expect(result).toMatchObject({ cursor: "4", hasMore: true });
+    expect(result.events.map(({ id }: AgentEvent) => id)).toEqual(["1", "2", "3", "4"]);
+
+    const following = await runner.handleDialout({ ...command, op: "events", cursor: result.cursor });
+    expect(await following.json()).toMatchObject({
+      result: { cursor: "5", hasMore: false, events: [{ id: "5" }] },
+    });
+  } finally {
+    await runner.close();
+    journal.close();
+  }
+});
+
+test("a redacted event that exactly fits is returned intact when another row remains", async () => {
+  const journal = new Journal(":memory:", (text) => text);
+  const runner = new Runner(journal, grant, {});
+  try {
+    const message = {
+      id: "answer",
+      at: 1,
+      kind: "message",
+      textMode: "snapshot",
+      text: "",
+      partial: false,
+      tools: [],
+    } satisfies AgentEvent;
+    const emptyTextBytes = Buffer.byteLength(
+      JSON.stringify({
+        version: 1,
+        requestId: command.requestId,
+        result: { events: [message], cursor: "1", hasMore: true },
+      }),
+    );
+    const padding = "a".repeat(1_048_576 - emptyTextBytes - 1_000_000);
+    journal.append({ ...message, text: "x".repeat(100_000) + padding });
+    journal.append({ ...message, id: "next", text: "done" });
+    journal.registerApplicationSecrets(["x"]);
+
+    const response = await runner.handleDialout({ ...command, op: "events", limit: 1 });
+    const body = await response.text();
+    expect(response.status).toBe(200);
+    expect(Buffer.byteLength(body)).toBe(1_048_576);
+    expect(JSON.parse(body).result).toEqual({
+      events: [{ ...message, text: "[REDACTED]".repeat(100_000) + padding }],
+      cursor: "1",
+      hasMore: true,
+    });
+  } finally {
+    await runner.close();
     journal.close();
   }
 });
