@@ -230,6 +230,36 @@ test("backfill advances past a page of terminal history to reach a waiting reque
   expect(await jobsForWaiting()).toHaveLength(1);
 });
 
+test("a backfill sweep wraps to retry a failed insert while newer rows are arriving", async () => {
+  const waiting = { id: ids[0]!, request_id: requests[0]!, prompt: "next instruction" };
+  await queue.accept(caller, waiting);
+  const addHistory = () =>
+    database().query(
+      `insert into public.account_turn_queue
+         (sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id,state)
+       select sandbox_id,gen_random_uuid(),account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id,'failed'
+       from public.account_turn_queue cross join generate_series(1,20) where sandbox_id=$1 and request_id=$2`,
+      [waiting.id, waiting.request_id],
+    );
+  await addHistory();
+  await database().exec("update public.credentials set max_agents=0; delete from public.jobs");
+  const worker = createAccountTurnQueue(sql, btoa("x".repeat(32)));
+  worker.setDispatch(async () => ({}));
+  const signal = new AbortController().signal;
+  await database().exec("alter table public.jobs add constraint reject_dispatch check (kind <> 'turn_dispatch')");
+  try {
+    expect(await worker.reconcileOne(signal)).toBe(false);
+  } finally {
+    await database().exec("alter table public.jobs drop constraint reject_dispatch");
+  }
+
+  for (let pass = 0; pass < 2; pass++) {
+    await addHistory();
+    expect(await worker.reconcileOne(signal)).toBe(false);
+  }
+  expect((await database().query("select id from public.jobs where sandbox_id=$1", [waiting.id])).rows).toHaveLength(1);
+});
+
 test("full-account prompts persist, dispatch FIFO after a turn settles, and queued IDs resolve to actual receipts", async () => {
   await database().query("update sandboxes set status='running',task_prompt_id='active_turn' where id=$1", [ids[0]]);
   const first = { id: ids[1]!, request_id: requests[0]!, prompt: "first instruction" };

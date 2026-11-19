@@ -59,7 +59,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
   const jobs = createJobsStore(sql, key);
   const pending = new Set<Promise<unknown>>();
   let scanAfter = "0";
-  let backfillAfter = "0";
+  let backfillRange: { after: string; through: string | null } = { after: "0", through: null };
   let dispatch: DispatchTurn | undefined;
   function enqueueDispatchJob(entry: DispatchJobEntry, tx?: Sql) {
     return jobs.enqueue(
@@ -74,19 +74,27 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
   }
   async function backfillDispatchJobs(signal: AbortSignal) {
     // WARNING: Match the producer's compact key with queued_generation, since the job generation can advance.
-    const { rows } = await sql.query<DispatchJobEntry & { sequence: string; missing_job: boolean }>(
-      `select q.sandbox_id,q.request_id,q.org_id,q.queued_generation::text,q.sequence::text,
+    const { rows } = await sql.query<DispatchJobEntry & { sequence: string; through: string; missing_job: boolean }>(
+      `with sweep as (
+         select coalesce($3::bigint,(select max(sequence) from public.account_turn_queue)) as through
+       )
+       select q.sandbox_id,q.request_id,q.org_id,q.queued_generation::text,q.sequence::text,sweep.through::text,
        case when q.state in ('queued','dispatching') then not exists (
          select 1 from public.jobs j where j.idem_key =
            format('["internal","%s","turn_dispatch","%s",%s,"%s"]',q.org_id,q.sandbox_id,q.queued_generation,q.request_id)
        ) else false end as missing_job
-       from (
+       from sweep cross join lateral (
          select sandbox_id,request_id,org_id,queued_generation,sequence,state
-         from public.account_turn_queue where sequence>$1::bigint order by sequence limit $2
+         from public.account_turn_queue where sequence>$1::bigint and sequence<=sweep.through
+         order by sequence limit $2
        ) q order by q.sequence`,
-      [backfillAfter, DISPATCH_JOB_BACKFILL_BATCH],
+      [backfillRange.after, DISPATCH_JOB_BACKFILL_BATCH, backfillRange.through],
     );
-    backfillAfter = rows.length === DISPATCH_JOB_BACKFILL_BATCH ? rows.at(-1)!.sequence : "0";
+    const last = rows.at(-1);
+    backfillRange =
+      last && rows.length === DISPATCH_JOB_BACKFILL_BATCH && last.sequence !== last.through
+        ? { after: last.sequence, through: last.through }
+        : { after: "0", through: null };
     for (const entry of rows) {
       if (signal.aborted) return;
       if (entry.missing_job) await enqueueDispatchJob(entry);
