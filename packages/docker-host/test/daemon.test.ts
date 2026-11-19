@@ -25,7 +25,10 @@ function fail(): never {
 }
 
 function fixture(
-  operation: Exclude<Job["operation"], "bootstrap" | "resume" | "buildSnapshot" | "deletePhysical"> = "create",
+  operation: Exclude<
+    Job["operation"],
+    "bootstrap" | "resume" | "buildSnapshot" | "deletePhysical" | "restore"
+  > = "create",
   bootstrap?: BootstrapDescriptor,
 ) {
   const job: Job = {
@@ -160,6 +163,63 @@ test("physical-only mailbox delete replays an uncommitted result for the same im
     { scope: "physical-only", machineId },
   ]);
   expect(acknowledgements).toEqual(["completed", "completed"]);
+});
+
+test("restore replays its frozen predecessor after a lost completion without authorizing retention cleanup", async () => {
+  const { job, store, api, executor, acknowledgements, state } = fixture();
+  const restore: Job = {
+    ...job,
+    operation: "restore",
+    request: { ...job.request, generation: crypto.randomUUID(), expiresAt: 200_000 },
+    predecessor: { request: job.request, machineId: "a".repeat(64) },
+  };
+  await store.save({
+    ...state(),
+    retention: [{ request: job.request, requestId: job.requestId, deadline: 1 }],
+  });
+  const save = store.save;
+  let loseCompletion = true;
+  store.save = async (next) => {
+    if (loseCompletion && next.receipts.some((receipt) => receipt.outcome === "completed"))
+      throw new Error("completion write lost");
+    await save(next);
+  };
+  const cleanup: string[] = [];
+  executor.deleteStopped = async (request) => {
+    cleanup.push(request.generation);
+  };
+  const copies: string[] = [];
+  executor.restore = async (target, predecessor) => {
+    expect(state().receipts.find((receipt) => receipt.requestId === restore.requestId)?.outcome).toBeUndefined();
+    expect(target).toEqual(restore.request);
+    expect(predecessor.request).toEqual(job.request);
+    copies.push(predecessor.machineId);
+  };
+  executor.startRuntime = async () => {
+    throw new Error("Restore must not install the runtime");
+  };
+  const run = () => tick(store, api, executor, false, () => 100_000);
+  api.poll = async () => ({ job: restore });
+  await expect(run()).rejects.toThrow("completion write lost");
+  expect(cleanup).toEqual([]);
+
+  api.poll = async () => {
+    throw new Error("offline");
+  };
+  await expect(run()).rejects.toThrow("offline");
+  expect(cleanup).toEqual([]);
+  api.poll = async () => ({ job: { ...restore, predecessor: { ...restore.predecessor, machineId: "b".repeat(64) } } });
+  await expect(run()).rejects.toThrow("Changed host job");
+
+  api.poll = async () => ({ job: restore });
+  loseCompletion = false;
+  await run();
+  await run();
+  expect(copies).toEqual([restore.predecessor.machineId, restore.predecessor.machineId]);
+  expect(acknowledgements).toEqual(["completed", "completed"]);
+  api.poll = async () => ({ job: null });
+  await run();
+  expect(cleanup).toEqual([job.request.generation]);
 });
 
 test("a refused physical-only delete leaves the retained generation eligible for resume", async () => {
@@ -544,6 +604,7 @@ test("HTTP registration is single-use and host credentials remain in authorizati
       "content-type": "application/json",
       "x-armada-docker-host-protocol": "1",
       "x-armada-docker-host-delete-physical": "1",
+      "x-armada-docker-host-restore": "1",
     },
     { authorization: `Bearer ${hostToken}`, "content-type": "application/json", "x-armada-docker-host-protocol": "1" },
     { authorization: `Bearer ${hostToken}`, "content-type": "application/json", "x-armada-docker-host-protocol": "1" },

@@ -15,6 +15,7 @@ export type DockerSnapshotBuildDescriptor = DockerSnapshotBinding & {
 export type DockerHostJob = { requestId: string; request: DockerMachineRequest } & (
   | { operation: "create" | "stop" | "delete" }
   | { operation: "deletePhysical"; machineId: string }
+  | { operation: "restore"; predecessor: { request: DockerMachineRequest; machineId: string } }
   | { operation: "bootstrap" | "resume"; bootstrap: BootstrapDescriptor }
   | { operation: "buildSnapshot"; build: DockerSnapshotBuildDescriptor }
 );
@@ -30,27 +31,7 @@ function exact(value: unknown, keys: string[]): asserts value is Record<string, 
 function id(value: unknown): asserts value is string {
   if (typeof value !== "string" || !uuid.test(value)) invalid();
 }
-/** Shared strict mailbox admission, with no network, cryptography or filesystem dependencies. */
-export function parseDockerHostJob(value: unknown): DockerHostJob {
-  if (!value || typeof value !== "object") invalid();
-  const bootstrap = "operation" in value && (value.operation === "bootstrap" || value.operation === "resume");
-  const build = "operation" in value && value.operation === "buildSnapshot";
-  const physical = "operation" in value && value.operation === "deletePhysical";
-  exact(value, [
-    "requestId",
-    "operation",
-    "request",
-    ...(bootstrap ? ["bootstrap"] : []),
-    ...(build ? ["build"] : []),
-    ...(physical ? ["machineId"] : []),
-  ]);
-  id(value.requestId);
-  if (
-    typeof value.operation !== "string" ||
-    !["create", "stop", "delete", "deletePhysical", "bootstrap", "resume", "buildSnapshot"].includes(value.operation)
-  )
-    invalid();
-  const r = value.request;
+function parseMachineRequest(r: unknown) {
   const absolute = r !== null && typeof r === "object" && Object.hasOwn(r, "expiresAt");
   exact(r, [
     "sandboxId",
@@ -84,6 +65,52 @@ export function parseDockerHostJob(value: unknown): DockerHostJob {
     const end = r.expiresAt;
     if (typeof end !== "number" || !Number.isSafeInteger(end) || end <= 0 || end > 8_640_000_000_000_000) invalid();
     request.expiresAt = end;
+  }
+  return request;
+}
+/** Shared strict mailbox admission, with no network, cryptography or filesystem dependencies. */
+export function parseDockerHostJob(value: unknown): DockerHostJob {
+  if (!value || typeof value !== "object") invalid();
+  const bootstrap = "operation" in value && (value.operation === "bootstrap" || value.operation === "resume");
+  const build = "operation" in value && value.operation === "buildSnapshot";
+  const physical = "operation" in value && value.operation === "deletePhysical";
+  const restore = "operation" in value && value.operation === "restore";
+  exact(value, [
+    "requestId",
+    "operation",
+    "request",
+    ...(bootstrap ? ["bootstrap"] : []),
+    ...(build ? ["build"] : []),
+    ...(physical ? ["machineId"] : []),
+    ...(restore ? ["predecessor"] : []),
+  ]);
+  id(value.requestId);
+  if (
+    typeof value.operation !== "string" ||
+    !["create", "stop", "delete", "deletePhysical", "restore", "bootstrap", "resume", "buildSnapshot"].includes(
+      value.operation,
+    )
+  )
+    invalid();
+  const request = parseMachineRequest(value.request);
+  if (restore) {
+    const predecessor = value.predecessor;
+    exact(predecessor, ["request", "machineId"]);
+    const source = parseMachineRequest(predecessor.request);
+    if (
+      request.expiresAt === undefined ||
+      request.sandboxId !== source.sandboxId ||
+      request.generation === source.generation ||
+      typeof predecessor.machineId !== "string" ||
+      !/^[a-f0-9]{64}$/.test(predecessor.machineId)
+    )
+      invalid();
+    return {
+      requestId: value.requestId,
+      operation: "restore",
+      request,
+      predecessor: { request: source, machineId: predecessor.machineId },
+    };
   }
   if (physical) {
     if (typeof value.machineId !== "string" || !/^[a-f0-9]{64}$/.test(value.machineId)) invalid();
@@ -153,5 +180,6 @@ export function canonicalDockerHostJob(value: unknown): string {
     ...(job.operation === "bootstrap" || job.operation === "resume" ? { bootstrap: job.bootstrap } : {}),
     ...(job.operation === "buildSnapshot" ? { build: job.build } : {}),
     ...(job.operation === "deletePhysical" ? { machineId: job.machineId } : {}),
+    ...(job.operation === "restore" ? { predecessor: job.predecessor } : {}),
   });
 }
