@@ -349,7 +349,7 @@
     "packages/mcp-server/test/turn-pricing.test.ts": 2.396,
     "packages/mcp-server/test/usage-pricing-admission.test.ts": 2.432,
     "packages/mcp-server/test/usage-recordings.test.ts": 0.018,
-    "packages/mcp-server/test/work-preservation.test.ts": 7.12,
+    "packages/mcp-server/test/work-preservation.test.ts": 3.551,
     "packages/provider-boat/test/errors.test.ts": 0.078,
     "packages/provider-boat/test/events.test.ts": 0.062,
     "packages/provider-boat/test/integration.test.ts": 0.093,

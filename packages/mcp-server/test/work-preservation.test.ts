@@ -1,20 +1,46 @@
-import { expect, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { decryptSecret, ProviderError } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
 import { preserveBeforeStop } from "../src/work-preservation.ts";
 import { encryptedRecoveryExec } from "./fixtures/recovery-exec.ts";
-import { rowOnlyDatabase } from "./row-only-database.ts";
-import { bunLikeSql, ENCRYPTION_KEY, fakeBoat } from "./support.ts";
+import { migratedDatabase } from "./migrated-database.ts";
+import { bunLikeSql, ENCRYPTION_KEY, fakeBoat, seedDatabase } from "./support.ts";
 
-const sharedDatabase = rowOnlyDatabase();
+let fixture: Awaited<ReturnType<typeof seedDatabase>> | undefined;
+
+beforeAll(async () => {
+  const db = await migratedDatabase();
+  try {
+    await db.exec("set search_path=public");
+    fixture = await seedDatabase(db);
+  } catch (error) {
+    await db.close();
+    throw error;
+  }
+});
+
+afterEach(async () => {
+  await fixture?.db.exec("delete from sandboxes");
+});
+
+afterAll(async () => {
+  const db = fixture?.db;
+  fixture = undefined;
+  await db?.close();
+});
+
+function sharedDatabase() {
+  if (!fixture) throw new Error("Work preservation fixture is not open");
+  return fixture;
+}
 
 // Primary owner for encrypted persistence and recovery authorization. Collector behavior
 // (including actual Git reconstruction) belongs to core's work-preservation test.
 test("recovery receipts retain encrypted versions and only current interior owners/admins can retrieve them", async () => {
+  const { db, people } = sharedDatabase();
   const oldKey = process.env.ARMADA_ENCRYPTION_KEY;
   process.env.ARMADA_ENCRYPTION_KEY = ENCRYPTION_KEY;
-  const { db, people } = await sharedDatabase();
   try {
     const sql = bunLikeSql(db);
     const id = crypto.randomUUID();
@@ -113,7 +139,6 @@ test("recovery receipts retain encrypted versions and only current interior owne
       await db.exec("reset role");
     }
   } finally {
-    await db.exec("reset role; reset all; set search_path=public");
     if (oldKey === undefined) delete process.env.ARMADA_ENCRYPTION_KEY;
     else process.env.ARMADA_ENCRYPTION_KEY = oldKey;
   }
@@ -124,7 +149,7 @@ test("recovery receipts retain encrypted versions and only current interior owne
 test.each(["observe", "quiesce", "capture", "known_capture"])(
   "the stop deadline fences late %s work",
   async (stage) => {
-    const { db, people } = await sharedDatabase();
+    const { db, people } = sharedDatabase();
     const originalTimeout = globalThis.setTimeout;
     try {
       const sql = bunLikeSql(db);
@@ -231,7 +256,6 @@ test.each(["observe", "quiesce", "capture", "known_capture"])(
       expect((await db.query("select id from sandbox_work_recovery where sandbox_id=$1", [id])).rows).toHaveLength(0);
     } finally {
       globalThis.setTimeout = originalTimeout;
-      await db.exec("reset role; reset all; set search_path=public");
     }
   },
 );
@@ -245,32 +269,28 @@ async function withPreservationRow(
     provider: ReturnType<typeof fakeBoat>["provider"];
   }) => Promise<void>,
 ) {
-  const { db, people } = await sharedDatabase();
-  try {
-    const id = crypto.randomUUID();
-    const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0];
-    if (!golden) throw new Error("Missing golden");
-    await db.query(
-      `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status)
-      values($1,$2,$3,$4,'boat','bx_policy','claude','running')`,
-      [id, golden.id, people.org, people.owner],
-    );
-    const boat = fakeBoat();
-    const provider = {
-      ...boat.provider,
-      get: async () => ({
-        id: "bx_policy",
-        name: "policy",
-        state: "ready" as const,
-        providerState: "idle",
-        labels: {},
-      }),
-      quiesce: async () => {},
-    };
-    await work({ db, id, boat, provider, sql: bunLikeSql(db) });
-  } finally {
-    await db.exec("reset role; reset all; set search_path=public");
-  }
+  const { db, people } = sharedDatabase();
+  const id = crypto.randomUUID();
+  const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0];
+  if (!golden) throw new Error("Missing golden");
+  await db.query(
+    `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status)
+    values($1,$2,$3,$4,'boat','bx_policy','claude','running')`,
+    [id, golden.id, people.org, people.owner],
+  );
+  const boat = fakeBoat();
+  const provider = {
+    ...boat.provider,
+    get: async () => ({
+      id: "bx_policy",
+      name: "policy",
+      state: "ready" as const,
+      providerState: "idle",
+      labels: {},
+    }),
+    quiesce: async () => {},
+  };
+  await work({ db, id, boat, provider, sql: bunLikeSql(db) });
 }
 
 test("confirmed work at risk records a closed stage/reason and owner action", async () => {
@@ -476,7 +496,7 @@ test("an unavailable receipt lookup defers stop without provider work", async ()
 
 // The real persistence boundary owns this no-archive contract, including restart.
 test("application-secret taint permanently disables collection and recovery, purging older archives", async () => {
-  const { db, people } = await sharedDatabase();
+  const { db, people } = sharedDatabase();
 
   const id = crypto.randomUUID();
   const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0];
