@@ -260,6 +260,7 @@ for (const outcome of [
   "external-stop",
   "invalid-stop-time",
   "snapshot-pending",
+  "snapshot-owner-removed",
   "expired",
   "expired-external-stop",
   "interrupt-pending",
@@ -269,7 +270,7 @@ for (const outcome of [
   "manual-stop",
 ] as const) {
   const waitingForRetention = outcome === "invalid-stop-time" || outcome === "snapshot-pending";
-  const externalStop = outcome === "external-stop" || waitingForRetention;
+  const externalStop = outcome === "external-stop" || waitingForRetention || outcome === "snapshot-owner-removed";
   const validStoppedAt = "2026-11-11T00:00:00.000Z";
   test(`lifecycle reconciles Boat ${outcome} without deleting retained data`, async () => {
     const { db, people } = await sharedDatabase();
@@ -323,6 +324,8 @@ for (const outcome of [
             ok: true,
             conversations: outcome === "interrupt-pending" ? [{ id: "conv-pending", running: true }] : [],
           });
+        if (outcome === "snapshot-owner-removed")
+          await db.query("delete from members where org_id=$1 and user_id=$2", [people.org, people.owner]);
         return Response.json({
           ok: true,
           sandbox:
@@ -330,13 +333,48 @@ for (const outcome of [
               ? retainedSandbox({
                   stoppedAt: outcome === "invalid-stop-time" ? "not-a-date" : validStoppedAt,
                   snapshotVerifiedAt: validStoppedAt,
-                  ...(outcome === "snapshot-pending" ? { lastSnapshotStatus: "in_progress" } : {}),
+                  ...(outcome === "snapshot-pending" || outcome === "snapshot-owner-removed"
+                    ? { lastSnapshotStatus: "in_progress" }
+                    : {}),
                 })
               : sandbox({ state: "running" }),
         });
       }) as typeof fetch,
     });
-    await createSandboxLifecycle(sql, async () => provider).reconcileOne();
+    const worker = createSandboxLifecycle(sql, async () => provider);
+    if (outcome === "snapshot-pending") {
+      const fault = new Error("injected pending-retention settlement failure");
+      const before = (
+        await db.query("select status, stop_requested_at, stop_generation from sandboxes where id=$1", [id])
+      ).rows;
+      for (const boundary of ["transition", "retry update", "commit"]) {
+        const faultingSql: Sql = {
+          query: sql.query,
+          transaction: (work) =>
+            db.transaction(async (tx) => {
+              await work({
+                query: (statement, args) => {
+                  if (
+                    (boundary === "transition" && statement.includes("public.sandbox_transition(")) ||
+                    (boundary === "retry update" && statement.includes("last_observed_at=case"))
+                  )
+                    throw fault;
+                  return tx.query(statement, args);
+                },
+              });
+              if (boundary === "commit") throw fault;
+              throw Error("fault did not run at the expected boundary");
+            }),
+        };
+        await expect(createSandboxLifecycle(faultingSql, async () => provider).reconcileOne()).rejects.toBe(fault);
+        expect(
+          (await db.query("select status, stop_requested_at, stop_generation from sandboxes where id=$1", [id])).rows,
+        ).toEqual(before);
+        expect((await db.query("select id from sandbox_transitions where sandbox_id=$1", [id])).rows).toEqual([]);
+        await db.query("update sandboxes set reconcile_lease_until=now()-interval '1 second' where id=$1", [id]);
+      }
+    }
+    await worker.reconcileOne();
     const row = (
       await db.query<{
         status: string;
@@ -358,7 +396,7 @@ for (const outcome of [
         outcome === "expired-external-stop" ||
         outcome === "manual-stop"
         ? "stopped"
-        : outcome === "stale"
+        : outcome === "stale" || outcome === "snapshot-owner-removed"
           ? "running"
           : "stopping",
     );
@@ -370,8 +408,21 @@ for (const outcome of [
     expect(row.effective_ttl_seconds).toBe(60);
     expect(row.requested_ttl_seconds).toBe(60);
     if (outcome === "external-stop") expect(row.provider_stop_retained).toBe(true);
+    if (outcome === "snapshot-owner-removed")
+      expect((await db.query("select id from sandbox_transitions where sandbox_id=$1", [id])).rows).toEqual([]);
     if (waitingForRetention) {
       expect(row.stop_time_finite).toBeNull();
+      expect(
+        (
+          await db.query(
+            `select t.actor,t.code,t.generation=s.lifecycle_generation as same_generation,
+                    s.stop_requested_at is not null and s.stop_generation=1 as requested_once
+               from sandbox_transitions t join sandboxes s on s.id=t.sandbox_id
+              where t.sandbox_id=$1 and t.from_status='running' and t.to_status='stopping'`,
+            [id],
+          )
+        ).rows,
+      ).toEqual([{ actor: "reconciler", code: "stop_requested", same_generation: true, requested_once: true }]);
       expect(row.lifecycle_error).toContain(
         outcome === "snapshot-pending" ? "snapshot is pending" : "no verified retained snapshot",
       );
