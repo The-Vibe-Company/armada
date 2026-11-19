@@ -4,7 +4,7 @@ import { HARNESSES, isFinalPromptStatus } from "@armada/core";
 import { HarnessError } from "./errors.ts";
 import { checkpointIdentity, checkpointIdentityKey } from "./identity.ts";
 import type { CheckpointIdentity, StoredPrompt } from "./protocol.ts";
-import { createRedactor, shortSecretTextPattern } from "./state.ts";
+import { createRedactor, createShortSecretTextRedactor } from "./state.ts";
 
 /** Cut a preview without splitting a surrogate pair into a lone UTF-16 code unit. */
 function boundedPreview(text: string, limit: number): string {
@@ -17,14 +17,14 @@ export class Journal {
   readonly redact: (text: string) => string;
   private dynamicRedactor = createRedactor([]);
   private applicationSecrets = new Set<string>();
-  private shortApplicationSecrets: RegExp | undefined;
+  private redactShortApplicationText: ((text: string) => string) | undefined;
   registerSecrets(values: readonly string[]) {
     this.dynamicRedactor.register(values);
   }
   registerApplicationSecrets(values: readonly string[]) {
     this.registerSecrets(values);
     for (const value of values) if (value.length > 0 && value.length < 8) this.applicationSecrets.add(value);
-    this.shortApplicationSecrets = shortSecretTextPattern([...this.applicationSecrets]);
+    this.redactShortApplicationText = createShortSecretTextRedactor([...this.applicationSecrets]);
   }
   constructor(path: string, redact: (text: string) => string) {
     this.redact = (text) => this.dynamicRedactor(redact(text));
@@ -51,14 +51,15 @@ export class Journal {
       control = { ...event, text: `${boundedPreview(this.redact(event.text), 16000)}… [truncated]` };
     let body = this.redact(JSON.stringify(control));
     if (
-      this.shortApplicationSecrets &&
+      this.redactShortApplicationText &&
       (event.kind === "message" || (event.kind === "other" && event.type === "harness_stderr"))
     ) {
-      const masked = JSON.parse(body) as AgentEvent;
-      if (masked.kind === "message") masked.text = masked.text.replace(this.shortApplicationSecrets, "[REDACTED]");
-      if (masked.kind === "other" && masked.type === "harness_stderr") {
-        const data = masked.data as { text?: unknown } | null;
-        if (typeof data?.text === "string") data.text = data.text.replace(this.shortApplicationSecrets, "[REDACTED]");
+      const masked = JSON.parse(body) as { text?: unknown; data?: { text?: unknown } | null };
+      if (event.kind === "message" && typeof masked.text === "string")
+        masked.text = this.redactShortApplicationText(masked.text);
+      if (event.kind === "other") {
+        const data = masked.data;
+        if (typeof data?.text === "string") data.text = this.redactShortApplicationText(data.text);
       }
       body = JSON.stringify(masked);
     }

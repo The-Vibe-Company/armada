@@ -9,19 +9,28 @@ export interface Redactor {
   (text: string): string;
   register(values: readonly string[]): void;
 }
-function secretForms(value: string): string[] {
+function secretForms(value: string) {
   return [value, JSON.stringify(value).slice(1, -1), encodeURIComponent(value)];
 }
 
-function escapePattern(value: string): string {
+function escapePattern(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-export function shortSecretTextPattern(values: readonly string[]): RegExp | undefined {
+export function createShortSecretTextRedactor(values: readonly string[]) {
   const forms = new Set(values.filter((value) => value.length > 0 && value.length < 8).flatMap(secretForms));
   if (forms.size === 0) return undefined;
   const alternatives = [...forms].sort((a, b) => b.length - a.length).map(escapePattern);
-  return new RegExp(["\\[REDACTED\\]", ...alternatives].join("|"), "g");
+  const pattern = new RegExp(`(?=(${["\\[REDACTED\\]", ...alternatives].join("|")}))`, "g");
+  return (text: string) => {
+    let output = "";
+    let end = 0;
+    for (const match of text.matchAll(pattern)) {
+      if (match.index >= end) output += `${text.slice(end, match.index)}[REDACTED]`;
+      end = Math.max(end, match.index + match[1]!.length);
+    }
+    return output + text.slice(end);
+  };
 }
 
 export function createRedactor(values: readonly string[]): Redactor {

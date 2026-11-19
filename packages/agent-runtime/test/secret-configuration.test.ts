@@ -12,62 +12,63 @@ const command = { version: 1 as const, requestId: "configure_fixture", sandboxId
 test.each([
   { secret: 'opaque_fixture_\n"value', prefix: "", suffix: "" },
   { secret: "ess", prefix: "prefix", suffix: "suffix" },
-])(
-  "marked launch values reach the harness and are masked in event text ($prefix)",
-  async ({ secret, prefix, suffix }) => {
-    const journal = new Journal(":memory:", (text) => text);
-    const variables = { APP_TOKEN: secret, APP_REGION: "fixture_region" };
-    let environment: Record<string, string> = {};
-    const driver: Driver = {
-      configureReadableVariables(values) {
-        environment = values;
+  { secret: "stderr", prefix: "prefix", suffix: "suffix" },
+  { secret: "abc", prefix: "prefix", suffix: "suffix", overlap: "bc12345", extension: "12345" },
+])("masks marked values in event text ($secret)", async ({ secret, prefix, suffix, overlap, extension = "" }) => {
+  const journal = new Journal(":memory:", (text) => text);
+  const variables = { APP_TOKEN: secret, APP_REGION: "fixture_region", ...(overlap ? { APP_OTHER: overlap } : {}) };
+  let environment: Record<string, string> = {};
+  const driver: Driver = {
+    configureReadableVariables(values) {
+      environment = values;
+    },
+    start({ emit }) {
+      const text = `${prefix}${environment.APP_TOKEN}${extension}${suffix} ${environment.APP_REGION}`;
+      emit({ kind: "other", type: "harness_stderr", data: { text } });
+      emit({ kind: "message", text, partial: false, tools: [], messageId: "message_fixture" });
+      return { done: Promise.resolve("finished"), async interrupt() {}, async steer() {} };
+    },
+    async close() {},
+  };
+  const runner = new Runner(journal, grant, { codex: driver });
+  try {
+    const ack = await runner.handleDialout({
+      ...command,
+      op: "configureReadableVariables",
+      harness: "codex",
+      variables,
+      secretKeys: overlap ? ["APP_TOKEN", "APP_OTHER"] : ["APP_TOKEN"],
+    });
+    expect(ack.status).toBe(200);
+    expect(await ack.json()).toEqual({ version: 1, requestId: command.requestId, result: { acknowledged: true } });
+    expect(environment).toEqual(variables);
+    const prompt = await runner.handleDialout({
+      ...command,
+      requestId: "prompt_fixture",
+      op: "prompt",
+      input: { sandboxId: grant.sandboxId, harness: "codex", text: "emit diagnostic" },
+    });
+    expect(prompt.status).toBe(200);
+    const events = await runner.handleDialout({ ...command, requestId: "events_fixture", op: "events" });
+    const body = await events.json();
+    const text = `${prefix}[REDACTED]${suffix} fixture_region`;
+    expect(body).toMatchObject({
+      result: {
+        events: expect.arrayContaining([
+          expect.objectContaining({ kind: "other", data: { text } }),
+          expect.objectContaining({ kind: "message", text, messageId: "message_fixture" }),
+        ]),
       },
-      start({ emit }) {
-        const text = `${prefix}${environment.APP_TOKEN}${suffix} ${environment.APP_REGION}`;
-        emit({ kind: "other", type: "harness_stderr", data: { text } });
-        emit({ kind: "message", text, partial: false, tools: [], messageId: "message_fixture" });
-        return { done: Promise.resolve("finished"), async interrupt() {}, async steer() {} };
-      },
-      async close() {},
-    };
-    const runner = new Runner(journal, grant, { codex: driver });
-    try {
-      const ack = await runner.handleDialout({
-        ...command,
-        op: "configureReadableVariables",
-        harness: "codex",
-        variables,
-        secretKeys: ["APP_TOKEN"],
-      });
-      expect(ack.status).toBe(200);
-      expect(await ack.json()).toEqual({ version: 1, requestId: command.requestId, result: { acknowledged: true } });
-      expect(environment).toEqual(variables);
-      const prompt = await runner.handleDialout({
-        ...command,
-        requestId: "prompt_fixture",
-        op: "prompt",
-        input: { sandboxId: grant.sandboxId, harness: "codex", text: "emit diagnostic" },
-      });
-      expect(prompt.status).toBe(200);
-      const events = await runner.handleDialout({ ...command, requestId: "events_fixture", op: "events" });
-      const body = await events.json();
-      const text = `${prefix}[REDACTED]${suffix} fixture_region`;
-      expect(body).toMatchObject({
-        result: {
-          events: expect.arrayContaining([
-            expect.objectContaining({ type: "harness_stderr", data: { text } }),
-            expect.objectContaining({ kind: "message", text, messageId: "message_fixture" }),
-          ]),
-        },
-      });
-      expect(JSON.stringify(body)).not.toContain(JSON.stringify(`${prefix}${secret}${suffix}`).slice(1, -1));
-      expect(journal.db.query("select 1 from requests where id=?").get(command.requestId)).toBeNull();
-    } finally {
-      await runner.close();
-      journal.close();
-    }
-  },
-);
+    });
+    expect(JSON.stringify(journal.events())).not.toContain(
+      JSON.stringify(`${prefix}${secret}${extension}${suffix}`).slice(1, -1),
+    );
+    expect(journal.db.query("select 1 from requests where id=?").get(command.requestId)).toBeNull();
+  } finally {
+    await runner.close();
+    journal.close();
+  }
+});
 
 test("invalid secret keys do not configure the harness or consume its configuration slot", async () => {
   const journal = new Journal(":memory:", (text) => text);
