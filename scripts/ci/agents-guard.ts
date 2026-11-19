@@ -8,9 +8,22 @@ const budgets = new Map([
 ]);
 const generatedNextRules =
   /^<!-- BEGIN:nextjs-agent-rules -->\r?\n[\s\S]*?^<!-- END:nextjs-agent-rules -->(?:\r?\n|$)/m;
-const fileExtension =
-  /\.(?:\{(?:[\w-]+,)*)?(?:c|cjs|css|html|ico|jpe?g|js|jsonc?|jsx|lock|md|mjs|plist|png|py|sh|snap|sql|svg|swift|toml|tsx?|txt|woff2|xcconfig|ya?ml)(?=$|[,}])/i;
+const extensions =
+  "c cjs css html ico jpeg jpg js json jsonc jsx lock md mjs plist png py sh snap sql svg swift toml ts tsx txt woff2 xcconfig yaml yml".split(
+    " ",
+  );
+const fileExtension = new RegExp(`\\.(?:${extensions.join("|")})(?=$|[,}])`, "i");
 const pathToken = /^[\p{L}\p{N}_.*{(-][\p{L}\p{M}\p{N}_./*{},@()+-]*$/u;
+
+function hasKnownExtension(token: string) {
+  if (fileExtension.test(token)) return true;
+  const dot = token.lastIndexOf(".");
+  if (dot === -1) return false;
+  const suffix = token.slice(dot);
+  if (!/[*{]/.test(suffix)) return false;
+  const glob = new Bun.Glob(suffix.toLowerCase());
+  return extensions.some((extension) => glob.match(`.${extension}`));
+}
 
 export function checkAgentsFiles(files: ReadonlyMap<string, string>, exists: (path: string) => boolean) {
   const errors: string[] = [];
@@ -27,7 +40,7 @@ export function checkAgentsFiles(files: ReadonlyMap<string, string>, exists: (pa
     }
 
     for (const [, , token] of rules.matchAll(/(?<!`)(`+)([^`\n]+)\1(?!`)/g)) {
-      if (!token || !pathToken.test(token) || (!token.includes("/") && !fileExtension.test(token))) continue;
+      if (!token || !pathToken.test(token) || (!token.includes("/") && !hasKnownExtension(token))) continue;
       if (!exists(token.replace(/^\.\//, "").replace(/\/$/, ""))) {
         errors.push(`${path}: missing repository path: ${token}`);
       }
