@@ -1056,7 +1056,7 @@ test("starting compute waits for readiness before a command", async () => {
 });
 
 test("idle capture observations show command admission without a wake", async () => {
-  const log = spyOn(console, "info").mockImplementation(() => {});
+  const log = spyOn(console, "info");
   try {
     const boat = fakeBoat(
       { body: { ok: true, sandbox: sandbox({ state: "idle" }) } },
@@ -1187,7 +1187,7 @@ test("cleared Boat /run receipt restarts SSH hydration instead of trusting a pre
 test.each(["provisioning", "archived", "suspended", "PRIVATE_STATE"])(
   "capture observations identify %s without waking or stopping compute",
   async (state) => {
-    const log = spyOn(console, "info").mockImplementation(() => {});
+    const log = spyOn(console, "info");
     try {
       const reads = state === "archived" ? 1 : 5;
       const boat = fakeBoat(
@@ -1247,7 +1247,7 @@ test("runtime activation resumes compute with explicit lifetime and no account e
 });
 
 test("terminal capture refusal identifies its stop caller without forwarding context to Boat", async () => {
-  const log = spyOn(console, "info").mockImplementation(() => {});
+  const log = spyOn(console, "info");
   try {
     const boat = fakeBoat({ body: { sandbox: sandbox({ state: "archived" }) } });
     await expect(
