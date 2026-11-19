@@ -144,6 +144,7 @@ export interface SandboxStore {
     provider: SandboxProviderId;
     providerSandboxId: string;
     goldenId: string;
+    sourceSnapshotId?: string;
     orgId: string;
     ownerId: string;
     harness: Harness;
@@ -225,10 +226,16 @@ export function createSqlSandboxStore(sql: Sql, options: { turnModels?: true } =
     },
     async insert(input): Promise<SandboxRecord> {
       const result = await sql.query<SandboxRow>(
-        `insert into public.sandboxes (id, provider_sandbox_id, golden_id, org_id, owner_id, harness, status, model,
+        `with inserted as (
+         insert into public.sandboxes (id, provider_sandbox_id, golden_id, org_id, owner_id, harness, status, model,
            reasoning_effort, provider, visibility, repository_dir, requested_ttl_seconds, effective_ttl_seconds, expires_at, activity_lease_id, activity_until, credential_id, credential_version, machine_size, resource_project, boat_runtime, runtime_transport, external_ref, stop_when_work_merged, pull_request_source)
          values ($1, $2, $3, $4, $5, $6::public.harness, $7::public.sandbox_status, $8, $9, $10::public.sandbox_provider, $11::public.visibility, $12::text, $13::integer, $14::integer, coalesce($20::timestamptz, now() + $14::integer * interval '1 second'), $15::uuid, case when $15::uuid is not null then now()+interval '2 minutes' else null end, $16::uuid, $17::integer, $18::text::jsonb, $19::text::jsonb, $21::boolean,$22::text,$23::text,$24::boolean,$25::text::jsonb)
-         returning ${COLUMNS}`,
+         returning ${COLUMNS}
+        ), snapshot_reference as (
+          insert into public.sandbox_source_snapshots (sandbox_id,snapshot_id)
+          select id,$26::text from inserted where $26::text is not null
+        )
+        select * from inserted`,
         [
           input.id,
           input.providerSandboxId,
@@ -255,6 +262,7 @@ export function createSqlSandboxStore(sql: Sql, options: { turnModels?: true } =
           input.externalRef ?? null,
           input.stopWhenWorkMerged ?? true,
           JSON.stringify(input.pullRequestSource ?? null),
+          input.sourceSnapshotId ?? null,
         ],
       );
       const row = result.rows[0];
