@@ -278,7 +278,7 @@ export async function admitCheckpointedIdleStop(tx: Sql, sandboxId: string, gene
     fromStates: ["ready", "running"],
     toState: "stopping",
     actor: "idle",
-    code: checkpoint.merge_stop ? "work_merged" : "idle_paused",
+    code: checkpoint.merge_stop ? "runtime_checkpoint_work_merged" : "runtime_checkpoint_idle_paused",
     effects: [],
   });
 }

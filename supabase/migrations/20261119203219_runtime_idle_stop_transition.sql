@@ -27,7 +27,9 @@ declare
   docker_cleanup boolean;
   self_finish boolean := (p_actor = 'finish' and p_code = 'agent_finished' and p_to_state = 'stopping') is true;
   checkpointed_idle boolean :=
-    (p_actor = 'idle' and p_code in ('idle_paused', 'work_merged') and p_to_state = 'stopping') is true;
+    (p_actor = 'idle'
+      and p_code in ('runtime_checkpoint_idle_paused', 'runtime_checkpoint_work_merged')
+      and p_to_state = 'stopping') is true;
 begin
   select s.* into sandbox from public.sandboxes s where s.id = p_id for update;
   if not found or sandbox.lifecycle_generation is distinct from p_expected_generation
@@ -190,6 +192,8 @@ begin
         when docker_refusal then null
         when p_code = 'docker_idle_paused' then 'idle_paused'
         when p_code = 'docker_work_merged' then 'work_merged'
+        when checkpointed_idle then case when p_code = 'runtime_checkpoint_work_merged'
+          then 'work_merged' else 'idle_paused' end
         when p_actor in ('reconciler', 'runtime_observation') then p_status_reason else case p_to_state
         when 'starting' then null
         when 'stopping' then case

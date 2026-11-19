@@ -857,7 +857,7 @@ test.each(["current", "superseded", "rolled back"] as const)(
           from_status: "ready",
           to_status: "stopping",
           actor: "idle",
-          code: "idle_paused",
+          code: "runtime_checkpoint_idle_paused",
           generation: before.lifecycle_generation,
         },
       ]);
