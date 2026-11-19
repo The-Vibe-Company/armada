@@ -10,7 +10,7 @@ import {
   ROUTINE_REASON_HELP,
   resolveMachineSize,
 } from "@armada/core";
-import { createInboundTrigger } from "@armada/core/contract";
+import { createInboundTrigger, type LaunchEnvelope } from "@armada/core/contract";
 import { largeSandboxExpiry } from "./fixture-expiry";
 
 /**
@@ -1425,7 +1425,7 @@ function launchRoute(body: Row, userId: string | null): Response {
       visibility: "private",
     });
     state.sandboxes.unshift(row);
-    return json({ sandbox: { id: row.id, provider: "docker" } });
+    return fixtureLaunchResponse(body, row, null);
   }
   const source = liveGoldens(userId).find(
     (row) => row.name === body.golden && row.provider === body.provider && row.org_id === body.org,
@@ -1478,15 +1478,33 @@ function launchRoute(body: Row, userId: string | null): Response {
   row.provider = source.provider;
   if ("size_policy" in source) row.machine_size = machineSize;
   state.sandboxes.unshift(row);
+  return fixtureLaunchResponse(
+    body,
+    row,
+    { id: String(source.id), name: String(source.name) },
+    sized ? machineSize : undefined,
+  );
+}
+
+function fixtureLaunchResponse(body: Row, row: Row, golden: LaunchEnvelope["golden"], machineSize?: unknown) {
   return json({
     sandbox: {
-      id: row.id,
-      boatId: row.boat_id,
-      repositoryDir: row.repository_dir,
-      // An older server answers no `machineSize` key at all.
-      ...(sized ? { machineSize } : {}),
+      id: String(row.id),
+      provider: String(row.provider),
+      providerSandboxId: String(row.provider_sandbox_id),
+      status: String(row.status),
+      repositoryDir: row.repository_dir ?? null,
+      ...(machineSize === undefined ? {} : { machineSize }),
     },
-  });
+    golden,
+    promptId: null,
+    conversationId: null,
+    ttlSeconds: Number(body.ttlSeconds ?? 14_400),
+    expiresAt: null,
+    github: { status: "unavailable" },
+    helper: null,
+    runtime: null,
+  } satisfies LaunchEnvelope);
 }
 
 function vaultItem(
