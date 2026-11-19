@@ -39,7 +39,7 @@ test("coordinator cleanup is staging-only, org-scoped and dry-run unless explici
     expect(mutations).toBe(0);
     expect(counts).toContainEqual({ step: "historical_smoke_plan", dryRun: true, candidates: 1, batchLimit: 32 });
     expect(await cleanupStagingSmoke(env, ["--delete"], io)).toBe(true);
-    expect(mutations).toBe(2);
+    expect(mutations).toBe(1);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

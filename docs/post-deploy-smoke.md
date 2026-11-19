@@ -195,7 +195,7 @@ Every step receipt from a lane carries its `case` index and `lane`, so
 interleaved output still gives one attributable failure report per case. Each
 lane keeps its own cleanup reserve: one lane entering cleanup never extends or
 shortens another lane's deadline. The run waits for every lane, including its
-cleanup, before the journal cleanup waves and passes only if every lane passes.
+cleanup, before journal deletion and passes only if every lane passes.
 The scoped-access snapshot diff ignores sandboxes this same run launched through
 the owner API in other lanes; any other new sandbox remains unattributed and
 fails the probe. Verified children are stopped first. Only a row nothing else
@@ -301,8 +301,7 @@ lifecycle capture overwriting the stop result cannot silently pass.
 Budget: two allocations and two trivial model turns per selected pair, instead
 of one. Expect roughly 4–10 minutes per pair (provider/model dependent); the
 functional probe phase has a 35-minute work budget plus five minutes of local
-cleanup. Historical/final receipt reconciliation has separate bounded windows;
-the staging job's outer cap is 85 minutes (see cleanup transition races below).
+cleanup. Historical and final receipt sweeps bound each DELETE request to two minutes.
 Slow selected pairs can exhaust the work budget and
 fail closed. Cost is twice the baseline sandbox/model usage, plus small recovery
 storage; stopped disks/archives retain the normal retention cost. No dollar
@@ -826,7 +825,7 @@ Synthetic protocol/build proofs are not inference or production acceptance.
 Both staging workflows upload `.smoke/sandboxes.json` as an artifact even when probes fail, restore the latest named artifact across branches/tags, and set
 `ARMADA_SMOKE_JOURNAL` for the compute smoke. Launch receipts are persisted before
 probe validation; cleanup deletes known IDs after all stop/recovery assertions.
-The bounded startup sweep retries at most 32 older receipted IDs in parallel;
+The startup sweep submits one DELETE per older receipt, up to 32 receipts;
 current-run deletion has an independent 64-ID bound. It never lists all stopped
 sandboxes for deletion. The target `smoke_cleanup_summary.remainingRows` is zero;
 deleted audit rows remain but do not grow active dashboard lists.
@@ -860,7 +859,8 @@ verify its deletion while an unrelated stopped sandbox remains unchanged.
    refused before requests.
 4. Set `ARMADA_TOKEN` through the staging secret store, then run
    `bun scripts/cleanup-staging-smoke.ts --delete`. At most 32 explicit IDs are
-   attempted per invocation. Counts are printed; failures return nonzero. Preserve
+   attempted per invocation. Stop active sandboxes before running the sweep.
+   Counts are printed; failures return nonzero. Preserve
    the source manifest and partition into batches of 32. Already-deleted IDs can
    safely be repeated. Never paste tokens into argv or logs.
 5. Compare the staging org's visible sandbox count before/after. Run an ordinary
@@ -873,61 +873,19 @@ one known leftover on the next run; verify unrelated stopped sandboxes survive.
 
 ## Diagnosing and reconciling deletion
 
-`delete_smoke_sandbox` failures now include `phase`, `httpStatus` and a closed,
-non-secret `code`. No error message, provider body, bearer or cookie is printed;
-unrecognized remote codes become `api_failed`. Retry diagnostics use the named
-`delete_smoke_sandbox_retry` step with the same safe fields.
+`delete_smoke_sandbox` reports the sandbox ID and whether cleanup settled. Each
+selected receipt gets one bounded DELETE request per sweep after the functional
+lanes have handled shutdown. The receipt settles on a matching `deleted`
+response or an explicit HTTP 404 `not_found` from the sandbox endpoint.
+Ordinary receipts are processed before delegated child receipts because the
+server requires the parent to be durably deleted first.
 
-A successful stop request may return `stopping`, not physical completion. Cleanup accepts a matching terminal stop receipt or
-observes terminal status before calling the public
-`DELETE /api/v1/sandboxes/<id>?org=<org>` endpoint. The former POST alias is also
-routed to the same server tool; changing verbs alone is not the fix. A Boat
-provider deletion can return pending, which the server reports as `409 conflict`;
-that admission intentionally retains a two-minute activity lease, so immediate
-retries can return `sandbox_not_ready`. Cleanup now reconciles the same idempotent
-delete within a bounded four-minute window, with up to two minutes per HTTP
-request instead of 15 seconds. It never replays stop while waiting or deletes a
-row merely because it disappeared from a fleet list. Authorization/refusal codes
-are reported without retrying indefinitely; failed receipts stay in the journal.
-
-Run 43399781555 discarded all HTTP/error information, so its nine failures cannot
-retrospectively distinguish pending deletion, lease contention, authorization or
-provider failure. The source confirms the asynchronous-state/lease defects above,
-not that every historical refusal had that cause. Coordinator check: restore that
-run's exact receipt artifact, run the next staging smoke, require zero remaining
-rows, and inspect any named failure's status/code before attributing it. No worker
-needs staging access to run the fake-fetch regression tests.
-Functional probes and local cleanup retain their 35+5-minute budgets.
-Historical/final receipt reconciliation has separate bounded windows described
-under cleanup transition races below; waiting for deletion is never unbounded.
-
-### Final delegated cleanup order (#1383)
-
-Cleanup uses two waves over its existing exact-ID receipts: ordinary sandboxes
-(including delegated parents) first, then `smoke-scoped-*` child receipts. Ordering
-is applied before the sweep limit, so a child cannot occupy every bounded slot
-while its parent waits behind it. Sandboxes within a wave still run in parallel.
-
-The server permits owner/admin deletion of an ordinary delegated child only
-**after its ordinary parent is durably deleted**. Both authorization and atomic
-activity admission enforce the same rule. Relation/history rows remain intact;
-legacy orchestrator parents and children remain refused. A merely stopped parent
-is not sufficient because it could resume and issue delegated work again.
-
-Stop settling and transient `sandbox_not_ready`/pending deletion now share the
-local five-minute cleanup reserve across both waves. The later
-[cleanup transition-race handling](#cleanup-transition-races-1785) adds separately
-bounded historical/final reconciliation, not unbounded mutation retries. This replaces the previous four-minute
-per-row cutoff; it adds no new overall grace period. A still-busy provider or
-unsettled lease at the bound remains a named failure with its safe HTTP/code
-and a retained receipt, never a falsely successful cleanup.
-
-Coordinator validation: rerun staging with run 43405042771's two exact receipts,
-verify parent deletion precedes scoped-child deletion and
-`smoke_cleanup_summary.remainingRows` is zero. Confirm unrelated stopped rows
-remain untouched. Offline regression tests cover a late-settling stop/lease,
-bounded parent-first selection, and real-SQL child-before-parent refusal followed
-by successful parent/child deletion under current owner/org authorization.
+HTTP 409 can mean either a refusal to start deletion or an operation still in
+progress. A 409, a lost response, or a mismatched receipt fails cleanup and
+keeps the ID in the journal. Failure output includes the HTTP status and a safe
+error code. Restore the journal on the next run or use the manual sweep for
+known receipts. A 404 settles the logical receipt only. It provides no evidence
+about a provider machine whose allocation never registered a sandbox row.
 
 ### Modal and Docker parity observation (#1532)
 
@@ -1513,29 +1471,6 @@ Transient template-admission failures reconcile only the identical durable
 request key. The safe `parity_template_intent` record permits reconciliation;
 if no allocation identity can be recovered, cleanup is explicitly unconfirmed,
 never a successful absence. No values or raw manifests are printed.
-### Cleanup transition races (#1785)
-
-DELETE remains stop-first: a transition/lease refusal is not an accepted future
-operation. The smoke must observe terminal shutdown, then confirm idempotent
-DELETE for the same receipt ID. Do not remove the lifecycle/authorization
-fences or infer deletion from a timeout, `stopping`, or a pending response.
-
-Receipt cleanup preserves parent-before-delegated-child ordering and grants each
-wave up to ten minutes (the parity lifecycle bound), capped by an explicit caller
-deadline. A slow parent cannot spend the child's whole window. The journal
-wrapper reserves both windows independently of the existing 35-minute work and
-five-minute local cleanup allowances; historical reconciliation has its own
-bounded sweep. Standard release modes are bounded to 20 minutes historical,
-35 work, 5 local cleanup, and 20 final reconciliation. The existing staging job
-still has its 85-minute outer cap; no job or required check was added or changed.
-
-An unknown/admitted stop is observed, not blindly dispatched again. Only an
-explicit busy refusal followed by a ready/running observation permits retrying
-the guarded stop API. Transient reads and the same idempotent DELETE can be
-reconciled after lost acknowledgements. Permanent refusals and exhausted hard
-deadlines still retain receipts and fail cleanup. Successful reconciliation
-never converts a failed functional probe into a pass.
-
 ### Installed skill-content parity
 
 Configure a dedicated existing template revision with at least one exact skill
@@ -1826,7 +1761,7 @@ IDs to a particular launch failure without their original response evidence.
 
 Keep this conservative recording: discarding every failed or reconciling launch
 handle could hide an uncertain provider allocation. Instead, the cleanup boundary
-resolves an explicit API HTTP 404 `not_found` at stop, status or delete. Other
+resolves an explicit API HTTP 404 `not_found` from DELETE. Other
 404 codes (including `unknown_route`), permission refusals and transport failures
 remain unresolved. A failed functional probe still fails the smoke even when
 cleanup succeeds. A 404 is not a provider-allocation reconciliation proof;
