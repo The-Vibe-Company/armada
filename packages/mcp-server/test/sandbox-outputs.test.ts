@@ -161,7 +161,7 @@ test("output dispatch preserves path, method, and range refusals", async () => {
   for (const [range, expected] of [
     ["bytes=-3", "ent"],
     ["bytes=6-", "nt"],
-  ]) {
+  ] as const) {
     const response = await route(new Request(download, { headers: { range } }));
     expect(response?.status).toBe(206);
     expect(await response?.text()).toBe(expected);
