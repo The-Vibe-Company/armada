@@ -96,7 +96,7 @@ Usage:
                                            without one the sandbox waits, ready, for the first prompt. The model
                                            and effort apply to every later turn too. --credential-id UUID selects a model account;
                                            otherwise use your personal or organization default.
-                                           --repo selects the native agent's initial working directory, including when idle.
+                                           --repo selects the agent's initial working directory, including when idle.
                                            Defaults:
                                            claude claude-opus-5-5 medium, codex gpt-6.2-sol medium, opencode armada/deepseek-flash default
   armada list [--status STATUS] [--agent|--harness claude|codex|opencode] [--golden UUID] [--owner UUID|me]
