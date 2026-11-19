@@ -179,12 +179,13 @@ async function fixture() {
     if (runnerError) throw new Error(runnerError);
     return claimed;
   }
-  function advanceToRetry(receiptId: string) {
+  async function advanceToRetry(receiptId: string) {
     now += 60_000;
-    return db.query("update public.jobs set run_after='-infinity' where id=$1 and state='queued' and run_after <= $2", [
-      receiptId,
-      new Date(now),
-    ]);
+    const { rows } = await db.query<{ id: string }>(
+      "update public.jobs set run_after='-infinity' where id=$1 and state='queued' and run_after=$2 returning id",
+      [receiptId, new Date(now)],
+    );
+    expect(rows).toEqual([{ id: receiptId }]);
   }
   return {
     db,
@@ -331,9 +332,6 @@ test("Modal queued authority is rechecked and a lost worker fence cannot publish
     release();
     await worker;
     expect((await f.db.query("select 1 from goldens where name='fenced'")).rows).toEqual([]);
-    f.rotate();
-    await f.advanceToRetry(fenced.jobId);
-    await f.tick();
     expect((await f.jobs.status(f.actor.userId, fenced.jobId)).state).toBe("failed");
     expect(await f.tick()).toBe(false);
     expect(f.allocations()).toBe(1);
@@ -367,8 +365,9 @@ test.each(["unknown", "refusal"])(
     });
     expect(f.deleted).toEqual([]);
     f.rotate();
+    expect(await f.tick()).toBe(false);
     await f.advanceToRetry(job.jobId);
-    await f.tick();
+    expect(await f.tick()).toBe(true);
     expect((await f.jobs.status(f.actor.userId, job.jobId)).state).toBe("recovery_required");
     expect(f.contexts.at(-1)?.modal).toEqual(binding);
     expect(f.deleted).toEqual([]);
