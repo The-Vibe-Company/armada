@@ -787,6 +787,29 @@ test.each(["cleanup", "claim"] as const)(
       const lateId = randomUUID();
       expect((await service.resume(f.actor, f.sandbox.id, lateId)).state).toBe("claiming");
       expect((await service.resume(f.actor, f.sandbox.id, requestId)).state).toBe("pending");
+      expect((await service.resume(f.actor, f.sandbox.id, requestId)).state).toBe("pending");
+      expect(
+        (
+          await db.query(
+            `select t.from_status,t.to_status,t.actor,t.code,s.docker_retention_deadline,
+                    s.lifecycle_generation=c.lifecycle_generation+1 as advanced_once
+             from public.sandbox_transitions t
+             join public.sandboxes s on s.id=t.sandbox_id
+             join public.docker_resume_claims c on c.sandbox_id=s.id and c.request_id=$2
+             where t.sandbox_id=$1 and t.to_status='starting'`,
+            [f.sandbox.id, requestId],
+          )
+        ).rows,
+      ).toEqual([
+        {
+          from_status: "stopped",
+          to_status: "starting",
+          actor: "resume_admission",
+          code: "docker_resume_admitted",
+          docker_retention_deadline: null,
+          advanced_once: true,
+        },
+      ]);
       const { rows } = await database().query(
         `select l.stage,l.at = case l.stage when 'accepted' then c.created_at else c.claimed_at end as matched
            from public.sandbox_launch_stages l
@@ -809,6 +832,88 @@ test.each(["cleanup", "claim"] as const)(
     }
   },
 );
+
+test("resume admission rejects a generation change after claim selection", async () => {
+  const db = database();
+  const f = await fixture();
+  await service.bootstrap(f.actor, f.sandbox.id, f.requestId);
+  await hosts.complete(f.hostToken, f.installationId, { requestId: f.requestId, outcome: "completed" });
+  await db.query("update public.sandboxes set status='stopped',stopped_at=now() where id=$1", [f.sandbox.id]);
+  const requestId = randomUUID();
+  expect((await service.resume(f.actor, f.sandbox.id, requestId)).state).toBe("claiming");
+  await hosts.claimResume(f.hostToken, f.installationId, requestId, true);
+
+  await db.exec(`create function public.advance_resume_generation() returns trigger language plpgsql as $$
+    begin
+      update public.sandboxes set lifecycle_generation=lifecycle_generation+1 where id=new.sandbox_id;
+      return new;
+    end $$;
+    create trigger advance_resume_generation after update on public.docker_resume_claims for each row
+      execute function public.advance_resume_generation();`);
+  try {
+    await denied(service.resume(f.actor, f.sandbox.id, requestId));
+  } finally {
+    await db.exec(
+      "drop trigger advance_resume_generation on public.docker_resume_claims; drop function public.advance_resume_generation();",
+    );
+  }
+  expect(
+    (
+      await db.query(
+        `select s.status, s.lifecycle_generation=c.lifecycle_generation as same_generation,
+           r.lifecycle_generation=c.lifecycle_generation as same_ticket,
+           exists(select 1 from public.sandbox_transitions t where t.sandbox_id=s.id and t.to_status='starting') as journaled,
+           exists(select 1 from public.docker_host_jobs j where j.request_id=c.request_id) as enqueued
+         from public.sandboxes s join public.docker_resume_claims c on c.sandbox_id=s.id and c.request_id=$2
+         join public.runtime_enrolments r on r.sandbox_id=s.id where s.id=$1`,
+        [f.sandbox.id, requestId],
+      )
+    ).rows,
+  ).toEqual([{ status: "stopped", same_generation: true, same_ticket: true, journaled: false, enqueued: false }]);
+  expect((await service.resume(f.actor, f.sandbox.id, requestId)).state).toBe("pending");
+});
+
+test("a failed resume mailbox insert rolls back admission and can replay the acknowledged claim", async () => {
+  const db = database();
+  const f = await fixture();
+  await service.bootstrap(f.actor, f.sandbox.id, f.requestId);
+  await hosts.complete(f.hostToken, f.installationId, { requestId: f.requestId, outcome: "completed" });
+  await db.query(
+    "update public.sandboxes set status='stopped',stopped_at=now(),docker_retention_deadline=expires_at where id=$1",
+    [f.sandbox.id],
+  );
+  const requestId = randomUUID();
+  expect((await service.resume(f.actor, f.sandbox.id, requestId)).state).toBe("claiming");
+  await hosts.claimResume(f.hostToken, f.installationId, requestId, true);
+  await db.exec(`create function public.reject_resume_job() returns trigger language plpgsql as $$
+    begin if new.bound_operation='resume' then raise exception 'resume insert failed'; end if; return new; end $$;
+    create trigger reject_resume_job before insert on public.docker_host_jobs for each row
+      execute function public.reject_resume_job();`);
+  try {
+    await denied(service.resume(f.actor, f.sandbox.id, requestId));
+  } finally {
+    await db.exec(
+      "drop trigger reject_resume_job on public.docker_host_jobs; drop function public.reject_resume_job();",
+    );
+  }
+  expect(
+    (
+      await db.query(
+        `select s.status,s.docker_retention_deadline=s.expires_at as retains_deadline,
+           s.lifecycle_generation=c.lifecycle_generation as same_generation,
+           r.lifecycle_generation=c.lifecycle_generation as same_ticket,
+           exists(select 1 from public.sandbox_transitions t
+             where t.sandbox_id=s.id and t.code='docker_resume_admitted') as journaled
+         from public.sandboxes s join public.docker_resume_claims c on c.sandbox_id=s.id and c.request_id=$2
+         join public.runtime_enrolments r on r.sandbox_id=s.id where s.id=$1`,
+        [f.sandbox.id, requestId],
+      )
+    ).rows,
+  ).toEqual([
+    { status: "stopped", retains_deadline: true, same_generation: true, same_ticket: true, journaled: false },
+  ]);
+  expect((await service.resume(f.actor, f.sandbox.id, requestId)).state).toBe("pending");
+});
 
 test("a failed Docker resume ACK only fails the activation admitted for that request", async () => {
   const f = await fixture();
