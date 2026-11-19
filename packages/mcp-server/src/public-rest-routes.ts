@@ -17,7 +17,6 @@ export const PUBLISHED_REST_ROUTES = [
   "github/refresh",
   "github/runtime-status",
   "sandbox/list",
-  "sandbox/detail",
   "sandbox/status",
   "sandbox/recovery",
   "sandbox/advice",

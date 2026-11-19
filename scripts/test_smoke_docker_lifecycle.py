@@ -123,7 +123,7 @@ class PlacementCleanupTest(unittest.TestCase):
                 return {"item": {"id": "template"}, "revision": {"revision": 1}}
             if path == "templates/launch":
                 return {"state": "succeeded", "id": "actual-child", "promptId": "initial"}
-            if path == "sandbox/detail":
+            if path == "sandbox/status":
                 return {"provider": "docker", "hostId": "host", "prompt": {"promptId": "initial"}}
             if path == "logs/read":
                 return {"events": [{"kind": "prompt", "promptId": "initial", "status": "failed"}]}

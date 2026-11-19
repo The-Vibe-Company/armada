@@ -131,7 +131,6 @@ test("request cancellation also cancels saved-session refresh, preserving option
 
 // API transport owns redaction; server payloads must not become terminal output.
 for (const path of [
-  "sandbox/detail",
   "sandbox/status",
   "sandbox/send",
   "sandbox/exec",

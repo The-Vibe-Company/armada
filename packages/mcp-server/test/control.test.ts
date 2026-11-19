@@ -628,7 +628,7 @@ describe("armada org and armada creds against the control API", () => {
       };
       const read = (user: string) =>
         handleControlRequest(
-          new Request("https://armada.test/api/v1/sandbox/detail", {
+          new Request("https://armada.test/api/v1/sandbox/status", {
             method: "POST",
             headers: {
               authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: user })).replace(/=+$/, "")}.sig`,
@@ -641,8 +641,7 @@ describe("armada org and armada creds against the control API", () => {
       expect(response?.status).toBe(200);
       expect(await response?.json()).toMatchObject({ id, status: "ready" });
       expect(response?.headers.get("server-timing")).toContain("stored_provider;dur=");
-      for (const phase of ["tool_register", "tool_connect", "tool_call", "tool_close"])
-        expect(response?.headers.get("server-timing")).toContain(`${phase};dur=`);
+      expect(response?.headers.get("server-timing")).toContain("tool_call;dur=");
       expect(storedReads).toBe(1);
       expect((await read(ADA))?.status).toBe(404);
       expect(storedReads).toBe(1);

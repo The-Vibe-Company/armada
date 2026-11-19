@@ -30,11 +30,18 @@ export type ToolRegistrar = <In extends ToolInput, Out extends z.ZodRawShape>(
   restOnly?: boolean,
 ) => ToolContract<In, Out> & { invoke: (args: ToolArgs<In>) => Promise<CallToolResult> };
 
+export type ToolBinding = <In extends ToolInput, Out extends z.ZodRawShape>(
+  name: string,
+  config: ToolContract<In, Out>,
+  invoke: (args: ToolArgs<In>) => Promise<CallToolResult>,
+) => void;
+
 export function createToolRegistration(
-  server: McpServer,
+  server: McpServer | undefined,
   context: ToolContext,
   surface: "mcp" | "rest",
   visible: (sandboxId: string) => Promise<SandboxView>,
+  bind?: ToolBinding,
 ) {
   const { caller, data } = context;
   const register = <In extends ToolInput, Out extends z.ZodRawShape>(
@@ -42,7 +49,8 @@ export function createToolRegistration(
     config: ToolContract<In, Out>,
     invoke: (args: ToolArgs<In>) => Promise<CallToolResult>,
   ) => {
-    server.registerTool(
+    bind?.(name, config, invoke);
+    server?.registerTool(
       name,
       {
         title: config.title,

@@ -1,24 +1,22 @@
 import { idlePauseMessage } from "@armada/core";
+import {
+  DEFAULT_WAIT_SECONDS,
+  sandboxIdInput as id,
+  LOGS_OUTPUT,
+  SANDBOX_STATUSES,
+  sandboxOperations,
+} from "@armada/core/contract";
 import { type Provider, ProviderError, type SandboxStatus } from "@armada/core/server";
 import * as z from "zod";
 import type { SandboxView } from "./data.ts";
 import { MAX_LOG_PAGES, readEventPages } from "./event-pagination.ts";
 import { publicLogEvents } from "./model-usage.ts";
-import {
-  sandboxIdInput as id,
-  LOGS_OUTPUT,
-  SANDBOX_STATUSES,
-  sandboxListInput,
-  sandboxListMetadata,
-  statusOutput,
-} from "./sandbox-tool-schemas.ts";
 import { ToolError } from "./tool-error.ts";
 import type { ToolRegistrar } from "./tool-registration.ts";
 import type { ToolContext } from "./tools.ts";
 import { isStatusReadFenced, readStatus, recordedStatus, type StatusReport, waitSettled } from "./turns.ts";
 
-export const DEFAULT_WAIT_SECONDS = 60;
-export const MAX_WAIT_SECONDS = 600;
+export { DEFAULT_WAIT_SECONDS, MAX_WAIT_SECONDS } from "@armada/core/contract";
 
 type VisibleSandbox = (sandboxId: string) => Promise<SandboxView>;
 
@@ -34,52 +32,33 @@ export function logicalExpiry(expiresAt: string | null | undefined, now: Date) {
 
 export function registerListTool(context: ToolContext, tool: ToolRegistrar) {
   const { caller, data } = context;
-  tool(
-    "list",
-    {
-      title: "List sandboxes",
-      description:
-        "Allowlisted metadata of sandboxes in your current organizations, newest first. Interior is owner/admin only. " +
-        "Deleted ones are left out unless asked for. Statuses are as recorded; call status for a fresh read.",
-      input: sandboxListInput.shape,
-      output: {
-        sandboxes: z.array(sandboxListMetadata),
-        total: z.number().int(),
-        page: z.number().int(),
-        limit: z.number().int(),
-        hasMore: z.boolean(),
-        nextPage: z.number().int().nullable(),
-      },
-      readOnly: true,
-    },
-    async (args) => {
-      const statuses: readonly SandboxStatus[] = args.status ?? SANDBOX_STATUSES.filter((name) => name !== "deleted");
-      const limit = args.limit ?? 25;
-      const page = args.page ?? 1;
-      const { rows, total } = await data.sandboxes.list({
-        statuses,
-        limit,
-        page,
-        ...(args.harness === undefined ? {} : { harness: args.harness }),
-        ...(args.golden === undefined ? {} : { goldenId: args.golden }),
-        ...(args.owner === undefined ? {} : { ownerId: args.owner === "me" ? caller.userId : args.owner }),
-        ...(args.externalRef === undefined ? {} : { externalRef: args.externalRef }),
-      });
-      const hasMore = page * limit < total;
-      return {
-        total,
-        page,
-        limit,
-        hasMore,
-        nextPage: hasMore && page < 1_000_000 ? page + 1 : null,
-        sandboxes: rows.map((row) => ({
-          ...row,
-          ...logicalExpiry(row.expiresAt, context.now()),
-          statusMessage: idlePauseMessage(row, context.now()),
-        })),
-      };
-    },
-  );
+  tool("list", sandboxOperations.listSandboxes.tool, async (args) => {
+    const statuses: readonly SandboxStatus[] = args.status ?? SANDBOX_STATUSES.filter((name) => name !== "deleted");
+    const limit = args.limit ?? 25;
+    const page = args.page ?? 1;
+    const { rows, total } = await data.sandboxes.list({
+      statuses,
+      limit,
+      page,
+      ...(args.harness === undefined ? {} : { harness: args.harness }),
+      ...(args.golden === undefined ? {} : { goldenId: args.golden }),
+      ...(args.owner === undefined ? {} : { ownerId: args.owner === "me" ? caller.userId : args.owner }),
+      ...(args.externalRef === undefined ? {} : { externalRef: args.externalRef }),
+    });
+    const hasMore = page * limit < total;
+    return {
+      total,
+      page,
+      limit,
+      hasMore,
+      nextPage: hasMore && page < 1_000_000 ? page + 1 : null,
+      sandboxes: rows.map((row) => ({
+        ...row,
+        ...logicalExpiry(row.expiresAt, context.now()),
+        statusMessage: idlePauseMessage(row, context.now()),
+      })),
+    };
+  });
 }
 
 export function registerStatusTools(
@@ -178,25 +157,7 @@ export function registerStatusTools(
 
   const readStatusTool = tool(
     "status",
-    {
-      title: "Sandbox status",
-      description:
-        "Where a sandbox and its latest turn are. Modal uses authorized stored observations; physical state is refreshed by the lifecycle worker. Boat is read live. prompt.state is " +
-        "queued (accepted by a starting Docker sandbox, not yet admitted by its runtime), running, finished, interrupted or failed; failed includes a usage limit or an expired login, with " +
-        "the reason. settled is true when the agent is not working.",
-      input: {
-        id,
-        prompt_id: z.string().min(1).optional().describe("A specific turn. Default: the latest."),
-        recorded: z
-          .boolean()
-          .optional()
-          .describe(
-            "True: database-only state. False: live provider probe. Omitted: provider-specific detail read. CLI defaults to true; --live sets false.",
-          ),
-      },
-      output: statusOutput,
-      readOnly: true,
-    },
+    sandboxOperations.sandboxStatus.tool,
     async (args) => {
       const report = await statusOf(args.id, args.prompt_id, args.recorded === undefined, true, args.recorded === true);
       const launch = data.sandboxes.launchTiming ? await data.sandboxes.launchTiming(report.id) : undefined;
@@ -207,20 +168,7 @@ export function registerStatusTools(
 
   const waitTool = tool(
     "wait",
-    {
-      title: "Wait for the agent",
-      description:
-        `Blocks until the agent settles (its turn finished, failed or was interrupted, or the machine stopped) ` +
-        `or the timeout passes, then answers like status with timedOut. Default ${DEFAULT_WAIT_SECONDS}s, ` +
-        `at most ${MAX_WAIT_SECONDS}s: call again to keep waiting.`,
-      input: {
-        id,
-        timeout_seconds: z.number().int().min(0).max(MAX_WAIT_SECONDS).optional(),
-        prompt_id: z.string().min(1).optional().describe("A specific turn. Default: the latest."),
-      },
-      output: { ...statusOutput, timedOut: z.boolean() },
-      readOnly: true,
-    },
+    sandboxOperations.waitSandbox.tool,
     (args) =>
       waitSettled(() => statusOf(args.id, args.prompt_id), {
         timeoutMs: (args.timeout_seconds ?? DEFAULT_WAIT_SECONDS) * 1000,

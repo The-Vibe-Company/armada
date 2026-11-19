@@ -71,7 +71,7 @@ private func detail(status: String, settled: Bool, prompt: String? = nil) -> Str
     _ = try await client.sandboxEvents(id: sandboxID, cursor: first.cursor)
 
     let requests = Array(await transport.requests.dropFirst(2))
-    #expect(requests.map { $0.url!.path } == ["/api/v1/sandbox/detail", "/api/v1/logs/read", "/api/v1/logs/read"])
+    #expect(requests.map { $0.url!.path } == ["/api/v1/sandbox/status", "/api/v1/logs/read", "/api/v1/logs/read"])
     #expect(requests.allSatisfy { $0.value(forHTTPHeaderField: "Authorization") == "Bearer fixture-access" })
     #expect(try body(requests[0]) == ["id": sandboxID, "org": "org-a"])
     #expect(try body(requests[1]) == ["id": sandboxID, "org": "org-a"])

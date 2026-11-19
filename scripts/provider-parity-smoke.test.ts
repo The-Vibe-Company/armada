@@ -1150,7 +1150,6 @@ for (const mode of [
               }
               result = { exitCode: 0, timedOut: false, stdout: "PARITY_EXEC_OK" };
               break;
-            case "sandbox/detail":
             case "sandbox/status":
               if (mode.startsWith("idle_")) {
                 const n = (idleReads.get(p) ?? 0) + 1;
@@ -1183,7 +1182,7 @@ for (const mode of [
                 break;
               }
               detailReads.set(p, (detailReads.get(p) ?? 0) + 1);
-              if (mode === "baseline_quota" && path === "sandbox/detail" && detailReads.get(p) === 1)
+              if (mode === "baseline_quota" && detailReads.get(p) === 1)
                 return Response.json(
                   { error: { code: "rate_limited", message: "Read quota reached." } },
                   { status: 429 },
@@ -1694,7 +1693,7 @@ for (const mode of [
         expect(report.features.cleanup[provider].status).toBe("pass");
         expect(calls.filter((call) => call === `${provider}:sandbox/launch`)).toHaveLength(1);
         expect(calls).not.toContain(`${provider}:sandbox/resume`);
-        const firstDetail = calls.indexOf(`${provider}:sandbox/detail`);
+        const firstDetail = calls.indexOf(`${provider}:sandbox/status`);
         expect(calls.indexOf(`${provider}:sandbox/stop`)).toBeGreaterThan(firstDetail);
       }
       return;
@@ -2249,8 +2248,10 @@ function productionBoatFixture(
               { kind: "message", promptId: turns.at(-1), text: `SMOKE_OK ${memory}` },
             ],
           });
-        case "sandbox/detail":
+        case "sandbox/status":
           return Response.json({
+            id: "new-production-boat",
+            status,
             usage: {
               turnCount: turns.length,
               turns: turns.map((promptId) => ({
@@ -2269,8 +2270,6 @@ function productionBoatFixture(
               },
             },
           });
-        case "sandbox/status":
-          return Response.json({ id: "new-production-boat", status });
         case "sandbox/exec":
           return Response.json({
             exitCode: 0,
