@@ -459,7 +459,7 @@ export async function resolveCredentials(
     if (!row) throw new VaultError("conflict", "Multiple compatible accounts: choose credentialId or set a default.");
     const harnesses = harnessesForCredential(row.kind);
     const reason = accountIneligibility(
-      { version: row.version ?? 1, status: row.status ?? "active", expiresAt: row.expiresAt, harnesses },
+      { scope, version: row.version ?? 1, status: row.status ?? "active", expiresAt: row.expiresAt, harnesses },
       input.harness,
       Date.now(),
       input.credentialVersion,

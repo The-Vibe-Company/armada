@@ -4,8 +4,13 @@ import { MODEL_CATALOG } from "../src/models.ts";
 
 const now = Date.parse("2026-12-31T23:00:00Z");
 const pool: AccountPool = { harness: "codex", credentialIds: ["first", "second"], model: "pool-model" };
-const active: AccountCandidate = { version: 3, status: "active", harnesses: ["codex"] };
-const budget = { capUsd: 500, spentUsd: 499, modelPriceKnown: true, hasUnpricedUsage: false };
+const active: AccountCandidate = { scope: "user", version: 3, status: "active", harnesses: ["codex"] };
+const budget = {
+  capUsd: 500,
+  spentUsd: 499,
+  pricedModels: new Set(["pool-model", "requested-model"]),
+  hasUnpricedUsage: false,
+};
 
 test.each([
   ["inactive", { status: "deleted" }, { code: "account_inactive" }],
@@ -17,7 +22,11 @@ test.each([
     { budget: { ...budget, spentUsd: 500 } },
     { code: "budget_exhausted", resetsAt: "2027-01-01T00:00:00.000Z" },
   ],
-  ["unknown model price", { budget: { ...budget, modelPriceKnown: false } }, { code: "pricing_unknown" }],
+  [
+    "unknown model price",
+    { budget: { ...budget, pricedModels: new Set(["different-model"]) } },
+    { code: "pricing_unknown" },
+  ],
   ["unpriced usage", { budget: { ...budget, hasUnpricedUsage: true } }, { code: "pricing_unknown" }],
   [
     "exhausted",
@@ -58,8 +67,8 @@ test.each([
 
 test("refuses a full pool in preference order and reports account and model capacity separately", () => {
   const candidates = new Map<string, AccountCandidate>([
-    ["second", { ...active, capacity: "model_full" }],
-    ["first", { ...active, capacity: "account_full" }],
+    ["second", { ...active, fullModels: new Set(["pool-model"]) }],
+    ["first", { ...active, accountFull: true }],
   ]);
   expect(choose(pool, undefined, { now, candidates })).toEqual({
     kind: "refuse",
@@ -71,10 +80,10 @@ test("refuses a full pool in preference order and reports account and model capa
   });
 });
 
-test("an explicit account outside the pool uses the harness default model", () => {
+test("an explicit org account outside the pool uses the harness default model", () => {
   const candidates = new Map<string, AccountCandidate>([
     ["first", active],
-    ["pinned", active],
+    ["pinned", { ...active, scope: "org" }],
   ]);
   const result = choose(pool, undefined, { now, candidates, explicit: { credentialId: "pinned" } });
   expect(result).toMatchObject({ kind: "account", credentialId: "pinned", credentialVersion: 3, skips: [] });
@@ -82,9 +91,9 @@ test("an explicit account outside the pool uses the harness default model", () =
 });
 
 test.each([
-  [3, { capacity: "account_full" }, "wait", "account_full"],
+  [3, { accountFull: true }, "wait", "account_full"],
   [2, {}, "refuse", "account_version_changed"],
-  [3, { budget: { ...budget, modelPriceKnown: false } }, "refuse", "pricing_unknown"],
+  [3, { budget: { ...budget, pricedModels: new Set(["different-model"]) } }, "refuse", "pricing_unknown"],
 ] as const)("an explicit pin with version %d and facts %j returns %s", (credentialVersion, overrides, kind, code) => {
   const candidates = new Map<string, AccountCandidate>([
     ["first", active],
@@ -105,5 +114,19 @@ test("refuses a missing explicit account without exposing its eligibility or try
     kind: "refuse",
     model: "requested-model",
     skips: [{ credentialId: "unavailable", reason: { code: "account_unavailable" } }],
+  });
+});
+
+test("an org account in the stored order requires an explicit placement", () => {
+  const candidates = new Map<string, AccountCandidate>([
+    ["first", { ...active, scope: "org" }],
+    ["second", active],
+  ]);
+  expect(choose(pool, undefined, { now, candidates })).toEqual({
+    kind: "account",
+    credentialId: "second",
+    credentialVersion: 3,
+    model: "pool-model",
+    skips: [{ credentialId: "first", reason: { code: "account_unavailable" } }],
   });
 });

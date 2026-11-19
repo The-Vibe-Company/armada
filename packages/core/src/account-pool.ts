@@ -1,4 +1,5 @@
 import type { Harness } from "./contract.ts";
+import type { CredentialScope } from "./database.types.ts";
 import { MODEL_CATALOG } from "./models.ts";
 
 export interface AccountPool {
@@ -8,14 +9,16 @@ export interface AccountPool {
 }
 
 export interface AccountCandidate {
+  scope: CredentialScope;
   version: number;
   status: string;
   expiresAt?: string | null | undefined;
   harnesses: readonly Harness[];
   models?: readonly string[];
   exhaustion?: { version: number; code: string; resetsAt: string | null };
-  budget?: { capUsd: number; spentUsd: number; modelPriceKnown: boolean; hasUnpricedUsage: boolean };
-  capacity?: "account_full" | "model_full";
+  budget?: { capUsd: number; spentUsd: number; pricedModels: ReadonlySet<string>; hasUnpricedUsage: boolean };
+  accountFull?: boolean;
+  fullModels?: ReadonlySet<string>;
 }
 
 export type AccountRefusal =
@@ -59,7 +62,7 @@ export const choose: (pool: AccountPool, requestedModel: string | undefined, fac
     const skips: AccountSkip[] = [];
     for (const credentialId of ids) {
       const candidate = facts.candidates.get(credentialId);
-      if (!candidate) {
+      if (!candidate || (!facts.explicit && candidate.scope !== "user")) {
         skips.push({ credentialId, reason: { code: "account_unavailable" } });
         continue;
       }
@@ -99,7 +102,9 @@ export const accountIneligibility: (
       reset.setUTCHours(0, 0, 0, 0);
       return { code: "budget_exhausted", resetsAt: reset.toISOString() };
     }
-    if (!budget.modelPriceKnown || budget.hasUnpricedUsage) return { code: "pricing_unknown" };
+    if (model === undefined || !budget.pricedModels.has(model) || budget.hasUnpricedUsage)
+      return { code: "pricing_unknown" };
   }
-  if (candidate.capacity) return { code: candidate.capacity };
+  if (candidate.accountFull) return { code: "account_full" };
+  if (model !== undefined && candidate.fullModels?.has(model)) return { code: "model_full" };
 };
