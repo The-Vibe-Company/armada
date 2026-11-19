@@ -892,7 +892,6 @@ test.each(["queued", "dispatching"])("idle-only stop preserves %s account work",
   );
   const idle = await store.get(id);
   if (!idle) throw Error("missing sandbox");
-  // Queue acceptance has won since the idle observation, without changing its generation.
   await db.query(
     `insert into account_turn_queue
        (sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id,state)

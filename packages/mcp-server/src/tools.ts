@@ -669,16 +669,17 @@ function createToolServer(
       if (found.stopRequestedAt || ["stopping", "stopped"].includes(found.status))
         return { id: found.id, status: found.status };
       const { provider } = await live(args.id, true);
+      const idleGuard: Pick<ServerSandboxPatch, "onlyIfIdle"> = { onlyIfIdle: args.only_if_idle };
       return sandboxActivity(
         data.sandboxes,
         found,
         {
+          ...idleGuard,
           status: found.status === "failed" ? "failed" : "stopping",
           stoppedAt: null,
           stopRequested: true,
-          onlyIfIdle: args.only_if_idle === true,
           ...(found.statusReason === "expired" ? { statusReason: "expired" } : {}),
-        } satisfies ServerSandboxPatch,
+        },
         async (signal) => {
           signal.throwIfAborted();
           // A historical warning is not proof that this stop has captured current work.

@@ -51,7 +51,6 @@ export interface SandboxView extends SandboxRecord {
 }
 
 export interface ServerSandboxPatch extends SandboxPatch {
-  /** Require a ready sandbox with no pending account turns at stop admission. */
   onlyIfIdle?: boolean;
 }
 
@@ -866,8 +865,7 @@ export function createSqlData(
         if (idleAdmission) {
           if (!sql.transaction) throw new Error("Idle-only stop requires transactional sandbox admission.");
           result = await sql.transaction(async (tx) => {
-            // Queue admission locks this row before inserting without changing its generation.
-            // The CAS must read the queue in a fresh statement after acquiring the same lock.
+            // WARNING: The queue check needs a fresh statement snapshot after acquiring the sandbox lock.
             const locked = await tx.query<{ id: string }>(
               `select s.id from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE} for update`,
               [...scope, id],
