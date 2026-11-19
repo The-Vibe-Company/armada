@@ -19,7 +19,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as z from "zod";
 import type { Caller } from "./caller.ts";
 import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
-import type { SandboxView, ScopedData } from "./data.ts";
+import type { SandboxView, ScopedData, ServerSandboxPatch } from "./data.ts";
 import type { GoldenLaunchCredentials } from "./launch-account-admission.ts";
 import { mcpLaunchContract, runMcpLaunch } from "./mcp-launch-tool.ts";
 import { registerListTool, registerLogsTool, registerStatusTools } from "./mcp-read-tools.ts";
@@ -669,10 +669,12 @@ function createToolServer(
       if (found.stopRequestedAt || ["stopping", "stopped"].includes(found.status))
         return { id: found.id, status: found.status };
       const { provider } = await live(args.id, true);
+      const idleGuard: Pick<ServerSandboxPatch, "onlyIfIdle"> = { onlyIfIdle: args.only_if_idle === true };
       return sandboxActivity(
         data.sandboxes,
         found,
         {
+          ...idleGuard,
           status: found.status === "failed" ? "failed" : "stopping",
           stoppedAt: null,
           stopRequested: true,
