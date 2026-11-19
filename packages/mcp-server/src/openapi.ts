@@ -112,12 +112,21 @@ function boundByBody(schema: Record<string, unknown>, field: string, maxBytes: n
   property.maxLength = Math.min(typeof property.maxLength === "number" ? property.maxLength : maxBytes, maxBytes);
   if (description) property.description = description;
 }
-/** Failures of the outputs routes: the server's bare code, or the dashboard endpoint's typed failure. */
-const OUTPUT_FAILURE = {
-  "application/json": {
-    schema: { anyOf: [{ $ref: "#/components/schemas/Failure" }, { $ref: "#/components/schemas/OutputFailure" }] },
-  },
-};
+/** The mounted route, dashboard proxy, and ingress each have their own failure body. */
+function outputFailure(errorOutput: z.ZodType) {
+  return {
+    "application/json": {
+      schema: {
+        anyOf: [
+          responseJsonSchema(errorOutput),
+          { $ref: "#/components/schemas/Failure" },
+          { $ref: "#/components/schemas/DrainRefusal" },
+          { type: "object", required: ["error"], properties: { error: { const: "internal" } } },
+        ],
+      },
+    },
+  };
+}
 const { listSandboxOutputs, readSandboxOutput } = sandboxOutputOperations;
 const SANDBOX_ID_PARAMETER = {
   name: "id",
@@ -126,15 +135,18 @@ const SANDBOX_ID_PARAMETER = {
   description: "The sandbox id, a lowercase UUID.",
   schema: requestJsonSchema(listSandboxOutputs.input.path.id),
 };
-const OUTPUT_COMMON_RESPONSES = {
-  "401": { description: "Missing or invalid bearer.", content: OUTPUT_FAILURE },
-  "404": {
-    description:
-      "No such sandbox or file, or the caller is neither its owner nor an org admin, or the sandbox is deleted or application-secret tainted.",
-    content: OUTPUT_FAILURE,
-  },
-  default: { description: "Public API failure", content: OUTPUT_FAILURE },
-};
+const downloadFailure = outputFailure(readSandboxOutput.errorOutput);
+function outputCommonResponses(content: ReturnType<typeof outputFailure>) {
+  return {
+    "401": { description: "Missing or invalid bearer.", content },
+    "404": {
+      description:
+        "No such sandbox or file, or the caller is neither its owner nor an org admin, or the sandbox is deleted or application-secret tainted.",
+      content,
+    },
+    default: { description: "Public API failure", content },
+  };
+}
 /** Declared output snapshots (`sandbox-outputs.ts`): GET, path parameters, no request body. */
 const OUTPUT_OPERATIONS = {
   [listSandboxOutputs.route.path]: {
@@ -153,7 +165,7 @@ const OUTPUT_OPERATIONS = {
             },
           },
         },
-        ...OUTPUT_COMMON_RESPONSES,
+        ...outputCommonResponses(outputFailure(listSandboxOutputs.errorOutput)),
       },
     },
   },
@@ -212,12 +224,12 @@ const OUTPUT_OPERATIONS = {
           description: "The byte range is invalid or unsatisfiable.",
           headers: { "Content-Range": { schema: { type: "string" } } },
         },
-        "400": { description: "The file name is invalid.", content: OUTPUT_FAILURE },
+        "400": { description: "The file name is invalid.", content: downloadFailure },
         "503": {
           description: "Stored outputs cannot be decrypted on this server, or the API is temporarily unavailable.",
-          content: OUTPUT_FAILURE,
+          content: downloadFailure,
         },
-        ...OUTPUT_COMMON_RESPONSES,
+        ...outputCommonResponses(downloadFailure),
       },
     },
   },
@@ -370,16 +382,6 @@ export async function generateOpenApi() {
       components: {
         securitySchemes: { serviceToken: { type: "http", scheme: "bearer" } },
         schemas: {
-          OutputFailure: {
-            type: "object",
-            required: ["error"],
-            properties: {
-              error: {
-                type: "string",
-                description: "Bare failure code answered by the outputs routes, for example not_found or invalid_name.",
-              },
-            },
-          },
           DrainRefusal: {
             type: "object",
             required: ["error"],

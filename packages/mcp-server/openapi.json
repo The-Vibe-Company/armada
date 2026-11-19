@@ -7669,10 +7669,39 @@
                 "schema": {
                   "anyOf": [
                     {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "string",
+                          "enum": [
+                            "unauthorized",
+                            "not_found",
+                            "Use GET"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "error"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
                       "$ref": "#/components/schemas/Failure"
                     },
                     {
-                      "$ref": "#/components/schemas/OutputFailure"
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "error"
+                      ],
+                      "properties": {
+                        "error": {
+                          "const": "internal"
+                        }
+                      }
                     }
                   ]
                 }
@@ -7686,10 +7715,39 @@
                 "schema": {
                   "anyOf": [
                     {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "string",
+                          "enum": [
+                            "unauthorized",
+                            "not_found",
+                            "Use GET"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "error"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
                       "$ref": "#/components/schemas/Failure"
                     },
                     {
-                      "$ref": "#/components/schemas/OutputFailure"
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "error"
+                      ],
+                      "properties": {
+                        "error": {
+                          "const": "internal"
+                        }
+                      }
                     }
                   ]
                 }
@@ -7703,10 +7761,39 @@
                 "schema": {
                   "anyOf": [
                     {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "string",
+                          "enum": [
+                            "unauthorized",
+                            "not_found",
+                            "Use GET"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "error"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
                       "$ref": "#/components/schemas/Failure"
                     },
                     {
-                      "$ref": "#/components/schemas/OutputFailure"
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "error"
+                      ],
+                      "properties": {
+                        "error": {
+                          "const": "internal"
+                        }
+                      }
                     }
                   ]
                 }
@@ -7848,10 +7935,41 @@
                 "schema": {
                   "anyOf": [
                     {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "string",
+                          "enum": [
+                            "unauthorized",
+                            "not_found",
+                            "Use GET",
+                            "invalid_name",
+                            "unavailable"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "error"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
                       "$ref": "#/components/schemas/Failure"
                     },
                     {
-                      "$ref": "#/components/schemas/OutputFailure"
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "error"
+                      ],
+                      "properties": {
+                        "error": {
+                          "const": "internal"
+                        }
+                      }
                     }
                   ]
                 }
@@ -7865,10 +7983,41 @@
                 "schema": {
                   "anyOf": [
                     {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "string",
+                          "enum": [
+                            "unauthorized",
+                            "not_found",
+                            "Use GET",
+                            "invalid_name",
+                            "unavailable"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "error"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
                       "$ref": "#/components/schemas/Failure"
                     },
                     {
-                      "$ref": "#/components/schemas/OutputFailure"
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "error"
+                      ],
+                      "properties": {
+                        "error": {
+                          "const": "internal"
+                        }
+                      }
                     }
                   ]
                 }
@@ -7882,10 +8031,41 @@
                 "schema": {
                   "anyOf": [
                     {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "string",
+                          "enum": [
+                            "unauthorized",
+                            "not_found",
+                            "Use GET",
+                            "invalid_name",
+                            "unavailable"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "error"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
                       "$ref": "#/components/schemas/Failure"
                     },
                     {
-                      "$ref": "#/components/schemas/OutputFailure"
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "error"
+                      ],
+                      "properties": {
+                        "error": {
+                          "const": "internal"
+                        }
+                      }
                     }
                   ]
                 }
@@ -7909,10 +8089,41 @@
                 "schema": {
                   "anyOf": [
                     {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "string",
+                          "enum": [
+                            "unauthorized",
+                            "not_found",
+                            "Use GET",
+                            "invalid_name",
+                            "unavailable"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "error"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
                       "$ref": "#/components/schemas/Failure"
                     },
                     {
-                      "$ref": "#/components/schemas/OutputFailure"
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "error"
+                      ],
+                      "properties": {
+                        "error": {
+                          "const": "internal"
+                        }
+                      }
                     }
                   ]
                 }
@@ -7926,10 +8137,41 @@
                 "schema": {
                   "anyOf": [
                     {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "string",
+                          "enum": [
+                            "unauthorized",
+                            "not_found",
+                            "Use GET",
+                            "invalid_name",
+                            "unavailable"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "error"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
                       "$ref": "#/components/schemas/Failure"
                     },
                     {
-                      "$ref": "#/components/schemas/OutputFailure"
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "error"
+                      ],
+                      "properties": {
+                        "error": {
+                          "const": "internal"
+                        }
+                      }
                     }
                   ]
                 }
@@ -7948,18 +8190,6 @@
       }
     },
     "schemas": {
-      "OutputFailure": {
-        "type": "object",
-        "required": [
-          "error"
-        ],
-        "properties": {
-          "error": {
-            "type": "string",
-            "description": "Bare failure code answered by the outputs routes, for example not_found or invalid_name."
-          }
-        }
-      },
       "DrainRefusal": {
         "type": "object",
         "required": [

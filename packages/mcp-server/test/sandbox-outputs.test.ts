@@ -147,10 +147,11 @@ test("output dispatch preserves path, method, and range refusals", async () => {
   expect(wrongMethod?.status).toBe(405);
   expect(await wrongMethod?.json()).toEqual({ error: "Use GET" });
 
+  const invalidName = publishedGetResponse("sandboxes/{id}/outputs/{name}", "400");
   for (const segment of ["%ZZ", "a%2Fb.txt", "a%00b.txt"]) {
     const response = await route(new Request(`${url}/${segment}`));
     expect(response?.status).toBe(400);
-    expect(await response?.json()).toEqual({ error: "invalid_name" });
+    expect(invalidName.parse(await response?.json())).toEqual({ error: "invalid_name" });
   }
   for (const range of ["bytes=-", "bytes=1-0", "bytes=8-", "bytes=0-1,2-3", "bytes=0-9007199254740992"]) {
     const response = await route(new Request(download, { headers: { range } }));

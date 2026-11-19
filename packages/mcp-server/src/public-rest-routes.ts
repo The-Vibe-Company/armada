@@ -1,15 +1,8 @@
 /**
- * The integration REST contract inventory. `packages/mcp-server/openapi.json` publishes exactly
- * `PUBLISHED_REST_ROUTES` and `PUBLISHED_REST_GET_ROUTES`. Every other route that the public dashboard endpoint
- * (`/api/v1/*`) forwards must have a reason in `UNPUBLISHED_REST_ROUTES`. The
- * dashboard proxy test checks both directions, so a new forwarded route cannot
- * silently fall outside the description.
- *
- * `PUBLISHED_REST_ROUTES` are POST operations of the control dispatcher;
- * `PUBLISHED_REST_GET_ROUTES` are GET operations whose path carries parameters.
+ * The integration REST POST inventory. The published sandbox output GET operations come from
+ * the shared operation table. Every other route that the dashboard forwards must have a reason
+ * in `UNPUBLISHED_REST_ROUTES`. The dashboard proxy test checks both directions.
  */
-import { sandboxOutputOperations } from "@armada/core/contract";
-
 export const PUBLISHED_REST_ROUTES = [
   // Discovery: what a launch can ask for, and which goldens it can name.
   "launch/options",
@@ -36,11 +29,6 @@ export const PUBLISHED_REST_ROUTES = [
   "templates/launch",
   "logs/read",
 ] as const;
-
-/** Published GET operations with path parameters (`{name}` is one percent-encoded segment). */
-export const PUBLISHED_REST_GET_ROUTES = Object.values(sandboxOutputOperations).map(({ route }) =>
-  route.path.slice("/api/v1/".length),
-);
 
 /**
  * Forwarded routes outside the integration description, by exact route or by a
