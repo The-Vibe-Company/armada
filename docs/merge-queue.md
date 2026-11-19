@@ -10,10 +10,10 @@ source for these exact check names:
 This is the single required verdict. The coordinator has configured the ruleset;
 do not add optional iOS, migration previews or deployment checks to it.
 
-Start with build concurrency **2**, merge limits **minimum 1 / maximum 1** PR,
-only merge non-failing PRs enabled, and a **60-minute** status-check timeout.
-This limits runner pressure while validating each candidate together with the
-PRs ahead of it. Merge limits control merges, not the contents of CI builds.
+The ruleset uses build concurrency **4** (owner decision, 2026-11-19), merge
+limits **minimum 1 / maximum 5** PRs with no wait, only merge non-failing PRs
+(all-green grouping) and a **10-minute** status-check response timeout. Each
+candidate is validated together with the PRs ahead of it. Merge limits control merges, not the contents of CI builds.
 
 Dashboard browser tests are manual-only for now (owner decision, 2026-11-12).
 Run `bun run e2e` when browser validation is wanted; it is not a PR or merge-queue
