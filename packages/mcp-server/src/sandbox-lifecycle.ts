@@ -255,6 +255,34 @@ export async function settleRuntimeTurn(tx: Sql, sandboxId: string, generation: 
   });
 }
 
+export async function admitCheckpointedIdleStop(tx: Sql, sandboxId: string, generation: string, requestId: string) {
+  const locked = await tx.query(`select id from public.sandboxes where id=$1 and lifecycle_generation=$2 for update`, [
+    sandboxId,
+    generation,
+  ]);
+  if (!locked.rows.length) return { kind: "conflict" } satisfies SandboxTransitionResult;
+  const {
+    rows: [checkpoint],
+  } = await tx.query<{ merge_stop: boolean }>(
+    `select p.merge_stop from public.runtime_checkpoints p
+     join public.runtime_enrolments r on r.sandbox_id=p.sandbox_id and r.epoch=p.epoch
+     where p.sandbox_id=$1 and p.request_id=$2::uuid and r.lifecycle_generation=$3
+       and p.completed_at is not null
+       and p.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=$1)`,
+    [sandboxId, requestId, generation],
+  );
+  if (!checkpoint) return { kind: "conflict" } satisfies SandboxTransitionResult;
+  return transitionSandbox(tx, {
+    sandboxId,
+    expectedGeneration: generation,
+    fromStates: ["ready", "running"],
+    toState: "stopping",
+    actor: "idle",
+    code: checkpoint.merge_stop ? "runtime_checkpoint_work_merged" : "runtime_checkpoint_idle_paused",
+    effects: [],
+  });
+}
+
 export async function recordDockerCleanupReceipt(
   tx: Sql,
   sandboxId: string,
