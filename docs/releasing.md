@@ -69,6 +69,10 @@ that contains it: publish the exact `the-vibe-company-armada-sdk-<version>.tgz` 
 Until then that release's npm job fails after the CLI packages are published; rerunning it after the
 bootstrap skips the already-published versions and publishes nothing twice.
 
+For any new npm package, the owner must bootstrap it and configure its trusted publisher
+before adding its name to `scripts/release/npm-packages.json`. PR CI compares that list
+with the package names staged for release.
+
 After v2 is published and installation succeeds, deprecate **only** the legacy versions:
 
 ```sh
