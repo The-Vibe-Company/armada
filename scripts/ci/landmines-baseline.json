@@ -138,7 +138,7 @@
     "apps/dashboard/src/components/landing/frames.ts": 7,
     "apps/dashboard/src/components/landing/terminal-types.ts": 1,
     "apps/dashboard/src/components/landing/transcript.ts": 1,
-    "apps/dashboard/src/components/launch-dialog.tsx": 17,
+    "apps/dashboard/src/components/launch-dialog.tsx": 16,
     "apps/dashboard/src/components/launch-sentence.tsx": 1,
     "apps/dashboard/src/components/launch-surface.tsx": 2,
     "apps/dashboard/src/components/launch-times.tsx": 1,
