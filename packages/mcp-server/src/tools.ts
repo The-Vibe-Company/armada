@@ -10,6 +10,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Caller } from "./caller.ts";
 import type { ScopedData } from "./data.ts";
 import type { GoldenLaunchCredentials } from "./launch-account-admission.ts";
+import type { LaunchDiscoveryOptions } from "./launch-options.ts";
 import { registerAgentTools } from "./mcp-operation-projection.ts";
 import type { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
@@ -46,9 +47,13 @@ export interface ToolContext {
 export const serverInfo = { name: "armada" } as const;
 
 /** One MCP server per request: the principal is fixed for its whole life, and nothing outlives the request. */
-export function createArmadaServer(context: ToolContext, version: string) {
+export function createArmadaServer(
+  context: ToolContext,
+  version: string,
+  launchDiscovery: LaunchDiscoveryOptions = context,
+) {
   const server = createToolServer(version);
-  registerAgentTools(server, context);
+  registerAgentTools(server, context, launchDiscovery);
   return server;
 }
 
