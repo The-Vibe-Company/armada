@@ -78,7 +78,6 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
         }
         // WARNING: Owner stop can hold the sandbox lock while waiting for the receipt.
         await tx.query("select id from public.sandboxes where id = $1 for update nowait", [sandboxId]);
-        // Use a post-lock snapshot so evidence committed by the previous lock holder is visible.
         const {
           rows: [sandbox],
         } = await tx.query<{ generation: string; cancelled: boolean; queued_with_evidence: boolean }>(
