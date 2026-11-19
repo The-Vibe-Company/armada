@@ -153,6 +153,15 @@ jobs:
       - name: Install pinned deployment clients
         if: (steps.evidence.outputs.reused != 'true')
         run: npm install --global @railway/cli@5.71.0 vercel@65.14.0
+      - name: Check previous staging reaper evidence
+        shell: bash
+        if: (steps.evidence.outputs.reused != 'true')
+        run: |
+          [[ "$ARMADA_URL" == 'https://armada-mcp-staging.up.railway.app' ]]
+          timeout 30s railway logs --deployment --json --since 15m --lines 500 \
+            --project "$RAILWAY_PROJECT_ID" --environment "$RAILWAY_ENVIRONMENT_ID" --service "$RAILWAY_SERVICE_ID" \
+            --filter '(@provider:modal OR @provider:docker) AND (@metric:reaper_unknown_machines OR @event:reaper_overdue_machines) OR (@event:provider_reaper_retry AND @phase:discovery)' \
+            | env -i PATH="$PATH" bun scripts/smoke-reaper-evidence.ts
       # Stamp the checked-out SHA in ordinary wakeup evidence. GitHub run metadata
       # can describe an older main tip than the source resolved under the lock.
       - name: Migrate then deploy pinned server and dashboard${{ github.event_name == 'workflow_run' && inputs.source_sha == '' && format(' ({0})', env.RELEASE_SHA) || '' }}

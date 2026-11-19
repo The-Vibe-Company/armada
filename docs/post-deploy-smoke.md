@@ -1948,3 +1948,21 @@ and `noAccess`. Use one fresh nonce per key or answer, retaining the existing
 the child prompt with the same prefix and a `lane: "child"` marker containing
 `answer`. The smoke runner verifies that exact child prompt in the message evidence
 before checking the child's answer.
+
+### Provider inventory preflight
+
+Ordinary and pinned staging smoke inspect the live staging server's Railway
+deployment logs before replacing it. The check uses the staging project,
+environment and service already configured for deployment. Modal and Docker
+each need a complete reaper observation within five minutes. Every observed
+source must have a fresh, complete latest observation. Missing, incomplete or
+truncated evidence fails the preflight.
+
+The check reports physical machine IDs observed overdue in the last 15 minutes,
+even if the Modal reaper subsequently deleted the machine. Docker's inventory
+path reports overdue containers. Both providers need to be reporting on staging
+before this preflight is enabled. After remediation, the overdue observation
+must age out of the lookback window before the next smoke can pass.
+
+The ordinary journal cleanup submits a bounded delete request per receipt and
+retains IDs with unresolved outcomes for the next run or manual sweep.
