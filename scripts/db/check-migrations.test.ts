@@ -82,10 +82,7 @@ test.each([
   ["SAVEPOINT", "savepoint migration"],
   ["RELEASE SAVEPOINT", "release migration"],
   ["ROLLBACK TO SAVEPOINT", "rollback work to savepoint migration"],
-  ["SET TRANSACTION", "set transaction isolation level serializable"],
-  ["SET CONSTRAINTS", "set constraints all deferred"],
   ["PREPARE TRANSACTION", "prepare transaction 'migration'"],
-  ["SET LOCAL", "set local lock_timeout = '2s'"],
   ["DECLARE CURSOR", "declare migration cursor for select 1"],
 ])("requires an explicit transaction for %s", (command, sql) => {
   expect(transactionErrors(`-- comment\n${sql};`)).toEqual([

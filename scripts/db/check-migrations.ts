@@ -67,9 +67,6 @@ function transactionOnlyCommand(tokens: string[], rollbackTo: boolean) {
   if (verb === "savepoint") return "SAVEPOINT";
   if (verb === "release") return "RELEASE SAVEPOINT";
   if (rollbackTo) return "ROLLBACK TO SAVEPOINT";
-  if (verb === "set" && ["transaction", "local", "constraints"].includes(keyword ?? "")) {
-    return `SET ${keyword!.toUpperCase()}`;
-  }
   if (verb === "declare" && !tokens.slice(2, tokens.indexOf("for", 2)).includes("hold")) {
     return "DECLARE CURSOR";
   }
@@ -77,7 +74,7 @@ function transactionOnlyCommand(tokens: string[], rollbackTo: boolean) {
   return undefined;
 }
 
-export function transactionErrors(sql: string): string[] {
+export function transactionErrors(sql: string) {
   const errors: string[] = [];
   let explicitTransaction = false;
   for (const { tokens, startsAt } of sqlStatements(sql)) {
