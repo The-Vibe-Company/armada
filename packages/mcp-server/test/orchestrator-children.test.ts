@@ -1432,6 +1432,8 @@ test("the event feed grants a scoped bearer access only to its authorized child"
       orgId: f.p.org,
       ownerId: f.p.owner,
       harness: "codex",
+      model: "m",
+      reasoningEffort: "medium",
       status: "ready",
       visibility: "private",
     });
