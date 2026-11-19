@@ -2,7 +2,6 @@ import { expect, test } from "bun:test";
 import { run } from "../src/run.ts";
 import { memorySessionStore } from "../src/session.ts";
 
-// Exact published #680 DTO: terminal presentation must need no interior enrichment.
 const row = {
   id: "11111111-1111-4111-8111-111111111111",
   orgId: "org",

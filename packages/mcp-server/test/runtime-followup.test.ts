@@ -1,9 +1,9 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { createSqlData } from "../src/data.ts";
 import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import { callSharedTool } from "../src/tool-api.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { runtimeFixture as fixture } from "./runtime.fixture.ts";
+import { runtimeFixture as fixture, scopedRuntimeFixture } from "./runtime.fixture.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
@@ -15,24 +15,25 @@ describe.each([
   { provider: "modal", harness: "claude" },
   { provider: "modal", harness: "opencode" },
 ] as const)("$provider $harness shared runtime send", ({ provider, harness }) => {
-  let f: Awaited<ReturnType<typeof fixture>>;
   let preparations = 0;
   // Cold PGlite WASM startup, all migrations, fixture seeding and the initial
   // Runner turn are setup, not send/replay behavior. Keep them out of the test's
   // 5s budget; the real SQL/Runner/epoch assertions below remain unchanged.
-  beforeAll(async () => {
-    f = await fixture(await sharedDatabase(), provider, harness);
-    if (provider === "modal")
-      f.context.runtimeSend = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, async () => {
-        preparations++;
-        return undefined;
-      });
-  }, 20_000);
-  afterAll(async () => {
-    await f?.close();
-  });
+  const prepared = scopedRuntimeFixture(
+    async () => {
+      const f = await fixture(await sharedDatabase(), provider, harness);
+      if (provider === "modal")
+        f.context.runtimeSend = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, async () => {
+          preparations++;
+          return undefined;
+        });
+      return f;
+    },
+    { timeout: 20_000 },
+  );
 
   test("shared send preserves the Runner session and epoch; replay cannot duplicate turns or overwrite a newer task", async () => {
+    const f = await prepared();
     const original = (await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))!;
     const originalGeneration = original.lifecycleGeneration!;
     const input = {
@@ -107,11 +108,12 @@ test("uncertain send reconciles the same durable identity/lease; changed input a
 });
 
 test("stop committing after runtime acceptance fences late turn publication and never rearms the sandbox", async () => {
-  const f = await fixture();
+  const f = await fixture(await sharedDatabase());
   try {
     await f.db.exec(`create function stop_accepted_runtime() returns trigger language plpgsql as $$ begin
       update public.sandboxes set stop_requested_at=now() where id=new.sandbox_id; return new; end $$;
-      create trigger stop_accepted_runtime after insert on public.sandbox_turn_models for each row execute function stop_accepted_runtime();`);
+      create trigger stop_accepted_runtime after insert on public.sandbox_turn_models for each row
+      when (new.sandbox_id = '${f.row.id}') execute function stop_accepted_runtime();`);
     await expect(f.send(f.caller, f.input())).rejects.toThrow();
     const row = (await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))!;
     expect(row.stopRequestedAt).not.toBeNull();
@@ -119,7 +121,12 @@ test("stop committing after runtime acceptance fences late turn publication and 
     expect(f.starts).toHaveLength(2); // Accepted before stop, not replayed or resumed.
     await expect(f.authority.withSession(f.active.runtimeToken, f.active.epoch, async () => true)).rejects.toThrow();
   } finally {
-    await f.close();
+    try {
+      await f.close();
+    } finally {
+      await f.db.exec(`drop trigger if exists stop_accepted_runtime on public.sandbox_turn_models;
+        drop function if exists stop_accepted_runtime();`);
+    }
   }
 });
 
@@ -159,15 +166,12 @@ describe.each([
   { provider: "modal", harness: "claude" },
   { provider: "modal", harness: "opencode" },
 ] as const)("idle $provider $harness first send", ({ provider, harness }) => {
-  let f: Awaited<ReturnType<typeof fixture>>;
-  beforeAll(async () => {
-    f = await fixture(await sharedDatabase(), provider, harness, true);
-  }, 20_000);
-  afterAll(async () => {
-    await f?.close();
+  const prepared = scopedRuntimeFixture(async () => fixture(await sharedDatabase(), provider, harness, true), {
+    timeout: 20_000,
   });
 
   test("first send opens one conversation; uncertain replay and later follow-up retain it", async () => {
+    const f = await prepared();
     expect(f.journal.prompts()).toHaveLength(0);
     const request = f.input("first instruction");
     await expect(f.send(f.caller, { ...request, ...{ conversation_id: "foreign" } })).rejects.toThrow();

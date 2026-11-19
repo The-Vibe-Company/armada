@@ -9,7 +9,7 @@ import {
 } from "@armada/core/server";
 import type { IngestGrantClaims, Scope } from "@armada/provider-modal";
 import { scopeKey } from "@armada/provider-modal";
-import { admitAccountCapacity, admitLaunchAccount } from "./account-capacity.ts";
+import { admitAccountCapacity, admitLaunchAccount, releaseAccountCapacity } from "./account-capacity.ts";
 import { chooseLaunchPoolAccount, type LaunchAccountDefault, readLaunchAccountDefault } from "./launch-account-pool.ts";
 import { exposedSecrets } from "./launch-credentials.ts";
 import { createNativeStateStore } from "./model-auth-state.ts";
@@ -95,9 +95,7 @@ export function createModelAuthOwnership(
         if (row?.credential_id) await admitAccountCapacity(tx, row.credential_id, sandboxId);
       });
     },
-    async releaseCapacity(sandboxId: string) {
-      await sql.query("delete from public.account_agent_reservations where sandbox_id=$1", [sandboxId]);
-    },
+    releaseCapacity: (sandboxId: string) => releaseAccountCapacity(sql, sandboxId),
     async shared(sandboxId: string): Promise<boolean> {
       return (
         !!broker &&

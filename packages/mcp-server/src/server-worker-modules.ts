@@ -46,6 +46,7 @@ const jobsLane: LaneFactory = ({
   webhooks,
   options,
   outputs,
+  langfuse,
   control,
 }) => {
   const prScan = githubApp
@@ -83,6 +84,7 @@ const jobsLane: LaneFactory = ({
   const runner = createJobsRunner(
     jobs,
     {
+      langfuse_export: langfuse.exportJob,
       maintenance: retentionMaintenanceJob(sql, control.applicationVault, options.logError),
       webhook: { concurrency: 1, run: webhooks.run },
       ...(prScan ? { pr_scan: prScan } : {}),
@@ -173,7 +175,6 @@ export const runtimeModule: ServerModule = ({ mounts, workers, shutdown }) => {
   mounts.push(runtimeMounts);
   workers.managed.set("account-turns", ({ accountTurns }) => accountTurns);
   workers.managed.set("runtime-idle", idleLane);
-  workers.isolated.set("langfuse", ({ langfuse }) => langfuse);
   workers.isolated.set("steer-recovery", ({ nativePrompts }) => nativePrompts.steerRecovery);
   shutdown.stopSockets = ({ runtimeSockets }) => runtimeSockets.stop();
 };

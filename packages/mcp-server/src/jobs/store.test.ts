@@ -258,6 +258,14 @@ test("the registered jobs lane retries a lost seed reply and preserves the sched
     options: { logError: () => {} },
     githubApp: null,
     config: {},
+    langfuse: {
+      exportJob: {
+        concurrency: 1,
+        async run() {
+          throw new Error("Unexpected Langfuse export.");
+        },
+      },
+    },
     webhooks: {
       run: async () => {
         throw new Error("Unexpected webhook.");
