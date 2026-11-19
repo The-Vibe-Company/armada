@@ -1,8 +1,9 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { machineCapacity, type ProviderResourceObservation, type Sql } from "@armada/core";
 import type { Caller } from "../src/caller.ts";
+import { createJobsStore } from "../src/jobs/store.ts";
 import { createResourceStore, pruneResourceObservations } from "../src/resource-store.ts";
-import { pruneServerRetention } from "../src/retention-maintenance.ts";
+import { retentionMaintenanceJob, seedRetentionMaintenance } from "../src/retention-maintenance.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 
 // Synthetic protocol/counter inputs only; these are not measured provider usage.
@@ -275,29 +276,30 @@ test("vault purge failure cannot skip expired resource evidence pruning or leak 
     id = await f.sandbox();
   const token = await f.admit(id, now);
   await f.store.append(id, f.reading(id), now, token);
-  const canary = crypto.randomUUID();
-  let error: unknown;
-  try {
-    await pruneServerRetention(
-      sql,
-      {
-        purgeExpired: async () => {
-          throw new Error(canary);
-        },
+  const messages: string[] = [];
+  const cutoff = new Date(now.getTime() + 15 * 86400000);
+  const job = retentionMaintenanceJob(
+    sql,
+    {
+      purgeExpired: async () => {
+        throw new Error("private database details");
       },
-      new Date(now.getTime() + 15 * 86400000),
-    );
-  } catch (failure) {
-    error = failure;
-  }
+    },
+    (line) => messages.push(line),
+    () => cutoff,
+  );
+  const jobs = createJobsStore(sql);
+  await seedRetentionMaintenance(jobs);
+  const claim = await jobs.claim("maintenance", crypto.randomUUID(), 30, 1);
+  expect(claim).toBeDefined();
+  const result = await job.run(claim!);
   const rows = await db.query<{ count: number }>(
     "select count(*)::integer as count from resource_observations where sandbox_id=$1",
     [id],
   );
   expect(rows.rows[0]?.count).toBe(0);
-  expect(error instanceof Error).toBe(true);
-  expect(error instanceof Error && error.message === "Server retention maintenance unavailable.").toBe(true);
-  expect(error instanceof Error && error.cause === undefined).toBe(true);
+  expect(messages).toEqual(["armada: retention maintenance unavailable; retrying."]);
+  expect(result).toMatchObject({ status: "retry", after: new Date(cutoff.getTime() + 600_000) });
 });
 
 test("unknown launch/capacity and arbitrary extra transport fields never become evidence", async () => {

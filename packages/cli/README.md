@@ -51,3 +51,21 @@ the route or evidence is unavailable.
 A closed stdout pipe ends the CLI with status zero, including during a follow
 operation. Check a submitted mutation's outcome before retrying it. The exit
 status in this case only describes the pipe.
+
+## Local skill installation and hints
+
+The installer preflights both agent destinations before writing. Exclusive
+directory creation still refuses a destination created after that check. The
+installer and hint use the same package name for the pinned public Armada skill.
+
+The hint checks discovery roots in the home directory and up to 32 directories
+starting at the working directory. Missing or unreadable installations do not
+suppress the hint. The weekly cooldown also suppresses it when the receipt
+timestamp is in the future after a clock rollback.
+
+The CLI records the cooldown before printing. Unusable state suppresses the
+hint, and errors in the hint leave the command's exit status alone. The receipt
+is opened without following symlinks and in nonblocking mode, and the CLI
+checks that the opened object is a regular file before truncating it. This
+protects against a named pipe or other special file replacing the receipt
+between the initial check and open.

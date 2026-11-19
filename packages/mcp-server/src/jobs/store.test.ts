@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import { rowOnlyDatabase } from "../../test/row-only-database.ts";
+import { retentionMaintenanceJob, seedRetentionMaintenance } from "../retention-maintenance.ts";
 import { scopedRuntimeSql } from "../runtime-enrolment.ts";
+import type { LaneFactory } from "../server-worker-modules.ts";
 import { sqlOver } from "../sql.ts";
 import { runtimeWakes } from "../wake-bus.ts";
 import { createJobsRunner, type Job } from "./runner.ts";
@@ -231,4 +233,112 @@ test("a failed completion transaction replays the same job and preserves its pri
   expect((await db.query("select state, outcome from jobs where id = $1", [id])).rows).toEqual([
     { state: "failed", outcome: { reason: "reconciled", evidence } },
   ]);
+});
+
+test("the registered jobs lane retries a lost seed reply and preserves the schedule across a restart", async () => {
+  const { db, sql, store } = await fixture();
+  await import("../modules.ts");
+  const { jobsModule } = await import("../server-worker-modules.ts");
+  const managed = new Map<string, LaneFactory>();
+  jobsModule({ workers: { managed } } as Parameters<typeof jobsModule>[0]);
+  const factory = managed.get("jobs")!;
+  let purges = 0;
+  let seeds = 0;
+  const services = {
+    jobs: {
+      ...store,
+      async enqueue(...args: Parameters<typeof store.enqueue>) {
+        const id = await store.enqueue(...args);
+        if (++seeds === 1) {
+          throw new Error("Seed reply lost.");
+        }
+        return id;
+      },
+    },
+    options: { logError: () => {} },
+    githubApp: null,
+    config: {},
+    langfuse: {
+      exportJob: {
+        concurrency: 1,
+        async run() {
+          throw new Error("Unexpected Langfuse export.");
+        },
+      },
+    },
+    webhooks: {
+      run: async () => {
+        throw new Error("Unexpected webhook.");
+      },
+    },
+    outputs: { enqueueCaptures: async () => {}, drain: async () => {} },
+    sql,
+    control: {
+      applicationVault: {
+        async purgeExpired() {
+          purges++;
+        },
+      },
+    },
+  } as unknown as Parameters<LaneFactory>[0];
+  const lane = factory(services)!;
+  expect(await lane.reconcileOne(signal)).toBe(true);
+  await lane.drain();
+  expect(await lane.reconcileOne(signal)).toBe(false);
+  const restarted = factory(services)!;
+  expect(await restarted.reconcileOne(signal)).toBe(false);
+  expect(purges).toBe(1);
+  expect(seeds).toBe(3);
+  const { rows } = await db.query(
+    "select state, attempts, run_after > clock_timestamp() as delayed from jobs where kind = 'maintenance'",
+  );
+  expect(rows).toEqual([{ state: "queued", attempts: 0, delayed: true }]);
+});
+
+test("a failed recurring completion rolls back its schedule and the next lease replays the sweep", async () => {
+  const { db, sql, store } = await fixture();
+  const id = await seedRetentionMaintenance(store);
+  const time = new Date("2100-01-01T00:00:00Z");
+  let purges = 0;
+  const handler = retentionMaintenanceJob(
+    sql,
+    {
+      async purgeExpired() {
+        purges++;
+      },
+    },
+    () => {},
+    () => time,
+  );
+  let retryExpiredCompletion: (() => Promise<boolean>) | undefined;
+  const crashed = createJobsRunner(
+    {
+      ...store,
+      complete(job, owner, result) {
+        retryExpiredCompletion = () => store.complete(job, owner, result);
+        return store.complete(job, owner, {
+          ...result,
+          async commit(tx) {
+            await result.commit?.(tx);
+            throw new Error("Completion interrupted before commit.");
+          },
+        });
+      },
+    },
+    { maintenance: handler },
+    () => {},
+  );
+  expect(await crashed.reconcileOne(signal)).toBe(true);
+  await crashed.drain();
+  const schedule = async () => (await db.query("select state, attempts, run_after from jobs where id = $1", [id])).rows;
+  const beforeExpiry = await schedule();
+  expect(beforeExpiry).toMatchObject([{ state: "leased", attempts: 1 }]);
+  await db.query("update jobs set lease_until = '-infinity' where id = $1", [id]);
+  expect(await retryExpiredCompletion?.()).toBe(false);
+  expect(await schedule()).toEqual(beforeExpiry);
+  const successor = createJobsRunner(store, { maintenance: handler });
+  expect(await successor.reconcileOne(signal)).toBe(true);
+  await successor.drain();
+  expect(purges).toBe(2);
+  expect(await schedule()).toEqual([{ state: "queued", attempts: 0, run_after: new Date(time.getTime() + 600_000) }]);
 });

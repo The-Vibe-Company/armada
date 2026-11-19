@@ -5,7 +5,7 @@ import { createJobsRunner } from "./jobs/runner.ts";
 import { createMcpSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
 import { createNativeWebhookPrompts } from "./native-webhook-prompts.ts";
 import { createProviderReaper } from "./provider-reaper.ts";
-import { pruneServerRetention } from "./retention-maintenance.ts";
+import { retentionMaintenanceJob, seedRetentionMaintenance } from "./retention-maintenance.ts";
 import { startRoutineWorker } from "./routine-worker.ts";
 import { createRuntimeAgent } from "./runtime-agent.ts";
 import { createRuntimeIdle } from "./runtime-idle.ts";
@@ -48,6 +48,7 @@ const jobsLane: LaneFactory = ({
   options,
   outputs,
   langfuse,
+  control,
 }) => {
   const prScan = githubApp
     ? createPullRequestScanJob(
@@ -90,15 +91,25 @@ const jobsLane: LaneFactory = ({
         run: (job, context) => goldenRetirements.runJob(job.id, context),
       },
       langfuse_export: langfuse.exportJob,
+      maintenance: retentionMaintenanceJob(sql, control.applicationVault, options.logError),
       webhook: { concurrency: 1, run: webhooks.run },
       ...(prScan ? { pr_scan: prScan } : {}),
       ...(config.encryptionKey ? { [OUTPUTS_CAPTURE]: outputs.captureJob } : {}),
     },
     options.logError,
   );
+  let seeded = false;
   return {
     ...runner,
     async reconcileOne(signal) {
+      if (!seeded && !signal.aborted) {
+        try {
+          await seedRetentionMaintenance(jobs);
+          seeded = true;
+        } catch {
+          (options.logError ?? console.error)("armada: retention maintenance scheduling unavailable.");
+        }
+      }
       try {
         await outputs.enqueueCaptures(jobs, signal);
       } catch {
@@ -131,11 +142,6 @@ const idleLane: LaneFactory = ({ sql, config, runtimeCheckpoint, idleDelayMs, do
   });
 
 const dockerCleanupLane: LaneFactory = ({ sql, config }) => createFinishedDockerCleanup(sql, config.encryptionKey);
-export const retentionWorker =
-  ({ sql, control }: ServerServices) =>
-  () =>
-    pruneServerRetention(sql, control.applicationVault, new Date());
-
 const invitationWorker = ({ env, control }: ServerServices) => {
   const invitations = control.invitations;
   return env.ARMADA_INVITATION_MAIL === "supabase" && invitations

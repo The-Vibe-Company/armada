@@ -12,7 +12,6 @@ export interface ServerLifecycleLane {
 export function startServerWorkers(
   lifecycle: ServerLifecycleLane,
   log: (line: string) => void = console.error,
-  maintenance?: () => Promise<void>,
   managed: readonly ServerLifecycleLane[] | ServerLifecycleLane = [],
   isolated: readonly ServerLifecycleLane[] = [],
 ) {
@@ -54,28 +53,7 @@ export function startServerWorkers(
   }
   const lifecycleDone = runLanes(lanes, true, true);
   const isolatedDone = Promise.all(isolated.map((lane) => runLanes([lane], !lane.isolatedSweep)));
-  const maintenanceDone = (async () => {
-    if (!maintenance) return;
-    while (!shutdown.signal.aborted) {
-      try {
-        await maintenance();
-      } catch {
-        log("armada: retention maintenance unavailable; retrying.");
-      }
-      if (!shutdown.signal.aborted)
-        await new Promise<void>((resolve) => {
-          const finish = () => {
-            clearTimeout(timer);
-            shutdown.signal.removeEventListener("abort", finish);
-            resolve();
-          };
-          const timer = setTimeout(finish, 10 * 60_000);
-          timer.unref();
-          shutdown.signal.addEventListener("abort", finish, { once: true });
-        });
-    }
-  })();
-  const done = Promise.all([lifecycleDone, maintenanceDone, isolatedDone]).then(() => {});
+  const done = Promise.all([lifecycleDone, isolatedDone]).then(() => {});
   return {
     lifecycleWorker: { done: lifecycleDone },
     done,

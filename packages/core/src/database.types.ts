@@ -1040,6 +1040,44 @@ export type Database = {
           },
         ];
       };
+      event_log: {
+        Row: {
+          id: number;
+          org_id: string;
+          sandbox_id: string;
+          sequence: number | null;
+          kind: string;
+          ref: number;
+          created_at: string;
+        };
+        Insert: {
+          id?: number;
+          org_id: string;
+          sandbox_id: string;
+          sequence?: number | null;
+          kind: string;
+          ref: number;
+          created_at?: string;
+        };
+        Update: {
+          id?: number;
+          org_id?: string;
+          sandbox_id?: string;
+          sequence?: number | null;
+          kind?: string;
+          ref?: number;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "event_log_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: false;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       github_authorizations: {
         Row: {
           id: string;
@@ -4844,6 +4882,29 @@ export type Database = {
             isOneToOne: false;
             referencedRelation: "sandbox_output_transfers";
             referencedColumns: ["sandbox_id", "id"];
+          },
+        ];
+      };
+      sandbox_source_snapshots: {
+        Row: {
+          sandbox_id: string;
+          snapshot_id: string;
+        };
+        Insert: {
+          sandbox_id: string;
+          snapshot_id: string;
+        };
+        Update: {
+          sandbox_id?: string;
+          snapshot_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "sandbox_source_snapshots_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: true;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
           },
         ];
       };
