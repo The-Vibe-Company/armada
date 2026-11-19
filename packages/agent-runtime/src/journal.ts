@@ -215,7 +215,7 @@ export class Journal {
           scrubbed.data.outputTruncated = true;
         }
       } else if (event.type === "model/rerouted") {
-        maskPayloadField(event, scrubbed, "data", maskField);
+        maskPayloadField({ data: event.data }, scrubbed, "data", maskField);
       } else {
         scrubbed.data = maskProofData(event.data, scrubbed.data, mask, maskField);
       }
