@@ -12,7 +12,11 @@ function isToolProof(type: string) {
   return type === "armada/opencodeShell" || type === "armada/opencodeMcp";
 }
 
-function truncatedEvent(event: AgentEvent, bytes: number, terminal = false) {
+function truncatedEvent(
+  event: Pick<AgentEvent, "id" | "at" | "conversationId" | "promptId" | "kind">,
+  bytes: number,
+  terminal = false,
+) {
   return JSON.stringify({
     id: event.id,
     at: event.at,
@@ -49,23 +53,29 @@ const maskPayload: (value: unknown, mask: (text: string) => string) => unknown =
   return value;
 };
 
-function maskProofData(original: unknown, scrubbed: unknown, mask: (text: string) => string) {
+function maskProofData(
+  original: unknown,
+  scrubbed: unknown,
+  mask: ((text: string) => string) | undefined,
+  maskInput: (text: string) => string,
+) {
   if (!original || typeof original !== "object" || !scrubbed || typeof scrubbed !== "object") return scrubbed;
   const source = original as Record<string, unknown>;
   const data = scrubbed as Record<string, unknown>;
   for (const key of ["command", "output", "server", "nativeToolName", "nativeMessageId", "callId"]) {
     const before = source[key];
     const after = data[key];
-    if (typeof before === "string" && typeof after === "string") data[key] = maskText(before, after, mask);
+    if (mask && typeof before === "string" && typeof after === "string") data[key] = maskText(before, after, mask);
   }
+  if (source.tool === "bash" || source.tool === "shell") data.tool = source.tool;
   if (source.input !== undefined) {
-    const short = maskPayload(source.input, mask);
+    const input = maskPayload(source.input, maskInput);
     const before = JSON.stringify(source.input);
     const after = JSON.stringify(data.input);
-    const masked = JSON.stringify(short);
-    if (masked !== before && masked !== after) data.input = before === after ? short : "[REDACTED]";
+    const masked = JSON.stringify(input);
+    if (masked !== before && masked !== after) data.input = before === after ? input : "[REDACTED]";
   }
-  if (source.result && data.result) {
+  if (mask && source.result && data.result) {
     const before = (source.result as { output?: unknown }).output;
     const result = data.result as { output?: unknown };
     if (typeof before === "string" && typeof result.output === "string")
@@ -130,7 +140,10 @@ export class Journal {
       control = { ...event, text: `${boundedPreview(this.redact(event.text), 16000)}… [truncated]` };
     let body = this.eventBody(control, true);
     const oversized = Buffer.byteLength(body) > MAX_EVENT_BYTES;
-    if (oversized) body = truncatedEvent(event, body.length, terminalSnapshot);
+    if (oversized) {
+      const scrubbed = JSON.parse(body) as AgentEvent;
+      body = truncatedEvent({ ...scrubbed, kind: event.kind }, body.length, terminalSnapshot);
+    }
     const sequence = Number(this.db.query("INSERT INTO events(body) VALUES(?)").run(body).lastInsertRowid);
     this.onAppend?.(sequence);
     // A terminal snapshot is an answer receipt. Never acknowledge a finished answer whose full text
@@ -176,7 +189,10 @@ export class Journal {
     }
     if (isToolProof(event.type)) {
       scrubbed.type = event.type;
-      if (mask) scrubbed.data = maskProofData(event.data, scrubbed.data, mask);
+      scrubbed.data = maskProofData(event.data, scrubbed.data, mask, (text) => {
+        const literal = this.redactLiteralText(text);
+        return mask ? maskText(text, literal, mask) : literal;
+      });
       const proof = JSON.stringify(scrubbed);
       return !appending && Buffer.byteLength(proof) > MAX_EVENT_BYTES ? truncatedEvent(scrubbed, proof.length) : proof;
     }
