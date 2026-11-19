@@ -35,6 +35,7 @@ export const sandboxRestOperations = {
       "conflict",
       "sandbox_busy",
       "sandbox_not_ready",
+      "provider_unavailable",
       "provider_routing_unavailable",
       "provider_mismatch",
       "rate_limited",

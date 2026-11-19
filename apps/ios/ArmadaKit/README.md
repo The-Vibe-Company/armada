@@ -103,8 +103,9 @@ a 4xx whose code this build does not know but which carries the server's message
 lost answers, `outcome_unknown` (on any status), other 5xx and an unknown code without a
 message to `unconfirmed` (check the list before launching again). Each code selects
 local text adapted from the dashboard's failure help; validation codes and codes without
-local text add the server's own message, on one line of at most 300 characters. Sandbox delete is not
-offered: `/api/v1` has no delete route for a sandbox.
+local text add the server's own message, on one line of at most 300 characters.
+The sandbox deletion API is `DELETE /api/v1/sandboxes/{id}`. The iOS command
+surface covers launch, stop, and resume.
 
 ## Upgrade compatibility
 
