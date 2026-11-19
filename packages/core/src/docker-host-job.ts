@@ -14,6 +14,7 @@ export type DockerSnapshotBuildDescriptor = DockerSnapshotBinding & {
 };
 export type DockerHostJob = { requestId: string; request: DockerMachineRequest } & (
   | { operation: "create" | "stop" | "delete" }
+  | { operation: "deletePhysical"; machineId: string }
   | { operation: "bootstrap" | "resume"; bootstrap: BootstrapDescriptor }
   | { operation: "buildSnapshot"; build: DockerSnapshotBuildDescriptor }
 );
@@ -34,11 +35,19 @@ export function parseDockerHostJob(value: unknown): DockerHostJob {
   if (!value || typeof value !== "object") invalid();
   const bootstrap = "operation" in value && (value.operation === "bootstrap" || value.operation === "resume");
   const build = "operation" in value && value.operation === "buildSnapshot";
-  exact(value, ["requestId", "operation", "request", ...(bootstrap ? ["bootstrap"] : []), ...(build ? ["build"] : [])]);
+  const physical = "operation" in value && value.operation === "deletePhysical";
+  exact(value, [
+    "requestId",
+    "operation",
+    "request",
+    ...(bootstrap ? ["bootstrap"] : []),
+    ...(build ? ["build"] : []),
+    ...(physical ? ["machineId"] : []),
+  ]);
   id(value.requestId);
   if (
     typeof value.operation !== "string" ||
-    !["create", "stop", "delete", "bootstrap", "resume", "buildSnapshot"].includes(value.operation)
+    !["create", "stop", "delete", "deletePhysical", "bootstrap", "resume", "buildSnapshot"].includes(value.operation)
   )
     invalid();
   const r = value.request;
@@ -75,6 +84,10 @@ export function parseDockerHostJob(value: unknown): DockerHostJob {
     const end = r.expiresAt;
     if (typeof end !== "number" || !Number.isSafeInteger(end) || end <= 0 || end > 8_640_000_000_000_000) invalid();
     request.expiresAt = end;
+  }
+  if (physical) {
+    if (typeof value.machineId !== "string" || !/^[a-f0-9]{64}$/.test(value.machineId)) invalid();
+    return { requestId: value.requestId, operation: "deletePhysical", request, machineId: value.machineId };
   }
   if (build) {
     const b = value.build;
@@ -139,5 +152,6 @@ export function canonicalDockerHostJob(value: unknown): string {
     request: job.request,
     ...(job.operation === "bootstrap" || job.operation === "resume" ? { bootstrap: job.bootstrap } : {}),
     ...(job.operation === "buildSnapshot" ? { build: job.build } : {}),
+    ...(job.operation === "deletePhysical" ? { machineId: job.machineId } : {}),
   });
 }
