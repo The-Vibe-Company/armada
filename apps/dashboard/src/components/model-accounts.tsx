@@ -458,6 +458,7 @@ export function AccountRow({
   const opener = useRef<"menu" | "row">("menu");
   const info = KIND_INFO[account.kind];
   const spendLabel = monthlyApiSpendLabel(account);
+  const spokenSpendLabel = spendLabel?.replace("—", "unknown");
   const state = modelsPageStatus(account, now);
   const StateIcon = STATE_ICON[state.tone];
   const headingId = `account-${account.id}`;
@@ -502,7 +503,16 @@ export function AccountRow({
             {info.label} · {account.scope === "user" ? "Only you" : orgName}
           </span>
           {spendLabel && (
-            <span className="mt-1 block text-xs break-words text-muted-foreground tabular-nums">{spendLabel}</span>
+            <span className="mt-1 block text-xs break-words text-muted-foreground tabular-nums">
+              {spokenSpendLabel === spendLabel ? (
+                spendLabel
+              ) : (
+                <>
+                  <span aria-hidden="true">{spendLabel}</span>
+                  <span className="sr-only">{spokenSpendLabel}</span>
+                </>
+              )}
+            </span>
           )}
         </span>
         <span className={cn("shrink-0 text-xs", STATE_TONE[state.tone])}>
