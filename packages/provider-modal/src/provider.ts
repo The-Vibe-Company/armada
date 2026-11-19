@@ -32,7 +32,8 @@ import {
   readCollectorResult,
   runtimeBootstrapScript,
 } from "@armada/core/server";
-import type { App, ModalClient, Sandbox } from "modal";
+import { type App, type ModalClient, NotFoundError, type Sandbox } from "modal";
+import { SHARED_ARTIFACT_CACHE_PATH } from "../../core/src/shared-artifact-cache.ts";
 import { chooseManagementAuthority, matchesManagementAuthority } from "./authority.ts";
 import { type ModalConnection, modalConnection } from "./client.ts";
 import { lifecycleStep, ModalOperationError, modalBuilderImageError, modalError, refusal } from "./errors.ts";
@@ -360,6 +361,17 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           throw modalBuilderImageError(error);
         }
       }
+      const artifactVolume = row.commonRuntime
+        ? await client.volumes
+            .fromName("armada-runtime-artifacts", {
+              environment: options.scope.binding.environment,
+              createIfMissing: false,
+            })
+            .catch((error: unknown) => {
+              if (!(error instanceof NotFoundError)) throw error;
+              return undefined;
+            })
+        : undefined;
       row.phase = "creating";
       row.grantExpiresAt = Date.now() + row.ttlSeconds * 1000;
       await save(row);
@@ -383,6 +395,9 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           },
           timeoutMs: row.ttlSeconds * 1000,
           workdir: "/home/user",
+          ...(artifactVolume
+            ? { volumes: { [SHARED_ARTIFACT_CACHE_PATH]: artifactVolume.withMountOptions({ readOnly: true }) } }
+            : {}),
           unencryptedPorts: [SSH_PORT],
           secrets: [],
           env: {},
@@ -1045,7 +1060,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
               "PATH=/usr/local/bin:/usr/bin:/bin",
               "node",
               "-e",
-              runtimeBootstrapScript(server.origin, input.artifact, input.cacheDir),
+              runtimeBootstrapScript(server.origin, input.artifact, input.cacheDir, SHARED_ARTIFACT_CACHE_PATH),
             ],
             { env: {}, secrets: [], timeoutMs: 150_000, workdir: "/home/user", stdout: "ignore", stderr: "ignore" },
           );
