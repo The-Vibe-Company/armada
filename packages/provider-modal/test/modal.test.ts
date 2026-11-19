@@ -42,14 +42,14 @@ const scope: Scope = {
 };
 beforeAll(async () => {
   db = await openMigratedDatabase();
-  await db.query("insert into auth.users(id) values($1)", [scope.userId]);
-  await db.query("insert into auth.users(id) values($1)", ["00000000-0000-0000-0000-000000000004"]);
-  await db.query("insert into orgs(id,name) values($1,'modal')", [scope.orgId]);
-  await db.query("insert into members(org_id,user_id,role) values($1,$2,'admin')", [scope.orgId, scope.userId]);
-  await db.query("insert into members(org_id,user_id,role) values($1,$2,'member')", [
-    scope.orgId,
-    "00000000-0000-0000-0000-000000000004",
-  ]);
+  await db.exec(`
+    insert into auth.users(id) values
+      ('${scope.userId}'), ('00000000-0000-0000-0000-000000000004');
+    insert into orgs(id,name) values ('${scope.orgId}','modal');
+    insert into members(org_id,user_id,role) values
+      ('${scope.orgId}','${scope.userId}','admin'),
+      ('${scope.orgId}','00000000-0000-0000-0000-000000000004','member');
+  `);
 });
 afterAll(async () => {
   await db.close();
@@ -60,7 +60,9 @@ function fixture(
   beforePrompt?: ModalProviderOptions["beforePrompt"],
   beforeResume?: ModalProviderOptions["beforeResume"],
   commonRuntime?: true,
-  admissionSleep: NonNullable<ModalProviderOptions["admissionSleep"]> = Bun.sleep,
+  admissionSleep: NonNullable<ModalProviderOptions["admissionSleep"]> = async () => {
+    throw new Error("Unexpected admission retry: supply a fixture barrier for contention.");
+  },
 ) {
   const store = createSqlModalStore(sql, accessScope);
   const log: string[] = [];
@@ -1070,6 +1072,32 @@ function deferred() {
   });
   return { promise, resolve };
 }
+function admissionBarrier() {
+  const retry = deferred();
+  let holder: Promise<unknown> | undefined;
+  return {
+    retry: retry.promise,
+    wait: async () => {
+      retry.resolve();
+      if (holder) await Promise.allSettled([holder]);
+    },
+    track(store: ReturnType<typeof createSqlModalStore>, sandboxId: string) {
+      const lease = store.lease.bind(store);
+      store.lease = async (id, work) => {
+        if (id !== sandboxId) return lease(id, work);
+        const attempt = lease(id, (row, save) => {
+          holder = attempt;
+          return work(row, save);
+        });
+        try {
+          return await attempt;
+        } finally {
+          if (holder === attempt) holder = undefined;
+        }
+      };
+    },
+  };
+}
 function compositionOptions(
   f: ReturnType<typeof fixture>,
   target: Scope = scope,
@@ -1730,8 +1758,8 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     // The retirement's own collection holds the remote call open.
     const retiring = f.provider.deleteSnapshot(name);
     await entered.promise;
-    // Sixteen sweeps while the claim is live dispatch nothing.
-    await Promise.all(Array.from({ length: 16 }, () => f.provider.collectGarbage()));
+    // An overlapping sweep while the claim is live dispatches nothing.
+    await f.provider.collectGarbage();
     expect(calls).toBe(1);
     const expire = () =>
       db.query(
@@ -2733,9 +2761,10 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(f.log.filter((op) => op === "prompt")).toHaveLength(healthy ? 1 : 0);
   });
   test("beforePrompt sees ready first/restored generation outside the lease, configures before native submission, and supports parallel stable turns", async () => {
+    const admission = admissionBarrier();
     const observed: string[] = [];
     const hydrated: { generation: number; variables: unknown }[] = [];
-    const f = fixture(scope, db, async (provider, id) => {
+    const beforePrompt: ModalProviderOptions["beforePrompt"] = async (provider, id) => {
       const info = await provider.get(id);
       expect(info.state).toBe("ready");
       observed.push(info.physicalGeneration ?? "missing");
@@ -2748,13 +2777,15 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
         sandboxId: id,
         configuration: { revision: `generation-${info.physicalGeneration}`, servers: {} },
       });
-    });
+    };
+    const f = fixture(scope, db, beforePrompt, undefined, undefined, admission.wait);
     f.onRpc(async (machine, op, input) => {
       if (op !== "configureReadableVariables") return undefined;
       hydrated.push({ generation: machine.generation, variables: (input as { variables: unknown }).variables });
       return { acknowledged: true };
     });
     const row = await runningFork(f);
+    admission.track(f.store, row.id);
     await Promise.all(
       (["claude", "codex"] as const).map((harness) =>
         f.provider.prompt({ sandboxId: row.id, harness, text: "prepared turn" }),
@@ -3015,8 +3046,10 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(f.creates).toBe(allocations);
   });
   test("configureMcp serializes transient authority with turn admission, returns only revision and never persists config", async () => {
-    const f = fixture();
+    const admission = admissionBarrier();
+    const f = fixture(scope, db, undefined, undefined, undefined, admission.wait);
     const row = await runningFork(f);
+    admission.track(f.store, row.id);
     const entered = deferred(),
       release = deferred();
     const configuration = {
@@ -3038,14 +3071,23 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     });
     const configuring = f.provider.configureMcp({ sandboxId: row.id, configuration });
     await entered.promise;
-    const prompts = Promise.all(
-      (["claude", "codex"] as const).map((harness) =>
-        f.provider.prompt({ sandboxId: row.id, harness, text: "queued behind authoritative config" }),
-      ),
+    const pendingPrompts = (["claude", "codex"] as const).map((harness) =>
+      f.provider.prompt({ sandboxId: row.id, harness, text: "queued behind authoritative config" }),
     );
-    await expect(f.provider.stop({ sandboxId: row.id })).rejects.toMatchObject({ code: "conflict" });
-    expect(f.log.at(-1)).toBe("configureMcp");
-    release.resolve();
+    const prompts = Promise.all(pendingPrompts);
+    try {
+      await Promise.race([
+        admission.retry,
+        prompts.then(() => {
+          throw new Error("A prompt entered before MCP configuration released the lease.");
+        }),
+      ]);
+      await expect(f.provider.stop({ sandboxId: row.id })).rejects.toMatchObject({ code: "conflict" });
+      expect(f.log.at(-1)).toBe("configureMcp");
+    } finally {
+      release.resolve();
+      await Promise.allSettled([configuring, ...pendingPrompts]);
+    }
     expect(await configuring).toEqual({ revision: configuration.revision });
     const receipts = await prompts;
     expect(new Set(receipts.map((x) => x.promptId)).size).toBe(2);

@@ -365,7 +365,7 @@
     "packages/provider-modal/test/conformance-app.test.ts": 0.012,
     "packages/provider-modal/test/distribution.test.ts": 0.728,
     "packages/provider-modal/test/exec-env.test.ts": 0.13,
-    "packages/provider-modal/test/modal.test.ts": 10.336,
+    "packages/provider-modal/test/modal.test.ts": 8.816,
     "packages/provider-modal/test/security.test.ts": 0.134,
     "packages/provider-modal/test/snapshot.test.ts": 0.155,
     "packages/provider-modal/test/ssh-os.test.ts": 0.019,
