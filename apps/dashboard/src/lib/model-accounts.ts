@@ -23,7 +23,10 @@ export type AccountKind = (typeof ACCOUNT_KINDS)[number];
 export type AccountStatus = (typeof ACCOUNT_STATUSES)[number];
 export type AccountScope = (typeof ACCOUNT_SCOPES)[number];
 
+type MonthlySpend = { periodStart: string; usd: string; unpricedTurns: number };
+
 export interface ModelAccount {
+  monthlySpend?: MonthlySpend;
   maxAgents?: number | null;
   modelLimits?: Record<string, number>;
   modelCounts?: Record<string, { runningAgents: number; waitingAgents: number }>;
@@ -138,6 +141,30 @@ function text(value: unknown, max: number): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim().slice(0, max) : undefined;
 }
 
+function parseMonthlySpend(value: unknown): MonthlySpend | undefined {
+  if (!isRow(value)) return;
+  const { periodStart, usd, unpricedTurns } = value;
+  if (
+    typeof periodStart !== "string" ||
+    !/^\d{4}-(0[1-9]|1[0-2])-01$/.test(periodStart) ||
+    typeof usd !== "string" ||
+    !/^\d+(?:\.\d+)?$/.test(usd) ||
+    typeof unpricedTurns !== "number" ||
+    !Number.isSafeInteger(unpricedTurns) ||
+    unpricedTurns < 0
+  )
+    return;
+  return { periodStart, usd, unpricedTurns };
+}
+
+export function monthlyApiSpendLabel({ kind, monthlySpend }: ModelAccount): string | null {
+  if (kind !== "openai" && kind !== "anthropic" && kind !== "opencode") return null;
+  const unpriced = monthlySpend?.unpricedTurns ?? 0;
+  const usd = monthlySpend && (monthlySpend.usd !== "0" || unpriced === 0) ? monthlySpend.usd : "—";
+  const note = unpriced ? ` (${unpriced} unpriced ${unpriced === 1 ? "turn" : "turns"})` : "";
+  return `API: ${usd} USD this month${note}`;
+}
+
 /** An account DTO, or null when it does not match the contract. An unknown status reads as `unknown`. */
 export function parseAccount(value: unknown): ModelAccount | null {
   if (!isRow(value)) return null;
@@ -148,7 +175,9 @@ export function parseAccount(value: unknown): ModelAccount | null {
   const updatedAt = isoOrNull(value.updatedAt);
   if (!name || expiresAt === undefined || !updatedAt) return null;
   if (typeof value.version !== "number" || !Number.isInteger(value.version) || value.version < 0) return null;
+  const monthlySpend = parseMonthlySpend(value.monthlySpend);
   return {
+    ...(monthlySpend ? { monthlySpend } : {}),
     id: value.id,
     scope: value.scope,
     kind: value.kind,
