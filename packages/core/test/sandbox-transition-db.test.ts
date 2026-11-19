@@ -141,12 +141,42 @@ test("existing same-generation stop intent is reused and the transition is journ
     [sandbox, org, key, resume.deadline_at],
   );
   expect(
-    (await transition(db, ["starting", "running"], "stopping", "owner", [{ ...resume, kind: "stop" }])).rows,
+    (
+      await transition(db, ["starting", "running"], "stopping", "idle", [{ ...resume, kind: "stop" }], {
+        code: "idle_paused",
+      })
+    ).rows,
   ).toEqual([{ applied: true, generation: 1 }]);
   expect((await history(db)).rows).toEqual([
-    { from_status: "running", to_status: "stopping", actor: "owner", code: "test_transition", generation: 1 },
+    { from_status: "running", to_status: "stopping", actor: "idle", code: "idle_paused", generation: 1 },
   ]);
   expect((await db.query("select idem_key from jobs")).rows).toEqual([{ idem_key: key }]);
+  expect((await db.query("select status_reason from sandboxes")).rows).toEqual([{ status_reason: "idle_paused" }]);
+});
+
+test("stop requires exactly one intent, including a handoff of an existing job", async () => {
+  const db = database();
+  await seedSandbox(db, "running");
+  const stop = { ...resume, kind: "stop" };
+  for (const effects of [[], [stop, { ...stop, idem_key: "second_stop" }]]) {
+    await expect(transition(db, ["running"], "stopping", "owner", effects)).rejects.toThrow(
+      "sandbox transition requires one lifecycle job",
+    );
+  }
+  expect((await db.query("select status from sandboxes")).rows).toEqual([{ status: "running" }]);
+});
+
+test("a failed sandbox can be deleted only after reconciliation records physical exit", async () => {
+  const db = database();
+  await seedSandbox(db, "failed", "runtime_failure");
+  const deleteSandbox = () => transition(db, ["failed"], "deleted", "retention_job", [], { code: "retention_elapsed" });
+  await expect(deleteSandbox()).rejects.toThrow("failed sandbox exit is unconfirmed");
+  expect((await history(db)).rows).toEqual([]);
+  await db.query("update sandboxes set stopped_at = now() where id = $1 and lifecycle_generation = 1", [sandbox]);
+  expect((await deleteSandbox()).rows).toEqual([{ applied: true, generation: 1 }]);
+  expect((await db.query("select status, status_reason from sandboxes")).rows).toEqual([
+    { status: "deleted", status_reason: "retention_elapsed" },
+  ]);
 });
 
 test.each(["anon", "authenticated"])("%s cannot execute the transition", async (role) => {

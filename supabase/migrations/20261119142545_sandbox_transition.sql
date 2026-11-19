@@ -50,10 +50,16 @@ begin
     raise exception 'invalid sandbox transition' using errcode = '22023';
   end if;
 
+  if p_to_state in ('starting', 'stopping') and jsonb_array_length(p_effects) <> 1 then
+    raise exception 'sandbox transition requires one lifecycle job' using errcode = '22023';
+  end if;
+
+  -- Reconciliation records proven exit on failed rows before deletion.
+  if sandbox.status = 'failed' and p_to_state = 'deleted' and sandbox.stopped_at is null then
+    raise exception 'failed sandbox exit is unconfirmed' using errcode = '22023';
+  end if;
+
   if p_to_state = 'starting' then
-    if jsonb_array_length(p_effects) <> 1 then
-      raise exception 'resume requires one job' using errcode = '22023';
-    end if;
     sandbox.lifecycle_generation := sandbox.lifecycle_generation + 1;
   end if;
 
@@ -62,6 +68,10 @@ begin
       lifecycle_generation = sandbox.lifecycle_generation,
       status_reason = case p_to_state
         when 'starting' then null
+        when 'stopping' then case
+          when p_code in ('expired', 'idle_paused', 'agent_finished', 'work_merged') then p_code
+          else s.status_reason
+        end
         when 'failed' then p_code
         when 'deleted' then case when p_code in ('retention_elapsed', 'disk_pressure') then p_code end
         else s.status_reason
