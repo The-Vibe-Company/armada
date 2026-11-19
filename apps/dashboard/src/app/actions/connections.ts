@@ -180,7 +180,7 @@ async function finishAdd(control: Control, created: McpConnection, org: string, 
 }
 
 /** A catalog add's outcome; `created` once the connection exists, so the form is not submitted a second time. */
-export type AddServiceResult = ActionResult & { created?: true };
+type AddServiceResult = ActionResult & { created?: true };
 
 /** Adds a remote (URL) or stdio connection to the selected org, personal or shared, then connects it. */
 export async function addConnection(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {

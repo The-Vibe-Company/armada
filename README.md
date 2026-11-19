@@ -128,15 +128,15 @@ armada launch web --provider boat --agent claude --model claude-opus-5-5 --reaso
   "Find why the checkout test is flaky and fix it"
 ```
 
-**7. Drive it.**
+**7. Drive it.** Replace `SANDBOX_ID` with the ID printed by launch. Run `steer` while the turn is active, from another terminal if `logs --follow` is still running. Send a follow-up after the turn settles. The effort override below applies to a new turn on native Boat. On runtime-backed Boat, keep the launch effort by omitting the override.
 
 ```sh
-armada logs <sandbox-id> --follow
-armada steer <sandbox-id> "Keep the public API unchanged"   # Codex restarts the turn with it
-armada send <sandbox-id> "Now add a regression test" --reasoning-effort xhigh   # this turn only
-armada extend <sandbox-id> --ttl 270m        # extend the 4h launch to 4h30m from now
-armada stop <sandbox-id>                     # normally retains disk/conversation; Modal checkpoint failure does not
-armada send <sandbox-id> "Push the branch"   # resumes only if the stopped sandbox was retained
+armada logs SANDBOX_ID --follow
+armada steer SANDBOX_ID "Keep the public API unchanged"
+armada send SANDBOX_ID "Now add a regression test" --reasoning-effort xhigh   # this turn only
+armada extend SANDBOX_ID --ttl 270m              # extend the 4h launch to 4h30m from now
+armada stop SANDBOX_ID                     # normally retains disk/conversation; Modal checkpoint failure does not
+armada send SANDBOX_ID "Push the branch"   # resumes only if the stopped sandbox was retained
 ```
 
 Extend an accessible running or idle sandbox as its owner or an org admin. The new deadline must be later than the current one and within server/provider limits. Boat resets its hard timer; Modal extensions must fit before the existing physical deadline minus a five-minute stop margin, without replacing the machine. Modal launch headroom is server-configured; see [sandbox lifetime limits](docs/sandbox-expiry-investigation.md#initial-delivery-scope).
@@ -149,20 +149,21 @@ Fable (`claude-fable-5-2`) is not suggested in the shared catalogue: Boat is kno
 
 ## Bring your MCP servers
 
-Register an MCP server once, connect it (the browser opens when it asks for OAuth), then attach it to the sandboxes that need it. Only connected servers can be attached, and tokens never go on the command line. For an ordinary cloud launch with a personal connection, use a private snapshot (named `private-web` below); an admin shares one with the whole organization with `--scope org`.
+Register an MCP server once, connect it (the browser opens when it asks for OAuth), then attach it to the sandboxes that need it. Replace `CONNECTION_ID` with the ID from `armada mcp list` and `SANDBOX_ID` with the ID printed by launch. Only connected servers can be attached, and tokens never go on the command line. For an ordinary cloud launch with a personal connection, use a private snapshot (named `private-web` below). An admin can register an organization-wide connection with `armada mcp add --scope org` using the same name and URL arguments.
 
 ```sh
 armada mcp add Docs https://mcp.example.com/mcp      # personal; --scope org shares it with your org
-armada mcp connect <connection-id>
-armada launch private-web --provider boat --agent codex --connections <connection-id> "Update the API reference"
-armada mcp sandbox-connections <sandbox-id>
+armada mcp list
+armada mcp connect CONNECTION_ID
+armada launch private-web --provider boat --agent codex --connections CONNECTION_ID "Update the API reference"
+armada mcp sandbox-connections SANDBOX_ID
 ```
 
 Details: [docs/cli-capabilities-and-mcp-shortcuts.md](docs/cli-capabilities-and-mcp-shortcuts.md).
 
 ## Drive Armada from your own agent
 
-Armada is also a remote MCP server. Add it to Claude Code, Codex, Cursor or your own coordinator, and that agent can launch and drive sandboxes with `launch`, `list`, `status`, `wait`, `logs`, `send`, `steer`, `interrupt`, `exec`, `extend` and `stop`.
+Armada is also a remote MCP server. Add it to Claude Code, Codex, Cursor or your own coordinator, and that agent can launch and drive sandboxes with `launch`, `list`, `status`, `logs`, `send`, `report`, `exec` and `stop`. Use `status` with `wait: true` to wait for settlement, `send` with `steer: true` to redirect a turn, and `stop` with `turn: true` to interrupt the turn while keeping the machine up.
 
 MCP clients sign in with OAuth; bots and CI use a service token bound to one organization:
 

@@ -47,7 +47,7 @@ async function adminControl(org: string) {
   return control;
 }
 
-export type HostRegistrationResult =
+type HostRegistrationResult =
   | { ok: true; hostId: string; command: string; expiresAt: string }
   | { ok: false; error: string };
 
