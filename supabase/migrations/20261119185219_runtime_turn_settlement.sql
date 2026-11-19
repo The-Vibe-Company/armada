@@ -28,6 +28,7 @@ begin
     return;
   end if;
 
+  -- ready is the persisted availability state during the writer rollout.
   select edge.actors, edge.effects into allowed_actors, allowed_effects
   from (values
     ('stopped', 'starting', array['resume_admission'], array['resume']),
@@ -42,8 +43,8 @@ begin
     ('running', 'failed', array['lifecycle_runner', 'docker_host', 'reconciler'], array[]::text[]),
     ('ready', 'failed', array['lifecycle_runner', 'docker_host', 'reconciler'], array[]::text[]),
     ('stopping', 'failed', array['lifecycle_runner', 'reconciler'], array[]::text[]),
-    ('ready', 'stopped', array['reconciler'], array['output_publication', 'webhook']),
-    ('running', 'stopped', array['reconciler'], array['output_publication', 'webhook']),
+    ('ready', 'stopped', array['reconciler', 'runtime_observation'], array['output_publication', 'webhook']),
+    ('running', 'stopped', array['reconciler', 'runtime_observation'], array['output_publication', 'webhook']),
     ('stopping', 'stopped', array['lifecycle_runner', 'reconciler'], array['output_publication', 'webhook']),
     ('stopped', 'deleted', array['delete_job', 'retention_job'], array['webhook', 'metadata_retirement']),
     ('failed', 'deleted', array['delete_job', 'retention_job'], array['webhook', 'metadata_retirement'])
@@ -64,6 +65,10 @@ begin
     return;
   end if;
 
+  if p_actor = 'runtime_observation' and p_stopped_at is null then
+    raise exception 'runtime stop observation requires an exit timestamp' using errcode = '22023';
+  end if;
+
   if p_to_state in ('starting', 'stopping') and jsonb_array_length(p_effects) <> 1 then
     raise exception 'sandbox transition requires one lifecycle job' using errcode = '22023';
   end if;
@@ -80,7 +85,7 @@ begin
   update public.sandboxes s
   set status = p_to_state,
       lifecycle_generation = sandbox.lifecycle_generation,
-      status_reason = case when p_actor = 'reconciler' then p_status_reason else case p_to_state
+      status_reason = case when p_actor in ('reconciler', 'runtime_observation') then p_status_reason else case p_to_state
         when 'starting' then null
         when 'stopping' then case
           when p_code in ('expired', 'idle_paused', 'agent_finished', 'work_merged') then p_code
@@ -95,7 +100,7 @@ begin
         when 'stopping' then coalesce(s.stop_requested_at, clock_timestamp())
         else s.stop_requested_at
       end end,
-      stopped_at = case when p_actor = 'reconciler' then p_stopped_at else case p_to_state
+      stopped_at = case when p_actor in ('reconciler', 'runtime_observation') then p_stopped_at else case p_to_state
         when 'starting' then null
         when 'stopped' then coalesce(s.stopped_at, clock_timestamp())
         else s.stopped_at

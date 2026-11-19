@@ -4076,3 +4076,27 @@ test("connection probe uses only the active runtime and validates its receipt wi
   expect(f.creates).toBe(creates);
   expect(f.log).toEqual([]);
 });
+
+test("a native scan cannot exec on a newer physical incarnation", async () => {
+  const f = fixture();
+  const worker = await activeWorker(f);
+  const { physicalGeneration } = await f.provider.get(worker.id);
+  if (!physicalGeneration) throw new Error("Expected an observed physical generation");
+  const request = {
+    sandboxId: worker.id,
+    command: "true",
+    onlyIfRunning: true,
+    expectedPhysicalGeneration: physicalGeneration,
+  };
+  await f.provider.stop({ sandboxId: worker.id });
+  await f.provider.exec({ sandboxId: worker.id, command: "pwd" });
+  const replacement = await f.provider.get(worker.id);
+  if (!replacement.physicalGeneration) throw new Error("Expected a replacement physical generation");
+  expect(replacement.physicalGeneration).not.toBe(physicalGeneration);
+  const execs = f.log.filter((call) => call === "exec").length;
+
+  await expect(f.provider.exec(request)).rejects.toMatchObject({ code: "conflict" });
+  expect(f.log.filter((call) => call === "exec")).toHaveLength(execs);
+  await f.provider.exec({ ...request, expectedPhysicalGeneration: replacement.physicalGeneration });
+  expect(f.log.filter((call) => call === "exec")).toHaveLength(execs + 1);
+});

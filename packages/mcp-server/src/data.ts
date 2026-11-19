@@ -40,7 +40,7 @@ import type { Caller } from "./caller.ts";
 import { scopedOrg } from "./control-caller.ts";
 import { createResourceStore, type ResourceStore } from "./resource-store.ts";
 import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
-import { recordObservedRuntimeFailure, settleRuntimeTurn } from "./sandbox-lifecycle.ts";
+import { recordObservedRuntimeState, settleRuntimeTurn } from "./sandbox-lifecycle.ts";
 import { SANDBOX_MEMBER, SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 import { admittedTurnContexts, stampTurnPricing, withServerCost } from "./turn-pricing.ts";
 import { preserveBeforeStop, readWorkRecovery, type StopAuthority } from "./work-preservation.ts";
@@ -59,7 +59,7 @@ export interface ServerSandboxPatch extends SandboxPatch {
   onlyIfIdle?: boolean;
   retainedRuntimeStop?: string;
   modalRuntimeExtensionTarget?: string;
-  runtimeFailureFrom?: "ready" | "running";
+  runtimeObservationFrom?: "ready" | "running";
   turnActivity?: "claim" | "finish";
 }
 
@@ -748,18 +748,24 @@ export function createSqlData(
       },
       async update(id, patch) {
         const reason = statusReasonOf(patch);
-        if (patch.runtimeFailureFrom !== undefined) {
-          if (patch.expectedGeneration === undefined || reason === undefined)
-            throw new DataError("Runtime failure publication requires a transaction, generation and diagnostic.");
-          const result = await recordObservedRuntimeFailure(sql, scope, {
+        if (patch.runtimeObservationFrom !== undefined) {
+          if (
+            patch.expectedGeneration === undefined ||
+            reason === undefined ||
+            (patch.status !== "failed" && patch.status !== "stopped") ||
+            (patch.status === "stopped" && !patch.stoppedAt)
+          )
+            throw new DataError("Runtime observation publication requires generation and state evidence.");
+          const result = await recordObservedRuntimeState(sql, scope, {
             sandboxId: id,
             generation: patch.expectedGeneration,
-            fromState: patch.runtimeFailureFrom,
+            fromState: patch.runtimeObservationFrom,
+            toState: patch.status,
             reason,
             stoppedAt: patch.stoppedAt ?? null,
           });
           if (result.kind === "conflict")
-            throw new DataError("Runtime failure observation is stale.", "sandbox_not_ready");
+            throw new DataError("Runtime state observation is stale.", "sandbox_not_ready");
           return;
         }
         const sets: string[] = [];

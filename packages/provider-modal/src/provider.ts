@@ -19,6 +19,7 @@ import { executeGoldenCommand } from "./golden-exec.ts";
 import { createImageCollection, trackDetachedCollection } from "./image-collection.ts";
 import { createLaunchLifecycle } from "./launch-lifecycle.ts";
 import { createNativeLifecycle } from "./native-lifecycle.ts";
+import { createNativeOrchestratorOperations } from "./native-orchestrator.ts";
 import { createPhysicalLifecycle } from "./physical-lifecycle.ts";
 import type {
   Machine,
@@ -240,42 +241,6 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     assertMachineSource,
     physicalLifecycle,
   });
-  async function verifyNativeSession(
-    row: Machine,
-    request: Parameters<NonNullable<Provider["verifyOrchestratorSession"]>>[0],
-  ) {
-    if (row.golden || row.phase !== "active" || request.physicalGeneration !== String(row.generation))
-      throw refusal("conflict", "Native session verification requires the bound active incarnation.");
-    const result = await runner.call<{
-      physicalGeneration: string;
-      conversationId: string;
-      nativeSessionId: string;
-      verified: boolean;
-    }>(row, "resumeNativeSession", {
-      conversationId: request.conversationId,
-      expectedSessionId: request.nativeSessionId,
-      input: {
-        sandboxId: request.sandboxId,
-        harness: request.harness,
-        model: request.model,
-        ...(request.reasoningEffort === undefined ? {} : { reasoningEffort: request.reasoningEffort }),
-        ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
-      },
-    });
-    if (
-      result?.physicalGeneration !== request.physicalGeneration ||
-      result.conversationId !== request.conversationId ||
-      result.nativeSessionId !== request.nativeSessionId ||
-      result.verified !== true
-    )
-      throw refusal("conflict", "Native session verification did not match the persisted identity.");
-    return {
-      physicalGeneration: request.physicalGeneration,
-      conversationId: request.conversationId,
-      nativeSessionId: request.nativeSessionId,
-      verified: true as const,
-    };
-  }
   function assertRecoveryTarget({ ownerId, target }: Parameters<NonNullable<Provider["findGoldenBuilder"]>>[0]) {
     if (
       target.provider !== "modal" ||
@@ -621,87 +586,16 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         return { revision: configuration.revision };
       });
     },
-    async installOrchestratorEpoch({ sandboxId, token, binding, url }) {
-      return admit(sandboxId, async (row, save) => {
-        if (row.golden || row.phase !== "active" || binding.physicalGeneration !== String(row.generation))
-          throw refusal("conflict", "Orchestrator authority requires the bound active physical generation.");
-        const active = await healthyAdmission(row, save);
-        if (binding.physicalGeneration !== String(active.generation))
-          throw refusal("conflict", "Physical generation changed during authority admission.");
-        const result = await runner.call<{ acknowledged?: unknown }>(active, "installOrchestratorEpoch", {
-          token,
-          binding,
-          url,
-        });
-        if (result?.acknowledged !== true)
-          throw refusal("unavailable", "Private runner did not acknowledge authority delivery.");
-        return { acknowledged: true };
-      });
-    },
-    async observeOrchestrator({ sandboxId, physicalGeneration, conversationId }) {
-      return admit(sandboxId, async (row) => {
-        if (row.golden || row.phase !== "active" || physicalGeneration !== String(row.generation))
-          throw refusal("conflict", "Observation requires the bound active native generation.");
-        const observed = await runner.call<{
-          physicalGeneration: string;
-          state: "active" | "quiescent" | "unknown";
-          evidence: string;
-          eventWatermark: number;
-          acknowledgedSequence: number;
-          nativeSessionId: string | null;
-        }>(row, "observeOrchestrator", { ...(conversationId === undefined ? {} : { conversationId }) });
-        if (
-          observed?.physicalGeneration !== physicalGeneration ||
-          !["active", "quiescent", "unknown"].includes(observed.state) ||
-          typeof observed.evidence !== "string" ||
-          !/^[a-f0-9]{64}$/.test(observed.evidence) ||
-          !Number.isSafeInteger(observed.eventWatermark) ||
-          observed.eventWatermark < 0 ||
-          !Number.isSafeInteger(observed.acknowledgedSequence) ||
-          observed.acknowledgedSequence < 0 ||
-          observed.acknowledgedSequence > observed.eventWatermark ||
-          (observed.nativeSessionId !== null && typeof observed.nativeSessionId !== "string")
-        )
-          throw refusal("unavailable", "Invalid native observation receipt.");
-        return observed;
-      });
-    },
-    async verifyOrchestratorSession(request) {
-      return admit(request.sandboxId, async (row) => {
-        return verifyNativeSession(row, request);
-      });
-    },
-    async quiesceOrchestrator({ sandboxId, physicalGeneration }) {
-      return admit(sandboxId, async (row, save) => {
-        if (row.golden || row.phase !== "active" || physicalGeneration !== String(row.generation))
-          throw refusal("conflict", "Quiescence requires the bound active physical generation.");
-        const active = await healthyAdmission(row, save);
-        if (physicalGeneration !== String(active.generation))
-          throw refusal("conflict", "Physical generation changed during quiescence.");
-        await runner.call(active, "interrupt", {});
-        return { acknowledged: true };
-      });
-    },
-    async scrubOrchestratorEpoch({ sandboxId, physicalGeneration, tokenHash }) {
-      return admit(sandboxId, async (row, save) => {
-        if (row.golden || row.phase !== "active" || physicalGeneration !== String(row.generation))
-          throw refusal("conflict", "Orchestrator scrub requires the bound active physical generation.");
-        const active = await healthyAdmission(row, save);
-        if (physicalGeneration !== String(active.generation))
-          throw refusal("conflict", "Physical generation changed during authority scrub.");
-        const result = await runner.call<{ acknowledged?: unknown }>(active, "scrubOrchestratorEpoch", {
-          ...(tokenHash === undefined ? {} : { tokenHash }),
-        });
-        if (result?.acknowledged !== true)
-          throw refusal("unavailable", "Private runner did not acknowledge authority scrub.");
-        return { acknowledged: true };
-      });
-    },
+    ...createNativeOrchestratorOperations({ admit, healthyAdmission, runner }),
     ...turns,
-    async exec(r) {
-      if (r.onlyIfRunning)
+    supportsExecPhysicalGeneration: true,
+    async exec({ expectedPhysicalGeneration, ...r }) {
+      if (r.onlyIfRunning || expectedPhysicalGeneration !== undefined)
         return admit(r.sandboxId, async (row) => {
+          r.signal?.throwIfAborted();
           if (row.commonRuntime) throw refusal("invalid_request", "Enrolled runtime exec is not enabled.");
+          if (expectedPhysicalGeneration !== undefined && expectedPhysicalGeneration !== String(row.generation))
+            throw refusal("conflict", "Native exec physical incarnation changed.");
           if (row.phase !== "active") throw refusal("sandbox_not_ready", "Recovery capture requires active compute.");
           return runner.call<ExecResult>(row, "exec", { input: r });
         });
