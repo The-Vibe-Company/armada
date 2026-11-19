@@ -10,12 +10,8 @@ and optimistic-revision checks are unchanged.
 Template launch's read-only preset summary shows its pinned skills. It is not
 a preview of all default skills resolved at admission.
 
-![Actual template revision form with a selected exact workspace pin](images/skills/template.png)
-
-This is a synthetic fixture screenshot from the real production dashboard,
-cropped only for readability. Targeted unit regressions cover preserving,
-replacing and clearing pins; browser evidence publishes successive revisions
-and verifies all earlier pins remain unchanged.
+Targeted unit regressions cover preserving, replacing and clearing pins.
+Browser checks publish successive revisions and verify all earlier pins remain unchanged.
 
 No migrations. Depends on the shared Launch picker/catalog slices. Coordinator
 staging: publish a public+private template revision, launch on Boat and Modal,
