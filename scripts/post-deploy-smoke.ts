@@ -605,7 +605,8 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
       try {
         result = (await response.json()) as ResponseBody;
       } catch (error) {
-        if (timedOut(error)) throw error;
+        if (timedOut(error))
+          throw new SmokeFailure("request_failed", response.status, undefined, launchResponse, requestTimeoutMs);
         if (path === "sandbox/wait")
           throw new SmokeFailure("invalid_response", response.status, {
             body: "unparseable",

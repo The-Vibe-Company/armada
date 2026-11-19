@@ -1923,15 +1923,23 @@ function expiryApi(now: () => number, starting: (id: string) => boolean = () => 
 
 test("an ambiguous expiry launch reports bounded HTTP correlation without replaying the launch", async () => {
   const requestId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-  for (const header of [requestId, "secret-header"]) {
+  for (const { header, status } of [
+    { header: requestId, status: 503 },
+    { header: "secret-header", status: 503 },
+    { header: requestId, status: 200 },
+  ]) {
     const fake = lifecycleFixture("none", (call) => {
       if (call.path === "sandbox/list" && call.body.externalRef) return Response.json({ sandboxes: [] });
       if (call.path !== "sandbox/launch" || call.body.ttlSeconds !== 180) return undefined;
       fake.advance(112_848);
-      return Response.json(
-        { error: { code: "outcome_unknown", message: "secret-body" } },
-        { status: 503, headers: { "x-request-id": header, "server-timing": "secret-timing" } },
-      );
+      const headers = { "x-request-id": header, "server-timing": "secret-timing" };
+      if (status === 200)
+        return Object.assign(Response.json({}, { headers }), {
+          json: () => {
+            throw new DOMException("secret-body", "TimeoutError");
+          },
+        });
+      return Response.json({ error: { code: "outcome_unknown", message: "secret-body" } }, { status, headers });
     });
     expect(await fake.run([selected], ["--expiry"])).toBe(false);
     const launches = fake.calls.filter((call) => call.path === "sandbox/launch" && call.body.ttlSeconds === 180);
@@ -1941,10 +1949,10 @@ test("an ambiguous expiry launch reports bounded HTTP correlation without replay
       lane: "expiry",
       step: "expiry_launch",
       pass: false,
-      code: "outcome_unknown",
+      code: status === 200 ? "request_failed" : "outcome_unknown",
       elapsedMs: 112_848 + deadlines.expiry_launch,
       launchResponse: {
-        httpStatus: 503,
+        httpStatus: status,
         timeoutMs: deadlines.expiry_launch,
         requestKey: launches[0]?.body.idempotencyKey,
         ...(header === requestId ? { requestId } : {}),
