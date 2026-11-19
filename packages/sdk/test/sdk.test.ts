@@ -16,7 +16,6 @@ import {
   verifyWebhookSignature,
 } from "../src/index.ts";
 
-/** The SDK Docker launch input has exactly the fields of the server's Docker launch request. */
 const dockerInputMatchesCore: [
   Exclude<keyof DockerLaunchRequest, keyof DockerLaunchInput>,
   Exclude<keyof DockerLaunchInput, keyof DockerLaunchRequest>,
@@ -24,7 +23,6 @@ const dockerInputMatchesCore: [
   ? true
   : never = true;
 void dockerInputMatchesCore;
-/** The server's status prompt (including a queued Docker prompt) is assignable to the SDK's. */
 const dockerPrompt: SandboxStatus["prompt"] = null as DockerSandboxStatus["prompt"];
 void dockerPrompt;
 
@@ -97,7 +95,6 @@ test("launch sends a Docker request and returns the Docker receipt without a gol
     repos: [{ url: "https://github.com/acme/app", branch: "main" }],
   } satisfies DockerLaunchInput;
   expect(launch.input.body.safeParse(input).success).toBe(true);
-  // Docker checkouts are always shallow, so the published contract does not offer golden-config history.
   const history = { ...input, repos: [{ url: "https://github.com/acme/app", history: "full" }] };
   expect(launch.input.body.safeParse(history).success).toBe(false);
   const receipt = {
@@ -221,12 +218,10 @@ test("retry policy replays only eligible reads and retains typed safe failures",
 });
 
 test("server-requested retry delays reach the caller and suppress early replays", async () => {
-  // The real drain handler: 503 with Retry-After while the server shuts down.
   const drain = createServerRequestDrain(async () => Response.json({}));
   drain.beginDrain();
   const failures = [
     { fetch: async (request: Request) => drain.fetch(request), retryAfterSeconds: 5 },
-    // The public provider rate-limit failure carries its delay in details, without a header.
     {
       fetch: async () =>
         Response.json(
@@ -262,7 +257,6 @@ test("server-requested retry delays reach the caller and suppress early replays"
     });
     const error = await client.status({ id: "sandbox_placeholder" }).catch((error: unknown) => error);
     expect(error).toBeInstanceOf(ArmadaError);
-    // HTTP dates round to whole seconds, so the delay is within one second of the date.
     expect((error as ArmadaError).retryAfterSeconds).toBeWithin(
       failure.retryAfterSeconds - 1,
       failure.retryAfterSeconds + 1,
@@ -280,7 +274,6 @@ test("server-requested retry delays reach the caller and suppress early replays"
 });
 
 test("server retry delays longer than one day reach the caller unchanged", async () => {
-  // Two days: above any one-day cap, within the server's one-year provider limit.
   const delay = 172_800;
   const limited = controlFailureResponse(
     new ProviderError({
@@ -310,7 +303,6 @@ test("server retry delays longer than one day reach the caller unchanged", async
       .launch({ provider: "boat", golden: "worker", harness: "codex" })
       .catch((error: unknown) => error);
     expect(error).toBeInstanceOf(ArmadaError);
-    // HTTP dates round to whole seconds.
     expect((error as ArmadaError).retryAfterSeconds).toBeWithin(delay - 1, delay + 1);
   }
 });
@@ -399,7 +391,6 @@ test("remote origins must use HTTPS so the service token never crosses the netwo
 test("the default transport calls fetch without the client as its receiver", async () => {
   const original = globalThis.fetch;
   const receivers: unknown[] = [];
-  // Mirrors browsers' native fetch, which throws "Illegal invocation" for any other receiver.
   const nativeLike = function (this: unknown) {
     receivers.push(this);
     if (this !== undefined && this !== globalThis) throw new TypeError("Illegal invocation");
@@ -454,7 +445,6 @@ test("a draining server's refusal is a typed, admitted-nothing failure carrying 
     expect(error).toBeInstanceOf(ArmadaError);
     expect(error).toMatchObject({ code: "unavailable", status: 503, outcomeUnknown: false, retryAfterSeconds: 5 });
   }
-  // The caller owns the delay that Retry-After asks for: no immediate replay.
   expect(count).toBe(2);
 });
 
