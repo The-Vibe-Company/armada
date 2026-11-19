@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { MAX_SANDBOX_EXTENSION_TTL_SECONDS } from "@armada/core";
+import { type EventsRequest, eventPageOptions, MAX_SANDBOX_EXTENSION_TTL_SECONDS } from "@armada/core";
 import { type ControlOptions, dispatchControlCommand } from "./control.ts";
 import { controlFailureResponse } from "./control-errors.ts";
 import { controlRoutes } from "./modules.ts";
@@ -251,4 +251,19 @@ test.each([
   const response = controlFailureResponse(error);
   expect(response.status).toBe(400);
   expect(await response.json()).toMatchObject({ error: { code: "invalid", message } });
+});
+
+test("REST logs leave out-of-range numbers to provider pagination validation", async () => {
+  const error = await dispatchControlCommand("logs/read", caller, JSON.parse('{"id":"sandbox","limit":1e400}'), {
+    ...options,
+    logs: async () => ({
+      providerSandboxId: "provider-sandbox",
+      provider: {
+        events: (request: EventsRequest) => eventPageOptions(request, "modal"),
+      } as never,
+    }),
+  }).catch((reason) => reason);
+  const response = controlFailureResponse(error);
+  expect(response.status).toBe(400);
+  expect(await response.json()).toMatchObject({ error: { code: "invalid_request" } });
 });

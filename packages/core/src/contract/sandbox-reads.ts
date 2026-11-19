@@ -59,8 +59,13 @@ export const launchOptionsOperation = {
   audience: "agent",
   description:
     "What a launch can ask for on this server: harnesses with their models and credential kinds, machine sizes, TTL limits, and each provider's launch sources and capabilities. Read it before offering launch choices.",
-  errors: ["invalid", "unauthorized", "unavailable"],
+  errors: ["invalid", "unauthorized", "dependency_unavailable", "internal"],
 } as const satisfies Operation<z.ZodType, z.ZodType>;
+
+const paginationNumber = z
+  .unknown()
+  .refine((input): input is number => typeof input === "number", { error: "Invalid event pagination." })
+  .meta({ type: "number" });
 
 export const readLogsOperation = {
   name: "readLogs",
@@ -72,13 +77,13 @@ export const readLogsOperation = {
         .describe("Armada sandbox ID returned by launch and list."),
       org: z.string({ error: "org must be text." }).nullish(),
       direction: z.enum(["forward", "backward"], { error: "Invalid event direction." }).optional(),
-      limit: z
-        .number({ error: "Invalid event pagination." })
-        .optional()
-        .describe("Docker requires an integer from 1 to 500."),
-      maxBytes: z.number({ error: "Invalid event pagination." }).optional(),
+      limit: paginationNumber.optional().describe("Events per page, an integer from 1 to 1000 (up to 500 on Docker)."),
+      maxBytes: paginationNumber.optional().describe("Page byte budget, an integer from 256 to 1048576."),
       coalesce: z.boolean({ error: "Invalid coalesce option." }).optional(),
-      cursor: z.string({ error: "cursor must be text." }).nullish().describe("The cursor of the previous page."),
+      cursor: z
+        .string({ error: "cursor must be text." })
+        .nullish()
+        .describe("The cursor of the previous page. Docker requires a nonempty string when provided."),
       all: z.boolean().optional().describe(`Read up to ${MAX_LOG_PAGES} pages. Use forward direction only.`),
       follow: z.boolean().optional().describe("Follow events within the bounded HTTP request."),
     }),
@@ -98,6 +103,7 @@ export const readLogsOperation = {
     "unavailable",
     "dependency_unavailable",
     "provider_mismatch",
+    "provider_unavailable",
     "provider_routing_unavailable",
     "rate_limited",
     "internal",

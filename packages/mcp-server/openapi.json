@@ -7303,17 +7303,18 @@
                     ]
                   },
                   "limit": {
-                    "description": "Docker requires an integer from 1 to 500.",
+                    "description": "Events per page, an integer from 1 to 1000 (up to 500 on Docker).",
                     "type": "number"
                   },
                   "maxBytes": {
+                    "description": "Page byte budget, an integer from 256 to 1048576.",
                     "type": "number"
                   },
                   "coalesce": {
                     "type": "boolean"
                   },
                   "cursor": {
-                    "description": "The cursor of the previous page.",
+                    "description": "The cursor of the previous page. Docker requires a nonempty string when provided.",
                     "type": [
                       "string",
                       "null"
