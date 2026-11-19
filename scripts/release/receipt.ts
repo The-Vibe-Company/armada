@@ -50,26 +50,45 @@ function removedContract(previous: unknown, current: unknown, path: string) {
   return removed;
 }
 
-export function surfaceBreaks(previous: unknown, current: unknown, commits: string[]) {
-  const breaks = commits
-    .filter((message) => /^[\w-]+(?:\([^\r\n]+\))?!:/.test(message) || /^BREAKING[ -]CHANGE:/m.test(message))
-    .map((message) => `commit: ${message.split("\n", 1)[0]}`);
-  const before = object(previous).paths;
-  const after = object(current).paths;
-  if (!before || !after || typeof before !== "object" || typeof after !== "object")
-    return [...breaks, "OpenAPI comparison unavailable"];
-  for (const [path, value] of Object.entries(object(before))) {
-    const next = object(object(after)[path]);
+function removedOperations(before: Record<string, unknown>, after: Record<string, unknown>) {
+  const breaks: string[] = [];
+  for (const [path, value] of Object.entries(before)) {
+    const next = object(after[path]);
     for (const [method, operation] of Object.entries(object(value))) {
       if (!methods.has(method)) continue;
       const label = `${method.toUpperCase()} ${path}`;
-      if (!(method in next)) breaks.push(label);
+      if (!Object.hasOwn(next, method)) breaks.push(label);
       else breaks.push(...removedContract(operation, next[method], label));
     }
     breaks.push(...removedContract(object(value).parameters, next.parameters, `path parameters: ${path}`));
   }
-  breaks.push(...removedContract(object(previous).components, object(current).components, "components"));
-  return [...new Set(breaks)];
+  return breaks;
+}
+
+export function surfaceBreaks(previous: unknown, current: unknown, commits: string[]) {
+  const breaks = commits
+    .filter((message) => /^[\w-]+(?:\([^\r\n]+\))?!:/.test(message) || /^BREAKING[ -]CHANGE:/m.test(message))
+    .map((message) => `commit: ${message.split("\n", 1)[0]}`);
+  const before = object(previous);
+  const after = object(current);
+  if (
+    !before.paths ||
+    typeof before.paths !== "object" ||
+    Array.isArray(before.paths) ||
+    !after.paths ||
+    typeof after.paths !== "object" ||
+    Array.isArray(after.paths)
+  )
+    return [...breaks, "OpenAPI comparison unavailable"];
+  return [
+    ...new Set([
+      ...breaks,
+      ...removedOperations(object(before.paths), object(after.paths)),
+      ...removedOperations(object(after.paths), object(before.paths)),
+      ...removedContract(before.components, after.components, "components"),
+      ...removedContract(after.components, before.components, "components"),
+    ]),
+  ];
 }
 
 const migrationVersion = /^\d{14}$/;

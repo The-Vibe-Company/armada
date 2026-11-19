@@ -63,6 +63,7 @@ test("surface evidence records breaking commits and removed operations and field
     "commit: chore: publish",
     "GET /items/responses/200/content/json/schema/properties/title",
     "DELETE /items",
+    "GET /items/responses/200/content/json/schema/properties/state",
   ]);
 });
 
@@ -81,4 +82,8 @@ test("a changed field type is recorded as a surface break", () => {
   expect(surfaceBreaks(api("string"), api("number"), [])).toEqual([
     "GET /items/responses/200/content/json/schema/properties/id/type",
   ]);
+});
+
+test("a newly added operation is unavailable after rollback", () => {
+  expect(surfaceBreaks({ paths: {} }, { paths: { "/items": { get: {} } } }, [])).toEqual(["GET /items"]);
 });
