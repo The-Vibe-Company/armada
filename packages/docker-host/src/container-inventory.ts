@@ -1,6 +1,6 @@
 import type { ProviderInventoryMachine } from "@armada/core";
 import type { DockerMachineCli } from "../../core/src/docker-machine.ts";
-import { type State, serverOrigin, validId } from "./daemon.ts";
+import { type State, validId } from "./daemon.ts";
 
 const labelPrefix = "dev.armada.machine.";
 const containerId = /^[a-f0-9]{64}$/;
@@ -25,16 +25,15 @@ export function machineLabelFilters(state: Pick<State, "hostId" | "installationI
   ];
 }
 
-/** Read actual allocations, including created and stopped containers. The registration
- * binds the observed host and installation labels to one Armada server origin. */
+/** Read actual allocations, including created and stopped containers, for the bound registration. */
 export function createDockerContainerInventory(
   cli: DockerMachineCli,
-  state: Pick<State, "server" | "hostId" | "installationId">,
+  state: Pick<State, "hostId" | "installationId">,
+  deploymentId: string,
 ) {
   return {
     async *listInventory(signal?: AbortSignal): AsyncIterable<ProviderInventoryMachine & { containerName: string }> {
       signal?.throwIfAborted();
-      const deploymentId = `${serverOrigin(state.server)}/${state.hostId}/${state.installationId}`;
 
       async function run(argv: string[]): Promise<string[]> {
         signal?.throwIfAborted();
