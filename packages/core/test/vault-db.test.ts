@@ -387,7 +387,7 @@ describe("Skillpack registry credentials", () => {
 
 describe("named model accounts", () => {
   test("legacy account creation applies defaults and replacement preserves overrides", async () => {
-    await withVault(async ({ db, store, people }) => {
+    await withVault(async ({ store, people }) => {
       const org = await createOrg(store, people.stan, "Defaults");
       for (const scope of ["user", "org"] as const) {
         const owner = scope === "user" ? people.stan : org.id;
@@ -396,16 +396,15 @@ describe("named model accounts", () => {
           const write = () =>
             setCredential(store, KEY, people.stan, { scope, org: org.id, kind, value: "model_key_placeholder" });
           const current = async () => {
-            const { rows } = await db.query<{ id: string; max_agents: number | null }>(
-              "select id, max_agents from credentials where scope=$1 and owner_id=$2 and kind=$3 and status<>'deleted'",
-              [scope, owner, kind],
+            const active = (await store.listCredentials(scope, owner)).filter(
+              (row) => row.kind === kind && row.status !== "deleted",
             );
-            expect(rows).toHaveLength(1);
-            return rows[0]!;
+            expect(active).toHaveLength(1);
+            return active[0]!;
           };
           await write();
           const initial = await current();
-          expect(initial.max_agents).toBe(expected);
+          expect(initial.maxAgents).toBe(expected);
           for (const maxAgents of [5, null]) {
             await store.mutateAccount!(
               people.stan,
@@ -413,14 +412,14 @@ describe("named model accounts", () => {
                 action: "limits",
                 scope,
                 org: org.id,
-                id: initial.id,
+                id: initial.id!,
                 maxAgents,
               },
               undefined,
               KEY,
             );
             await write();
-            expect(await current()).toEqual({ id: initial.id, max_agents: maxAgents });
+            expect(await current()).toMatchObject({ id: initial.id, maxAgents });
           }
           await store.mutateAccount!(
             people.stan,
@@ -428,13 +427,13 @@ describe("named model accounts", () => {
               action: "remove",
               scope,
               org: org.id,
-              id: initial.id,
+              id: initial.id!,
             },
             undefined,
             KEY,
           );
           await write();
-          expect((await current()).max_agents).toBe(expected);
+          expect((await current()).maxAgents).toBe(expected);
         }
       }
     });
