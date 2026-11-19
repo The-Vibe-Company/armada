@@ -4196,6 +4196,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
                 "type": "object",
                 "properties": {
                   "id": {
@@ -4214,8 +4215,7 @@
                 "required": [
                   "id",
                   "request_id"
-                ],
-                "$schema": "http://json-schema.org/draft-07/schema#"
+                ]
               }
             }
           }
@@ -4226,6 +4226,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
                   "type": "object",
                   "properties": {
                     "id": {
@@ -4240,7 +4241,6 @@
                     "id",
                     "status"
                   ],
-                  "$schema": "http://json-schema.org/draft-07/schema#",
                   "additionalProperties": false
                 }
               }
@@ -4653,6 +4653,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
                 "type": "object",
                 "properties": {
                   "id": {
@@ -4671,8 +4672,7 @@
                 "required": [
                   "id",
                   "ttlSeconds"
-                ],
-                "$schema": "http://json-schema.org/draft-07/schema#"
+                ]
               }
             }
           }
@@ -4683,6 +4683,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
                   "type": "object",
                   "properties": {
                     "id": {
@@ -4702,7 +4703,6 @@
                     "expiresAt",
                     "ttlSeconds"
                   ],
-                  "$schema": "http://json-schema.org/draft-07/schema#",
                   "additionalProperties": false
                 }
               }

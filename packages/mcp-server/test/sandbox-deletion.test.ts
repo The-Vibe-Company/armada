@@ -334,7 +334,6 @@ test("admin extension and deletion resolve private-source resources through thei
       await encryptSecret(adminKey, ENCRYPTION_KEY),
     ]);
     const token = await server.token(p.admin);
-    const mcp = await server.client(token);
     const golden = (await db.query<{ id: string }>("select id from goldens where name='mine'")).rows[0];
     if (!golden) throw new Error("Missing private golden fixture.");
     const vault = createSqlVaultStore(db);
@@ -346,7 +345,7 @@ test("admin extension and deletion resolve private-source resources through thei
       data: createSqlData(db),
       providers: providerRegistry({ vault, encryptionKey: ENCRYPTION_KEY, providerFor }),
     };
-    for (const transport of ["api", "mcp"]) {
+    for (const transport of ["delete", "post"]) {
       const id = crypto.randomUUID();
       const providerId = `bx_private_${transport}`;
       await db.query(
@@ -358,7 +357,7 @@ test("admin extension and deletion resolve private-source resources through thei
         "update sandboxes set status='ready',stopped_at=null,expires_at=now()+interval '1 minute' where id=$1",
         [id],
       );
-      if (transport === "api") {
+      if (transport === "delete") {
         for (const ttl of [{ ttl_seconds: 600 }, { ttlSeconds: 900 }]) {
           const result = await handleControlRequest(
             new Request(`${PUBLIC_URL}/api/v1/sandbox/extend`, {
@@ -370,13 +369,13 @@ test("admin extension and deletion resolve private-source resources through thei
           );
           expect(result?.status).toBe(200);
         }
-      } else expect((await call(mcp, "extend", { id, ttl_seconds: 600 })).isError).toBe(false);
+      }
       await db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [id]);
       await db.query("insert into sandbox_work_recovery(sandbox_id,archive_enc) values($1,$2)", [
         id,
         new Uint8Array([1]),
       ]);
-      if (transport === "api") {
+      if (transport === "delete") {
         const result = await handleControlRequest(
           new Request(`${PUBLIC_URL}/api/v1/sandboxes/${id}`, {
             method: "DELETE",
@@ -402,7 +401,7 @@ test("admin extension and deletion resolve private-source resources through thei
       ]);
       expect((await db.query("select id from sandbox_work_recovery where sandbox_id=$1", [id])).rows).toEqual([]);
     }
-    expect(accounts).toEqual(["owner", "owner", "owner", "owner", "owner"]);
+    expect(accounts).toEqual(["owner", "owner", "owner", "owner"]);
   } finally {
     await server.close();
   }

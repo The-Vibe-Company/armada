@@ -201,7 +201,6 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
           ? { modal: (target) => options.storedProviderFor!(target, caller) }
           : {},
         provider: (target) => providerRegistry(options).resolve(target, caller),
-        deletionProvider: (sandbox) => providerRegistry(options).resolve(sandbox, { userId: sandbox.ownerId }),
         now,
         sleep,
         logError: log,

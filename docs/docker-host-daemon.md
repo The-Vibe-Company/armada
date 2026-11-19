@@ -691,7 +691,7 @@ accepts `{id, request_id, prompt, conversation_id?}`. Reuse the UUID and identic
 input after uncertain delivery. Omitted conversation selects the retained conversation;
 model and effort stay pinned. Only the sandbox owner can send.
 
-`sandbox/resume` (MCP `resume`) accepts `{id, request_id}` after a confirmed stop.
+`POST /api/v1/sandbox/resume` accepts `{id, request_id}` after a confirmed stop.
 It starts the **same** labelled container on the original host, retains the workspace,
 native conversation and journal, and issues fresh enrolment/epoch before confirming
 runtime health. It does not extend the original TTL or replace an expired/missing

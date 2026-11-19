@@ -158,7 +158,8 @@ Preserve returned cursors/identifiers in reports; do not fabricate a cursor flag
 ## 4. Preserve work and manage lifetime
 
 Use `armada extend SANDBOX --ttl 1h --json` before expiry if more time is
-justified. Confirm the returned expiry; do not assume extension succeeded.
+justified. Direct API callers use `POST /api/v1/sandbox/extend` with `id` and
+`ttlSeconds`. Confirm the returned expiry.
 Ask the agent to commit and push, and verify branch/PR/head SHA independently
 before `armada stop SANDBOX`. Stop is not delete, but provider retention is not
 a substitute for a pushed branch. Modal retains disk only after a successful
@@ -174,9 +175,9 @@ owner REST routes `sandbox/checkpoint-runtime-v1` and `sandbox/resume-runtime-v1
 Read [failure and recovery](references/recovery.md) before recovering stopped
 machines or unpushed work. One authorized armada send to a retained stopped
 sandbox resumes it and continues its conversation, subject to current credential
-and access gates. This is a new agent turn, not a read-only restart. There is no
-standalone sandbox resume/recover command; do not invent one or substitute
-undocumented endpoints.
+and access gates. This starts a new agent turn. For a standalone Docker restart,
+use the owner REST route `POST /api/v1/sandbox/resume` with `id` and a
+`request_id` UUID. Reuse that UUID after an uncertain outcome.
 
 ## 5. Several sandboxes, including a sandbox as caller
 

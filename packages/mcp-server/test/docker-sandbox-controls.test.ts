@@ -22,7 +22,7 @@ import { sandboxListText } from "../../cli/src/sandbox-list.ts";
 import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import { apiFailureCode } from "../src/api-failure.ts";
 import type { Caller } from "../src/caller.ts";
-import { type ControlOptions, handleControlRequest } from "../src/control.ts";
+import { type ControlOptions, dispatchControlCommand, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { createDockerBootstrapService } from "../src/docker-bootstrap-service.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
@@ -905,10 +905,26 @@ test("resuming on a draining host names the uninstall, not a generic unavailable
   await hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });
   await db.query(`update public.docker_hosts set draining_at=now() where id=$1`, [f.hostId]);
   const controller = createDockerSandboxControls(sql, key, { resume: bootstrap });
-  await rejected(
-    invoke(caller(f.actor), "resume", { id: f.sandbox.id, request_id: randomUUID() }, controller),
-    "host_draining",
-  );
+  await expect(
+    dispatchControlCommand(
+      "sandbox/resume",
+      caller(f.actor),
+      { id: f.sandbox.id, request_id: randomUUID() },
+      {
+        store: createSqlVaultStore(sql),
+        authStore: createSqlAuthStore(sql),
+        supabase: { supabaseUrl: "https://project.supabase.co", anonKey: "fixture-anon" },
+        encryptionKey: key,
+        data: createSqlData(sql),
+        providers: {
+          resolve: async () => {
+            throw Error("Docker resume must not resolve legacy provider credentials");
+          },
+        },
+        dockerControls: controller,
+      },
+    ),
+  ).rejects.toMatchObject({ code: "host_draining", status: 409 });
 });
 
 test("Docker mutations reuse the fenced runtime mailbox and reconcile identical request IDs", async () => {

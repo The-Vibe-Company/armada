@@ -39,7 +39,6 @@ import { createArmadaServer, type ToolContext } from "./tools.ts";
 /** MCP input names that the REST adapters (`control.ts`, `control-logs.ts`) accept under another name. */
 export const REST_FIELD_NAMES: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   "sandbox/launch": { ttl_seconds: "ttlSeconds", reasoning_effort: "reasoningEffort" },
-  "sandbox/extend": { ttl_seconds: "ttlSeconds" },
   "logs/read": { since_cursor: "cursor" },
 };
 /** REST routes whose contract is the named MCP tool, beyond the dispatcher's shared-tool table. */
@@ -53,6 +52,8 @@ const REST_TOOL_ROUTES: Readonly<Record<string, string>> = {
 const REST_RESPONSES: Readonly<Record<string, z.ZodType>> = {
   "launch/options": LAUNCH_OPTIONS_RESPONSE,
   "golden/list": GOLDEN_LIST_RESPONSE,
+  "sandbox/resume": SANDBOX_REST_CONTRACTS["sandbox/resume"].output,
+  "sandbox/extend": SANDBOX_REST_CONTRACTS["sandbox/extend"].output,
   "sandbox/delete": SANDBOX_REST_CONTRACTS["sandbox/delete"].output,
   "sandbox/advice": SANDBOX_REST_CONTRACTS["sandbox/advice"].output,
   "sandbox/recovery": SANDBOX_REST_CONTRACTS["sandbox/recovery"].output,
@@ -66,6 +67,14 @@ const REST_RESPONSES: Readonly<Record<string, z.ZodType>> = {
 const REST_ONLY: Readonly<
   Record<string, { description: string; input: { properties?: Record<string, unknown>; [key: string]: unknown } }>
 > = {
+  "sandbox/resume": {
+    description: SANDBOX_REST_CONTRACTS["sandbox/resume"].description,
+    input: requestJsonSchema(SANDBOX_REST_CONTRACTS["sandbox/resume"].input.extend({ org: z.string().optional() })),
+  },
+  "sandbox/extend": {
+    description: SANDBOX_REST_CONTRACTS["sandbox/extend"].description,
+    input: requestJsonSchema(SANDBOX_REST_CONTRACTS["sandbox/extend"].input.extend({ org: z.string().optional() })),
+  },
   "sandbox/delete": {
     description: SANDBOX_REST_CONTRACTS["sandbox/delete"].description,
     input: requestJsonSchema(SANDBOX_REST_CONTRACTS["sandbox/delete"].input.extend({ org: z.string().optional() })),
