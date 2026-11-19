@@ -50,32 +50,30 @@ Missing key, refused key, unavailable/inaccessible skill, and general
 installation failure have separate closed diagnostic reasons. Provider/tool
 output is never forwarded.
 
-The server-only `installPrivateSkill` function owns the shared installation boundary. Ordinary
-launch failures expose the closed `reason` and `stage` through the API; the CLI
-reports the same closed classification in its error message, without forwarding
-installer or provider output. Receipts are
-returned in the existing sandbox `skills` field, including private `workspaceId`.
-The snapshot scan includes Skillpack tokens.
+Launch failures expose a closed `reason` and `stage` through the API, and the
+CLI reports the same classification. The snapshot scan includes Skillpack
+tokens.
 
-Transport uses pinned-host SSH stdin. The key is passed only in child process
-environment to `skillpack auth status` and `skillpack install`, then discarded;
-no `auth login`, profile write, argv secret or provider command journal is used.
-The freshly authorized SSH key is removed under the shared `authorized_keys`
-lock **before** the installer runs, including on refused/missing-skill paths;
-unrelated keys and file metadata are preserved. Snapshot builds install the trusted native CLI automatically; the base
-image must supply Node, Bash and `flock`. A read-only key limits authority during the install window; broader keys do not
-provide that capability fence.
+Enrolled runtimes install skills through an epoch-fenced runtime command.
+The native provider path uses pinned-host SSH and passes the key to the
+installer through its child-process environment. Both paths discard the key
+after installation and keep it out of the harness environment. Snapshot builds
+provision the Skillpack CLI. Before launch, check the snapshot build result
+for provisioning warnings.
 
-See [default pins](skill-defaults.md) for how Armada resolves skills at launch. No live credential or production
-install is used in verification; fake SSH/CLI tests execute the actual guest
-script and check receipt validation, error sanitization and command-local auth.
+See [default pins](skill-defaults.md) for how Armada resolves skills at launch.
 
 ## Ordinary launch parity (#983)
 
-The coordinator can run the ordinary `armada launch` command above for Modal
-Codex on staging with a private pin and a configured Skillpack credential. Run
-Boat Codex on demand only. Check `--json` output `skills[]` for the exact reference,
-version, checksum, fixed origin and expected workspaceId; ask the first turn to
+On Modal staging, the coordinator can use a private pin and a configured
+Skillpack credential with:
+
+```sh
+armada launch SNAPSHOT --provider modal --agent codex --skill notes@1.0.0 --json
+```
+
+Boat checks are coordinator-only and on demand. Check `sandbox.skills[]` for
+the exact reference, version, checksum, fixed origin and expected `workspaceId`; ask the first turn to
 read a known installed marker. Confirm missing/revoked private credentials fail
 with a closed reason before any prompt, and a public-only launch never requires
 a Skillpack credential.

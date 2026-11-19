@@ -1,7 +1,7 @@
 # Launch with Skillpack skills (#1007)
 
-Choose **Additional skills** when launching from a snapshot. After launch,
-open the sandbox Details to see its installation receipts. Use the
+Open **Skills** in the snapshot launch form to add exact pins. After launch,
+open **Skills** in the sandbox details to see its installation receipts. Use the
 [template editor](template-skills.md) to save pins for template launches.
 
 The picker reads the caller's connected workspace or the public catalog, showing
@@ -28,6 +28,6 @@ depends on Skillpack's existing anonymous catalog being enabled. Exact-pin entry
 and private browsing are independent of public availability.
 
 Coordinator staging: select a visible workspace skill/version and a public pin,
-launch on Boat and Modal, inspect both receipts, then try a missing/revoked key.
+launch on Modal, inspect both receipts, then try a missing/revoked key.
 Confirm selected skills remain editable after launch refusal and that a member
 without sandbox interior access cannot see its receipts.

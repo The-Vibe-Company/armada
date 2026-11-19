@@ -16,14 +16,14 @@ pinned lockfile/checksum/target/workspace receipts and adds native-equivalent
 Git exclusions. Revocation/shutdown cancels the owned process group before the
 runtime closes its journal. Old runtime artifacts refuse before key delivery.
 Resume retains project files, including user edits, without reinstalling.
-Arbitrary enrolled `exec` remains disabled.
 
 ## Coordinator-only Boat check with MCP, GitHub, checkpoint and resume
 
-Use the **armada-server staging HTTPS origin** and the same existing Armada
-login/token, organization, snapshot and Codex credential inputs documented in
-[the MCP check](boat-runtime-first-prompt.md#staging-acceptance). The existing connected default-for-launch
-remote MCP connection/tool inputs and linked GitHub repository are unchanged.
+Set `ARMADA_URL` to the production Armada HTTPS origin. Use the Armada
+bearer token, organization, snapshot, Codex credential, default-for-launch MCP
+connection, and linked GitHub repository for that same server. See
+[deployed checks](post-deploy-smoke.md) for the coordinator-only Boat policy and
+[the MCP check](boat-runtime-first-prompt.md#staging-acceptance) for input names.
 **Do not supply skill pins, SKILL.md substrings or a Skillpack key.**
 
 ```bash
@@ -72,5 +72,4 @@ launch ordering and old-artifact/epoch/key-delivery guards. The deployed check's
 actual entrypoint is also driven offline: no-defaults allocates nothing;
 configured defaults launch without explicit pins; a snapshot mismatch or inconsistent status
 receipts fail and stop the known sandbox. No network, sleeps or new test seam.
-Real staging parity remains pending the coordinator's check. Claude admission
-is a later slice; this does not enable it or change native/default routing.
+Live Boat parity remains pending the coordinator's on-demand check.
