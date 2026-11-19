@@ -13,6 +13,7 @@ import { type ControlOptions, createSqlData, handleControlRequest } from "@armad
 import type { PGlite } from "@electric-sql/pglite";
 import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
 import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
+import { dispatchGoldenBuild } from "../../core/test/support/golden-build-dispatch.ts";
 import { goldenHelperReport } from "../../core/test/support/golden-helper.ts";
 import type { AuthIo } from "../src/auth-commands.ts";
 import { run } from "../src/run.ts";
@@ -108,7 +109,7 @@ describe("golden command", () => {
         {
           auth,
           sleep: async () => {
-            await controlOptions.goldenBuilds!.runOne();
+            await dispatchGoldenBuild(db, controlOptions.goldenBuilds!);
           },
         },
       );

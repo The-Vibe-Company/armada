@@ -22,8 +22,8 @@ import {
   type SandboxInfo,
   type Sql,
 } from "../src/server.ts";
-
 import { migratedDatabase } from "./support/database.ts";
+import { dispatchGoldenBuild } from "./support/golden-build-dispatch.ts";
 
 const KEY = Buffer.alloc(32, 7).toString("base64");
 const APP = { clientId: "Iv1.test", clientSecret: "github-client-secret" };
@@ -201,7 +201,7 @@ describe("createGoldenCreateService, wired to a real database", () => {
         actor.orgId,
         await encryptSecret(JSON.stringify(activePair), KEY),
       ]);
-      expect(await jobs.runOne()).toBe(true);
+      expect(await dispatchGoldenBuild(db, jobs)).toBe(true);
       expect(workerTargets).toHaveLength(providerId === "modal" ? 2 : 1);
       expect(configurationCalls).toBe(1); // Never rederive App binding during execution.
       expect(builders).toBe(1);
@@ -640,12 +640,12 @@ test("rebuild retains last-good artifacts/config through verification, scan, sna
       provider: async () => provider,
     });
     const job = await jobs.admit(provider, actor, { ...input, existingGolden: committed }, crypto.randomUUID());
-    await jobs.runOne();
+    await dispatchGoldenBuild(db, jobs);
     expect((await jobs.status(actor.userId, job.jobId)).state).toBe("succeeded");
     const changed = (await store.findByName(actor.orgId, "web"))[0]!;
     integrityFailure = true;
     const rejectedBuild = await jobs.admit(provider, actor, { ...input, existingGolden: changed }, crypto.randomUUID());
-    await jobs.runOne();
+    await dispatchGoldenBuild(db, jobs);
     expect(await jobs.status(actor.userId, rejectedBuild.jobId)).toMatchObject({
       state: "failed",
       failureReason: "skillpack_integrity_failed",
