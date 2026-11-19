@@ -35,6 +35,7 @@ export function createRuntimeLaunch(options: RuntimeLaunchOptions, provider: "bo
     input: LaunchInput;
     configure(): Promise<LaunchPlan>;
     bootstrap(): Bootstrap;
+    commandGrantDeadline?(logicalExpiresAt: number): Promise<number>;
   }): Promise<Started> => {
     const { input } = request;
     const { actor, sandbox, signal, activate, restoreCheckpoint } = input;
@@ -47,21 +48,9 @@ export function createRuntimeLaunch(options: RuntimeLaunchOptions, provider: "bo
     signal.throwIfAborted();
     await activate?.(signal);
     signal.throwIfAborted();
-    if (provider === "modal") {
-      const physical = await input.host.get(sandbox.providerSandboxId, { signal });
-      signal.throwIfAborted();
-      const expiresAt = physical.expiresAt?.getTime();
-      if (
-        physical.providerState !== "active" ||
-        !["ready", "running"].includes(physical.state) ||
-        physical.physicalExitConfirmed ||
-        expiresAt === undefined ||
-        !Number.isFinite(expiresAt) ||
-        expiresAt < plan.configuration.grant.expiresAt
-      )
-        throw Error("modal_runtime_physical_deadline_unavailable");
-      plan.configuration.grant.expiresAt = expiresAt;
-    }
+    const commandGrantExpiresAt = await request.commandGrantDeadline?.(plan.configuration.grant.expiresAt);
+    signal.throwIfAborted();
+    if (commandGrantExpiresAt !== undefined) plan.configuration.grant.expiresAt = commandGrantExpiresAt;
     const agent = runtimeAgentFor(commands, actor.userId, sandbox, defaults, plan.configuration.cwd);
     const ready = await createRuntimeStartup(authority, {
       bootstrap: request.bootstrap(),
@@ -72,7 +61,7 @@ export function createRuntimeLaunch(options: RuntimeLaunchOptions, provider: "bo
       providerSandboxId: sandbox.providerSandboxId,
       serverUrl: server.origin,
       ...plan,
-      ...(provider === "modal" ? { commandGrantExpiresAt: plan.configuration.grant.expiresAt } : {}),
+      ...(commandGrantExpiresAt !== undefined ? { commandGrantExpiresAt } : {}),
       signal,
     });
     await environment.deliver(provider, actor, sandbox.id, ready.epoch, signal);

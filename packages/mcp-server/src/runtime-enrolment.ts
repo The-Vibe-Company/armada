@@ -114,8 +114,8 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
       if (!host.rows.length) throw new RuntimeEnrolmentDenied();
     }
     const row = (
-      await tx.query<{ id: string; lifecycle_generation: string }>(
-        `select s.id,s.lifecycle_generation::text from public.sandboxes s
+      await tx.query<{ id: string; lifecycle_generation: string; runtime_transport: string | null }>(
+        `select s.id,s.lifecycle_generation::text,s.runtime_transport from public.sandboxes s
        where s.id=$1 and (s.provider in ('boat','docker') or (s.provider='modal' and s.runtime_transport='dialout')) and s.status in ('starting','ready','running')
        and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>now()
        and s.org_id=$2 and s.owner_id=$3 and s.provider=$4
@@ -149,7 +149,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
       const sandbox = await lockSandbox(tx, input.sandboxId, input.ownerId);
       if (sandbox.provider === "docker" && options.allowDockerIssue !== true) throw new RuntimeEnrolmentDenied();
       const commandDeadline =
-        sandbox.provider === "modal" && input.commandGrantExpiresAt !== undefined
+        sandbox.runtime_transport === "dialout" && input.commandGrantExpiresAt !== undefined
           ? new Date(input.commandGrantExpiresAt)
           : null;
       const pricing = await createSqlSandboxStore(tx, { turnModels: true }).captureUsagePricingContext!(
