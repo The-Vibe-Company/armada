@@ -10,6 +10,7 @@ import {
   VaultError,
 } from "@armada/core";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
+import { recordAccountExhaustion } from "./account-exhaustion.ts";
 import { completedUsageTurns, unmeasuredUsage } from "./account-spend.ts";
 import { UUID } from "./control-input.ts";
 import { createSqlData } from "./data.ts";
@@ -259,6 +260,7 @@ export function createRuntimeEvents(
             item.status,
           ]);
       }
+      await recordAccountExhaustion(tx, scope.sandboxId, fresh);
       await projectRuntimeIdle(tx, scope.sandboxId, key, initialAck, fresh, ack);
       const usage = reportedTurnUsage(fresh);
       const completed = completedUsageTurns(fresh);

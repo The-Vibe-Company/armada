@@ -40,6 +40,7 @@ const ROW_ALIASES: Record<string, string> = {
   agent_defaults: "AgentDefaultsRow",
   account_turn_queue: "AccountTurnQueueRow",
   account_agent_reservations: "AccountAgentReservationRow",
+  account_exhaustion: "AccountExhaustionRow",
   account_spend: "AccountSpendRow",
   account_spend_turns: "AccountSpendTurnRow",
   ordinary_launch_receipts: "OrdinaryLaunchReceiptRow",
