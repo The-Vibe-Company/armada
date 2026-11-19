@@ -2950,7 +2950,7 @@ function langfuseControl(request: Request, match: RegExpMatchArray, body: Row): 
   return json({ enabled: candidate.enabled, contentMode: candidate.contentMode });
 }
 
-async function inboundTriggers(request: Request, url: URL, path: RegExpMatchArray) {
+function inboundTriggers(request: Request, url: URL, path: RegExpMatchArray, body: Row) {
   const caller = viewer(request);
   const org = url.searchParams.get("org");
   if (!caller) return controlFail(401, "unauthorized", "Sign in again.");
@@ -2958,28 +2958,45 @@ async function inboundTriggers(request: Request, url: URL, path: RegExpMatchArra
 
   const [, triggerId, operation] = path;
   const headers = { "cache-control": "no-store" };
+  const visibleTemplate = (row: Row) => row.orgId === org && (row.scope === "org" || row.ownerId === caller);
   if (request.method === "GET" && !triggerId) {
     const triggers = Array.from(state.inboundTriggers.values())
       .filter((entry) => entry.org === org)
-      .map((entry) => entry.summary);
+      .map(({ summary }) => ({
+        ...summary,
+        templateId: state.templates.some((row) => row.id === summary.templateId && visibleTemplate(row))
+          ? summary.templateId
+          : null,
+      }));
     return json({ triggers }, 200, headers);
   }
   if (request.method === "POST" && !triggerId) {
     const scope = createInboundTrigger.input.query.safeParse({ org });
-    const input = createInboundTrigger.input.body.safeParse(await request.json().catch(() => null));
+    const input = createInboundTrigger.input.body.safeParse(body);
     if (!scope.success || !input.success) return controlFail(400, "invalid_request", "Invalid trigger configuration.");
     const { templateId, poolHarness } = input.data;
     const template = state.templates.find(
-      (row) =>
-        row.id === templateId &&
-        row.orgId === org &&
-        row.status === "active" &&
-        (row.scope === "org" || row.ownerId === caller),
+      (row) => row.id === templateId && row.status === "active" && visibleTemplate(row),
     );
     const revision = state.templateRevisions.find(
       (row) => row.templateId === template?.id && row.revision === template?.currentRevision,
     );
-    if ((revision?.definition as Row | undefined)?.harness !== poolHarness)
+    const definition = revision?.definition as Row | undefined;
+    const accountId = state.agentDefaults[caller]?.find((row) => row.harness === poolHarness)?.credentialId;
+    const account = state.credentials.find(
+      (row) =>
+        row.id === accountId &&
+        row.status === "active" &&
+        (!row.expires_at || Date.parse(String(row.expires_at)) > Date.now()) &&
+        ((row.scope === "user" && row.owner_id === caller) || (row.scope === "org" && row.owner_id === org)) &&
+        harnessesForCredential(row.kind as Parameters<typeof harnessesForCredential>[0]).includes(poolHarness),
+    );
+    const pinned = definition?.modelAccount as Row | undefined;
+    if (
+      !account ||
+      definition?.harness !== poolHarness ||
+      (pinned && (pinned.id !== account.id || pinned.version !== account.version))
+    )
       return controlFail(409, "conflict", "The template or account pool is unavailable.");
 
     const newId = id(++sequence);
@@ -3045,7 +3062,7 @@ const server = Bun.serve({
     const langfuse = url.pathname.match(/^\/api\/v1\/orgs\/([0-9a-f-]{36})\/langfuse(\/test)?$/i);
     if (langfuse) return langfuseControl(request, langfuse, body);
     const triggerPath = url.pathname.match(/^\/api\/v1\/triggers(?:\/([^/]+)\/(deliveries|rotate|disable))?$/);
-    if (triggerPath) return inboundTriggers(request, url, triggerPath);
+    if (triggerPath) return inboundTriggers(request, url, triggerPath, body);
     if (url.pathname.startsWith("/api/v1/")) {
       const route = url.pathname.slice("/api/v1/".length);
       if (route === "docker/hosts/list" && body.org === LARGE) {

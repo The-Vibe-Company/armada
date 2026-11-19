@@ -56,10 +56,19 @@ export function CreateTriggerDialog({
     <CreateDialog
       label="Create trigger"
       title={secret ? "New signing key" : "Create inbound trigger"}
-      description={secret ? "Copy this key now. It is shown only once." : "Bind a webhook to a launch template."}
+      description={
+        secret ? (
+          <span tabIndex={-1} ref={(instructions) => instructions?.focus()}>
+            Copy this key now. It is shown only once.
+          </span>
+        ) : (
+          "Bind a webhook to a launch template."
+        )
+      }
       open={open}
       onOpenChange={changeOpen}
       dismissible={!pending && !secret}
+      showCloseButton={!pending && !secret}
       className="sm:max-w-md"
     >
       {secret ? (
@@ -69,9 +78,7 @@ export function CreateTriggerDialog({
             <CopyButton value={secret} label="Copy signing key" />
           </div>
           <div className="flex justify-end">
-            <Button ref={(button) => button?.focus()} onClick={() => changeOpen(false)}>
-              Done
-            </Button>
+            <Button onClick={() => changeOpen(false)}>Done</Button>
           </div>
         </>
       ) : templates?.length ? (
