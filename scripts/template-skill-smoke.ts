@@ -214,7 +214,7 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
           async function observeAllocation(expectedId?: string) {
             if (item.provider !== "modal") return;
             const until = Math.min(io.deadline, io.now() + timeout);
-            const sandboxId = await observeSmokeLaunch(until, io, async (remaining) => {
+            await observeSmokeLaunch(until, io, async (remaining) => {
               const inventory = await io
                 .request<{ sandboxes: { id: string; provider: string; externalRef: string }[] }>(
                   "sandbox/list",
@@ -233,14 +233,13 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
                 sandbox.externalRef === record.requestKey &&
                 (expectedId === undefined || sandbox.id === expectedId) &&
                 /^[a-f0-9]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(sandbox.id)
-              )
+              ) {
+                record.sandboxId = sandbox.id;
+                claim(sandbox.id);
+                await io.recordSandbox?.(sandbox.id, record.requestKey);
                 return sandbox.id;
+              }
             });
-            if (sandboxId) {
-              record.sandboxId = sandboxId;
-              claim(sandboxId);
-              await io.recordSandbox?.(sandboxId, record.requestKey);
-            }
           }
           let result: LaunchReceipt;
           try {

@@ -36,7 +36,13 @@ type Fault =
   | "uncertain_launch"
   | "missing_handle";
 function fixture(
-  options: { key?: "user" | "org" | "absent"; fault?: Fault; splitAnswer?: boolean; refusalReason?: string } = {},
+  options: {
+    key?: "user" | "org" | "absent";
+    fault?: Fault;
+    splitAnswer?: boolean;
+    refusalReason?: string;
+    lateInventory?: boolean;
+  } = {},
 ) {
   const { key = "user", fault = "none", splitAnswer = false } = options;
   const calls: { path: string; body: Record<string, unknown> }[] = [];
@@ -85,7 +91,7 @@ function fixture(
         },
       ),
     launchTimeout: () => 600_000,
-    isAmbiguousLaunch: () => false,
+    isAmbiguousLaunch: () => fault === "lost_launch",
     async request<T>(path: string, body: object) {
       const input = body as Record<string, unknown>;
       calls.push({ path, body: input });
@@ -147,6 +153,7 @@ function fixture(
               };
       } else if (path === "sandbox/list") {
         const launch = calls.find((call) => call.path === "templates/launch");
+        if (options.lateInventory && inventoryReads === 1) clock = io.deadline + 1;
         expect(input).toEqual({ org: selected.org, owner: "me", externalRef: launch?.body.requestKey });
         output = {
           sandboxes:
@@ -398,6 +405,14 @@ test("a reserved template launch waits for keyed inventory before cleanup withou
   expect(await runTemplateSkillCase({ ...selected, provider: "modal" }, fake.io)).toBe(false);
   expect(fake.calls.filter((call) => call.path === "templates/launch")).toHaveLength(1);
   expect(fake.calls.filter((call) => call.path === "sandbox/list")).toHaveLength(2);
+  expect(fake.discovered).toEqual([fake.reservedId]);
+  expect(fake.stopped).toEqual([fake.reservedId]);
+});
+
+test("a late inventory receipt still supplies a lost template launch cleanup handle", async () => {
+  const fake = fixture({ fault: "lost_launch", key: "absent", lateInventory: true });
+  expect(await runTemplateSkillCase({ ...selected, provider: "modal" }, fake.io)).toBe(false);
+  expect(fake.calls.filter((call) => call.path === "templates/launch")).toHaveLength(1);
   expect(fake.discovered).toEqual([fake.reservedId]);
   expect(fake.stopped).toEqual([fake.reservedId]);
 });
