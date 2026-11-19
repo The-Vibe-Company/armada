@@ -18,6 +18,7 @@ import {
 } from "./account-turn-dispatch.ts";
 import type { Caller } from "./caller.ts";
 import { DOCKER_SEND_REFUSAL, DOCKER_SEND_REQUEST } from "./docker-send-request-schema.ts";
+import { createJobsStore } from "./jobs/store.ts";
 import { queuedPromptAliases } from "./queued-prompt-ids.ts";
 import { currentRequestId } from "./request-observability.ts";
 import type { RuntimeFollowupInput } from "./runtime-followup.ts";
@@ -47,6 +48,7 @@ type Entry = {
  * Runtime-backed lanes reconcile the same durable request under a bounded dispatch lease.
  * An uncertain dispatch retains its slot until lifecycle evidence or an owner stop resolves it. */
 export function createAccountTurnQueue(sql: Sql, key: string) {
+  const jobs = createJobsStore(sql, key);
   const pending = new Set<Promise<unknown>>();
   let scanAfter = "0";
   let dispatch: DispatchTurn | undefined;
@@ -242,6 +244,15 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
             ],
           )
         ).rows[0]!;
+        await jobs.enqueue(
+          "turn_dispatch",
+          saved.sandbox_id,
+          Number(saved.queued_generation),
+          saved.request_id,
+          { requestId: saved.request_id },
+          { orgId: saved.org_id, maxAttempts: 3 },
+          tx,
+        );
       }
       return saved;
     });
