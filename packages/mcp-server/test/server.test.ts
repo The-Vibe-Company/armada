@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { createSqlAuthStore } from "@armada/auth";
 import {
   createSqlSandboxStore,
@@ -15,7 +15,7 @@ import { createSqlData } from "../src/data.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { readStatus } from "../src/turns.ts";
 import { encryptedRecoveryExec } from "./fixtures/recovery-exec.ts";
-import { rowOnlyDatabase } from "./row-only-database.ts";
+import { migratedDatabase } from "./migrated-database.ts";
 import {
   bunLikeSql,
   call,
@@ -25,11 +25,22 @@ import {
   launchSandboxId,
   PUBLIC_URL,
   SECRETS,
+  seedDatabase,
   type TestServer,
 } from "./support.ts";
 
-const sharedDatabase = rowOnlyDatabase();
+let sharedDatabase: Awaited<ReturnType<typeof migratedDatabase>> | undefined;
 let server: TestServer | undefined;
+
+beforeAll(async () => {
+  sharedDatabase = await migratedDatabase();
+});
+
+afterAll(async () => {
+  const db = sharedDatabase;
+  sharedDatabase = undefined;
+  await db?.close();
+});
 
 afterEach(async () => {
   await server?.close();
@@ -37,7 +48,23 @@ afterEach(async () => {
 });
 
 async function start(options: Parameters<typeof harness>[0] = {}) {
-  server = await harness(options, await sharedDatabase());
+  if (!sharedDatabase) throw new Error("Server database is not open");
+  await sharedDatabase.exec(`
+    reset role;
+    reset all;
+    set search_path=public;
+    truncate members cascade;
+    delete from provider_launch_requests;
+    delete from ordinary_launch_receipts;
+    delete from sandboxes;
+    delete from account_exhaustion;
+    delete from account_spend;
+    delete from credentials;
+    delete from orgs;
+    delete from auth.users;
+    delete from mcp_invalidations;
+  `);
+  server = await harness(options, await seedDatabase(sharedDatabase));
   return server;
 }
 
