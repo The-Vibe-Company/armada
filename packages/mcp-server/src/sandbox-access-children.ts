@@ -303,11 +303,13 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
               principal.orgId !== operation.orgId ||
               !(
                 await tx.query(
-                  `select c.id from public.orchestrator_child_operations c
-                 join public.armada_access_parents o on o.id=c.orchestrator_id
-                 join public.sandboxes s on s.id=o.sandbox_id
-                 where c.id=$1 and c.state in ('pending','uncertain') and o.authority_epoch=c.parent_epoch
-                 and (case when o.kind='sandbox' then o.generation else s.lifecycle_generation end)=c.parent_generation`,
+                  `update public.orchestrator_child_operations c
+                 set state='uncertain',error_code='child_outcome_unconfirmed'
+                 from public.armada_access_parents o join public.sandboxes s on s.id=o.sandbox_id
+                 where c.id=$1 and o.id=c.orchestrator_id and c.state in ('pending','uncertain')
+                 and o.authority_epoch=c.parent_epoch
+                 and (case when o.kind='sandbox' then o.generation else s.lifecycle_generation end)=c.parent_generation
+                 returning c.id`,
                   [operation.id],
                 )
               ).rows.length

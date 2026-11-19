@@ -918,8 +918,9 @@ test("registered failed child with confirmed stopped compute releases explicit c
   }
 });
 
-test.each(["checkpoint", "handler", "compute"])("scoped Modal stop replay after loss of %s response", async (loss) => {
-  const loseStopReply = loss === "compute";
+test.each(["checkpoint", "handler", "both"])("scoped Modal stop replay after loss of %s response", async (loss) => {
+  const loseStopReply = loss === "both";
+  const suspendFirstStop = loss !== "checkpoint";
   const checkpointWritten = Promise.withResolvers<void>();
   const releaseCheckpoint = Promise.withResolvers<void>();
   const { close, sql, p, id, token, selection } = await fixture("running", "anthropic", "modal");
@@ -989,7 +990,7 @@ test.each(["checkpoint", "handler", "compute"])("scoped Modal stop replay after 
             request.request_id,
           ]);
           checkpointWritten.resolve();
-          if (loss === "handler") await releaseCheckpoint.promise;
+          if (suspendFirstStop) await releaseCheckpoint.promise;
           throw Error("synthetic lost response after checkpoint intent");
         }
         await sql.query(
@@ -1083,7 +1084,7 @@ test.each(["checkpoint", "handler", "compute"])("scoped Modal stop replay after 
     const firstStop = services.childWorker.stop(token, "stop", receipt.sandboxId);
     let stopped: Awaited<typeof firstStop>;
     try {
-      if (loss === "handler") {
+      if (suspendFirstStop) {
         await Promise.race([
           checkpointWritten.promise,
           firstStop.then(() => {
@@ -1099,11 +1100,11 @@ test.each(["checkpoint", "handler", "compute"])("scoped Modal stop replay after 
         stopped = await services.childWorker.stop(token, "stop", receipt.sandboxId);
         expect(stopped.id).toBe(first.id);
       }
+      expect(stopped.state).toBe(loseStopReply ? "uncertain" : "succeeded");
     } finally {
       releaseCheckpoint.resolve();
       await firstStop;
     }
-    expect(stopped.state).toBe(loseStopReply ? "uncertain" : "succeeded");
     expect(checkpointRequest).toBe(stopped.id);
     expect(await services.childWorker.stop(token, "stop", receipt.sandboxId)).toEqual(stopped);
     expect(checkpointCalls).toBe(2);
