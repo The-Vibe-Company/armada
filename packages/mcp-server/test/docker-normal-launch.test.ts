@@ -1196,9 +1196,38 @@ test("the normal HTTP route accepts the dashboard body and returns a launched sa
   await sql.query("update runtime_commands set accepted_prompt_id=null where sandbox_id=$1", [f.body.requestId]);
   expect(await (await complete(events.slice(0, 2), 1))?.json()).toEqual({ acknowledgedSequence: 2 });
   expect(await post("sandbox/status", { ...scope, id: f.body.requestId })).toMatchObject({ status: "running" });
+  const busyRequest = randomUUID();
+  expect(
+    await createDockerRuntimeLifecycle(sql, key, { enabled: true }).prompt(f.actor, f.body.requestId, {
+      requestId: busyRequest,
+      text: "Competing prompt",
+      conversationId: f.receipt.conversationId,
+    }),
+  ).toMatchObject({ state: "pending" });
+  const competing = createRuntimeCommands(authority, key);
+  const rejectBusy = () =>
+    competing.complete(session.runtimeToken, session.epoch, {
+      epoch: session.epoch,
+      requestId: `docker_prompt_${busyRequest}`,
+      status: 409,
+      body: { version: 1, requestId: `docker_prompt_${busyRequest}`, error: "conversation_busy" },
+    });
   const journal = await complete(events.slice(2), 3);
   expect(journal?.status).toBe(200);
   expect(await journal?.json()).toEqual({ acknowledgedSequence: 3 });
+  expect(await post("sandbox/status", { ...scope, id: f.body.requestId })).toMatchObject({ status: "running" });
+  await database().exec(
+    "alter table sandbox_transitions add constraint test_reject_settlement check (code <> 'runtime_turn_settled') not valid",
+  );
+  try {
+    await expect(rejectBusy()).rejects.toThrow();
+    expect(await competing.result(f.actor.userId, f.body.requestId, `docker_prompt_${busyRequest}`)).toEqual({
+      state: "pending",
+    });
+  } finally {
+    await database().exec("alter table sandbox_transitions drop constraint test_reject_settlement");
+  }
+  await rejectBusy();
   const listed = (await post("sandbox/list", { ...scope, status: ["ready"] })) as {
     sandboxes: SandboxListMetadata[];
   };

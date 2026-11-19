@@ -263,7 +263,7 @@ export function createRuntimeEvents(
       }
       await recordAccountExhaustion(tx, scope.sandboxId, fresh);
       await projectRuntimeIdle(tx, scope.sandboxId, key, initialAck, fresh, ack);
-      await settleRuntimeTurn(tx, scope.sandboxId, generation);
+      await settleRuntimeTurn(tx, scope.sandboxId, generation, key);
       const usage = reportedTurnUsage(fresh);
       const completed = completedUsageTurns(fresh);
       if (addedPrompt || usage.turns.length || completed.size) {

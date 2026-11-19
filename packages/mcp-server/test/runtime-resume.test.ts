@@ -271,16 +271,24 @@ test("an already enrolled uncertain resume reconciles on a fresh server without 
     const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => ({
       async start(_signal, restore) {
         activations++;
-        const ready = await f.reboot(restore);
-        f.lose();
-        return ready;
+        f.deliverPromptEventsBeforeReply();
+        return f.reboot(restore);
       },
       async stop() {
         throw Error("Live enrolled uncertainty must remain reconcilable");
       },
     }));
-    await expect(resume(f.caller, request)).rejects.toMatchObject({ code: "conflict" });
+    await f.db.exec(
+      "alter table sandbox_transitions add constraint test_reject_settlement check (code <> 'runtime_turn_settled') not valid",
+    );
+    try {
+      await expect(resume(f.caller, request)).rejects.toMatchObject({ code: "conflict" });
+      expect((await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))?.status).toBe("starting");
+    } finally {
+      await f.db.exec("alter table sandbox_transitions drop constraint test_reject_settlement");
+    }
     const recovered = await createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge)(f.caller, request);
+    expect((await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))?.status).toBe("ready");
     expect(recovered.runtime.epoch).toBe("2");
     expect(activations).toBe(1);
     expect(f.starts).toHaveLength(2);

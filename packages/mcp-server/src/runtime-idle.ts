@@ -131,7 +131,7 @@ export function createRuntimeIdle(
               if (Number(legacy?.sequence) > 0)
                 await projectRuntimeIdle(tx, row.id, key, Number(legacy!.sequence), [], Number(legacy!.sequence));
               const generation = locked.rows[0]?.generation;
-              if (generation !== undefined) await settleRuntimeTurn(tx, row.id, generation);
+              if (generation !== undefined) await settleRuntimeTurn(tx, row.id, generation, key);
             });
             // A legacy/manual checkpoint has no merge-stop intent. It still
             // must pass the ordinary idle timer before this worker can stop it.

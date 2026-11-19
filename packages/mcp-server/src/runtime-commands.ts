@@ -272,7 +272,7 @@ export function createRuntimeCommands(
           [scope.sandboxId, queued[1], result.promptId],
         );
       }
-      if (row.request_id.startsWith("docker_prompt_")) await settleRuntimeTurn(tx, scope.sandboxId, generation);
+      if (row.request_id.startsWith("docker_prompt_")) await settleRuntimeTurn(tx, scope.sandboxId, generation, key);
       return { sandboxId: scope.sandboxId, epoch: scope.epoch, requestId: value.requestId };
     });
     runtimeWakes.notify(`reply:${sandboxId}:${receipt.epoch}:${receipt.requestId}`);
