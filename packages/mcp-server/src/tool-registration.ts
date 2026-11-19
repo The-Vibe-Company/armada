@@ -163,6 +163,7 @@ export function createToolRegistration(
           content: [{ type: "text", text: JSON.stringify(result) }],
         };
       } catch (error) {
+        context.onLocalToolError?.(error);
         return errorResult(error, name, context.logError ?? ((line) => console.error(line)));
       }
     };

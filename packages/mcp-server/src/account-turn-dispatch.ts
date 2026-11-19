@@ -1,6 +1,8 @@
-import { decryptSecret, encryptSecret, type Sql, VaultError } from "@armada/core/server";
+import { API_FAILURE_STATUS } from "@armada/core";
+import { sandboxOperations } from "@armada/core/contract";
+import { decryptSecret, encryptSecret, failureDiagnostic, type Sql, VaultError } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
-import { continueRequest } from "./request-observability.ts";
+import { continueRequest, recordOperatorDiagnostic } from "./request-observability.ts";
 import type { RuntimeFollowupInput } from "./runtime-followup.ts";
 import { ToolApiError } from "./tool-api.ts";
 import { ToolError } from "./tool-error.ts";
@@ -11,9 +13,16 @@ export const RUNTIME_REQUEST_EVIDENCE = `(s.activity_lease_id=q.request_id
   or exists(select 1 from public.docker_host_jobs j where j.bound_sandbox_id=s.id and j.request_id=q.request_id))`;
 export const RUNTIME_LANE = `(s.provider='docker' or s.boat_runtime or s.runtime_transport='dialout')`;
 
+const dispatchRefusalCodes = new Set([
+  ...Object.keys(API_FAILURE_STATUS),
+  ...sandboxOperations.sendPrompt.errors,
+  "missing_credential",
+]);
+
 type DispatchEntry = {
   account_id: string;
   sandbox_id: string;
+  sequence: string;
   request_id: string;
   input_enc: Uint8Array<ArrayBuffer>;
 };
@@ -27,13 +36,23 @@ export async function dispatchAccountTurn(
   caller: Caller,
   dispatch: DispatchTurn,
 ) {
+  let correlationId: string | undefined;
+  let phase = "decrypt";
   try {
-    const { correlationId, id, request_id, prompt, model, reasoning_effort } = JSON.parse(
-      await decryptSecret(entry.input_enc, key),
-    ) as RuntimeFollowupInput & { correlationId?: string };
+    const {
+      correlationId: savedCorrelationId,
+      id,
+      request_id,
+      prompt,
+      model,
+      reasoning_effort,
+    } = JSON.parse(await decryptSecret(entry.input_enc, key)) as RuntimeFollowupInput & { correlationId?: string };
+    correlationId = savedCorrelationId;
+    phase = "send";
     const result = await continueRequest(correlationId, () =>
       dispatch(caller, { id, request_id, prompt, model, reasoning_effort }),
     );
+    phase = "publish_receipt";
     await sql.query(
       `with admitted as (update public.account_turn_queue set state='admitted',result_enc=$3
            where sandbox_id=$1 and request_id=$2 and state='dispatching' returning sandbox_id)
@@ -50,7 +69,7 @@ export async function dispatchAccountTurn(
       error.code === "conflict" &&
       (error.message === "Template launch refused: secret_unavailable." ||
         error.message === "Template launch refused: secret_version_changed.");
-    const stoppedRefusal = await sql.transaction!(async (tx) => {
+    const rejected = await sql.transaction!(async (tx) => {
       await tx.query("select id from public.credentials where id=$1 for update", [entry.account_id]);
       const unchanged = await tx.query<{ stopped_runtime: boolean }>(
         `select (s.status='stopped' and coalesce(${RUNTIME_LANE},false)) as stopped_runtime from public.sandboxes s
@@ -84,7 +103,7 @@ export async function dispatchAccountTurn(
               : "Queued prompt rejected before dispatch; inspect sandbox and account settings before resending.",
           ],
         );
-        return target.stopped_runtime;
+        return !retry;
       } else {
         await tx.query(
           `update public.account_turn_queue q set failure_reason='Dispatch outcome uncertain; inspect sandbox history before resending.',
@@ -96,14 +115,25 @@ export async function dispatchAccountTurn(
       }
       return false;
     });
-    if (stoppedRefusal)
-      console.info(
-        JSON.stringify({
-          event: "sandbox_resume_dispatch_refused",
+    if (rejected) {
+      const origin = error instanceof ToolApiError ? (error.cause ?? error) : error;
+      const diagnostic = failureDiagnostic(origin);
+      const errorClass =
+        origin instanceof ToolApiError
+          ? "ToolApiError"
+          : origin instanceof ToolError
+            ? "ToolError"
+            : diagnostic.errorClass;
+      recordOperatorDiagnostic(
+        `account_turn.dispatch.${phase}`,
+        { ...diagnostic, errorClass },
+        {
           sandboxId: entry.sandbox_id,
-          requestId: entry.request_id,
-          code: refusalCode,
-        }),
+          operationSequence: String(entry.sequence),
+          correlationId: correlationId ?? null,
+          code: refusalCode && dispatchRefusalCodes.has(refusalCode) ? refusalCode : undefined,
+        },
       );
+    }
   }
 }

@@ -1,12 +1,10 @@
 import { VaultError } from "@armada/core";
 
-// Codex 0.166 polls device approval for 15 minutes; allow its completion and file flush to finish.
 export const NATIVE_CODEX_LOGIN_TIMEOUT_MS = 16 * 60_000;
 export const NATIVE_CODEX_START_TIMEOUT_MS = 30_000;
 const unpublished = " No account was published.";
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 
-/** Never forward native error bodies: token-exchange errors can contain provider-controlled secrets. */
 function reported(error: unknown): string {
   const text =
     typeof error === "string" ? error : object(error) && typeof error.message === "string" ? error.message : "";
@@ -29,7 +27,6 @@ function reported(error: unknown): string {
   return `Codex reported: ${reason}${status ? ` (HTTP ${status})` : ""}${rpc}`;
 }
 
-/** Pure owner of the native JSON-RPC login stages, also exercised without a process or provider. */
 export class NativeCodexLoginProtocol {
   stage = "initializing the app-server";
   private loginId: string | undefined;
@@ -49,8 +46,6 @@ export class NativeCodexLoginProtocol {
   }
   receive(message: unknown): boolean {
     if (!object(message)) throw this.failure("Codex sent an invalid login protocol message");
-    // Only our requests (or a connection-level parse error) can fail this login.
-    // Other native notifications/responses are not another failed authorization.
     if (message.error && (message.id === 1 || message.id === 2 || message.id === null))
       throw this.failure(reported(message.error));
     if (message.id === 1) {
@@ -114,7 +109,6 @@ export class NativeCodexLoginProtocol {
   }
 }
 
-/** Native permits a null account_id; Armada's refresh/binding broker cannot safely use an unidentified account. */
 export function validateNativeCodexAuth(raw: string, approved = true): string {
   const prefix = approved ? "Codex approved the login, but its auth.json" : "The native Codex ChatGPT auth.json";
   const fail = (detail: string): never => {

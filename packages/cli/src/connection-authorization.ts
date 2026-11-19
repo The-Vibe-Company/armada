@@ -20,7 +20,6 @@ export interface ConnectionStatus {
   authorizationUrl?: string;
 }
 
-/** Only backend-issued HTTPS authorizations are handed to a browser; never a CLI-supplied issuer. */
 export function authorizationUrl(value: string): string {
   try {
     const url = new URL(value);
@@ -32,7 +31,6 @@ export function authorizationUrl(value: string): string {
   }
 }
 
-/** One browser handoff, then authoritative connection state; a URL alone never means connected. */
 export async function authorizeConnection(
   auth: AuthIo,
   initial: ConnectionStatus,
