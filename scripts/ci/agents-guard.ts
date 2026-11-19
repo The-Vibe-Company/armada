@@ -11,7 +11,7 @@ const generatedNextRules =
 const fileExtension = /\.(?:cjs|css|html|js|json|jsonc|jsx|md|mjs|py|sh|sql|swift|toml|ts|tsx|txt|yaml|yml)$/i;
 const pathToken = /^(?:\.\/)?[\w.-][\w./*{},-]*$/;
 
-export function checkAgentsFiles(files: ReadonlyMap<string, string>, exists: (path: string) => boolean): string[] {
+export function checkAgentsFiles(files: ReadonlyMap<string, string>, exists: (path: string) => boolean) {
   const errors: string[] = [];
   for (const [path, content] of files) {
     if (posix.basename(path) !== "AGENTS.md") continue;
@@ -26,7 +26,7 @@ export function checkAgentsFiles(files: ReadonlyMap<string, string>, exists: (pa
     }
 
     for (const [, token] of rules.matchAll(/(?<!`)\x60+([^\x60\n]+)\x60+(?!`)/g)) {
-      if (!pathToken.test(token) || (!token.includes("/") && !fileExtension.test(token))) continue;
+      if (!token || !pathToken.test(token) || (!token.includes("/") && !fileExtension.test(token))) continue;
       if (!exists(token.replace(/^\.\//, "").replace(/\/$/, ""))) {
         errors.push(`${path}: missing repository path: ${token}`);
       }
