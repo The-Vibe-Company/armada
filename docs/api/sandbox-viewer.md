@@ -38,6 +38,7 @@ The viewer bearer works only on these routes:
   header. Each `page` event contains the ordinary logs response. Save its JSON
   `cursor` for reconnects; do not derive a cursor from event text. Last-Event-ID is
   also accepted as an input cursor, but JSON cursors are authoritative.
+- `GET /api/v1/events?sandbox=<sandbox UUID>`: the [sandbox event feed](README.md#stream-sandbox-events) accepts the viewer bearer for its bound sandbox.
 
 Pages contain at most 100 events and request a 64 KiB provider byte budget.
 Streams poll the existing incremental reader when idle, at one second intervals,

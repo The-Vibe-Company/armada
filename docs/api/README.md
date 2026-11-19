@@ -181,16 +181,11 @@ details.
 
 ## Stream sandbox events
 
-Use `GET /api/v1/events?sandbox=<UUID>` with `fetch` and an `Authorization: Bearer ...` header.
-The sandbox owner, an organization admin, and grants scoped to read that child or view that sandbox can subscribe.
-A refused caller receives HTTP 403 before the stream opens.
+Fetch `GET /api/v1/events?sandbox=<UUID>` with an `Authorization: Bearer ...` header. The sandbox owner, an organization admin, and a bearer scoped to read that child or view that sandbox can subscribe. A refusal returns HTTP 403 before streaming.
 
-Each SSE data frame contains an event-log reference. The decimal-string global `id` is also the SSE `id`.
-Runtime event references include the per-sandbox archive `sequence`. Transition references have a null `sequence`.
-Fetch the sandbox's logs or status when you need the referenced content.
-Reconnect with the last processed ID in `Last-Event-ID` or the `cursor` query parameter.
-The header takes precedence, and playback starts strictly after that ID.
-Without a cursor, the stream replays available history. Idle connections receive a heartbeat comment every 15 seconds.
+Each frame carries the global decimal-string SSE `id` and an event-log reference. Runtime entries include the per-sandbox `sequence`. Transition entries have a null sequence. Fetch logs or status for content.
+
+Reconnect with the last processed ID in `Last-Event-ID` or `cursor`. The header takes precedence and playback starts strictly after that ID. With neither, the stream replays available history. Idle feeds send a heartbeat comment every 15 seconds.
 
 ## Drive a turn over MCP
 
