@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -6,8 +6,7 @@ import { type McpBootstrap, nativeMcpInstallScript } from "../src/mcp-native.ts"
 
 import { installEnvironment, installProtocolWrapper } from "./mcp-codex-bridge.fixture.ts";
 
-// Real pinned app-server protocol, offline inference: no model/auth credentials.
-test("real Codex SAME process and thread resumes with rotated MCP credentials without model inference", async () => {
+async function verifyNativeBridge() {
   const binary = process.env.CODEX_NATIVE_TEST_BINARY;
   if (!binary) throw Error("CODEX_NATIVE_TEST_BINARY is required for the native release contract.");
   const { McpServer } = await import("@modelcontextprotocol/sdk/server/mcp.js");
@@ -28,8 +27,6 @@ test("real Codex SAME process and thread resumes with rotated MCP credentials wi
   const upstream = Bun.serve({
     port: 0,
     async fetch(request) {
-      // A completed local Responses turn is the durable-rollout fixture. Keep this exact
-      // route separate from MCP authorization; it never contacts a model service.
       if (request.method === "POST" && new URL(request.url).pathname === "/v1/responses") {
         const responseId = `offline-response-${crypto.randomUUID()}`;
         const body = [
@@ -55,8 +52,6 @@ test("real Codex SAME process and thread resumes with rotated MCP credentials wi
       const sessionId = request.headers.get("mcp-session-id");
       const session = sessionId ? sessions.get(sessionId) : undefined;
       if (request.headers.get("authorization") !== expected) {
-        // Closing an old client after revocation is allowed to be refused; only
-        // executable POST admission must never use stale authority.
         if (request.method === "POST") {
           rejected++;
           rejectedStale ||= request.headers.get("authorization") === "first";
@@ -96,17 +91,25 @@ test("real Codex SAME process and thread resumes with rotated MCP credentials wi
         stdin: new Blob([script]),
         stdout: "ignore",
         stderr: "ignore",
+        timeout: 30_000,
         env: {
           ...(await installEnvironment(home)),
           ...(configuration ? { ARMADA_GIT_TOKEN: JSON.stringify(configuration) } : {}),
         },
       });
-      expect(await p.exited).toBe(0);
+      assert.equal(await p.exited, 0);
     };
     await installProtocolWrapper(path, install);
     const script = `
-import json, subprocess, sys, os
-p=subprocess.Popen([sys.argv[1],"app-server","--listen","stdio://","-c",'model_provider="offline"',"-c",'model_providers.offline={name="offline",base_url="http://127.0.0.1:${upstream.port}/v1",wire_api="responses",requires_openai_auth=false,request_max_retries=0,stream_max_retries=0}'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+import json, subprocess, sys, os, signal
+from contextlib import suppress
+def abort(signum, _frame):
+    if signum == signal.SIGALRM:
+        raise TimeoutError("native bridge protocol deadline elapsed")
+    raise SystemExit(1)
+signal.signal(signal.SIGALRM, abort)
+signal.signal(signal.SIGTERM, abort)
+p=subprocess.Popen([sys.argv[1],"app-server","--listen","stdio://","-c",'model_provider="offline"',"-c",'model_providers.offline={name="offline",base_url="http://127.0.0.1:${upstream.port}/v1",wire_api="responses",requires_openai_auth=false,request_max_retries=0,stream_max_retries=0}'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,start_new_session=True)
 completed=False
 def receive():
     global completed
@@ -125,7 +128,22 @@ def rpc(id,method,params):
                 detail=(":"+str(error.get("message",""))[:256]) if error.get("code")==-32601 else ""
                 raise RuntimeError(method+":"+str(error.get("code"))+detail)
             return m["result"]
+def process_tree(root):
+    pending=[root]
+    while pending:
+        pid=pending.pop()
+        yield pid
+        with suppress(FileNotFoundError, ProcessLookupError):
+            with open("/proc/%d/task/%d/children"%(pid,pid)) as source:
+                pending.extend(map(int,source.read().split()))
+def native_pids():
+    found=[]
+    for pid in process_tree(p.pid):
+        with suppress(FileNotFoundError, ProcessLookupError):
+            if os.path.basename(os.readlink("/proc/%d/exe"%pid))=="codex":found.append(pid)
+    return sorted(found)
 try:
+    signal.alarm(30)
     rpc(1,"initialize",{"clientInfo":{"name":"armada-mcp-proof","version":"1"},"capabilities":{"experimentalApi":True}})
     p.stdin.write(b'{"method":"initialized"}\\n');p.stdin.flush()
     params={"cwd":sys.argv[2],"approvalPolicy":"never","sandbox":"danger-full-access"}
@@ -137,15 +155,6 @@ try:
     state=rpc(8,"thread/read",{"threadId":thread,"includeTurns":False})
     assert state["thread"]["status"]["type"]!="active"
 
-    def native_pids():
-        todo=[p.pid];found=[]
-        while todo:
-            pid=todo.pop()
-            try:
-                with open("/proc/%d/task/%d/children"%(pid,pid)) as source:todo.extend(map(int,source.read().split()))
-                if os.path.basename(os.readlink("/proc/%d/exe"%pid))=="codex":found.append(pid)
-            except (OSError,ValueError):pass
-        return sorted(found)
     peer=rpc(40,"thread/start",params)["thread"]["id"]
     assert peer!=thread
     original_pids=None
@@ -223,7 +232,28 @@ try:
         else:assert current_pids==original_pids
         print("phase-ok",flush=True)
 finally:
-    p.terminate();p.wait(timeout=5)
+    signal.alarm(0)
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    p.terminate()
+    try:
+        p.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        # Freeze the wrapper before finding the separate managed native group.
+        with suppress(ProcessLookupError):
+            p.send_signal(signal.SIGSTOP)
+        groups=set()
+        for pid in process_tree(p.pid):
+            with suppress(ProcessLookupError):
+                groups.add(os.getpgid(pid))
+        groups.discard(os.getpgrp())
+        groups.discard(p.pid)
+        for group in groups:
+            with suppress(ProcessLookupError):
+                os.killpg(group,signal.SIGKILL)
+        with suppress(ProcessLookupError):
+            os.killpg(p.pid,signal.SIGKILL)
+        p.wait(timeout=5)
+        raise
 `;
     const configure = async (phase: string) => {
       expected = phase;
@@ -248,45 +278,49 @@ finally:
         env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home },
       },
     );
+    const stderr = new Response(p.stderr).text();
     try {
       const reader = p.stdout.getReader();
       let buffer = "";
-      const line = async () => {
+      const verifyPhase = async (phase: string) => {
         while (!buffer.includes("\n")) {
           const next = await reader.read();
           if (next.done)
-            throw Error(
-              `Native proof exited: ${await new Response(p.stderr).text()}; upstreamRejectedStale=${rejectedStale}`,
-            );
+            throw Error(`Native proof exited during ${phase}: ${await stderr}; upstreamRejectedStale=${rejectedStale}`);
           buffer += new TextDecoder().decode(next.value);
         }
         const i = buffer.indexOf("\n"),
           value = buffer.slice(0, i);
         buffer = buffer.slice(i + 1);
-        return value;
+        assert.equal(value, "phase-ok", phase);
       };
-      expect(await line()).toBe("phase-ok");
+      await verifyPhase("initial credentials");
       await configure("restored");
       p.stdin.write("resume\n");
-      expect(await line()).toBe("phase-ok");
+      await verifyPhase("thread resume");
       await configure("turnonly");
       p.stdin.write("turnonly\n");
-      expect(await line()).toBe("phase-ok");
+      await verifyPhase("turn start");
       await install(nativeMcpInstallScript, { revision: "removed", servers: {} });
       p.stdin.write("removed\n");
-      expect(await line()).toBe("phase-ok");
-      expect(await p.exited).toBe(0);
-      expect(await new Response(p.stderr).text()).toBe("");
+      await verifyPhase("tool removal");
+      const code = await p.exited;
+      const diagnostics = await stderr;
+      assert.equal(code, 0, `Native proof failed during shutdown: ${diagnostics}`);
+      assert.equal(diagnostics, "");
     } finally {
-      p.kill();
+      if (p.exitCode === null && p.signalCode === null) p.kill();
+      await p.exited;
     }
-    expect(calls).toBe(6);
-    expect(rejected).toBe(0);
-    expect(staleSessionUsed).toBe(false);
-    expect(sessions.size).toBeGreaterThanOrEqual(3);
+    assert.equal(calls, 6);
+    assert.equal(rejected, 0);
+    assert.equal(staleSessionUsed, false);
+    assert.ok(sessions.size >= 3);
   } finally {
     upstream.stop(true);
     await Promise.all(servers.map((s) => s.close()));
     await rm(home, { recursive: true, force: true });
   }
-}, 30000);
+}
+
+await verifyNativeBridge();
