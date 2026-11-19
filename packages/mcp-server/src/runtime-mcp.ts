@@ -38,7 +38,6 @@ async function pinnedServer(definition: ConnectionDefinition, key: string) {
   }
   if (definition.value_enc === null) return { type: "stdio" as const, ...launcher };
   try {
-    // The complete wire snapshot is validated before enqueue, including env shape and limits.
     const env: Record<string, string> = JSON.parse(await decryptSecret(definition.value_enc, key));
     return { type: "stdio" as const, ...launcher, env };
   } catch {
