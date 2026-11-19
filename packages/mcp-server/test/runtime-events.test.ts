@@ -3,6 +3,7 @@ import type { AgentEvent, Sql } from "@armada/core";
 import * as coreServer from "@armada/core/server";
 import { createUsagePricingContext, decryptSecret, encryptSecret } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
+import { createJobsStore } from "../src/jobs/store.ts";
 import { createOutboundWebhooks } from "../src/outbound-webhooks.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
@@ -884,7 +885,7 @@ test("terminal runtime prompts admit one webhook and one Langfuse export across 
   }
 });
 
-test("delivery failures release the lease, back off durably, and stop at five attempts", async () => {
+test("failed webhook jobs persist the original backoff and stop after five sends", async () => {
   const f = await fixture();
   try {
     const endpoint = (
@@ -894,23 +895,92 @@ test("delivery failures release the lease, back off durably, and stop at five at
       )
     ).rows[0]!;
     await f.db.query("insert into outbound_webhook_deliveries(endpoint_id,payload) values($1,'{}')", [endpoint.id]);
-    // An unavailable encryption key fails before network I/O; the same durable
-    // failure settlement handles transport errors and unsuccessful responses.
-    const worker = createOutboundWebhooks(f.sql, "invalid_key", "https://armada.example");
+    const store = createJobsStore(f.sql);
+    const owner = crypto.randomUUID();
+    const now = Date.now() + 1_000;
+    const worker = createOutboundWebhooks(f.sql, ENCRYPTION_KEY, "https://armada.example", {
+      now: () => now,
+      send: async () => 503,
+    });
     for (let attempt = 1; attempt <= 5; attempt++) {
-      expect(await worker.reconcileOne(new AbortController().signal)).toBe(true);
+      const job = (await store.claim("webhook", owner, 30, 1))!;
+      const result = await worker.run(job, {
+        signal: new AbortController().signal,
+        canDispatch: async () => (await store.inspect(job, owner)) === "dispatch",
+      });
+      expect(await store.complete(job, owner, result)).toBe(true);
       const row = (
-        await f.db.query<{ attempts: number; lease_until: unknown; seconds: number }>(
-          "select attempts,lease_until,extract(epoch from next_attempt_at-now())::float as seconds from outbound_webhook_deliveries",
+        await f.db.query<{ attempts: number; last_status: number; next_attempt_at: Date }>(
+          "select attempts,last_status,next_attempt_at from outbound_webhook_deliveries where id=$1",
+          [job.id],
         )
       ).rows[0]!;
       expect(row.attempts).toBe(attempt);
-      expect(row.lease_until).toBeNull();
-      expect(row.seconds).toBeGreaterThan(30 * 2 ** (attempt - 1) - 1);
-      expect(await worker.reconcileOne(new AbortController().signal)).toBe(false);
-      await f.db.query("update outbound_webhook_deliveries set next_attempt_at=now()-interval '1 second'");
+      expect(row.last_status).toBe(503);
+      expect(new Date(row.next_attempt_at).getTime()).toBe(now + 30_000 * 2 ** (attempt - 1));
+      expect(await store.claim("webhook", owner, 30, 1)).toBeUndefined();
+      await f.db.query("update jobs set run_after=now()-interval '1 second' where id=$1", [job.id]);
+      await f.db.query("update outbound_webhook_deliveries set next_attempt_at=now()-interval '1 second' where id=$1", [
+        job.id,
+      ]);
     }
-    expect(await worker.reconcileOne(new AbortController().signal)).toBe(false);
+    expect(await store.claim("webhook", owner, 30, 1)).toBeUndefined();
+  } finally {
+    await f.close();
+  }
+});
+
+test("a lost webhook settlement replays the same signed delivery ID under a new epoch", async () => {
+  const f = await fixture();
+  try {
+    const endpoint = (
+      await f.db.query<{ id: string }>(
+        "insert into outbound_webhook_endpoints(org_id,url,secret_enc) values($1,'https://receiver.example/events',$2) returning id",
+        [f.people.org, await encryptSecret("webhook_secret", ENCRYPTION_KEY)],
+      )
+    ).rows[0]!;
+    const { rows: deliveries } = await f.db.query<{ id: string }>(
+      "insert into outbound_webhook_deliveries(endpoint_id,payload) values($1,'{}') returning id",
+      [endpoint],
+    );
+    const id = deliveries[0]!.id;
+    const oldClaim = await f.db.query(
+      "update outbound_webhook_deliveries set attempts=attempts+1,lease_until=now()+interval '60 seconds' where id=$1 returning id",
+      [id],
+    );
+    expect(oldClaim.rows).toEqual([]);
+    const store = createJobsStore(f.sql);
+    const owner = crypto.randomUUID();
+    const sent: (string | undefined)[] = [];
+    const worker = createOutboundWebhooks(f.sql, ENCRYPTION_KEY, "https://armada.example", {
+      now: () => Date.UTC(2030, 0, 1),
+      send: async (_url, _body, headers) => {
+        sent.push(headers["Armada-Webhook-Id"]);
+        return 204;
+      },
+    });
+    const run = async () => {
+      const job = (await store.claim("webhook", owner, 30, 1))!;
+      const result = await worker.run(job, {
+        signal: new AbortController().signal,
+        canDispatch: async () => (await store.inspect(job, owner)) === "dispatch",
+      });
+      return { job, result };
+    };
+    const first = await run();
+    await f.db.query("update jobs set lease_until=now()-interval '1 second' where id=$1", [id]);
+    const replacement = await run();
+    expect(await store.complete(first.job, owner, first.result)).toBe(false);
+    expect(await store.complete(replacement.job, owner, replacement.result)).toBe(true);
+    expect(sent).toEqual([id, id]);
+    expect(
+      (
+        await f.db.query(
+          "select attempts,delivered_at is not null as delivered from outbound_webhook_deliveries where id=$1",
+          [id],
+        )
+      ).rows,
+    ).toEqual([{ attempts: 2, delivered: true }]);
   } finally {
     await f.close();
   }

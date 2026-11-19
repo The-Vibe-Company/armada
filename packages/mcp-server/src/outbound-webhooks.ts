@@ -4,6 +4,7 @@ import { request as httpsRequest } from "node:https";
 import { decryptSecret, encryptSecret, type Sql } from "@armada/core/server";
 import type { CallerResult } from "./caller.ts";
 import type { Route } from "./http.ts";
+import type { Job, JobResult } from "./jobs/runner.ts";
 import { queuedPromptAliases } from "./queued-prompt-ids.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -96,7 +97,12 @@ async function deliver(url: URL, body: string, headers: Record<string, string>, 
   return postPinned(url, address, body, headers, signal);
 }
 
-export function createOutboundWebhooks(sql: Sql, key: string | undefined, dashboardUrl: string) {
+export function createOutboundWebhooks(
+  sql: Sql,
+  key: string | undefined,
+  dashboardUrl: string,
+  { now = Date.now, send = deliver } = {},
+) {
   async function publicPayload(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
     if (typeof payload.promptId !== "string") return payload;
     const receipts = await sql.query<{
@@ -185,23 +191,32 @@ export function createOutboundWebhooks(sql: Sql, key: string | undefined, dashbo
         }
       };
     },
-    async reconcileOne(signal: AbortSignal): Promise<boolean> {
+    async run(
+      job: Job,
+      {
+        signal,
+        canDispatch,
+      }: {
+        signal: AbortSignal;
+        canDispatch(): Promise<boolean>;
+      },
+    ): Promise<JobResult> {
       const rows = await sql.query<{
         id: string;
         url: string;
         secret_enc: Uint8Array<ArrayBuffer>;
         payload: Record<string, unknown>;
         attempts: number;
-      }>(`
-        with candidate as (
-          select d.id from public.outbound_webhook_deliveries d join public.outbound_webhook_endpoints e on e.id=d.endpoint_id
-          where e.enabled and d.delivered_at is null and d.attempts<5 and d.next_attempt_at<=now()
-          and (d.lease_until is null or d.lease_until<now())
+        next_attempt_at: Date;
+        alias_ready: boolean;
+      }>(
+        `
+        select d.id,d.payload,d.attempts,d.next_attempt_at,e.url,e.secret_enc,
           -- Only a prompt identity can need a public alias, and only one not yet captured.
           -- A pending command blocks only while its epoch can still complete it (an
           -- active session in the sandbox's current lifecycle); a superseded command can
           -- never produce the alias, so it must not hold any delivery.
-          and (d.payload->>'promptId' is null
+          (d.payload->>'promptId' is null
             or exists(select 1 from public.account_turn_queue a
               where a.sandbox_id::text=d.payload->>'sandboxId' and a.native_prompt_id=d.payload->>'promptId')
             or not exists(select 1 from public.account_turn_queue q
@@ -212,25 +227,45 @@ export function createOutboundWebhooks(sql: Sql, key: string | undefined, dashbo
                 join public.runtime_enrolments r on r.sandbox_id=c.sandbox_id and r.epoch=c.epoch
                   and r.lifecycle_generation=s.lifecycle_generation and r.runtime_hash is not null
                 where c.sandbox_id=q.sandbox_id and c.result_enc is null
-                  and c.request_id in ('follow_'||q.request_id::text,'docker_prompt_'||q.request_id::text,'resume_'||q.request_id::text)))))
-          order by d.next_attempt_at,d.id
-          for update of d skip locked limit 1
-        ), claimed as (
-          update public.outbound_webhook_deliveries d set attempts=attempts+1,lease_until=now()+interval '60 seconds'
-          from candidate c where d.id=c.id returning d.*
-        ) select c.id,c.payload,c.attempts,e.url,e.secret_enc from claimed c join public.outbound_webhook_endpoints e on e.id=c.endpoint_id`);
+                  and c.request_id in ('follow_'||q.request_id::text,'docker_prompt_'||q.request_id::text,'resume_'||q.request_id::text))))) as alias_ready
+        from public.outbound_webhook_deliveries d
+        join public.outbound_webhook_endpoints e on e.id=d.endpoint_id
+        where d.id=$1 and e.enabled and d.delivered_at is null
+        for update of d
+      `,
+        [job.id],
+      );
       const row = rows.rows[0];
-      if (!row) return false;
+      if (!row) return { status: "done" };
+      if (row.attempts >= 5) return { status: "fail", reason: "delivery_attempts_exhausted" };
+      const due = new Date(row.next_attempt_at);
+      if (due.getTime() > now()) return { status: "retry", after: due };
+      if (!row.alias_ready) return { status: "retry", after: new Date(now() + 1_000) };
+      if (!(await canDispatch())) return { status: "fail", reason: "dispatch_unavailable" };
+      // Reserve the send under the shared claim. A crash after the request can
+      // replay the delivery ID, but cannot bypass the five-attempt limit.
+      const reservation = await sql.query<{ attempts: number }>(
+        `with claim as (
+           select id from public.jobs where id=$1 and kind='webhook' and state='leased'
+             and lease_epoch=$2 and lease_until>clock_timestamp()
+           for update
+         ) update public.outbound_webhook_deliveries d set attempts=d.attempts+1
+           from claim where d.id=claim.id and d.attempts=$3 returning d.attempts`,
+        [row.id, job.lease_epoch, row.attempts],
+      );
+      const attempt = reservation.rows[0];
+      if (!attempt) return { status: "fail", reason: "dispatch_unavailable" };
       let status: number | null = null;
       try {
         const secret = await decryptSecret(row.secret_enc, key);
-        const timestamp = String(Math.floor(Date.now() / 1000));
+        const timestamp = String(Math.floor(now() / 1000));
         const payload = await publicPayload(row.payload);
         const body = JSON.stringify({
           ...payload,
           links: { sandbox: `${dashboardUrl.replace(/\/$/, "")}/sandboxes/${row.payload.sandboxId}` },
         });
-        status = await deliver(
+        signal.throwIfAborted();
+        status = await send(
           endpointUrl(row.url),
           body,
           {
@@ -246,13 +281,24 @@ export function createOutboundWebhooks(sql: Sql, key: string | undefined, dashbo
         /* Store only status codes; exception text can contain endpoint credentials. */
       }
       const success = status !== null && status >= 200 && status < 300;
-      await sql.query(
-        `update public.outbound_webhook_deliveries set last_status=$3,delivered_at=case when $4 then now() else null end,
-        lease_until=null,next_attempt_at=now()+($5 * interval '1 second') where id=$1 and attempts=$2`,
-        [row.id, row.attempts, status, success, Math.min(3600, 30 * 2 ** (row.attempts - 1))],
-      );
-      return true;
+      const { attempts } = attempt;
+      const after = new Date(now() + Math.min(3600, 30 * 2 ** (attempts - 1)) * 1_000);
+      const result: JobResult = success
+        ? { status: "done" }
+        : attempts < 5
+          ? { status: "retry", after }
+          : { status: "fail", reason: "delivery_attempts_exhausted" };
+      return {
+        ...result,
+        async commit(tx) {
+          await tx.query(
+            `update public.outbound_webhook_deliveries
+             set last_status=$3,delivered_at=case when $4 then now() else null end,next_attempt_at=$5
+             where id=$1 and attempts=$2`,
+            [row.id, attempts, status, success, after],
+          );
+        },
+      };
     },
-    async drain() {},
   };
 }
