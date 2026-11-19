@@ -8,7 +8,7 @@ if (!apiKey || process.env.ARMADA_RUN_LIVE_BOAT_TESTS !== "1") {
 }
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-async function until<T>(what: string, read: () => Promise<T | undefined>, timeoutMs: number): Promise<T> {
+async function until<T>(what: string, read: () => Promise<T | undefined>, timeoutMs: number) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const value = await read();
