@@ -64,7 +64,7 @@ export async function viewerDockerHosts() {
   };
 }
 
-export type DockerHostsState =
+type DockerHostsState =
   | { state: "ready"; list: DockerHostList }
   | { state: "disabled" }
   | { state: "error"; message: string };
