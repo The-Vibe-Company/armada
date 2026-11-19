@@ -7,6 +7,12 @@ docker build -t armada-golden-os-review scripts/fixtures/golden-os
 ARMADA_GOLDEN_OS_IMAGE=armada-golden-os-review bun packages/core/test/golden-os.probe.ts
 ```
 
+The same image can run the GitHub SSH bootstrap probe. It uses local Docker and SSH.
+
+```sh
+ARMADA_GOLDEN_OS_IMAGE=armada-golden-os-review bun packages/mcp-server/test/github-boat-os.probe.ts
+```
+
 The fixture uses the approved Node/Debian digest and exact apt versions, including sudo `1.9.13p3-1+deb12u4`. It runs the production pinned-host-key SSH stdin checkout transport and the complete generated golden recipe as the unprivileged `user`, then invokes the production scanner through that user's exec channel. Passwordless sudo is inside this disposable container only. Host Git configuration is never changed; fixture Git identity is repository-local.
 
 Only the fixture's GitHub network location is redirected to a real local Git repository. Its project pins Bun 1.3.14 and Playwright 1.56.1. The test verifies actual npm installation, privileged global Bun relinking, Playwright `--with-deps`, user-owned checkout files, root-only secret detection, and an independently copied root-owned runtime Bun remaining 1.4.2. SSH keys are generated at container start, not baked into the image. The token-shaped scanner value and stdin token are synthetic fixtures.

@@ -74,7 +74,9 @@ Repository-wide search includes `skipIf`, `test.skip`, conditional test aliases,
 - Core `golden-os`, provider-modal `ssh-os`, mcp-server `github-boat-os` are
   opt-in container/image OS acceptance, not ordinary unit proof. They require
   `ARMADA_GOLDEN_OS_IMAGE` and remain on-demand acceptance checks; no provider
-  or image build is introduced into PR CI. Run the Modal SSH probe with
+  or image build is introduced into PR CI. Run the GitHub SSH bootstrap probe with
+  `ARMADA_GOLDEN_OS_IMAGE=<fixture-image> bun packages/mcp-server/test/github-boat-os.probe.ts`.
+  Run the Modal SSH probe with
   `ARMADA_GOLDEN_OS_IMAGE=<fixture-image> bun packages/provider-modal/test/ssh-os.probe.ts`.
 - `provider-boat/integration.coordinator.ts` is no longer automatically
   discovered at all. Only the coordinator may explicitly invoke its documented
