@@ -1354,6 +1354,55 @@ test("a command answered before its first result read still records the fenced a
   expect(replay.records).toEqual([]);
 });
 
+function bootstrapFailureRequest(token: string) {
+  return new Request("https://armada.test/api/runtime/progress", {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}` },
+    body: JSON.stringify({ stage: "bootstrap_failed" }),
+  });
+}
+
+test("bootstrap failure journals one transition and refuses progress authenticated against a stale generation", async () => {
+  const f = await fixture();
+  const { enrolmentToken } = await f.authority.issue({ ownerId: f.people.owner, sandboxId: f.id, configuration: {} });
+  const request = () => bootstrapFailureRequest(enrolmentToken);
+  const stale = createRuntimeProgress({
+    ...f.authority,
+    withBootstrap: (token, work) =>
+      f.authority.withBootstrap(token, (tx, scope, generation) => work(tx, scope, String(BigInt(generation) + 1n))),
+  });
+  const journal = () =>
+    f.db.query("select from_status,to_status,code from sandbox_transitions where sandbox_id=$1", [f.id]);
+  expect((await stale(request()))?.status).toBe(401);
+  expect((await journal()).rows).toEqual([]);
+  expect((await f.db.query("select status from sandboxes where id=$1", [f.id])).rows).toEqual([{ status: "ready" }]);
+
+  const report = createRuntimeProgress(f.authority);
+  expect((await report(request()))?.status).toBe(200);
+  expect((await report(request()))?.status).toBe(401);
+  expect((await journal()).rows).toEqual([{ from_status: "ready", to_status: "failed", code: "bootstrap_failed" }]);
+});
+
+test("a failed reason write rolls back the bootstrap status change and journal", async () => {
+  const f = await fixture();
+  const { enrolmentToken } = await f.authority.issue({ ownerId: f.people.owner, sandboxId: f.id, configuration: {} });
+  const report = createRuntimeProgress(f.authority);
+  await f.db.exec(
+    `alter table sandboxes add constraint fixture_reject_bootstrap_reason
+     check (status_reason is distinct from 'Armada runtime bootstrap failed.') not valid`,
+  );
+  try {
+    expect((await report(bootstrapFailureRequest(enrolmentToken)))?.status).toBe(400);
+    expect((await f.db.query("select status,status_reason from sandboxes where id=$1", [f.id])).rows).toEqual([
+      { status: "ready", status_reason: null },
+    ]);
+    expect((await f.db.query("select id from sandbox_transitions where sandbox_id=$1", [f.id])).rows).toEqual([]);
+  } finally {
+    await f.db.exec("alter table sandboxes drop constraint fixture_reject_bootstrap_reason");
+  }
+  expect((await report(bootstrapFailureRequest(enrolmentToken)))?.status).toBe(200);
+});
+
 test("authenticated boot and turn diagnostics retain their initiating request IDs and sanitized stack", async () => {
   const f = await fixture();
   const records: Record<string, unknown>[] = [];
@@ -1420,6 +1469,9 @@ test("authenticated boot and turn diagnostics retain their initiating request ID
       sandboxId: f.id,
     },
   ]);
+  expect(
+    (await f.db.query("select from_status,to_status,code from sandbox_transitions where sandbox_id=$1", [f.id])).rows,
+  ).toEqual([{ from_status: "ready", to_status: "failed", code: "artifact_preparation" }]);
   expect(JSON.stringify(records)).not.toContain("private_config_canary");
   expect((await f.db.query("select status,status_reason from sandboxes where id=$1", [f.id])).rows).toEqual([
     {

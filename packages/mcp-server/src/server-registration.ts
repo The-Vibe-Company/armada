@@ -77,7 +77,6 @@ export function registerServer(modules: readonly ServerModule[]) {
             },
             start() {
               const core = startServerWorkers(
-                services.goldenBuilds,
                 context.lifecycle,
                 options.logError,
                 services.goldenRetirements,
@@ -87,7 +86,6 @@ export function registerServer(modules: readonly ServerModule[]) {
               );
               const started = background.map(({ start }) => start());
               return {
-                goldenWorker: core.goldenWorker,
                 lifecycleWorker: core.lifecycleWorker,
                 done: Promise.all([core.done, ...started.map((worker) => worker.done)]).then(() => {}),
                 stop() {
