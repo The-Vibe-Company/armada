@@ -1,5 +1,5 @@
 import { expect, jest, test } from "bun:test";
-import { ControlError, controlPost, createControlClient, readGoldenCapabilities } from "../src/lib/control.ts";
+import { ControlError, controlPost, createControlClient, readGoldenCapabilities } from "./control.ts";
 
 const TOKEN = "session-token-under-test";
 
@@ -13,7 +13,7 @@ test("posts once to the control API origin with the bearer, and returns the JSON
       return Response.json({ name: "web", visibility: "org", snapshot: "golden-1" });
     }) as typeof fetch,
   });
-  expect(await client.post("golden/create", { name: "web" })).toEqual({
+  expect(await client.post<unknown>("golden/create", { name: "web" })).toEqual({
     name: "web",
     visibility: "org",
     snapshot: "golden-1",
@@ -86,13 +86,11 @@ test("the golden limit is read once from golden/capabilities for the selected or
   expect(seen[0]?.url).toBe("https://armada.test/api/v1/golden/capabilities");
   expect(seen[0]?.headers.get("authorization")).toBe(`Bearer ${TOKEN}`);
   expect(await seen[0]?.json()).toEqual({ org, provider: "boat" });
-  // Null is "no limit reported", not zero and not a default: Modal is unbounded.
   const modalSeen: Request[] = [];
   expect(
     await readGoldenCapabilities(answering(200, { provider: "modal", maxGoldens: null }, modalSeen), org, "modal"),
   ).toEqual({ ok: true, maxGoldens: null });
   expect(await modalSeen[0]?.json()).toEqual({ org, provider: "modal" });
-  // An answer about another provider is not this provider's limit.
   expect(await readGoldenCapabilities(answering(200, { provider: "boat", maxGoldens: 1 }), org, "modal")).toEqual({
     ok: false,
     reason: "The Armada server sent an unexpected answer.",
@@ -113,7 +111,6 @@ test("a refused, failed or unexpected capacity read is unavailable, never a numb
     ok: false,
     reason: "No Boat credential for this org.",
   });
-  // An older server without the route.
   for (const body of [{ error: "Not found." }, null])
     expect(await readGoldenCapabilities(answering(404, body), org, "boat")).toEqual({
       ok: false,
@@ -136,7 +133,6 @@ test("a refused, failed or unexpected capacity read is unavailable, never a numb
   expect(JSON.stringify(unreachable)).not.toContain(TOKEN);
 });
 
-// Both public adapter boundaries own deadline behavior; feature callers need no duplicate cases.
 for (const adapter of ["client", "controlPost"] as const) {
   const post = (options: Parameters<typeof createControlClient>[0]) =>
     adapter === "client"
@@ -200,7 +196,7 @@ for (const adapter of ["client", "controlPost"] as const) {
       fetch: (async () => {
         calls++;
         return Response.json({});
-      }) as typeof fetch,
+      }) as unknown as typeof fetch,
     };
     for (const serverUrl of ["not a url", "ftp://armada.test", "https://user:password@armada.test"])
       await expect(post({ ...options, serverUrl })).rejects.toThrow("not configured");
@@ -212,11 +208,11 @@ for (const adapter of ["client", "controlPost"] as const) {
 
 test("the generic client retains arbitrary JSON and its own refusal mappings", async () => {
   for (const value of [null, ["value"], 42, "text"])
-    expect(await answering(200, value).post("read", {})).toEqual(value);
+    expect(await answering(200, value).post<unknown>("read", {})).toEqual(value);
   const malformed = createControlClient({
     serverUrl: "https://armada.test",
     token: TOKEN,
-    fetch: (async () => new Response("not JSON")) as typeof fetch,
+    fetch: (async () => new Response("not JSON")) as unknown as typeof fetch,
   });
   expect(await malformed.post("read", {})).toBeNull();
   for (const status of [401, 404, 405]) {
@@ -236,7 +232,7 @@ test("unreadable control errors separate refusal from uncertain outcomes without
     const client = createControlClient({
       serverUrl: "https://armada.test/mcp",
       token: TOKEN,
-      fetch: (async () => new Response("private_proxy_diagnostic", { status })) as typeof fetch,
+      fetch: (async () => new Response("private_proxy_diagnostic", { status })) as unknown as typeof fetch,
     });
     try {
       await client.post("sandbox/stop", {});

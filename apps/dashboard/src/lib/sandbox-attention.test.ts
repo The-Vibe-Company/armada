@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import type { ChatEvent } from "../src/lib/events.ts";
-import { outcomeView } from "../src/lib/outcome.ts";
+import type { ChatEvent } from "./events.ts";
+import { outcomeView } from "./outcome.ts";
 import {
   attentionOf,
   attentionState,
@@ -9,14 +9,15 @@ import {
   sandboxAttention,
   summarizeEvents,
   type TurnSummary,
-} from "../src/lib/sandbox-attention.ts";
+} from "./sandbox-attention.ts";
 
 const NOW = new Date("2026-11-10T12:00:00.000Z");
 const BOX_MOVED = "The box moved to a new machine while this prompt was running. Send it again.";
-const turn = (status: TurnSummary["status"], reason: string | null = null): TurnSummary => ({
-  status,
-  reason,
-});
+const turn = (status: TurnSummary["status"], reason: string | null = null) =>
+  ({
+    status,
+    reason,
+  }) satisfies TurnSummary;
 
 describe("summarizeEvents", () => {
   test("keeps the latest turn's prompt, status and reason", () => {
@@ -87,7 +88,6 @@ describe("attentionState", () => {
       attentionState("failed", null, { statusReason: null, lifecycleError: "The provider lost the machine." }).failure
         ?.title,
     ).toBe("Sandbox failed");
-    // The reason the server recorded on the sandbox explains a launch failure, with its fix.
     expect(attentionState("failed", null, { statusReason: "auth_expiry", lifecycleError: "later" }).failure).toEqual({
       title: "Account expired",
       hint: expect.any(String),
@@ -183,7 +183,6 @@ describe("honest failures", () => {
     for (const latest of [turn("finished"), null])
       expect(attentionState("failed", latest, crash, ready)).toMatchObject({ kind: "failed", outcome: ready });
     expect(attentionState("failed", turn("failed", "crash"), crash, ready).outcome).toBeUndefined();
-    // A failed turn followed by one that finished on a live machine is history.
     expect(attentionState("ready", turn("finished")).kind).toBe("finished");
     const launch = {
       statusReason: "Launch interrupted before completion; provider cleanup is retried until confirmed.",
@@ -191,7 +190,6 @@ describe("honest failures", () => {
     };
     const state = attentionState("failed", null, launch);
     expect(state.kind).toBe("interrupted");
-    // Nothing can be resent to an ended sandbox: it needs the operator only for work it preserved.
     expect(attentionOf(state, "failed", null, null, null)).toBeNull();
   });
 });
@@ -215,11 +213,9 @@ describe("attentionOf", () => {
     expect(
       attentionOf(working, "running", turn("running"), expiryView("running", "2026-11-10T12:10:00.000Z", NOW), null),
     ).toBe("expiring");
-    // Stopped mid-turn with its work preserved: the operator decides what happens to it.
     const stopped = attentionState("stopped", turn("interrupted"));
     expect(attentionOf(stopped, "stopped", turn("interrupted"), null, preserved)).toBe("unconcluded");
     expect(attentionOf(stopped, "stopped", turn("interrupted"), null, null)).toBeNull();
-    // Events that could not be read cannot show the turn concluded.
     expect(attentionOf(attentionState("stopped", null), "stopped", null, null, preserved)).toBe("unconcluded");
     expect(
       attentionOf(attentionState("stopped", turn("finished")), "stopped", turn("finished"), null, preserved),
