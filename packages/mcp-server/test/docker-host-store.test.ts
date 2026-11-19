@@ -887,7 +887,6 @@ test("Docker stop admission rolls back when the lifecycle CAS rejects its genera
           work({
             query: (query, params) => {
               if (query.includes("from public.sandbox_transition(") && params?.[0] === a.sandboxId) {
-                // The host and sandbox locks normally prevent a stale caller. Inject one at the CAS boundary.
                 const staleParams = [...params];
                 staleParams[1] = "1";
                 return tx.query(query, staleParams);
