@@ -60,7 +60,7 @@ describe.each([
       ).toEqual(receipt);
     const row = (await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))!;
     expect(row.taskPromptId).toBe(next.promptId as string);
-    expect(row.lifecycleGeneration).toBe(originalGeneration + 4);
+    expect(row.lifecycleGeneration).toBe(originalGeneration);
     expect(f.starts).toHaveLength(3);
     if (provider === "modal") expect(preparations).toBe(2);
     expect(await f.authority.withSession(f.active.runtimeToken, f.active.epoch, async () => true)).toBe(true);
@@ -144,7 +144,7 @@ test("a competing accepted turn invalidates an older finished probe before admis
     if (!competing) throw Error("No competing turn was accepted");
     const row = (await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))!;
     expect(row.taskPromptId).toBe(competing.promptId);
-    expect(row.lifecycleGeneration).toBe(generation + 2);
+    expect(row.lifecycleGeneration).toBe(generation);
     expect(f.starts).toHaveLength(2);
   } finally {
     done.resolve("finished");
@@ -155,6 +155,41 @@ test("a competing accepted turn invalidates an older finished probe before admis
         body: JSON.stringify({ version: 1, sandboxId: f.row.id, requestId: crypto.randomUUID(), op: "checkpoint" }),
       }),
     );
+    await f.close();
+  }
+});
+
+test("a generation change after the prompt probe refuses admission even if the task and epoch match", async () => {
+  const f = await fixture(await sharedDatabase());
+  try {
+    const store = createSqlData(f.sql)(f.caller).sandboxes;
+    const before = (await store.get(f.row.id))!;
+    const generation = before.lifecycleGeneration!;
+    const taskPromptId = before.taskPromptId!;
+    f.race(async () => {
+      // Exercise the existing lifecycle-fenced activity path and preserve the enrolled epoch.
+      const activityToken = crypto.randomUUID();
+      await store.update(f.row.id, {
+        status: "running",
+        expectedGeneration: generation,
+        advanceGeneration: true,
+        clearTaskOutcome: true,
+        activityToken,
+      });
+      await store.update(f.row.id, {
+        expectedGeneration: generation + 1,
+        finishActivity: true,
+        taskPromptId,
+        activityToken,
+      });
+    });
+    await expect(f.send(f.caller, f.input())).rejects.toThrow("Runtime admission changed");
+    expect(await store.get(f.row.id)).toMatchObject({
+      lifecycleGeneration: generation + 2,
+      taskPromptId,
+    });
+    expect(f.starts).toHaveLength(1);
+  } finally {
     await f.close();
   }
 });
@@ -172,6 +207,7 @@ describe.each([
 
   test("first send opens one conversation; uncertain replay and later follow-up retain it", async () => {
     const f = await prepared();
+    const before = (await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))!;
     expect(f.journal.prompts()).toHaveLength(0);
     const request = f.input("first instruction");
     await expect(f.send(f.caller, { ...request, ...{ conversation_id: "foreign" } })).rejects.toThrow();
@@ -182,7 +218,11 @@ describe.each([
     const recovered = await createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge)(f.caller, request);
     expect(recovered.conversationId).toBeTruthy();
     const row = await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id);
-    expect(row?.conversationIds).toEqual([recovered.conversationId]);
+    expect(row).toMatchObject({
+      status: "ready",
+      lifecycleGeneration: before.lifecycleGeneration,
+      conversationIds: [recovered.conversationId],
+    });
     const next = await f.send(f.caller, f.input("follow-up"));
     expect(next.conversationId).toBe(recovered.conversationId);
     expect(await f.send(f.caller, request)).toEqual(recovered);
