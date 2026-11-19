@@ -511,6 +511,53 @@ their timings. Focused traces of `private-ssh.test.ts`,
 | `ssh-github-token.test.ts` | bootstrap relays an exact installer phase and maps all other child stderr to sudo | Local Python executes the emitted GitHub client, installer, or bootstrap with fixture dependencies. | 58.35 ms |
 | `ssh-readable-variables.test.ts` | Boat fixed bootstrap successfully restores the same readable file after /run loss | Local Python executes the emitted bootstrap and installer with fixture filesystem paths. | 122.09 ms |
 
+## Server subprocess cases
+
+The [process-test allowlist](../scripts/ci/process-tests.txt) finds eight
+Server files with direct spawn syntax. The push-ledger fixture and the SSH
+executor also start real processes from tests outside the allowlist. The
+table records whole-case timings from untraced Linux runs with Bun 1.4.2
+(744846f84). The control and GitHub broker cases ran at `f9e67913` and
+`4718766a`, respectively. The remaining cases ran in per-file invocations
+at `c8f81db1`. Separate execution traces and source
+inspection identify process boundaries.
+
+| File under `packages/mcp-server/test` | Case | Local subprocess boundary | Local |
+| --- | --- | --- | ---: |
+| `boat-orchestrator-private.test.ts` | Boat private epoch script rejects older writes/boot mismatch and exact hash cleanup preserves newer authority without disk secrets | Bash runs the emitted control and bridge scripts with local Node processes, a Unix socket, and temporary state. | 428.27 ms |
+| `control.test.ts` | control API > GitHub refresh preserves the closed hydration failure over HTTP | The SSH executor starts local `ssh-keygen`. The fake provider refuses key registration before any SSH connection. | 229.90 ms |
+| `docker-host-install.test.ts` | installer publishes both build digests without credentials and refuses missing artifacts | POSIX sh checks the generated installer syntax. Route requests are in process. | 3.35 ms |
+| `docker-host-install.test.ts` | one-line installer verifies bytes, delivers the one-use token privately and confirms a poll | POSIX sh runs the installer with local command and artifact stubs for download, service, registration, and package runners. | 125.71 ms |
+| `github-boat.test.ts` | generated GitHub broker fits the private transport before SSH registration | The SSH executor starts local `ssh-keygen`. The fake provider refuses key registration before any SSH connection. | 91.77 ms |
+| `main.test.ts` | standalone server entrypoint reports configuration errors without starting the CLI | A fresh Bun process runs the standalone server entrypoint and rejects missing configuration. | 459.24 ms |
+| `managed-inspection.test.ts` | native argv sentinel inspection excludes its exec command and ancestors, but catches an actual native-looking child leak | A local Node wrapper invokes Bash to install the sentinel and inspect Linux procfs while fixture Node CLI processes supply argv. | 301.53 ms |
+| `mcp-codex-bridge.test.ts` | Codex reload control is private, preserves unmanaged params, and rejects unsafe config without killing the app-server | Bash installs the wrapper and managed MCP configuration. The installed wrapper runs the Python bridge and a local Python app-server peer over stdio. | 170.77 ms |
+| `mcp-native.test.ts` | an untouched golden snapshot does not require Node or modify public native configuration | Bash evaluates the scrub script with no Node on PATH and untouched public configuration. | 2.15 ms |
+| `orchestrator-bootstrap.test.ts` | built-in reference preserves conflicting files | An injected provider exec runs the built-in reference script in POSIX sh against temporary files. | 9.61 ms |
+| `serve-database-boot.test.ts` | startServer retries real Supavisor admission errors before serving and closes both pools on exhaustion | A fresh Bun fixture isolates the SQL and clock doubles and makes loopback HTTP requests against the composed server. | 701.26 ms |
+| `push-ledger.test.ts` | push evidence survives a pruned tracking ref and reports pushes that escaped the ledger | The helper runs POSIX sh and local Git to push, prune, and detect a push without ledger hooks. | 204.57 ms |
+| `push-ledger.test.ts` | a missing reference-transaction hook is reported, kept in the ledger and restored | POSIX sh and local Git push, remove the reference-transaction hook, and exercise ledger repair. | 113.01 ms |
+| `push-ledger.test.ts` | a missing pre-push hook is reported, kept in the ledger and restored | POSIX sh and local Git push, remove the pre-push hook, and exercise ledger repair. | 114.75 ms |
+| `push-ledger.test.ts` | a push the ledger cannot attribute leaves a gap even after its tracking ref is pruned | POSIX sh and local Git exercise alternate push paths and inspect the ledger after tracking-ref pruning. | 460.51 ms |
+| `push-ledger.test.ts` | the repository's own hooks keep running, with their input and exit status, beside the ledger | POSIX sh and local Git install and exercise existing repository hooks alongside the ledger. | 215.14 ms |
+| `push-ledger.test.ts` | recreating a deleted branch at the SHA its tracking ref still holds is recorded | POSIX sh and local Git use two clones to recreate a deleted branch at its previous SHA. | 110.57 ms |
+| `push-ledger.test.ts` | a push the remote rejects is an unconfirmed attempt, never push evidence | POSIX sh and local Git exercise a push rejected by a local remote hook and inspect the pending and aged ledger records. | 123.66 ms |
+| `push-ledger.test.ts` | confirmed pushes keep their chronological order across both evidence sources | POSIX sh and local Git push and recreate a branch from a newer fetched commit to check ordering. | 160.10 ms |
+| `push-ledger.test.ts` | a verified push is confirmed by its tracking update even without a reflog entry | POSIX sh and local Git disable reflogs, push, prune, and read the tracking-update evidence. | 97.46 ms |
+| `push-ledger.test.ts` | an accepted push whose tracking update failed stays unresolved; a later confirmed push supersedes it | POSIX sh and local Git exercise a locked tracking ref and competing pushes across local clones. | 359.84 ms |
+| `push-ledger.test.ts` | a relative hooks path still resolves in each linked worktree once the ledger is installed | POSIX sh and local Git exercise distinct hook behavior in the primary and linked worktrees. | 59.20 ms |
+
+The unattributed-push gap case took 1,631.84 ms in the
+[archived unit shard](https://github.com/The-Vibe-Company/armada/actions/runs/44526380196/job/135567940848#logs).
+It sets up four local launch fixtures and exercises four push paths in one case.
+
+The other cases in `mcp-native.test.ts` execute the installer payload in a
+VM context or call the pin policy in process. The other
+`orchestrator-bootstrap.test.ts` cases inject the provider result or reject
+the request before execution. The Boat provider composition test injects its
+SSH spawn function. Explicit conformance and release probes are outside unit
+discovery.
+
 ## Evidence owed after merge
 
 Run the existing publishing release validation on the exact release SHA. Verify
