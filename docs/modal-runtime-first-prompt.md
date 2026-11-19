@@ -512,7 +512,7 @@ no configuration, adds no credentials, and retains one allocation/one activation
 and all prior lifecycle proofs. Matching normal server/runtime artifacts are
 required; no new migration or manual artifact publication. Coordinator receipts
 are still required for live acceptance, ordinary default-path rollout and the
-production-day gate before tunnel deletion.
+default-on release cycle and production checklist before tunnel deletion.
 
 
 ## Promptless direct launch and first send
@@ -628,8 +628,7 @@ Matching schema/server/runtime must include
 `20261114150137_runtime_empty_checkpoint_resume.sql` (private server-only mode;
 existing operations default to nonempty). No default flip, native fallback, new
 credentials or manual artifact publication. Live acceptance remains coordinator
-owned; secrets/multi-conversation/default readiness and the production-day gate
-still precede authorized tunnel deletion.
+owned. The default-on release cycle and production checklist gate tunnel deletion.
 
 
 ## Ordinary launch default

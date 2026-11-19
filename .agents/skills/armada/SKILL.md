@@ -58,6 +58,9 @@ any receipt UUID returned. On success, pass `sandbox.id` to subsequent tools.
   For REST golden and Docker launches, read the Armada ID from `sandbox.id`.
   The TypeScript SDK uses the same `LaunchResult` envelope for ordinary launches.
   Docker returns `golden: null`. Pinned template launches return a template receipt.
+- Ordinary Modal launches default to the enrolled runtime. To confirm the deployed
+  default, check `modalRuntime.defaultPath` in the authenticated response to
+  `POST /api/v1/launch/options`.
 - Choose the harness and a model/effort it supports. Launch selections persist
   for later turns. Do not assume provider sizes have equal price or performance.
 - If a runtime launch returns `credential_binding_required`, add the model account
