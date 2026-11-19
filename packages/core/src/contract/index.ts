@@ -1,7 +1,7 @@
 import type { z } from "zod";
 import { createdInboundTrigger, createInboundTriggerBody, createInboundTriggerQuery } from "./inbound-trigger.ts";
 import { launchInput } from "./launch.ts";
-import { launchOutput } from "./launch-response.ts";
+import { launchEnvelope } from "./launch-response.ts";
 import { publicAuthOperations } from "./public-auth.ts";
 import { githubOperations, goldenOperations, launchTemplateOperation } from "./resources.ts";
 import { sandboxOperations } from "./sandbox.ts";
@@ -12,7 +12,12 @@ import { sandboxRestOperations } from "./sandbox-rest.ts";
 import { sandboxViewerOperations } from "./sandbox-viewer.ts";
 
 export type { CreatedInboundTrigger } from "./inbound-trigger.ts";
-export { dockerHostLaunchFields, dockerSnapshotLaunchFields, type LaunchInput } from "./launch.ts";
+export {
+  dockerHostLaunchFields,
+  dockerSnapshotLaunchFields,
+  type LaunchInput,
+  type PinnedModalLaunchInput,
+} from "./launch.ts";
 export { type LaunchEnvelope, launchEnvelope, templateLaunchResponse } from "./launch-response.ts";
 export { PUBLIC_CONTROL_ROUTES, publicAuthOperations, signInMethod } from "./public-auth.ts";
 export { githubOperations, goldenOperations, launchTemplateOperation } from "./resources.ts";
@@ -73,13 +78,13 @@ export const launch = {
     "Personal sessions may use an org slug or UUID. For scoped tokens, omit `org` or use the scoped org UUID.",
   route: { method: "POST", path: "/api/v1/sandbox/launch" },
   input: { body: launchInput },
-  output: launchOutput,
+  output: launchEnvelope,
   readOnly: false,
   destructive: false,
   audience: "agent",
   description: "Launch a sandbox and optionally start its first turn.",
   errors: ["invalid"],
-} as const satisfies Operation<typeof launchInput, typeof launchOutput>;
+} as const satisfies Operation<typeof launchInput, typeof launchEnvelope>;
 
 export const createInboundTrigger = {
   name: "createInboundTrigger",
