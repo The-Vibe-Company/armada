@@ -67,6 +67,7 @@ test("retries provider errors on the next sweep and counts confirmed deletes onc
   const records: unknown[] = [];
   const source: ProviderReaperSource = {
     provider: "modal",
+    emitOverdueMachineIds: true,
     sourceId: "account_a",
     deploymentId,
     inventory: {
@@ -270,6 +271,7 @@ test("an overdue evidence log failure does not prevent live deletion", async () 
   const lane = createProviderReaper(
     {
       provider: "modal",
+      emitOverdueMachineIds: true,
       sourceId: "account_a",
       deploymentId,
       inventory: {

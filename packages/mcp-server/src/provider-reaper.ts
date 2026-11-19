@@ -15,6 +15,7 @@ type Decision = "keep" | "unknown_young" | DeleteReason;
 
 export interface ProviderReaperSource {
   provider: SandboxPlacementProviderId;
+  emitOverdueMachineIds?: boolean;
   /** Stable, nonsecret identity unique to the provider account/binding or host within this deployment. */
   sourceId: string;
   /** Stable environment + server identity used when tagging machines. */
@@ -116,7 +117,7 @@ export function createProviderReaperLane(
           if (ownership.kind === "absent") unknown++;
           if (decision === "unknown") {
             overdue++;
-            if (source.provider === "modal" || source.provider === "docker") {
+            if (source.emitOverdueMachineIds) {
               overdueMachineIds.push(machine.machineId);
               if (source.deleteMachine || overdueMachineIds.length === OVERDUE_LOG_BATCH_SIZE) reportOverdueMachines();
             }
