@@ -261,7 +261,7 @@ export function createRuntimeResume(
           if (scope.epoch !== admitted.op.target_epoch || !receipt)
             throw new VaultError("conflict", "Resume epoch changed before publication.");
           await createSqlData(tx)(caller).sandboxes.update(id, patch);
-          if (found.provider === "modal") await restoreModalResumeSchedule(tx, id);
+          if (found.runtimeTransport === "dialout") await restoreModalResumeSchedule(tx, id);
           const saved = await tx.query(
             "update public.runtime_resumes set phase='complete',receipt=$3::jsonb where sandbox_id=$1 and request_id=$2 and phase='dispatched' returning request_id",
             [found.id, requestId, JSON.stringify(receipt)],
@@ -278,20 +278,12 @@ export function createRuntimeResume(
         async (signal) => {
           if (admitted.first) {
             placement = await prepare!(caller, admitted.current);
-            const confirmActivation =
-              found.provider === "boat" || found.provider === "modal"
-                ? async () => {
-                    if (
-                      !(await confirmRuntimeResumeActivation(
-                        sql,
-                        found.id,
-                        requestId,
-                        admitted.current.lifecycleGeneration,
-                      ))
-                    )
-                      throw new VaultError("conflict", "Resume activation authority changed.");
-                  }
-                : undefined;
+            const confirmActivation = async () => {
+              if (
+                !(await confirmRuntimeResumeActivation(sql, found.id, requestId, admitted.current.lifecycleGeneration))
+              )
+                throw new VaultError("conflict", "Resume activation authority changed.");
+            };
             const ready = await placement.start(signal, restore, confirmActivation);
             if (ready.epoch !== admitted.op.target_epoch) throw new VaultError("conflict", "Unexpected resume epoch.");
           }
@@ -395,7 +387,7 @@ export function createRuntimeResume(
             found.provider === "boat" && runtime && !runtime.live && runtime.epoch === admitted.op.source_epoch;
           const retained = Boolean(
             (boatSourceEpoch && (runtime.ticket_issued || runtime.activation_confirmed || preActivationArchive)) ||
-              (found.provider === "modal" &&
+              (found.runtimeTransport === "dialout" &&
                 runtime?.activation_confirmed &&
                 !runtime.live &&
                 runtime.epoch === admitted.op.source_epoch),

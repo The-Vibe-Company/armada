@@ -220,6 +220,7 @@ export function createSandboxLifecycle(
           owner_is_member: boolean;
           retained_resume: boolean;
           interrupted_resume: boolean;
+          protected_resume: boolean;
           work_merged: boolean | null;
           preservation_note: string | null;
           stop_requested_at: Date | string | null;
@@ -255,17 +256,18 @@ export function createSandboxLifecycle(
         where s.id=due.id
         returning s.id,s.provider_sandbox_id,s.runtime_transport,s.boat_runtime,s.lifecycle_generation,s.expires_at,s.status::text as status,s.status_reason,s.task_prompt_id,s.activity_lease_id,s.application_secret_tainted,s.credential_id,s.credential_version,s.stop_requested_at,s.preservation_note,
           ${mergedWorkProof("s")} as work_merged,due.retained_resume,
-          (due.modal_resume or (s.provider='boat' and s.boat_runtime and s.status='starting' and exists(
+          due.modal_resume as protected_resume,
+          (s.provider='boat' and s.boat_runtime and s.status='starting' and exists(
             select 1 from public.runtime_resumes r where r.sandbox_id=s.id and r.request_id=s.activity_lease_id
               and r.phase='dispatched' and r.receipt is null
-          ))) as interrupted_resume,
+          )) as interrupted_resume,
           exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id) as owner_is_member`,
           [token, providerId, UNENROLLED_RESUME_STOP, `${OPERATOR_CLEANUP_PREFIX}%`],
         )
       ).rows[0];
       if (!row) return false;
       const recoverInterruptedResume = async (observedProviderId: string | null) => {
-        if (!row.interrupted_resume) return false;
+        if (!row.interrupted_resume && !row.protected_resume) return false;
         if (!sql.transaction) throw Error("Runtime resume recovery requires a SQL transaction.");
         return sql.transaction(async (tx) => {
           const owned = await tx.query(
@@ -313,7 +315,7 @@ export function createSandboxLifecycle(
             reconcile_lease=null,reconcile_lease_until=case when $4 then now()+interval '1 minute' end
           where id=$1::uuid and reconcile_lease=$2::uuid and lifecycle_generation=$3
             and reconcile_lease_until>now() and (activity_until is null or activity_until<now())`,
-          [row.id, token, row.lifecycle_generation, providerId === "modal" && row.interrupted_resume],
+          [row.id, token, row.lifecycle_generation, row.protected_resume],
         );
         return true;
       }
@@ -328,7 +330,7 @@ export function createSandboxLifecycle(
       let stoppedAt: Date | undefined;
       const expired = new Date(row.expires_at).getTime() <= now();
       const retainedResume = row.retained_resume;
-      const modalRollback = retainedResume && providerId === "modal";
+      const rollbackRetainedResume = retainedResume && row.runtime_transport === "dialout";
       const native = !row.boat_runtime && row.runtime_transport !== "dialout";
       // Lease expiry is not evidence a native exec completed. Retain its identity
       // until an owner outcome or explicit/TTL cleanup, rather than inventing idle.
@@ -339,11 +341,7 @@ export function createSandboxLifecycle(
         !row.stop_requested_at &&
         ["ready", "running"].includes(row.status);
       const canDeferInterruptedResume =
-        providerId === "boat" &&
-        row.interrupted_resume &&
-        !expired &&
-        !row.stop_requested_at &&
-        !row.application_secret_tainted;
+        row.interrupted_resume && !expired && !row.stop_requested_at && !row.application_secret_tainted;
       const deferInterruptedResume = () =>
         sql.query(
           `update public.sandboxes set reconcile_after=now()+interval '1 minute',
@@ -402,9 +400,9 @@ export function createSandboxLifecycle(
         // Uses persisted owner membership, source credential visibility and pinned Modal App.
         const provider = await operation(signal, () => providerFor(row.id));
         resolved = true;
-        if (modalRollback) {
+        if (rollbackRetainedResume) {
           const rollback = (provider as Partial<ModalProvider>).rollbackRuntimeResume;
-          if (provider.id !== "modal" || !rollback) throw Error("Modal rollback authority is unavailable.");
+          if (!rollback) throw Error("Modal rollback authority is unavailable.");
           await operation(signal, () =>
             rollback.call(provider, { sandboxId: row.provider_sandbox_id, generation: row.lifecycle_generation - 1 }),
           );
@@ -430,7 +428,6 @@ export function createSandboxLifecycle(
           return true;
         }
         if (
-          providerId === "boat" &&
           row.interrupted_resume &&
           (info.state === "stopped" ||
             ((info.state === "ready" || info.state === "running") && !info.physicalExitConfirmed))
@@ -653,7 +650,7 @@ export function createSandboxLifecycle(
         // Never infer absence from transport errors or discover resources by name.
         if (
           resolved &&
-          !modalRollback &&
+          !rollbackRetainedResume &&
           (providerId !== "boat" || observing) &&
           caught instanceof ProviderError &&
           caught.code === "not_found"
