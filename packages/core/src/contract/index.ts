@@ -2,6 +2,7 @@ import type { z } from "zod";
 import { createdInboundTrigger, createInboundTriggerBody, createInboundTriggerQuery } from "./inbound-trigger.ts";
 import { launchInput } from "./launch.ts";
 import { launchEnvelope } from "./launch-response.ts";
+import { githubOperations, goldenOperations, launchTemplateOperation } from "./resources.ts";
 import { sandboxOperations } from "./sandbox.ts";
 import { sandboxCheckOperations } from "./sandbox-checks.ts";
 import { sandboxOutputOperations } from "./sandbox-outputs.ts";
@@ -17,6 +18,7 @@ export {
   type PinnedModalLaunchInput,
 } from "./launch.ts";
 export { type LaunchEnvelope, launchEnvelope, templateLaunchResponse } from "./launch-response.ts";
+export { githubOperations, goldenOperations, launchTemplateOperation } from "./resources.ts";
 export {
   DEFAULT_WAIT_SECONDS,
   LOGS_OUTPUT,
@@ -25,6 +27,10 @@ export {
   sandboxIdInput,
   sandboxOperations,
 } from "./sandbox.ts";
+
+export function controlRouteKey<Path extends string>(route: { readonly path: `/api/v1/${Path}` }) {
+  return route.path.slice("/api/v1/".length) as Path;
+}
 
 export { sandboxCheckOperations } from "./sandbox-checks.ts";
 export { sandboxOutputOperations } from "./sandbox-outputs.ts";
@@ -39,11 +45,13 @@ export interface Operation<Input extends z.ZodType, Output extends z.ZodType | u
   readonly route: { readonly method: string; readonly path: `/api/v1/${string}` };
   readonly input: {
     readonly body: Input;
+    readonly maxBodyBytes?: number;
     readonly query?: z.ZodType;
     readonly path?: Readonly<Record<string, z.ZodType>>;
     readonly headers?: Readonly<Record<string, z.ZodType>>;
   };
   readonly output: Output;
+  readonly directServer?: true;
   readonly outputMediaType?: string;
   readonly errorOutput?: z.ZodType;
   readonly successStatus?: number;
@@ -89,6 +97,9 @@ export const createInboundTrigger = {
 
 export const operations = {
   launch,
+  ...goldenOperations,
+  ...githubOperations,
+  launchTemplate: launchTemplateOperation,
   createInboundTrigger,
   ...sandboxOperations,
   ...sandboxRestOperations,

@@ -657,19 +657,23 @@ test("proxy-generated failures match the published failure schema and decode to 
 const fillParameters = (template: string) =>
   template.replace("{id}", "11111111-1111-4111-8111-111111111111").replace("{name}", "memo%20v2.pdf");
 
-test("every operation in the published OpenAPI description crosses the public proxy with a bearer", async () => {
+test("published OpenAPI operations cross the proxy unless marked direct-server", async () => {
   const published = (await import("../../../packages/mcp-server/openapi.json")).default as {
-    paths: Record<string, Record<string, unknown>>;
+    paths: Record<string, Record<string, { "x-armada-direct-server"?: boolean }>>;
   };
   const env = process.env.ARMADA_MCP_URL;
   process.env.ARMADA_MCP_URL = "https://armada.test/mcp";
   try {
     const operations = Object.entries(published.paths).flatMap(([path, verbs]) =>
-      Object.keys(verbs).map((verb) => ({ path, verb: verb.toUpperCase() })),
+      Object.entries(verbs).map(([verb, operation]) => ({
+        path,
+        verb: verb.toUpperCase(),
+        direct: operation["x-armada-direct-server"],
+      })),
     );
     expect(operations.length).toBeGreaterThan(0);
     const blocked: string[] = [];
-    for (const { path: template, verb } of operations) {
+    for (const { path: template, verb, direct } of operations) {
       const path = fillParameters(template);
       const forwarded: string[] = [];
       const response = await forwardControl(
@@ -684,7 +688,13 @@ test("every operation in the published OpenAPI description crosses the public pr
           return Response.json({});
         },
       );
-      if (response.status !== 200 || forwarded[0] !== path) blocked.push(`${verb} ${path}`);
+      const expectedStatus = direct ? 404 : 200;
+      if (
+        response.status !== expectedStatus ||
+        forwarded.length !== (direct ? 0 : 1) ||
+        (!direct && forwarded[0] !== path)
+      )
+        blocked.push(`${verb} ${path}`);
     }
     expect(blocked).toEqual([]);
   } finally {

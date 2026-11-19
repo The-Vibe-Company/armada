@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { parseApplicationSecretBindings } from "./application-secret-bindings.ts";
 import type { ApplicationVaultActor } from "./application-vault.ts";
 import type { LaunchEnvelope } from "./contract/launch-response.ts";
+import { launchTemplateOperation } from "./contract/resources.ts";
 import { HARNESS_KINDS } from "./credentials.ts";
 import type { DockerLaunchResult } from "./docker-api.ts";
 import type { GoldenActor, GoldenOperation, GoldenRecord } from "./golden.ts";
@@ -157,21 +158,8 @@ function dto(h: Header): LaunchTemplate {
 }
 
 /** Every field the REST `templates/launch` route accepts; the published OpenAPI request lists exactly these. */
-export const TEMPLATE_LAUNCH_FIELDS = [
-  "org",
-  "id",
-  "revision",
-  "requestKey",
-  "prompt",
-  "ttlSeconds",
-  "size",
-  "repo",
-  "skills",
-  "skipSkillDefaults",
-  "modelAccount",
-  "externalRef",
-  "stopWhenWorkMerged",
-] as const;
+const templateLaunchFields = launchTemplateOperation.input.body.shape;
+export const TEMPLATE_LAUNCH_FIELDS = Object.freeze(Object.keys(templateLaunchFields));
 
 /** Service-role owner: both transports share validation, reference authorization and admission. */
 export function createTemplateService(sql: Sql, encryptionKey?: string) {
@@ -525,13 +513,16 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
   ): Promise<Record<string, unknown>> {
     if (!runtime) throw new VaultError("unavailable", "Template launching unavailable.");
     id(input.id);
-    const key = text(input.requestKey, 128);
-    const keyPattern = runtime.pinnedLaunch ? /^pinned-modal\/[a-f0-9]{64}$/ : /^[A-Za-z0-9._:-]+$/;
-    if (!keyPattern.test(key)) invalid();
+    const key = input.requestKey;
+    if (typeof key !== "string") invalid();
+    const validKey = runtime.pinnedLaunch
+      ? /^pinned-modal\/[a-f0-9]{64}$/.test(key)
+      : templateLaunchFields.requestKey.safeParse(key).success;
+    if (!validKey) invalid();
     if (input.revision !== undefined) integer(input.revision);
-    if (input.prompt !== undefined) text(input.prompt, 100000);
+    if (!templateLaunchFields.prompt.safeParse(input.prompt).success) invalid();
     if (input.ttlSeconds !== undefined) integer(input.ttlSeconds);
-    if (input.repo !== undefined) text(input.repo);
+    if (!templateLaunchFields.repo.safeParse(input.repo).success) invalid();
     if (input.skipSkillDefaults !== undefined && typeof input.skipSkillDefaults !== "boolean") invalid();
     if (input.externalRef !== undefined && !isExternalRef(input.externalRef)) invalid();
     if (input.stopWhenWorkMerged !== undefined && typeof input.stopWhenWorkMerged !== "boolean") invalid();

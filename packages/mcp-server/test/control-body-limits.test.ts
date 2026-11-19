@@ -3,8 +3,6 @@ import { createMemoryAuthStore } from "@armada/auth";
 import type { VaultStore } from "@armada/core";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 
-import { PUBLISHED_REST_ROUTES } from "../src/public-rest-routes.ts";
-
 const userId = "11111111-1111-4111-8111-111111111111";
 const options: ControlOptions = {
   authStore: createMemoryAuthStore(),
@@ -92,10 +90,20 @@ test("control JSON policies preserve empty, whitespace, object and malformed UTF
 
 test("every published route refuses a body over its published limit with its published status", async () => {
   const published = (await import("../openapi.json")).default as unknown as {
-    paths: Record<string, { post: { requestBody: { "x-max-body-bytes": number; "x-oversized-body-status": number } } }>;
+    paths: Record<
+      string,
+      { post?: { requestBody?: { "x-max-body-bytes"?: number; "x-oversized-body-status"?: number } } }
+    >;
   };
-  for (const route of PUBLISHED_REST_ROUTES.filter((route) => route !== "logs/read")) {
-    const { requestBody } = published.paths[`/api/v1/${route}`]!.post;
+  for (const [path, { post }] of Object.entries(published.paths)) {
+    const requestBody = post?.requestBody;
+    if (
+      requestBody?.["x-max-body-bytes"] === undefined ||
+      requestBody["x-oversized-body-status"] === 503 ||
+      path === "/api/v1/logs/read"
+    )
+      continue;
+    const route = path.slice("/api/v1/".length);
     const limit = requestBody["x-max-body-bytes"];
     const response = await handleControlRequest(
       new Request(`https://armada.test/api/v1/${route}`, {
