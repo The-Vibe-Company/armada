@@ -11,7 +11,8 @@ import {
 const code: FailureCode = "outcome_unknown";
 
 const client = new Armada({ token: code });
-const golden = (provider: "boat" | "modal") => client.launch({ provider, golden: "worker", harness: "codex" });
+const boat = () => client.launch({ provider: "boat", golden: "worker", harness: "codex" });
+const modal = () => client.launch({ provider: "modal", golden: "worker", harness: "codex" });
 const docker = () =>
   client.launch({
     org: "o",
@@ -32,7 +33,8 @@ export type SendInputContract = Assert<
   Equal<Extract<"conversationId" | "conversation_id", keyof SendInput | keyof DockerSendInput>, never>
 >;
 
-export type GoldenReceiptContract = Assert<Equal<Awaited<ReturnType<typeof golden>>, LaunchResult>>;
+export type BoatReceiptContract = Assert<Equal<Awaited<ReturnType<typeof boat>>, LaunchResult>>;
+export type ModalReceiptContract = Assert<Equal<Awaited<ReturnType<typeof modal>>, LaunchResult>>;
 export type DockerReceiptContract = Assert<Equal<Awaited<ReturnType<typeof docker>>, LaunchResult>>;
 export type LaunchFields = Assert<
   Equal<
