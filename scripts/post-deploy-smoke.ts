@@ -1536,8 +1536,17 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
       if (!launch) return io.fetch(url, init);
       const body = JSON.parse(String(init.body));
       const key = body.externalRef;
+      const keyedDockerParity =
+        args[0] === "--parity" &&
+        url.endsWith("/sandbox/launch") &&
+        body.provider === "docker" &&
+        typeof body.requestId === "string" &&
+        SANDBOX_ID.test(body.requestId) &&
+        key === `post-deploy-smoke:${body.requestId}`;
       const requestKey =
-        typeof key === "string" && /^post-deploy-smoke:[0-9a-f-]{36}$/.test(key) && key === body.idempotencyKey
+        typeof key === "string" &&
+        /^post-deploy-smoke:[0-9a-f-]{36}$/.test(key) &&
+        (key === body.idempotencyKey || keyedDockerParity)
           ? key
           : `post-deploy-smoke:${crypto.randomUUID()}`;
       const org = body.org;
@@ -1559,10 +1568,12 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         id?: unknown;
       } | null;
       const keyedModalParity = args[0] === "--parity" && requestKey === key && body.provider === "modal";
-      const id = keyedModalParity ? result?.sandbox?.id : (result?.sandbox?.id ?? result?.id);
+      const id = keyedModalParity || keyedDockerParity ? result?.sandbox?.id : (result?.sandbox?.id ?? result?.id);
       const provider = smokeReceiptProvider(result);
       const unverifiedParityLaunch =
-        keyedModalParity && (!response.ok || provider !== "modal" || result?.sandbox?.provider !== "modal");
+        (keyedModalParity && (!response.ok || provider !== "modal" || result?.sandbox?.provider !== "modal")) ||
+        (keyedDockerParity &&
+          (!response.ok || id !== body.requestId || provider !== "docker" || result?.sandbox?.provider !== "docker"));
       if (!unverifiedParityLaunch && typeof id === "string" && SANDBOX_ID.test(id) && typeof org === "string") {
         const row: SmokeSandboxReceipt = {
           requestKey,

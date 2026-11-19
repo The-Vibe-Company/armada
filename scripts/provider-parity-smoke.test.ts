@@ -270,7 +270,10 @@ for (const mode of [
     const snapshotOwner = "10000000-0000-4000-8000-000000000008";
     const snapshotImage = `sha256:${"a".repeat(64)}`;
     const journalDir =
-      mode === "modal_launch_missing_provider" || mode === "modal_launch_top_level_id"
+      mode === "modal_launch_missing_provider" ||
+      mode === "modal_launch_top_level_id" ||
+      mode === "docker_launch_recovers" ||
+      mode === "docker_launch_incomplete"
         ? await mkdtemp(join(tmpdir(), "parity-journal-"))
         : undefined;
     const journalPath = journalDir ? join(journalDir, "sandboxes.json") : undefined;
@@ -1268,7 +1271,7 @@ for (const mode of [
               break;
             case "sandbox/stop":
               if (journalPath) {
-                expect(body.id).toBe(recoveredSandbox);
+                expect(body.id).toBe(dockerLaunchScenario ? sandboxId(p) : recoveredSandbox);
                 if (states.get(p) === "deleted")
                   return Response.json({ error: { code: "not_found" } }, { status: 404 });
               }
@@ -1421,7 +1424,13 @@ for (const mode of [
       if (mode !== "docker_launch_unresolved") {
         expect(passed).toBe(true);
         expect(report.features.cleanup.docker.status).toBe("pass");
-        expect(journalClaims).toEqual([sandboxId("docker")]);
+        const receipts = lines.filter((line) => line.startsWith("{")).map((line) => JSON.parse(line));
+        expect(receipts.some((receipt) => receipt.step === "smoke_sandbox_receipt")).toBe(false);
+        expect(receipts.find((receipt) => receipt.step === "smoke_cleanup_summary")).toMatchObject({
+          pass: true,
+          deferredRows: 0,
+          launchOutcomeUnknown: false,
+        });
         expect(lines).toContain(
           JSON.stringify({
             step: "parity_docker_launch",
