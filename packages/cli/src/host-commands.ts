@@ -58,7 +58,6 @@ export async function listHosts(client: ArmadaCommandClient, org: string): Promi
   return value as unknown as DockerHostListResponse;
 }
 
-/** Host names are resolved through the existing host API, which takes an organization UUID. */
 export async function resolveHostOrganization(client: ArmadaCommandClient, ref: string | undefined): Promise<string> {
   const wanted = ref?.trim().toLowerCase();
   if (wanted && UUID.test(wanted)) return wanted;

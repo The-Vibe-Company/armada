@@ -43,6 +43,24 @@ transport grace. `send`, `stop`, and `bind-credential` use a 660-second
 request deadline. That budget gives `send` time to restore paused compute
 before admitting the turn. A transport timeout does not trigger a write retry.
 
+## Docker host commands and launches
+
+Host names resolve within the selected organization through the host API.
+Local host commands with an explicit server can select an instance even if
+another server's daemon is unhealthy. If a registered daemon's server origin
+cannot be read, inspect the instance with `armada host status` before retrying
+installation. The new registration token remains unused.
+
+The wrapper uses fixed failure diagnostics to keep native output and private
+state out of CLI errors. See [Docker host installation and recovery](../../docs/docker-host-daemon.md)
+for installation path checks, registration preservation, and service repair.
+
+A plain-image Docker launch uses the Armada API without a golden or a Docker
+provider credential. If the CLI reports an unknown outcome and prints a launch key,
+retry with the same `--idempotency-key` and request body to recover the
+original launch. Transport failures, uncertain server responses, and malformed
+receipts can leave the outcome unknown.
+
 ## Login and session storage
 
 Armada browser sign-in uses PKCE through the Armada server and keeps provider

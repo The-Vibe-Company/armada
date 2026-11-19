@@ -52,7 +52,6 @@ async function capture(argv: string[], fetcher: (request: Request) => Promise<Re
   return { code, out, err };
 }
 
-// CLI owns translating flags and preserving recovery identity, not host/runtime sequencing.
 test.each(["codex", "claude", "opencode"] as const)(
   "Docker %s CLI uses normal authenticated launch without golden or provider secrets",
   async (harness) => {
