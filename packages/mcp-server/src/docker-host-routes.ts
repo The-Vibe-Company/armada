@@ -378,6 +378,7 @@ export function createDockerHostRoutes(
         let job: Awaited<ReturnType<typeof store.poll>>;
         const skipSnapshots = body.skipSnapshots === true;
         const supportsPhysicalDelete = request.headers.get("x-armada-docker-host-delete-physical") === "1";
+        const supportsRestore = request.headers.get("x-armada-docker-host-restore") === "1";
         const runningIds = (running as string[] | undefined) ?? [];
         let probed = false;
         const wake = runtimeWakes.watch(`host:${hostId}`);
@@ -396,6 +397,7 @@ export function createDockerHostRoutes(
               runningIds,
               protocol,
               supportsPhysicalDelete,
+              supportsRestore,
             );
             if (job || resumeClaims.length) break;
             // Recheck every second with a read-only probe; the full poll above
@@ -420,6 +422,7 @@ export function createDockerHostRoutes(
                 runningIds,
                 body.resumeClaimProtocol === 1,
                 supportsPhysicalDelete,
+                supportsRestore,
               );
             }
             if (!ready) break;
@@ -428,7 +431,7 @@ export function createDockerHostRoutes(
         } finally {
           wake.close();
         }
-        const pendingStarts = await store.pendingStartsForHost(token, installationId);
+        const pendingStarts = await store.pendingStartsForHost(token, installationId, supportsRestore);
         const limits = body.resourcePolicyVersion === 1 ? await store.limitsForHost(token, installationId) : undefined;
         return Response.json(
           {

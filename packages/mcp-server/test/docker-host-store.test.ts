@@ -360,15 +360,18 @@ test("frozen machine expiry survives mailbox delivery and cannot change under an
   );
 });
 
-async function boundFixture(registered?: Awaited<ReturnType<typeof fixture>>) {
+async function boundFixture(
+  registered?: Awaited<ReturnType<typeof fixture>>,
+  placement?: { sandboxId: string; generation: string; expiresAt: number },
+) {
   const db = database();
   const host = registered ?? (await fixture());
-  const sandboxId = randomUUID(),
-    generation = randomUUID();
+  const sandboxId = placement?.sandboxId ?? randomUUID(),
+    generation = placement?.generation ?? randomUUID();
   await db.query(
     `insert into public.sandboxes(id,org_id,owner_id,provider,provider_sandbox_id,harness,status,
       docker_host_id,docker_installation_id,docker_generation,docker_image,expires_at,effective_ttl_seconds)
-     values($1,$2,$3,'docker',$4,'codex','starting',$5,$6,$7,$8,now()+interval '1 hour',3600)`,
+     values($1,$2,$3,'docker',$4,'codex','starting',$5,$6,$7,$8,coalesce($9::timestamptz,now()+interval '1 hour'),3600)`,
     [
       sandboxId,
       host.actor.orgId,
@@ -378,12 +381,120 @@ async function boundFixture(registered?: Awaited<ReturnType<typeof fixture>>) {
       host.installationId,
       generation,
       `example/worker@sha256:${"a".repeat(64)}`,
+      placement ? new Date(placement.expiresAt) : null,
     ],
   );
   const owner = { ...host.actor, userId: host.memberId };
   const create = { requestId: randomUUID(), operation: "create" as const };
   return { ...host, sandboxId, generation, owner, create };
 }
+
+async function restoreFixture() {
+  const host = await fixture();
+  const db = database();
+  const bindings = createDockerMachineBindings(sql, { ...host, deploymentId: randomUUID() });
+  const sandboxId = randomUUID();
+  const predecessor = await bindings.bind({ sandboxId, generation: 1 });
+  const generation = await bindings.bind({ sandboxId, generation: 2 });
+  const expiresAt = Date.UTC(2099, 0, 1);
+  const a = await boundFixture(host, { sandboxId, generation, expiresAt });
+  await db.query("update sandboxes set lifecycle_generation=2 where id=$1", [sandboxId]);
+  const request = { ...job().request, sandboxId: a.sandboxId, generation, expiresAt };
+  const restore = {
+    requestId: randomUUID(),
+    operation: "restore" as const,
+    request,
+    predecessor: { request: { ...request, generation: predecessor }, machineId: "a".repeat(64) },
+  };
+  const cleanupId = randomUUID();
+  const cleanup = { operation: "stop", request: restore.predecessor.request };
+  const putIntent = async (requestId: string, operation: string, input: object) =>
+    db.query(
+      `insert into docker_host_jobs(request_id,host_id,bound_sandbox_id,bound_actor_id,bound_actor_epoch,bound_operation,input_enc)
+       select $1,$2,$3,user_id,epoch,$4,$5 from mcp_actor_epochs where org_id=$6 and user_id=$7`,
+      [
+        requestId,
+        a.hostId,
+        a.sandboxId,
+        operation,
+        await encryptSecret(JSON.stringify(input), key),
+        a.owner.orgId,
+        a.owner.userId,
+      ],
+    );
+  await putIntent(cleanupId, "stop", { bound: 1, job: cleanup });
+  const { requestId, ...payload } = restore;
+  await putIntent(requestId, "restore", { bound: 1, job: payload, lifecycleGeneration: "2" });
+  const poll = (running: string[] = [], supportsRestore = true, hostStore = store) =>
+    hostStore.poll(
+      a.hostToken,
+      a.installationId,
+      undefined,
+      false,
+      undefined,
+      undefined,
+      null,
+      null,
+      running,
+      null,
+      false,
+      supportsRestore,
+    );
+  return { ...a, restore, cleanupId, poll };
+}
+
+test("restore work is gated and stays eligible behind an excluded predecessor cleanup", async () => {
+  const a = await restoreFixture();
+  const excluded = [a.cleanupId];
+  const supportsRestore = true;
+  const probe = (running: string[], supports: boolean) =>
+    store.mayHaveWork(a.hostToken, a.installationId, false, running, false, false, supports);
+  expect(await probe([], false)).toBe(false);
+  expect(await a.poll([], false)).toBeNull();
+  expect(await probe(excluded, supportsRestore)).toBe(true);
+  const unrelated = job();
+  await store.enqueue(a.actor, a.hostId, unrelated);
+  expect(await a.poll(excluded)).toEqual(unrelated);
+  await store.complete(a.hostToken, a.installationId, { requestId: unrelated.requestId, outcome: "completed" });
+  expect(await a.poll(excluded)).toEqual(a.restore);
+  expect(await a.poll([a.restore.requestId])).toBeNull();
+  expect(await store.pendingStartsForHost(a.hostToken, a.installationId, supportsRestore)).toEqual(
+    [a.restore.request, a.restore.predecessor.request].map(({ sandboxId, generation }) => ({ sandboxId, generation })),
+  );
+});
+
+test("unbound enqueue cannot bypass restore admission", async () => {
+  const a = await fixture();
+  const target = job();
+  const request = { ...target.request, expiresAt: Date.UTC(2099, 0, 1) };
+  await denied(
+    store.enqueue(a.actor, a.hostId, {
+      requestId: target.requestId,
+      operation: "restore",
+      request,
+      predecessor: { request: { ...request, generation: randomUUID() }, machineId: "a".repeat(64) },
+    }),
+  );
+});
+
+test("restore dispatch cancels stale intent and reconciles a late physical receipt", async () => {
+  const a = await restoreFixture();
+  const db = database();
+  await db.query("update sandboxes set lifecycle_generation=3 where id=$1", [a.sandboxId]);
+  const { faultingStore, failure } = failDockerJobCommit(a.restore.requestId, "failed");
+  await expect(a.poll([a.cleanupId], true, faultingStore)).rejects.toMatchObject({ cause: failure });
+  expect(await a.poll([a.cleanupId])).toBeNull();
+  const result = { requestId: a.restore.requestId, outcome: "completed" as const };
+  const lostReceipt = failDockerJobCommit(result.requestId, result.outcome);
+  await expect(lostReceipt.faultingStore.complete(a.hostToken, a.installationId, result)).rejects.toMatchObject({
+    cause: lostReceipt.failure,
+  });
+  await store.complete(a.hostToken, a.installationId, result);
+  await store.complete(a.hostToken, a.installationId, result);
+  await denied(store.complete(a.hostToken, a.installationId, { ...result, outcome: "failed" }));
+  expect(await store.pendingStartsForHost(a.hostToken, a.installationId, true)).toEqual([]);
+  expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "starting" });
+});
 
 function interruptDockerCommit(written: (tx: Sql) => Promise<boolean>) {
   const failure = new Error("Docker transaction interrupted before commit");
