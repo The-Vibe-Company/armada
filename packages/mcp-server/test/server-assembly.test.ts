@@ -43,6 +43,10 @@ test("server assembly preserves worker lane order and isolation", () => {
       ],
       "isolated": [
         {
+          "name": "golden-builds",
+          "sweep": true,
+        },
+        {
           "name": "langfuse",
           "sweep": false,
         },

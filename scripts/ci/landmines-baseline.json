@@ -881,7 +881,7 @@
     "packages/mcp-server/src/server-request-drain.ts": 4,
     "packages/mcp-server/src/server-routines.ts": 2,
     "packages/mcp-server/src/server-shutdown.ts": 4,
-    "packages/mcp-server/src/server-workers.ts": 7,
+    "packages/mcp-server/src/server-workers.ts": 6,
     "packages/mcp-server/src/session-jwt.ts": 4,
     "packages/mcp-server/src/shutdown.ts": 2,
     "packages/mcp-server/src/sql.ts": 12,

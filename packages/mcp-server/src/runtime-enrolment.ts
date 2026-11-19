@@ -286,7 +286,10 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
     return result;
   }
   /** Read-only bootstrap reporting does not consume or extend the one-use ticket. */
-  async function withBootstrap<T>(enrolmentToken: string, work: (tx: Sql, scope: RuntimeSessionScope) => Promise<T>) {
+  async function withBootstrap<T>(
+    enrolmentToken: string,
+    work: (tx: Sql, scope: RuntimeSessionScope, generation: string) => Promise<T>,
+  ) {
     if (!valid(enrolmentToken, "enrol")) throw new RuntimeEnrolmentDenied();
     const hash = await sha256Hex(enrolmentToken);
     return transaction(async (tx) => {
@@ -307,14 +310,14 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
         )
       ).rows[0];
       if (!row) throw new RuntimeEnrolmentDenied();
-      return work(tx, { sandboxId: sandbox.id, epoch: String(BigInt(row.epoch) + 1n) });
+      return work(tx, { sandboxId: sandbox.id, epoch: String(BigInt(row.epoch) + 1n) }, sandbox.lifecycle_generation);
     });
   }
   /** Keep the epoch lock through journal/command mutations, not merely an earlier auth lookup. */
   async function withSession<T>(
     runtimeToken: string,
     epoch: string,
-    work: (tx: Sql, scope: RuntimeSessionScope) => Promise<T>,
+    work: (tx: Sql, scope: RuntimeSessionScope, generation: string) => Promise<T>,
     source?: Source,
   ) {
     if (!valid(runtimeToken, "runtime") || !/^[1-9][0-9]{0,18}$/.test(epoch)) throw new RuntimeEnrolmentDenied();
@@ -337,7 +340,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
         )
       ).rows[0];
       if (!row || !supportsProtocol(row.runtime_protocol_version)) throw new RuntimeEnrolmentDenied();
-      return work(tx, { sandboxId: sandbox.id, epoch: row.epoch });
+      return work(tx, { sandboxId: sandbox.id, epoch: row.epoch }, sandbox.lifecycle_generation);
     });
   }
   /** Trusted server-side command issuer/readback, under the same owner/lifecycle fence. */
