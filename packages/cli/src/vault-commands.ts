@@ -506,14 +506,15 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
         io.auth.out(`${JSON.stringify({ ok: true })}\n`);
         return 0;
       }
-      if (endpoint)
-        io.auth.out(
+      if (endpoint) {
+        const guidance =
           kind === "opencode"
-            ? "Custom OpenCode endpoint: Modal only; use --model armada/<upstream-model>.\n"
+            ? "Custom OpenCode endpoint: use --model armada/<upstream-model>."
             : kind === "anthropic"
-              ? "Custom Claude gateway: Modal only; supports Claude models only and requires Anthropic Messages with streaming/tool use.\n"
-              : "Custom Codex endpoint: Modal only; requires the Responses API (not chat completions).\n",
-        );
+              ? "Custom Claude gateway: supports Claude models only and requires Anthropic Messages with streaming/tool use."
+              : "Custom Codex endpoint: requires the Responses API (not chat completions).";
+        io.auth.out(`${guidance} Available on Modal, Docker hosts and runtime-backed Boat.\n`);
+      }
       io.auth.out(
         `Stored ${credentialName(kind)} for ${scope === "org" ? `org ${org}` : "you"}, encrypted. It is never shown again.\n`,
       );
