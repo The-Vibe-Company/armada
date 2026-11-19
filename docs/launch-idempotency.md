@@ -108,6 +108,13 @@ or may not exist. Never retry with a new key: that is how duplicates happen.
    organization, original key, `externalRef` and receipt UUID when available.
    An unregistered allocation can exist even when the sandbox list is empty.
 
+Before deploying the shared MCP launch contract, reconcile outstanding
+launches sent without `provider` or with `ttl_seconds` or `reasoning_effort`.
+After deployment, sending the same key with the new fields can return
+`conflict` and the existing receipt UUID. Use that UUID with `status`, or look
+up the sandbox by `externalRef` and escalate to an operator if needed. Keep the
+original key throughout reconciliation.
+
 Template launches follow the same rule with `requestKey`: a replay answers the
 recorded state (`succeeded`, `failed`, `reconciling`), and `reconciling` is
 never re-dispatched.

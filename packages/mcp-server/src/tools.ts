@@ -5,14 +5,12 @@ import {
   LAUNCH_STAGES,
   launchFailureHelp,
   launchResponse,
-  MACHINE_SIZES,
-  MAX_MCP_CONNECTIONS,
   providerRateLimitDetails,
   SANDBOX_PLACEMENT_PROVIDERS,
   USAGE_UNAVAILABLE_CODES,
 } from "@armada/core";
+import { launch } from "@armada/core/contract";
 import {
-  DEFAULT_LAUNCH_TTL_SECONDS,
   EncryptionKeyError,
   GoldenError,
   type GoldenRecord,
@@ -22,10 +20,8 @@ import {
   type LaunchOptions,
   type LaunchStores,
   launchSandbox,
-  MAX_LAUNCH_TTL_SECONDS,
   type MemberRole,
   MODEL_CATALOG,
-  PROVIDER_LIMITS,
   type Provider,
   ProviderError,
   ProviderRoutingError,
@@ -45,6 +41,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod";
 import { apiFailureCode } from "./api-failure.ts";
 import type { Caller } from "./caller.ts";
+import { UUID } from "./control-input.ts";
 import { INTERNAL_FAILURE_MESSAGE } from "./control-response.ts";
 import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
 import { DataError, type SandboxView, type ScopedData } from "./data.ts";
@@ -418,6 +415,19 @@ export const sandboxListInput = z.object({
     .describe("Only sandboxes launched with this reference that you own or administer."),
 });
 
+const [ordinaryBoatLaunch, , ordinaryModalLaunch] = launch.input.body.options;
+const mcpLaunchOmissions = { armadaAccess: true, armadaAccessVersion: true } as const;
+const mcpLaunchInput = z.union([
+  ordinaryBoatLaunch.omit(mcpLaunchOmissions),
+  ordinaryModalLaunch.omit(mcpLaunchOmissions),
+]);
+const mcpLaunchArguments = z.looseObject({}).meta({
+  anyOf: mcpLaunchInput.options.map((variant) => {
+    const { $schema: _dialect, ...schema } = z.toJSONSchema(variant, { io: "input" });
+    return schema;
+  }),
+});
+
 /** One MCP server per request: the principal is fixed for its whole life, and nothing outlives the request. */
 export function createArmadaServer(context: ToolContext, version: string) {
   return createToolServer(context, version, "mcp");
@@ -428,7 +438,10 @@ export function createRestToolServer(context: ToolContext, version: string, only
   return createToolServer(context, version, "rest", onlyTool);
 }
 
-type ToolContract<In extends z.ZodRawShape, Out extends z.ZodRawShape> = {
+type ToolInput = z.ZodRawShape | z.ZodObject;
+type ToolArgs<In extends ToolInput> = z.infer<In extends z.ZodRawShape ? z.ZodObject<In> : In>;
+
+type ToolContract<In extends ToolInput, Out extends z.ZodRawShape> = {
   title: string;
   description: string;
   input: In;
@@ -456,10 +469,10 @@ function createToolServer(
   const { caller, data } = context;
   const orgIds = caller.orgs.map((org) => org.orgId);
 
-  const register = <In extends z.ZodRawShape, Out extends z.ZodRawShape>(
+  const register = <In extends ToolInput, Out extends z.ZodRawShape>(
     name: string,
     config: ToolContract<In, Out>,
-    invoke: (args: z.infer<z.ZodObject<In>>) => Promise<CallToolResult>,
+    invoke: (args: ToolArgs<In>) => Promise<CallToolResult>,
   ) => {
     server.registerTool(
       name,
@@ -478,13 +491,13 @@ function createToolServer(
     );
   };
 
-  const tool = <In extends z.ZodRawShape, Out extends z.ZodRawShape>(
+  const tool = <In extends ToolInput, Out extends z.ZodRawShape>(
     name: string,
     config: ToolContract<In, Out>,
-    run: (args: z.infer<z.ZodObject<In>>) => Promise<z.infer<z.ZodObject<Out>>>,
+    run: (args: ToolArgs<In>) => Promise<z.infer<z.ZodObject<Out>>>,
     restOnly = false,
   ) => {
-    const invoke: (args: z.infer<z.ZodObject<In>>) => Promise<CallToolResult> = async (args) => {
+    const invoke: (args: ToolArgs<In>) => Promise<CallToolResult> = async (args) => {
       try {
         if (["send", "steer", "exec", "interrupt"].includes(name)) {
           const input = args as Record<string, unknown>;
@@ -717,53 +730,9 @@ function createToolServer(
         "With `prompt` the agent starts working at once (status running). Without it the sandbox is left ready " +
         "and the conversation starts at the first `send`. The sandbox gets only your (or your org's) Armada " +
         "credentials for this agent, never the boat.dev account's. When the caller connected GitHub, git and gh in " +
-        "the sandbox act as that person (8 hour token): see `github` in the answer. Setup can take a few minutes.",
-      input: {
-        idempotencyKey: z
-          .string()
-          .min(16)
-          .max(128)
-          .optional()
-          .describe("Reuse this key with the same inputs if the launch outcome is unknown."),
-        externalRef: externalRefInput.optional(),
-        stopWhenWorkMerged: z.boolean().optional(),
-        visibility: z.enum(["private", "org"]).optional(),
-        skills: z.array(z.string()).max(20).optional(),
-        skipSkillDefaults: z.boolean().optional(),
-        helperCapabilities: z.array(z.string().max(64)).max(8).optional(),
-        connections: z.array(z.string().uuid()).max(MAX_MCP_CONNECTIONS).optional(),
-        golden: z.string().min(1).describe("The golden's name, as in golden/list."),
-        org: z
-          .string()
-          .optional()
-          .describe("The golden's orgId, as in golden/list. Needed only when the name is in several of your orgs."),
-        provider: z
-          .enum(SANDBOX_PROVIDERS)
-          .optional()
-          .describe("The golden's provider. Needed only when the name exists on several providers."),
-        harness: z.enum(HARNESSES).describe("claude (Claude Code) or codex."),
-        model: modelInput,
-        reasoning_effort: effortInput,
-        size: z.enum(MACHINE_SIZES).optional(),
-        repo: z
-          .string()
-          .optional()
-          .describe(
-            "Configured directory or owner/repo from the golden. Prepares native agent cwd, including idle launches. Not confinement.",
-          ),
-        credentialId: z.string().uuid().optional(),
-        prompt: z.string().min(1).optional().describe("The first instruction. Leave out for an idle sandbox."),
-        ttl_seconds: z
-          .number()
-          .int()
-          .min(1)
-          .max(MAX_LAUNCH_TTL_SECONDS)
-          .optional()
-          .describe(
-            `Seconds before the machine stops by itself. Default ${DEFAULT_LAUNCH_TTL_SECONDS} (4 hours). At most ` +
-              `${providerLimitsText}; a longer TTL is refused.`,
-          ),
-      },
+        "the sandbox act as that person (8 hour token): see `github` in the answer. Setup can take a few minutes. " +
+        "Personal sessions may use an org slug or UUID. For scoped tokens, omit `org` or use the scoped org UUID.",
+      input: mcpLaunchArguments,
       output: {
         id: z.string(),
         provider: providerOutput,
@@ -800,10 +769,14 @@ function createToolServer(
           ),
       },
     },
-    (args) =>
+    (input) =>
       observeGoldenLaunch("mcp", async (timing) => {
+        const parsed = mcpLaunchInput.safeParse(input);
+        if (!parsed.success)
+          throw new VaultError("invalid", "Invalid golden launch request. See the launch tool schema.");
+        const args = parsed.data;
         // Refused before any lookup or allocation.
-        resolveModelChoice(args.harness, { model: args.model, reasoningEffort: args.reasoning_effort });
+        resolveModelChoice(args.harness, { model: args.model, reasoningEffort: args.reasoningEffort });
         const actor = await launchActor(args.golden, args.org);
         const chosen: GoldenRecord = await goldenForLaunch(data.goldens, actor, args.golden, args.provider);
         resolveRepositoryDir(chosen, args.repo);
@@ -849,9 +822,9 @@ function createToolServer(
               ...(args.helperCapabilities === undefined ? {} : { helperCapabilities: args.helperCapabilities }),
               ...(args.connections === undefined ? {} : { connections: args.connections }),
               ...(args.credentialId ? { credentialId: args.credentialId } : {}),
-              ...(args.reasoning_effort === undefined ? {} : { reasoningEffort: args.reasoning_effort }),
+              ...(args.reasoningEffort === undefined ? {} : { reasoningEffort: args.reasoningEffort }),
               ...(args.prompt === undefined ? {} : { prompt: args.prompt }),
-              ...(args.ttl_seconds === undefined ? {} : { ttlSeconds: args.ttl_seconds }),
+              ...(args.ttlSeconds === undefined ? {} : { ttlSeconds: args.ttlSeconds }),
               ...(args.stopWhenWorkMerged === undefined ? {} : { stopWhenWorkMerged: args.stopWhenWorkMerged }),
               ...(args.externalRef === undefined ? {} : { externalRef: args.externalRef }),
             },
@@ -1731,7 +1704,11 @@ function createToolServer(
       return found ? { userId: caller.userId, orgId: found.orgId, role: found.role } : null;
     };
     if (org !== undefined) {
-      const chosen = member(org);
+      const ref = org.trim().toLowerCase();
+      const orgId = UUID.test(ref)
+        ? ref
+        : caller.orgs.find(({ orgId }) => caller.orgNames?.[orgId]?.trim().toLowerCase() === ref)?.orgId;
+      const chosen = orgId ? member(orgId) : null;
       if (!chosen) throw new ToolError("not_found", `You are not a member of org '${org}'.`);
       return chosen;
     }
@@ -1741,18 +1718,16 @@ function createToolServer(
     const holders: string[] = [];
     for (const orgId of orgIds) if ((await data.goldens.findByName(orgId, name)).length > 0) holders.push(orgId);
     if (holders.length > 1) {
-      throw new ToolError("invalid_request", `'${name}' is a golden in several of your orgs. Pass org (an orgId).`);
+      throw new ToolError(
+        "invalid_request",
+        `'${name}' is a golden in several of your orgs. Pass org (a slug or UUID).`,
+      );
     }
     return member(holders[0] ?? first.orgId) ?? fail();
   }
 
   return server;
 }
-
-const providerLimitsText = SANDBOX_PROVIDERS.map((provider) => {
-  const limits = PROVIDER_LIMITS[provider];
-  return `${limits.maxTtlSeconds} (${limits.maxTtlLabel}) on ${provider}`;
-}).join(", ");
 
 function fail(): never {
   throw new ToolError("internal", INTERNAL_FAILURE_MESSAGE);

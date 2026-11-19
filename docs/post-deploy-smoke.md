@@ -1948,3 +1948,8 @@ and for a separate observation window capped by the overall smoke deadline.
 After an ambiguous response it reads sandbox inventory using the launch's
 unique reference. A recovered launch records the full elapsed time. An
 unresolved launch records the reference and any available server request ID.
+
+The ordinary Modal lifecycle and preservation launches also use keyed
+observation and read their timeout from the `launch` entry, with a ten-minute
+default. Runs that check default-skill receipts or scoped parent configuration
+still require the original launch receipt.
