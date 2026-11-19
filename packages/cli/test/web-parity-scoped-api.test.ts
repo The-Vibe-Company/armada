@@ -413,14 +413,14 @@ test("CLI retires launch visibility without changing source golden authority", a
     ]);
     expect(launched.code).toBe(0);
     const dto = JSON.parse(launched.out);
-    expect(dto).toMatchObject({ golden: "first", provider: "boat" });
+    expect(dto).toMatchObject({ golden: { name: "first" }, sandbox: { provider: "boat" } });
     expect(dto).not.toHaveProperty("visibility");
     expect(launched.err).toContain("deprecated and ignored");
     expect(
       (
         await f.db.query<{ visibility: string; source_golden_visibility: string }>(
           "select visibility,source_golden_visibility from sandboxes where id=$1",
-          [dto.id],
+          [dto.sandbox.id],
         )
       ).rows[0],
     ).toEqual({ visibility: "org", source_golden_visibility: "org" });

@@ -40,8 +40,11 @@ configured Codex account:
 ```
 
 The golden and Docker success bodies use the `launchEnvelope` schema in
-`@armada/core/contract`. Read the sandbox ID from `sandbox.id`. Docker returns
-`golden: null`. Pinned template requests return a durable template receipt.
+`@armada/core/contract`. The CLI emits the same body for `armada launch --json`
+on Boat, Modal and Docker. Read the sandbox ID, provider and status from
+`sandbox.id`, `sandbox.provider` and `sandbox.status`. The golden name is
+`golden.name` for golden launches, and Docker returns `golden: null`. Pinned
+template requests return a durable template receipt.
 
 Omit `prompt` to launch without starting a turn. The first
 `sandbox/send` then opens the conversation. Save the returned Armada

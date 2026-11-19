@@ -98,7 +98,9 @@ test("compiled launch preserves account selection and owner defaults without all
         child.exited,
       ]);
       expect(code, stderr).toBe(0);
-      expect(JSON.parse(stdout)).toMatchObject({ providerSandboxId: "bx_fixture", credentialId, credentialVersion: 2 });
+      expect(JSON.parse(stdout)).toMatchObject({
+        sandbox: { providerSandboxId: "bx_fixture", credentialId, credentialVersion: 2 },
+      });
       expect(JSON.parse(stdout)).not.toHaveProperty("visibility");
       expect(stderr).toContain("deprecated and ignored");
       const request = requests.at(-1)!;
