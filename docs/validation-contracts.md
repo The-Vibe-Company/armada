@@ -82,10 +82,14 @@ Repository-wide search includes `skipIf`, `test.skip`, conditional test aliases,
   build the local image using the [golden OS fixture recipe](../scripts/fixtures/golden-os/README.md)
   and run `bun scripts/prepare-runtime.ts` after installing dependencies. Then run
   `ARMADA_GOLDEN_OS_IMAGE=<fixture-image> bun packages/mcp-server/test/github-boat-os.probe.ts`.
-- `provider-boat/integration.coordinator.ts` is no longer automatically
-  discovered at all. Only the coordinator may explicitly invoke its documented
-  billed-compute opt-in command. It is not part of release/staging acceptance:
-  `boat: not part of the release gate`.
+- The Boat integration probe is coordinator-only and spends sandbox and model
+  credits. With `BOAT_API_KEY` exported and Claude Code configured on the Boat
+  account, run
+  `ARMADA_RUN_LIVE_BOAT_TESTS=1 bun packages/provider-boat/test/integration.coordinator.probe.ts`.
+  Set `BOAT_TEST_SNAPSHOT` to fork an existing snapshot or leave it unset to
+  build a disposable one (snapshot creation requires a paid account).
+  `BOAT_BASE_URL` can select a different Boat API. The probe is outside unit
+  discovery, CI, staging acceptance, and the release gate.
 - PostgreSQL skips and artifact portable-manifest skips were replaced by
   explicit release prerequisites. The native `mcp-codex-bridge` release
   probe (`packages/mcp-server/test/mcp-codex-bridge.release.probe.ts`) requires
