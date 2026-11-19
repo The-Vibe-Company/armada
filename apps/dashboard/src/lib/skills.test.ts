@@ -5,7 +5,7 @@ import {
   parseSkillVersions,
   skillCatalogFailure,
   skillPinProblem,
-} from "../src/lib/skills.ts";
+} from "./skills.ts";
 
 test("additional skills require distinct exact pins, exclude Armada tools and cap the selection", () => {
   expect(skillPinProblem(["team/review@1.2.3", "testing@2.0.0-beta.1"])).toBeNull();

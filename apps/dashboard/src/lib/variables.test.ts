@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ControlError, createVaultControl } from "../src/lib/control.ts";
+import { ControlError, createVaultControl } from "./control.ts";
 import {
   audience,
   canManage,
@@ -10,7 +10,7 @@ import {
   valueProblem,
   vaultFailure,
   vaultState,
-} from "../src/lib/variables.ts";
+} from "./variables.ts";
 
 const ORG = "00000000-0000-4000-8000-000000000010";
 const ALICE = "00000000-0000-4000-8000-000000000001";

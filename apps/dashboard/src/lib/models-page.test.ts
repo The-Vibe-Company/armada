@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
 import { MODEL_CATALOG } from "@armada/core";
-import { initialLaunchSelection, launchPickerGroups } from "../src/lib/launch-picker";
-import { accountsFromList, launchAccounts, type ModelAccount } from "../src/lib/model-accounts";
-import { modelsPageDefault, modelsPageExhaustion, modelsPageModel, modelsPageStatus } from "../src/lib/models-page";
+import { initialLaunchSelection, launchPickerGroups } from "./launch-picker";
+import { accountsFromList, launchAccounts, type ModelAccount } from "./model-accounts";
+import { modelsPageDefault, modelsPageExhaustion, modelsPageModel, modelsPageStatus } from "./models-page";
 
 const account: ModelAccount = {
   id: "account_id",

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { goldenRepositoryDirs, repositoryChoice, sandboxRepositoryDir } from "../src/lib/repository-context.ts";
+import { goldenRepositoryDirs, repositoryChoice, sandboxRepositoryDir } from "./repository-context.ts";
 
 test("the choices are exactly the snapshot config's repository directories, as the server derives them", () => {
   const config = {

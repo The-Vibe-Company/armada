@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { launchTimingFact } from "../src/lib/launch-timing.ts";
+import { launchTimingFact } from "./launch-timing.ts";
 
 test("sandbox detail shows total launch time and the slowest stage", () => {
   expect(launchTimingFact(null)).toBeNull();
