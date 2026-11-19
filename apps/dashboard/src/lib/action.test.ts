@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { explainDbError, fail, isUuid } from "../src/lib/action.ts";
+import { explainDbError, fail, isUuid } from "./action.ts";
 
 describe("action errors", () => {
   test("a row level security denial is one sentence, whatever Postgres says", () => {
