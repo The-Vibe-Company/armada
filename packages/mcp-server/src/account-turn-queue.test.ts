@@ -69,7 +69,7 @@ beforeAll(async () => {
     owner,
   ]);
   await database().exec(
-    "alter table credentials add column model_limits jsonb not null default '{}'::jsonb; alter table account_agent_reservations add column model text; alter table account_turn_queue add column model text",
+    "alter table credentials add column model_limits jsonb not null default '{}'::jsonb; alter table account_agent_reservations add column model text; alter table account_turn_queue add column model text; alter table account_turn_queue add column native_prompt_id text",
   );
   await database().exec(
     await Bun.file(
