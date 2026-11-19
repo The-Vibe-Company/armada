@@ -1,9 +1,14 @@
 import { accountRoutes } from "./account-control.ts";
+import { applicationVaultRoutes } from "./application-vault-control.ts";
+import { logRoutes } from "./control-logs.ts";
 import { sandboxToolRoutes } from "./control-tool-routes.ts";
 import { credentialRoutes } from "./credential-control.ts";
-import { githubCallbackRoutes } from "./github-account.ts";
+import { githubAccountRoutes } from "./github-account.ts";
+import { githubSandboxRoutes } from "./github-rest-controls.ts";
+import { goldenRoutes } from "./golden-control.ts";
 import { invitationRoutes } from "./invitation-control.ts";
 import { launchRoutes } from "./launch-control.ts";
+import { mcpRoutes } from "./mcp-control.ts";
 import { orgRoutes } from "./org-control.ts";
 import { publicAuthRoutes } from "./public-auth-control.ts";
 import { registerRoutes } from "./routes.ts";
@@ -24,11 +29,16 @@ export const controlRoutes = registerRoutes([
   credentialRoutes,
   skillpackRoutes,
   publicAuthRoutes,
-  githubCallbackRoutes,
+  githubAccountRoutes,
   tokenRoutes,
   accountRoutes,
   invitationRoutes,
   routineRoutes,
   skillDefaultsRoutes,
   templateRoutes,
+  mcpRoutes,
+  goldenRoutes,
+  githubSandboxRoutes,
+  logRoutes,
+  applicationVaultRoutes,
 ]);
