@@ -86,9 +86,8 @@ installed-feature discovery, not authorization or account health. With all three
 staging inputs above and a valid installed runtime manifest, Docker advertises
 `capabilities.launch:true` and the host list advertises `placement:true`.
 Host-only opt-in retains normal list/status/logs/stop/delete without admitting new
-placement. A request field cannot enable placement. Docker is a host-bound
-source with no fabricated Boat alias; golden providers
-remain Boat/Modal. The explicit preview API below is unchanged.
+placement. A request field cannot enable placement. Docker launches use a
+host-bound source.
 
 ### Normal dashboard/API/CLI launch
 
@@ -112,9 +111,11 @@ remain Boat/Modal. The explicit preview API below is unchanged.
 The account's current version is resolved and frozen on first admission; optional
 `credentialVersion` must match if provided. `prompt` and `ttlSeconds` are optional
 (default TTL four hours, maximum one day). The example selects Codex; the launch
-dialog offers the harnesses advertised by the server. Armada selects the environment, or the user selects a host-local
-snapshot with `--golden SNAPSHOT_UUID` (the retained flag spelling, not a cloud
-golden). Boat/Modal snapshots and machine-size policy do not apply.
+dialog offers the harnesses advertised by the server. Armada selects the environment
+unless you select a host-local snapshot with the `--golden SNAPSHOT_UUID` flag.
+Docker uses its own host limits and snapshot builds.
+[Morph model accounts](morph.md) and [per-account simultaneous-agent limits](named-model-credentials.md)
+also apply to Docker launches.
 The server composes durable create, existing enrolment
 and artifact bootstrap, runtime health and first-prompt admission. It returns the
 shared launch envelope with `sandbox`, null `golden` and `helper`, GitHub
@@ -306,8 +307,8 @@ Host ACK is handoff, **not** health, prompt completion or journal commit.
 ## Persisted placement and admission
 
 Reservation atomically stores a private Docker/Codex row and bound create job;
-its stable request UUID is also sandbox/create identity. There is no fake golden,
-Boat alias or movable host/installation/generation/image binding. Current owners
+its stable request UUID is also sandbox/create identity. The host, installation,
+generation and image bindings are fixed. Current owners
 may create/bootstrap; owner or current org admin may stop/delete. Source member
 locks precede credentials, host, sandbox and runtime. Issuer actor epoch, current
 host registration, owner membership and pinned account version are rechecked.
@@ -901,8 +902,8 @@ CLI follow-up. Existing `--service-install` real-host acceptance remains pending
 
 ### Default model accounts on normal Docker launch (#1579)
 
-`armada launch --provider docker` no longer requires an explicit
-`--credential-id`. With an account omitted, the server uses the same compatible
+Docker launches such as `armada launch --provider docker --agent codex`
+can omit `--credential-id`. With an account omitted, the server uses the same compatible
 personal-default policy as ordinary launches: a personal subscription marked as
 default wins over a personal API key. Explicit account choices still win; an
 invalid default or ambiguous personal choice fails rather than silently using a
@@ -1122,7 +1123,7 @@ After normal deployment, with existing staging origin/token and consent:
 ARMADA_SMOKE=create_real_compute bun scripts/post-deploy-smoke.ts --parity --only docker --feature launch-snapshot
 ```
 
-The server must advertise its golden/snapshot launch source and capability. The
+The server must advertise its snapshot launch source and capability. The
 probe launches via normal `sandbox/launch` with only the selected `snapshotId`,
 not an image or explicit repository recipe. Require exact snapshot/host/image/
 organization/owner identity in its receipt, a real finished answer, and confirmed
@@ -1133,9 +1134,7 @@ sandbox ID is still journaled and cleaned up.
 Unfiltered parity keeps its ordinary plain-image Docker launch unchanged and
 reports the snapshot cell as not-run with a dedicated-probe-required reason when
 configured (or fixture-not-configured otherwise). It never claims that a plain
-image proved snapshot launch. Cloud golden probes remain unchanged. Boat is not
-part of staging/release acceptance. No deployment or real provider check was
-performed by this worker; these instructions are not acceptance evidence.
+image proved snapshot launch. Staging and release acceptance exclude Boat.
 
 ## Multiple Armada servers on one machine (#2169)
 

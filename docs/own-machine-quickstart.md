@@ -103,16 +103,16 @@ armada host show office --org ORG_UUID
 On the Linux machine, check the local installation with:
 
 ```sh
-~/.local/bin/armada-docker-host status
+armada host status
 ```
 
 Online means the daemon has polled, not that an agent is ready. If installation
 reports pending or an uncertain result, inspect status before trying again;
-do not blindly replay the registration command. Local service management belongs
-to `armada-docker-host`, not `armada host`: the latter manages server registrations.
-To remove the managed installation later, use
-`~/.local/bin/armada-docker-host uninstall`; it drains/revokes before removal
-and refuses uncertain cleanup. See [managed installation troubleshooting](docker-host-daemon.md#managed-owner-installation-1453).
+do not blindly replay the registration command. To remove the managed installation
+later, run `armada host uninstall` on the Docker machine. The daemon drains and revokes
+the installation before removing it. If the machine is linked to multiple servers, add
+`--server HTTPS_ORIGIN` to either command to select the installation. See
+[managed installation troubleshooting](docker-host-daemon.md#managed-owner-installation-1453).
 
 ## 3. First launch: fresh workspace
 
