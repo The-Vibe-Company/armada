@@ -56,7 +56,6 @@ export class Journal {
       const redactText = (original: string, scrubbed: string) => {
         const short = redactShort(original);
         if (short === original || short === scrubbed) return scrubbed;
-        // Either pass can erase part of a match made by the other.
         return original === scrubbed ? short : "[REDACTED]";
       };
       if (event.kind === "message" && typeof masked.text === "string")
