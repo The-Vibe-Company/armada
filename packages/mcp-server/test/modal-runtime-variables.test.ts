@@ -23,7 +23,7 @@ import {
   runtimeConfigurationWithVariables,
 } from "../src/runtime-readable-variables.ts";
 import { createRuntimeResume } from "../src/runtime-resume.ts";
-import { publishedResponse } from "./published-response.ts";
+import { publishedFailure, publishedResponse } from "./published-response.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
@@ -454,6 +454,64 @@ test("Modal uses the vault conflict refusal for a pinned secret that is no longe
   expect(response.status).toBe(409);
   expect(await response.text()).toContain("secret_unavailable");
   expect(f.physical.forks).toHaveLength(0);
+});
+
+test.each([
+  ["explicit", "secret_version_changed"],
+  ["default", "secret_unavailable"],
+] as const)("Modal %s launch returns the vault conflict after allocation and on replay", async (entry, reason) => {
+  const f = await fixture("codex", "modal", false, entry, true);
+  const secret = (
+    await f.db.query<{ id: string }>(
+      "insert into application_secrets(org_id,owner_id,scope,name,value_enc) values($1,$2,'personal','APP_TOKEN',$3) returning id",
+      [f.people.org, f.people.owner, await encryptSecret(crypto.randomUUID(), ENCRYPTION_KEY)],
+    )
+  ).rows[0]!;
+  const template = await f.create({
+    ...f.definition,
+    secrets: [{ key: "APP_TOKEN", secretId: secret.id, version: 1 }],
+  });
+  if (entry === "explicit") {
+    const resolveHost = f.options.modalRuntimeHostFor!;
+    f.options.modalRuntimeHostFor = async (golden, caller) => {
+      const host = await resolveHost(golden, caller);
+      return {
+        ...host,
+        async fork(request) {
+          const child = await host.fork(request);
+          await f.db.query("update application_secrets set version=2 where id=$1", [secret.id]);
+          return child;
+        },
+      };
+    };
+  } else {
+    const policy = f.options.modalRuntimeLaunch!;
+    f.options.modalRuntimeLaunch = {
+      async start(input) {
+        const agent = await policy.start(input);
+        return {
+          ...agent,
+          async prepareWorkspace() {
+            await f.db.query("update application_secrets set status='revoked',value_enc=null where id=$1", [secret.id]);
+            return { status: "not_connected" };
+          },
+        };
+      },
+    };
+    f.enableDefault();
+  }
+  const request = f.request(template.id);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const response = await f.api(request);
+    expect(response.status).toBe(409);
+    expect(publishedFailure().parse(await response.json())).toMatchObject({
+      error: { code: "conflict", message: `Template launch refused: ${reason}.` },
+    });
+  }
+  expect(f.physical.forks).toHaveLength(1);
+  expect(f.physical.stops).toHaveLength(1);
+  expect(f.deliveries).toHaveLength(entry === "explicit" ? 0 : 1);
+  expect(f.prompts()).toBe(0);
 });
 
 test("Modal refuses a short secret before admitting a runtime configuration command", async () => {
