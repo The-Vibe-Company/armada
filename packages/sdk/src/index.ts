@@ -38,7 +38,6 @@ export class ArmadaError extends Error {
     readonly status: number,
     readonly serverCode: string | undefined,
     readonly outcomeUnknown: boolean,
-    /** Server-requested delay before retrying, from `Retry-After` or the failure body; schedule retries no sooner. */
     readonly retryAfterSeconds?: number,
   ) {
     super(
@@ -248,7 +247,6 @@ interface ExecResult {
   timedOut: boolean;
   truncated: boolean;
 }
-/** Loopback hosts never leave this machine: localhost, 127.0.0.0/8 and ::1. Other names depend on the resolver. */
 function loopbackHost(hostname: string): boolean {
   const host = hostname.toLowerCase();
   return host === "localhost" || host === "[::1]" || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
@@ -260,7 +258,6 @@ export class Armada {
   private readonly fetcher: Fetch;
   private readonly retries: number;
   private readonly timeoutMs: number | undefined;
-  // An ECMAScript private field: JSON.stringify, util.inspect and Object.keys never expose the bearer token.
   readonly #token: string;
   constructor(options: ArmadaOptions) {
     const url = new URL(options.url ?? "https://armada.thevibecompany.co");
@@ -273,15 +270,12 @@ export class Armada {
       url.hash
     )
       throw new TypeError("Use an HTTP(S) Armada origin.");
-    // The bearer token rides on the first request, so cleartext HTTP is only safe on this machine.
     if (url.protocol === "http:" && !loopbackHost(url.hostname))
       throw new TypeError("Use an HTTPS Armada origin; plain HTTP is only accepted for loopback hosts.");
     if (!options.token || /[\r\n]/.test(options.token)) throw new TypeError("A service token is required.");
     this.#token = options.token;
     this.timeoutMs = options.timeoutMs;
     this.origin = url.origin;
-    // Never call fetch as a method of this client: browsers' native fetch throws
-    // "Illegal invocation" for any receiver other than the global object or undefined.
     const fetcher = options.fetch;
     this.fetcher = fetcher ? (input, init) => fetcher(input, init) : (input, init) => globalThis.fetch(input, init);
     this.retries = options.readRetries ?? 0;
@@ -303,7 +297,6 @@ export class Armada {
     return this.#sandboxes.status(input, options);
   }
   wait(input: WaitInput, options?: RequestOptions): Promise<SandboxStatus & { timedOut: boolean }> {
-    // Precedence: per-call timeout, then the client timeout, then the server wait plus a margin.
     return this.#sandboxes.wait(input, options, ((input.timeout_seconds ?? 60) + 30) * 1000);
   }
   logs(input: LogsInput, options?: RequestOptions): Promise<LogsResult> {
@@ -350,20 +343,15 @@ export class Armada {
     options: RequestOptions = {},
     defaultTimeoutMs = 300000,
   ): Promise<T> {
-    const result = await requestApi(
-      apiUrl(this.origin, `/api/v1/${route}`),
-      // Serialize each attempt within the shared deadline.
-      () => jsonPost(body),
-      {
-        fetch: (url, init) => this.fetcher(String(url), init),
-        token: this.#token,
-        timeoutMs: options.timeoutMs ?? this.timeoutMs ?? defaultTimeoutMs,
-        signal: options.signal,
-        combineSignal: true,
-        readOnly,
-        readRetries: this.retries,
-      },
-    );
+    const result = await requestApi(apiUrl(this.origin, `/api/v1/${route}`), () => jsonPost(body), {
+      fetch: (url, init) => this.fetcher(String(url), init),
+      token: this.#token,
+      timeoutMs: options.timeoutMs ?? this.timeoutMs ?? defaultTimeoutMs,
+      signal: options.signal,
+      combineSignal: true,
+      readOnly,
+      readRetries: this.retries,
+    });
     if (result.kind === "transport")
       throw new ArmadaError(result.failure.code, 0, undefined, result.failure.outcomeUnknown);
     const { response, payload, failure, bodyReadFailed } = result;

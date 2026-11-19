@@ -1,4 +1,3 @@
-// PR typechecking resolves the workspace source. The npm smoke resolves the installed declarations.
 import {
   Armada,
   type DockerSendInput,

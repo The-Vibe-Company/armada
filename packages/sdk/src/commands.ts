@@ -79,7 +79,6 @@ export function commandClient(
       return control(`docker/snapshots/${operation}`, body);
     },
     dockerHost<T>(operation: "list" | "limits" | "register-token" | "retention" | "revoke", body: unknown): Promise<T> {
-      // Preserve the host API’s existing request headers.
       return request(`/api/v1/docker/hosts/${operation}`, { method: "POST", body: JSON.stringify(body) });
     },
     token<T>(operation: "create" | "list" | "revoke", body?: unknown): Promise<T> {
