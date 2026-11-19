@@ -50,7 +50,9 @@ test.each([
   "runtime evidence",
   "dispatching",
   "stopped with queued",
+  "stopped with queued dispatch evidence",
   "stopped with dispatching",
+  "stopped after retarget",
   "wake-on-send",
   "failed",
   "admitted",
@@ -64,7 +66,12 @@ test.each([
   const options = { orgId: people.org, maxAttempts: 2 };
   const enqueue = () => store.enqueue("turn_dispatch", sandboxId, 2, requestId, { requestId }, options);
   const id = await enqueue();
-  const cancelled = scenario === "stopped with queued" || scenario === "stopped with dispatching";
+  const retargetedBeforeStop = scenario === "stopped after retarget";
+  const cancelled =
+    scenario === "stopped with queued" ||
+    scenario === "stopped with queued dispatch evidence" ||
+    scenario === "stopped with dispatching" ||
+    retargetedBeforeStop;
   const stopped = cancelled || scenario === "wake-on-send";
   const state =
     scenario === "stopped with dispatching" || scenario === "dispatching"
@@ -72,6 +79,7 @@ test.each([
       : scenario === "failed" || scenario === "admitted"
         ? scenario
         : "queued";
+  if (retargetedBeforeStop) await db.query("update jobs set generation=3 where id=$1", [id]);
   await db.query("update account_turn_queue set state=$1, native_prompt_id=$2 where sandbox_id=$3", [
     state,
     scenario === "native evidence" ? "prior-prompt" : null,
@@ -90,6 +98,8 @@ test.each([
         scenario === "wake-on-send" ? 2 : 3,
       ],
     );
+  if (scenario === "stopped with queued dispatch evidence")
+    await db.query("update sandboxes set task_prompt_id=$2 where id=$1", [sandboxId, requestId]);
   const delivered: Job[] = [];
   const runner = createJobsRunner(
     store,
@@ -120,7 +130,7 @@ test.each([
         scenario === "missing"
           ? "done"
           : "failed",
-      generation: retargeted ? "3" : "2",
+      generation: retargeted || retargetedBeforeStop ? "3" : "2",
     },
   ]);
   if (cancelled)
@@ -130,9 +140,11 @@ test.each([
       {
         state: "failed",
         failure_reason:
-          state === "queued"
-            ? "Queued prompt cannot start: sandbox stopped, deleted, expired, or stopping."
-            : "Dispatch cancelled by confirmed stop.",
+          scenario === "stopped with queued dispatch evidence"
+            ? "Queued receipt already has dispatch evidence; inspect sandbox history before resending."
+            : state === "queued"
+              ? "Queued prompt cannot start: sandbox stopped, deleted, expired, or stopping."
+              : "Dispatch cancelled by confirmed stop.",
       },
     ]);
   expect(await enqueue()).toBe(id);

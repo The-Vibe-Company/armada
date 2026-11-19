@@ -15,10 +15,13 @@ export const RUNTIME_LANE = `(s.provider='docker' or s.boat_runtime or s.runtime
 
 export async function failStoppedTurn(tx: Sql, sandboxId: string, requestId: string) {
   await tx.query(
-    `update public.account_turn_queue set state='failed', failure_reason=case when state='queued'
-       then 'Queued prompt cannot start: sandbox stopped, deleted, expired, or stopping.'
-       else 'Dispatch cancelled by confirmed stop.' end
-     where sandbox_id=$1 and request_id=$2 and state in ('queued','dispatching')`,
+    `update public.account_turn_queue q set state='failed', failure_reason=case
+       when q.state='dispatching' then 'Dispatch cancelled by confirmed stop.'
+       when s.task_prompt_id=q.request_id::text or ${RUNTIME_REQUEST_EVIDENCE}
+         then 'Queued receipt already has dispatch evidence; inspect sandbox history before resending.'
+       else 'Queued prompt cannot start: sandbox stopped, deleted, expired, or stopping.' end
+     from public.sandboxes s
+     where q.sandbox_id=$1 and q.request_id=$2 and q.state in ('queued','dispatching') and s.id=q.sandbox_id`,
     [sandboxId, requestId],
   );
 }

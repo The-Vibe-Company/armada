@@ -79,7 +79,8 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
           [sandboxId],
         );
         if (sandbox?.status === "stopped" && sandbox.generation !== receipt.queued_generation) {
-          if (await failStale(tx, job, owner, sandbox.generation)) await failStoppedTurn(tx, sandboxId, requestId);
+          if (await retireClaim(tx, job, owner, sandbox.generation, "stopped_receipt"))
+            await failStoppedTurn(tx, sandboxId, requestId);
           return job;
         }
         if (receipt.state === "queued") {
@@ -102,7 +103,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
           );
           if (updated) return { ...job, generation: updated.generation };
         }
-        if (retiring) await failStale(tx, job, owner, sandbox?.generation ?? null);
+        if (retiring) await retireClaim(tx, job, owner, sandbox?.generation ?? null);
         return job;
       });
     } catch (error) {
@@ -119,13 +120,19 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
     }
   }
 
-  async function failStale(tx: Sql, job: Job, owner: string, generation: string | null) {
+  async function retireClaim(
+    tx: Sql,
+    job: Job,
+    owner: string,
+    generation: string | null,
+    reason: "stale_generation" | "stopped_receipt" = "stale_generation",
+  ) {
     const { rows } = await tx.query(
       `update public.jobs j set state = 'failed', lease_owner = null, lease_until = null,
-         outcome = coalesce(outcome, '{}'::jsonb) || '{"reason":"stale_generation"}'::jsonb
+         outcome = coalesce(outcome, '{}'::jsonb) || jsonb_build_object('reason', $6::text)
        where ${fence} and (j.kind = 'turn_dispatch' or j.generation = $4)
-         and j.generation is distinct from $5 returning j.id`,
-      [...claimKey(job, owner), generation],
+         and (j.generation is distinct from $5 or $6 = 'stopped_receipt') returning j.id`,
+      [...claimKey(job, owner), generation, reason],
     );
     return rows.length > 0;
   }
@@ -246,7 +253,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
           "select lifecycle_generation::text as generation from public.sandboxes where id = $1 for update",
           [job.sandbox_id],
         );
-        await failStale(tx, job, owner, sandboxRows[0]?.generation ?? null);
+        await retireClaim(tx, job, owner, sandboxRows[0]?.generation ?? null);
       });
     },
     async handoffGeneration(job, owner, handoff) {
