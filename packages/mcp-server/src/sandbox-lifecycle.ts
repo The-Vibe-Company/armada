@@ -115,21 +115,13 @@ export async function publishDockerRuntimeReady(tx: Sql, sandboxId: string, sour
   return result.kind === "applied";
 }
 
-export async function finishEnrolledRuntimeStartup(
+export async function finishEnrolledRuntimeReadiness(
   tx: Sql,
   scope: [string[], string],
   sandboxId: string,
   generation: number,
   activityToken: string,
-  turn?: { taskPromptId: string; conversationIds?: string[] },
 ) {
-  const membership = turn
-    ? await tx.query(
-        `select m.user_id from public.members m join public.sandboxes s on s.org_id=m.org_id
-       where s.id=$1 and m.user_id=$2 and s.owner_id=m.user_id for share of m`,
-        [sandboxId, scope[1]],
-      )
-    : undefined;
   const {
     rows: [sandbox],
   } = await tx.query<{ enrolled_path: boolean; owned: boolean }>(
@@ -140,59 +132,34 @@ export async function finishEnrolledRuntimeStartup(
     [...scope, sandboxId],
   );
   if (sandbox && !sandbox.enrolled_path) return "other_path";
-  if (!sandbox?.owned || (membership && !membership.rows.length)) return "conflict";
-  const live = await tx.query<{ epoch: string }>(
-    `select epoch::text from public.runtime_enrolments where sandbox_id=$1 and lifecycle_generation=$2
+  if (!sandbox?.owned) return "conflict";
+  const live = await tx.query(
+    `select 1 from public.runtime_enrolments where sandbox_id=$1 and lifecycle_generation=$2
       and runtime_hash is not null for update`,
     [sandboxId, generation],
   );
-  const epoch = live.rows[0]?.epoch;
-  if (!epoch) return "conflict";
-  if (turn) {
-    const accepted = await tx.query(
-      `select 1 from public.runtime_commands
-       where sandbox_id=$1 and epoch=$2 and accepted_prompt_id::text=$3
-         and request_id in ('launch_'||$1::uuid::text, 'resume_'||$4::text)`,
-      [sandboxId, epoch, turn.taskPromptId, activityToken],
-    );
-    if (!accepted.rows.length) return "conflict";
-  }
+  if (!live.rows.length) return "conflict";
   const eligible = await tx.query(
     `select s.id from public.sandboxes s where s.id=$3 and ${SANDBOX_VISIBLE}
       and s.activity_lease_id=$4 and s.activity_until>clock_timestamp() and s.expires_at>clock_timestamp()
       and s.stopped_at is null and s.stop_requested_at is null and s.deleted_at is null
       and not s.application_secret_tainted
       and (s.reconcile_lease_until is null or s.reconcile_lease_until<=clock_timestamp())
-      and ($5::boolean or (s.task_prompt_id is null and cardinality(s.conversation_ids)=0))`,
-    [...scope, sandboxId, activityToken, turn !== undefined],
+      and s.task_prompt_id is null and cardinality(s.conversation_ids)=0`,
+    [...scope, sandboxId, activityToken],
   );
   if (!eligible.rows.length) return "conflict";
-  if (turn) {
-    await tx.query(
-      `update public.sandboxes set task_prompt_id=$2,conversation_ids=coalesce($3::text[],conversation_ids),
-       status_reason=null,activity_lease_id=null,activity_until=null where id=$1`,
-      [sandboxId, turn.taskPromptId, turn.conversationIds ?? null],
-    );
-  }
   const result = await transitionSandbox(tx, {
     sandboxId,
     expectedGeneration: generation,
     fromStates: ["starting"],
-    toState: turn ? "running" : "ready",
+    toState: "ready",
     actor: "runtime_enrolment",
     code: "runtime_enrolled",
     effects: [],
   });
-  if (result.kind === "conflict") {
-    if (turn) throw new VaultError("conflict", "Runtime startup publication is stale.");
-    return "conflict";
-  }
-  if (turn) {
-    await releaseAccountCapacity(tx, sandboxId);
-    await settleRuntimeTurn(tx, sandboxId, generation);
-  } else {
-    await tx.query("update public.sandboxes set activity_lease_id=null,activity_until=null where id=$1", [sandboxId]);
-  }
+  if (result.kind === "conflict") return "conflict";
+  await tx.query("update public.sandboxes set activity_lease_id=null,activity_until=null where id=$1", [sandboxId]);
   return "applied";
 }
 
@@ -1293,4 +1260,40 @@ export function createSandboxLifecycle(
       return false;
     },
   };
+}
+
+/** Complete the wake under the enrolment authority's owner, sandbox and epoch locks. */
+export async function publishRuntimeWake(
+  tx: Sql,
+  sandboxId: string,
+  generation: number,
+  requestId: string,
+  promptId: string,
+  conversationIds: string[],
+) {
+  const published = await tx.query(
+    `update public.sandboxes s set task_prompt_id=$4,conversation_ids=$5::text[],status_reason=null,
+       activity_lease_id=null,activity_until=null
+     where s.id=$1 and s.lifecycle_generation=$2 and s.activity_lease_id=$3
+       and s.status='starting' and s.activity_until>clock_timestamp() and s.expires_at>clock_timestamp()
+       and s.stop_requested_at is null and s.stopped_at is null and s.deleted_at is null
+       and not s.application_secret_tainted
+       and (s.reconcile_lease_until is null or s.reconcile_lease_until<=clock_timestamp())
+       and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)
+     returning s.id`,
+    [sandboxId, generation, requestId, promptId, conversationIds],
+  );
+  if (!published.rows.length) throw new VaultError("conflict", "Runtime wake publication is stale.");
+  const transition = await transitionSandbox(tx, {
+    sandboxId,
+    expectedGeneration: generation,
+    fromStates: ["starting"],
+    toState: "running",
+    actor: "runtime_enrolment",
+    code: "runtime_enrolled",
+    effects: [],
+  });
+  if (transition.kind === "conflict") throw new VaultError("conflict", "Runtime wake publication is stale.");
+  await releaseAccountCapacity(tx, sandboxId);
+  await settleRuntimeTurn(tx, sandboxId, generation);
 }

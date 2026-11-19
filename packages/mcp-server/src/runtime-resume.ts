@@ -9,7 +9,7 @@ import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 import { lockRuntimeAccount } from "./runtime-account-admission.ts";
 import { runtimeAgentFor } from "./runtime-agent.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
-import { createRuntimeEnrolments, runtimeTransaction } from "./runtime-enrolment.ts";
+import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
 import type { RestoreScopedRuntimeAccess } from "./sandbox-armada-access.ts";
@@ -17,6 +17,7 @@ import { refuseConversationSelector, SINGLE_CONVERSATION_GUIDANCE } from "./sand
 import {
   confirmRuntimeResumeActivation,
   deferAmbiguousBoatResume,
+  publishRuntimeWake,
   requestFailedRuntimeResumeStop,
   restoreModalResumeSchedule,
 } from "./sandbox-lifecycle.ts";
@@ -260,9 +261,16 @@ export function createRuntimeResume(
       async update(id: string, patch: Parameters<typeof store.update>[1]) {
         if (!patch.finishActivity) return store.update(id, patch);
         await authority.withOwner(found.id, caller.userId, async (tx, scope) => {
-          if (scope.epoch !== admitted.op.target_epoch || !receipt)
+          if (scope.epoch !== admitted.op.target_epoch || !receipt || patch.expectedGeneration === undefined)
             throw new VaultError("conflict", "Resume epoch changed before publication.");
-          await createSqlData(runtimeTransaction(tx))(caller).sandboxes.update(id, patch);
+          await publishRuntimeWake(
+            tx,
+            id,
+            patch.expectedGeneration,
+            requestId,
+            receipt.promptId,
+            admitted.op.empty_checkpoint ? [conversation] : admitted.current.conversationIds,
+          );
           if (found.runtimeTransport === "dialout") await restoreModalResumeSchedule(tx, id);
           const saved = await tx.query(
             "update public.runtime_resumes set phase='complete',receipt=$3::jsonb where sandbox_id=$1 and request_id=$2 and phase='dispatched' returning request_id",
@@ -357,12 +365,7 @@ export function createRuntimeResume(
           }
           return {
             result: receipt,
-            patch: {
-              status: "running",
-              statusReason: null,
-              taskPromptId: accepted.promptId,
-              conversationIds: admitted.op.empty_checkpoint ? [conversation] : admitted.current.conversationIds,
-            },
+            patch: {},
           };
         },
         { initialLeaseId: requestId, deadlineMs: 600_000 },

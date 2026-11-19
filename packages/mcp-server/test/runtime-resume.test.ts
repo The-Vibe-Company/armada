@@ -250,6 +250,16 @@ describe.each([
     expect(f.starts).toEqual([undefined, "native-thread"]);
     const row = (await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))!;
     expect(row.status).toBe("ready");
+    expect(row.lifecycleGeneration).toBe((before?.lifecycleGeneration ?? 0) + 1);
+    expect(
+      (
+        await f.db.query(
+          `select actor,code,generation::text from sandbox_transitions
+           where sandbox_id=$1 and from_status='starting' and to_status='running'`,
+          [f.row.id],
+        )
+      ).rows,
+    ).toEqual([{ actor: "runtime_enrolment", code: "runtime_enrolled", generation: String(row.lifecycleGeneration) }]);
     expect(row.expiresAt).toBe(before?.expiresAt);
     expect(row.stoppedAt).toBeNull();
     expect(row.taskPromptId).toBe(result.promptId);
@@ -284,6 +294,15 @@ test("an already enrolled uncertain resume reconciles on a fresh server without 
     try {
       await expect(resume(f.caller, request)).rejects.toMatchObject({ code: "conflict" });
       expect((await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))?.status).toBe("starting");
+      expect(
+        (
+          await f.db.query(
+            `select 1 from sandbox_transitions
+             where sandbox_id=$1 and from_status='starting' and to_status='running'`,
+            [f.row.id],
+          )
+        ).rows,
+      ).toEqual([]);
     } finally {
       await f.db.exec("alter table sandbox_transitions drop constraint test_reject_settlement");
     }
