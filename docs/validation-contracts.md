@@ -24,7 +24,6 @@ Missing PostgreSQL/native prerequisites fail closed. No PR job/service is added.
 | mcp-server/runtime-native-auth-postgres | credential publication/lifecycle replacement |
 | mcp-server/sql | advisory lock exclusion across commit/rollback |
 | provider-modal/artifact | built native artifact bootstrap, checkpoint, journal reopening |
-| mcp-server/mcp-codex-bridge | pinned Codex process/thread continuity through MCP credential rotation |
 | cli/binary | compiled CLI packaging and argument/environment boundaries |
 
 `scripts/build-migration.release.ts` retains the standalone compiled migration
@@ -85,12 +84,14 @@ Repository-wide search includes `skipIf`, `test.skip`, conditional test aliases,
   `boat: not part of the release gate`.
 - PostgreSQL skips and artifact portable-manifest skips were replaced by
   explicit release prerequisites. The native `mcp-codex-bridge` release
-  contract requires the pinned binary and a no-skip report.
+  probe (`packages/mcp-server/test/mcp-codex-bridge.release.probe.ts`) requires
+  the pinned binary and a successful process exit.
 
 ## Evidence owed after merge
 
 Run the existing publishing release validation on the exact release SHA. Verify
-all routed files print executed testcase counts with zero skips, native version
+routed Bun suites print executed testcase counts with zero skips, the native
+Codex probe reports success, and native version
 validation and checkpoint process boundaries pass. No production action or
 Boat lifecycle is required for this test-routing change. OS/container checks
 remain separately opt-in, not an implied pass from green unit CI.

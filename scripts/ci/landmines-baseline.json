@@ -976,7 +976,6 @@
     "packages/mcp-server/test/managed-inspection.test.ts": 3,
     "packages/mcp-server/test/mcp-before-resume.test.ts": 15,
     "packages/mcp-server/test/mcp-client-metadata-ingress.test.ts": 1,
-    "packages/mcp-server/test/mcp-codex-bridge.release.ts": 5,
     "packages/mcp-server/test/mcp-codex-bridge.test.ts": 4,
     "packages/mcp-server/test/mcp-http-integration.test.ts": 3,
     "packages/mcp-server/test/mcp-ingress.test.ts": 2,

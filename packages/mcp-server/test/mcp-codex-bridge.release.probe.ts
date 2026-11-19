@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -6,8 +6,7 @@ import { type McpBootstrap, nativeMcpInstallScript } from "../src/mcp-native.ts"
 
 import { installEnvironment, installProtocolWrapper } from "./mcp-codex-bridge.fixture.ts";
 
-// Real pinned app-server protocol, offline inference: no model/auth credentials.
-test("real Codex SAME process and thread resumes with rotated MCP credentials without model inference", async () => {
+async function verifyNativeBridge() {
   const binary = process.env.CODEX_NATIVE_TEST_BINARY;
   if (!binary) throw Error("CODEX_NATIVE_TEST_BINARY is required for the native release contract.");
   const { McpServer } = await import("@modelcontextprotocol/sdk/server/mcp.js");
@@ -28,8 +27,6 @@ test("real Codex SAME process and thread resumes with rotated MCP credentials wi
   const upstream = Bun.serve({
     port: 0,
     async fetch(request) {
-      // A completed local Responses turn is the durable-rollout fixture. Keep this exact
-      // route separate from MCP authorization; it never contacts a model service.
       if (request.method === "POST" && new URL(request.url).pathname === "/v1/responses") {
         const responseId = `offline-response-${crypto.randomUUID()}`;
         const body = [
@@ -55,8 +52,6 @@ test("real Codex SAME process and thread resumes with rotated MCP credentials wi
       const sessionId = request.headers.get("mcp-session-id");
       const session = sessionId ? sessions.get(sessionId) : undefined;
       if (request.headers.get("authorization") !== expected) {
-        // Closing an old client after revocation is allowed to be refused; only
-        // executable POST admission must never use stale authority.
         if (request.method === "POST") {
           rejected++;
           rejectedStale ||= request.headers.get("authorization") === "first";
@@ -96,16 +91,23 @@ test("real Codex SAME process and thread resumes with rotated MCP credentials wi
         stdin: new Blob([script]),
         stdout: "ignore",
         stderr: "ignore",
+        timeout: 30_000,
         env: {
           ...(await installEnvironment(home)),
           ...(configuration ? { ARMADA_GIT_TOKEN: JSON.stringify(configuration) } : {}),
         },
       });
-      expect(await p.exited).toBe(0);
+      assert.equal(await p.exited, 0);
     };
     await installProtocolWrapper(path, install);
     const script = `
-import json, subprocess, sys, os
+import json, subprocess, sys, os, signal
+def abort(signum, _frame):
+    if signum == signal.SIGALRM:
+        raise TimeoutError("native bridge protocol deadline elapsed")
+    raise SystemExit(1)
+signal.signal(signal.SIGALRM, abort)
+signal.signal(signal.SIGTERM, abort)
 p=subprocess.Popen([sys.argv[1],"app-server","--listen","stdio://","-c",'model_provider="offline"',"-c",'model_providers.offline={name="offline",base_url="http://127.0.0.1:${upstream.port}/v1",wire_api="responses",requires_openai_auth=false,request_max_retries=0,stream_max_retries=0}'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
 completed=False
 def receive():
@@ -126,6 +128,7 @@ def rpc(id,method,params):
                 raise RuntimeError(method+":"+str(error.get("code"))+detail)
             return m["result"]
 try:
+    signal.alarm(30)
     rpc(1,"initialize",{"clientInfo":{"name":"armada-mcp-proof","version":"1"},"capabilities":{"experimentalApi":True}})
     p.stdin.write(b'{"method":"initialized"}\\n');p.stdin.flush()
     params={"cwd":sys.argv[2],"approvalPolicy":"never","sandbox":"danger-full-access"}
@@ -223,7 +226,10 @@ try:
         else:assert current_pids==original_pids
         print("phase-ok",flush=True)
 finally:
-    p.terminate();p.wait(timeout=5)
+    signal.alarm(0)
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    p.terminate()
+    p.wait(timeout=5)
 `;
     const configure = async (phase: string) => {
       expected = phase;
@@ -248,45 +254,47 @@ finally:
         env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home },
       },
     );
+    const stderr = new Response(p.stderr).text();
     try {
       const reader = p.stdout.getReader();
       let buffer = "";
-      const line = async () => {
+      const verifyPhase = async (phase: string) => {
         while (!buffer.includes("\n")) {
           const next = await reader.read();
           if (next.done)
-            throw Error(
-              `Native proof exited: ${await new Response(p.stderr).text()}; upstreamRejectedStale=${rejectedStale}`,
-            );
+            throw Error(`Native proof exited during ${phase}: ${await stderr}; upstreamRejectedStale=${rejectedStale}`);
           buffer += new TextDecoder().decode(next.value);
         }
         const i = buffer.indexOf("\n"),
           value = buffer.slice(0, i);
         buffer = buffer.slice(i + 1);
-        return value;
+        assert.equal(value, "phase-ok", phase);
       };
-      expect(await line()).toBe("phase-ok");
+      await verifyPhase("initial credentials");
       await configure("restored");
       p.stdin.write("resume\n");
-      expect(await line()).toBe("phase-ok");
+      await verifyPhase("thread resume");
       await configure("turnonly");
       p.stdin.write("turnonly\n");
-      expect(await line()).toBe("phase-ok");
+      await verifyPhase("turn start");
       await install(nativeMcpInstallScript, { revision: "removed", servers: {} });
       p.stdin.write("removed\n");
-      expect(await line()).toBe("phase-ok");
-      expect(await p.exited).toBe(0);
-      expect(await new Response(p.stderr).text()).toBe("");
+      await verifyPhase("tool removal");
+      assert.equal(await p.exited, 0);
+      assert.equal(await stderr, "");
     } finally {
-      p.kill();
+      if (p.exitCode === null && p.signalCode === null) p.kill();
+      await p.exited;
     }
-    expect(calls).toBe(6);
-    expect(rejected).toBe(0);
-    expect(staleSessionUsed).toBe(false);
-    expect(sessions.size).toBeGreaterThanOrEqual(3);
+    assert.equal(calls, 6);
+    assert.equal(rejected, 0);
+    assert.equal(staleSessionUsed, false);
+    assert.ok(sessions.size >= 3);
   } finally {
     upstream.stop(true);
     await Promise.all(servers.map((s) => s.close()));
     await rm(home, { recursive: true, force: true });
   }
-}, 30000);
+}
+
+await verifyNativeBridge();
