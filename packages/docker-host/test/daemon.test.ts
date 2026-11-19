@@ -305,6 +305,7 @@ test("a pending restore lets unrelated jobs drain while a priority stop is fence
   const { job: stop } = fixture("stop");
   const conflictingStop: Job = { ...stop, requestId: crypto.randomUUID(), request: job.request };
   const failed = Promise.withResolvers<void>();
+  const unrelatedCompleted = Promise.withResolvers<void>();
   let pollCount = 0;
   let now = 100_000;
   const acknowledgements: string[] = [];
@@ -331,13 +332,17 @@ test("a pending restore lets unrelated jobs drain while a priority stop is fence
   };
   api.result = async (_state, receipt) => {
     acknowledgements.push(receipt.requestId);
+    if (receipt.requestId === stop.requestId) unrelatedCompleted.resolve();
   };
   const sleeps: number[] = [];
   await runJobs(store, api, executor, {
     now: () => now,
     beforeTick: async () => {
       if (pollCount === 1) await failed.promise;
-      if (acknowledgements.includes(stop.requestId)) now = 200_000;
+      if (pollCount === 3 && dispatches.includes("stop")) {
+        await unrelatedCompleted.promise;
+        now = 200_000;
+      }
     },
     stopping: () => acknowledgements.length === 2 || pollCount > 4,
     failed: () => failed.resolve(),
