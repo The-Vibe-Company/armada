@@ -171,6 +171,37 @@ test("REST durable admission, idempotent acknowledgement recovery and status out
   }
 });
 
+test("losing the shared lease while recording builder intent prevents allocation", async () => {
+  const s = await fixture({ isolated: true });
+  try {
+    await s.db.exec(`create function expire_at_builder_intent() returns trigger language plpgsql as $$
+      begin
+        if new.phase='builder' then
+          update public.jobs set lease_until='-infinity' where id=new.id;
+        end if;
+        return new;
+      end $$;
+      create trigger expire_at_builder_intent before update of phase on golden_build_jobs
+        for each row execute function expire_at_builder_intent();`);
+    const response = await s.http(await s.token(s.people.admin), "golden/create", {
+      name: "lease-lost-before-builder",
+      org: s.people.org,
+      repos: ["acme/web"],
+      idempotencyKey: crypto.randomUUID(),
+    });
+    expect(response.status).toBe(202);
+    const job = (await response.json()) as GoldenBuildStatus;
+    await runGoldenBuildJob(s.db, s.builds);
+    expect(await s.builds.status(s.people.admin, job.jobId)).toMatchObject({
+      state: "failed",
+      phase: "authorization",
+    });
+    expect(s.allocations()).toBe(0);
+  } finally {
+    await s.close();
+  }
+});
+
 test("a live receipt from the previous revision still prevents shared dispatch", async () => {
   const s = await fixture({ isolated: true });
   try {

@@ -380,9 +380,10 @@ export class GoldenBuildJobs {
           : null,
     };
   }
-  private async ownsLease(sql: Sql, id: string, epoch: string) {
+  private async ownsLease(sql: Sql, id: string, epoch: string, lock = true) {
     const lease = await sql.query(
-      "select id from public.jobs where id=$1 and kind='golden_build' and state='leased' and lease_epoch=$2 and lease_until>clock_timestamp() for update",
+      `select id from public.jobs where id=$1 and kind='golden_build' and state='leased' and lease_epoch=$2
+         and lease_until>clock_timestamp()${lock ? " for update" : ""}`,
       [id, epoch],
     );
     return lease.rows.length > 0;
@@ -395,8 +396,7 @@ export class GoldenBuildJobs {
         [job.id, job.fence],
       )
     ).rows[0];
-    if (!owned || !(await this.ownsLease(sql, job.id, epoch)))
-      throw new GoldenError("build_failed", "Build lease is no longer owned.");
+    if (!owned) throw new GoldenError("build_failed", "Build lease is no longer owned.");
     await this.actor(sql, job);
     if (job.reservation_id) {
       const slot = (
@@ -405,6 +405,9 @@ export class GoldenBuildJobs {
       if (!slot) throw new GoldenError("build_failed", "Build reservation is no longer owned.");
     } else if (PROVIDER_LIMITS[job.provider].defaultGoldenCapacity !== undefined)
       throw new GoldenError("build_failed", "Build reservation is missing.");
+    if (!(await this.ownsLease(sql, job.id, epoch, false)))
+      throw new GoldenError("build_failed", "Build lease is no longer owned.");
+    signal?.throwIfAborted();
   }
   private async context(job: Job): Promise<Input> {
     const raw = JSON.parse(await decryptSecret(job.payload_enc, this.options.encryptionKey));
@@ -704,12 +707,22 @@ export class GoldenBuildJobs {
       const actor = await this.transaction((sql) => this.actor(sql, job));
       const input = await this.context(job);
       const provider = await this.resolve(job, actor, input, signal);
-      const phase = async (next: string) =>
-        this.transaction(async (sql) => {
+      const phase = async (next: string) => {
+        await this.transaction(async (sql) => {
           await this.lock(sql, job, epoch, signal);
-          await sql.query("update public.golden_build_jobs set phase=$2,updated_at=now() where id=$1", [job.id, next]);
+          if (!(await this.ownsLease(sql, job.id, epoch)))
+            throw new GoldenError("build_failed", "Build lease is no longer owned.");
+          const changed = await sql.query(
+            "update public.golden_build_jobs set phase=$2,updated_at=now() where id=$1 and deadline>clock_timestamp() returning id",
+            [job.id, next],
+          );
+          if (!changed.rows.length || !(await this.ownsLease(sql, job.id, epoch, false)))
+            throw new GoldenError("build_failed", "Build lease or deadline expired.");
+          signal?.throwIfAborted();
           if (next === "builder") safeToRelease = false;
         });
+        signal?.throwIfAborted();
+      };
       const service = createGoldenCreateService({
         ...this.options.service,
         sql: this.options.sql,
@@ -720,8 +733,7 @@ export class GoldenBuildJobs {
           cleaned: (safe) => {
             safeToRelease = safe;
           },
-          // Under the attempt's fence even after a lease-expiry sweep moved it to recovery: the
-          // sweep keeps the fence, so this record reaches the reconciler that now owns the row.
+          // Recovery retains the attempt fence so it can see a late snapshot.
           candidate: async (snapshot) => {
             unpublished = snapshot;
             const saved = await this.options.sql.query(
@@ -733,6 +745,8 @@ export class GoldenBuildJobs {
           builder: async (id) =>
             this.transaction(async (sql) => {
               await this.lock(sql, job, epoch, signal);
+              if (!(await this.ownsLease(sql, job.id, epoch)))
+                throw new GoldenError("build_failed", "Build lease is no longer owned.");
               await sql.query("update public.golden_build_jobs set builder_id=$2 where id=$1", [job.id, id]);
             }),
           lock: (sql) => this.lock(sql, job, epoch, signal),
@@ -740,6 +754,8 @@ export class GoldenBuildJobs {
             // Recheck with wall time at the final write: PostgreSQL now() is frozen at
             // transaction start, and the lease may have expired while publication waited.
             signal?.throwIfAborted();
+            if (!(await this.ownsLease(sql, job.id, epoch)))
+              throw new GoldenError("build_failed", "Build lease expired before publication.");
             const completed = await sql.query(
               `update public.golden_build_jobs set state='succeeded',phase='complete',golden_id=$3,snapshot=$4,
                  build_warnings=$5::text[],lease_until=null,updated_at=now()
@@ -750,6 +766,7 @@ export class GoldenBuildJobs {
             );
             if (!completed.rows.length)
               throw new GoldenError("build_failed", "Build lease expired before publication.");
+            signal?.throwIfAborted();
           },
         },
       });
@@ -767,8 +784,7 @@ export class GoldenBuildJobs {
         ).rows[0];
         if (!current || current.fence !== job.fence) return;
         if (current.state === "recovery_required") {
-          // A lease-expiry sweep kept this fence and moved the attempt to recovery. If its earlier
-          // record failed, hand the never-published candidate to the reconciler now.
+          // Preserve late evidence for recovery under the original attempt fence.
           if (unpublished && current.snapshot === null)
             await sql.query("update public.golden_build_jobs set snapshot=$2,updated_at=now() where id=$1", [
               job.id,
@@ -779,10 +795,6 @@ export class GoldenBuildJobs {
         if (current.state !== "running") return;
         if (safeToRelease && job.reservation_id) await sqlGoldenBackendSlots(sql).release(job.reservation_id);
         await sql.query(
-          // The candidate stays as durable cleanup work unless its cleanup was confirmed, and is
-          // written here if its earlier record failed: this write proves it unpublished (state
-          // running under the fence), so recovery retires and collects it, then frees the
-          // builder and capacity.
           "update public.golden_build_jobs set state=$2,error_code='build_failed',failure_reason=$3,phase=$4,snapshot=case when $5::boolean then null else coalesce(snapshot,$6) end,lease_until=null,updated_at=now() where id=$1",
           [
             job.id,

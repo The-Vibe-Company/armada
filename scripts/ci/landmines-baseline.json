@@ -502,7 +502,7 @@
     "packages/core/src/github-installation.ts": 3,
     "packages/core/src/github.ts": 43,
     "packages/core/src/golden-adoption.ts": 3,
-    "packages/core/src/golden-build-jobs.ts": 50,
+    "packages/core/src/golden-build-jobs.ts": 46,
     "packages/core/src/golden-build-status.ts": 4,
     "packages/core/src/golden-build-warning.ts": 1,
     "packages/core/src/golden-config.ts": 46,
