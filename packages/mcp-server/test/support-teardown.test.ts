@@ -7,6 +7,7 @@ test("harness closes its remaining clients and database after a client close rej
   const first = await server.client(token);
   const second = await server.client(token);
   const failure = new Error("client close failed");
+  // oxlint-disable-next-line landmines-testing/no-test-doubles -- Inject one close rejection while exercising real cleanup for the remaining client and PGlite engine.
   const rejectClose = spyOn(first, "close").mockRejectedValueOnce(failure);
   const closeRemaining = spyOn(second, "close");
   try {
