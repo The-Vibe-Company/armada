@@ -159,8 +159,23 @@ test("the launch body omits image overrides: the chosen agent, private, the form
       reasoningEffort: "e",
     }).harness,
   ).toBe("claude");
-  expect(launchedDockerSandbox({ sandbox: { id: REQUEST, provider: "docker" } })).toBe(REQUEST);
-  expect(launchedDockerSandbox({ sandbox: { id: REQUEST, provider: "boat" } })).toBeNull();
+});
+
+test("Docker launch reads only a complete receipt for a Docker sandbox", () => {
+  const receipt = {
+    sandbox: { id: REQUEST, provider: "docker", providerSandboxId: "d1", status: "starting" },
+    golden: null,
+    promptId: null,
+    conversationId: null,
+    ttlSeconds: 3600,
+    expiresAt: null,
+    github: { status: "not_connected" },
+    helper: null,
+    runtime: null,
+  };
+  expect(launchedDockerSandbox(receipt)).toBe(REQUEST);
+  expect(launchedDockerSandbox({ sandbox: receipt.sandbox })).toBeNull();
+  expect(launchedDockerSandbox({ ...receipt, sandbox: { ...receipt.sandbox, provider: "boat" } })).toBeNull();
 });
 
 function fail(): never {

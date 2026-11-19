@@ -1,4 +1,5 @@
 import { launchFailureHelp } from "@armada/core";
+import { launchEnvelope } from "@armada/core/contract";
 import { isUuid } from "./action.ts";
 import { type ArmadaApiOptions, ControlError, controlPost, LAUNCH_TIMEOUT_MS } from "./control.ts";
 import type { LaunchArgs } from "./model-choice.ts";
@@ -57,10 +58,12 @@ export async function launchSandbox(
         ? "launching with machine sizes"
         : "launching from the dashboard",
   );
-  const sandbox = payload.sandbox;
-  const id = typeof sandbox === "object" && sandbox !== null && "id" in sandbox ? sandbox.id : undefined;
-  if (typeof id !== "string" || !id) throw new ControlError("The Armada server sent no sandbox id.");
-  return { id };
+  const receipt = launchEnvelope.safeParse(payload);
+  if (!receipt.success || !receipt.data.sandbox.id)
+    throw new ControlError("The Armada server sent an invalid launch response.", undefined, undefined, {
+      outcomeUnknown: true,
+    });
+  return { id: receipt.data.sandbox.id };
 }
 
 /** One launch submission the dashboard already sent: its request key and when the server action first sent it. */
