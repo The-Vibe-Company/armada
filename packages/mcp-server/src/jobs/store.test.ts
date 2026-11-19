@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
 import { rowOnlyDatabase } from "../../test/row-only-database.ts";
+import { scopedRuntimeSql } from "../runtime-enrolment.ts";
 import { sqlOver } from "../sql.ts";
 import { runtimeWakes } from "../wake-bus.ts";
-import { createJobsRunner, type Job, type JobResult } from "./runner.ts";
+import { createJobsRunner } from "./runner.ts";
 import { createJobsStore, JOBS_WAKE } from "./store.ts";
 
 const database = rowOnlyDatabase();
@@ -27,7 +28,7 @@ test("transactional enqueue wakes after commit and replays the encrypted job by 
   const close = runtimeWakes.subscribe(JOBS_WAKE, () => wakes++);
   try {
     const id = await sql.transaction!(async (tx) => {
-      const inserted = await enqueue(tx);
+      const inserted = await enqueue(scopedRuntimeSql(tx));
       expect(wakes).toBe(0);
       return inserted;
     });
@@ -101,7 +102,7 @@ test("a failed completion transaction replays the same job and preserves its pri
   await db.query("update jobs set outcome = $2 where id = $1", [id, evidence]);
   const effects = new Set<string>();
   const epochs: string[] = [];
-  const run = async (job: Job, { canDispatch }: { canDispatch(): Promise<boolean> }): Promise<JobResult> => {
+  const run: Parameters<typeof createJobsRunner>[1][string]["run"] = async (job, { canDispatch }) => {
     expect(await canDispatch()).toBe(job.attempts === 1);
     effects.add(job.id);
     epochs.push(job.lease_epoch);

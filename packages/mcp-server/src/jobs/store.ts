@@ -57,7 +57,10 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
         ],
       );
       if (insertedRows[0]) {
-        if (!deferTransactionWake(db, JOBS_WAKE) && !tx) runtimeWakes.notify(JOBS_WAKE);
+        if (!deferTransactionWake(db, JOBS_WAKE)) {
+          if (!tx || tx === sql) runtimeWakes.notify(JOBS_WAKE);
+          else await tx.transaction?.(async (raw) => deferTransactionWake(raw, JOBS_WAKE));
+        }
         return insertedRows[0].id;
       }
       const { rows: existingRows } = await db.query<{ id: string }>(

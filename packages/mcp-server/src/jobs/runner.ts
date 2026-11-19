@@ -78,11 +78,9 @@ export function createJobsRunner(
         if (signal.aborted) cancelNextExpiry();
       }
     }
-    function scheduleRenewal() {
-      cancelRenewal = schedule((LEASE_SECONDS * 1000) / 3, () => {
-        renewal = renew();
-      });
-    }
+    const scheduleRenewal = () => {
+      cancelRenewal = schedule((LEASE_SECONDS * 1000) / 3, () => (renewal = renew()));
+    };
     try {
       if (signal.aborted) return;
       const state = await store.inspect(job, owner);
@@ -122,9 +120,7 @@ export function createJobsRunner(
           claimed = true;
           const work = run(job, handler, cancelExpiry, lease)
             .catch(() => log("armada: job execution unavailable; durable lease remains fenced."))
-            .finally(() => {
-              pending.delete(work);
-            });
+            .finally(() => pending.delete(work));
           pending.add(work);
           return true;
         } finally {
