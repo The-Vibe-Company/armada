@@ -35,6 +35,7 @@ import {
   type RoutineService,
   removeCredential,
   removeMember,
+  resolveModelChoice,
   resolveOrg,
   resolveSkillpackCredential,
   retainFailureDiagnostic,
