@@ -185,8 +185,6 @@ async function fixture(
   };
   const commands = createRuntimeCommands(authority, key, clock);
   async function step() {
-    // Like a held host poll, check for work before reconciling the host. A wake
-    // can belong solely to the runtime, which must still get its own poll.
     let job: Awaited<ReturnType<typeof hosts.poll>> = null;
     if (await hosts.mayHaveWork(host.hostToken, installationId, false, [], true)) {
       for (const claim of await hosts.resumeClaimsForHost(host.hostToken, installationId))
