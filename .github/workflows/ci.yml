@@ -74,6 +74,7 @@ jobs:
           bun scripts/ci/docs-guard.ts "${PR_BASE_SHA:-$base}"
           bun scripts/ci/process-tests.ts --check "${PR_BASE_SHA:-$base}"
           bun scripts/ci/landmines.ts "${PR_BASE_SHA:-$base}"
+          time bun scripts/ci/ratchets.ts "${PR_BASE_SHA:-$base}"
           echo "TABLE_OWNERS_BASE=${PR_BASE_SHA:-$base}" >> "$GITHUB_ENV"
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         if: matrix.shard == 1

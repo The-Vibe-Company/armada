@@ -13,4 +13,5 @@ export function isNonTestSource(path: string): boolean {
 export const nativePathExclusions = /^(?:packages\/agent-runtime|scripts\/metrics)\//;
 export const nativePathPattern = /\b(?:agentPath|nativeRuntime|nativeCli|runtimeTransport)\b|["']native["']/g;
 export const providerAdapterExclusions = /^(?:packages\/(?:provider-[^/]+|docker-host)|scripts\/metrics)\//;
-export const providerBranchPattern = /===\s*(?:"(?:boat|modal|docker)"|'(?:boat|modal|docker)')/g;
+export const providerBranchPattern =
+  /(?:[!=]==|\bcase\b)\s*(?:"(?:boat|modal|docker)"|'(?:boat|modal|docker)')|\bswitch\s*\(\s*provider\b/g;
