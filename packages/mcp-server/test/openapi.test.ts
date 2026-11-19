@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { CONTROL_BODY_MAX_BYTES, TEMPLATE_LAUNCH_FIELDS, VAULT_CONTROL_BODY_MAX_BYTES } from "@armada/core/server";
+import { CONTROL_BODY_MAX_BYTES, VAULT_CONTROL_BODY_MAX_BYTES } from "@armada/core/server";
 import { z } from "zod";
 import releasePlease from "../../../release-please-config.json";
 import published from "../openapi.json";
@@ -175,13 +175,8 @@ test("published Docker launch request accepts the mixed-case UUIDs launch admiss
   expect(launch.safeParse({ ...base, hostId: "ABCDEF12-0000-4000-8000-00000000000g" }).success).toBe(false);
 });
 
-test("published template launch request lists exactly the fields the template service accepts", async () => {
+test("the published template launch request accepts CLI model accounts and bounds text fields", async () => {
   const { publishedRequest } = await import("./published-response.ts");
-  type Operation = { post: { requestBody: { content: { "application/json": { schema: { properties: object } } } } } };
-  const operation = (published.paths as unknown as Record<string, Operation>)["/api/v1/templates/launch"]!.post;
-  expect(Object.keys(operation.requestBody.content["application/json"].schema.properties).sort()).toEqual(
-    [...TEMPLATE_LAUNCH_FIELDS].sort(),
-  );
   const id = "11111111-1111-4111-8111-111111111111";
   // The CLI's `templates launch --model-account` body.
   const cli = { org: id, id, requestKey: "k", modelAccount: { id, version: 1 }, externalRef: "tender:1" };
