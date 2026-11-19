@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { MAX_SANDBOX_EXTENSION_TTL_SECONDS } from "@armada/core";
 import { type ControlOptions, dispatchControlCommand } from "./control.ts";
 import { controlFailureResponse } from "./control-errors.ts";
 import { controlRoutes } from "./modules.ts";
@@ -161,6 +162,21 @@ test("registry construction rejects duplicate routes with both module names", ()
   );
 });
 
+const caller = { via: "supabase" as const, userId: "owner", orgs: [] };
+const options = {
+  data: () => ({
+    sandboxes: {
+      get: async () => {
+        throw new Error("Validation must run before sandbox reads.");
+      },
+      list: async () => {
+        throw new Error("Validation must run before sandbox reads.");
+      },
+    },
+  }),
+  providers: {},
+} as unknown as ControlOptions;
+
 test.each([
   ["sandbox/list", { limit: 0 }],
   ["sandbox/status", { id: 42 }],
@@ -171,25 +187,36 @@ test.each([
   ["sandbox/steer", { id: "sandbox", text: "" }],
   ["sandbox/interrupt", { id: "sandbox", request_id: "invalid" }],
   ["sandbox/exec", { id: "sandbox", command: "", timeout_seconds: 0 }],
+  ["sandbox/resume", { id: "sandbox", request_id: "invalid" }],
+  ["sandbox/extend", { id: 42, ttlSeconds: 60 }],
+  ["sandbox/advice", { id: 42 }],
+  ["sandbox/recovery", { id: "sandbox", recovery_id: "invalid" }],
+  [
+    "sandbox/checkpoint-runtime-v1",
+    { id: "sandbox", request_id: "42ec79bb-0baa-452e-a5c8-0a788e16e880", runtimeVersion: 2 },
+  ],
+  [
+    "sandbox/resume-runtime-v1",
+    { id: "sandbox", request_id: "42ec79bb-0baa-452e-a5c8-0a788e16e880", runtimeVersion: 1, prompt: "" },
+  ],
 ] as const)("%s keeps its REST validation code and refuses before touching sandbox data", async (route, body) => {
-  const caller = { via: "supabase" as const, userId: "owner", orgs: [] };
-  const options = {
-    data: () => ({
-      sandboxes: {
-        get: async () => {
-          throw new Error("Validation must run before sandbox reads.");
-        },
-        list: async () => {
-          throw new Error("Validation must run before sandbox reads.");
-        },
-      },
-    }),
-    providers: {},
-  } as unknown as ControlOptions;
   const error = await dispatchControlCommand(route, caller, body, options).catch((reason) => reason);
   if (!(error instanceof ToolApiError)) throw new Error("Expected a REST validation refusal.", { cause: error });
   expect(error.message).toContain("Input validation error");
   const response = controlFailureResponse(error);
   expect(response.status).toBe(503);
   expect(await response.json()).toMatchObject({ error: { code: "internal" } });
+});
+
+test.each([
+  [{ ttlSeconds: 1.5 }, "invalid"],
+  [{ ttlSeconds: Number.MAX_SAFE_INTEGER + 1 }, "invalid"],
+  [{ ttlSeconds: MAX_SANDBOX_EXTENSION_TTL_SECONDS + 1 }, "extension_maximum"],
+] as const)("sandbox extension keeps the lifetime refusal for %j", async (body, code) => {
+  const error = await dispatchControlCommand("sandbox/extend", caller, { id: "sandbox", ...body }, options).catch(
+    (reason) => reason,
+  );
+  const response = controlFailureResponse(error);
+  expect(response.status).toBe(400);
+  expect(await response.json()).toMatchObject({ error: { code } });
 });

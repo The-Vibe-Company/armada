@@ -1,4 +1,5 @@
-import { MAX_SANDBOX_EXTENSION_TTL_SECONDS, providerRateLimitDetails } from "@armada/core";
+import { providerRateLimitDetails } from "@armada/core";
+import { sandboxExtensionLifetime, sandboxIdInput, sandboxRestOperations } from "@armada/core/contract";
 import { GoldenError, isNonMutatingProviderRefusal, ProviderError, VaultError } from "@armada/core/server";
 import { z } from "zod";
 import { validateProviderResourceObservation } from "../../core/src/resource-validation.ts";
@@ -16,81 +17,19 @@ import { ToolApiError } from "./tool-api.ts";
 import { ToolError } from "./tool-error.ts";
 import { describeToolFailure } from "./tool-failure.ts";
 
-const id = z.string().describe("Armada's sandbox id (a uuid, as returned by launch and list).");
-const runtimeRequest = z.object({ id, request_id: z.string().uuid(), runtimeVersion: z.literal(1) });
-const runtime = z.object({ kind: z.literal("armada"), epoch: z.string() });
-
-export const SANDBOX_REST_CONTRACTS = {
-  "sandbox/resume": {
-    description:
-      "Owner-only. Restarts the same Docker allocation with fresh runtime enrolment, keeping history and the original TTL. Reuse request_id after uncertainty.",
-    input: z.object({ id, request_id: z.string().uuid() }),
-    output: z.object({ id: z.string(), status: z.literal("ready") }),
-  },
-  "sandbox/extend": {
-    description:
-      "Set a later expiry, measured from now. Owner/admin only. Modal extensions must fit inside the current physical machine lifetime; stop and resume for a new physical lifetime.",
-    input: z.object({ id, ttlSeconds: z.number().int().positive().max(MAX_SANDBOX_EXTENSION_TTL_SECONDS) }),
-    output: z.object({ id: z.string(), expiresAt: z.string(), ttlSeconds: z.number().int() }),
-  },
-  "sandbox/delete": {
-    description:
-      "Owner/admin only. Permanently removes provider resources and recovery archives. Stop first. Legacy orchestrator parents and children are refused; ordinary delegated children require a deleted parent.",
-    input: z.object({ id, request_id: z.string().uuid().optional() }),
-    output: z.object({ id: z.string(), status: z.literal("deleted") }),
-  },
-  "sandbox/advice": {
-    description:
-      "Collects one bounded read-only VM observation and reports the last ten comparable repository sessions. Missing evidence causes abstention; never resizes or changes defaults.",
-    input: z.object({ id }),
-    output: z.object({ advice: z.unknown() }),
-  },
-  "sandbox/recovery": {
-    description: "Owner/admin only. Returns sensitive base64 recovery archive; never log it.",
-    input: z.object({ id, recovery_id: z.string().uuid().optional() }),
-    output: z.object({ archive: z.string().nullable() }),
-  },
-  "sandbox/checkpoint-runtime-v1": {
-    input: runtimeRequest,
-    output: z.object({
-      id: z.string(),
-      requestId: z.string(),
-      runtime,
-      checkpoint: z.object({
-        state: z.literal("complete"),
-        watermark: z.number().int().nonnegative(),
-        acknowledgedSequence: z.number().int().nonnegative(),
-      }),
-    }),
-  },
-  "sandbox/resume-runtime-v1": {
-    input: runtimeRequest.extend({
-      prompt: z.string().min(1),
-    }),
-    output: z.object({
-      id: z.string(),
-      requestId: z.string(),
-      promptId: z.string(),
-      conversationId: z.string(),
-      status: z.enum(["queued", "running", "finished", "failed", "interrupted"]),
-      resumed: z.literal(true),
-      runtime,
-      sourceCheckpoint: z.object({
-        epoch: z.string(),
-        watermark: z.number().int().nonnegative(),
-        empty: z.literal(true).optional(),
-      }),
-    }),
-  },
+export const deleteSandboxAliasContract = {
+  description:
+    "Owner/admin only. Permanently removes provider resources and recovery archives. Stop first. Legacy orchestrator parents and children are refused; ordinary delegated children require a deleted parent.",
+  input: z.object({ id: sandboxIdInput, request_id: z.string().uuid().optional() }),
+  output: z.object({ id: z.string(), status: z.literal("deleted") }),
 };
 
-type SandboxRestRoute = keyof typeof SANDBOX_REST_CONTRACTS;
-export function isSandboxRestControl(route: string): route is SandboxRestRoute {
-  return Object.hasOwn(SANDBOX_REST_CONTRACTS, route);
-}
+const contracts = { ...sandboxRestOperations, deleteSandbox: deleteSandboxAliasContract };
+type SandboxRestOperation = keyof typeof contracts;
 
-export async function dispatchSandboxRestControl(
-  route: SandboxRestRoute,
+async function dispatchSandboxRestControl(
+  name: SandboxRestOperation,
+  route: string,
   caller: Caller,
   body: Record<string, unknown>,
   options: ControlOptions & Required<Pick<ControlOptions, "data" | "providers">>,
@@ -98,7 +37,7 @@ export async function dispatchSandboxRestControl(
   const data = options.data(caller);
   try {
     const result = await run();
-    if (!SANDBOX_REST_CONTRACTS[route].output.safeParse(result).success)
+    if (!contracts[name].output.safeParse(result).success)
       throw new ToolApiError("internal", `Output validation error for ${route}.`);
     return result;
   } catch (error) {
@@ -127,15 +66,15 @@ export async function dispatchSandboxRestControl(
   }
 
   async function run() {
-    switch (route) {
-      case "sandbox/resume": {
-        const args = parseControl("resume", SANDBOX_REST_CONTRACTS[route].input);
+    switch (name) {
+      case "resumeSandbox": {
+        const { org: _org, ...args } = parseControl("resume", contracts[name].input.body);
         const routed = await options.dockerControls?.invoke(caller, "resume", args);
         if (routed?.handled) return routed.result;
         throw new ToolError("unsupported", "Normal resume is currently available only for Docker sandboxes.");
       }
-      case "sandbox/extend": {
-        const args = parseControl("extend", SANDBOX_REST_CONTRACTS[route].input);
+      case "extendSandbox": {
+        const args = parseControl("extend", contracts[name].input.body);
         await data.sandboxes.assertExtensionAllowed?.(args.id).catch((error) => {
           if (error instanceof GoldenError && ["not_found", "forbidden"].includes(error.code))
             throw new ToolError(
@@ -155,12 +94,12 @@ export async function dispatchSandboxRestControl(
           data.sandboxes,
           sandbox,
           provider,
-          args.ttlSeconds,
+          args.ttlSeconds ?? args.ttl_seconds,
           () => options.connections?.renewLifetime?.(provider, sandbox.id) ?? Promise.resolve(),
         );
       }
-      case "sandbox/delete": {
-        const args = parseControl("delete", SANDBOX_REST_CONTRACTS[route].input);
+      case "deleteSandbox": {
+        const args = parseControl("delete", deleteSandboxAliasContract.input);
         const routed = await options.dockerControls?.invoke(caller, "delete", args);
         if (routed?.handled) return routed.result;
         if (!data.sandboxes.assertDeletionAllowed)
@@ -207,25 +146,25 @@ export async function dispatchSandboxRestControl(
           { failurePatch },
         );
       }
-      case "sandbox/checkpoint-runtime-v1": {
-        const args = parse(SANDBOX_REST_CONTRACTS[route].input);
+      case "postSandboxCheckpointRuntimeV1": {
+        const { org: _org, ...args } = parse(contracts[name].input.body);
         if (!options.runtimeCheckpoint) throw new ToolApiError("unsupported", "Runtime checkpoint is unavailable.");
         return options.runtimeCheckpoint(caller, args);
       }
-      case "sandbox/resume-runtime-v1": {
+      case "postSandboxResumeRuntimeV1": {
         refuseConversationSelector(body);
-        const args = parse(SANDBOX_REST_CONTRACTS[route].input);
+        const { org: _org, ...args } = parse(contracts[name].input.body);
         if (!options.runtimeResume) throw new ToolApiError("unsupported", "Runtime resume is unavailable.");
         return options.runtimeResume(caller, args);
       }
-      case "sandbox/recovery": {
-        const args = parse(SANDBOX_REST_CONTRACTS[route].input);
+      case "recoverSandbox": {
+        const args = parse(contracts[name].input.body);
         const found = await data.sandboxes.get(args.id);
         if (!found) throw new ToolApiError("not_found", "No such sandbox.");
         return { archive: (await data.sandboxes.readWorkRecovery?.(found.id, args.recovery_id)) ?? null };
       }
-      case "sandbox/advice": {
-        const args = parse(SANDBOX_REST_CONTRACTS[route].input);
+      case "sandboxAdvice": {
+        const args = parse(contracts[name].input.body);
         const found = await data.sandboxes.get(args.id);
         if (!found) throw new ToolApiError("not_found", `No sandbox with id '${args.id}' that you can see.`);
         const store = data.resourceObservations;
@@ -265,10 +204,15 @@ export async function dispatchSandboxRestControl(
 
 export const sandboxRestRoutes = defineRoutes("sandbox REST", {
   ...Object.fromEntries(
-    Object.keys(SANDBOX_REST_CONTRACTS)
-      .filter(isSandboxRestControl)
-      .map((route) => [route, (context: ControlRouteContext) => sandboxRestRoute(route, context)]),
+    Object.values(sandboxRestOperations).map(
+      ({ name, route }) =>
+        [
+          route.path.slice("/api/v1/".length),
+          { methods: [route.method], handler: (context: ControlRouteContext) => sandboxRestRoute(name, context) },
+        ] as const,
+    ),
   ),
+  "sandbox/delete": (context) => sandboxRestRoute("deleteSandbox", context),
   "sandboxes/{id}": {
     methods: ["DELETE"],
     pattern: /^sandboxes\/[0-9a-f-]+$/i,
@@ -276,26 +220,28 @@ export const sandboxRestRoutes = defineRoutes("sandbox REST", {
       const url = new URL(request.url);
       return { id: url.pathname.split("/").at(-1), org: url.searchParams.get("org") ?? undefined };
     },
-    handler: (context) => sandboxRestRoute("sandbox/delete", context),
+    handler: (context) => sandboxRestRoute("deleteSandbox", context),
   },
 });
 
-async function sandboxRestRoute(route: SandboxRestRoute, { caller, body, options }: ControlRouteContext) {
-  if (route === "sandbox/extend") {
+async function sandboxRestRoute(name: SandboxRestOperation, { route, caller, body, options }: ControlRouteContext) {
+  if (name === "extendSandbox") {
     if (Object.hasOwn(body, "ttlSeconds") && Object.hasOwn(body, "ttl_seconds"))
       throw new VaultError("invalid", "Send one lifetime field: ttlSeconds.");
     const ttl = Object.hasOwn(body, "ttlSeconds") ? body.ttlSeconds : body.ttl_seconds;
-    if (Number.isSafeInteger(ttl) && Number(ttl) > MAX_SANDBOX_EXTENSION_TTL_SECONDS)
-      throw new ToolApiError("extension_maximum", "Requested lifetime exceeds the server maximum.");
-    if (!Number.isSafeInteger(ttl) || Number(ttl) < 1)
+    const parsed = sandboxExtensionLifetime.safeParse(ttl);
+    if (!parsed.success) {
+      if (Number.isSafeInteger(ttl) && parsed.error.issues.some((issue) => issue.code === "too_big"))
+        throw new ToolApiError("extension_maximum", "Requested lifetime exceeds the server maximum.");
       throw new VaultError(
         "invalid",
         "ttlSeconds must be a positive whole number of seconds within the server maximum.",
       );
-    body = { ...body, ttlSeconds: ttl };
+    }
   }
   const { data, providers } = options;
   if (!data || !providers) throw new VaultError("unavailable", "Sandbox control is not configured.");
-  const scopedCaller = await selectedCaller(options, caller, optional(body, "org"));
-  return dispatchSandboxRestControl(route, scopedCaller, body, { ...options, data, providers });
+  const org = optional(body, "org");
+  const scopedCaller = await selectedCaller(options, caller, org);
+  return dispatchSandboxRestControl(name, route, scopedCaller, body, { ...options, data, providers });
 }

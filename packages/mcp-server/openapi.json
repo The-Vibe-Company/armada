@@ -2801,7 +2801,10 @@
                     "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
                   },
                   "org": {
-                    "type": "string"
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   }
                 },
                 "required": [
@@ -2909,7 +2912,10 @@
                     "description": "Armada's sandbox id (a uuid, as returned by launch and list)."
                   },
                   "org": {
-                    "type": "string"
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   }
                 },
                 "required": [
@@ -3268,7 +3274,10 @@
                     "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
                   },
                   "org": {
-                    "type": "string"
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   }
                 },
                 "required": [
@@ -3719,24 +3728,61 @@
             "application/json": {
               "schema": {
                 "$schema": "http://json-schema.org/draft-07/schema#",
-                "type": "object",
-                "properties": {
-                  "id": {
-                    "type": "string",
-                    "description": "Armada's sandbox id (a uuid, as returned by launch and list)."
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "description": "Armada's sandbox id (a uuid, as returned by launch and list)."
+                      },
+                      "ttlSeconds": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 2591700
+                      },
+                      "ttl_seconds": {
+                        "not": {}
+                      },
+                      "org": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "ttlSeconds"
+                    ]
                   },
-                  "ttlSeconds": {
-                    "type": "integer",
-                    "exclusiveMinimum": 0,
-                    "maximum": 2591700
-                  },
-                  "org": {
-                    "type": "string"
+                  {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "description": "Armada's sandbox id (a uuid, as returned by launch and list)."
+                      },
+                      "ttl_seconds": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 2591700
+                      },
+                      "ttlSeconds": {
+                        "not": {}
+                      },
+                      "org": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "ttl_seconds"
+                    ]
                   }
-                },
-                "required": [
-                  "id",
-                  "ttlSeconds"
                 ]
               }
             }
