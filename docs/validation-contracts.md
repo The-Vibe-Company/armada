@@ -93,7 +93,10 @@ Repository-wide search includes `skipIf`, `test.skip`, conditional test aliases,
 - PostgreSQL skips and artifact portable-manifest skips were replaced by
   explicit release prerequisites. The native `mcp-codex-bridge` release
   probe (`packages/mcp-server/test/mcp-codex-bridge.release.probe.ts`) requires
-  the pinned binary and a successful process exit.
+  the pinned binary and a successful process exit. The Modal artifact probe
+  (`bun packages/provider-modal/test/artifact.release.probe.ts`) requires the
+  Linux native runtime build and waits for the runtime's HTTP listen signal.
+  The publishing validator requires both probes to exit successfully.
 
 ## Process-spawning unit cases in `provider-modal`
 

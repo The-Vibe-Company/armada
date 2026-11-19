@@ -1081,7 +1081,6 @@
     "packages/provider-modal/src/store.ts": 9,
     "packages/provider-modal/src/transport.ts": 3,
     "packages/provider-modal/test/artifact-validation.test.ts": 3,
-    "packages/provider-modal/test/artifact.release.ts": 11,
     "packages/provider-modal/test/bundle.ts": 1,
     "packages/provider-modal/test/checkpoint-process-conformance.ts": 14,
     "packages/provider-modal/test/conformance-app.ts": 5,
