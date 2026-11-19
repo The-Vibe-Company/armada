@@ -305,13 +305,16 @@ test.each(["activation receipt", "pending ticket"])(
     try {
       const first = input(f.row.id);
       let ticket: string | undefined;
-      const started = false;
+      let started = false;
       const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => ({
         async start(_signal, restore, confirmActivation) {
-          if (ticket) return f.reboot(restore);
-          await confirmActivation!();
-          ticket = (await f.authority.issue({ sandboxId: f.row.id, ownerId: f.caller.userId, configuration: {} }))
-            .enrolmentToken;
+          if (started) return f.reboot(restore);
+          started = true;
+          if (proof === "activation receipt") await confirmActivation!();
+          else {
+            ticket = (await f.authority.issue({ sandboxId: f.row.id, ownerId: f.caller.userId, configuration: {} }))
+              .enrolmentToken;
+          }
           await f.db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [f.row.id]);
           throw Error("Owner lost its lease before it could hand off");
         },
