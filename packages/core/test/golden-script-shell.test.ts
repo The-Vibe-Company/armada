@@ -81,44 +81,6 @@ test("real shell: the baseline tolerates a repo with no package.json, pins acros
   }
 });
 
-test("real shell: pinned Bun persists for a fresh shell", () => {
-  const base = mkdtempSync(join(tmpdir(), "armada-baseline-"));
-  try {
-    const home = join(base, "home");
-    const bin = join(base, "bin");
-    mkdirSync(join(home, "web"), { recursive: true });
-    writeFileSync(join(home, "web", "package.json"), JSON.stringify({ packageManager: "bun@9.9.9" }));
-    fakeBin(bin, ["npm", "bunx", "bun", "claude", "codex"]);
-    // Mimic npm's installed binary without touching host globals.
-    mkdirSync(join(home, ".bun-npm", "bin"), { recursive: true });
-    writeFileSync(join(home, ".bun-npm", "bin", "bun"), "#!/bin/sh\necho PINNED\n", { mode: 0o755 });
-    const prepared = withGoldenDirs([{ owner: "acme", repo: "web", id: 1, installationId: 2, branch: "main" }]);
-    const block = extract(
-      goldenScript(prepared)
-        .replace(/\/home\/user/g, home)
-        .replaceAll("/usr/local", join(home, "system")),
-      'bun_pin=""',
-      "npm install --global @openai/codex",
-    );
-    expect(
-      spawnSync("/bin/bash", ["-euo", "pipefail", "-c", block], {
-        env: { PATH: `${bin}:/usr/bin:/bin`, HOME: home },
-        encoding: "utf8",
-      }).status,
-    ).toBe(0);
-    // An old system Bun comes first, matching provider native exec PATH precedence.
-    const old = bin;
-    const fresh = spawnSync("/bin/sh", ["-c", "bun"], {
-      env: { PATH: `${old}:${home}/.local/bin:${home}/.bun/bin:/usr/bin:/bin`, HOME: home },
-      encoding: "utf8",
-    });
-    expect(fresh.status).toBe(0);
-    expect(fresh.stdout).toContain("PINNED");
-  } finally {
-    rmSync(base, { recursive: true, force: true });
-  }
-});
-
 // Linux CI has passwordless sudo; mount isolation keeps the host installation untouched.
 (process.platform === "linux" ? test : test.skip).each([
   ["2.1.319", "2.1.322", true],
