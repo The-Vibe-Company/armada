@@ -140,7 +140,21 @@ function main() {
     command("git", "merge-base", "--is-ancestor", sha, "origin/main");
     if (recovery && version !== REQUESTED_VERSION) throw new Error("Requested version differs from source");
     const status = releaseStatus(version);
-    const publishedSha = tagSha(version);
+    let publishedSha = tagSha(version);
+    if (status === 200 && !publishedSha) {
+      command(
+        "git",
+        "-c",
+        "credential.helper=",
+        "-c",
+        "credential.helper=!gh auth git-credential",
+        "fetch",
+        "--no-tags",
+        "origin",
+        `refs/tags/v${version}:refs/tags/v${version}`,
+      );
+      publishedSha = tagSha(version);
+    }
     const mode =
       !recovery && version !== versionAt(SOURCE_SHA)
         ? "superseded"

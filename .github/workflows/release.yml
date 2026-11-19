@@ -51,8 +51,11 @@ jobs:
 
   release-please:
     name: Prepare the next version PR
-    needs: publication-intent
-    if: needs.publication-intent.outputs.mode == 'prepare'
+    needs: [publication-intent, release-pipeline]
+    if: >-
+      !cancelled() && needs.publication-intent.result == 'success' &&
+      (needs.publication-intent.outputs.mode == 'prepare' ||
+       (needs.release-pipeline.result == 'success' && needs.release-pipeline.outputs.mode == 'prepare'))
     concurrency:
       group: release-version-pr
       cancel-in-progress: false
@@ -72,8 +75,8 @@ jobs:
       - uses: ./.github/actions/setup-bun
       - name: Reconcile the published version PR
         env:
-          VERSION: ${{ needs.publication-intent.outputs.version }}
-          RELEASE_SHA: ${{ needs.publication-intent.outputs.sha }}
+          VERSION: ${{ needs.release-pipeline.outputs.version || needs.publication-intent.outputs.version }}
+          RELEASE_SHA: ${{ needs.release-pipeline.outputs.sha || needs.publication-intent.outputs.sha }}
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: bun scripts/release/publication.ts reconcile

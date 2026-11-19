@@ -694,8 +694,10 @@ candidate. A 200 allows version PR preparation and verified label reconciliation
 Other API responses fail closed. Only a candidate or explicit recovery queues
 for the shared lock, with `queue: max`. The publishing pipeline rechecks intent
 after admission, so a queued candidate for a version that was already published
-or superseded exits before opening deployment environments. After the SHA is
-frozen, a same-version main advance alone does not invalidate a passing candidate.
+or superseded exits before opening deployment environments. If the version
+was already published, the run prepares the next version PR after the call
+releases the lock. After the SHA is frozen, a same-version main advance alone
+does not invalidate a passing candidate.
 Before publication, require the candidate version on main and reject a newer
 stable tag. After publication, production and recovery require the latest stable
 version and its exact tag SHA.

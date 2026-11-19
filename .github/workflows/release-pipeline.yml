@@ -12,6 +12,13 @@ on:
       sha:
         type: string
         required: true
+    outputs:
+      mode:
+        value: ${{ jobs.release-metadata.outputs.mode }}
+      version:
+        value: ${{ jobs.release-metadata.outputs.intent-version }}
+      sha:
+        value: ${{ jobs.release-metadata.outputs.intent-sha }}
 
 permissions:
   contents: read
@@ -35,6 +42,8 @@ jobs:
       dist_tag: ${{ steps.version.outputs.dist_tag }}
       publish: ${{ steps.version.outputs.publish }}
       mode: ${{ steps.intent.outputs.mode }}
+      intent-version: ${{ steps.intent.outputs.version }}
+      intent-sha: ${{ steps.intent.outputs.sha }}
       sha: ${{ steps.version.outputs.sha }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
