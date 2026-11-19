@@ -102,13 +102,14 @@ async function verifyNativeBridge() {
     await installProtocolWrapper(path, install);
     const script = `
 import json, subprocess, sys, os, signal
+from contextlib import suppress
 def abort(signum, _frame):
     if signum == signal.SIGALRM:
         raise TimeoutError("native bridge protocol deadline elapsed")
     raise SystemExit(1)
 signal.signal(signal.SIGALRM, abort)
 signal.signal(signal.SIGTERM, abort)
-p=subprocess.Popen([sys.argv[1],"app-server","--listen","stdio://","-c",'model_provider="offline"',"-c",'model_providers.offline={name="offline",base_url="http://127.0.0.1:${upstream.port}/v1",wire_api="responses",requires_openai_auth=false,request_max_retries=0,stream_max_retries=0}'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+p=subprocess.Popen([sys.argv[1],"app-server","--listen","stdio://","-c",'model_provider="offline"',"-c",'model_providers.offline={name="offline",base_url="http://127.0.0.1:${upstream.port}/v1",wire_api="responses",requires_openai_auth=false,request_max_retries=0,stream_max_retries=0}'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,start_new_session=True)
 completed=False
 def receive():
     global completed
@@ -127,6 +128,20 @@ def rpc(id,method,params):
                 detail=(":"+str(error.get("message",""))[:256]) if error.get("code")==-32601 else ""
                 raise RuntimeError(method+":"+str(error.get("code"))+detail)
             return m["result"]
+def process_tree(root):
+    pending=[root]
+    while pending:
+        pid=pending.pop()
+        yield pid
+        with suppress(FileNotFoundError, ProcessLookupError):
+            with open("/proc/%d/task/%d/children"%(pid,pid)) as source:
+                pending.extend(map(int,source.read().split()))
+def native_pids():
+    found=[]
+    for pid in process_tree(p.pid):
+        with suppress(FileNotFoundError, ProcessLookupError):
+            if os.path.basename(os.readlink("/proc/%d/exe"%pid))=="codex":found.append(pid)
+    return sorted(found)
 try:
     signal.alarm(30)
     rpc(1,"initialize",{"clientInfo":{"name":"armada-mcp-proof","version":"1"},"capabilities":{"experimentalApi":True}})
@@ -140,15 +155,6 @@ try:
     state=rpc(8,"thread/read",{"threadId":thread,"includeTurns":False})
     assert state["thread"]["status"]["type"]!="active"
 
-    def native_pids():
-        todo=[p.pid];found=[]
-        while todo:
-            pid=todo.pop()
-            try:
-                with open("/proc/%d/task/%d/children"%(pid,pid)) as source:todo.extend(map(int,source.read().split()))
-                if os.path.basename(os.readlink("/proc/%d/exe"%pid))=="codex":found.append(pid)
-            except (OSError,ValueError):pass
-        return sorted(found)
     peer=rpc(40,"thread/start",params)["thread"]["id"]
     assert peer!=thread
     original_pids=None
@@ -229,7 +235,25 @@ finally:
     signal.alarm(0)
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
     p.terminate()
-    p.wait(timeout=5)
+    try:
+        p.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        # Freeze the wrapper before finding the separate managed native group.
+        with suppress(ProcessLookupError):
+            p.send_signal(signal.SIGSTOP)
+        groups=set()
+        for pid in process_tree(p.pid):
+            with suppress(ProcessLookupError):
+                groups.add(os.getpgid(pid))
+        groups.discard(os.getpgrp())
+        groups.discard(p.pid)
+        for group in groups:
+            with suppress(ProcessLookupError):
+                os.killpg(group,signal.SIGKILL)
+        with suppress(ProcessLookupError):
+            os.killpg(p.pid,signal.SIGKILL)
+        p.wait()
+        raise
 `;
     const configure = async (phase: string) => {
       expected = phase;
@@ -280,8 +304,10 @@ finally:
       await install(nativeMcpInstallScript, { revision: "removed", servers: {} });
       p.stdin.write("removed\n");
       await verifyPhase("tool removal");
-      assert.equal(await p.exited, 0);
-      assert.equal(await stderr, "");
+      const code = await p.exited;
+      const diagnostics = await stderr;
+      assert.equal(code, 0, `Native proof failed during shutdown: ${diagnostics}`);
+      assert.equal(diagnostics, "");
     } finally {
       if (p.exitCode === null && p.signalCode === null) p.kill();
       await p.exited;
