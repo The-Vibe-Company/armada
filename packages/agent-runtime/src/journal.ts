@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import type { AgentEvent, PromptStatus } from "@armada/core";
+import type { AgentEvent, PromptStatus, ToolCall } from "@armada/core";
 import { HARNESSES, isFinalPromptStatus } from "@armada/core";
 import { HarnessError } from "./errors.ts";
 import { checkpointIdentity, checkpointIdentityKey } from "./identity.ts";
@@ -52,14 +52,25 @@ export class Journal {
     let body = this.redact(JSON.stringify(control));
     const redactShort = this.redactShortApplicationText;
     if (redactShort && (event.kind === "message" || (event.kind === "other" && event.type === "harness_stderr"))) {
-      const masked = JSON.parse(body) as { text?: unknown; data?: { text?: unknown } | null };
+      const masked = JSON.parse(body) as { text?: string; tools?: ToolCall[]; data?: { text?: unknown } | null };
+      const redactPayload = (original: unknown, scrubbed: unknown) => {
+        const serialized = JSON.stringify(original);
+        return serialized !== undefined && redactShort(serialized) !== serialized ? "[REDACTED]" : scrubbed;
+      };
       const redactText = (original: string, scrubbed: string) => {
         const short = redactShort(original);
         if (short === original || short === scrubbed) return scrubbed;
         return original === scrubbed ? short : "[REDACTED]";
       };
-      if (event.kind === "message" && typeof masked.text === "string")
-        masked.text = redactText(event.text, masked.text);
+      if (event.kind === "message") {
+        if (typeof masked.text === "string") masked.text = redactText(event.text, masked.text);
+        masked.tools?.forEach((tool, index) => {
+          const original = event.tools[index];
+          if (tool.input !== undefined) tool.input = redactPayload(original?.input, tool.input);
+          if (tool.result && original?.result)
+            tool.result.output = redactPayload(original.result.output, tool.result.output);
+        });
+      }
       if (event.kind === "other") {
         const data = masked.data;
         const original = (event.data as { text?: unknown } | null)?.text;

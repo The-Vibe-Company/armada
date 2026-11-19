@@ -31,7 +31,7 @@ function pinnedServer(definition: ConnectionDefinition) {
   }
 }
 const launcherEnvironment =
-  /^(?:PATH|HOME|USERPROFILE|PREFIX|DESTDIR|SHELL|ENV|BASH_ENV|BASHOPTS|SHELLOPTS|ZDOTDIR|COREPACK_.+|NODE(?:JS)?_.+|NPM_.+|NPX_.+|UV_.+|UVX_.+|PYTHON.*|PIP_.+|VIRTUAL_ENV.*|CONDA_.+|LD_.+|DYLD_.+|XDG_.+|GIT_.+|(?:ALL|HTTP|HTTPS|NO)_PROXY|SSL_CERT_.+|CURL_CA_BUNDLE|REQUESTS_CA_BUNDLE)$/i;
+  /^(?:PATH|HOME|USERPROFILE|PREFIX|DESTDIR|SHELL|ENV|BASH_ENV|BASHOPTS|SHELLOPTS|ZDOTDIR|COREPACK_.+|NODE(?:JS)?_.+|NPM_.+|NPX_.+|UV_.+|UVX_.+|PYTHON.*|PIP_.+|VIRTUAL_ENV.*|CONDA_.+|LD_.+|DYLD_.+|XDG_.+|GIT_.+|(?:ALL|HTTP|HTTPS|NO)_PROXY|SSL_CERT_.+|OPENSSL_.+|CURL_CA_BUNDLE|REQUESTS_CA_BUNDLE)$/i;
 
 async function boundStdioServer(
   definition: ConnectionDefinition & { value_enc: Uint8Array<ArrayBuffer> | null },

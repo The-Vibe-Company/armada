@@ -509,6 +509,20 @@ test("pinned stdio delivers its encrypted environment privately without a gatewa
       type: "harness_stderr",
       data: { text: `prefix${secret}suffix` },
     });
+    f.journal.append({
+      id: "mcp-tool-result",
+      at: 1,
+      kind: "message",
+      text: "",
+      partial: false,
+      tools: [
+        {
+          id: "tool-call",
+          name: "test-tool",
+          result: { output: [{ text: `prefix${secret}suffix` }], isError: false },
+        },
+      ],
+    });
     expect(lines.map((line) => JSON.parse(line))).toContainEqual(
       expect.objectContaining({ event: "provider_call", operation: "runtime.configureMcp", outcome: "ok" }),
     );
