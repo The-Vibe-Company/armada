@@ -7,7 +7,17 @@ import type { CheckpointIdentity, StoredPrompt } from "./protocol.ts";
 import { createRedactor, createShortSecretTextRedactor } from "./state.ts";
 
 const MAX_EVENT_BYTES = 262144;
-const CLAUDE_RESULT_OUTPUT_FIELDS = ["result", "errors", "structured_output"] as const;
+const CLAUDE_RESULT_PAYLOAD_FIELDS = [
+  "result",
+  "errors",
+  "structured_output",
+  "permission_denials",
+  "session_id",
+  "uuid",
+  "user_message_uuid",
+  "user_message_uuids",
+  "stop_reason",
+] as const;
 
 function isStructuredDiagnostic(type: string) {
   return (
@@ -206,12 +216,12 @@ export class Journal {
       };
       if (event.type === "result") {
         if (event.data && typeof event.data === "object" && scrubbed.data && typeof scrubbed.data === "object") {
-          for (const key of CLAUDE_RESULT_OUTPUT_FIELDS)
+          for (const key of CLAUDE_RESULT_PAYLOAD_FIELDS)
             maskPayloadField(event.data as Record<string, unknown>, scrubbed.data, key, maskField);
 
           const result = JSON.stringify(scrubbed);
           if (Buffer.byteLength(result) <= MAX_EVENT_BYTES) return result;
-          for (const key of CLAUDE_RESULT_OUTPUT_FIELDS) delete scrubbed.data[key];
+          for (const key of CLAUDE_RESULT_PAYLOAD_FIELDS) delete scrubbed.data[key];
           scrubbed.data.outputTruncated = true;
         }
       } else if (event.type === "model/rerouted") {
