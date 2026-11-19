@@ -16,6 +16,32 @@ import { preserveBeforeStop, recordStopDispatch } from "./work-preservation.ts";
 export const UNENROLLED_RESUME_STOP = "runtime_resume_unenrolled";
 const OPERATOR_CLEANUP_PREFIX = "Operator cleanup required:";
 
+/** Retire an unsuccessful resume under its original activity and generation fence. */
+export async function requestFailedRuntimeResumeStop(
+  tx: Sql,
+  sandboxId: string,
+  requestId: string,
+  generation: number | undefined,
+  retained: boolean,
+) {
+  const changed = await tx.query<{ status: "stopping" | "failed" }>(
+    `update public.sandboxes set
+    status=case when $4 and not application_secret_tainted then 'stopping'::public.sandbox_status else 'failed'::public.sandbox_status end,
+    transition_context=jsonb_build_object('actor','runtime_resume','code',
+      case when $4 and not application_secret_tainted then $5::text else 'restore_unconfirmed' end),
+    status_reason=case when $4 and not application_secret_tainted then null
+      else 'Runtime resume failed before a restored worker was confirmed; cleanup requested.' end,
+    stop_requested_at=now(),stop_generation=stop_generation+1,
+    activity_lease_id=null,activity_until=null,lifecycle_generation=lifecycle_generation+1,
+    reconcile_after=case when $4 and not application_secret_tainted then 'infinity'::timestamptz else now() end
+    where id=$1 and status='starting' and activity_lease_id=$2 and lifecycle_generation=$3
+      and stop_requested_at is null and deleted_at is null
+      and (reconcile_lease_until is null or reconcile_lease_until<now()) returning status`,
+    [sandboxId, requestId, generation, retained, UNENROLLED_RESUME_STOP],
+  );
+  return changed.rows[0]?.status;
+}
+
 /** One bounded batch in the existing server loop. SQL leases serialize replicas; generation
  * fencing prevents an old observation from publishing over a newly admitted resume. */
 export function createSandboxLifecycle(

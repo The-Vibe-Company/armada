@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { createMemoryAuthStore } from "@armada/auth";
 import { createSqlVaultStore, type Provider } from "@armada/core/server";
-import { sandbox as sdkSandbox } from "../../provider-boat/test/support.ts";
+import { fakeBoat, sandbox as sdkSandbox } from "../../provider-boat/test/support.ts";
 import { boatRuntimeResume } from "../src/boat-runtime-resume.ts";
 import { dispatchControlCommand } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
@@ -460,7 +460,25 @@ test.each([false, true])(
             ]),
       ]);
       expect(requests.some((path) => path.endsWith("/resume"))).toBe(!taint);
-      expect(f.starts).toHaveLength(1);
+      const store = createSqlData(f.sql)(f.caller).sandboxes;
+      expect((await store.get(f.row.id))?.status).toBe(taint ? "failed" : "stopping");
+      if (!taint) {
+        expect(requests.some((path) => path.endsWith("/stop"))).toBe(false);
+        const { provider } = fakeBoat({
+          body: { sandbox: sdkSandbox({ id: f.row.providerSandboxId, state: "archived", snapshotAvailable: true }) },
+        });
+        const worker = createSandboxLifecycle(f.sql, async () => provider);
+        expect(await worker.reconcileOne()).toBe(true);
+        expect((await store.get(f.row.id))?.status).toBe("stopped");
+        await expect(
+          createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => ({
+            start: (_signal, restore) => f.reboot(restore),
+            stop: async () => {},
+          }))(f.caller, input(f.row.id)),
+        ).resolves.toMatchObject({
+          sourceCheckpoint: { epoch: f.cp.runtime.epoch },
+        });
+      }
     } finally {
       network.mockRestore();
       await f.close();
