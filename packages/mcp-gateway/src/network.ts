@@ -44,7 +44,6 @@ function publicAddress(address: string) {
       (a === 203 && b === 0)
     );
   }
-  // Only globally routed unicast; mapped IPv4, local, multicast, documentation excluded.
   return (
     isIP(address) === 6 &&
     /^[23]/.test(address) &&
@@ -52,7 +51,6 @@ function publicAddress(address: string) {
     !address.toLowerCase().startsWith("2002:")
   );
 }
-/** HTTPS with DNS resolved once and the vetted address pinned to the socket. No redirects. */
 export const publicFetch: FetchLike = async (input, init) => {
   const req = new Request(input instanceof URL ? input.href : input, init);
   const url = endpoint(req.url);
@@ -94,8 +92,6 @@ export const publicFetch: FetchLike = async (input, init) => {
             ),
           );
         } catch (error) {
-          // Node's parser accepts statuses which Fetch Response rejects. Nothing
-          // from this asynchronous callback may escape into the control process.
           incoming.destroy();
           reject(
             error instanceof GatewayError
@@ -109,7 +105,6 @@ export const publicFetch: FetchLike = async (input, init) => {
     outgoing.end(body);
   });
 };
-/** All injected fetch implementations must preserve DNS pinning in production. */
 export function restrictedFetch(fetcher: FetchLike, allowed: (url: URL) => boolean) {
   const fetchRestricted: FetchLike = async (input, init) => {
     const req = new Request(input instanceof URL ? input.href : input, init);

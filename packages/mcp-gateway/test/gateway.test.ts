@@ -6,8 +6,6 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { createMcpGateway, createRemoteAuthResolver, type GatewayLease } from "../src/index.ts";
 
-// Owner boundary: real SDK client -> gateway -> independent SDK server. Protects
-// protocol payload/cursors and identity isolation, not a simulated success receipt.
 test("SDK bridge carries tools/resources/prompts and isolates sessions, policies and revocation", async () => {
   const servers: McpServer[] = [];
   const transports = new Map<string, WebStandardStreamableHTTPServerTransport>();
@@ -250,8 +248,6 @@ test("bridge rejects an upstream ignoring compatible version negotiation with an
   }
 });
 
-// Raw downstream POST-only client: unlike SDK Client, it never opens GET SSE.
-// The upstream is an actual SDK Server using request-scoped send helpers.
 test("POST-only concurrent calls retain progress, sampling, elicitation and reply correlation", async () => {
   const { Server } = await import("@modelcontextprotocol/sdk/server/index.js");
   const { CallToolRequestSchema, CreateMessageResultSchema, ElicitResultSchema, JSONRPCMessageSchema } = await import(
@@ -284,8 +280,6 @@ test("POST-only concurrent calls retain progress, sampling, elicitation and repl
         ElicitResultSchema,
       ),
     });
-    // Finish this finite POST stream after emitting requests, so a dropped event
-    // fails assertions rather than hanging the regression on a wall-clock timeout.
     await extra.sendNotification({ method: "notifications/progress", params: { progressToken: label, progress: 2 } });
     return { content: [{ type: "text", text: label }] };
   });
@@ -545,7 +539,6 @@ for (const disconnect of ["GET", "POST"] as const) {
       for (const release of f.releases) release();
       expect(await right.text()).toContain('"text":"right"');
       if (disconnect === "GET") expect(await left.text()).toContain('"text":"left"');
-      // Still the same live session, not a replacement/replayed initialize.
       const listed = await f.request("POST", undefined, { jsonrpc: "2.0", id: 103, method: "tools/list" });
       expect(listed.status).toBe(200);
       expect(await listed.text()).toContain('"name":"held"');
@@ -584,7 +577,6 @@ test("explicit DELETE still closes locally if revoked upstream credentials preve
 test("unresponsive upstream DELETE has a cleanup-owned abort deadline and cannot retain the local session", async () => {
   async function advance(milliseconds: number) {
     jest.advanceTimersByTime(milliseconds);
-    // Settle the deadline's promise continuations, never a real wall timer.
     await Promise.resolve();
     await Promise.resolve();
   }
@@ -630,8 +622,6 @@ test("unresponsive upstream DELETE has a cleanup-owned abort deadline and cannot
     expect(peerSignal?.aborted).toBe(true);
     expect(await held.text()).toBe("");
     expect(f.counts()).toEqual({ deletes: 1, retired: 0 });
-    // Even an injected peer ignoring AbortSignal and rejecting later is observed;
-    // the DELETE is neither replayed nor awaited past the local deadline.
     rejectPeer(Error("late remote failure"));
     await Promise.resolve();
     await Promise.resolve();

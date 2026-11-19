@@ -27,7 +27,6 @@ export interface OAuthServiceBinding {
   tokenFormat?: "slack-user";
 }
 export interface OAuthGrant {
-  /** Trusted registered-service policy, encrypted with the grant and pending state. */
   binding?: OAuthServiceBinding;
   issuer: string;
   resource: string;
@@ -49,11 +48,8 @@ export interface PendingAuthorization {
   sealed: string;
 }
 export interface OAuthStore {
-  /** Current connect/revoke generation, including when no grant exists. */
   generation(connectionId: string): Promise<string>;
-  /** Vault ciphertext only. Must enforce connection ownership separately. */
   readGrant(connectionId: string): Promise<StoredGrant | null>;
-  /** Atomic compare-and-swap, including a non-revoked connection check. null means initial creation only. */
   saveGrant(
     connectionId: string,
     expectedVersion: string | null,
@@ -61,12 +57,9 @@ export interface OAuthStore {
     generation: string,
     refreshOwner?: string,
   ): Promise<boolean>;
-  /** Exclusive cross-process refresh claim, fenced by grant version. Never reclaim an ambiguous claim automatically. */
   claimRefresh(connectionId: string, version: string, generation: string, refreshOwner: string): Promise<boolean>;
-  /** Atomic tombstone and grant deletion; must defeat outstanding CAS/claims and pending callbacks. */
   revoke(connectionId: string): Promise<void>;
   putPending(stateHash: string, record: PendingAuthorization): Promise<void>;
-  /** Atomic one-time consumption, bound to actor and expiry; failed checks MUST NOT return the record. */
   takePending(stateHash: string, actorId: string, now: number): Promise<PendingAuthorization | null>;
 }
 export interface SecretBox {
@@ -77,10 +70,8 @@ export interface OAuthBrokerOptions {
   store: OAuthStore;
   vault: SecretBox;
   redirectUri: string;
-  /** Trusted deployment option: HTTP is allowed only for a fixed loopback browser callback. */
   development?: boolean;
   clientMetadataUrl?: string;
-  /** Must check actor membership/ownership and disabled/revoked state. */
   authorize(actorId: string, connectionId: string): Promise<void>;
   fetch?: FetchLike;
   now?: () => number;
@@ -115,7 +106,6 @@ export async function discoverOAuthIssuer(issuer: string, fetcher: FetchLike = p
         continue;
       }
       if (!response.ok) throw new GatewayError("upstream", "Authorization metadata is unavailable.");
-      // SDK 1.32.2's OIDC discovery schema strips RFC 9207 and revocation fields.
       const schema = (candidate.type === "oauth" ? OAuthMetadataSchema : OpenIdProviderDiscoveryMetadataSchema).extend({
         authorization_response_iss_parameter_supported: z.boolean().optional(),
         revocation_endpoint: z.url().optional(),
@@ -214,7 +204,6 @@ export function createOAuthBroker(options: OAuthBrokerOptions) {
       client?: OAuthClientInformationMixed;
       scope?: string;
       resourceMetadataUrl?: string;
-      /** Trusted server policy only; never accept this from a public request. */
       binding?: OAuthServiceBinding;
     }) {
       await options.authorize(input.actorId, input.connectionId);
