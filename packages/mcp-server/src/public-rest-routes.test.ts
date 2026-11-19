@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { CONTROL_BODY_MAX_BYTES } from "@armada/core";
-import { PUBLIC_CONTROL_ROUTES } from "@armada/core/contract";
+import { operations as contractOperations, controlRouteKey, PUBLIC_CONTROL_ROUTES } from "@armada/core/contract";
 import {
   forwardControl,
   PARAMETERIZED_CONTROL_ROUTES,
@@ -162,6 +162,11 @@ test("every route the public proxy forwards is published or has a recorded reaso
   const publishedOperations = Object.entries(published.paths).flatMap(([path, verbs]) =>
     Object.keys(verbs).map((verb) => `${verb.toUpperCase()} ${path.replace(/^\/api\/v1\//, "")}`),
   );
+  const adminOperations = new Set(
+    Object.values(contractOperations)
+      .filter(({ audience }) => audience === "admin")
+      .map(({ route }) => `${route.method} ${controlRouteKey(route)}`),
+  );
   const publishedRoutes = publishedOperations.map((operation) => operation.split(" ")[1]!);
   const operations = [
     ...[...PRIVATE_POST_PATHS].map((path) => ({ method: "POST", path })),
@@ -194,7 +199,10 @@ test("every route the public proxy forwards is published or has a recorded reaso
   const forwarded = operations.map(({ path }) => path);
   expect(
     operations
-      .filter(({ method, path }) => !publishedOperations.includes(`${method} ${path}`) && !unpublishedReason(path))
+      .filter(({ method, path }) => {
+        const key = `${method} ${path}`;
+        return !publishedOperations.includes(key) && !adminOperations.has(key) && !unpublishedReason(path);
+      })
       .map(({ method, path }) => `${method} ${path}`),
   ).toEqual([]);
   expect(publishedRoutes.filter((route) => unpublishedReason(route) !== undefined)).toEqual([]);
