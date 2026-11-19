@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { hkdfSync } from "node:crypto";
 import {
   type CredentialReader,
@@ -289,6 +290,7 @@ export async function createModalIntegration(options: {
     const sql = modalReaperSql(options.sql);
     const vault = createSqlVaultStore(sql);
     const clients = new Map<string, ModalClient>();
+    const terminationDeadline = new AsyncLocalStorage<AbortSignal>();
     const lane = createModalReaper(
       sql,
       options.publicUrl,
@@ -318,14 +320,32 @@ export async function createModalIntegration(options: {
             grpcMiddleware: [
               async function* (call, options) {
                 const deadline = AbortSignal.timeout(10_000);
-                const signal = AbortSignal.any([shutdown, deadline, ...(options.signal ? [options.signal] : [])]);
+                const signal = AbortSignal.any([
+                  shutdown,
+                  deadline,
+                  ...[options.signal, terminationDeadline.getStore()].filter(
+                    (signal): signal is AbortSignal => signal !== undefined,
+                  ),
+                ]);
+                signal.throwIfAborted();
                 return yield* call.next(call.request, { ...options, signal });
               },
             ],
           });
           clients.set(slot, client);
         }
-        return createModalInventory(client, registration.app_name, binding, deploymentId);
+        const inventoryClient = client;
+        return {
+          ...createModalInventory(inventoryClient, registration.app_name, binding, deploymentId),
+          async openSandbox(machineId) {
+            const sandbox = await inventoryClient.sandboxes.fromId(machineId);
+            return {
+              terminate: () => sandbox.terminate(),
+              waitForTermination: (signal) =>
+                terminationDeadline.run(AbortSignal.any([signal, AbortSignal.timeout(10_000)]), () => sandbox.wait()),
+            };
+          },
+        };
       },
       {
         log,

@@ -9,9 +9,10 @@ interface OwnershipEvidence {
   canonical_binding: boolean | null;
   provider_binding: boolean | null;
   same_owner: boolean | null;
+  protected?: boolean;
 }
 
-export function createModalReaperOwnership(sql: Sql, binding: ModalBinding) {
+export function createModalReaperOwnership(sql: Sql, binding: ModalBinding, forDelete = false) {
   const { workspace, environment, appId } = binding;
   const lookupOwnership: ProviderReaperSource["lookupOwnership"] = async (machine, signal) => {
     signal.throwIfAborted();
@@ -26,11 +27,35 @@ export function createModalReaperOwnership(sql: Sql, binding: ModalBinding) {
                and c.context->'binding'->>'environment'=$4::text
                and c.context->'binding'->>'appId'=$5::text) as provider_binding,
               (m.org_id=s.org_id and m.owner_id=s.owner_id) as same_owner
+              ${
+                forDelete
+                  ? `,
+              (coalesce(m.lease_until >= statement_timestamp(), false)
+               or coalesce((m.record->>'golden') = 'true', false)
+               or exists (
+                 select 1 from public.sandboxes canonical
+                 where canonical.id=request.sandbox_id
+                    or (canonical.provider='modal' and canonical.provider_sandbox_id=inventory.physical_id)
+               )
+               or exists (
+                 select 1 from public.ordinary_launch_receipts receipt
+                 where receipt.id=request.sandbox_id and receipt.response is null and receipt.failure is null
+               )) as protected`
+                  : ""
+              }
        from (values ($1::text,$2::text)) as inventory(logical_id,physical_id)
        left join public.sandboxes s on s.provider='modal' and s.provider_sandbox_id=inventory.logical_id
        left join public.goldens g on g.id=s.golden_id
        left join public.modal_machines m on m.id=inventory.logical_id or m.record->>'physicalId'=inventory.physical_id
        left join public.modal_server_scopes c on c.scope=m.scope
+       ${
+         forDelete
+           ? `left join lateral (
+         select case when m.request_key ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+                     then m.request_key::uuid end as sandbox_id
+       ) request on true`
+           : ""
+       }
        limit 2`,
       [machine.sandboxId, machine.machineId, workspace, environment, appId],
     );
@@ -39,6 +64,7 @@ export function createModalReaperOwnership(sql: Sql, binding: ModalBinding) {
     if (
       rows.length !== 1 ||
       !evidence ||
+      evidence.protected ||
       (evidence.status && !evidence.canonical_binding) ||
       (evidence.logical_id !== null &&
         (evidence.logical_id !== machine.sandboxId ||
