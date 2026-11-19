@@ -805,11 +805,11 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
   const lifecycleUnits = cases.map(async (item, index) => {
     let passed = true;
     if (scopedAccess && item.harness === "codex") {
+      const { reasoningEffort: _baselineEffort, ...scriptedCase } = item;
       const scripted = {
-        ...item,
+        ...scriptedCase,
         modelAccountId: item.scriptedModelAccountId!.toLowerCase(),
         model: "scripted",
-        reasoningEffort: undefined,
       };
       const scopedLane = unit(index, "scoped");
       for (const mode of ["enabled", "no_option"] as const) {
