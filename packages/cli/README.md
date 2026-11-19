@@ -19,8 +19,9 @@ secrets. These paths select local diagnostics from recognised codes or fixed
 sentinels. A few older control servers use `not_found` for both an unknown
 route and a missing resource. The exact `Unknown route.` sentinel identifies
 the former. The transport also recognises the fixed provider-specific GitHub
-refresh refusal. Success receipts are validated before the CLI reports success.
-Control routes use JSON objects, including `{}` for empty acknowledgements.
+refresh refusal. Typed commands validate success receipts before reporting
+success. Their control routes use JSON objects, including `{}` for empty
+acknowledgements.
 
 The golden list normalizer handles older Boat responses whose sandbox and
 snapshot IDs predate the provider field.
