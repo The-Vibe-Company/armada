@@ -14,7 +14,7 @@ export interface ConnectionChoices {
   models: readonly ConnectionModelInfo[];
 }
 
-export interface PickerOption {
+interface PickerOption {
   /** The select value: a bare model ID, or a connection model encoded with its account. */
   value: string;
   model: string;
@@ -24,7 +24,7 @@ export interface PickerOption {
   isDefault: boolean;
 }
 
-export interface PickerGroup {
+interface PickerGroup {
   label: string;
   accountId: string | null;
   options: PickerOption[];
@@ -46,7 +46,7 @@ export function decodeModelValue(value: string): { model: string; accountId: str
   return { model: rest.slice(37), accountId };
 }
 
-export function priceText(input: number | string | null, output: number | string | null): string | null {
+function priceText(input: number | string | null, output: number | string | null): string | null {
   if (input === null || output === null) return null;
   return `$${input} in · $${output} out per M tokens`;
 }
