@@ -232,13 +232,12 @@ export function createRuntimeFollowup(
         const existing = await commands.result(caller.userId, found.id, commandId, admitted.epoch);
         if (existing.state === "missing") {
           await prepareMcp?.(caller, found.id, signal);
-          if (found.provider === "modal")
-            await restoreScopedAccess?.(
-              caller.userId,
-              found.id,
-              admitted.epoch,
-              String(admitted.current.lifecycleGeneration),
-            );
+          await restoreScopedAccess?.(
+            caller.userId,
+            found.id,
+            admitted.epoch,
+            String(admitted.current.lifecycleGeneration),
+          );
         }
         const accepted = await submit(signal);
         try {
