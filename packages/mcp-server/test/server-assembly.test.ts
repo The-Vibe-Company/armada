@@ -20,7 +20,7 @@ test("server assembly preserves worker lane order and isolation", () => {
     accountTurns: passiveLane,
     langfuse: passiveLane,
     modal: { inventoryReaper: () => ({ ...passiveLane, isolatedSweep: true }) },
-  } as ServerServices;
+  } as unknown as ServerServices;
 
   expect(assembleServer(services).planWorkers().description).toMatchInlineSnapshot(`
     {
