@@ -851,6 +851,7 @@ const refusalOrders = [
   "ACK transaction rollback",
   "missing ACK after daemon restart",
   "failed retained-stop ACK",
+  "failed retained-stop ACK after early resume failure",
 ];
 
 test.each(refusalOrders)(
@@ -914,7 +915,8 @@ test.each(refusalOrders)(
       );
 
     if (order === "ACK first") await ack(job.requestId);
-    const failedAckFirst = order === "failed ACK first";
+    const failedAckFirst =
+      order === "failed ACK first" || order === "failed retained-stop ACK after early resume failure";
     const failWrite = (fragment: string) =>
       ({
         query: sql.query,
@@ -1072,7 +1074,7 @@ test.each(refusalOrders)(
     const stop = await hosts.poll(f.hostToken, f.installationId);
     if (stop?.operation !== "stop") throw Error("missing refusal stop");
     expect(stop.request).toEqual(job.request);
-    const failedRetainedStop = order === "failed retained-stop ACK";
+    const failedRetainedStop = order.startsWith("failed retained-stop ACK");
     const reportRetained = (requestId: string, store = hosts) =>
       createDockerHostRoutes(store, async () => ({ ok: false }))(
         new Request("https://armada.example/api/docker-host/results", {
@@ -1115,7 +1117,7 @@ test.each(refusalOrders)(
     if (nextJob?.operation !== "resume") throw Error("missing replacement resume");
     if (order === "previous server failed ACK" || failedAckFirst || missingAck) {
       await ack(job.requestId, "failed");
-      await ack(stop.requestId);
+      await ack(stop.requestId, failedRetainedStop ? "failed" : "completed");
       expect((await reservations.get(f.actor, id)).status).toBe("starting");
       expect((await service.resume(f.actor, id, resume.requestId)).state).toBe("failed");
     }

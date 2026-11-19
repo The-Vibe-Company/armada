@@ -137,8 +137,6 @@ export async function confirmRefusedDockerResumeRetention(
   generation: string | number,
   requestId: string,
 ) {
-  // The refusal handoff uses now() for its stop intent and the mailbox insert.
-  // Match the first stop after the refused resume, from that same transaction.
   await tx.query(
     `update public.sandboxes s set status='stopped',stopped_at=now()
      where s.id=$1 and s.lifecycle_generation=$2 and s.provider='docker' and s.status='stopping'
