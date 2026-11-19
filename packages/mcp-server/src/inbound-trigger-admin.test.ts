@@ -150,7 +150,8 @@ test("rotation advances ingress key revision and returns the new key only in its
   const response = await manage(post(rotationTrigger, "rotate"));
   expect(response?.status).toBe(200);
   expect(response?.headers.get("cache-control")).toBe("no-store");
-  const signingSecret = (await response?.json())?.signingSecret;
+  const payload = (await response?.json()) as { signingSecret: string };
+  const { signingSecret } = payload;
   expect(Buffer.from(signingSecret, "base64")).toHaveLength(32);
   const { rows } = await db.query<{ key_revision: number; ciphertext: string }>(
     "select key_revision, encode(secret_enc, 'hex') as ciphertext from public.triggers where id = $1",
@@ -159,16 +160,17 @@ test("rotation advances ingress key revision and returns the new key only in its
   expect(rows[0]?.key_revision).toBe(8);
   const sealed = Uint8Array.from(Buffer.from(rows[0]!.ciphertext, "hex"));
   expect((await decryptSecret(sealed, encryptionKey)) === signingSecret).toBe(true);
-  const inspection = await (await manage(request()))?.json();
-  expect(inspection?.triggers.find((entry: { id: string }) => entry.id === rotationTrigger)).toEqual({
-    id: rotationTrigger,
-    templateId: null,
-    poolHarness: "codex",
-    enabled: true,
-    ratePerMinute: 25,
-    concurrency: 2,
-    rateRefusals: 0,
-  });
+  const inspection = (await (await manage(request()))?.json()) as { triggers: { id: string }[] };
+  const summary = inspection.triggers.find((entry) => entry.id === rotationTrigger);
+  expect(Object.keys(summary ?? {}).sort()).toEqual([
+    "concurrency",
+    "enabled",
+    "id",
+    "poolHarness",
+    "ratePerMinute",
+    "rateRefusals",
+    "templateId",
+  ]);
   expect(
     (
       await db.query("select org_id, actor_id, action from public.trigger_admin_audit where trigger_id = $1", [

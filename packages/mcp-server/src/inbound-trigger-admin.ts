@@ -46,8 +46,6 @@ async function mutate(
     }
   }
 
-  // Lock current membership until the trigger change and its audit row commit.
-  // Updating the trigger row serializes with ingress admission.
   const { rows } = await sql.query<{ id: string }>(
     `with admin as materialized (
        select 1 from public.members where org_id = $1 and user_id = $2 and role = 'admin' for share
@@ -67,7 +65,6 @@ async function mutate(
     [org, actor, triggerId, sealed, action],
   );
   if (!rows.length) {
-    // Idempotent disable still succeeds for an already-disabled trigger in scope.
     if (action === "disable") {
       const { rows: disabled } = await sql.query(
         `select 1 from public.triggers t
