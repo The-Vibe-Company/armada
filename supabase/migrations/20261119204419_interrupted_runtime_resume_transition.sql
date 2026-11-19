@@ -227,7 +227,13 @@ begin
       end end,
       deleted_at = case when docker_cleanup then coalesce(s.deleted_at, now()) when p_to_state = 'deleted' then clock_timestamp() else s.deleted_at end,
       transition_context = jsonb_build_object('actor', p_actor, 'code', p_code)
-  where s.id = p_id;
+  where s.id = p_id and (not interrupted_resume or exists (
+    select 1 from public.members m where m.org_id = s.org_id and m.user_id = s.owner_id
+  ));
+  if not found then
+    return query select false, null::bigint;
+    return;
+  end if;
 
   for effect in select * from jsonb_to_recordset(p_effects) as item(
     kind text, idem_key text, max_attempts integer, deadline_at timestamptz, payload_enc bytea

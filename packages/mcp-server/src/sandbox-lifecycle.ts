@@ -614,7 +614,6 @@ async function recoverInterruptedRuntimeResume(
        and s.status='starting'
        and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>clock_timestamp()
        and not s.application_secret_tainted
-       and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id)
        and r.phase='dispatched' and r.receipt is null
        and e.runtime_hash is null
        and (
