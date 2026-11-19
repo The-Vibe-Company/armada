@@ -6,6 +6,7 @@ import { createSqlData } from "../src/data.ts";
 import { createDockerBootstrapService } from "../src/docker-bootstrap-service.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
 import { createDockerRuntimeLifecycle, DockerRuntimeDenied } from "../src/docker-runtime-lifecycle.ts";
+import { createDockerSandboxControls } from "../src/docker-sandbox-controls.ts";
 import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
@@ -203,6 +204,18 @@ test("normal launch preparation cannot be bypassed by private readiness or an un
   await complete(session, { ready: true, generation: session.epoch });
   await service.ready(f.actor, f.sandbox.id, healthId);
   expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("ready");
+  const controls = createDockerSandboxControls(sql, key);
+  const caller = {
+    userId: f.actor.userId,
+    orgs: [{ orgId: f.actor.orgId, role: "member" as const }],
+    via: "service" as const,
+  };
+  expect(await controls.invoke(caller, "status", { id: f.sandbox.id })).toMatchObject({
+    result: { status: "starting" },
+  });
+  await expect(controls.invoke(caller, "exec", { id: f.sandbox.id, command: "pwd" })).rejects.toThrow(
+    "Docker sandbox must be running.",
+  );
   await denied(service.prompt(f.actor, f.sandbox.id, input));
   await denied(service.prompt(f.actor, f.sandbox.id, input, String(BigInt(session.epoch) + 1n)));
   await denied(service.prompt(f.actor, f.sandbox.id, { ...input, requestId: randomUUID() }, session.epoch));
