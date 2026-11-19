@@ -805,7 +805,7 @@ function createToolServer(
         ...stopTool,
         description:
           `${stopTool.description} Set turn to interrupt the current turn and keep the machine up. ` +
-          "Set after to wait for settlement and stop only if still idle. A timedOut receipt leaves compute up.",
+          "Set after to wait for settlement and stop only if still idle. On timeout this call does not request a stop.",
         input: z.strictObject({
           ...stopTool.input,
           turn: z.boolean().optional().describe("Interrupt the turn without stopping the sandbox."),
