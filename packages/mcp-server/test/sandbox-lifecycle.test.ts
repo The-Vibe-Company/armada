@@ -918,15 +918,17 @@ test.each(["queued", "dispatching", "acknowledged"])("idle-only stop preserves %
     via: "service",
   }).sandboxes;
   const id = crypto.randomUUID();
+  const runtime = state === "acknowledged";
+  const status = runtime ? "running" : "ready";
   await db.query(
-    `insert into sandboxes (id, provider, provider_sandbox_id, golden_id, org_id, owner_id, harness, status)
-     select $1,'boat','idle-stop-race',id,$2,$3,'claude','ready' from goldens where name='shared'`,
-    [id, people.org, people.owner],
+    `insert into sandboxes (id, provider, provider_sandbox_id, golden_id, org_id, owner_id, harness, status, boat_runtime)
+     select $1,'boat','idle-stop-race',id,$2,$3,'claude',$4::sandbox_status,$5 from goldens where name='shared'`,
+    [id, people.org, people.owner, status, runtime],
   );
   const idle = await store.get(id);
   if (!idle) throw Error("missing sandbox");
   const promptId = crypto.randomUUID();
-  if (state === "acknowledged") {
+  if (runtime) {
     await db.query(
       `insert into public.runtime_enrolments(sandbox_id,lifecycle_generation,epoch,runtime_hash)
        select id,lifecycle_generation,1,encode(sha256(uuid_send(id)),'hex')
@@ -949,20 +951,23 @@ test.each(["queued", "dispatching", "acknowledged"])("idle-only stop preserves %
   }
 
   const admission = { status: "stopping", stopRequested: true, onlyIfIdle: true } as const;
-  const stop = (patch: typeof admission | Omit<typeof admission, "onlyIfIdle">) =>
-    sandboxActivity(store, idle, patch, async () => ({
+  const stop = (patch: typeof admission | Omit<typeof admission, "onlyIfIdle">, sandbox = idle) =>
+    sandboxActivity(store, sandbox, patch, async () => ({
       result: "stopped",
       patch: { status: "stopped", stoppedAt: new Date().toISOString(), stopRequested: false },
     }));
 
   await expect(stop(admission)).rejects.toThrow("The sandbox is busy");
-  expect(await store.get(id)).toMatchObject({ status: "ready", lifecycleGeneration: idle.lifecycleGeneration });
-  if (state === "acknowledged") {
+  expect(await store.get(id)).toMatchObject({ status, lifecycleGeneration: idle.lifecycleGeneration });
+  if (runtime) {
     await db.query("insert into public.runtime_idle_turns(sandbox_id,prompt_id,settled) values($1,$2,true)", [
       id,
       promptId,
     ]);
-    expect(await stop(admission)).toBe("stopped");
+    await db.query("update public.sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [id]);
+    await expect(stop(admission)).rejects.toMatchObject({ code: "sandbox_not_ready" });
+    const current = (await store.get(id))!;
+    expect(await stop(admission, current)).toBe("stopped");
     return;
   }
   expect((await db.query("select state from account_turn_queue where sandbox_id=$1", [id])).rows).toEqual([{ state }]);
