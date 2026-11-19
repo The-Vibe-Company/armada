@@ -37,6 +37,7 @@ interface SandboxTransition {
   actor:
     | "resume_admission"
     | "runtime_enrolment"
+    | "runtime_resume"
     | "runtime_observation"
     | "runtime_turn"
     | "owner"
@@ -629,38 +630,50 @@ async function recoverInterruptedRuntimeResume(
   generation: number,
   observedProviderId: string | null,
 ) {
-  const result = await tx.query(
-    `with handoff as (
-      update public.sandboxes s set status='stopping',
-        transition_context=jsonb_build_object('actor','runtime_resume','code',$4::text),
-        stop_requested_at=clock_timestamp(),stop_generation=s.stop_generation+1,status_reason=null,
-        activity_lease_id=null,activity_until=null,lifecycle_generation=s.lifecycle_generation+1,
-        reconcile_after='infinity'::timestamptz,reconcile_lease=null,reconcile_lease_until=null
-      from public.runtime_resumes r
-      join public.runtime_enrolments e on e.sandbox_id=r.sandbox_id and e.epoch=r.source_epoch
-      join public.runtime_checkpoints c on c.sandbox_id=r.sandbox_id and c.epoch=r.source_epoch
-      where s.id=$1 and s.reconcile_lease=$2 and s.lifecycle_generation=$3
-        and s.reconcile_lease_until>clock_timestamp() and s.activity_until<=clock_timestamp()
-        and s.status='starting'
-        and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>clock_timestamp()
-        and not s.application_secret_tainted
-        and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id)
-        and r.sandbox_id=s.id and r.request_id=s.activity_lease_id and r.phase='dispatched' and r.receipt is null
-        and e.runtime_hash is null
-        and (
-          (s.provider='boat' and s.boat_runtime and (s.provider_sandbox_id=$5::text or r.activated_at is not null
-            or (e.enrolment_hash is not null and e.lifecycle_generation=$3)))
-          or (s.provider='modal' and s.runtime_transport='dialout' and r.activated_at is not null)
-        )
-        and c.watermark=r.watermark
-        and c.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=s.id)
-      returning s.id,r.request_id
-    )
-    update public.runtime_resumes r set phase='abandoned' from handoff
-    where r.sandbox_id=handoff.id and r.request_id=handoff.request_id returning r.request_id`,
-    [sandboxId, lease, generation, UNENROLLED_RESUME_STOP, observedProviderId],
+  const {
+    rows: [resume],
+  } = await tx.query<{ request_id: string }>(
+    `select r.request_id from public.sandboxes s
+     join public.runtime_resumes r on r.sandbox_id=s.id and r.request_id=s.activity_lease_id
+     join public.runtime_enrolments e on e.sandbox_id=r.sandbox_id and e.epoch=r.source_epoch
+     join public.runtime_checkpoints c on c.sandbox_id=r.sandbox_id and c.epoch=r.source_epoch
+     where s.id=$1 and s.reconcile_lease=$2 and s.lifecycle_generation=$3
+       and s.reconcile_lease_until>clock_timestamp() and s.activity_until<=clock_timestamp()
+       and s.status='starting'
+       and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>clock_timestamp()
+       and not s.application_secret_tainted
+       and r.phase='dispatched' and r.receipt is null
+       and e.runtime_hash is null
+       and (
+         (s.provider='boat' and s.boat_runtime and (s.provider_sandbox_id=$4::text or r.activated_at is not null
+           or (e.enrolment_hash is not null and e.lifecycle_generation=$3)))
+         or (s.provider='modal' and s.runtime_transport='dialout' and r.activated_at is not null)
+       )
+       and c.watermark=r.watermark
+       and c.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=s.id)`,
+    [sandboxId, lease, generation, observedProviderId],
   );
-  return result.rows.length > 0;
+  if (!resume) return false;
+
+  const transition = await transitionSandbox(tx, {
+    sandboxId,
+    expectedGeneration: generation,
+    fromStates: ["starting"],
+    toState: "stopping",
+    actor: "runtime_resume",
+    code: UNENROLLED_RESUME_STOP,
+    effects: [],
+    settlement: { lease, statusReason: null, stopRequestedAt: null, stoppedAt: null },
+  });
+  if (transition.kind === "conflict") return false;
+
+  const abandoned = await tx.query(
+    `update public.runtime_resumes set phase='abandoned'
+     where sandbox_id=$1 and request_id=$2 and phase='dispatched' and receipt is null returning request_id`,
+    [sandboxId, resume.request_id],
+  );
+  if (!abandoned.rows.length) throw Error("Interrupted runtime resume changed before abandonment.");
+  return true;
 }
 
 /** One bounded batch in the existing server loop. SQL leases serialize replicas; generation

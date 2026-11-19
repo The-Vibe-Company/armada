@@ -15,10 +15,10 @@ import { createRuntimeHistory } from "../src/runtime-history.ts";
 import { createRuntimeResume } from "../src/runtime-resume.ts";
 import { createRuntimeServing } from "../src/runtime-serving.ts";
 import { createSandboxArmadaAccess } from "../src/sandbox-armada-access.ts";
-import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
+import { createSandboxLifecycle, transitionSandbox } from "../src/sandbox-lifecycle.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { runtimeFixture, scopedRuntimeFixture } from "./runtime.fixture.ts";
-import { ENCRYPTION_KEY, PUBLIC_URL } from "./support.ts";
+import { bunLikeSql, ENCRYPTION_KEY, PUBLIC_URL } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
 
@@ -544,57 +544,141 @@ test.each(interruptedResumeProofs)(
   },
 );
 
-test("rollback of an observed Boat archive handoff remains recoverable", async () => {
-  const f = await stopped();
-  try {
-    const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => ({
-      async start() {
-        await f.db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [f.row.id]);
-        throw Error("Request owner exited before activation");
-      },
-      async stop() {
-        throw Error("Request owner has no cleanup authority");
-      },
-    }));
-    await expect(resume(f.caller, input(f.row.id))).rejects.toMatchObject({ code: "conflict" });
-    const store = createSqlData(f.sql)(f.caller).sandboxes;
-    expect((await store.get(f.row.id))?.status).toBe("starting");
+test.each(["transition", "abandonment", "pre-commit"])(
+  "an interrupted resume rolls back when %s fails",
+  async (fault) => {
+    const f = await stopped();
+    try {
+      const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => ({
+        async start() {
+          await f.db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [f.row.id]);
+          throw Error("Request owner exited before activation");
+        },
+        async stop() {
+          throw Error("Request owner has no cleanup authority");
+        },
+      }));
+      await expect(resume(f.caller, input(f.row.id))).rejects.toMatchObject({ code: "conflict" });
+      const store = createSqlData(f.sql)(f.caller).sandboxes;
+      expect((await store.get(f.row.id))?.status).toBe("starting");
 
-    const archive = { id: f.row.providerSandboxId, snapshotAvailable: false };
-    const { provider, requests } = fakeBoat(
-      { body: { sandbox: retainedSandbox(archive) } },
-      { body: { sandbox: retainedSandbox(archive) } },
-      { body: { sandbox: retainedSandbox({ ...archive, snapshotAvailable: true }) } },
-    );
-    let archiveHandoffs = 0;
-    const rollback = Error("Injected handoff rollback");
-    const workerSql: typeof f.sql = {
-      ...f.sql,
-      transaction: (work) =>
-        f.sql.transaction!(async (tx) => {
-          const result = await work(tx);
-          if (result === true && ++archiveHandoffs === 1) throw rollback;
-          return result;
+      const archive = { id: f.row.providerSandboxId, snapshotAvailable: false };
+      const { provider, requests } = fakeBoat(
+        { body: { sandbox: retainedSandbox(archive) } },
+        { body: { sandbox: retainedSandbox(archive) } },
+        { body: { sandbox: retainedSandbox({ ...archive, snapshotAvailable: true }) } },
+      );
+      const rollback = Error("Injected handoff rollback");
+      let injectFault = true;
+      const faultSql = bunLikeSql(f.db, (statement) => {
+        const isFaultPoint =
+          (fault === "transition" && statement.includes("from public.sandbox_transition(")) ||
+          (fault === "abandonment" && statement.startsWith("update public.runtime_resumes set phase='abandoned'"));
+        if (injectFault && isFaultPoint) {
+          injectFault = false;
+          throw rollback;
+        }
+      });
+      const workerSql: typeof f.sql = {
+        ...faultSql,
+        transaction: (work) =>
+          faultSql.transaction!(async (tx) => {
+            const result = await work(tx);
+            if (injectFault && fault === "pre-commit" && result === true) {
+              injectFault = false;
+              throw rollback;
+            }
+            return result;
+          }),
+      };
+      const readHandoff = async () =>
+        (
+          await f.db.query<{ phase: string; generation: number; stop_generation: number; edges: number }>(
+            `select r.phase, s.lifecycle_generation::int as generation, s.stop_generation::int as stop_generation,
+            (select count(*)::int from public.sandbox_transitions t where t.sandbox_id=s.id
+              and t.from_status='starting' and t.to_status='stopping'
+              and t.actor='runtime_resume' and t.code='runtime_resume_unenrolled') as edges
+           from public.runtime_resumes r join public.sandboxes s on s.id=r.sandbox_id where s.id=$1`,
+            [f.row.id],
+          )
+        ).rows[0];
+      const before = await readHandoff();
+      if (!before) throw Error("Missing dispatched resume.");
+      expect(before).toMatchObject({ phase: "dispatched", edges: 0 });
+      const worker = createSandboxLifecycle(workerSql, async () => provider);
+
+      await expect(worker.reconcileOne()).rejects.toBe(rollback);
+      expect(await readHandoff()).toEqual(before);
+      expect((await store.get(f.row.id))?.status).toBe("starting");
+      expect(await worker.reconcileOne()).toBe(false);
+
+      await f.db.query("update sandboxes set reconcile_lease_until=now()-interval '1 second' where id=$1", [f.row.id]);
+      expect(await worker.reconcileOne()).toBe(true);
+      expect((await store.get(f.row.id))?.status).toBe("stopping");
+      expect(await readHandoff()).toEqual({
+        phase: "abandoned",
+        generation: before.generation + 1,
+        stop_generation: before.stop_generation + 1,
+        edges: 1,
+      });
+
+      expect(await worker.reconcileOne()).toBe(true);
+      expect((await store.get(f.row.id))?.status).toBe("stopped");
+      expect(requests.map(({ method }) => method)).toEqual(["GET", "GET", "GET"]);
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test.each(["expired reconcile lease", "removed owner membership"])(
+  "interrupted resume stop cannot commit with %s",
+  async (conflict) => {
+    const f = await stopped();
+    try {
+      const lease = crypto.randomUUID();
+      const {
+        rows: [starting],
+      } = await f.db.query<{ generation: number }>(
+        `update public.sandboxes set status='starting', stopped_at=null,
+         activity_lease_id=$2, activity_until=now()-interval '1 minute',
+         reconcile_lease=$2, reconcile_lease_until=now()+$3::interval
+       where id=$1 returning lifecycle_generation::int as generation`,
+        [f.row.id, lease, conflict === "expired reconcile lease" ? "-1 minute" : "1 minute"],
+      );
+      if (!starting) throw Error("Missing starting sandbox.");
+      if (conflict === "removed owner membership") {
+        const removed = await f.db.query(
+          `delete from public.members m using public.sandboxes s
+           where s.id=$1 and m.org_id=s.org_id and m.user_id=s.owner_id returning m.user_id`,
+          [f.row.id],
+        );
+        expect(removed.rows).toEqual([{ user_id: f.caller.userId }]);
+      }
+      expect(
+        await transitionSandbox(f.sql, {
+          sandboxId: f.row.id,
+          expectedGeneration: starting.generation,
+          fromStates: ["starting"],
+          toState: "stopping",
+          actor: "runtime_resume",
+          code: "runtime_resume_unenrolled",
+          effects: [],
+          settlement: { lease, statusReason: null, stopRequestedAt: null, stoppedAt: null },
         }),
-    };
-    const worker = createSandboxLifecycle(workerSql, async () => provider);
-
-    await expect(worker.reconcileOne()).rejects.toBe(rollback);
-    expect(archiveHandoffs).toBe(1);
-    expect((await store.get(f.row.id))?.status).toBe("starting");
-    expect(await worker.reconcileOne()).toBe(false);
-
-    await f.db.query("update sandboxes set reconcile_lease_until=now()-interval '1 second' where id=$1", [f.row.id]);
-    expect(await worker.reconcileOne()).toBe(true);
-    expect((await store.get(f.row.id))?.status).toBe("stopping");
-
-    expect(await worker.reconcileOne()).toBe(true);
-    expect((await store.get(f.row.id))?.status).toBe("stopped");
-    expect(requests.map(({ method }) => method)).toEqual(["GET", "GET", "GET"]);
-  } finally {
-    await f.close();
-  }
-});
+      ).toEqual({ kind: "conflict" });
+      expect(
+        (
+          await f.db.query("select status, lifecycle_generation::int as generation from public.sandboxes where id=$1", [
+            f.row.id,
+          ])
+        ).rows[0],
+      ).toEqual({ status: "starting", generation: starting.generation });
+    } finally {
+      await f.close();
+    }
+  },
+);
 
 test.each(["request catch", "expired activity lease", "activation before ticket"])(
   "an unenrolled Modal replacement recovers through %s and can enrol the current artifact",
