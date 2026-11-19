@@ -108,14 +108,11 @@ export async function extendSandbox(_previous: ActionResult | null, data: FormDa
   if (target.sandbox.provider === "docker") return fail("The time limit cannot be extended on a Docker host.");
   const expires = Date.parse(target.sandbox.expires_at ?? "");
   if (!Number.isFinite(expires)) return fail("This sandbox has no recorded deadline to extend.");
-  const viewer = await requireViewer();
-  const url = mcpUrl();
-  if (!url || !viewer.token) return fail("The Armada server is not configured.");
   const ttl = Math.ceil((Math.max(Date.now(), expires) - Date.now()) / 1000) + 3600;
   try {
-    await createGateway({ url, token: viewer.token }).call("extend", { id, ttl_seconds: ttl });
+    await target.gateway.extend(id, ttl);
   } catch (error) {
-    if (error instanceof GatewayError) return fail(error.message);
+    if (error instanceof ControlError) return fail(error.message);
     throw error;
   }
   revalidatePath(`/sandboxes/${id}`);
@@ -158,7 +155,7 @@ export async function deleteSandbox(_previous: ActionResult | null, data: FormDa
   try {
     await target.gateway.delete(id);
   } catch (error) {
-    if (error instanceof GatewayError) return fail(lifecycleFailure("delete", error));
+    if (error instanceof ControlError) return fail(lifecycleFailure("delete", error));
     throw error;
   }
   revalidatePath("/sandboxes");

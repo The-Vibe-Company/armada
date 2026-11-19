@@ -1,5 +1,5 @@
 import { isRecord, VERSION } from "@armada/core";
-import { controlFallback } from "./control.ts";
+import { type ControlClient, ControlError, controlFallback } from "./control.ts";
 import { describeFailure } from "./failure.ts";
 import type { SendArgs } from "./model-choice.ts";
 
@@ -150,10 +150,10 @@ async function readMessage(response: Response, id?: number): Promise<Record<stri
 }
 
 /**
- * What the dashboard asks of the server, by the tool names of the spec. `send` opens a new turn or redirects
+ * Dashboard sandbox operations across MCP and REST. `send` opens a new turn or redirects
  * the running one with `steer`. `stop` with `turn` interrupts it. The server applies the harness's capabilities.
  */
-export function sandboxGateway(gateway: Gateway) {
+export function sandboxGateway(gateway: Gateway, control: ControlClient) {
   return {
     logs: (
       sandboxId: string,
@@ -163,7 +163,31 @@ export function sandboxGateway(gateway: Gateway) {
     status: (sandboxId: string) => gateway.call("status", { id: sandboxId }),
     stop: (sandboxId: string) => gateway.call("stop", { id: sandboxId }),
     /** Permanent; the server refuses it unless the sandbox is stopped or failed. */
-    delete: (sandboxId: string) => gateway.call("delete", { id: sandboxId }),
+    async delete(sandboxId: string) {
+      const receipt = await control.post("sandbox/delete", { id: sandboxId });
+      if (!isRecord(receipt) || receipt.id !== sandboxId.toLowerCase() || receipt.status !== "deleted") {
+        throw new ControlError("The delete request could not be confirmed.", undefined, undefined, {
+          outcomeUnknown: true,
+        });
+      }
+    },
+    async extend(sandboxId: string, ttlSeconds: number) {
+      const receipt = await control.post("sandbox/extend", { id: sandboxId, ttlSeconds });
+      if (
+        !isRecord(receipt) ||
+        receipt.id !== sandboxId.toLowerCase() ||
+        typeof receipt.expiresAt !== "string" ||
+        !Number.isFinite(Date.parse(receipt.expiresAt)) ||
+        receipt.ttlSeconds !== ttlSeconds
+      ) {
+        throw new ControlError(
+          "The extension could not be confirmed. Reload the sandbox to check its deadline before trying again.",
+          undefined,
+          undefined,
+          { outcomeUnknown: true },
+        );
+      }
+    },
     /** Runtime-backed sends require a stable requestId. Native accepts the field for compatibility only, without deduplication. */
     send: (sandboxId: string, prompt: string, override: SendArgs = {}, requestId?: string) =>
       gateway.call("send", {
