@@ -701,60 +701,62 @@ export async function dispatchControlCommand(
     const pinned = body.id === undefined ? undefined : launchOperation.input.body.safeParse(body);
     const template = pinned?.success && "id" in pinned.data ? pinned.data : undefined;
     if (pinned && !template) throw new VaultError("invalid", "Invalid pinned Modal launch request.");
-    if (!pinned) {
-      scopedOrg(caller, optional(body, "org"));
-      if (!GOLDEN_LAUNCH_REQUEST.safeParse(body).success)
-        throw new VaultError("invalid", "Invalid golden launch request. See the sandbox/launch request schema.");
-    }
-    const templateOrg = template ? scopedOrg(caller, template.org) : undefined;
 
-    if (body.runtimeTransport === "dialout") {
+    if (template) {
+      const templateOrg = scopedOrg(caller, template.org);
       if (!options.modalRuntimeLaunch || !options.modalRuntimeHostFor)
         throw new VaultError("unavailable", "Modal runtime staging opt-in is disabled.");
-      if (!template && body.prompt !== undefined) required(body, "prompt");
-      if (body.prompt === undefined && !options.runtimeSend)
+      if (template.prompt === undefined && !options.runtimeSend)
         throw new VaultError("unavailable", "Modal runtime idle first send is unavailable.");
-      if (template) {
-        if (!options.templates) throw new VaultError("unavailable", "Templates unavailable.");
-        const base = templateRuntime(options, caller);
-        if (!base) throw new VaultError("unavailable", "Template launching unavailable.");
-        const { provider, harness, runtimeVersion: _runtimeVersion, runtimeTransport, org: _org, ...input } = template;
-        const organization = await resolveOrg(store, userId, templateOrg);
-        return launchTemplate(
-          options.templates,
-          caller,
-          { ...input, org: organization.id },
-          {
-            validateDefinition: (definition) => {
-              if (definition.provider !== provider || definition.harness !== harness)
-                throw new VaultError("invalid", "Modal runtime templates require the selected Modal harness.");
-            },
-            stores: {
-              goldens: base.stores.goldens,
-              sandboxes: base.stores.sandboxes,
-              credentials: launchCredentials(
-                options.store,
-                options.encryptionKey,
-                undefined,
-                options.modelAuth,
-                options.github ? { ...options.github, store: options.store } : undefined,
-              ),
-              ...(options.runtimeMcp ? { connections: options.runtimeMcp.connections } : {}),
-            },
-            provider: (golden) => options.modalRuntimeHostFor!({ ...golden, runtimeTransport }, caller),
-            options: { ...base.options, runtime: options.modalRuntimeLaunch },
+      if (!options.templates) throw new VaultError("unavailable", "Templates unavailable.");
+      const base = templateRuntime(options, caller);
+      if (!base) throw new VaultError("unavailable", "Template launching unavailable.");
+      const { provider, harness, runtimeVersion: _runtimeVersion, runtimeTransport, org: _org, ...input } = template;
+      const organization = await resolveOrg(store, userId, templateOrg);
+      return launchTemplate(
+        options.templates,
+        caller,
+        { ...input, org: organization.id },
+        {
+          validateDefinition: (definition) => {
+            if (definition.provider !== provider || definition.harness !== harness)
+              throw new VaultError("invalid", "Modal runtime templates require the selected Modal harness.");
           },
-          "template_rest",
-        );
-      }
-      return canonicalLaunchResponse(await launchRoute(options, caller, body, "modal"));
+          stores: {
+            goldens: base.stores.goldens,
+            sandboxes: base.stores.sandboxes,
+            credentials: launchCredentials(
+              options.store,
+              options.encryptionKey,
+              undefined,
+              options.modelAuth,
+              options.github ? { ...options.github, store: options.store } : undefined,
+            ),
+            ...(options.runtimeMcp ? { connections: options.runtimeMcp.connections } : {}),
+          },
+          provider: (golden) => options.modalRuntimeHostFor!({ ...golden, runtimeTransport }, caller),
+          options: { ...base.options, runtime: options.modalRuntimeLaunch },
+        },
+        "template_rest",
+      );
     }
-    if (body.boatRuntime === true) {
+    scopedOrg(caller, optional(body, "org"));
+    const golden = GOLDEN_LAUNCH_REQUEST.safeParse(body);
+    if (!golden.success)
+      throw new VaultError("invalid", "Invalid golden launch request. See the sandbox/launch request schema.");
+    if ("runtimeTransport" in golden.data) {
+      if (!options.modalRuntimeLaunch || !options.modalRuntimeHostFor)
+        throw new VaultError("unavailable", "Modal runtime staging opt-in is disabled.");
+      if (golden.data.prompt === undefined && !options.runtimeSend)
+        throw new VaultError("unavailable", "Modal runtime idle first send is unavailable.");
+      return canonicalLaunchResponse(await launchRoute(options, caller, golden.data, "modal"));
+    }
+    if ("boatRuntime" in golden.data) {
       if (!options.boatRuntimeLaunch || !options.runtimeHostFor)
         throw new VaultError("unavailable", "Experimental Boat runtime launch is not configured.");
-      return canonicalLaunchResponse(await launchRoute(options, caller, body, true));
+      return canonicalLaunchResponse(await launchRoute(options, caller, golden.data, true));
     }
-    return canonicalLaunchResponse(await launchRoute(options, caller, body));
+    return canonicalLaunchResponse(await launchRoute(options, caller, golden.data));
   }
   const org = scopedOrg(caller, optional(body, "org"));
   switch (route) {

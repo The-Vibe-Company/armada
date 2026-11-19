@@ -1965,7 +1965,7 @@
     "packages/mcp-server/src/sandbox-access-scoped-gateway.ts": 4,
     "packages/mcp-server/src/sandbox-access-transport.ts": 1,
     "packages/mcp-server/src/sandbox-account-change.ts": 2,
-    "packages/mcp-server/src/sandbox-armada-access.ts": 2,
+    "packages/mcp-server/src/sandbox-armada-access.ts": 1,
     "packages/mcp-server/src/sandbox-billing-account.ts": 1,
     "packages/mcp-server/src/sandbox-finish.ts": 4,
     "packages/mcp-server/src/sandbox-lifecycle.ts": 4,

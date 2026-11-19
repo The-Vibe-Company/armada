@@ -1,12 +1,5 @@
 import type { Harness, VaultStore } from "@armada/core";
-import {
-  goldenCompatibilityIds,
-  isExternalRef,
-  isHarness,
-  launchGitHubResponse,
-  parseMachineSize,
-  sandboxIdentity,
-} from "@armada/core";
+import { goldenCompatibilityIds, launchGitHubResponse, sandboxIdentity } from "@armada/core";
 import {
   type GoldenActor,
   type GoldenRecord,
@@ -27,13 +20,13 @@ import {
 import type { Caller } from "./caller.ts";
 import type { ControlOptions } from "./control.ts";
 import { scopedOrg } from "./control-caller.ts";
-import { isLaunchConnectionList, optional, required, requiredNumber, UUID } from "./control-input.ts";
+import { UUID } from "./control-input.ts";
 import type { ScopedData } from "./data.ts";
 import { providerForGolden } from "./golden-control.ts";
 import { prepareGoldenLaunchAccount } from "./launch-account-admission.ts";
 import { launchCredentials } from "./launch-credentials.ts";
+import type { GoldenLaunchRequest } from "./launch-request-schema.ts";
 import { type GoldenLaunchTiming, observeGoldenLaunch } from "./request-timing.ts";
-import { parseSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 
 type LaunchControlOptions = Pick<
   ControlOptions,
@@ -60,7 +53,7 @@ type LaunchControlOptions = Pick<
 export function launchRoute(
   options: LaunchControlOptions,
   caller: Caller,
-  body: Record<string, unknown>,
+  body: GoldenLaunchRequest,
   runtime: boolean | "modal" = false,
 ) {
   return observeGoldenLaunch("rest", (timing) => launchGolden(options, caller, body, runtime, timing));
@@ -69,7 +62,7 @@ export function launchRoute(
 async function launchGolden(
   options: LaunchControlOptions,
   caller: Caller,
-  body: Record<string, unknown>,
+  body: GoldenLaunchRequest,
   runtime: boolean | "modal",
   timing: GoldenLaunchTiming,
 ) {
@@ -80,44 +73,20 @@ async function launchGolden(
     throw new VaultError("unavailable", "Experimental Boat runtime launch is not configured.");
   if (!options.data || !options.providerFor)
     throw new VaultError("unavailable", "Launching is not configured on this server.");
-  if (body.visibility !== undefined && body.visibility !== "private" && body.visibility !== "org")
-    throw new VaultError("invalid", "Visibility is private or org.");
-  const connections = body.connections;
-  if (connections !== undefined && !isLaunchConnectionList(connections))
-    throw new VaultError("invalid", "connections must contain at most 100 connection UUIDs.");
-  const idempotencyKey = body.idempotencyKey;
-  if (
-    idempotencyKey !== undefined &&
-    (typeof idempotencyKey !== "string" || idempotencyKey.length < 16 || idempotencyKey.length > 128)
-  )
-    throw new VaultError("invalid", "idempotencyKey must be 16 to 128 characters.");
-  if (body.stopWhenWorkMerged !== undefined && typeof body.stopWhenWorkMerged !== "boolean")
-    throw new VaultError("invalid", "stopWhenWorkMerged must be a boolean.");
-  if (body.externalRef !== undefined && !isExternalRef(body.externalRef))
-    throw new VaultError("invalid", "externalRef must be 1 to 200 characters without control characters.");
+  const { connections, idempotencyKey, golden: name, repo, harness, credentialId } = body;
   if (idempotencyKey !== undefined && !options.ordinaryLaunchReceipts)
     throw new VaultError("unavailable", "Durable launch receipts are not configured; idempotencyKey is refused.");
-  const armadaAccess = parseSandboxArmadaAccess(body.armadaAccess);
+  const armadaAccess = body.armadaAccess === true ? {} : body.armadaAccess || undefined;
   if (armadaAccess && !options.sandboxArmadaAccess)
     throw new VaultError("unavailable", "Sandbox Armada access is not enabled on this server.");
-  const name = required(body, "golden");
-  const repo = body.repo === undefined ? undefined : required(body, "repo");
-  const harness = required(body, "harness");
-  if (!isHarness(harness)) throw new VaultError("invalid", "The agent is claude or codex.");
   const data = options.data(caller);
-  const actor = await launchActor(data, caller, name, optional(body, "org"), options.store);
-  const golden = await goldenForLaunch(
-    data.goldens,
-    actor,
-    name,
-    optional(body, "provider") as "boat" | "modal" | undefined,
-  );
-  resolveRepositoryDir(golden, optional(body, "repo"));
+  const actor = await launchActor(data, caller, name, body.org ?? undefined, options.store);
+  const golden = await goldenForLaunch(data.goldens, actor, name, body.provider ?? undefined);
+  resolveRepositoryDir(golden, repo);
   if (armadaAccess && harness !== "codex")
     throw new VaultError("unavailable", "Sandbox Armada access is unavailable for this provider/harness.");
   if (runtime && golden.provider !== (modalRuntime ? "modal" : "boat"))
     throw new VaultError("invalid", "Runtime v1 requires a Boat golden.");
-  const credentialId = body.credentialId;
   const launchOptions: import("@armada/core").LaunchOptions = {
     ...options.launch,
     ...(runtimePolicy ? (modalRuntime ? { runtime: runtimePolicy } : { boatRuntime: runtimePolicy }) : {}),
@@ -138,10 +107,13 @@ async function launchGolden(
   );
   timing.checkpoint("admission");
   const prepare = async () => {
-    const account =
-      credentialId === undefined || typeof credentialId === "string"
-        ? await prepareGoldenLaunchAccount(actor, golden, { harness, credentialId }, credentials, launchOptions)
-        : { credentials, options: launchOptions };
+    const account = await prepareGoldenLaunchAccount(
+      actor,
+      golden,
+      { harness, credentialId },
+      credentials,
+      launchOptions,
+    );
     timing.checkpoint("account_resolution");
     const provider = modalRuntime
       ? await options.modalRuntimeHostFor!({ ...golden, runtimeTransport: "dialout" }, caller)
@@ -185,22 +157,22 @@ async function launchGolden(
       },
       actor,
       {
-        ...(credentialId === undefined ? {} : { credentialId: required(body, "credentialId") }),
+        ...(credentialId === undefined ? {} : { credentialId }),
         golden: name,
-        ...(body.size === undefined ? {} : { size: parseMachineSize(body.size) }),
+        ...(body.size === undefined ? {} : { size: body.size }),
         provider: golden.provider,
         ...(repo === undefined ? {} : { repo }),
-        ...(body.visibility === undefined ? {} : { visibility: body.visibility as "private" | "org" }),
-        ...(body.skipSkillDefaults === undefined ? {} : { skipSkillDefaults: body.skipSkillDefaults as boolean }),
-        ...(body.skills === undefined ? {} : { skills: body.skills as string[] }),
-        ...(body.helperCapabilities === undefined ? {} : { helperCapabilities: body.helperCapabilities as string[] }),
+        ...(body.visibility === undefined ? {} : { visibility: body.visibility }),
+        ...(body.skipSkillDefaults === undefined ? {} : { skipSkillDefaults: body.skipSkillDefaults }),
+        ...(body.skills === undefined ? {} : { skills: body.skills }),
+        ...(body.helperCapabilities === undefined ? {} : { helperCapabilities: body.helperCapabilities }),
         ...(connections === undefined ? {} : { connections }),
-        ...modelChoice(harness, optional(body, "model"), optional(body, "reasoningEffort")),
+        ...modelChoice(harness, body.model ?? undefined, body.reasoningEffort ?? undefined),
         harness,
-        ...(optional(body, "prompt") === undefined ? {} : { prompt: required(body, "prompt") }),
-        ...(body.ttlSeconds === undefined ? {} : { ttlSeconds: requiredNumber(body, "ttlSeconds") }),
+        ...(body.prompt == null ? {} : { prompt: body.prompt }),
+        ...(body.ttlSeconds === undefined ? {} : { ttlSeconds: body.ttlSeconds }),
         ...(body.stopWhenWorkMerged === false ? { stopWhenWorkMerged: false } : {}),
-        ...(body.externalRef === undefined ? {} : { externalRef: body.externalRef as string }),
+        ...(body.externalRef === undefined ? {} : { externalRef: body.externalRef }),
       },
       {
         ...account.options,
@@ -241,7 +213,7 @@ async function launchGolden(
   // Same key and same request replays the recorded answer; a different request under the key is refused.
   return options.ordinaryLaunchReceipts!.run(
     actor,
-    idempotencyKey as string,
+    idempotencyKey,
     {
       surface: "control",
       route: modalRuntime ? "modal-runtime" : runtime ? "boat-runtime" : "native",

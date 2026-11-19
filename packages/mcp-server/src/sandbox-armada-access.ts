@@ -17,21 +17,6 @@ import { createDelegatedTransport } from "./sandbox-access-transport.ts";
 export interface SandboxArmadaAccessOptions {
   maxActiveChildren?: number;
 }
-export function parseSandboxArmadaAccess(value: unknown): SandboxArmadaAccessOptions | undefined {
-  if (value === undefined || value === false) return undefined;
-  if (value === true) return {};
-  if (
-    !value ||
-    typeof value !== "object" ||
-    Array.isArray(value) ||
-    Object.keys(value).some((key) => key !== "maxActiveChildren")
-  )
-    throw new VaultError("invalid", "armadaAccess must be a boolean or a child-limit configuration.");
-  const limit = Reflect.get(value, "maxActiveChildren");
-  if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || limit > 100))
-    throw new VaultError("invalid", "maxActiveChildren must be between 1 and 100.");
-  return limit === undefined ? {} : { maxActiveChildren: limit };
-}
 
 /** Ordinary sandbox authority. There is deliberately no orchestrator identity,
  * orchestration policy, owner token or ambient access for unselected sandboxes. */
