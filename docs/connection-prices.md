@@ -13,6 +13,7 @@ Example private-file shape (placeholder key, never a real secret in this repo):
 {
   "endpoint": {"version": 1, "baseUrl": "https://example.invalid/v1"},
   "apiKey": "REPLACE_IN_YOUR_PRIVATE_FILE",
+  "models": ["exact-native-model-id"],
   "prices": {
     "exact-native-model-id": {
       "input": "2",
@@ -25,7 +26,8 @@ Example private-file shape (placeholder key, never a real secret in this repo):
 }
 ```
 
-For Claude use kind `anthropic` and add endpoint `auth: "api-key"` or `"bearer"`.
+For Codex, list the exact deployment names in `models`. For Claude, use kind
+`anthropic`, omit `models`, and add endpoint `auth: "api-key"` or `"bearer"`.
 Use an owner-controlled HTTPS endpoint exactly as in the existing connection flow.
 Prices are flat **USD per million tokens**, nonnegative decimal **strings** with
 at most 12 fractional digits and 12 integer digits. `input` and `output` are
@@ -60,17 +62,22 @@ edit of an admitted session or a historical reprice.
 
 Use a private file (mode 0600) containing the owner's working endpoint, key and
 prices for the model that endpoint actually reports. Never print or commit it.
-Pass the **whole JSON file**, without `--base-url`/endpoint-construction flags:
+Pass the **whole JSON file**, without `--base-url` or endpoint-construction flags.
+
+Replace `MODAL_SNAPSHOT` with the snapshot name, `MODEL_ACCOUNT_UUID`
+with the account ID from the list, `CODEX_DEPLOYMENT` with the deployment name
+from `models`, and `SANDBOX_UUID` with the sandbox ID from the launch receipt.
 
 ```sh
-armada creds set openai --file /private/priced-connection.json
+armada creds set openai --name priced-connection --file /private/priced-connection.json
 armada creds list --json
-armada launch <modal-golden> --provider modal --agent codex --credential-id <id> "Reply OK"
-armada wait <sandbox-id>
+armada launch MODAL_SNAPSHOT --provider modal --agent codex --credential-id MODEL_ACCOUNT_UUID --model CODEX_DEPLOYMENT "Reply OK"
+armada wait SANDBOX_UUID
 ```
 
-Repeat with `armada creds set anthropic --file /private/priced-gateway.json` and
-`--agent claude`. Expect accepted config, unchanged native endpoint behavior and
+Repeat with `armada creds set anthropic --name priced-gateway --file /private/priced-gateway.json`.
+Launch with `--agent claude` and the Claude account ID in `--credential-id`.
+Omit the Codex deployment flag. Expect accepted config, unchanged native endpoint behavior and
 no key/rate payload returned in account metadata. Existing no-price connections
 must still launch. A malformed rate such as `"-1"` in a separate private test file
 must be refused with a sanitized price-validation error before replacement.
