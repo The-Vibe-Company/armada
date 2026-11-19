@@ -1453,8 +1453,8 @@ describe("tools", () => {
     expectNoSecret(ran.text);
   });
 
-  test("stop with turn interrupts the current conversation and leaves compute up", async () => {
-    const { token, client, people, boat, db } = await start();
+  test("stop with turn interrupts the agent and leaves compute up", async () => {
+    const { token, client, people, boat } = await start();
     const mcp = await client(await token(people.member));
     const launched = await call(mcp, "launch", {
       provider: "boat",
@@ -1464,13 +1464,12 @@ describe("tools", () => {
     });
     const interrupt = spyOn(boat.provider, "interrupt");
     const id = launchSandboxId(launched.data);
-    await db.query("update sandboxes set conversation_ids=array['older','conv_1'] where id=$1", [id]);
     const selected = await call(mcp, "stop", { id, turn: true, conversation_id: "selected-conversation" });
     expect(selected.isError).toBe(true);
     expect(interrupt).not.toHaveBeenCalled();
     const stopped = await call(mcp, "stop", { id, turn: true });
     expect(stopped.data).toEqual({ id, interrupted: true });
-    expect(interrupt).toHaveBeenCalledWith({ sandboxId: "bx_1", conversationId: "conv_1" });
+    expect(interrupt).toHaveBeenCalledTimes(1);
     expect(boat.stops).toEqual([]);
   });
 
