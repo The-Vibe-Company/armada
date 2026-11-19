@@ -61,6 +61,45 @@ function* sqlStatements(sql: string) {
   if (tokens.length) yield { tokens, startsAt };
 }
 
+function transactionOnlyCommand(tokens: string[], rollbackTo: boolean) {
+  const [verb, keyword] = tokens;
+  if (verb === "lock") return "LOCK";
+  if (verb === "savepoint") return "SAVEPOINT";
+  if (verb === "release") return "RELEASE SAVEPOINT";
+  if (rollbackTo) return "ROLLBACK TO SAVEPOINT";
+  if (verb === "set" && ["transaction", "local", "constraints"].includes(keyword ?? "")) {
+    return `SET ${keyword!.toUpperCase()}`;
+  }
+  if (verb === "declare" && !tokens.slice(2, tokens.indexOf("for", 2)).includes("hold")) {
+    return "DECLARE CURSOR";
+  }
+  if (verb === "prepare" && keyword === "transaction") return "PREPARE TRANSACTION";
+  return undefined;
+}
+
+export function transactionErrors(sql: string): string[] {
+  const errors: string[] = [];
+  let explicitTransaction = false;
+  for (const { tokens, startsAt } of sqlStatements(sql)) {
+    const [verb, keyword] = tokens;
+    const transactionKeyword = keyword === "work" || keyword === "transaction" ? tokens[2] : keyword;
+    const rollbackTo = verb === "rollback" && transactionKeyword === "to";
+    if (verb === "begin" || (verb === "start" && keyword === "transaction")) {
+      explicitTransaction = true;
+    } else if (["commit", "end", "rollback", "abort"].includes(verb ?? "") && !rollbackTo) {
+      explicitTransaction &&= tokens.at(-2) === "and" && tokens.at(-1) === "chain";
+    } else if (!explicitTransaction) {
+      const command = transactionOnlyCommand(tokens, rollbackTo);
+      if (command) {
+        const line = sql.slice(0, startsAt).split(/\r\n|\r|\n/).length;
+        errors.push(`Line ${line}: ${command} requires an explicit BEGIN transaction.`);
+      }
+    }
+    if (verb === "prepare" && keyword === "transaction") explicitTransaction = false;
+  }
+  return errors;
+}
+
 function qualifiedName(tokens: readonly (string | undefined)[], start: number) {
   let name: string | undefined;
   let next = start;
@@ -212,12 +251,21 @@ function gitReferences(name: string, ref: string) {
     .map((entry) => entry.slice(ref.length + 1));
 }
 
-function checkDrops(paths: string[], base: string, head: string) {
-  const changes = paths.flatMap((path) => {
-    const statements = destructiveStatements(execFileSync("git", ["show", `${head}:${path}`], { encoding: "utf8" }));
+function checkMigrationSql(paths: string[], base: string, head: string) {
+  const migrations = paths.map((path) => ({
+    path,
+    sql: execFileSync("git", ["show", `${head}:${path}`], { encoding: "utf8" }),
+  }));
+  const transactionFailures = migrations.flatMap(({ path, sql }) =>
+    transactionErrors(sql).map((error) => `${path}: ${error}`),
+  );
+  if (transactionFailures.length) throw new Error(transactionFailures.join("\n"));
+
+  const drops = migrations.flatMap(({ path, sql }) => {
+    const statements = destructiveStatements(sql);
     return statements.length ? [{ path, statements }] : [];
   });
-  if (!changes.length) return;
+  if (!drops.length) return;
   const tag = latestRelease(
     execFileSync("git", ["ls-remote", "--tags", "--refs", "origin", "v*"], { encoding: "utf8" }),
   );
@@ -231,7 +279,7 @@ function checkDrops(paths: string[], base: string, head: string) {
     packageVersion,
     references: (name: string, ref: string) => gitReferences(name, ref === tag ? `refs/tags/${tag}` : ref),
   };
-  const errors = changes.flatMap(({ path, statements }) =>
+  const errors = drops.flatMap(({ path, statements }) =>
     dropSafety(statements, sources).map((error) => `${path}: ${error}`),
   );
   if (errors.length) throw new Error(errors.join("\n"));
@@ -278,7 +326,7 @@ function main() {
     );
     throw new Error(errors.join("\n"));
   }
-  checkDrops(
+  checkMigrationSql(
     [...head.keys()].filter((path) => !baseline.has(path)),
     base,
     headRef,

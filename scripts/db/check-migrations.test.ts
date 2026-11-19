@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { destructiveStatements, dropSafety } from "./check-migrations";
+import { destructiveStatements, dropSafety, transactionErrors } from "./check-migrations";
 
 test("migration CLI rejects collisions, placeholder versions and non-increasing additions against the current base", () => {
   const script = resolve(import.meta.dir, "check-migrations.ts");
@@ -75,6 +75,41 @@ test("migration CLI rejects collisions, placeholder versions and non-increasing 
       rmSync(cwd, { recursive: true, force: true });
     }
   }
+});
+
+test.each([
+  ["LOCK", "lock table public.jobs"],
+  ["SAVEPOINT", "savepoint migration"],
+  ["RELEASE SAVEPOINT", "release migration"],
+  ["ROLLBACK TO SAVEPOINT", "rollback work to savepoint migration"],
+  ["SET TRANSACTION", "set transaction isolation level serializable"],
+  ["SET CONSTRAINTS", "set constraints all deferred"],
+  ["PREPARE TRANSACTION", "prepare transaction 'migration'"],
+  ["SET LOCAL", "set local lock_timeout = '2s'"],
+  ["DECLARE CURSOR", "declare migration cursor for select 1"],
+])("requires an explicit transaction for %s", (command, sql) => {
+  expect(transactionErrors(`-- comment\n${sql};`)).toEqual([
+    `Line 2: ${command} requires an explicit BEGIN transaction.`,
+  ]);
+  expect(transactionErrors(`begin; ${sql}; commit;`)).toEqual([]);
+});
+
+test("tracks real transaction boundaries and ignores SQL inside comments and bodies", () => {
+  expect(
+    transactionErrors(`
+      -- begin;
+      do $$ begin perform 'LOCK TABLE jobs'; end $$;
+      start transaction;
+      savepoint migration;
+      rollback to migration;
+      lock jobs;
+      end and chain;
+      lock jobs;
+      rollback and no chain;
+      lock jobs;
+      declare migration cursor with hold for select 1;
+    `),
+  ).toEqual(["Line 11: LOCK requires an explicit BEGIN transaction."]);
 });
 
 test("finds top-level drops and renames, including quoted names and multi-object statements", () => {
