@@ -1004,7 +1004,7 @@
     "packages/mcp-server/src/sandbox-lifecycle.ts": 22,
     "packages/mcp-server/src/sandbox-outputs.ts": 52,
     "packages/mcp-server/src/sandbox-pull-requests.ts": 92,
-    "packages/mcp-server/src/serve.ts": 19,
+    "packages/mcp-server/src/serve.ts": 9,
     "packages/mcp-server/src/server-request-drain.ts": 4,
     "packages/mcp-server/src/server-routines.ts": 2,
     "packages/mcp-server/src/server-shutdown.ts": 4,
