@@ -70,6 +70,7 @@ function fixture(
               Labels: { [label.slice(0, equals)]: label.slice(equals + 1) },
             },
             State: { Status: "created", Running: false },
+            Mounts: [{ Name: source.Mounts[0].Name }, { Name: destination }],
           });
           return { exitCode: 1, stdout: "" };
         }
@@ -135,6 +136,11 @@ function fixture(
         if (!container) return { exitCode: 1, stdout: "missing" };
         container.State = { Status: action === "start" ? "running" : "exited", Running: action === "start" };
       } else if (action === "rm") {
+        if (
+          kind === "volume" &&
+          [...containers.values()].some((c) => c.Mounts.some((m: { Name?: string }) => m.Name === last))
+        )
+          return { exitCode: 1, stdout: "" };
         const name =
           kind === "container" ? ([...containers].find(([, container]) => container.Id === last)?.[0] ?? last) : last;
         if (!retainRemoved) store.delete(name);
@@ -233,6 +239,23 @@ describe("Docker machine executor", () => {
     await f.executor.stop(request);
     const restored = await f.executor.restore(target, predecessor);
     expect(f.workspaces.get(restored.volumeName)).toBe("");
+  });
+
+  test("full cleanup releases an interrupted restore helper after the target expires", async () => {
+    const f = fixture();
+    const source = await f.executor.create(request);
+    const predecessor = { request, machineId: f.containers.get(source.containerName).Id };
+    const target = { ...request, generation: "55555555-5555-5555-5555-555555555555", expiresAt: 2000 };
+    await f.executor.stop(request);
+    f.fail("copy helper start");
+    await expect(f.executor.restore(target, predecessor)).rejects.toThrow("docker_failed");
+    f.setTime(2000);
+    await expect(f.executor.restore(target, predecessor)).rejects.toThrow("expired");
+    await f.executor.delete(target);
+    expect(await f.executor.isAbsent(target)).toBe(true);
+    expect(f.containers.size).toBe(1);
+    expect(f.volumes.size).toBe(1);
+    expect(await f.executor.isStopped(request)).toBe(true);
   });
 
   test("restore refuses to start after its deadline expires during cache preparation", async () => {
@@ -581,7 +604,7 @@ describe("Docker machine executor", () => {
 
   test("ignores unrelated listed resources without inspecting or mutating them", async () => {
     const f = fixture();
-    const unrelatedContainer = { Name: "/someone-else" };
+    const unrelatedContainer = { Name: "/someone-else", Mounts: [{ Name: "someone-else-home" }] };
     const unrelatedVolume = { Name: "someone-else-home" };
     f.containers.set("someone-else", unrelatedContainer);
     f.volumes.set("someone-else-home", unrelatedVolume);

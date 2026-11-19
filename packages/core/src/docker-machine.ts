@@ -404,8 +404,7 @@ export function createDockerMachineExecutor(options: {
     return { containerName: state.containerName, volumeName: state.volumeName, expiresAt: state.expiresAt };
   }
 
-  async function copyWorkspace(sourceId: string, volumeName: string) {
-    const name = `${volumeName}-restore`;
+  async function removeInactiveCopyHelper(name: string, sourceId: string) {
     const helper = await inspect("container", name);
     if (helper) {
       const id = helper.Id;
@@ -423,6 +422,11 @@ export function createDockerMachineExecutor(options: {
         fail("docker_failed");
       await checked(["container", "rm", id]);
     }
+  }
+
+  async function copyWorkspace(sourceId: string, volumeName: string) {
+    const name = `${volumeName}-restore`;
+    await removeInactiveCopyHelper(name, sourceId);
     const result = await options.cli
       .run(
         [
@@ -560,7 +564,16 @@ export function createDockerMachineExecutor(options: {
       return;
     }
     // Successful exact absence observation is required before deleting the exact owned volume.
-    if (state.volume) await checked(["volume", "rm", state.volumeName]);
+    if (state.volume) {
+      const origin = object(state.volume.Labels)[restoredFrom];
+      if (typeof origin === "string") {
+        const [generation, sourceId, ...extra] = origin.split("/");
+        if (!generation || !uuid.test(generation) || !sourceId || !dockerContainerId.test(sourceId) || extra.length)
+          fail("ownership_mismatch");
+        await removeInactiveCopyHelper(`${state.volumeName}-restore`, sourceId);
+      }
+      await checked(["volume", "rm", state.volumeName]);
+    }
   }
 
   async function stopIfExpired(request: DockerMachineRequest): Promise<boolean> {
