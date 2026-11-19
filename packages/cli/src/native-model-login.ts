@@ -10,7 +10,6 @@ import {
   validateNativeCodexAuth,
 } from "./native-login-protocol.ts";
 
-/** User-initiated foreground native login. Never forward native stdout/stderr or keep credentials after cleanup. */
 export async function nativeCodexLogin(options: {
   path: string;
   signal: AbortSignal;

@@ -3,9 +3,7 @@ import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { basename, dirname, join } from "node:path";
 import { AuthError } from "@armada/auth";
 
-/** The CLI's Armada API session. It is local-only and never contains provider configuration. */
 export interface Session {
-  /** Identifies a login independently of its rotating access and refresh tokens. */
   loginId?: string;
   armadaUrl?: string;
   accessToken: string;
@@ -17,7 +15,6 @@ export interface SessionStore {
   read(): Promise<Session | null>;
   write(session: Session): Promise<void>;
   clear(): Promise<void>;
-  /** Serialize a read/refresh/write transaction, including across processes for file stores. */
   withLock?<T>(operation: (store: SessionStore) => Promise<T>): Promise<T>;
 }
 
@@ -41,7 +38,6 @@ export function memorySessionStore(initial: Session | null = null): SessionStore
   return store;
 }
 
-/** `~/.config/armada/session.json`, mode 0600. */
 export function fileSessionStore(path: string): SessionStore {
   const unlocked: SessionStore = {
     async read() {
@@ -75,8 +71,6 @@ export function fileSessionStore(path: string): SessionStore {
   const withLock = async <T>(operation: (store: SessionStore) => Promise<T>): Promise<T> => {
     const directory = dirname(path);
     await mkdir(directory, { recursive: true, mode: 0o700 });
-    // SQLite supplies a portable OS lock, released even if the CLI crashes. No tokens
-    // are stored here. Never unlink this file: another process may already have it open.
     const lockPath = `${path}.lock.sqlite`;
     const lock = new Database(lockPath, { create: true });
     try {
