@@ -86,7 +86,6 @@ c=Private('private');c.request('POST','/redact',value['sample'].encode());r=c.ge
       exec("user", ["python3", "-c", probe], JSON.stringify({ socket, sample: `${old} ${current}` })).stdout,
       "*** ***",
     );
-    // Root-only credentials, no raw registry listing, no stale SSH key left behind.
     assert.equal(
       exec("0", ["stat", "-c", "%u:%a", socket.replace("redact.sock", "credentials.sock")]).stdout.trim(),
       "0:600",
