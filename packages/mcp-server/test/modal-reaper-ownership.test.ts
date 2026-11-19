@@ -13,11 +13,19 @@ const machine = {
 } satisfies ProviderInventoryMachine;
 const binding = { workspace: "work", environment: "env", appId: "ap-bound" };
 const signal = new AbortController().signal;
-const db = new PGlite();
-const lookup = createModalReaperOwnership({ query: (statement, params) => db.query(statement, params) }, binding);
+let connection: PGlite | undefined = new PGlite();
+
+function database() {
+  if (!connection) throw new Error("Database fixture is not open");
+  return connection;
+}
+const lookup = createModalReaperOwnership(
+  { query: (statement, params) => database().query(statement, params) },
+  binding,
+);
 
 beforeAll(async () => {
-  await db.exec(`
+  await database().exec(`
     create table modal_server_apps (
       app_id text, app_name text, environment text, authority_scope text, authority_owner_id uuid, org_id uuid
     );
@@ -64,7 +72,11 @@ beforeAll(async () => {
   `);
 });
 
-afterAll(() => db.close());
+afterAll(async () => {
+  const db = connection;
+  connection = undefined;
+  await db?.close();
+});
 
 test.each([
   ["provider-only allocation", { sandboxId: "modal_pending", machineId: "sb-pending" }, { kind: "absent" }],
@@ -101,7 +113,7 @@ test("a Modal ownership query failure propagates for the next sweep to retry", a
 test("the live Modal reaper excludes conflicting logical ownership from the overdue count", async () => {
   const logs: unknown[] = [];
   const lane = createModalReaper(
-    { query: (statement, params) => db.query(statement, params) },
+    { query: (statement, params) => database().query(statement, params) },
     "https://armada.test",
     async (_registration, _binding, deploymentId) => ({
       async openSandbox() {

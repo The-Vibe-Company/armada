@@ -5,18 +5,23 @@ import { PGlite } from "@electric-sql/pglite";
 import { admitAccountCapacity } from "./account-capacity.ts";
 import { repairHistoricalTurnModels } from "./account-model-upgrade.ts";
 
-const db = new PGlite();
+let connection: PGlite | undefined = new PGlite();
+
+function database() {
+  if (!connection) throw new Error("Database fixture is not open");
+  return connection;
+}
 const key = Buffer.alloc(32, 7).toString("base64");
 const account = "10000000-0000-4000-8000-000000000001";
 const ids = [1, 2, 3].map((n) => `20000000-0000-4000-8000-${String(n).padStart(12, "0")}`);
-const query = <T>(q: string, v?: unknown[]) => db.query<T>(q, v);
+const query = <T>(q: string, v?: unknown[]) => database().query<T>(q, v);
 const sql = {
   query,
   transaction: (fn: (tx: Sql) => Promise<unknown>) =>
-    db.transaction((tx) => fn({ query: (q: string, v?: unknown[]) => tx.query(q, v) } as Sql)),
+    database().transaction((tx) => fn({ query: (q: string, v?: unknown[]) => tx.query(q, v) } as Sql)),
 } as Sql;
 beforeAll(async () => {
-  await db.exec(`create role authenticated;
+  await database().exec(`create role authenticated;
     create table credentials(id uuid primary key,name text,max_agents integer);
     create table sandboxes(id uuid primary key,credential_id uuid,model text,status text,
       deleted_at timestamptz,stopped_at timestamptz,activity_lease_id uuid,task_prompt_id text,lifecycle_generation bigint default 1);
@@ -39,16 +44,20 @@ beforeAll(async () => {
       [id, sealed, i === 0 ? "admitted" : "queued", i + 1],
     );
   await query("insert into account_agent_reservations values($1,$2)", [ids[0], account]);
-  await db.exec(readFileSync("supabase/migrations/20261116180000_account_model_limits.sql", "utf8"));
+  await database().exec(readFileSync("supabase/migrations/20261116180000_account_model_limits.sql", "utf8"));
 });
-afterAll(() => db.close());
+afterAll(async () => {
+  const db = connection;
+  connection = undefined;
+  await db?.close();
+});
 
 test("upgrade reconstructs override identities for active work, reservations and queued admission", async () => {
   expect((await query<{ model: string }>("select model from account_turn_queue")).rows.map((r) => r.model)).toEqual([
     "deepseek",
     "deepseek",
   ]); // Reproduces the released migration's incorrect attribution.
-  await db.exec(readFileSync("supabase/migrations/20261116200000_repair_historical_turn_models.sql", "utf8"));
+  await database().exec(readFileSync("supabase/migrations/20261116200000_repair_historical_turn_models.sql", "utf8"));
   await query("update credentials set model_limits='{\"kimi\":1}'");
   await expect(admitAccountCapacity(sql, account, ids[2]!, "kimi")).rejects.toThrow("kimi");
   await repairHistoricalTurnModels(sql, key);
