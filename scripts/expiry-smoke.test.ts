@@ -14,6 +14,8 @@ type Fault =
   | "physical"
   | "lost_launch"
   | "recovered_launch"
+  | "late_launch"
+  | "unreadable_launch"
   | "invalid_launch_receipt"
   | "cleanup_lost"
   | "cleanup_failed"
@@ -49,11 +51,12 @@ function fixture(provider: "modal", fault: Fault = "none") {
         expect(body.connections).toEqual([]);
         expiry = clock + (fault === "deadline" ? 3600_000 : 180_000);
         clock += 2000;
-        if (fault === "lost_launch" || fault === "recovered_launch") {
+        if (fault === "lost_launch" || fault === "recovered_launch" || fault === "late_launch") {
           clock += 120_000;
           expiry = clock + 180_000;
           throw new DOMException("secret transport detail", "TimeoutError");
         }
+        if (fault === "unreadable_launch") return new Response("{", { status: 200 });
         return Response.json({
           sandbox: { id: "owned-worker", provider },
           ...(fault === "invalid_launch_receipt" ? { promptId: "unexpected" } : {}),
@@ -67,11 +70,20 @@ function fixture(provider: "modal", fault: Fault = "none") {
           expect(body.org).toBe("org");
           expect(body.externalRef).toBe(launch?.body.externalRef);
           lookups++;
+          if (fault === "late_launch") clock += 120_001;
+          const found =
+            fault === "late_launch" || fault === "unreadable_launch" || (fault === "recovered_launch" && lookups > 1);
           return Response.json({
-            sandboxes:
-              fault === "recovered_launch" && lookups > 1
-                ? [{ id: "owned-worker", provider, externalRef: body.externalRef, status: "ready" }]
-                : [],
+            sandboxes: found
+              ? [
+                  {
+                    id: "owned-worker",
+                    provider,
+                    externalRef: body.externalRef,
+                    status: lookups === 2 ? "starting" : "ready",
+                  },
+                ]
+              : [],
           });
         }
         expect(body.harness).toBe("codex");
@@ -248,6 +260,21 @@ test("expiry records launch latency when a timed-out request materializes after 
   expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(1);
   expect(fake.reports.find((line) => line.step === "expiry_launch")).toMatchObject({
     pass: true,
-    elapsedMs: 123_000,
+    elapsedMs: 124_000,
   });
+});
+
+test("an expiry lookup that returns after the deadline provides a cleanup handle and leaves the launch failed", async () => {
+  const fake = fixture("modal", "late_launch");
+  expect(await postDeploySmoke(fake.env, ["--expiry"], fake.io)).toBe(false);
+  expect(fake.calls.filter((call) => call.path === "sandbox/stop")).toEqual([
+    { path: "sandbox/stop", body: { org: "org", id: "owned-worker" } },
+  ]);
+  expect(fake.reports.find((line) => line.step === "expiry_launch")?.pass).toBe(false);
+});
+
+test("expiry reconciles an unreadable successful launch response", async () => {
+  const fake = fixture("modal", "unreadable_launch");
+  expect(await postDeploySmoke(fake.env, ["--expiry"], fake.io)).toBe(true);
+  expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(1);
 });

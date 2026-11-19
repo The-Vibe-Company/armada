@@ -1936,15 +1936,14 @@ experimental server-only routes; normal launch uses `sandbox/launch`. Runner sec
 Collect the JSONL receipt streams from the latest 20 ordinary green staging
 runs. Use the `armada-smoke.jsonl` output from the smoke step and keep one file
 per run. Name the files with sortable UTC timestamps so the most recent run
-sorts last. Then run:
+sorts last. Generate the configuration with this command.
 
 ```sh
 bun scripts/smoke-deadlines.ts /path/to/green-journals > scripts/smoke-deadlines.json
 ```
 
 The generator uses successful `elapsedMs` receipts and rounds up 1.5 times the
-nearest-rank p99. A step with receipts in fewer than 20 runs keeps its existing
-default. The expiry lane uses `expiry_launch` for the initial response timeout
+nearest-rank p99. A step with fewer than 20 receipts keeps its existing default. The expiry lane uses `expiry_launch` for the initial response timeout
 and for a separate observation window capped by the overall smoke deadline.
 After an ambiguous response it reads sandbox inventory using the launch's
 unique reference. A recovered launch records the full elapsed time. An

@@ -524,50 +524,57 @@ async function runPostDeploySmoke(
         redirect: "error",
         signal: AbortSignal.timeout(requestTimeoutMs),
       });
+      const requestId = sandboxLaunch ? response.headers.get("x-request-id") : null;
+      const launchResponse = sandboxLaunch
+        ? {
+            httpStatus: response.status,
+            timeoutMs: requestTimeoutMs,
+            ...(requestId && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(requestId) ? { requestId } : {}),
+          }
+        : undefined;
       if (!response.ok) {
         const payload = (await response.json().catch(() => null)) as { error?: { code?: unknown } } | null;
         if ([...protectedCanaries].some((value) => JSON.stringify(payload).includes(value)))
           throw new VaultSmokeFailure("secret_exposed");
         const code = payload?.error?.code;
-        const requestId = sandboxLaunch ? response.headers.get("x-request-id") : null;
         throw new SmokeFailure(
           typeof code === "string" && API_CODES.has(code as Code) ? (code as Code) : "api_failed",
           response.status,
           undefined,
-          sandboxLaunch
-            ? {
-                httpStatus: response.status,
-                timeoutMs: requestTimeoutMs,
-                ...(requestId && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(requestId) ? { requestId } : {}),
-              }
-            : undefined,
+          launchResponse,
         );
       }
+      let result: {
+        sandbox?: { id?: unknown; provider?: unknown };
+        state?: unknown;
+        id?: unknown;
+        provider?: unknown;
+      } | null;
       try {
-        const result = (await response.json()) as {
-          sandbox?: { provider?: unknown };
-          state?: unknown;
-          id?: unknown;
-          provider?: unknown;
-        } | null;
-        // Keep the handle before validating the receipt, as the cleanup journal does.
-        record(result);
-        if (sandboxLaunch && smokeReceiptProvider(result) !== "modal") fail("invalid_response");
-        if (
-          path === "templates/launch" &&
-          (result?.state === "succeeded" || (typeof result?.id === "string" && result.id)) &&
-          smokeReceiptProvider(result) !== "modal"
-        )
-          fail("invalid_response");
-        return result as T;
+        result = await response.json();
       } catch {
         if (path === "sandbox/wait")
           throw new SmokeFailure("invalid_response", response.status, {
             body: "unparseable",
             httpStatus: response.status,
           });
-        fail("invalid_response");
+        throw new SmokeFailure("invalid_response", response.status, undefined, launchResponse);
       }
+      record(result);
+      if (sandboxLaunch) {
+        const provider = smokeReceiptProvider(result);
+        if (provider !== undefined && provider !== "modal") fail("invalid_response");
+        if (typeof result?.sandbox?.id !== "string" || !result.sandbox.id)
+          throw new SmokeFailure("invalid_response", response.status, undefined, launchResponse);
+        if (provider !== "modal") fail("invalid_response");
+      }
+      if (
+        path === "templates/launch" &&
+        (result?.state === "succeeded" || (typeof result?.id === "string" && result.id)) &&
+        smokeReceiptProvider(result) !== "modal"
+      )
+        fail("invalid_response");
+      return result as T;
     } catch (error) {
       if (error instanceof SmokeFailure || error instanceof VaultSmokeFailure) throw error;
       fail("request_failed");
@@ -664,22 +671,24 @@ async function runPostDeploySmoke(
   function expiryUnit(index: number, item: SmokeCase): Promise<boolean> {
     const { request, withCleanup, out, step } = unit(index, "expiry");
     const timeoutMs = (deadlines as Record<string, number>).expiry_launch ?? 120_000;
-    const expiryRequest: typeof request = <T>(path: string, body?: unknown) => {
-      if (path !== "sandbox/launch") return request<T>(path, body);
+    const launch = <T>(body: object, keepHandle: (id: string) => void) => {
+      const path = "sandbox/launch";
       const requestKey = `post-deploy-smoke:${crypto.randomUUID()}`;
       return launches.track(path, async (record) => {
-        const launchBody = { ...(body as { org: string }), idempotencyKey: requestKey, externalRef: requestKey };
+        const launchBody = { ...body, org: item.org, idempotencyKey: requestKey, externalRef: requestKey };
         try {
           return await transport<T>(false, path, launchBody, undefined, timeoutMs, record);
         } catch (error) {
           if (!(error instanceof SmokeFailure)) throw error;
-          if (["outcome_unknown", "request_failed"].includes(error.code) || (error.status ?? 0) >= 500) {
+          const lostReceipt = error.code === "invalid_response" && error.launchResponse !== undefined;
+          if (lostReceipt || ["outcome_unknown", "request_failed"].includes(error.code) || (error.status ?? 0) >= 500) {
+            let observedId: string | undefined;
             const sandbox = await observeSmokeLaunch(
               Math.min(deadline, io.now() + timeoutMs),
               io,
               async (remaining) => {
                 const result = await request<{
-                  sandboxes: { id: string; provider: string; externalRef: string }[];
+                  sandboxes: { id: string; provider: string; externalRef: string; status: string }[];
                 }>(
                   "sandbox/list",
                   { org: launchBody.org, owner: "me", externalRef: requestKey },
@@ -692,15 +701,17 @@ async function runPostDeploySmoke(
                 const rows = result?.sandboxes;
                 const row = rows?.[0];
                 if (rows?.length === 1 && row?.id && row.provider === item.provider && row.externalRef === requestKey) {
-                  record({ sandbox: row });
-                  return row;
+                  if (observedId === undefined) {
+                    observedId = row.id;
+                    keepHandle(row.id);
+                    record({ sandbox: row });
+                    await io.recordSandbox?.(launchBody.org, row.id, requestKey, item.provider);
+                  }
+                  if (row.id === observedId && row.status === "ready") return row;
                 }
               },
             );
-            if (sandbox) {
-              await io.recordSandbox?.(launchBody.org, sandbox.id, requestKey, item.provider);
-              return { sandbox } as T;
-            }
+            if (sandbox) return { sandbox } as T;
           }
           throw new SmokeFailure(error.code, error.status, undefined, {
             timeoutMs,
@@ -714,7 +725,8 @@ async function runPostDeploySmoke(
     // lane gives the account back before its TTL wait, which then overlaps the other lanes.
     return accountSlot(item.modelAccountId, (release) =>
       runExpiryCase(item, {
-        request: expiryRequest,
+        launch,
+        request,
         now: io.now,
         sleep: io.sleep,
         out,
@@ -1535,7 +1547,9 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         rows.push(row);
         await saveSmokeJournal(path, [...deferred, ...earlierRows, ...rows]);
         io.out(JSON.stringify({ step: "smoke_sandbox_receipt", ...row }));
-      } else if (response.ok) unacknowledgedLaunches.add(requestKey);
+      } else if (response.ok || (requestKey === key && response.status >= 500)) {
+        unacknowledgedLaunches.add(requestKey);
+      }
       return response;
     },
   };
