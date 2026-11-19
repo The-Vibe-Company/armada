@@ -117,12 +117,12 @@ const quotaPayload = {
   },
 };
 
-function maskQuotaFields(
+const maskQuotaFields: (
   original: unknown,
   scrubbed: unknown,
   mask: (text: string) => string,
   shape?: PayloadShape | null,
-): unknown {
+) => unknown = (original, scrubbed, mask, shape) => {
   if (Array.isArray(original) && Array.isArray(scrubbed)) {
     return original.map((item, index) => maskQuotaFields(item, scrubbed[index], mask));
   }
@@ -151,7 +151,7 @@ function maskQuotaFields(
     return maskText(original, scrubbed, mask);
   }
   return maskPayload(original, mask);
-}
+};
 
 function maskProofData(
   original: unknown,
