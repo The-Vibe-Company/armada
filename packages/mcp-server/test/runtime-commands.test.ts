@@ -4,6 +4,7 @@ import type { Sql } from "@armada/core/server";
 import { encryptSecret } from "@armada/core/server";
 import { controlFailureResponse } from "../src/control-errors.ts";
 import { createOutboundWebhooks } from "../src/outbound-webhooks.ts";
+import { continueRequest } from "../src/request-observability.ts";
 import { createRuntimeAgent } from "../src/runtime-agent.ts";
 import { createRuntimeCommands, RuntimeCommandRefused } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
@@ -844,19 +845,23 @@ test("runtime startup privately issues configuration, awaits enrolment and fence
         },
       },
     );
+    const requestId = crypto.randomUUID();
     expect(
-      await start({
-        ownerId: f.people.owner,
-        sandboxId: f.id,
-        providerSandboxId: "physical",
-        serverUrl: "https://armada.invalid",
-        cacheDir: "/home/user/.armada-bootstrap",
-        artifact: { sha256: "a".repeat(64), bytes: 10 },
-        configuration,
-      }),
+      await continueRequest(requestId, () =>
+        start({
+          ownerId: f.people.owner,
+          sandboxId: f.id,
+          providerSandboxId: "physical",
+          serverUrl: "https://armada.invalid",
+          cacheDir: "/home/user/.armada-bootstrap",
+          artifact: { sha256: "a".repeat(64), bytes: 10 },
+          configuration,
+        }),
+      ),
     ).toEqual({ runtime: "armada", epoch: "2" });
     expect(bootstrapStart).toEqual({
       event: "armada.runtime.startup_phase",
+      requestId,
       sandboxId: f.id,
       epoch: "2",
       phase: "bootstrap",
