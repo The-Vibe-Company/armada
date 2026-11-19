@@ -218,7 +218,8 @@ for (const step of ["transition", "metadata"] as const) {
     });
     const provider = createBoatProvider({
       apiKey: "test-key",
-      fetch: (async () => Response.json({ ok: true, sandbox: retainedSandbox() })) as typeof fetch,
+      fetch: (async (_input: Request | string | URL) =>
+        Response.json({ ok: true, sandbox: retainedSandbox() })) as typeof fetch,
     });
     const lifecycle = createSandboxLifecycle(sql, async () => provider);
 

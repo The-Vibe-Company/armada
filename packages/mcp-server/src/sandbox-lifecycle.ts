@@ -47,8 +47,8 @@ interface SandboxTransition {
   effects: readonly SandboxTransitionEffect[];
   settlement?: {
     statusReason: string | null;
-    stopRequestedAt: Date | string | null;
-    stoppedAt: Date | string | null;
+    stopRequestedAt: string | null;
+    stoppedAt: string | null;
   };
 }
 
@@ -534,11 +534,11 @@ export function createSandboxLifecycle(
             await tx.query<{
               status: SandboxStatus;
               status_reason: string | null;
-              stop_requested_at: Date | string | null;
-              stopped_at: Date | string | null;
+              stop_requested_at: string | null;
+              stopped_at: string | null;
               settled_at: string;
             }>(
-              `select status,status_reason,stop_requested_at,stopped_at,now()::text as settled_at
+              `select status,status_reason,stop_requested_at::text,stopped_at::text,now()::text as settled_at
                from public.sandboxes where id=$1::uuid and reconcile_lease=$2::uuid and lifecycle_generation=$3
                  and reconcile_lease_until>clock_timestamp()
                  and (activity_until is null or activity_until<now()) for update`,

@@ -680,12 +680,12 @@ test.each(["request catch", "expired activity lease", "activation before ticket"
       const worker = createSandboxLifecycle(
         {
           ...f.sql,
-          async query(query, params) {
+          async transaction(work) {
             if (loseSettlement) {
               loseSettlement = false;
               throw settlementFailure;
             }
-            return f.sql.query(query, params);
+            return f.sql.transaction!(work);
           },
         },
         async () => host,

@@ -392,17 +392,18 @@ function fakeGitHub(db: PGlite) {
  * adapter sent an array literal. Run the server on this and a raw array parameter fails as it did on Railway.
  */
 export function bunLikeSql(db: PGlite, onQuery?: (text: string) => void): Sql {
-  const driver = (connection: Pick<PGlite, "query">): SqlDriver => ({
-    async unsafe(text, params) {
-      onQuery?.(text);
-      if (params.some((param) => Array.isArray(param))) {
-        throw new Error(
-          'invalid input syntax for type uuid[]: Array value must start with "{" or dimension information.',
-        );
-      }
-      return (await connection.query(text, params as unknown[])).rows;
-    },
-  });
+  const driver = (connection: Pick<PGlite, "query">) =>
+    ({
+      async unsafe(text, params) {
+        onQuery?.(text);
+        if (params.some((param) => Array.isArray(param))) {
+          throw new Error(
+            'invalid input syntax for type uuid[]: Array value must start with "{" or dimension information.',
+          );
+        }
+        return (await connection.query(text, params as unknown[])).rows;
+      },
+    }) satisfies SqlDriver;
   return sqlOver({ ...driver(db), begin: (work) => db.transaction((tx) => work(driver(tx))) });
 }
 
