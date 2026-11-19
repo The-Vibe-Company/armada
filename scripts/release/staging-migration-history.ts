@@ -3,12 +3,7 @@ import { readFileSync } from "node:fs";
 const versionPattern = /^\d{14}$/;
 
 /** Only a complete release prefix plus known, strictly later main migrations is safe. */
-export function stagingMigrationDecision(
-  local: string[],
-  remote: string[],
-  main: string[],
-  exact = false,
-): "apply" | "skip" {
+export function stagingMigrationDecision(local: string[], remote: string[], main: string[], exact = false) {
   for (const versions of [local, remote, main]) {
     if (versions.some((v) => !versionPattern.test(v)) || new Set(versions).size !== versions.length)
       throw new Error("Invalid or duplicate migration version");
@@ -29,7 +24,7 @@ export function stagingMigrationDecision(
 }
 
 /** Parse the pinned Supabase CLI's migration-list table; unexpected formats fail closed. */
-export function parseMigrationHistory(table: string): { local: string[]; remote: string[] } {
+export function parseMigrationHistory(table: string) {
   const local: string[] = [];
   const remote: string[] = [];
   let header = false;
