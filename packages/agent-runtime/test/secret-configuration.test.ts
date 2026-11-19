@@ -14,6 +14,7 @@ test.each([
   { secret: 'opaque_fixture_\n"value', prefix: "", suffix: "" },
   { secret: "ess", prefix: "prefix", suffix: "suffix" },
   { secret: "stderr", prefix: "prefix", suffix: "suffix" },
+  { secret: "harness_stderr", prefix: "prefix-", suffix: "-suffix" },
   { secret: "snapshot", prefix: "prefix", suffix: "suffix" },
   { secret: "abc", prefix: "prefix", suffix: "suffix", overlap: "bc12345", extension: "12345" },
   { secret: "abc", prefix: "", suffix: "suffix", overlap: "bc!xyz", extension: "!xyz", wholeField: true },
@@ -60,7 +61,7 @@ test.each([
     expect(body).toMatchObject({
       result: {
         events: expect.arrayContaining([
-          expect.objectContaining({ kind: "other", data: { text } }),
+          expect.objectContaining({ kind: "other", type: "harness_stderr", data: { text } }),
           expect.objectContaining({ kind: "message", text, textMode: "snapshot", messageId: "message_fixture" }),
         ]),
       },
@@ -134,6 +135,49 @@ test("event pages mask values registered after append while preserving the store
     expect(journal.events()).toEqual([{ sequence: 1, event: message }]);
   } finally {
     await runner.close();
+    journal.close();
+  }
+});
+
+test("checkpoint sanitation masks a short value registered after stderr append", () => {
+  const journal = new Journal(":memory:", (text) => text);
+  try {
+    journal.append({
+      id: "diagnostic",
+      at: 1,
+      kind: "other",
+      type: "harness_stderr",
+      data: { text: "prefix-embeddedvalue-suffix" },
+    });
+    journal.registerApplicationSecrets(["value", "harness_stderr"]);
+    journal.sanitize();
+    expect(journal.events()).toMatchObject([
+      {
+        sequence: 1,
+        event: { kind: "other", type: "harness_stderr", data: { text: "prefix-embedded[REDACTED]-suffix" } },
+      },
+    ]);
+  } finally {
+    journal.close();
+  }
+});
+
+test("checkpoint sanitation keeps expanding stderr within the journal row limit", () => {
+  const journal = new Journal(":memory:", (text) => text);
+  try {
+    journal.append({
+      id: "diagnostic",
+      at: 1,
+      kind: "other",
+      type: "harness_stderr",
+      data: { text: "x".repeat(30_000) },
+    });
+    journal.registerApplicationSecrets(["x"]);
+    journal.sanitize();
+    expect(journal.events()).toMatchObject([
+      { sequence: 1, event: { kind: "other", type: "harness_stderr", data: { truncated: true } } },
+    ]);
+  } finally {
     journal.close();
   }
 });
