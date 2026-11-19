@@ -1,9 +1,8 @@
-// PROTOCOL_VERSION = 1
+export declare const PROTOCOL_VERSION = 1;
 import type { AgentEvent, ExecRequest, Harness, OutputChunkRequest, PromptRequest, PromptStatus } from "@armada/core";
 import type { GitHubBrokerConfiguration } from "./github-broker.ts";
 import type { ModelConnectionTestResult } from "./model-connection-test.ts";
 export declare const MAX_COMMAND_RESPONSE_BYTES = 1048576;
-export declare const PROTOCOL_VERSION = 1;
 export declare const AUTH_HEADER = "x-armada-runner-grant";
 export type McpConnection = {
     type: "http";

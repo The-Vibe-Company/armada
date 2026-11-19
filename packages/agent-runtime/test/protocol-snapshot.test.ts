@@ -1,12 +1,11 @@
 import { expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import ts from "typescript";
-import { PROTOCOL_VERSION } from "../src/protocol.ts";
 
 const protocolSource = new URL("../src/protocol.ts", import.meta.url);
 const snapshotFile = new URL("./fixtures/protocol.snapshot.d.ts", import.meta.url);
 
-function normalizeWhitespace(text: string): string {
+function normalizeWhitespace(text: string) {
   return text
     .split(/\r?\n/)
     .map((line) => line.trimEnd())
@@ -20,9 +19,11 @@ test("runtime protocol declarations match the checked-in snapshot", () => {
     compilerOptions: { removeComments: true, newLine: ts.NewLineKind.LineFeed },
     reportDiagnostics: true,
   });
-  expect(diagnostics.map((diagnostic) => ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"))).toEqual([]);
+  expect(
+    (diagnostics ?? []).map((diagnostic) => ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n")),
+  ).toEqual([]);
 
-  const actual = `// PROTOCOL_VERSION = ${PROTOCOL_VERSION}\n${normalizeWhitespace(outputText)}\n`;
+  const actual = `${normalizeWhitespace(outputText)}\n`;
   if (process.env.UPDATE_PROTOCOL_SNAPSHOT === "1") {
     writeFileSync(snapshotFile, actual);
   }
