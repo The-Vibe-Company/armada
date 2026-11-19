@@ -3,8 +3,9 @@ import { matchesDeploymentHealth } from "./deployment-health";
 const stableTag = /^v\d+\.\d+\.\d+$/;
 type Release = { tag: string; sha: string };
 
-function record(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+function record(value: unknown) {
+  const empty: Record<string, unknown> = {};
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : empty;
 }
 
 function stringList(value: unknown, pattern: RegExp): value is string[] {
@@ -21,7 +22,7 @@ function protocol(value: unknown) {
 
 function readReceipt(value: unknown, release: Release) {
   const receipt = record(value);
-  const { migrations, productionMigrationHistory, surfaceBreak } = receipt;
+  const { imageDigest, migrations, productionMigrationHistory, surfaceBreak } = receipt;
   if (
     receipt.version !== release.tag.slice(1) ||
     receipt.sha !== release.sha ||
@@ -30,6 +31,7 @@ function readReceipt(value: unknown, release: Release) {
     !receipt.serverDeployment.trim() ||
     typeof receipt.dashboardDeployment !== "string" ||
     !receipt.dashboardDeployment.trim() ||
+    (imageDigest !== null && (typeof imageDigest !== "string" || !/^sha256:[a-f0-9]{64}$/.test(imageDigest))) ||
     !stringList(migrations, /^\d{14}$/) ||
     !stringList(productionMigrationHistory, /^\d{14}$/) ||
     !stringList(surfaceBreak, /\S/)
@@ -76,20 +78,27 @@ function command(...args: string[]) {
   return result.exitCode === 0 ? result.stdout.toString().trim() : "";
 }
 
-function receipt(tag: string): unknown {
+function receipt(tag: string) {
   try {
-    return JSON.parse(command("gh", "release", "download", tag, "--pattern", "release-receipt.json", "--output", "-"));
+    return JSON.parse(
+      command("gh", "release", "download", tag, "--pattern", "release-receipt.json", "--output", "-"),
+    ) as unknown;
   } catch {
     return null;
   }
 }
 
-async function health(): Promise<unknown> {
+async function health() {
   const url = process.env.ARMADA_SERVER_URL;
   if (!url) return null;
   try {
-    const response = await fetch(new URL("/healthz", url), { redirect: "error", signal: AbortSignal.timeout(10_000) });
-    return response.ok ? await response.json() : null;
+    const endpoint = new URL(url);
+    if (endpoint.protocol !== "https:") return null;
+    const response = await fetch(new URL("/healthz", endpoint), {
+      redirect: "error",
+      signal: AbortSignal.timeout(10_000),
+    });
+    return response.ok ? ((await response.json()) as unknown) : null;
   } catch {
     return null;
   }
@@ -102,7 +111,8 @@ async function preflight(requested: string) {
     .filter((tag) => stableTag.test(tag));
   if (!latest || !prior) return "two stable release tags are required";
   if (requested !== prior) return "target is not the previous stable release";
-  const release = (tag: string): Release => ({ tag, sha: command("git", "rev-parse", `refs/tags/${tag}^{commit}`) });
+  const release = (tag: string) =>
+    ({ tag, sha: command("git", "rev-parse", `refs/tags/${tag}^{commit}`) }) satisfies Release;
   return rollbackRefusal(requested, release(latest), release(prior), await health(), receipt(latest), receipt(prior));
 }
 

@@ -12,6 +12,7 @@ function receipt(release: typeof current) {
     previousVersion: "3.0.0",
     serverDeployment: "server",
     dashboardDeployment: "dashboard",
+    imageDigest: null,
     migrations: [],
     productionMigrationHistory: [],
     protocolBump: { runtime: { from: 1, to: 1 }, dockerHost: { from: 2, to: 2 } },
@@ -28,6 +29,11 @@ test.each([
   ["a request for another release", { requested: "v2.0.0" }, "target is not the previous stable release"],
   ["a different deployed SHA", { health: { ...health, commit: previous.sha } }, "current deployment unverified"],
   ["a missing current receipt", { currentAsset: null }, "current receipt unavailable or invalid"],
+  [
+    "a target receipt with a missing image digest field",
+    { previousAsset: { ...previousAsset, imageDigest: undefined } },
+    "target receipt unavailable or invalid",
+  ],
   [
     "a current receipt naming another predecessor",
     { currentAsset: { ...currentAsset, previousVersion: "2.0.0" } },
