@@ -20,7 +20,7 @@ export const CONTINUE_PROMPT =
 
 /** What the events say about the agent's work. */
 export type TurnSummary = {
-  /** The latest turn's status, or `running` while any conversation has a turn in flight. Null before the first. */
+  /** The latest turn's status, or `running` while this conversation has a turn in flight. Null before the first. */
   status: PromptStatus | null;
   /** Why the latest turn failed, as the server reported it. */
   reason: string | null;
@@ -30,8 +30,12 @@ export type TurnSummary = {
   prompt?: string | null;
 };
 
-export function summarizeEvents(events: readonly ChatEvent[]): TurnSummary {
-  const { items, running } = projectChat(events);
+export function summarizeEvents(events: readonly ChatEvent[], currentConversation?: string) {
+  const { items, running } = projectChat(
+    currentConversation
+      ? events.filter((event) => !event.conversationId || event.conversationId === currentConversation)
+      : events,
+  );
   let status: PromptStatus | null = null;
   let reason: string | null = null;
   let promptId: string | null = null;

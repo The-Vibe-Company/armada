@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { type ChatItem, projectChat, toolText } from "../src/lib/chat.ts";
+import { type ChatItem, chatTurnRunning, projectChat, toolText } from "../src/lib/chat.ts";
 import { type ChatEvent, mergeEvents } from "../src/lib/events.ts";
 import { describeFailure } from "../src/lib/failure.ts";
 
@@ -126,6 +126,12 @@ describe("chat projection", () => {
       title: "Account expired",
       fix: { href: "/harness" },
     });
+  });
+
+  test("historical status does not override the current conversation's transcript state", () => {
+    expect(chatTurnRunning({ state: "running", conversationId: "old" }, "current", false)).toBe(false);
+    expect(chatTurnRunning({ state: "finished", conversationId: "old" }, "current", true)).toBe(true);
+    expect(chatTurnRunning({ state: "running", conversationId: "current" }, "current", false)).toBe(true);
   });
 
   test("historical prompts stay visible without marking the current conversation as running", () => {

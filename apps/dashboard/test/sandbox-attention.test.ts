@@ -35,6 +35,34 @@ describe("summarizeEvents", () => {
     });
   });
 
+  test("recovery summarizes the current conversation even when an older one interrupted later", () => {
+    const events: ChatEvent[] = [
+      {
+        id: "1",
+        at: 1,
+        kind: "prompt",
+        text: "Current instruction",
+        status: "finished",
+        promptId: "b",
+        conversationId: "c2",
+      },
+      {
+        id: "2",
+        at: 2,
+        kind: "prompt",
+        text: "Historical instruction",
+        status: "interrupted",
+        promptId: "a",
+        conversationId: "c1",
+      },
+    ];
+    expect(summarizeEvents(events, "c2")).toMatchObject({
+      status: "finished",
+      prompt: "Current instruction",
+      promptId: "b",
+    });
+  });
+
   test("is running while any turn is in flight, and empty before the first", () => {
     expect(summarizeEvents([]).status).toBeNull();
     const events: ChatEvent[] = [

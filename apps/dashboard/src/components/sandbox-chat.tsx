@@ -40,7 +40,15 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import type { ActionResult } from "@/lib/action";
-import { type ChatItem, projectChat, STEER_RESTARTS_TURN, type ToolActivity, toolSummary, toolText } from "@/lib/chat";
+import {
+  type ChatItem,
+  chatTurnRunning,
+  projectChat,
+  STEER_RESTARTS_TURN,
+  type ToolActivity,
+  toolSummary,
+  toolText,
+} from "@/lib/chat";
 import {
   composerAdmission,
   INCOMPLETE_MODEL,
@@ -183,7 +191,7 @@ export function SandboxChat(props: Props) {
   const [turnModel, setTurnModel] = useState<{
     rateLimit?: { waiting: boolean; message: string; retryCount: number; totalWaitMs: number } | null;
     state?: string;
-    promptId?: string;
+    conversationId?: string | null;
     requestedModel?: string | null;
     observedModel?: string | null;
     modelSelectionReason?: string | null;
@@ -441,8 +449,7 @@ export function SandboxChat(props: Props) {
   const { currentConversation } = props;
   const chat = useMemo(() => projectChat(events, currentConversation), [events, currentConversation]);
   // A stopped or failed machine runs no turn, whatever its last prompt event said before it stopped.
-  const turnRunning =
-    (turnModel?.state ? ["queued", "running"].includes(turnModel.state) : chat.running) && LIVE.includes(status);
+  const turnRunning = LIVE.includes(status) && chatTurnRunning(turnModel, currentConversation, chat.running);
   const pauseMessage = idlePauseMessage({ status, idlePaused, expiresAt: props.expiresAt ?? null }, new Date());
   const failure = [...chat.items].reverse().find((item) => item.kind === "outcome" && item.status === "failed");
   const reason = failure?.kind === "outcome" ? failure.reason : undefined;

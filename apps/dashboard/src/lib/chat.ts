@@ -15,14 +15,6 @@ export type ChatItem =
   | (Turn & { kind: "tool"; key: string; at: number; tool: ToolActivity })
   | (Turn & { kind: "outcome"; key: string; at: number; status: "failed" | "interrupted"; reason?: string });
 
-export type Chat = {
-  items: ChatItem[];
-  /** Events the conversation does not show (unknown kinds, status-only prompts), kept for the technical view. */
-  technical: ChatEvent[];
-  /** A turn of this view is queued or running. */
-  running: boolean;
-};
-
 /**
  * How a steer reaches the running turn, as both providers declare it (`HarnessCapabilities.steer`): Claude Code joins
  * the turn, Codex interrupts it and continues with the message. Only the label depends on it; the server decides.
@@ -40,6 +32,17 @@ const STOP_EVENTS = new Set(["usage_limit", "auth_expiry"]);
 /** Claude Code reports a tool's result under this name, with the id of the call it answers. */
 const RESULT_PLACEHOLDER = "tool_result";
 
+export function chatTurnRunning(
+  status: { state?: string; conversationId?: string | null } | null,
+  currentConversation: string | undefined,
+  transcriptRunning: boolean,
+) {
+  const currentStatus = currentConversation && status?.conversationId !== currentConversation ? null : status;
+  return currentStatus?.state
+    ? currentStatus.state === "queued" || currentStatus.state === "running"
+    : transcriptRunning;
+}
+
 /**
  * Projects the event stream onto a conversation:
  * - one user message per prompt (`promptId`), whatever number of status events it has, with the latest status;
@@ -52,7 +55,7 @@ const RESULT_PLACEHOLDER = "tool_result";
  *   event failed, with that event's type as the reason.
  * The journal id stays the replay identity: the same events always give the same items and keys.
  */
-export function projectChat(events: readonly ChatEvent[], currentConversation?: string): Chat {
+export function projectChat(events: readonly ChatEvent[], currentConversation?: string) {
   const items: ChatItem[] = [];
   const technical: ChatEvent[] = [];
   const prompts = new Map<string, Extract<ChatItem, { kind: "user" }>>();
