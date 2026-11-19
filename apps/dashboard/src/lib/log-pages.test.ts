@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mergeEvents, readLogPages } from "../src/lib/events.ts";
+import { mergeEvents, readLogPages } from "./events.ts";
 
 describe("dashboard log catch-up", () => {
   test("returns the first page before later history is available, then resumes in replay order", async () => {
@@ -19,14 +19,13 @@ describe("dashboard log catch-up", () => {
     };
     const firstRead = readLogPages(logs, "sandbox", null);
     try {
-      // A held second page models arbitrary upstream delay without a clock or sleep.
       expect(await Promise.race([firstRead.then(() => "first-returned"), laterRequested.promise])).toBe(
         "first-returned",
       );
       expect(cursors).toEqual([null]);
       const first = await firstRead;
       expect(first).toMatchObject({ cursor: "1", hasMore: true });
-      // Historical continuation has no machine-activity prerequisite.
+
       const secondRead = readLogPages(logs, "sandbox", first.cursor);
       laterPage.resolve({
         events: [
@@ -39,7 +38,12 @@ describe("dashboard log catch-up", () => {
       const second = await secondRead;
       expect(cursors).toEqual([null, "1"]);
       expect(second).toMatchObject({ cursor: "2", hasMore: false });
-      expect(mergeEvents(first.events, second.events).map(({ id, text }) => ({ id, text }))).toEqual([
+      expect(
+        mergeEvents(first.events, second.events).map((event) => ({
+          id: event.id,
+          text: "text" in event ? event.text : undefined,
+        })),
+      ).toEqual([
         { id: "one", text: "complete" },
         { id: "two", text: "two" },
       ]);
