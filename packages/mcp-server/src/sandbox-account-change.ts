@@ -6,11 +6,12 @@ import {
   parseOpenCodeEndpoint,
   type Sql,
 } from "@armada/core";
+import { sandboxCheckOperations } from "@armada/core/contract";
 import { VaultError } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import type { CredentialBindingRecovery } from "./credential-binding-recovery.ts";
 
-const UUID = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
+const bindingIds = sandboxCheckOperations.bindSandboxCredential.input.body.pick({ id: true, credentialId: true });
 export const ACCOUNT_CHANGE_BUSY =
   "An account can change only when no turn is running. Wait for the turn and any start or stop operation to finish, then try again.";
 type Target = {
@@ -64,8 +65,7 @@ export function createSandboxAccountChange(
     return row;
   }
   return async (caller, input, quiesce) => {
-    if (!UUID.test(input.id) || !UUID.test(input.credentialId))
-      throw new VaultError("invalid", "Sandbox and account IDs must be UUIDs.");
+    if (!bindingIds.safeParse(input).success) throw new VaultError("invalid", "Sandbox and account IDs must be UUIDs.");
     if (!transaction) throw new VaultError("unavailable", "Account changes require a transaction.");
     const before = await target(sql, caller, input.id);
     const stopOwnedIdle = async () => {
