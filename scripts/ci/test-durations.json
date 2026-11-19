@@ -244,7 +244,6 @@
     "packages/mcp-server/test/docker-sandbox-service.test.ts": 2.508,
     "packages/mcp-server/test/exec-selected-org-api.test.ts": 2.969,
     "packages/mcp-server/test/github-account-api.test.ts": 2.497,
-    "packages/mcp-server/test/github-boat-os.test.ts": 0.022,
     "packages/mcp-server/test/github-boat.test.ts": 0.058,
     "packages/mcp-server/test/github-legacy.test.ts": 1.932,
     "packages/mcp-server/test/github-refresh.test.ts": 0.221,
