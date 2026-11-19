@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { CONTROL_BODY_MAX_BYTES, TEMPLATE_LAUNCH_FIELDS, VAULT_CONTROL_BODY_MAX_BYTES } from "@armada/core/server";
+import { z } from "zod";
 import releasePlease from "../../../release-please-config.json";
 import published from "../openapi.json";
 import { generateOpenApi } from "../src/openapi.ts";
@@ -55,7 +56,7 @@ test("every published operation states the body limit both public boundaries enf
   type Operation = { post?: { requestBody: { "x-max-body-bytes": number }; responses: Record<string, unknown> } };
   const limits = Object.fromEntries(
     Object.entries(published.paths as unknown as Record<string, Operation>).flatMap(([path, { post }]) => {
-      if (!post) return [];
+      if (!post?.requestBody?.["x-max-body-bytes"]) return [];
       expect(post.responses["413"]).toBeDefined();
       return [[path, post.requestBody["x-max-body-bytes"]]];
     }),
@@ -188,4 +189,37 @@ test("published extension request accepts either lifetime field and nullable org
   expect(extend.safeParse({ ...sandbox, ttlSeconds: 60 }).success).toBe(true);
   expect(extend.safeParse({ ...sandbox, ttl_seconds: 60 }).success).toBe(true);
   expect(extend.safeParse({ ...sandbox, ttlSeconds: 60, ttl_seconds: 60 }).success).toBe(false);
+});
+
+test("the integration projection merges methods on one path and excludes admin operations", () => {
+  const entry = {
+    name: "example",
+    route: { method: "GET", path: "/api/v1/example/{id}" },
+    input: { body: z.undefined(), path: { id: z.string() } },
+    output: z.object({ value: z.string() }),
+    readOnly: true,
+    destructive: false,
+    description: "Example",
+    errors: [],
+    audience: "public",
+  } as const;
+  const { paths } = generateOpenApi([
+    entry,
+    { ...entry, name: "deleteExample", route: { ...entry.route, method: "DELETE" } },
+    { ...entry, name: "adminExample", route: { ...entry.route, method: "PUT" }, audience: "admin" },
+  ]);
+  expect(paths).toEqual({
+    "/api/v1/example/{id}": {
+      get: expect.objectContaining({
+        operationId: "example",
+        parameters: [expect.objectContaining({ name: "id", in: "path", required: true })],
+        responses: expect.objectContaining({
+          "200": expect.objectContaining({
+            content: { "application/json": { schema: expect.objectContaining({ required: ["value"] }) } },
+          }),
+        }),
+      }),
+      delete: expect.objectContaining({ operationId: "deleteExample" }),
+    },
+  });
 });

@@ -28,6 +28,7 @@ const viewerDispatchFailure = z.union([
 export const sandboxViewerOperations = {
   mint: {
     name: "createSandboxViewerToken",
+    directServer: true,
     route: { method: "POST", path: "/api/v1/sandbox/viewer-token" },
     input: { body: z.object({ id: z.string().regex(/^[0-9a-fA-F-]{36}$/) }) },
     output: z.object({ token: z.string(), expiresAt: z.iso.datetime() }),
@@ -40,6 +41,7 @@ export const sandboxViewerOperations = {
   },
   logs: {
     name: "readViewerLogs",
+    directServer: true,
     route: { method: "POST", path: "/api/v1/viewer/logs" },
     input: { body: pageInput },
     output: readLogsOperation.output,
@@ -52,6 +54,7 @@ export const sandboxViewerOperations = {
   },
   status: {
     name: "readViewerStatus",
+    directServer: true,
     route: { method: "POST", path: "/api/v1/viewer/status" },
     input: { body: pageInput },
     output: sandboxOperations.sandboxStatus.output,
@@ -64,6 +67,7 @@ export const sandboxViewerOperations = {
   },
   send: {
     name: "sendViewerPrompt",
+    directServer: true,
     route: { method: "POST", path: "/api/v1/viewer/send" },
     input: {
       body: pageInput.extend({
@@ -81,8 +85,9 @@ export const sandboxViewerOperations = {
   },
   events: {
     name: "streamViewerEvents",
+    directServer: true,
     route: { method: "GET", path: "/api/v1/viewer/events" },
-    input: { body: z.object({}), query: pageInput },
+    input: { body: z.undefined(), query: pageInput, headers: { "Last-Event-ID": cursor } },
     output: z.discriminatedUnion("event", [
       z.object({ event: z.literal("page"), data: readLogsOperation.output }),
       z.object({ event: z.literal("access-ended"), data: z.strictObject({}) }),
