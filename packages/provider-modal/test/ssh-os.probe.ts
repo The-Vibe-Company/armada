@@ -13,8 +13,8 @@ function docker(args: string[]) {
 
 async function checkSsh(image: string, golden: boolean, runMode: number) {
   const name = `armada-ssh-auth-${crypto.randomUUID()}`;
-  docker(["run", "-d", "--rm", "--name", name, "-p", "127.0.0.1::2222", image, "sleep", "infinity"]);
   try {
+    docker(["run", "-d", "--rm", "--name", name, "-p", "127.0.0.1::2222", image, "sleep", "infinity"]);
     docker(["exec", name, "chmod", String(runMode), "/run"]);
     const port = Number(docker(["port", name, "2222/tcp"]).split(":").at(-1));
     assert.ok(port > 0, "Docker must publish the SSH port");
