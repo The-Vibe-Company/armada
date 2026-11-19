@@ -116,9 +116,16 @@ export function createRuntimeCommands(
       if (expectedEpoch !== undefined && scope.epoch !== expectedEpoch) throw new RuntimeCommandRefused();
       // Checkpoint intent fences every mutation entry point, including Docker.
       if (
-        !["checkpoint", "events", "health", "getPrompt", "getExec", "observeOrchestrator", "readOutputs"].includes(
-          request.op,
-        ) &&
+        ![
+          "checkpoint",
+          "scrubOrchestratorEpoch",
+          "events",
+          "health",
+          "getPrompt",
+          "getExec",
+          "observeOrchestrator",
+          "readOutputs",
+        ].includes(request.op) &&
         (
           await tx.query("select 1 from public.runtime_checkpoints where sandbox_id=$1 and epoch=$2", [
             scope.sandboxId,

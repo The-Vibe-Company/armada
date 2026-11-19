@@ -85,6 +85,7 @@ export async function runtimeFixture(
   );
   const starts: (string | undefined)[] = [];
   const mcpSnapshots: (import("@armada/agent-runtime").McpConfiguration | undefined)[] = [];
+  let dropReplyFor: RunnerRequest["op"] | undefined;
   let lost = false,
     now = 0;
   let nextDone: Promise<"finished" | "interrupted"> | undefined;
@@ -174,6 +175,10 @@ export async function runtimeFixture(
           responseBody.result.acknowledgedSequence++;
         }
         if (checkpointFault === "ack") responseBody.result.acknowledgedSequence--;
+      }
+      if (dropReplyFor === command.op) {
+        dropReplyFor = undefined;
+        throw Error("Guest reply lost before completion");
       }
       const replyAuthority: typeof authority = {
         ...authority,
@@ -354,6 +359,9 @@ export async function runtimeFixture(
     },
     refuse(op: RunnerRequest["op"]) {
       refused.add(op);
+    },
+    dropReplyOnce(op: RunnerRequest["op"]) {
+      dropReplyFor = op;
     },
     lose() {
       lost = true;
