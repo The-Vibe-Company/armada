@@ -61,24 +61,13 @@ export function createSandboxArmadaAccess(input: {
       )
     ).rows[0];
   }
-  async function install(provider: Provider, id: string, restore = false) {
+  async function install(provider: Provider, id: string) {
     const parent = await scope(provider, id);
     if (!parent) return;
     const target = native(provider);
     const physical = await target.get(id);
     if (!physical.physicalGeneration || !["ready", "running"].includes(physical.state))
       throw new VaultError("unavailable", "Delegated access requires an active native generation.");
-    // The ordinary MCP path intentionally does no SQL publication when no user
-    // connections exist. This native pre-prompt hook runs only after physical
-    // activation; publish that verified transition before issuing authority.
-    if (restore)
-      await sql.query(
-        `update public.sandboxes s set status='ready',stopped_at=null,
-          transition_context=jsonb_build_object('actor','armada_access','code','provider_ready')
-        where s.id=$1 and s.status='stopped' and s.stop_requested_at is null and s.deleted_at is null
-        and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id)`,
-        [parent.sandbox_id],
-      );
     // Native delivery requires quiescence. Reuse a still-acknowledged grant for
     // this incarnation instead of revoking an active turn's tools when a later
     // ordinary send is refused as busy. Stop/rebind/expiry invalidate this check.
@@ -271,7 +260,7 @@ export function createSandboxArmadaAccess(input: {
     );
   }
   return {
-    beforePrompt: (provider: Provider, id: string) => install(provider, id, true),
+    beforePrompt: install,
     beforeSnapshot: scrub,
     restoreEnrolled,
     prepare,

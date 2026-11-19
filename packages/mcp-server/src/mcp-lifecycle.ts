@@ -99,7 +99,7 @@ export function createMcpLifecycle(options: {
     // never roll back revocation of credentials recovered from an old machine snapshot.
     await sql.transaction(async (tx) => {
       const locked = await tx.query<{ id: string }>(
-        "select id from public.sandboxes where id=$1::uuid and org_id=$2::uuid and owner_id=$3::uuid and provider=$4 and provider_sandbox_id=$5 and status not in ('deleted','failed') for update",
+        "select id from public.sandboxes where id=$1::uuid and org_id=$2::uuid and owner_id=$3::uuid and provider=$4 and provider_sandbox_id=$5 and status not in ('stopped','deleted','failed') for update",
         [sandbox.id, sandbox.orgId, sandbox.ownerId, provider.id, sandbox.providerSandboxId],
       );
       if (!locked.rows.length) throw Error("Sandbox is no longer active.");
@@ -118,23 +118,15 @@ export function createMcpLifecycle(options: {
         );
     });
     const prepared = await sql.transaction(async (tx) => {
-      const locked = await tx.query<{ mcp_generation: number; status: string }>(
-        `select mcp_generation,status from public.sandboxes where id=$1::uuid and org_id=$2::uuid and owner_id=$3::uuid and status not in ('deleted','failed') and provider=$4 and provider_sandbox_id=$5 for update`,
+      const locked = await tx.query<{ mcp_generation: number }>(
+        `select s.mcp_generation from public.sandboxes s where id=$1::uuid and org_id=$2::uuid and owner_id=$3::uuid and status not in ('stopped','deleted','failed') and provider=$4 and provider_sandbox_id=$5
+         and (s.status <> 'starting' or (s.deleted_at is null and exists(
+           select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id
+         ))) for update of s`,
         [sandbox.id, sandbox.orgId, sandbox.ownerId, provider.id, sandbox.providerSandboxId],
       );
       const row = locked.rows[0];
       if (!row) throw Error("Sandbox is no longer authorized for MCP configuration.");
-      if (row.status === "stopped" || row.status === "starting") {
-        const restored = await tx.query(
-          `update public.sandboxes s set status='ready',stopped_at=null,
-          transition_context=jsonb_build_object('actor','mcp_bootstrap','code','provider_ready')
-          where s.id=$1::uuid and s.mcp_generation=$2 and s.status in ('stopped','starting') and s.deleted_at is null
-          and s.org_id=$3::uuid and s.owner_id=$4::uuid
-          and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id) returning s.id`,
-          [sandbox.id, row.mcp_generation, sandbox.orgId, sandbox.ownerId],
-        );
-        if (!restored.rows.length) throw Error("Sandbox generation or authorization changed before MCP restore.");
-      }
       const current = await tx.query<{ id: string; generation: number }>(
         `select c.id,g.generation from public.mcp_bindings b join public.mcp_connections c on c.id=b.connection_id join public.mcp_grants g on g.id=b.grant_id where b.sandbox_id=$1::uuid order by c.id`,
         [sandbox.id],

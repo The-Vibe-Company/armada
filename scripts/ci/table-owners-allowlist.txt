@@ -47,7 +47,6 @@ packages/mcp-server/src/mcp-lifecycle.ts	sandboxes	update
 packages/mcp-server/src/mcp-lifecycle.ts	sandboxes	update
 packages/mcp-server/src/mcp-lifecycle.ts	sandboxes	update
 packages/mcp-server/src/mcp-lifecycle.ts	sandboxes	update
-packages/mcp-server/src/mcp-lifecycle.ts	sandboxes	update
 packages/mcp-server/src/native-webhook-prompts.ts	org_langfuse_export_stats	insert
 packages/mcp-server/src/native-webhook-prompts.ts	org_langfuse_export_stats	insert
 packages/mcp-server/src/resource-store.ts	sandboxes	update
@@ -62,7 +61,6 @@ packages/mcp-server/src/sandbox-account-change.ts	modal_machines	update
 packages/mcp-server/src/sandbox-account-change.ts	modal_server_harnesses	update
 packages/mcp-server/src/sandbox-account-change.ts	sandbox_account_usage_pricing	insert
 packages/mcp-server/src/sandbox-account-change.ts	sandboxes	update
-packages/mcp-server/src/sandbox-armada-access.ts	sandboxes	update
 packages/mcp-server/src/sandbox-lifecycle.ts	runtime_idle_turns	insert
 packages/mcp-server/src/sandbox-outputs.ts	sandboxes	update
 packages/mcp-server/src/sandbox-outputs.ts	sandboxes	update
