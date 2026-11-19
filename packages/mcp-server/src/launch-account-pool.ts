@@ -70,5 +70,5 @@ export async function chooseLaunchPoolAccount(
       ? `#${index + 1}: exhausted until ${reason.resetsAt}`
       : `#${index + 1}: ${reason.code}`,
   );
-  throw new VaultError("conflict", `No eligible account in the launch pool (${reasons.join(", ")}).`);
+  throw new VaultError("credential_refused", `No eligible account in the launch pool (${reasons.join(", ")}).`);
 }

@@ -88,6 +88,12 @@ test("new launch resolution skips a pooled account until its current revision re
     expect((await launch()).binding?.credentialId).toBe(second);
     expect((await credentials.resolve(actor, "codex", first, 2)).binding?.credentialId).toBe(first);
 
+    await db.query("update public.credentials set status='revoked' where id=$1", [second]);
+    await expect(launch()).rejects.toMatchObject({
+      code: "credential_refused",
+      message: expect.stringContaining("exhausted until 2026-11-19T14:00:00.000Z"),
+    });
+
     now = reset;
     expect((await launch()).binding?.credentialId).toBe(first);
 
