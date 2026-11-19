@@ -38,7 +38,6 @@ import {
   type SandboxProviderId,
   type SandboxStatus,
   type SkillDefaultsService,
-  type TemplateService,
   VaultError,
 } from "@armada/core/server";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -78,7 +77,6 @@ export interface ToolContext {
   runtimeSend?: RuntimeFollowup;
   measure?: import("./request-timing.ts").RequestTiming["measure"];
   storedProviders?: Partial<Record<SandboxProviderId, ToolContext["provider"]>>;
-  templates?: TemplateService;
   skillDefaults?: SkillDefaultsService;
   caller: Caller;
   data: ScopedData;
@@ -554,58 +552,6 @@ export function createArmadaServer(context: ToolContext, version: string, option
     registerList();
     return server;
   }
-
-  const templateInput = z
-    .object({
-      org: z.string().uuid(),
-      id: z.string().uuid(),
-      revision: z.number().int().positive().optional(),
-      requestKey: z.string(),
-      prompt: z.string().optional(),
-      ttlSeconds: z.number().int().positive().optional(),
-      size: z.enum(MACHINE_SIZES).optional(),
-      repo: z.string().optional(),
-      skills: z.array(z.string()).max(20).optional(),
-      skipSkillDefaults: z.boolean().optional(),
-      stopWhenWorkMerged: z.boolean().optional(),
-    })
-    .strict();
-  server.registerTool(
-    "template_launch",
-    {
-      description:
-        "Launch an immutable template revision. requestKey is required: same key/body returns the recorded request and never allocates twice. Readable variables are NOT secrets; no secret bindings or authority-enlarging overrides.",
-      inputSchema: templateInput,
-      outputSchema: z.object({}).passthrough(),
-    },
-    async (args: Record<string, unknown>) => {
-      try {
-        if (!context.templates) throw new VaultError("unavailable", "Templates unavailable.");
-        const result = await context.templates.command(caller, "launch", args, {
-          stores: {
-            goldens: data.goldens,
-            sandboxes: data.sandboxes,
-            credentials: context.launchCredentials,
-            ...(context.connections ? { connections: context.connections } : {}),
-          },
-          provider: context.provider,
-          ...(context.launch ? { options: context.launch } : {}),
-        });
-        return { structuredContent: result, content: [{ type: "text" as const, text: JSON.stringify(result) }] };
-      } catch (error) {
-        return {
-          isError: true,
-          content: [
-            { type: "text" as const, text: error instanceof VaultError ? error.message : "Templates unavailable." },
-            {
-              type: "text" as const,
-              text: `error code: ${error instanceof VaultError ? error.code : "unavailable"}`,
-            },
-          ],
-        };
-      }
-    },
-  );
 
   const visible = async (sandboxId: string): Promise<SandboxView> => {
     const found = await data.sandboxes.get(sandboxId);

@@ -7773,6 +7773,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
                 "type": "object",
                 "properties": {
                   "org": {
@@ -7857,7 +7858,6 @@
                   "id",
                   "requestKey"
                 ],
-                "$schema": "http://json-schema.org/draft-07/schema#",
                 "additionalProperties": false
               }
             }
