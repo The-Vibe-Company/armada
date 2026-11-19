@@ -233,7 +233,7 @@ describe("on the database client production uses", () => {
     expect((await call(mcp, "status", { id: launched.data.id })).isError).toBe(false);
     expect((await call(mcp, "logs", { id: launched.data.id })).isError).toBe(false);
     boat.finish("bx_1", "prompt_1", "finished");
-    const waited = await call(mcp, "wait", { id: launched.data.id, timeoutSeconds: 5 });
+    const waited = await call(mcp, "status", { wait: true, id: launched.data.id, timeout_seconds: 5 });
     expect(waited.isError).toBe(false);
     expect((await call(mcp, "send", { id: launched.data.id, prompt: "and the tests" })).isError).toBe(false);
     const stopped = await call(mcp, "stop", { id: launched.data.id });
@@ -508,16 +508,17 @@ describe("tools", () => {
     const listed = await call(member, "list");
     expect(listed.data.sandboxes).toMatchObject([{ id: mine.data.id, canOpen: false, canManage: false }]);
     const before = { keys: boat.keys.length, execs: boat.execs.length, stops: boat.stops.length };
-    for (const [name, args] of Object.entries({
-      status: {},
-      logs: {},
-      wait: { timeout_seconds: 0 },
-      exec: { command: "pwd" },
-      send: { prompt: "hello" },
-      steer: { text: "hello" },
-      interrupt: {},
-      stop: {},
-    })) {
+    const controls = [
+      ["status", {}],
+      ["logs", {}],
+      ["status", { wait: true, timeout_seconds: 0 }],
+      ["exec", { command: "pwd" }],
+      ["send", { prompt: "hello" }],
+      ["send", { steer: true, prompt: "hello" }],
+      ["stop", { turn: true }],
+      ["stop", {}],
+    ] as const;
+    for (const [name, args] of controls) {
       const denied = await call(member, name, { id: mine.data.id, ...args });
       expect(denied.isError).toBe(true);
       expect(denied.text).toContain("No sandbox");
@@ -961,7 +962,7 @@ describe("tools", () => {
       tools: [],
     });
     boat.finish("bx_1", "prompt_2", "finished");
-    const waited = await call(mcp, "wait", { id, timeout_seconds: 1 });
+    const waited = await call(mcp, "status", { wait: true, id, timeout_seconds: 1 });
     expect(waited.data).toMatchObject({
       model: "claude-fable-5-2",
       prompt: {
@@ -986,17 +987,17 @@ describe("tools", () => {
     expect(persisted.rows).toHaveLength(2);
   });
 
-  test("wait returns once the turn ends, and timedOut when it does not", async () => {
+  test("status with wait returns once the turn ends, and timedOut when it does not", async () => {
     const { token, client, people, boat, clock } = await start();
     const mcp = await client(await token(people.member));
     const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude", prompt: "go" });
     const before = clock.now.getTime();
-    const waiting = await call(mcp, "wait", { id: launched.data.id, timeout_seconds: 3 });
+    const waiting = await call(mcp, "status", { wait: true, id: launched.data.id, timeout_seconds: 3 });
     expect(waiting.data).toMatchObject({ timedOut: true, settled: false, status: "running" });
     expect(clock.now.getTime() - before).toBe(3000);
 
     boat.finish("bx_1", "prompt_1", "finished");
-    const done = await call(mcp, "wait", { id: launched.data.id, timeout_seconds: 3 });
+    const done = await call(mcp, "status", { wait: true, id: launched.data.id, timeout_seconds: 3 });
     expect(done.data).toMatchObject({
       timedOut: false,
       settled: true,
@@ -1083,7 +1084,8 @@ describe("tools", () => {
       (await call(admin, "send", { id: launched.data.id, prompt: "Cannot use owner's personal account" })).isError,
     ).toBe(true);
     expect(
-      (await call(admin, "steer", { id: launched.data.id, text: "Cannot restart with owner's account" })).isError,
+      (await call(admin, "send", { id: launched.data.id, steer: true, prompt: "Cannot restart with owner's account" }))
+        .isError,
     ).toBe(true);
     expect({ prompts: boat.prompts.length, steers: boat.steers.length }).toEqual(beforeAdmin);
     const listed = await call(admin, "list");
@@ -1110,7 +1112,7 @@ describe("tools", () => {
     expect(refused.text).toContain("No fallback was used");
     expect(boat.prompts).toHaveLength(count);
     const steerCount = boat.steers.length;
-    const steerRefused = await call(mcp, "steer", { id: launched.data.id, text: "Must not restart" });
+    const steerRefused = await call(mcp, "send", { id: launched.data.id, steer: true, prompt: "Must not restart" });
     expect(steerRefused.isError).toBe(true);
     expect(steerRefused.text).toContain("No fallback was used");
     expect(boat.steers).toHaveLength(steerCount);
@@ -1179,7 +1181,7 @@ describe("tools", () => {
     const { token, client, people, boat, db } = await start();
     const mcp = await client(await token(people.member));
     const codex = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "codex", prompt: "go" });
-    expect((await call(mcp, "steer", { id: codex.data.id, text: "Use bun" })).data).toMatchObject({
+    expect((await call(mcp, "send", { id: codex.data.id, steer: true, prompt: "Use bun" })).data).toMatchObject({
       delivery: "restart",
     });
     const claude = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
@@ -1202,7 +1204,7 @@ describe("tools", () => {
     const tick = lifecycle.reconcileOne();
     try {
       await observing.promise;
-      const refused = await call(mcp, "steer", { id: claude.data.id, text: "Use bun" });
+      const refused = await call(mcp, "send", { id: claude.data.id, steer: true, prompt: "Use bun" });
       expect(refused.isError).toBe(true);
       expect(refused.text).toContain("Use send");
     } finally {
@@ -1215,7 +1217,7 @@ describe("tools", () => {
       status: "ready",
     });
     await call(mcp, "send", { id: claude.data.id, prompt: "go" });
-    expect((await call(mcp, "steer", { id: claude.data.id, text: "Use bun" })).data).toMatchObject({
+    expect((await call(mcp, "send", { id: claude.data.id, steer: true, prompt: "Use bun" })).data).toMatchObject({
       delivery: "native",
     });
     expect(boat.steers).toHaveLength(3);
@@ -1229,6 +1231,23 @@ describe("tools", () => {
     const ran = await call(mcp, "exec", { id: launched.data.id, command: "env" });
     expect(ran.data).toMatchObject({ exitCode: 0, stdout: "CLAUDE_CODE_OAUTH_TOKEN=***\nok\n" });
     expectNoSecret(ran.text);
+  });
+
+  test("stop with turn interrupts the agent and leaves compute up", async () => {
+    const { token, client, people, boat } = await start();
+    const mcp = await client(await token(people.member));
+    const launched = await call(mcp, "launch", {
+      provider: "boat",
+      golden: "shared",
+      harness: "claude",
+      prompt: "work",
+    });
+    const interrupt = spyOn(boat.provider, "interrupt");
+    const id = launched.data.id;
+    const stopped = await call(mcp, "stop", { id, turn: true });
+    expect(stopped.data).toEqual({ id, interrupted: true });
+    expect(interrupt).toHaveBeenCalledWith({ sandboxId: "bx_1" });
+    expect(boat.stops).toEqual([]);
   });
 
   test.each(["running", "failed"])(
@@ -1388,8 +1407,10 @@ describe("tools", () => {
       (
         await call(
           mcp,
-          tool,
-          tool === "exec" ? { id, command: "touch after-capture" } : { id, text: "change after capture" },
+          tool === "exec" ? "exec" : "send",
+          tool === "exec"
+            ? { id, command: "touch after-capture" }
+            : { id, steer: true, prompt: "change after capture" },
         )
       ).isError,
     ).toBe(true);
@@ -1505,7 +1526,7 @@ describe("tools", () => {
       // remain available without replaying capture or stop on archiving compute.
       await db.query("update sandboxes set reconcile_lease_until=now()+interval '2 minutes' where id=$1", [id]);
       expect((await call(mcp, "status", { id })).data).toMatchObject({ status: "stopping", settled: false });
-      expect((await call(mcp, "wait", { id, timeout_seconds: 0 })).data.timedOut).toBe(true);
+      expect((await call(mcp, "status", { wait: true, id, timeout_seconds: 0 })).data.timedOut).toBe(true);
       expect((await call(mcp, "stop", { id })).data.status).toBe("stopping");
       await db.query("update sandboxes set reconcile_lease_until=null where id=$1", [id]);
       const lifecycle = createSandboxLifecycle(bunLikeSql(db), async () => boat.provider);
@@ -1636,9 +1657,16 @@ test("public MCP inventory and schemas expose operation contracts", async () => 
   const { token, client, people } = await start();
   const mcp = await client(await token(people.member));
   const { tools } = await mcp.listTools();
-  expect(tools.map((tool) => tool.name).sort()).toEqual(
-    ["exec", "interrupt", "launch", "list", "logs", "report", "send", "status", "steer", "stop", "wait"].sort(),
-  );
+  expect(tools.map((tool) => tool.name).sort()).toEqual([
+    "exec",
+    "launch",
+    "list",
+    "logs",
+    "report",
+    "send",
+    "status",
+    "stop",
+  ]);
   for (const tool of tools) expect(tool.outputSchema).toBeDefined();
   const launch = tools.find((tool) => tool.name === "launch");
   expect(launch?.inputSchema.anyOf).toEqual(

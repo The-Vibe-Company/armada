@@ -82,13 +82,13 @@ export class ToolApiError extends Error {
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { INTERNAL_FAILURE_MESSAGE } from "./control-response.ts";
-import { createArmadaServer, type ToolContext } from "./tools.ts";
+import { createRestToolServer, type ToolContext } from "./tools.ts";
 
 /** HTTP and MCP run precisely the same validated operations and authorization context. */
 export async function callSharedTool(context: ToolContext, name: string, args: Record<string, unknown>) {
   const measure: NonNullable<ToolContext["measure"]> = context.measure ?? ((_phase, work) => work());
   const server = await measure("tool_register", async () =>
-    createArmadaServer(context, VERSION, name === "list" ? { onlyTool: "list" } : undefined),
+    createRestToolServer(context, VERSION, name === "list" ? "list" : undefined),
   );
   const { client, a, b } = await measure("tool_connect", async () => {
     const client = new Client({ name: "armada-http", version: "1" });
