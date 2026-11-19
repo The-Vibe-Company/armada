@@ -19,7 +19,6 @@ type DispatchEntry = {
 
 export type DispatchTurn = (caller: Caller, input: RuntimeFollowupInput) => Promise<unknown>;
 
-/** Execute an admitted request and settle its public receipt and account reservation. */
 export async function dispatchAccountTurn(
   sql: Sql,
   key: string,
@@ -46,8 +45,6 @@ export async function dispatchAccountTurn(
       error.code === "conflict" &&
       (error.message === "Template launch refused: secret_unavailable." ||
         error.message === "Template launch refused: secret_version_changed.");
-    // Retry only when durable evidence proves no model mutation began. Generation/lease
-    // fences native and runtime sends; journals and host jobs additionally fence Docker.
     await sql.transaction!(async (tx) => {
       await tx.query("select id from public.credentials where id=$1 for update", [entry.account_id]);
       const unchanged = await tx.query(
@@ -81,7 +78,6 @@ export async function dispatchAccountTurn(
           ],
         );
       } else {
-        // No raw exception text: provider diagnostics may contain credentials.
         await tx.query(
           `update public.account_turn_queue q set failure_reason='Dispatch outcome uncertain; inspect sandbox history before resending.',
            state=case when coalesce(${RUNTIME_LANE},false) then q.state else 'failed' end,
