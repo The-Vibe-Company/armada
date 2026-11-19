@@ -23,7 +23,7 @@ function server(reply: (call: Call) => Response, sessionId?: string) {
 }
 
 const unexpectedControl = {
-  async post<T>(): Promise<T> {
+  post: async () => {
     throw new Error("Unexpected REST request");
   },
 };
