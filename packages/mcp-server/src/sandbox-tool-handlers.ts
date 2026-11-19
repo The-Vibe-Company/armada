@@ -16,6 +16,7 @@ import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
 import type { SandboxView, ServerSandboxPatch } from "./data.ts";
 import { mcpLaunchContract, runMcpLaunch } from "./mcp-launch-tool.ts";
 import { DEFAULT_WAIT_SECONDS, registerListTool, registerLogsTool, registerStatusTools } from "./mcp-read-tools.ts";
+import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 import { recordOperatorFailure } from "./request-observability.ts";
 import { appendConversation, sandboxActivity } from "./sandbox-activity.ts";
 import { refuseConversationSelector } from "./sandbox-conversation.ts";
@@ -450,12 +451,13 @@ export function configureTools(
     sandboxOperations.stopSandbox.tool,
     async (args) => {
       const found = await visible(args.id);
-      if (args.only_if_idle && !["ready", "stopped"].includes(found.status))
+      const canCheckIdle = found.status === "ready" || (found.status === "running" && runtimeBridgeTarget(found));
+      if (args.only_if_idle && !canCheckIdle && found.status !== "stopped")
         throw new VaultError(
           "credential_binding_unsafe",
           "Wait for the running turn or lifecycle operation to finish before changing accounts.",
         );
-      if (args.only_if_idle && found.status === "ready" && !(await statusOf(args.id, undefined)).settled)
+      if (args.only_if_idle && canCheckIdle && !(await statusOf(args.id, undefined)).settled)
         throw new VaultError(
           "credential_binding_unsafe",
           "Wait for the current turn to finish before changing accounts.",
