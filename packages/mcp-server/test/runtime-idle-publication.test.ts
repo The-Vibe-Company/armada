@@ -5,14 +5,22 @@ import { runtimeFixture } from "./runtime.fixture.ts";
 const database = rowOnlyDatabase();
 for (const provider of ["boat", "modal"] as const)
   describe.each(["publish", "expired", "pin"] as const)(`${provider} empty runtime publication (%s)`, (mutation) => {
-    let f: Awaited<ReturnType<typeof runtimeFixture>>;
+    let prepared: Promise<Awaited<ReturnType<typeof runtimeFixture>>> | undefined;
     beforeAll(async () => {
-      f = await runtimeFixture(await database(), provider, "codex", true);
+      prepared = database().then((db) => runtimeFixture(db, provider, "codex", true));
+      await prepared;
     });
     afterAll(async () => {
-      await f?.close();
+      const pending = prepared;
+      prepared = undefined;
+      await pending?.then(
+        (fixture) => fixture.close(),
+        () => undefined,
+      );
     });
     test("only an unchanged actively leased launch retains authority", async () => {
+      const f = await prepared;
+      if (!f) throw Error("Idle runtime fixture is not open");
       await f.db.query(
         `update sandboxes set status='starting',activity_lease_id=$2,activity_until=now()+interval '1 minute' where id=$1`,
         [f.row.id, crypto.randomUUID()],
