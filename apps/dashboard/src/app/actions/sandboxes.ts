@@ -14,23 +14,26 @@ import {
   STEER_KEEPS_MODEL,
 } from "@/lib/composer";
 import { CONNECTION_CHOICE_FIELD, launchSelection } from "@/lib/connections";
-import { ControlError } from "@/lib/control";
+import { CAPABILITIES_TIMEOUT_MS, ControlError, createControlClient, readGoldenCapabilities } from "@/lib/control";
 import { listSelectedConnections } from "@/lib/data/connections";
 import { readDockerLaunchOption, readSelectedDockerHosts } from "@/lib/data/docker-hosts";
 import { readSelectedDockerSnapshots } from "@/lib/data/docker-snapshots";
 import { viewerGateway } from "@/lib/data/gateway";
+import { getGitHubConnection } from "@/lib/data/github";
 import { listGoldens } from "@/lib/data/goldens";
 import { readLaunchOptions } from "@/lib/data/launch-options";
 import { launchAccounts, listSelectedAccounts } from "@/lib/data/model-accounts";
 import { newWorkBlocker, readProviderSetup } from "@/lib/data/provider-setup";
 import { getSandbox } from "@/lib/data/sandboxes";
 import { isSelectedOrganization, selectedOrganization } from "@/lib/data/selected-org";
+import { listSelectedTemplates, lookupsFrom } from "@/lib/data/templates";
+import { listSelectedVault } from "@/lib/data/variables";
 import { requireViewer } from "@/lib/data/viewer";
 import { dockerHarnesses, dockerLaunchBlocker } from "@/lib/docker-launch";
 import { snapshotLaunchEnabled } from "@/lib/docker-snapshots";
 import { mcpUrl } from "@/lib/env";
 import { createGateway, GatewayError } from "@/lib/gateway";
-import { goldenLaunchReadiness, PROVIDER_LABELS } from "@/lib/golden-form";
+import { goldenLaunchReadiness, goldenRowState, PROVIDER_LABELS, providerCapacity } from "@/lib/golden-form";
 import { DOCKER_HOST_LABEL, dockerHostGroup } from "@/lib/labels";
 import {
   decodeLaunchAttempt,
@@ -48,10 +51,11 @@ import { goldenSizing, MACHINE_SIZE_LABELS, PROVIDER_REFUSALS, policyHasDefaults
 import { checkAccountChoice } from "@/lib/model-accounts";
 import { chosenConnection, launchArgs, type ModelFields, type SendArgs, sendOverride } from "@/lib/model-choice";
 import { connectedProviders } from "@/lib/provider-setup";
-import { goldenRepositoryDirs, repositoryChoice } from "@/lib/repository-context";
+import { goldenRepositories, goldenRepositoryDirs, repositoryChoice } from "@/lib/repository-context";
 import { filtersToSearch } from "@/lib/sandbox-filters";
 import { lifecycleFailure } from "@/lib/sandbox-lifecycle";
 import { createClient } from "@/lib/supabase/server";
+import { launchTarget } from "@/lib/template-launch";
 import { ttlChoice } from "@/lib/templates";
 
 async function gatewayFor(id: string) {
@@ -421,22 +425,37 @@ async function accountChoice(
 }
 
 /** Read the selected organization's visible launch sources only, using the viewer's JWT. */
-export async function readLaunchDialogOptions() {
+export async function readLaunchDialogOptions(includeBuildCapacity = false) {
   const selected = await selectedOrganization();
   if (!selected) throw new Error("Choose an organization first.");
   const supabase = await createClient();
-  const [goldens, hostRead, snapshotRead, dockerOption, discovery, listed, accountList, setup, idleDelaySeconds] =
-    await Promise.all([
-      listGoldens(supabase),
-      readSelectedDockerHosts(),
-      readSelectedDockerSnapshots(),
-      readDockerLaunchOption(),
-      readLaunchOptions(),
-      listSelectedConnections(),
-      listSelectedAccounts(),
-      readProviderSetup(selected.org.id),
-      readLaunchIdleDelay(),
-    ]);
+  const [
+    goldens,
+    hostRead,
+    snapshotRead,
+    dockerOption,
+    discovery,
+    listed,
+    accountList,
+    setup,
+    idleDelaySeconds,
+    templateList,
+    vault,
+    github,
+  ] = await Promise.all([
+    listGoldens(supabase),
+    readSelectedDockerHosts(),
+    readSelectedDockerSnapshots(),
+    readDockerLaunchOption(),
+    readLaunchOptions(),
+    listSelectedConnections(),
+    listSelectedAccounts(),
+    readProviderSetup(selected.org.id),
+    readLaunchIdleDelay(),
+    listSelectedTemplates(),
+    listSelectedVault(),
+    getGitHubConnection(supabase).catch(() => null),
+  ]);
   const connected = setup.state === "unavailable" ? null : connectedProviders(setup.status);
   const targets: LaunchStartTarget[] = goldens.flatMap((golden): LaunchStartTarget[] => {
     if (golden.provider === "docker") return [];
@@ -455,7 +474,9 @@ export async function readLaunchDialogOptions() {
         provider: golden.provider,
         label: `${golden.name} · ${golden.provider === "boat" ? "Boat" : "Modal"} cloud`,
         group: `${golden.provider === "boat" ? "Boat" : "Modal"} cloud`,
-        repositories,
+        repositories: goldenRepositories(golden.config),
+        createdAt: golden.created_at,
+        ...(golden.provider_snapshot_id ? { snapshotRef: golden.provider_snapshot_id } : {}),
         ...(readiness.kind === "ready" ? {} : { reason: readiness.detail }),
         ...(sizing.kind === "ready" ? { sizing: { policy: sizing.policy } } : {}),
         ...(sizing.kind === "unreadable" ? { reason: sizing.reason } : {}),
@@ -495,10 +516,14 @@ export async function readLaunchDialogOptions() {
             golden: snapshot.name,
             provider: "docker",
             snapshotId: snapshot.id,
+            snapshotHostId: snapshot.hostId,
             label: `${snapshot.name} · ${host.name ?? DOCKER_HOST_LABEL}`,
             group: dockerHostGroup(host.name, host.state),
             hostName: host.name ?? DOCKER_HOST_LABEL,
-            repositories: [],
+            repositories: snapshot.config.repos.map(({ url, dir }) => ({ url, dir })),
+            createdAt: snapshot.createdAt,
+            building: snapshot.status === "building",
+            failed: snapshot.status === "failed",
             harnesses: agents.offered,
             ...(blocked ? { reason: blocked } : {}),
           });
@@ -506,11 +531,69 @@ export async function readLaunchDialogOptions() {
       }
     }
   }
+  const accounts = launchAccounts(accountList, Date.now());
+  const hosts = hostRead.state === "ready" ? hostRead.list.hosts : [];
+  const snapshots = snapshotRead.state === "ready" ? snapshotRead.snapshots : [];
+  const lookups = {
+    ...lookupsFrom(goldens, listed, vault),
+    accounts,
+    hosts,
+    snapshots,
+  };
+  const templates =
+    templateList.state === "ready"
+      ? templateList.items.flatMap((item) => launchTarget(item, goldens, lookups) ?? [])
+      : [];
+  const buildProviders = connected ?? [];
+  const viewer = includeBuildCapacity && buildProviders.length ? await requireViewer() : null;
+  const serverUrl = mcpUrl();
+  const client =
+    viewer?.token && serverUrl
+      ? createControlClient({ serverUrl, token: viewer.token, timeoutMs: CAPABILITIES_TIMEOUT_MS })
+      : null;
+  const capacities = client
+    ? Object.fromEntries(
+        await Promise.all(
+          buildProviders.map(
+            async (provider) =>
+              [
+                provider,
+                providerCapacity(goldens, await readGoldenCapabilities(client, selected.org.id, provider), provider),
+              ] as const,
+          ),
+        ),
+      )
+    : undefined;
+  const replacements = viewer
+    ? goldens
+        .filter(
+          (golden) =>
+            golden.provider === "boat" &&
+            goldenRowState(golden, goldens, { id: viewer.id, isAdmin: selected.role === "admin" }).canRebuild,
+        )
+        .map(({ id, name, visibility }) => ({ id, name, visibility }))
+    : [];
   return {
     orgId: selected.org.id,
     targets,
+    templates,
+    build: {
+      orgName: selected.org.name,
+      isAdmin: selected.role === "admin",
+      githubConnected: Boolean(github && !github.revoked_at),
+      providers: buildProviders,
+      capacities,
+      replacements,
+      hosts:
+        hostRead.state === "ready" &&
+        hostRead.list.placement &&
+        dockerOption?.enabled &&
+        dockerOption.capabilities.goldens
+          ? hosts
+          : [],
+    },
     catalog: MODEL_CATALOG,
-    accounts: launchAccounts(accountList, Date.now()),
+    accounts,
     connections:
       listed.state === "ready" ? { connections: listed.connections } : { unavailable: "Tools could not be loaded." },
     boatOpenCodeAvailable: boatOpenCodeAvailable(discovery),

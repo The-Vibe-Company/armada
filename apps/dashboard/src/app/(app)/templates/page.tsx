@@ -5,6 +5,7 @@ import Link from "next/link";
 import { CatalogBrowser } from "@/components/catalog-browser";
 import { CatalogHarnessMark } from "@/components/catalog-harness-mark";
 import { CreatedAt } from "@/components/created-at";
+import { DockerLaunchLimitList } from "@/components/docker-launch-limit-list";
 import { IngredientLink } from "@/components/ingredient-link";
 import { Empty, PageHeader } from "@/components/page-header";
 import type { ResourceRow } from "@/components/resource-browser";
@@ -231,7 +232,10 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
         )}
         {target && !blocker && (
           <div className="pt-1">
-            <TemplateLaunchDialog target={target} />
+            <TemplateLaunchDialog
+              target={target}
+              dockerLimits={target.definition.provider === "docker" && <DockerLaunchLimitList />}
+            />
           </div>
         )}
       </div>
@@ -409,7 +413,16 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
         ))}
       </div>
     ),
-    ...(target && !blocker ? { action: <TemplateLaunchDialog target={target} /> } : {}),
+    ...(target && !blocker
+      ? {
+          action: (
+            <TemplateLaunchDialog
+              target={target}
+              dockerLimits={target.definition.provider === "docker" && <DockerLaunchLimitList />}
+            />
+          ),
+        }
+      : {}),
     detail,
     attrs: { "data-template": item.name },
   };
