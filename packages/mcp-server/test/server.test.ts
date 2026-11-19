@@ -1550,7 +1550,6 @@ test("public MCP inventory and schemas expose operation contracts", async () => 
       "launch",
       "list",
       "logs",
-      "template_launch",
       "report",
       "send",
       "runtime_github_status",

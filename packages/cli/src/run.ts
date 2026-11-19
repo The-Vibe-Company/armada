@@ -1,4 +1,4 @@
-import { AuthError, assertProvider } from "@armada/auth";
+import { AuthError } from "@armada/auth";
 import {
   configFromFlags,
   type GoldenBuildStatus,
@@ -20,18 +20,9 @@ import { accountCommand } from "./account-commands.ts";
 import { applicationVaultCommand } from "./application-vault-commands.ts";
 import { acceptedOptions, flag, oneName, parseArgs, providerFlag, single, values } from "./args.ts";
 import { ArmadaApiError, createArmadaApiClient, resolveArmadaOrigin } from "./armada-api.ts";
-import {
-  type AuthIo,
-  loginCommand,
-  logoutCommand,
-  productionAuthIo,
-  tokenCreate,
-  tokenList,
-  tokenRevoke,
-} from "./auth-commands.ts";
-import { commandWords, completion, HELP } from "./command-catalog.ts";
+import { type AuthIo, loginCommand, productionAuthIo } from "./auth-commands.ts";
+import { commandWords, HELP } from "./command-catalog.ts";
 import { findCommand } from "./commands/index.ts";
-import { doctor } from "./devx.ts";
 import { dockerSnapshotCommand } from "./docker-snapshots.ts";
 import { failureHint } from "./failure-hint.ts";
 import { hostCommand } from "./host-commands.ts";
@@ -98,15 +89,18 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
         "mcp",
         "creds",
         "org",
-        "account",
         "github",
-        "token",
         "skill",
       ].includes(localArgs[0] ?? "")
     ) {
       const family = localArgs[0] === "golden" ? "snapshot" : (localArgs[0] ?? "");
       if (family === "skill") return skillCommand(["--help"], io);
       io.out(onboardingHelp([family, "--help"]) ?? HELP);
+      return 0;
+    }
+    const bareCommand = localArgs.length === 1 ? findCommand(localArgs[0] ?? "") : undefined;
+    if (bareCommand?.helpWhenBare) {
+      io.out(bareCommand.help);
       return 0;
     }
     const focusedHelp = onboardingHelp(localArgs);
@@ -248,14 +242,16 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
   let rest = original;
   const terminator = rest.indexOf("--");
   const optionArgs = terminator < 0 ? rest : rest.slice(0, terminator);
-  const scoped = ["doctor", "host", "golden", "bind-credential", "mcp"];
+  const scoped = ["host", "golden", "bind-credential", "mcp"];
+  const useSelectedOrg = registered?.useSelectedOrg;
+  const commandUsesSelection =
+    typeof useSelectedOrg === "function" ? useSelectedOrg(rest) : registered && useSelectedOrg !== false;
   if (
     command &&
-    ((registered && registered.useSelectedOrg !== false) ||
+    (commandUsesSelection ||
       scoped.includes(command) ||
       (command === "org" && ["members", "setup", "connect"].includes(rest[0] ?? "")) ||
-      (command === "creds" && rest[0] === "list") ||
-      (command === "token" && rest[0] === "create")) &&
+      (command === "creds" && rest[0] === "list")) &&
     !optionArgs.some((arg) => arg === "--org" || arg.startsWith("--org="))
   ) {
     const auth = authOf(io, deps);
@@ -278,10 +274,6 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
     case "help":
       io.out(HELP);
       return 0;
-    case "doctor":
-      return doctor(rest, { ...authOf(io, deps), ...io });
-    case "completion":
-      return completion(rest, io);
     case "host":
       return hostCommand(rest, { ...authOf(io, deps), ...io });
     case "golden":
@@ -302,12 +294,7 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
         () => (deps.readStdin ? deps.readStdin() : process.stdin.isTTY ? Promise.resolve("") : Bun.stdin.text()),
       );
     case "github":
-    case "account":
       return accountCommand(command, rest, authOf(io, deps));
-    case "login":
-      return login(rest, io, deps);
-    case "logout":
-      return logout(rest, io, deps);
     case "org":
       return orgCommand(rest, vaultIo(io, deps));
     case "routine":
@@ -319,8 +306,6 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
       return applicationVaultCommand(command, rest, vaultIo(io, deps, true));
     case "creds":
       return credsCommand(rest, vaultIo(io, deps));
-    case "token":
-      return tokenCommand(parseAuth(rest), authOf(io, deps));
     default:
       throw new AuthError(`unknown command '${command}'. Run 'armada --help'.`, "usage");
   }
@@ -839,105 +824,6 @@ async function readConfig(args: ReturnType<typeof parseArgs>, deps: Deps): Promi
     return parseSnapshotConfig(parsed);
   }
   return configFromFlags(repos, init, "snapshot");
-}
-
-async function login(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
-  const parsed = parseAuth(argv);
-  rejectUnknown(parsed.flags, ["provider", "email", "url", "json"]);
-  if (parsed.position.length > 0) throw new AuthError("Run armada login --help.", "usage");
-  if (parsed.flags.has("provider") && parsed.flags.has("email")) {
-    throw new AuthError("Use --provider or --email, not both.", "usage");
-  }
-  const provider = parsed.flags.has("provider") ? assertProvider(authFlag(parsed.flags, "provider")) : undefined;
-  const email = parsed.flags.has("email") ? authFlag(parsed.flags, "email") : undefined;
-  await loginCommand(authOf(io, deps), {
-    provider,
-    email,
-    url: parsed.flags.get("url"),
-    json: parsed.flags.has("json"),
-  });
-  return 0;
-}
-
-async function logout(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
-  const parsed = parseAuth(argv);
-  rejectUnknown(parsed.flags, ["json"]);
-  if (parsed.position.length > 0) throw new AuthError("Run armada logout.", "usage");
-  await logoutCommand(authOf(io, deps), parsed.flags.has("json"));
-  return 0;
-}
-
-async function tokenCommand(parsed: AuthArgs, auth: AuthIo): Promise<number> {
-  const sub = parsed.position[0];
-  const extra = parsed.position[1];
-  switch (sub) {
-    case "create":
-      rejectUnknown(parsed.flags, ["org", "label", "json"]);
-      if (extra !== undefined) throw new AuthError("Run armada token create --org <name> --label <label>.", "usage");
-      await tokenCreate(auth, parsed.flags.get("org"), parsed.flags.get("label"), parsed.flags.has("json"));
-      return 0;
-    case "list":
-      rejectUnknown(parsed.flags, ["json"]);
-      if (extra !== undefined) throw new AuthError("Run armada token list.", "usage");
-      await tokenList(auth, parsed.flags.has("json"));
-      return 0;
-    case "revoke":
-      rejectUnknown(parsed.flags, ["json"]);
-      if (!extra || parsed.position.length > 2) throw new AuthError("Run armada token revoke <id>.", "usage");
-      await tokenRevoke(auth, extra, parsed.flags.has("json"));
-      return 0;
-    default:
-      throw new AuthError("Run armada token create, list, or revoke.", "usage");
-  }
-}
-
-interface AuthArgs {
-  position: string[];
-  flags: Map<string, string>;
-}
-
-function parseAuth(argv: readonly string[]): AuthArgs {
-  const position: string[] = [];
-  const flags = new Map<string, string>();
-  for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index];
-    if (arg === undefined) continue;
-    if (arg === "--") {
-      position.push(...argv.slice(index + 1));
-      break;
-    }
-    if (!arg.startsWith("--")) {
-      position.push(arg);
-      continue;
-    }
-    const eq = arg.indexOf("=");
-    const name = eq === -1 ? arg.slice(2) : arg.slice(2, eq);
-    if (name === "json" && eq === -1) {
-      flags.set("json", "true");
-      continue;
-    }
-    if (name.length === 0) throw new AuthError("Unknown flag.", "usage");
-    const value = eq === -1 ? argv[index + 1] : arg.slice(eq + 1);
-    if (eq === -1) {
-      if (value === undefined || value.startsWith("--")) throw new AuthError(`Missing value for --${name}.`, "usage");
-      index += 1;
-    }
-    if (value === undefined) throw new AuthError(`Missing value for --${name}.`, "usage");
-    flags.set(name, value);
-  }
-  return { position, flags };
-}
-
-function authFlag(flags: Map<string, string>, name: string): string {
-  const value = flags.get(name);
-  if (value === undefined) throw new AuthError(`Missing value for --${name}.`, "usage");
-  return value;
-}
-
-function rejectUnknown(flags: Map<string, string>, allowed: readonly string[]): void {
-  for (const name of flags.keys()) {
-    if (!allowed.includes(name)) throw new AuthError(`Unknown flag --${name}.`, "usage");
-  }
 }
 
 function authOf(io: Io, deps: Deps): AuthIo {

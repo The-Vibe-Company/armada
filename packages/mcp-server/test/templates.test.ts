@@ -25,7 +25,6 @@ import { AUTH_HEADER, CodexDriver, Journal, Runner } from "../../agent-runtime/s
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { createMcpLifecycle } from "../src/mcp-lifecycle.ts";
-import { callSharedTool } from "../src/tool-api.ts";
 import { publishedResponse } from "./published-response.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY, fakeBoat } from "./support.ts";
@@ -463,7 +462,7 @@ test("changed variable, removed membership and invalid authority overrides fail 
   }
 });
 
-test("Template REST validates authoring requests and MCP can still launch an existing template", async () => {
+test("Template REST validates authoring and launch requests", async () => {
   const f = await fixture();
   try {
     const options: ControlOptions = {
@@ -581,23 +580,6 @@ test("Template REST validates authoring requests and MCP can still launch an exi
       modelAccount: alternate,
     });
     expect(refusedOverride?.status).toBe(400);
-    const context = {
-      templates: f.service,
-      caller: f.actor(),
-      data: createSqlData(f.sql)(f.actor()),
-      provider: async () => f.provider,
-      launchCredentials: f.runtime.stores.credentials,
-      connections: f.runtime.stores.connections,
-      exposedSecrets: async () => [],
-      now: () => new Date(),
-      sleep: async () => {},
-    };
-    const launched = (await callSharedTool(context, "template_launch", {
-      org: f.people.org,
-      id: saved.item.id,
-      requestKey: "transport-launch",
-    })) as { state: string };
-    expect(launched.state).toBe("succeeded");
   } finally {
     await f.close();
   }

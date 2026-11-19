@@ -45,8 +45,7 @@ Usage:
   armada host retention HOST --retention 24h [--org UUID]
   armada host revoke UUID [--org UUID]
 ${sandboxUsage("docker-launch")}
-  armada doctor [--org UUID] [--json]      Check session, server, GitHub, hosts and model accounts
-  armada completion bash|zsh|fish           Print a shell completion script
+${sandboxUsage("setup")}
   armada --version                         Print the version
   armada --help                            Show this help (also -h or help); no login required
   armada skill install (--project <directory> | --global) --yes [--revision <commit>]
@@ -108,13 +107,7 @@ ${sandboxUsage("sandbox")}
                                            Public/OAuth URL shortcut; auto discovery, no secret argv
   armada mcp list|add|update|connect|status|reconnect|enable|disable|revoke|delete [id] [--org UUID] [--file JSON]
 ${sandboxUsage("logs")}
-  armada login [--url <url>] [--provider github|google | --email <address>]
-                                           Discovers enabled methods; prompts for email when available.
-                                           --email: open the emailed link on this machine, or type its code (use one, not both)
-  armada logout
-  armada token create [--org <name>] [--label <label>]
-  armada token list
-  armada token revoke <id>
+${sandboxUsage("session")}
   armada org create <name>                 Create an org; you are its first admin
   armada org list
   armada org setup [--org <name>]          Show organization provider setup status
@@ -122,7 +115,7 @@ ${sandboxUsage("logs")}
                                            Connect an org provider using hidden input, stdin or a file
   armada org use <name|UUID|none>           Persist selection for this Armada server
   armada org current                        Show selected organization
-  armada account status|logout              Account identity / revoke current login session
+${sandboxUsage("account")}
   armada github status|connect|reconnect|disconnect|install|manage [installation-id]
   armada github refresh <sandbox>
                                            Browser authorization waits for real completion; --no-browser prints URL
