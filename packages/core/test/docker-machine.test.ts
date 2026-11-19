@@ -65,7 +65,10 @@ function fixture(
           containers.set(name, {
             Id: String(nextContainerId++).padStart(64, "0"),
             Name: `/${name}`,
-            Config: { Labels: { [label.slice(0, equals)]: label.slice(equals + 1) } },
+            Config: {
+              Image: argv[argv.indexOf("--entrypoint") + 2],
+              Labels: { [label.slice(0, equals)]: label.slice(equals + 1) },
+            },
             State: { Status: "created", Running: false },
           });
           return { exitCode: 1, stdout: "" };

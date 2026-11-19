@@ -58,6 +58,8 @@ const dockerContainerId = /^[a-f0-9]{64}$/;
 const prefix = "dev.armada.machine.";
 const restoredFrom = `${prefix}restored-from`;
 const workspaceCopySeconds = 240;
+const workspaceCopyImage =
+  "docker.io/library/debian@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc";
 type Row = Record<string, unknown>;
 type DockerRetainedPredecessor = { request: DockerMachineRequest; machineId: string };
 
@@ -413,6 +415,7 @@ export function createDockerMachineExecutor(options: {
         helper.Name !== `/${name}` ||
         typeof id !== "string" ||
         !dockerContainerId.test(id) ||
+        config.Image !== workspaceCopyImage ||
         object(config.Labels)[restoredFrom] !== sourceId
       )
         fail("ownership_mismatch");
@@ -458,7 +461,7 @@ export function createDockerMachineExecutor(options: {
           `type=volume,src=${volumeName},dst=/restore,volume-nocopy`,
           "--entrypoint",
           "/usr/bin/timeout",
-          officialSandboxImage(),
+          workspaceCopyImage,
           "--kill-after=2s",
           `${workspaceCopySeconds}s`,
           "/usr/bin/cp",
