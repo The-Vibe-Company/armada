@@ -1,4 +1,5 @@
-import { ModalClient } from "modal";
+import type { ModalBinding } from "@armada/core";
+import { type App, ModalClient } from "modal";
 import { refusal } from "./errors.ts";
 export interface ModalConnection {
   /** Explicit server-owned public SDK client; may use an operator-managed profile. */
@@ -19,4 +20,25 @@ export function modalConnection(options: ModalConnection): ModalClient {
   const { tokenId, tokenSecret } = options;
   if (!tokenId || !tokenSecret) throw refusal("provider_routing_unavailable", "Explicit Modal credentials required.");
   return new ModalClient({ tokenId, tokenSecret });
+}
+
+export async function boundModalApp(
+  client: Pick<ModalClient, "apps">,
+  appName: string,
+  binding: ModalBinding,
+): Promise<App> {
+  const app = await client.apps.fromName(appName, { environment: binding.environment, createIfMissing: false });
+  // The globally unique App ID reached by the explicit credential verifies the binding.
+  if (app.appId !== binding.appId) throw refusal("forbidden", "Modal App does not match the immutable binding.");
+  return app;
+}
+
+export function abortable<T>(work: Promise<T>, signal: AbortSignal | undefined) {
+  if (!signal) return work;
+  signal.throwIfAborted();
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+    work.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+  });
 }

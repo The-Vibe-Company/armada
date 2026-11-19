@@ -7,14 +7,10 @@ import { modalError, refusal } from "./errors.ts";
 import { projectGitHubExecEnvironment, withTrustedHarnessPath } from "./exec-env.ts";
 import { createGenerationGrants } from "./grants.ts";
 import { createModalIngestHandler } from "./ingest.ts";
+import { modalDeploymentId } from "./inventory.ts";
 import type { ExecEnvironment, Machine, McpConfiguration, ModalManagementProvenance, Scope } from "./ports.ts";
 import { captureProcessBaseline, sealProcessBaseline } from "./process-scope.ts";
-import {
-  assertSourceTargetScopes,
-  createModalProvider,
-  type ModalProviderOptions,
-  modalDeploymentId,
-} from "./provider.ts";
+import { assertSourceTargetScopes, createModalProvider, type ModalProviderOptions } from "./provider.ts";
 import { prepareFilesystemSnapshot, prepareFreshFilesystem } from "./snapshot.ts";
 import { createSqlModalStore, scopeKey } from "./store.ts";
 import { createRunnerTransport } from "./transport.ts";
