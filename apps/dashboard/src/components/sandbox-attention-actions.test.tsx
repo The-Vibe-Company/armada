@@ -1,9 +1,8 @@
 import { expect, test } from "bun:test";
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { SandboxAttentionActions } from "../src/components/sandbox-attention-actions";
+import { SandboxAttentionActions } from "./sandbox-attention-actions";
 
-// React's renderer exercises reconciliation without a browser or server request.
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 test.each(["interrupted", "unconcluded"] as const)(

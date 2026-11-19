@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { checkSkillpackKey, skillpackActionFailure, skillpackKeysFromList } from "../src/lib/skillpack-key.ts";
+import { checkSkillpackKey, skillpackActionFailure, skillpackKeysFromList } from "./skillpack-key.ts";
 
 const ORG = "00000000-0000-4000-8000-000000000010";
 const OTHER = "00000000-0000-4000-8000-000000000011";
@@ -21,7 +21,7 @@ test("the key of each scope is read from creds/list as dates and state only, bes
     ORG,
     NOW,
   );
-  // The latest change is the date shown; another organization's key is not the selected one's.
+
   expect(keys).toEqual({ user: { setAt: "2026-11-02T00:00:00Z", usable: true }, org: null });
 });
 
@@ -31,7 +31,7 @@ test("a revoked, expired or deleted key is not usable or not there; an unreadabl
   expect(list({ status: "revoked" })?.usable).toBe(false);
   expect(list({ status: "active", expiresAt: "2026-11-10T00:00:00Z" })?.usable).toBe(false);
   expect(list({ status: "active", expiresAt: "2027-01-01T00:00:00Z" })?.usable).toBe(true);
-  // An older server sends no status: a listed key is in use.
+
   expect(list({})?.usable).toBe(true);
   expect(list({ status: "deleted" })).toBeNull();
   expect(skillpackKeysFromList(null, ORG, NOW)).toEqual({ user: null, org: null });

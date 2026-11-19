@@ -1,9 +1,9 @@
 import { expect, spyOn, test } from "bun:test";
 import { Children, isValidElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { ResourceBrowser } from "../src/components/resource-browser";
-import { ResourceTags } from "../src/components/resource-tags";
-import { roundTripRsc } from "./fixtures/rsc";
+import { roundTripRsc } from "../../test/fixtures/rsc";
+import { ResourceBrowser } from "./resource-browser";
+import { ResourceTags } from "./resource-tags";
 
 test("tag groups retain one identity across Flight transport without missing-key warnings", async () => {
   const errors = spyOn(console, "error");
@@ -16,7 +16,7 @@ test("tag groups retain one identity across Flight transport without missing-key
         </ResourceTags>
       ),
     });
-    // Exercise the actual transport that unwraps unkeyed server fragments.
+
     expect(Children.count(tags)).toBe(1);
     const group = Children.toArray(tags)[0];
     expect(isValidElement(group)).toBe(true);

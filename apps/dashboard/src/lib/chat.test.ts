@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { type ChatItem, chatTurnRunning, projectChat, toolText } from "../src/lib/chat.ts";
-import { type ChatEvent, mergeEvents } from "../src/lib/events.ts";
-import { describeFailure } from "../src/lib/failure.ts";
+import { type ChatItem, chatTurnRunning, projectChat, toolText } from "./chat.ts";
+import { type ChatEvent, mergeEvents } from "./events.ts";
+import { describeFailure } from "./failure.ts";
 
 const turn = { conversationId: "c1", promptId: "p1" };
 const prompt = (id: string, status: "queued" | "running" | "finished" | "failed" | "interrupted", extra = {}) =>
@@ -31,12 +31,12 @@ describe("chat projection", () => {
 
     const final = chunk("e4", "All green.", { messageId: "m1", textMode: "snapshot", partial: false });
     const done = prompt("e5", "finished");
-    // The second poll re-reads e3 and e4 (same journal ids) before the new ones.
+
     const pages = mergeEvents(mergeEvents(stream, [stream[2] as ChatEvent, final]), [final, done]);
     const chat = projectChat(pages);
     expect(view(chat.items)).toEqual(["user:Fix the test", "assistant:All green."]);
     expect(chat.running).toBe(false);
-    // The streaming message keeps its key when the final text lands, so the view updates it in place.
+
     expect(chat.items.map((item) => item.key)).toEqual(projectChat(stream).items.map((item) => item.key));
   });
 

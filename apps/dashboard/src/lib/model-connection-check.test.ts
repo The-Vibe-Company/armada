@@ -1,6 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
-import { createAccountControl } from "../src/lib/account-control";
-import { connectionTestOutcome, matchesConnectionTestSandbox } from "../src/lib/model-connection-check";
+import { createAccountControl } from "./account-control";
+import { connectionTestOutcome, matchesConnectionTestSandbox } from "./model-connection-check";
 
 const expected = { id: "sandbox", ownerId: "owner", orgId: "org", accountId: "account", version: 3 };
 const row = {
@@ -41,18 +41,21 @@ test("account check client sends no secret/config and closes untrusted result fi
   const control = createAccountControl({
     serverUrl: "https://armada.example/mcp",
     token: "synthetic-session",
-    fetch: async (input, init) => {
-      expect(String(input)).toBe("https://armada.example/api/v1/sandbox/test-model-connection");
-      expect(JSON.parse(String(init?.body))).toEqual({ id: "sandbox", model: "deployment", org: "org" });
-      return Response.json({
-        test: {
-          ok: false,
-          status: 401,
-          error: "provider_rejected",
-          code: malformed ? "private-diagnostic" : "invalid_api_key",
-        },
-      });
-    },
+    fetch: Object.assign(
+      async (input: Parameters<typeof fetch>[0], init: Parameters<typeof fetch>[1]) => {
+        expect(String(input)).toBe("https://armada.example/api/v1/sandbox/test-model-connection");
+        expect(JSON.parse(String(init?.body))).toEqual({ id: "sandbox", model: "deployment", org: "org" });
+        return Response.json({
+          test: {
+            ok: false,
+            status: 401,
+            error: "provider_rejected",
+            code: malformed ? "private-diagnostic" : "invalid_api_key",
+          },
+        });
+      },
+      { preconnect: fetch.preconnect },
+    ),
   });
   const result = await control.testConnection({ id: "sandbox", model: "deployment", org: "org" });
   expect(result).toEqual({ ok: false, status: 401, error: "provider_rejected", code: "invalid_api_key" });
@@ -68,7 +71,10 @@ test("dashboard check's deadline includes the runtime's 15-second response", asy
     const control = createAccountControl({
       serverUrl: "https://armada.example/mcp",
       token: "synthetic-session",
-      fetch: async () => Response.json({ test: { ok: false, status: null, error: "connection_failed", code: null } }),
+      fetch: Object.assign(
+        async () => Response.json({ test: { ok: false, status: null, error: "connection_failed", code: null } }),
+        { preconnect: fetch.preconnect },
+      ),
     });
     const result = await control.testConnection({ id: "sandbox", model: "deployment", org: "org" });
     expect(result).toEqual({ ok: false, status: null, error: "connection_failed", code: null });

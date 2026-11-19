@@ -13,7 +13,7 @@ import {
   sizeOptions,
   sizePolicyBlocker,
   sizeSpec,
-} from "../src/lib/machine-size.ts";
+} from "./machine-size.ts";
 
 const policy: MachineSizePolicy = { version: 1, golden: "medium", repositories: { api: "large" } };
 
@@ -45,7 +45,7 @@ describe("machine sizes in the launch dialog", () => {
     expect(golden).toMatchObject({ effective: "medium", source: "golden" });
     expect(describeDefault("modal", golden)).toBe("Medium, the snapshot's default");
     expect(launchDefault("boat", policy, "")).toMatchObject({ source: "golden", repositoryDir: null });
-    // A policy from JSON is a plain object: a directory named like a prototype key has no default of its own.
+
     const parsed = JSON.parse(JSON.stringify(policy)) as MachineSizePolicy;
     expect(launchDefault("boat", parsed, "constructor")).toMatchObject({ effective: "medium", source: "golden" });
   });
