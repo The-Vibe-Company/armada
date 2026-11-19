@@ -588,7 +588,7 @@ export class Journal {
       if (event.type === "result") {
         if (event.data && typeof event.data === "object" && scrubbed.data && typeof scrubbed.data === "object") {
           const source = event.data as Record<string, unknown>;
-          const generic = JSON.parse(this.redact(serialized)).data;
+          const generic = JSON.parse(this.redact(serialized, "events")).data;
           const shapedFields = new Set<string>([
             ...CLAUDE_RESULT_PAYLOAD_FIELDS,
             "modelUsage",
