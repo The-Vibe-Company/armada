@@ -794,6 +794,7 @@ test("membership changes permanently fence only the actor's org leases, with fre
 test("stdio is configured locally from a pinned definition, then explicitly reconfigured after enable", async () => {
   const { close, db, people: p } = await fixture();
   try {
+    const { decryptSecret } = await import("@armada/core");
     const { createSqlVaultStore } = await import("@armada/core/server");
     const { handleControlRequest } = await import("../src/control.ts");
     const registry = createSqlMcpRegistry(db, ENCRYPTION_KEY);
@@ -829,17 +830,33 @@ test("stdio is configured locally from a pinned definition, then explicitly reco
       command: "npx",
       args: ["--yes", "@modelcontextprotocol/server-filesystem@2026.1.0", "/workspace"],
     };
-    const saved = await call("create", { org: p.org, ...definition });
+    const stdioEnv = { SERVICE_KEY: "fixture" };
+    const saved = await call("create", { org: p.org, ...definition, stdioEnv });
     expect(saved.status).toBe(200);
     expect(saved.body.connection).toMatchObject({ transport: "stdio", authType: "none", status: "connected" });
     expect(saved.body.connection.toolCount).toBeUndefined();
     const id = saved.body.connection.id;
+    const readEnvironment = async () => {
+      const grant = (
+        await db.query<{ value_enc: Uint8Array<ArrayBuffer> | null }>(
+          "select value_enc from public.mcp_grants where connection_id=$1",
+          [id],
+        )
+      ).rows[0];
+      return grant?.value_enc ? JSON.parse(await decryptSecret(grant.value_enc, ENCRYPTION_KEY)) : null;
+    };
+    expect(JSON.stringify(saved.body)).not.toContain(stdioEnv.SERVICE_KEY);
+    expect(saved.body.connection).not.toHaveProperty("stdioEnv");
+    expect(await readEnvironment()).toEqual(stdioEnv);
+    expect((await call("connect", { org: p.org, id })).status).toBe(200);
+    expect(await readEnvironment()).toEqual(stdioEnv);
     const grants = createSqlMcpGrantPort(db);
     const refreshOwner = crypto.randomUUID();
     const snapshot = await grants.acquire(id, refreshOwner);
     if (!snapshot) throw new Error("Missing stdio grant");
     const disabled = await call("set-enabled", { org: p.org, id, enabled: false });
     expect(disabled.body.connection.status).toBe("disabled");
+    expect(await readEnvironment()).toBeNull();
     expect((await call("connect", { org: p.org, id })).status).toBe(409);
     expect((await call("set-enabled", { org: p.org, id, enabled: true })).body.connection.status).toBe("not_connected");
     expect((await call("status", { org: p.org, id })).body.connection.status).toBe("not_connected");
@@ -854,6 +871,12 @@ test("stdio is configured locally from a pinned definition, then explicitly reco
       { command: "uvx", args: ["server"] },
       { authType: "bearer", authentication: "not-supported" },
       { authType: "none", authentication: "not-supported" },
+      { stdioEnv: null },
+      { stdioEnv: { "invalid-name": "fixture" } },
+      { stdioEnv: { SERVICE_KEY: 1 } },
+      { stdioEnv: { SERVICE_KEY: "a".repeat(8193) } },
+      { stdioEnv: JSON.parse('{"__proto__":"fixture"}') },
+      { transport: "http", command: undefined, args: undefined, url: "https://mcp.example.com", stdioEnv },
     ]) {
       expect((await call("create", { org: p.org, ...definition, ...invalid })).status).toBe(400);
     }
@@ -862,9 +885,13 @@ test("stdio is configured locally from a pinned definition, then explicitly reco
         .connection.status,
     ).toBe("connected");
     expect((await call("update", { org: p.org, id, name: "Incomplete edit" })).status).toBe(400);
-    expect((await call("update", { org: p.org, id, ...definition, name: "Renamed" })).body.connection.status).toBe(
-      "connected",
-    );
+    const updated = await call("update", { org: p.org, id, ...definition, stdioEnv: { SERVICE_KEY: "replacement" } });
+    expect(updated.body.connection.status).toBe("connected");
+    expect(updated.body.connection).not.toHaveProperty("stdioEnv");
+    expect(JSON.stringify(updated.body)).not.toContain("replacement");
+    expect(await readEnvironment()).toEqual({ SERVICE_KEY: "replacement" });
+    expect((await call("update", { org: p.org, id, ...definition })).status).toBe(200);
+    expect(await readEnvironment()).toBeNull();
   } finally {
     await close();
   }

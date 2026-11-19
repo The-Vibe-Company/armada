@@ -36,6 +36,8 @@ export interface McpConnectionInput {
   authType?: McpConnectionDto["authType"];
   /** Write-only authentication payload. */
   authentication?: string;
+  /** Write-only stdio grant environment. A full update without it clears the environment. */
+  stdioEnv?: Record<string, string>;
 }
 /** OAuth worker owns issuer discovery, URL validation and fixed callback policy. Never return tokens. */
 export interface McpBrokerPort {
@@ -156,6 +158,8 @@ export function createSqlMcpRegistry(
       return dto(await get(user, org, id));
     },
     async save(user, org, input, id) {
+      if (input.stdioEnv !== undefined && (input.transport !== "stdio" || input.serviceId !== undefined))
+        throw new VaultError("invalid", "The stdio environment is only supported for local stdio definitions.");
       if (id) {
         const old = await get(user, org, id, true);
         if (old.catalog_id && input.serviceId !== old.catalog_id)
@@ -191,7 +195,8 @@ export function createSqlMcpRegistry(
           );
       }
       validateInput(input);
-      const enc = input.authentication === undefined ? null : await encryptSecret(input.authentication, encryptionKey);
+      const secret = input.stdioEnv === undefined ? input.authentication : serializeStdioEnvironment(input.stdioEnv);
+      const enc = secret === undefined ? null : await encryptSecret(secret, encryptionKey);
       const connectionId = id ?? crypto.randomUUID();
       // One statement: changing a definition invalidates every old lease via grant generation.
       await sql.query(
@@ -257,7 +262,7 @@ export function createSqlMcpRegistry(
       });
       const result = await sql.query<{ id: string }>(
         `update public.mcp_grants g set status='connected',generation=generation+1,
-        version=version+1,value_enc=null,revoked_at=null,refresh_consumed=false,refresh_owner=null,refresh_until=null
+        version=version+1,revoked_at=null,refresh_consumed=false,refresh_owner=null,refresh_until=null
         from public.mcp_connections c where c.id=$1::uuid and g.connection_id=c.id
         and c.transport='stdio' and c.auth_type='none' and not c.disabled returning g.id`,
         [id],
@@ -396,6 +401,32 @@ function validateInput(i: McpConnectionInput) {
         );
     }
   }
+}
+
+/** Validate individual environment fields before persisting. Launch admission checks the full wire budget. */
+function serializeStdioEnvironment(value: unknown): string {
+  const invalid = () => new VaultError("invalid", "Invalid MCP stdio environment.");
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw invalid();
+  const entries = Object.entries(value);
+  if (entries.length > 64) throw invalid();
+  for (const [name, entry] of entries) {
+    if (
+      !/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(name) ||
+      ["__proto__", "prototype", "constructor"].includes(name) ||
+      typeof entry !== "string" ||
+      entry.length > 8192 ||
+      entry.includes("\0")
+    )
+      throw invalid();
+    try {
+      encodeURIComponent(entry);
+    } catch {
+      throw invalid();
+    }
+  }
+  const serialized = JSON.stringify(Object.fromEntries(entries));
+  if (Buffer.byteLength(serialized) >= 65536) throw invalid();
+  return serialized;
 }
 
 /** Only deterministic package entrypoints, never a shell or an unpinned package alias. */
