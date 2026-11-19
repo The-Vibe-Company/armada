@@ -2,7 +2,7 @@ import { VaultError } from "@armada/core";
 import { parseArgs, single } from "./args.ts";
 
 /** CLI input only: the producer's versioned DTO is constructed by the API adapter. */
-type InvitationInput =
+export type InvitationInput =
   | { action: "create"; org?: string | undefined; email: string; role: "admin" | "member"; json: boolean }
   | { action: "list"; org?: string | undefined; json: boolean }
   | { action: "resend" | "revoke"; org?: string | undefined; id: string; json: boolean }
