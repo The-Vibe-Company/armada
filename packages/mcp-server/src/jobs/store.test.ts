@@ -162,6 +162,7 @@ test.each([
 test.each([
   ["native generation changed", 3, null, "-infinity", false, true],
   ["native request started at the job generation", 2, "request", "-infinity", false, true],
+  ["native request started without a legacy window", 2, "request", null, false, true],
   ["native legacy window still open", 2, "request", "infinity", false, false],
   ["runtime request started", 2, "request", "-infinity", true, false],
   ["native dispatch has no evidence", 2, null, "-infinity", false, false],
