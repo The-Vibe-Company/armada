@@ -22,7 +22,7 @@ async function seedVolume(request: SeedRequest, signal?: AbortSignal) {
     stderr: "ignore",
     env: { MODAL_CONFIG_PATH: "/dev/null" },
     timeout: 120_000,
-    signal,
+    ...(signal ? { signal } : {}),
     killSignal: "SIGKILL",
   });
   if ((await process.exited) !== 0) throw Error("Modal runtime artifact seed failed.");
