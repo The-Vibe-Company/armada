@@ -228,6 +228,23 @@ test.each([
       "prefix[REDACTED]": 3,
     },
   },
+  {
+    type: "armada/turnUsage",
+    data: {
+      model: "model-prefixvalue",
+      inputTokens: 17,
+      outputTokens: 42,
+      cachedTokens: null,
+      prefixlongfixture: "prefixvalue",
+    },
+    masked: {
+      model: "model-prefix[REDACTED]",
+      inputTokens: 17,
+      outputTokens: "[REDACTED]",
+      cachedTokens: null,
+      "prefix[REDACTED]": "prefix[REDACTED]",
+    },
+  },
   ...["account/rateLimits/read", "account/rateLimits/updated"].map((type) => ({
     type,
     data: {
@@ -320,7 +337,7 @@ test.each([
       "bash",
       "longfixture",
       ...(type.startsWith("account/") ? ["rateLimits", "42"] : []),
-      ...(type === "result" ? ["Tokens", "tokens", "42"] : []),
+      ...(type === "result" || type === "armada/turnUsage" ? ["Tokens", "tokens", "42"] : []),
     ]);
     journal.append({ ...event, id: "new-proof" });
     const expected = { ...event, data: masked };
