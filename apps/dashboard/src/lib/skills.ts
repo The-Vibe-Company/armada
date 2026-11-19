@@ -22,7 +22,7 @@ export function skillPinProblem(pins: readonly string[]): string | null {
   return null;
 }
 
-export interface InstalledSkill {
+interface InstalledSkill {
   reference: string;
   version: string;
   visibility: "public" | "private";

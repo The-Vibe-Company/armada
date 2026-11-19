@@ -1,5 +1,5 @@
 /** The keys a keyboard event carries, as far as a shortcut cares. */
-export type ShortcutKeys = {
+type ShortcutKeys = {
   key: string;
   metaKey: boolean;
   ctrlKey: boolean;
