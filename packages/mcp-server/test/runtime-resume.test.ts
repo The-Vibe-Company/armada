@@ -124,6 +124,8 @@ describe("Modal user stop and wake-on-send", () => {
       accountTurns.setDispatch((caller, request) =>
         dispatchControlCommand("sandbox/send", caller, { ...request }, controls),
       );
+      const outcome = Promise.withResolvers<"finished" | "interrupted">();
+      f.hold(outcome.promise);
       const request = f.input();
       expect(
         await dispatchControlCommand("sandbox/send", f.caller, request, { ...controls, accountTurns }),
@@ -138,6 +140,15 @@ describe("Modal user stop and wake-on-send", () => {
       expect((await controls.data(f.caller).sandboxes.get(f.row.id))?.conversationIds).toEqual([
         f.first.conversationId,
       ]);
+      const status = () =>
+        dispatchControlCommand("sandbox/status", f.caller, { id: request.id, recorded: true }, controls);
+      expect(await status()).toMatchObject({ status: "running" });
+      outcome.resolve(recover ? "interrupted" : "finished");
+      await outcome.promise;
+      await f.runner.flushOutbox();
+      expect(await status()).toMatchObject({ status: "ready" });
+      const list = await dispatchControlCommand("sandbox/list", f.caller, { status: ["ready"] }, controls);
+      expect(list).toMatchObject({ sandboxes: [expect.objectContaining({ id: request.id, status: "ready" })] });
       expect(retained).toMatchObject({ epoch: "1", watermark: expect.any(Number) });
       expect(f.starts).toEqual([undefined, "native-thread"]);
     },
@@ -168,7 +179,15 @@ describe.each([
       async () => ({
         async start(_signal, restore) {
           activations++;
-          return f.reboot(restore);
+          const active = await f.reboot(restore);
+          const handle = f.runner.handle.bind(f.runner);
+          spyOn(f.runner, "handle").mockImplementation(async (request) => {
+            const command = (await request.clone().json()) as { op: string };
+            const response = await handle(request);
+            if (command.op === "prompt") await f.runner.flushOutbox();
+            return response;
+          });
+          return active;
         },
         async stop() {
           throw Error("Healthy resume must not stop compute");
@@ -237,7 +256,7 @@ describe.each([
     if (provider === "modal") expect(preparations).toBe(1);
     expect(f.starts).toEqual([undefined, "native-thread"]);
     const row = (await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))!;
-    expect(row.status).toBe("running");
+    expect(row.status).toBe("ready");
     expect(row.expiresAt).toBe(before?.expiresAt);
     expect(row.stoppedAt).toBeNull();
     expect(row.taskPromptId).toBe(result.promptId);

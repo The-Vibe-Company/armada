@@ -1194,14 +1194,22 @@ test("the normal HTTP route accepts the dashboard body and returns a launched sa
   expect(journal?.status).toBe(200);
   expect(await journal?.json()).toEqual({ acknowledgedSequence: 3 });
   const scope = { org: f.actor.orgId };
-  const listed = (await post("sandbox/list", scope)) as { sandboxes: SandboxListMetadata[] };
+  const listed = (await post("sandbox/list", { ...scope, status: ["ready"] })) as {
+    sandboxes: SandboxListMetadata[];
+  };
   expect(listed.sandboxes).toHaveLength(1);
-  expect(listed.sandboxes[0]).toMatchObject({ id: f.body.requestId, provider: "docker", boatId: null });
+  expect(listed.sandboxes[0]).toMatchObject({
+    id: f.body.requestId,
+    provider: "docker",
+    boatId: null,
+    status: "ready",
+  });
   const status = (await post("sandbox/status", { ...scope, id: f.body.requestId })) as DockerSandboxStatus;
   expect(status).toMatchObject({
     id: f.body.requestId,
     provider: "docker",
     golden: null,
+    status: "ready",
     settled: true,
     prompt: { promptId: f.receipt.promptId, state: "finished" },
   });

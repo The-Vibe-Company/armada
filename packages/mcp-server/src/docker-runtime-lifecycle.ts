@@ -7,6 +7,7 @@ import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import { runtimeHealthMatches } from "./runtime-agent.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
+import { transitionSandbox } from "./sandbox-lifecycle.ts";
 
 type Actor = { userId: string; orgId: string };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -314,7 +315,23 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
               cwd: previous.rows.length ? previousCwd : repositoryDir ? `/home/user/${repositoryDir}` : "/home/user",
             },
           });
-          await tx.query(`update public.sandboxes set status='running' where id=$1 and status='ready'`, [sandboxId]);
+          if (queued.fresh) {
+            const ready = await tx.query<{ generation: string }>(
+              "select lifecycle_generation::text as generation from public.sandboxes where id=$1 and status='ready'",
+              [sandboxId],
+            );
+            const generation = ready.rows[0]?.generation;
+            if (generation !== undefined)
+              await transitionSandbox(tx, {
+                sandboxId,
+                expectedGeneration: generation,
+                fromStates: ["ready"],
+                toState: "running",
+                actor: "docker_host",
+                code: "docker_prompt_enqueued",
+                effects: [],
+              });
+          }
           const response = await commands.result(actor.userId, sandboxId, id, queued.epoch);
           if (response.state === "pending") return { state: "pending" as const };
           if (response.state !== "finished") deny();

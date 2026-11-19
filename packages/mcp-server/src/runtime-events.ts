@@ -20,6 +20,7 @@ import { runtimeHttpFailure } from "./runtime-http-failure.ts";
 import { projectRuntimeIdle } from "./runtime-idle-evidence.ts";
 import type { RuntimeNativePublication } from "./runtime-native-auth.ts";
 import { logRuntimeStage } from "./runtime-progress.ts";
+import { settleRuntimeTurn } from "./sandbox-lifecycle.ts";
 import { admittedTurnContexts } from "./turn-pricing.ts";
 
 class InvalidEvents extends Error {}
@@ -123,7 +124,7 @@ export function createRuntimeEvents(
       });
     }
     let first: { sandboxId: string; epoch: string } | undefined;
-    const result = await authority.withSession(token, epoch, async (tx, scope) => {
+    const result = await authority.withSession(token, epoch, async (tx, scope, generation) => {
       if (value.sandboxId !== scope.sandboxId || value.generation !== scope.epoch) throw new RuntimeEnrolmentDenied();
       if (value.nativeAuth !== undefined) throw new UnsupportedNativeAuth();
       if (
@@ -262,6 +263,7 @@ export function createRuntimeEvents(
       }
       await recordAccountExhaustion(tx, scope.sandboxId, fresh);
       await projectRuntimeIdle(tx, scope.sandboxId, key, initialAck, fresh, ack);
+      await settleRuntimeTurn(tx, scope.sandboxId, generation);
       const usage = reportedTurnUsage(fresh);
       const completed = completedUsageTurns(fresh);
       if (addedPrompt || usage.turns.length || completed.size) {

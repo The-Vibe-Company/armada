@@ -40,7 +40,7 @@ import type { Caller } from "./caller.ts";
 import { scopedOrg } from "./control-caller.ts";
 import { createResourceStore, type ResourceStore } from "./resource-store.ts";
 import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
-import { recordObservedRuntimeFailure } from "./sandbox-lifecycle.ts";
+import { recordObservedRuntimeFailure, settleRuntimeTurn } from "./sandbox-lifecycle.ts";
 import { SANDBOX_MEMBER, SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 import { admittedTurnContexts, stampTurnPricing, withServerCost } from "./turn-pricing.ts";
 import { preserveBeforeStop, readWorkRecovery, type StopAuthority } from "./work-preservation.ts";
@@ -948,6 +948,18 @@ export function createSqlData(
               [...scope, id],
             );
             return locked.rows.length ? applyUpdate(tx) : { rows: [] };
+          });
+        } else if (
+          patch.taskPromptId &&
+          patch.expectedGeneration !== undefined &&
+          (patch.status === "running" || patch.turnActivity === "finish") &&
+          sql.transaction
+        ) {
+          const generation = patch.expectedGeneration + (patch.finishActivity ? 1 : 0);
+          result = await sql.transaction(async (tx) => {
+            const published = await applyUpdate(tx);
+            if (published.rows[0]?.id) await settleRuntimeTurn(tx, id, generation);
+            return published;
           });
         } else {
           result = await applyUpdate(sql);

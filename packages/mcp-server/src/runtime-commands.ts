@@ -10,10 +10,12 @@ import {
 } from "./request-observability.ts";
 import { type createRuntimeEnrolments, RuntimeEnrolmentDenied, type RuntimeOwnerScope } from "./runtime-enrolment.ts";
 import { runtimeHttpFailure } from "./runtime-http-failure.ts";
+import { settleRuntimeTurn } from "./sandbox-lifecycle.ts";
 import { deferTransactionWake, runtimeWakes, waitForTimeout } from "./wake-bus.ts";
 
 const MAX_COMMAND = 1048576;
 const MAX_REPLY = MAX_COMMAND * 2;
+
 export class RuntimeCommandConflict extends Error {
   constructor() {
     super("runtime_command_conflict");
@@ -211,7 +213,7 @@ export function createRuntimeCommands(
     let acceptedPromptId =
       value.status < 300 && typeof candidate === "string" && UUID.test(candidate) ? candidate : null;
     let sealed = await encryptSecret(serialized, key);
-    const { sandboxId, ...receipt } = await authority.withSession(token, epoch, async (tx, scope) => {
+    const { sandboxId, ...receipt } = await authority.withSession(token, epoch, async (tx, scope, generation) => {
       // Keep the ordered acknowledgement even if the caller's deadline or the taint fence
       // invalidated the read. No reader can use these bytes now.
       const outputDeadline = /^outputs_(\d{1,16})_/.exec(String(value.requestId))?.[1];
@@ -270,6 +272,7 @@ export function createRuntimeCommands(
           [scope.sandboxId, queued[1], result.promptId],
         );
       }
+      if (row.request_id.startsWith("docker_prompt_")) await settleRuntimeTurn(tx, scope.sandboxId, generation);
       return { sandboxId: scope.sandboxId, epoch: scope.epoch, requestId: value.requestId };
     });
     runtimeWakes.notify(`reply:${sandboxId}:${receipt.epoch}:${receipt.requestId}`);

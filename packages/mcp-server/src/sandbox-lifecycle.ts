@@ -36,6 +36,7 @@ interface SandboxTransition {
   actor:
     | "resume_admission"
     | "runtime_enrolment"
+    | "runtime_turn"
     | "owner"
     | "finish"
     | "expiry"
@@ -84,6 +85,41 @@ export async function transitionSandbox(tx: Sql, input: SandboxTransition) {
   if (!result.applied) return { kind: "conflict" } satisfies SandboxTransitionResult;
   if (result.generation === null) throw new Error("Applied sandbox transition did not return a generation.");
   return { kind: "applied", generation: Number(result.generation) } satisfies SandboxTransitionResult;
+}
+
+export async function settleRuntimeTurn(tx: Sql, sandboxId: string, generation: number | string) {
+  const eligible = await tx.query(
+    `select 1 from public.sandboxes s join public.runtime_enrolments r
+       on r.sandbox_id=s.id and r.lifecycle_generation=s.lifecycle_generation
+     where s.id=$1 and s.lifecycle_generation=$2 and s.status='running'
+       and s.stop_requested_at is null and s.stopped_at is null and s.deleted_at is null
+       and s.expires_at>clock_timestamp() and r.runtime_hash is not null
+       and case when s.provider='docker' then
+         exists(select 1 from public.runtime_commands c where c.sandbox_id=s.id and c.epoch=r.epoch
+           and starts_with(c.request_id,'docker_prompt_'))
+         and not exists(
+           select 1 from public.runtime_commands c where c.sandbox_id=s.id and c.epoch=r.epoch
+             and starts_with(c.request_id,'docker_prompt_')
+             and (c.result_enc is null or (c.accepted_prompt_id is not null and not exists(
+               select 1 from public.runtime_idle_turns t where t.sandbox_id=s.id
+                 and t.prompt_id=c.accepted_prompt_id::text and t.settled))))
+       else
+         ((s.provider='boat' and s.boat_runtime) or (s.provider='modal' and s.runtime_transport='dialout'))
+         and exists(select 1 from public.runtime_idle_turns t where t.sandbox_id=s.id
+           and t.prompt_id=s.task_prompt_id and t.settled)
+       end`,
+    [sandboxId, generation],
+  );
+  if (eligible.rows.length)
+    await transitionSandbox(tx, {
+      sandboxId,
+      expectedGeneration: generation,
+      fromStates: ["running"],
+      toState: "ready",
+      actor: "runtime_turn",
+      code: "runtime_turn_settled",
+      effects: [],
+    });
 }
 
 export async function recordDockerCleanupReceipt(
