@@ -1,25 +1,10 @@
-import {
-  GitHubHydrationError,
-  idlePauseMessage,
-  isExternalRef,
-  LAUNCH_STAGES,
-  launchFailureHelp,
-  launchResponse,
-  providerRateLimitDetails,
-  SANDBOX_PLACEMENT_PROVIDERS,
-  USAGE_UNAVAILABLE_CODES,
-} from "@armada/core";
-import { launch } from "@armada/core/contract";
+import { GitHubHydrationError, idlePauseMessage, launchFailureHelp, providerRateLimitDetails } from "@armada/core";
 import {
   EncryptionKeyError,
   GoldenError,
-  type GoldenRecord,
-  goldenForLaunch,
-  HARNESSES,
   LaunchError,
   type LaunchOptions,
   type LaunchStores,
-  launchSandbox,
   type MemberRole,
   MODEL_CATALOG,
   type Provider,
@@ -28,8 +13,6 @@ import {
   type ProviderTarget,
   redact,
   resolveModelChoice,
-  resolveRepositoryDir,
-  SANDBOX_PROVIDERS,
   type SandboxProviderId,
   type SandboxStatus,
   type SkillDefaultsService,
@@ -41,20 +24,28 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod";
 import { apiFailureCode } from "./api-failure.ts";
 import type { Caller } from "./caller.ts";
-import { UUID } from "./control-input.ts";
 import { INTERNAL_FAILURE_MESSAGE } from "./control-response.ts";
 import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
 import { DataError, type SandboxView, type ScopedData } from "./data.ts";
 import { MAX_LOG_PAGES, readEventPages, validateLogPagination } from "./event-pagination.ts";
-import { type GoldenLaunchCredentials, prepareGoldenLaunchAccount } from "./launch-account-admission.ts";
+import type { GoldenLaunchCredentials } from "./launch-account-admission.ts";
+import { mcpLaunchContract, runMcpLaunch } from "./mcp-launch-tool.ts";
 import { publicLogEvents } from "./model-usage.ts";
 import type { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import { recordOperatorFailure } from "./request-observability.ts";
-import { observeGoldenLaunch } from "./request-timing.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
 import { appendConversation, sandboxActivity } from "./sandbox-activity.ts";
 import { sandboxControlRefusal } from "./sandbox-control-refusal.ts";
 import { refuseConversationSelector } from "./sandbox-conversation.ts";
+import {
+  LOGS_OUTPUT,
+  SANDBOX_STATUSES,
+  sandboxListInput,
+  sandboxListMetadata,
+  statusOutput,
+  taskOutcome,
+} from "./sandbox-tool-schemas.ts";
+import { ToolError } from "./tool-error.ts";
 import {
   collectSandboxUsage,
   isStatusReadFenced,
@@ -93,19 +84,9 @@ export interface ToolContext {
   logError?: (line: string) => void;
 }
 
-export const SANDBOX_STATUSES = ["starting", "ready", "running", "stopping", "stopped", "failed", "deleted"] as const;
 export const DEFAULT_WAIT_SECONDS = 60;
 export const MAX_WAIT_SECONDS = 600;
 const OUTPUT_LIMIT = 20_000;
-
-export class ToolError extends Error {
-  override readonly name = "ToolError";
-  readonly code: string;
-  constructor(code: string, message: string) {
-    super(message);
-    this.code = code;
-  }
-}
 
 export const serverInfo = { name: "armada" } as const;
 
@@ -120,90 +101,6 @@ const modelCatalogText = Object.entries(MODEL_CATALOG)
   .join(". ");
 const modelInput = z.string().min(1).optional().describe(`The model, by id. ${modelCatalogText}.`);
 const effortInput = z.string().min(1).optional().describe("The reasoning effort; one the model accepts (see model).");
-const modelOutput = {
-  credentialId: z.string().nullable().optional(),
-  credentialVersion: z.number().int().nullable().optional(),
-  model: z.string().nullable().describe("The requested next-send default, not proof of the observed model."),
-  reasoningEffort: z.string().nullable(),
-};
-
-const providerOutput = z.enum(SANDBOX_PROVIDERS).describe("The sandbox provider it runs on, fixed for its life.");
-const compat = (name: string) =>
-  z.string().nullable().describe(`The same as ${name} on a Boat golden or sandbox; null on any other provider.`);
-
-/** The golden record shared by the MCP tools and the REST golden list. */
-const taskOutcome = z.discriminatedUnion("state", [
-  z
-    .object({
-      state: z.literal("ready"),
-      prNumber: z.number().int().positive().optional(),
-      prUrl: z.url().max(2048).optional(),
-      headSha: z
-        .string()
-        .regex(/^[A-Fa-f0-9]{40}$/)
-        .optional(),
-    })
-    .strict(),
-  z.object({ state: z.literal("blocked"), reason: z.string().trim().min(1).max(1000) }).strict(),
-]);
-
-const pullRequests = z.array(
-  z.object({
-    repository: z.string(),
-    number: z.number().int().positive(),
-    url: z.url(),
-    headBranch: z.string(),
-    state: z.enum(["open", "merged", "closed"]),
-    checkedAt: z.string(),
-  }),
-);
-
-const sandboxUsage = z
-  .object({
-    computeSeconds: z.number().nullable(),
-    turnCount: z.number().nullable(),
-    cost: z
-      .object({
-        classification: z.enum(["priced", "included_in_subscription", "unknown"]),
-        currency: z.literal("USD"),
-        usd: z.string().nullable(),
-        basis: z.enum(["estimated", "api_equivalent"]).nullable(),
-        unknown: z.enum(["admission", "coverage", "price", "tokens", "pricing_dimensions"]).nullable(),
-        unpricedTurns: z.number().int().nonnegative().nullable(),
-      })
-      .optional(),
-    tokenTotals: z
-      .object({
-        incomplete: z.boolean().optional(),
-        inputTokens: z.number().nullable(),
-        outputTokens: z.number().nullable(),
-        cachedTokens: z.number().nullable(),
-        cacheWriteTokens: z.number().nullable(),
-        reasoningTokens: z.number().nullable(),
-      })
-      .optional(),
-    turns: z.array(
-      z.object({
-        promptId: z.string(),
-        model: z.string().nullable(),
-        inputTokens: z.number().nullable(),
-        outputTokens: z.number().nullable(),
-        cachedTokens: z.number().nullable(),
-        cacheWriteTokens: z.number().nullable().optional(),
-        reasoningTokens: z.number().nullable().optional(),
-        // Versioned service-owned pricing metadata; native decoders never populate it.
-        pricing: z
-          .unknown()
-          .nullable()
-          .optional()
-          .describe("Versioned server USD quote from a frozen snapshot; null means unpriced, never zero."),
-        unavailableReason: z.object({ code: z.enum(USAGE_UNAVAILABLE_CODES), message: z.string().max(600) }).optional(),
-      }),
-    ),
-  })
-  .nullable()
-  .optional();
-
 // Logical Armada lifetime only; provider deadlines never drive this warning.
 function logicalExpiry(expiresAt: string | null | undefined, now: Date) {
   const deadline = expiresAt ? Date.parse(expiresAt) : Number.NaN;
@@ -214,211 +111,6 @@ function logicalExpiry(expiresAt: string | null | undefined, now: Date) {
     expiringSoon: timeLeftSeconds !== null && timeLeftSeconds <= 300,
   };
 }
-
-const expiryOutput = {
-  timeLeftSeconds: z
-    .number()
-    .int()
-    .nonnegative()
-    .nullable()
-    .describe("Seconds until persisted Armada logical expiry, rounded up and clamped to zero; null if unknown."),
-  expiringSoon: z
-    .boolean()
-    .describe("True when known logical time left is at most five minutes, including expired resources."),
-};
-
-const externalRefOutput = z.string().optional().describe("Opaque reference given at launch; absent when none.");
-const externalRefInput = z
-  .string()
-  .refine(isExternalRef, "1 to 200 characters without control characters.")
-  .describe(
-    "Opaque caller reference, for example one business object id. Not unique; use idempotencyKey for exactly-once.",
-  );
-
-const sandboxListMetadata = z.object({
-  ...expiryOutput,
-  idlePaused: z.boolean().optional(),
-  statusMessage: z.string().nullable().optional(),
-  usage: sandboxUsage,
-  preservationNote: z.string().nullable().optional(),
-  providerSandboxId: z.string().nullable(),
-  boatId: z.string().nullable(),
-  id: z.string(),
-  orgId: z.string(),
-  ownerId: z.string(),
-  provider: z.enum(SANDBOX_PLACEMENT_PROVIDERS),
-  harness: z.enum(HARNESSES),
-  model: modelOutput.model,
-  reasoningEffort: modelOutput.reasoningEffort,
-  status: z.enum(SANDBOX_STATUSES),
-  createdAt: z.string(),
-  stoppedAt: z.string().nullable(),
-  expiresAt: z.string().nullable(),
-  effectiveTtlSeconds: z.number().nullable(),
-  machineSize: z.enum(["small", "medium", "large", "xlarge"]).nullable(),
-  displayLabel: z.string(),
-  taskOutcome: taskOutcome.nullable().optional(),
-  pullRequests: pullRequests.nullable().optional(),
-  externalRef: externalRefOutput,
-  canOpen: z.boolean(),
-  canManage: z.boolean(),
-});
-
-const prompt = z.object({
-  rateLimit: z
-    .object({
-      retryCount: z.number(),
-      delayMs: z.number(),
-      totalWaitMs: z.number(),
-      retryAt: z.number(),
-      waiting: z.boolean(),
-      message: z.string(),
-    })
-    .nullable()
-    .optional(),
-  promptId: z.string(),
-  conversationId: z.string().nullable(),
-  state: z.enum(["queued", "running", "finished", "interrupted", "failed"]),
-  reason: z.string().nullable(),
-  requestedModel: z.string().nullable().optional(),
-  observedModel: z.string().nullable().optional(),
-  modelSelectionReason: z.enum(["model_selection_mismatch", "model_selection_unverified"]).nullable().optional(),
-  modelSelectionMessage: z.string().nullable().optional(),
-});
-
-const skillReceipts = z
-  .array(
-    z.object({
-      reference: z.string(),
-      version: z.string(),
-      skillId: z.string(),
-      checksum: z.string(),
-      origin: z.string(),
-    }),
-  )
-  .optional();
-
-/** #2560: latest activation (launch or resume), stages in time order; ms is the time since the previous stage. */
-const launchTiming = z
-  .object({
-    activation: z.string().describe('"1" is the launch; a higher activation is a resume.'),
-    stages: z.array(z.object({ stage: z.enum(LAUNCH_STAGES), at: z.string(), ms: z.number().nullable() })),
-    ready: z.boolean().describe("Harness ready was recorded."),
-    totalMs: z
-      .number()
-      .nullable()
-      .describe(
-        "First stage to harness ready (or the last stage so far); first_token waits for a prompt and is excluded.",
-      ),
-    slowest: z.object({ stage: z.enum(LAUNCH_STAGES), ms: z.number() }).nullable(),
-  })
-  .nullable()
-  .optional()
-  .describe("Launch time per stage for the latest launch or resume; null before any stage is recorded.");
-
-const status = {
-  ...expiryOutput,
-  launch: launchTiming,
-  providerExpiresAt: z
-    .string()
-    .nullable()
-    .describe("Provider physical deadline, when observed; distinct from Armada logical expiry."),
-  billingAccount: z
-    .object({
-      id: z.string(),
-      name: z.string(),
-      kind: z.string(),
-      billing: z.enum(["subscription", "api-key"]),
-      version: z.number().int(),
-    })
-    .nullable()
-    .optional(),
-  skills: skillReceipts,
-  usage: sandboxUsage,
-  preservationNote: z.string().nullable().optional(),
-  externalRef: externalRefOutput,
-  id: z.string(),
-  golden: z.string().nullable(),
-  provider: z.enum(SANDBOX_PLACEMENT_PROVIDERS).optional(),
-  hostId: z.string().optional(),
-  image: z.string().optional(),
-  visibility: z.enum(["org", "private"]),
-  harness: z.enum(HARNESSES),
-  repositoryDir: z
-    .string()
-    .nullable()
-    .describe("Configured directory used to prepare native agent cwd; not confinement."),
-  ...modelOutput,
-  machineSize: z.unknown().nullable(),
-  status: z.enum(SANDBOX_STATUSES),
-  statusReason: z.string().nullable(),
-  statusMessage: z.string().nullable().optional(),
-  taskOutcome: taskOutcome.nullable().optional(),
-  pullRequests: pullRequests.nullable().optional(),
-  providerState: z.string().nullable(),
-  conversationIds: z.array(z.string()),
-  expiresAt: z.string().nullable(),
-  prompt: prompt.nullable(),
-  settled: z.boolean(),
-};
-
-const event = z.looseObject({
-  id: z.string(),
-  at: z.number(),
-  kind: z.enum(["prompt", "message", "steer", "other"]),
-  conversationId: z.string().optional(),
-  promptId: z.string().optional(),
-});
-
-/** Output of the `logs` tool, also published (open) as the REST `logs/read` response (`REST_LOGS_RESPONSE`). */
-export const LOGS_OUTPUT = {
-  events: z.array(event),
-  cursor: z.string().nullable(),
-  olderCursor: z.string().optional(),
-  hasMore: z.boolean(),
-  settled: z.boolean().optional(),
-  source: z.literal("armada-runtime").optional(),
-  threadStatus: z
-    .object({ status: z.string(), statusMessage: z.string().nullable(), prompt: z.unknown(), usage: z.unknown() })
-    .optional(),
-  runtimeFailure: z.object({ status: z.literal("failed"), reason: z.string() }).optional(),
-  queuedPrompt: z
-    .object({
-      promptId: z.string(),
-      conversationId: z.string().nullable(),
-      state: z.string(),
-      reason: z.string().nullable(),
-    })
-    .optional()
-    .describe(
-      "Docker only: the latest prompt while the runtime has not admitted it (queued behind startup, or failed before admission).",
-    ),
-};
-
-export const sandboxListInput = z.object({
-  harness: z.enum(HARNESSES).optional(),
-  golden: z.string().uuid().optional().describe("Golden UUID, not a name."),
-  owner: z.union([z.string().uuid(), z.literal("me")]).optional(),
-  page: z.number().int().min(1).max(1_000_000).optional().describe("1-based page, default 1."),
-  status: z.array(z.enum(SANDBOX_STATUSES)).min(1).optional().describe("Only these statuses."),
-  limit: z.number().int().min(1).max(200).optional().describe("At most this many. Default 25."),
-  externalRef: externalRefInput
-    .optional()
-    .describe("Only sandboxes launched with this reference that you own or administer."),
-});
-
-const [ordinaryBoatLaunch, , ordinaryModalLaunch] = launch.input.body.options;
-const mcpLaunchOmissions = { armadaAccess: true, armadaAccessVersion: true } as const;
-const mcpLaunchInput = z.union([
-  ordinaryBoatLaunch.omit(mcpLaunchOmissions),
-  ordinaryModalLaunch.omit(mcpLaunchOmissions),
-]);
-const mcpLaunchArguments = z.looseObject({}).meta({
-  anyOf: mcpLaunchInput.options.map((variant) => {
-    const { $schema: _dialect, ...schema } = z.toJSONSchema(variant, { io: "input" });
-    return schema;
-  }),
-});
 
 /** One MCP server per request: the principal is fixed for its whole life, and nothing outlives the request. */
 export function createArmadaServer(context: ToolContext, version: string) {
@@ -459,7 +151,6 @@ function createToolServer(
     },
   );
   const { caller, data } = context;
-  const orgIds = caller.orgs.map((org) => org.orgId);
 
   const register = <In extends ToolInput, Out extends z.ZodRawShape>(
     name: string,
@@ -711,155 +402,7 @@ function createToolServer(
     }
   };
 
-  tool(
-    "launch",
-    {
-      title: "Launch an agent",
-      description:
-        "Forks a golden into a new sandbox, pulls its repos, runs its init commands, and starts the agent. " +
-        "With `prompt` the agent starts working at once (status running). Without it the sandbox is left ready " +
-        "and the conversation starts at the first `send`. The sandbox gets only your (or your org's) Armada " +
-        "credentials for this agent, never the boat.dev account's. When the caller connected GitHub, git and gh in " +
-        "the sandbox act as that person (8 hour token): see `github` in the answer. Setup can take a few minutes. " +
-        "Personal sessions may use an org slug or UUID. For scoped tokens, omit `org` or use the scoped org UUID.",
-      input: mcpLaunchArguments,
-      output: {
-        id: z.string(),
-        provider: providerOutput,
-        runtime: z.object({ kind: z.literal("armada"), epoch: z.string() }).optional(),
-        runtimeTransport: z.literal("dialout").optional(),
-        providerSandboxId: z.string(),
-        boatId: compat("providerSandboxId"),
-        golden: z.string(),
-        externalRef: externalRefOutput,
-        visibility: z.enum(["org", "private"]),
-        harness: z.enum(HARNESSES),
-        helper: z.unknown(),
-        skills: skillReceipts,
-        repositoryDir: z
-          .string()
-          .nullable()
-          .describe("Configured directory used to prepare native agent cwd; not confinement."),
-        ...modelOutput,
-        machineSize: z.unknown().nullable(),
-        status: z.enum(SANDBOX_STATUSES),
-        conversationIds: z.array(z.string()),
-        promptId: z.string().nullable(),
-        ttlSeconds: z.number().int(),
-        expiresAt: z.string().nullable(),
-        github: z
-          .object({
-            status: z.enum(["connected", "not_connected", "revoked", "unavailable"]),
-            login: z.string().nullable(),
-            tokenExpiresAt: z.string().nullable(),
-            message: z.string().nullable(),
-          })
-          .describe(
-            "Whether git and gh in the sandbox act as the caller. Anything but connected means they are not signed in; message says how to fix it.",
-          ),
-      },
-    },
-    (input) =>
-      observeGoldenLaunch("mcp", async (timing) => {
-        const parsed = mcpLaunchInput.safeParse(input);
-        if (!parsed.success)
-          throw new VaultError("invalid", "Invalid golden launch request. See the launch tool schema.");
-        const args = parsed.data;
-        // Refused before any lookup or allocation.
-        resolveModelChoice(args.harness, { model: args.model, reasoningEffort: args.reasoningEffort });
-        const actor = await launchActor(args.golden, args.org);
-        const chosen: GoldenRecord = await goldenForLaunch(data.goldens, actor, args.golden, args.provider);
-        resolveRepositoryDir(chosen, args.repo);
-        timing.checkpoint("admission");
-        const prepare = async () => {
-          const account = await prepareGoldenLaunchAccount(
-            actor,
-            chosen,
-            args,
-            context.launchCredentials,
-            context.launch ?? {},
-          );
-          timing.checkpoint("account_resolution");
-          const provider = await context.provider(chosen);
-          timing.checkpoint("provider_resolution");
-          return { ...account, provider };
-        };
-        let prepared: ReturnType<typeof prepare> | undefined;
-        const prepareOnce = () => (prepared ??= prepare());
-        const dispatch = async (receiptId?: string) => {
-          const { provider, credentials, options } = await prepareOnce();
-          timing.checkpoint("receipt_admission");
-          const result = await launchSandbox(
-            provider,
-            {
-              ...(context.skillDefaults ? { skillDefaults: context.skillDefaults } : {}),
-              goldens: data.goldens,
-              sandboxes: data.sandboxes,
-              credentials,
-              ...(context.connections ? { connections: context.connections } : {}),
-            },
-            actor,
-            {
-              golden: args.golden,
-              ...(args.size === undefined ? {} : { size: args.size }),
-              provider: chosen.provider,
-              harness: args.harness,
-              ...(args.repo === undefined ? {} : { repo: args.repo }),
-              ...(args.model === undefined ? {} : { model: args.model }),
-              ...(args.visibility === undefined ? {} : { visibility: args.visibility }),
-              ...(args.skipSkillDefaults === undefined ? {} : { skipSkillDefaults: args.skipSkillDefaults }),
-              ...(args.skills === undefined ? {} : { skills: args.skills }),
-              ...(args.helperCapabilities === undefined ? {} : { helperCapabilities: args.helperCapabilities }),
-              ...(args.connections === undefined ? {} : { connections: args.connections }),
-              ...(args.credentialId ? { credentialId: args.credentialId } : {}),
-              ...(args.reasoningEffort === undefined ? {} : { reasoningEffort: args.reasoningEffort }),
-              ...(args.prompt === undefined ? {} : { prompt: args.prompt }),
-              ...(args.ttlSeconds === undefined ? {} : { ttlSeconds: args.ttlSeconds }),
-              ...(args.stopWhenWorkMerged === undefined ? {} : { stopWhenWorkMerged: args.stopWhenWorkMerged }),
-              ...(args.externalRef === undefined ? {} : { externalRef: args.externalRef }),
-            },
-            { ...options, ...(receiptId ? { newId: () => receiptId } : {}) },
-          );
-          timing.checkpoint("shared_launcher");
-          timing.launched(result.sandbox);
-          return {
-            ...launchResponse(result),
-            helper: result.helper,
-            visibility: result.sandbox.visibility ?? result.golden.visibility,
-          };
-        };
-        if (!context.ordinaryLaunchReceipts) {
-          if (args.idempotencyKey) throw new ToolError("invalid", "Durable launch receipts are not configured.");
-          return dispatch();
-        }
-        const { provider } = await prepareOnce();
-        const authority = {
-          target: {
-            provider: chosen.provider,
-            orgId: chosen.orgId,
-            visibility: chosen.visibility,
-            modal: chosen.modal,
-          },
-          management:
-            (await provider.managementIdentity?.()) ??
-            (() => {
-              throw new ToolError("invalid", "Provider cannot pin management authority.");
-            })(),
-          backendId:
-            (await provider.backendIdentity?.())?.id ??
-            (() => {
-              throw new ToolError("invalid", "Provider cannot pin allocation authority.");
-            })(),
-        };
-        return context.ordinaryLaunchReceipts.run(
-          actor,
-          args.idempotencyKey ?? crypto.randomUUID(),
-          { ...args, goldenId: chosen.id },
-          dispatch,
-          authority,
-        );
-      }),
-  );
+  tool("launch", mcpLaunchContract, (input) => runMcpLaunch(context, input));
 
   registerList();
 
@@ -930,7 +473,7 @@ function createToolServer(
             "True: database-only state. False: live provider probe. Omitted: provider-specific detail read. CLI defaults to true; --live sets false.",
           ),
       },
-      output: status,
+      output: statusOutput,
       readOnly: true,
     },
     async (args) => {
@@ -955,7 +498,7 @@ function createToolServer(
         timeout_seconds: z.number().int().min(0).max(MAX_WAIT_SECONDS).optional(),
         prompt_id: z.string().min(1).optional().describe("A specific turn. Default: the latest."),
       },
-      output: { ...status, timedOut: z.boolean() },
+      output: { ...statusOutput, timedOut: z.boolean() },
       readOnly: true,
     },
     (args) =>
@@ -1640,7 +1183,7 @@ function createToolServer(
           timeout_seconds: waitTool.input.timeout_seconds,
           wait: z.boolean().optional().describe("Wait for settlement. Default timeout: 60 seconds."),
         },
-        output: { ...status, timedOut: waitTool.output.timedOut.optional() },
+        output: { ...statusOutput, timedOut: waitTool.output.timedOut.optional() },
       },
       async ({ wait, timeout_seconds, ...args }) => {
         if (!wait && timeout_seconds !== undefined) return invalidToolInput("status", "timeout_seconds requires wait.");
@@ -1676,40 +1219,7 @@ function createToolServer(
     return errorResult(new ToolError("invalid_request", message), name, context.logError ?? console.error);
   }
 
-  /** The org a launch acts in: the given one, else the one of the caller's orgs that has this golden. */
-  async function launchActor(name: string, org: string | undefined) {
-    const member = (orgId: string) => {
-      const found = caller.orgs.find((item) => item.orgId === orgId);
-      return found ? { userId: caller.userId, orgId: found.orgId, role: found.role } : null;
-    };
-    if (org !== undefined) {
-      const ref = org.trim().toLowerCase();
-      const orgId = UUID.test(ref)
-        ? ref
-        : caller.orgs.find(({ orgId }) => caller.orgNames?.[orgId]?.trim().toLowerCase() === ref)?.orgId;
-      const chosen = orgId ? member(orgId) : null;
-      if (!chosen) throw new ToolError("not_found", `You are not a member of org '${org}'.`);
-      return chosen;
-    }
-    const [first] = caller.orgs;
-    if (!first) throw new ToolError("not_found", "You are not a member of any org.");
-    if (caller.orgs.length === 1) return member(first.orgId) ?? fail();
-    const holders: string[] = [];
-    for (const orgId of orgIds) if ((await data.goldens.findByName(orgId, name)).length > 0) holders.push(orgId);
-    if (holders.length > 1) {
-      throw new ToolError(
-        "invalid_request",
-        `'${name}' is a golden in several of your orgs. Pass org (a slug or UUID).`,
-      );
-    }
-    return member(holders[0] ?? first.orgId) ?? fail();
-  }
-
   return server;
-}
-
-function fail(): never {
-  throw new ToolError("internal", INTERNAL_FAILURE_MESSAGE);
 }
 
 async function readLogs(

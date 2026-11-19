@@ -69,6 +69,59 @@ async function fixture() {
   return { db, sql, userId, memberId, orgId, store, authenticate, route, post };
 }
 
+function inventoryRouteFixture() {
+  const hostId = "10000000-0000-0000-0000-000000000001";
+  const installationId = "10000000-0000-0000-0000-000000000002";
+  const publicUrl = `https://${"a".repeat(63)}.${"b".repeat(63)}.${"c".repeat(63)}.example`;
+  const store = createDockerHostStore(
+    {
+      async query() {
+        throw new Error("Unexpected SQL");
+      },
+    },
+    Buffer.alloc(32, 8).toString("base64"),
+  );
+  const records: unknown[] = [];
+  const route = createDockerHostRoutes(
+    { ...store, inventoryOwnership: async () => ({ hostId, rows: [] }) },
+    async () => ({ ok: false }),
+    { publicUrl, log: (line) => records.push(JSON.parse(line)) },
+  );
+  const send = (body: string) =>
+    route(
+      new Request(`${publicUrl}/api/docker-host/container-inventory`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${"f".repeat(64)}` },
+        body,
+      }),
+    );
+  return { hostId, installationId, publicUrl, records, send };
+}
+
+test("a full Docker inventory with long container names reaches the reaper", async () => {
+  const { hostId, installationId, publicUrl, records, send } = inventoryRouteFixture();
+  const containers = Array.from({ length: 4096 }, (_, i) => ({
+    machineId: i.toString(16).padStart(64, "0"),
+    sandboxId: hostId,
+    generation: installationId,
+    deploymentId: `${publicUrl}/${hostId}/${installationId}`,
+    createdAt: "2026-11-18T00:00:00.000Z",
+    containerName: "a".repeat(255),
+  }));
+  const body = JSON.stringify({ installationId, containers });
+  expect((await send(body))?.status).toBe(204);
+  expect(records[0]).toMatchObject({ metric: "reaper_unknown_machines", count: 4096, complete: true });
+});
+
+test("an oversized Docker inventory is refused before reaching the reaper", async () => {
+  const { installationId, records, send } = inventoryRouteFixture();
+  const body = JSON.stringify({ installationId, containers: [] }).padEnd(5 * 1024 * 1024 + 1);
+  const response = await send(body);
+  expect(response?.status).toBe(413);
+  expect(await response?.json()).toEqual({ error: { code: "invalid", message: "The request is too large." } });
+  expect(records).toHaveLength(0);
+});
+
 test("an authenticated Docker inventory report counts only unknown containers in its own binding", async () => {
   const { db, sql, userId, orgId, store, authenticate, post } = await fixture();
   const actor = { userId, orgId };

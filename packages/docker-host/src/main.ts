@@ -181,13 +181,24 @@ async function main(args: string[]) {
     const sampleDisk = () => dockerDiskFreeBytes(dockerCli);
     let stoppedSampleAt = 0;
     let stoppedSample: number | null = null;
-    const api = httpApi(fetch, createAvailabilitySampler(dockerCli), sampleDisk, async (state) => {
-      if (Date.now() - stoppedSampleAt >= 60_000) {
-        stoppedSampleAt = Date.now();
-        stoppedSample = await stoppedSandboxBytes(dockerCli, state);
-      }
-      return stoppedSample;
-    });
+    const api = httpApi(
+      fetch,
+      createAvailabilitySampler(dockerCli),
+      sampleDisk,
+      async (state) => {
+        if (Date.now() - stoppedSampleAt >= 60_000) {
+          stoppedSampleAt = Date.now();
+          stoppedSample = await stoppedSandboxBytes(dockerCli, state);
+        }
+        return stoppedSample;
+      },
+      {
+        cli: dockerCli,
+        failed() {
+          console.error("Docker host container inventory report failed.");
+        },
+      },
+    );
     if (command === "register" || command === "install") {
       if (await store.exists()) throw new Error("Host already registered");
       const token = (await Bun.stdin.text()).trim();
@@ -248,6 +259,7 @@ async function main(args: string[]) {
     let stopping = false;
     const stop = () => {
       stopping = true;
+      void api.stopInventory();
     };
     process.once("SIGINT", stop);
     process.once("SIGTERM", stop);
@@ -292,7 +304,7 @@ async function main(args: string[]) {
     } finally {
       clearInterval(expiryTimer);
       await Promise.all(scans);
-      await Promise.all([expiry.drain(), outputs.drain()]);
+      await Promise.all([expiry.drain(), outputs.drain(), api.stopInventory()]);
     }
   } finally {
     await release();

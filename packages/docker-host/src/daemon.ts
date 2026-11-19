@@ -104,6 +104,7 @@ export interface Api {
   ): Promise<
     DockerHostVersionOffer & {
       job: Job | null;
+      containerInventory?: 1;
       /** The server held this poll until work existed or its hold elapsed. */
       held?: true;
       limits?: DockerSandboxLimits;

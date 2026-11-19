@@ -72,4 +72,6 @@ const modalRuntimeLaunch = z
 
 export const GOLDEN_LAUNCH_REQUEST = z.union([goldenLaunch, boatRuntimeLaunch, modalRuntimeLaunch]);
 
+export type GoldenLaunchRequest = z.output<typeof GOLDEN_LAUNCH_REQUEST>;
+
 export const LAUNCH_REQUEST_VARIANTS = [...GOLDEN_LAUNCH_REQUEST.options, ...sharedLaunchVariants];

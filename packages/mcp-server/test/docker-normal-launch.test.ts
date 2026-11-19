@@ -57,7 +57,8 @@ import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeGitHub } from "../src/runtime-github.ts";
 import { createRuntimeMcp } from "../src/runtime-mcp.ts";
-import { createArmadaServer, LOGS_OUTPUT } from "../src/tools.ts";
+import { LOGS_OUTPUT } from "../src/sandbox-tool-schemas.ts";
+import { createArmadaServer } from "../src/tools.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 import { publishedRequest, publishedResponse } from "./published-response.ts";
 
