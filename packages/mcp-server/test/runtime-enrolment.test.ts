@@ -164,6 +164,77 @@ test.each(["boat", "modal"] as const)(
   },
 );
 
+test("prompted runtime publication keeps the enrolled generation and rolls back with the journal", async () => {
+  const f = await fixture();
+  const activityToken = crypto.randomUUID();
+  const taskPromptId = crypto.randomUUID();
+  await f.db.query(
+    `update sandboxes set status='starting',activity_lease_id=$2,
+     activity_until=now()+interval '1 minute' where id=$1`,
+    [f.id, activityToken],
+  );
+  const ticket = await f.issue();
+  const session = await f.service().enrol(ticket.enrolmentToken);
+  const store = createSqlData(f.sql)({
+    userId: f.people.owner,
+    orgs: [{ orgId: f.people.org, role: "member" }],
+    via: "service",
+  }).sandboxes;
+  const patch = {
+    status: "running",
+    expectedGeneration: Number(ticket.lifecycleGeneration),
+    finishActivity: true,
+    activityToken,
+    taskPromptId,
+    conversationIds: ["runtime-thread"],
+  } as const;
+  const publish = (change = {}) =>
+    store.update(f.id, { ...patch, conversationIds: [...patch.conversationIds], ...change });
+  const journal = () =>
+    f.db.query(
+      "select from_status,to_status,actor,code,generation::text from sandbox_transitions where sandbox_id=$1",
+      [f.id],
+    );
+  await expect(publish()).rejects.toThrow("Runtime readiness publication is stale.");
+  await f.db.query(
+    `insert into runtime_commands(sandbox_id,request_id,epoch,request_enc,result_enc,accepted_prompt_id)
+      values($1,$2,$3,''::bytea,''::bytea,$4)`,
+    [f.id, `launch_${f.id}`, session.epoch, taskPromptId],
+  );
+  await expect(publish({ expectedGeneration: patch.expectedGeneration + 1 })).rejects.toThrow(
+    "Runtime readiness publication is stale.",
+  );
+  await f.db.exec(
+    "alter table sandbox_transitions add constraint test_prompt_journal check (to_status <> 'running') not valid",
+  );
+  try {
+    await expect(publish()).rejects.toThrow("test_prompt_journal");
+  } finally {
+    await f.db.exec("alter table sandbox_transitions drop constraint test_prompt_journal");
+  }
+  expect((await journal()).rows).toEqual([]);
+  expect(
+    (await f.db.query("select status,task_prompt_id,activity_lease_id from sandboxes where id=$1", [f.id])).rows,
+  ).toEqual([{ status: "starting", task_prompt_id: null, activity_lease_id: activityToken }]);
+  await publish();
+  expect(await store.get(f.id)).toMatchObject({
+    status: "running",
+    lifecycleGeneration: patch.expectedGeneration,
+    taskPromptId,
+    conversationIds: ["runtime-thread"],
+  });
+  expect((await journal()).rows).toEqual([
+    {
+      from_status: "starting",
+      to_status: "running",
+      actor: "runtime_enrolment",
+      code: "runtime_enrolled",
+      generation: ticket.lifecycleGeneration,
+    },
+  ]);
+  expect((await f.request("session", session.runtimeToken, session.epoch)).status).toBe(200);
+});
+
 test("runtime readiness rechecks the activity deadline after locking the enrolled runtime", async () => {
   const f = await fixture();
   const activityToken = crypto.randomUUID();
