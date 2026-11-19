@@ -206,6 +206,7 @@ export interface Provider {
   steer(request: SteerRequest): Promise<SteerReceipt>;
   /** Stops the running turn of one conversation, or of every conversation when none is named. */
   interrupt(request: InterruptRequest): Promise<void>;
+  readonly supportsExecPhysicalGeneration?: true;
   exec(request: ExecRequest): Promise<ExecResult>;
   /** Optional one-shot native usage observation. Empty or an all-null diagnostic
    * row means unavailable, never zero tokens.

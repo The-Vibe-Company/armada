@@ -698,6 +698,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       });
     },
     ...turns,
+    supportsExecPhysicalGeneration: true,
     async exec({ expectedPhysicalGeneration, ...r }) {
       if (r.onlyIfRunning || expectedPhysicalGeneration !== undefined)
         return admit(r.sandboxId, async (row) => {

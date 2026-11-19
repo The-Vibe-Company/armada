@@ -59,12 +59,12 @@ const jobsLane: LaneFactory = ({
         async (target, request, canDispatch) => {
           if (!target.runtime) {
             const provider = await lifecycleProvider(target.id);
-            if (target.provider === "modal") {
+            if (provider.supportsExecPhysicalGeneration) {
               const { physicalGeneration } = await provider.get(
                 request.sandboxId,
                 request.signal ? { signal: request.signal } : undefined,
               );
-              if (!physicalGeneration) throw Error("No physical incarnation for native Modal PR scan.");
+              if (!physicalGeneration) throw Error("No physical incarnation for native PR scan.");
               request = { ...request, expectedPhysicalGeneration: physicalGeneration };
             }
             if (!(await canDispatch())) throw Error("PR scan generation changed.");
