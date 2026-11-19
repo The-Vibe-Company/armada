@@ -1953,3 +1953,9 @@ The ordinary Modal lifecycle and preservation launches also use keyed
 observation and read their timeout from the `launch` entry, with a ten-minute
 default. Runs that check default-skill receipts or scoped parent configuration
 still require the original launch receipt.
+
+Ordinary Modal provider parity records launch latency as `parity_modal_launch`
+and uses that entry for its response and observation timeouts, with a ten-minute
+default. It submits once and observes owner inventory by the exact launch
+reference after an ambiguous response. An unresolved result retains the
+reference and any server request ID in the parity diagnostic.
