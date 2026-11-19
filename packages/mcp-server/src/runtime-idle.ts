@@ -5,7 +5,7 @@ import { mergedWorkProof } from "./merged-work.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import { expiredOutputRead } from "./runtime-commands.ts";
 import { projectRuntimeIdle } from "./runtime-idle-evidence.ts";
-import { settleRuntimeTurn } from "./sandbox-lifecycle.ts";
+import { admitCheckpointedIdleStop, settleRuntimeTurn } from "./sandbox-lifecycle.ts";
 
 /** Unknown/truncated history cannot prove idle. Detached processes follow the timer,
  * not process inspection: only an active turn or admitted command blocks pause. */
@@ -115,7 +115,7 @@ export function createRuntimeIdle(
             // under checkpoint's admission lock, closing the send/exec race.
             // Upgrade pre-projection archives once, outside checkpoint admission.
             // Lock in the same order as ingestion so no committed events are lost.
-            await sql.transaction!(async (tx) => {
+            const generation = await sql.transaction!(async (tx) => {
               const locked = await tx.query<{ generation: string }>(
                 "select lifecycle_generation::text as generation from public.sandboxes where id=$1 for update",
                 [row.id],
@@ -132,7 +132,9 @@ export function createRuntimeIdle(
                 await projectRuntimeIdle(tx, row.id, key, Number(legacy!.sequence), [], Number(legacy!.sequence));
               const generation = locked.rows[0]?.generation;
               if (generation !== undefined) await settleRuntimeTurn(tx, row.id, generation, key);
+              return generation;
             });
+            if (generation === undefined) continue;
             // A legacy/manual checkpoint has no merge-stop intent. It still
             // must pass the ordinary idle timer before this worker can stop it.
             await guard(sql, row.id, row);
@@ -149,18 +151,7 @@ export function createRuntimeIdle(
               await options.dockerStop?.({ userId: row.owner_id, orgId: row.org_id }, row.id, requestId);
               continue;
             }
-            // Leave expiry unchanged. Existing lifecycle owns fenced provider shutdown.
-            await sql.query(
-              `update public.sandboxes set status='stopping',status_reason=case when exists(
-                 select 1 from public.runtime_checkpoints p where p.sandbox_id=$1 and p.request_id=$2::uuid and p.merge_stop
-               ) then 'work_merged' else 'idle_paused' end,stop_requested_at=coalesce(stop_requested_at,now()),
-               stop_generation=stop_generation+1,reconcile_after=now()
-               where id=$1 and status in ('ready','running') and stop_requested_at is null
-               and exists(select 1 from public.runtime_checkpoints p join public.runtime_enrolments r
-                 on r.sandbox_id=p.sandbox_id and r.epoch=p.epoch where p.sandbox_id=$1 and p.request_id=$2::uuid and p.watermark is not null
-                 and p.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=$1))`,
-              [row.id, requestId],
-            );
+            await sql.transaction!((tx) => admitCheckpointedIdleStop(tx, row.id, generation, requestId));
           } catch {
             // Pending checkpoints retain their request ID and retry next sweep.
           }

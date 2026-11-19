@@ -756,6 +756,86 @@ test("the runtime sweep settles a completed turn published by an overlapping ser
   expect(checkpoint).not.toHaveBeenCalled();
 });
 
+test.each(["current", "superseded"] as const)(
+  "idle stop journals only a %s checkpoint generation",
+  async (generation) => {
+    const f = await fixture();
+    const active = await f.enrol();
+    const promptId = crypto.randomUUID();
+    await f.db.query("update sandboxes set task_prompt_id=$2,expires_at=now()+interval '1 hour' where id=$1", [
+      f.id,
+      promptId,
+    ]);
+    const event: AgentEvent = { id: promptId, kind: "prompt", promptId, status: "finished", at: 1, text: "" };
+    expect((await f.publish(active, [{ sequence: 1, event }])).status).toBe(200);
+    const read = async () =>
+      (
+        await f.db.query(
+          `select status,status_reason,lifecycle_generation::text,stop_generation::text,expires_at::text,
+                stop_requested_at is not null as stop_requested,reconcile_after<=now() as due
+         from sandboxes where id=$1`,
+          [f.id],
+        )
+      ).rows[0]!;
+    const before = await read();
+    let checkpointed = false;
+    const idle = createRuntimeIdle(
+      f.sql,
+      ENCRYPTION_KEY,
+      async (_actor, input, guard) => {
+        await guard!(f.sql);
+        await f.db.query(
+          `insert into runtime_checkpoints(sandbox_id,epoch,request_id,watermark,completed_at)
+         values($1,$2,$3,1,now())`,
+          [f.id, active.epoch, input.request_id],
+        );
+        if (generation === "superseded")
+          await f.db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [f.id]);
+        checkpointed = true;
+        return {
+          id: input.id,
+          requestId: input.request_id,
+          runtime: { kind: "armada", epoch: active.epoch },
+          checkpoint: { state: "complete", watermark: 1, acknowledgedSequence: 1 },
+        };
+      },
+      { delayMs: 10, now: () => 100 },
+    );
+    await idle.reconcileOne(new AbortController().signal);
+    expect(checkpointed).toBe(true);
+    const journal = await f.db.query(
+      `select from_status,to_status,actor,code,generation::text
+     from sandbox_transitions where sandbox_id=$1 and to_status='stopping'`,
+      [f.id],
+    );
+    if (generation === "superseded") {
+      expect(journal.rows).toEqual([]);
+      expect(await read()).toEqual({
+        ...before,
+        lifecycle_generation: String(Number(before.lifecycle_generation) + 1),
+      });
+    } else {
+      expect(journal.rows).toEqual([
+        {
+          from_status: "ready",
+          to_status: "stopping",
+          actor: "idle",
+          code: "idle_paused",
+          generation: before.lifecycle_generation,
+        },
+      ]);
+      expect(await read()).toEqual({
+        ...before,
+        status: "stopping",
+        status_reason: "idle_paused",
+        stop_requested: true,
+        stop_generation: String(Number(before.stop_generation) + 1),
+        due: true,
+      });
+    }
+  },
+);
+
 test("idle evidence upgrades long archives, survives enrolment renewal, and blocks unresolved turns and commands", async () => {
   const f = await fixture();
   let active = await f.enrol();
