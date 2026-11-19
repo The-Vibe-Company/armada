@@ -179,8 +179,8 @@ test("runtime readiness rechecks the activity deadline after locking the enrolle
     transaction: (work) =>
       f.sql.transaction!((tx) =>
         work({
-          async query(statement, params) {
-            const result = await tx.query(statement, params);
+          async query<T>(statement: string, params?: unknown[]) {
+            const result = await tx.query<T>(statement, params);
             if (statement.includes("runtime_hash is not null for update"))
               await tx.query("update sandboxes set activity_until=clock_timestamp() where id=$1", [f.id]);
             return result;
