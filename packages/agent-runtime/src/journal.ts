@@ -7,6 +7,7 @@ import type { CheckpointIdentity, StoredPrompt } from "./protocol.ts";
 import { createRedactor, createShortSecretTextRedactor } from "./state.ts";
 
 const MAX_EVENT_BYTES = 262144;
+const MAX_COLLISION_ALIASES = MAX_EVENT_BYTES / 4;
 const CLAUDE_RESULT_PAYLOAD_FIELDS = [
   "result",
   "errors",
@@ -95,6 +96,50 @@ function maskPayloadField(
 type PayloadShape = {
   fields?: Readonly<Record<string, PayloadShape | null>>;
   entries?: PayloadShape;
+  items?: PayloadShape;
+};
+
+const claudeModelUsage = {
+  entries: {
+    fields: {
+      inputTokens: null,
+      outputTokens: null,
+      thinkingTokens: null,
+      reasoningTokens: null,
+      cacheReadInputTokens: null,
+      cacheCreationInputTokens: null,
+      cacheCreationEphemeral5mInputTokens: null,
+      cacheCreationEphemeral1hInputTokens: null,
+      webSearchRequests: null,
+      costUSD: null,
+      contextWindow: null,
+      maxOutputTokens: null,
+      canonicalModel: null,
+      provider: null,
+      costBasis: null,
+    },
+  },
+};
+
+const claudeUsageCounters = {
+  cache_creation: { fields: { ephemeral_5m_input_tokens: null, ephemeral_1h_input_tokens: null } },
+  cache_creation_input_tokens: null,
+  cache_read_input_tokens: null,
+  input_tokens: null,
+  output_tokens: null,
+};
+
+const claudeUsage = {
+  fields: {
+    ...claudeUsageCounters,
+    fallback_credit: { fields: { status: { fields: { type: null, reason: null, remove_to_redeem: null } } } },
+    inference_geo: null,
+    iterations: { items: { fields: { ...claudeUsageCounters, model: null, type: null } } },
+    output_tokens_details: { fields: { thinking_tokens: null } },
+    server_tool_use: { fields: { web_fetch_requests: null, web_search_requests: null } },
+    service_tier: null,
+    speed: null,
+  },
 };
 
 const quotaWindow = { fields: { usedPercent: null, windowDurationMins: null, resetsAt: null } };
@@ -117,14 +162,14 @@ const quotaPayload = {
   },
 };
 
-const maskQuotaFields: (
+const maskShapedPayload: (
   original: unknown,
   scrubbed: unknown,
   mask: (text: string) => string,
   shape?: PayloadShape | null,
 ) => unknown = (original, scrubbed, mask, shape) => {
   if (Array.isArray(original) && Array.isArray(scrubbed)) {
-    return original.map((item, index) => maskQuotaFields(item, scrubbed[index], mask));
+    return original.map((item, index) => maskShapedPayload(item, scrubbed[index], mask, shape?.items));
   }
   if (
     original &&
@@ -136,15 +181,48 @@ const maskQuotaFields: (
   ) {
     const fields = shape?.fields;
     const values = scrubbed as Record<string, unknown>;
-    return Object.fromEntries(
-      Object.entries(original).map(([key, value]) => {
-        const fixed = fields && Object.hasOwn(fields, key);
-        return [
-          fixed ? key : mask(key),
-          maskQuotaFields(value, values[key], mask, fixed ? fields[key] : shape?.entries),
-        ];
-      }),
+    const collapseMarkers = (text: string) => text.replace(/\[+REDACTED\]+/g, "[REDACTED]");
+    const maskKey = shape?.entries
+      ? (key: string) => {
+          const masked = mask(key);
+          if (masked === key) return key;
+          const collapsed = collapseMarkers(masked);
+          return collapseMarkers(mask(collapsed)) === collapsed ? collapsed : "[REDACTED]";
+        }
+      : mask;
+    const entries = Object.entries(original).map(([key, value]) => {
+      const fixed = fields && Object.hasOwn(fields, key);
+      return {
+        key,
+        maskedKey: fixed ? key : maskKey(key),
+        value: maskShapedPayload(value, values[key], mask, fixed ? fields[key] : shape?.entries),
+      };
+    });
+    if (!shape?.entries) return Object.fromEntries(entries.map(({ maskedKey, value }) => [maskedKey, value]));
+
+    const reserved = new Set(entries.map(({ maskedKey }) => maskedKey));
+    const output = new Map(
+      entries.filter(({ key, maskedKey }) => key === maskedKey).map(({ key, value }) => [key, value]),
     );
+    let nextAlias = 0;
+    for (const { key, maskedKey, value } of entries) {
+      if (key === maskedKey) continue;
+      if (!output.has(maskedKey)) {
+        output.set(maskedKey, value);
+        continue;
+      }
+      let alias: string | undefined;
+      while (nextAlias < MAX_COLLISION_ALIASES && !alias) {
+        const ordinal = nextAlias++;
+        const candidates = [`[REDACTED]#${ordinal + 1}`, String.fromCodePoint(0xf0000 + ordinal)];
+        alias = candidates.find((candidate) => !reserved.has(candidate) && maskKey(candidate) === candidate);
+      }
+      if (alias !== undefined) {
+        reserved.add(alias);
+        output.set(alias, value);
+      }
+    }
+    return Object.fromEntries(output);
   }
   if (original !== scrubbed) {
     if (typeof original !== "string" || typeof scrubbed !== "string") return scrubbed;
@@ -289,16 +367,37 @@ export class Journal {
       };
       if (event.type === "result") {
         if (event.data && typeof event.data === "object" && scrubbed.data && typeof scrubbed.data === "object") {
-          for (const key of CLAUDE_RESULT_PAYLOAD_FIELDS)
-            maskPayloadField(event.data as Record<string, unknown>, scrubbed.data, key, maskField);
+          const source = event.data as Record<string, unknown>;
+          for (const key of CLAUDE_RESULT_PAYLOAD_FIELDS) maskPayloadField(source, scrubbed.data, key, maskField);
+          if (Object.hasOwn(source, "modelUsage"))
+            scrubbed.data.modelUsage = maskShapedPayload(
+              source.modelUsage,
+              scrubbed.data.modelUsage,
+              maskField,
+              claudeModelUsage,
+            );
+          if (Object.hasOwn(source, "usage"))
+            scrubbed.data.usage = maskShapedPayload(source.usage, scrubbed.data.usage, maskField, claudeUsage);
+          maskPayloadField(source, scrubbed.data, "total_cost_usd", maskField);
 
           const result = JSON.stringify(scrubbed);
           if (Buffer.byteLength(result) <= MAX_EVENT_BYTES) return result;
           for (const key of CLAUDE_RESULT_PAYLOAD_FIELDS) delete scrubbed.data[key];
           scrubbed.data.outputTruncated = true;
+          if (Buffer.byteLength(JSON.stringify(scrubbed)) > MAX_EVENT_BYTES) {
+            delete scrubbed.data.usage;
+            if (Buffer.byteLength(JSON.stringify(scrubbed)) > MAX_EVENT_BYTES) {
+              for (const usage of Object.values(scrubbed.data.modelUsage ?? {})) {
+                if (!usage || typeof usage !== "object" || Array.isArray(usage)) continue;
+                const fields = usage as Record<string, unknown>;
+                delete fields.canonicalModel;
+                delete fields.provider;
+              }
+            }
+          }
         }
       } else if (isCodexQuotaDiagnostic(event.type)) {
-        scrubbed.data = maskQuotaFields(event.data, scrubbed.data, maskField, quotaPayload);
+        scrubbed.data = maskShapedPayload(event.data, scrubbed.data, maskField, quotaPayload);
       } else if (event.type === "model/rerouted") {
         maskPayloadField({ data: event.data }, scrubbed, "data", maskField);
       } else {

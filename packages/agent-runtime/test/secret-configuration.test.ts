@@ -268,7 +268,17 @@ test.each([
       local_command: "prefixvalue",
       resume_reason: "prefixvalue",
       origin: { kind: "peer", from: "fixture", body: "prefixvalue" },
-      modelUsage: { fixture: { inputTokens: 3 } },
+      modelUsage: {
+        prefixvalue: { inputTokens: 3, outputTokens: 42, provider: "prefixlongfixture" },
+        prefixlongfixture: { inputTokens: 5 },
+      },
+      usage: {
+        input_tokens: 3,
+        inference_geo: "prefixvalue",
+        iterations: [{ type: "message", input_tokens: 3, model: "prefixvalue" }],
+        output_tokens_details: { thinking_tokens: 6 },
+      },
+      total_cost_usd: 0.15,
     },
     masked: {
       subtype: "success",
@@ -285,7 +295,17 @@ test.each([
       local_command: "prefix[REDACTED]",
       resume_reason: "prefix[REDACTED]",
       origin: { kind: "peer", from: "fixture", body: "prefix[REDACTED]" },
-      modelUsage: { fixture: { inputTokens: 3 } },
+      modelUsage: {
+        "prefix[REDACTED]": { inputTokens: 3, outputTokens: "[REDACTED]", provider: "prefix[REDACTED]" },
+        "[REDACTED]#1": { inputTokens: 5 },
+      },
+      usage: {
+        input_tokens: 3,
+        inference_geo: "prefix[REDACTED]",
+        iterations: [{ type: "message", input_tokens: 3, model: "prefix[REDACTED]" }],
+        output_tokens_details: { thinking_tokens: 6 },
+      },
+      total_cost_usd: 0.15,
     },
   },
 ])("masks typed $type output at each journal boundary", async ({ type, data, masked }) => {
@@ -300,6 +320,7 @@ test.each([
       "bash",
       "longfixture",
       ...(type.startsWith("account/") ? ["rateLimits", "42"] : []),
+      ...(type === "result" ? ["Tokens", "tokens", "42"] : []),
     ]);
     journal.append({ ...event, id: "new-proof" });
     const expected = { ...event, data: masked };
@@ -316,24 +337,63 @@ test.each([
   }
 });
 
-test("expanding Claude result output is dropped while usage survives", () => {
+test.each([{ result: "x".repeat(30_000) }, { usage: { inference_geo: "x".repeat(30_000) } }])(
+  "expanding Claude result details are dropped while per-model counters survive",
+  (details) => {
+    const journal = new Journal(":memory:", (text) => text);
+    try {
+      const event = {
+        id: "result-event",
+        at: 1,
+        kind: "other",
+        type: "result",
+        data: { modelUsage: { "model-a": { inputTokens: 3 } }, ...details },
+      } satisfies AgentEvent;
+      journal.append(event);
+      journal.registerApplicationSecrets(["x"]);
+      journal.append(event);
+      const expected = { ...event, data: { modelUsage: { "model-a": { inputTokens: 3 } }, outputTruncated: true } };
+      expect(journal.redactEvent(journal.events()[0]!.event)).toEqual(expected);
+      expect(journal.events()[1]!.event).toEqual(expected);
+      journal.sanitize();
+      expect(journal.events().map(({ event }) => event)).toEqual([expected, expected]);
+    } finally {
+      journal.close();
+    }
+  },
+);
+
+test("many colliding Claude usage keys stay bounded and stable after masking", () => {
   const journal = new Journal(":memory:", (text) => text);
   try {
+    const modelUsage = Object.fromEntries(
+      Array.from({ length: 4098 }, (_, index) => [
+        index.toString(2).padStart(13, "0").replaceAll("0", "a").replaceAll("1", "b"),
+        { inputTokens: index + 1 },
+      ]),
+    );
     const event = {
       id: "result-event",
       at: 1,
       kind: "other",
       type: "result",
-      data: { result: "x".repeat(30_000), modelUsage: { fixture: { inputTokens: 3 } } },
+      data: { modelUsage: { "model[[REDACTED]]": { inputTokens: 5000 }, ...modelUsage } },
     } satisfies AgentEvent;
     journal.append(event);
-    journal.registerApplicationSecrets(["x"]);
+    journal.registerApplicationSecrets(["a", "b", "REDACTED", "model[R"]);
     journal.append(event);
-    const expected = { ...event, data: { modelUsage: { fixture: { inputTokens: 3 } }, outputTruncated: true } };
-    expect(journal.redactEvent(journal.events()[0]!.event)).toEqual(expected);
-    expect(journal.events()[1]!.event).toEqual(expected);
+
+    const stored = journal.events()[1]!.event;
+    expect(stored).toMatchObject({ type: "result", data: { modelUsage: { "[REDACTED]": { inputTokens: 5000 } } } });
+    if (stored.kind !== "other") throw Error("expected a result event");
+    const counterRows = Object.values((stored.data as typeof event.data).modelUsage);
+    expect(counterRows.map(({ inputTokens }) => inputTokens).sort((a, b) => a - b)).toEqual([
+      ...Array.from({ length: 4098 }, (_, index) => index + 1),
+      5000,
+    ]);
+    expect(journal.redactEvent(stored)).toEqual(stored);
     journal.sanitize();
-    expect(journal.events().map(({ event }) => event)).toEqual([expected, expected]);
+    expect(journal.events().map(({ event }) => event)).toEqual([stored, stored]);
   } finally {
     journal.close();
   }
