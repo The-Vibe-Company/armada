@@ -4,9 +4,6 @@ import { requireDockerDiskSpace } from "../../core/src/docker-disk-policy.ts";
 import type { DockerMachineCli } from "../../core/src/docker-machine.ts";
 import type { Executor } from "./daemon.ts";
 
-/** Measure the Docker data filesystem, not the daemon's HOME filesystem. Remote
- * Docker contexts cannot be measured using local statfs and are refused safely.
- */
 export async function dockerDiskFreeBytes(cli: DockerMachineCli): Promise<number | null> {
   try {
     let endpoint = process.env.DOCKER_HOST;
@@ -28,8 +25,6 @@ export async function dockerDiskFreeBytes(cli: DockerMachineCli): Promise<number
   }
 }
 
-/** Fresh local proof closes the heartbeat-to-dispatch race for allocations/builds.
- * Cleanup remains available even when admission cannot prove enough free space. */
 export function withDiskFloor(executor: Executor, sample: () => Promise<number | null>): Executor {
   return {
     ...executor,
@@ -63,7 +58,6 @@ const STOPPED_INSPECT_FORMAT =
 
 const DOCKER_SIZE_UNITS = ["B", "kB", "MB", "GB", "TB", "PB"] as const;
 
-/** Parse the SI, four-significant-digit sizes that `docker system df` renders. */
 export function dockerHumanSizeBytes(value: string): number | null {
   const match = /^(\d+(?:\.\d+)?)(B|kB|MB|GB|TB|PB)$/.exec(value.trim());
   if (!match) return null;
@@ -72,11 +66,6 @@ export function dockerHumanSizeBytes(value: string): number | null {
   return Number.isSafeInteger(bytes) && bytes >= 0 ? bytes : null;
 }
 
-/** Read-only, approximate inventory. Only volumes attached to non-running owned
- * containers with both installation labels are counted; shared volumes are counted once.
- * Docker's human-readable volume sizes are rounded, so this is not reclaimable space.
- * Inspect only the fields needed, in bounded chunks: full inspect JSON for a large
- * stopped inventory can exceed the CLI's 1 MiB output bound and its 3-second timeout. */
 export async function stoppedSandboxBytes(
   cli: DockerMachineCli,
   state: { installationId: string; hostId: string },
@@ -147,9 +136,6 @@ export async function stoppedSandboxBytes(
     }
     const names = [...volumes];
     if (names.length) {
-      // Volume inspect omits UsageData; only the Engine's /system/df response has
-      // per-volume sizes. Ask disk usage for its volumes only, so unrelated images,
-      // containers and build cache cannot inflate the bounded CLI output.
       const usage = await cli.run(["system", "df", "--verbose", "--format", VOLUME_USAGE_FORMAT], undefined, {
         timeoutMs: 5000,
       });

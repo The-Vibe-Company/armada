@@ -600,6 +600,8 @@ A daemon paired with the preceding server release derives the identity from
 its registered origin when the poll omits the new field. Alias reporting
 requires both the server and daemon updates. The receiver counts unknown
 containers in the authenticated host installation and performs no deletions.
+The daemon inventories actual allocations for the bound registration, including
+created and stopped containers.
 
 ### Fetching the image (#1507)
 
@@ -1067,9 +1069,10 @@ release path before deploying the server, then upgrade the host daemon.
 Each poll samples Linux MemAvailable and one-minute load, plus the current
 registration's labelled running sandbox containers using
 [Docker stats](https://docs.docker.com/reference/cli/docker/container/stats/).
-The CLI's memory metric excludes inactive file cache. Armada's working-set
-memory and CPU use are credited back, so its own running agents are not charged
-twice. Unrelated containers and host processes consume the remaining headroom.
+The CLI's memory metric excludes inactive file cache. Linux MemAvailable includes
+reclaimable memory. Armada credits back its working-set memory and CPU use to
+avoid charging its running agents twice. Unrelated containers and host processes
+consume the remaining headroom.
 Snapshot builders are conservatively treated as other work during their build.
 
 Headroom decreases immediately and recovers through a quarter-weight EWMA
@@ -1348,7 +1351,11 @@ container layers plus attached named volumes for this installation's
 exited/dead/created containers. Shared attached volumes are counted once. Volume
 sizes come from `docker system df` (the Engine `/system/df` data); volume inspect
 does not include usage. Docker rounds volume sizes; this is not a
-reclaimable-space guarantee and excludes detached volumes.
+reclaimable-space guarantee and excludes detached volumes. The scan inspects
+only the required container fields in batches of 50 to stay within the CLI's
+output and timeout bounds. It requests only volume rows from the disk usage
+report, so unrelated image, container, and build cache rows consume none of
+the output budget.
 The daemon caches the scan for one minute; unsupported or unreadable inventory
 is unknown. CLI and Machines display it alongside free disk and version guidance.
 Deploy migration `20261117080000_docker_host_stopped_disk_observation.sql` and
