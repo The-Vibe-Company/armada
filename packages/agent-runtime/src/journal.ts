@@ -23,9 +23,13 @@ const CLAUDE_RESULT_PAYLOAD_FIELDS = [
   "stop_reason",
 ] as const;
 
+function isCodexDiagnostic(type: string) {
+  return type === "model/rerouted" || type === "account/rateLimits/read" || type === "account/rateLimits/updated";
+}
+
 function isStructuredDiagnostic(type: string) {
   return (
-    type === "armada/opencodeShell" || type === "armada/opencodeMcp" || type === "result" || type === "model/rerouted"
+    type === "armada/opencodeShell" || type === "armada/opencodeMcp" || type === "result" || isCodexDiagnostic(type)
   );
 }
 
@@ -228,7 +232,7 @@ export class Journal {
           for (const key of CLAUDE_RESULT_PAYLOAD_FIELDS) delete scrubbed.data[key];
           scrubbed.data.outputTruncated = true;
         }
-      } else if (event.type === "model/rerouted") {
+      } else if (isCodexDiagnostic(event.type)) {
         maskPayloadField({ data: event.data }, scrubbed, "data", maskField);
       } else {
         scrubbed.data = maskProofData(event.data, scrubbed.data, mask, maskField);

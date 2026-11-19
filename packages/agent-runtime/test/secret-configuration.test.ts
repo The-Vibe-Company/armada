@@ -228,6 +228,15 @@ test.each([
       "prefix[REDACTED]": 3,
     },
   },
+  ...["account/rateLimits/read", "account/rateLimits/updated"].map((type) => ({
+    type,
+    data: {
+      rateLimits: { limitId: "codex", limitName: "quota-prefixvalue", primary: { usedPercent: 17 } },
+    },
+    masked: {
+      rateLimits: { limitId: "codex", limitName: "quota-prefix[REDACTED]", primary: { usedPercent: 17 } },
+    },
+  })),
   {
     type: "result",
     data: {
