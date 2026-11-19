@@ -163,6 +163,10 @@ production environment selection, `vercel build --prod`, and
 staging project's domain, not Armada production. Token authentication uses the
 environment, never argv. Clean source archives remain pinned to the validated
 SHA; deployment tooling comes from the executing workflow revision for recovery.
+Both projects use Actions for dashboard builds and deploy only prebuilt output.
+PRs do not get dashboard previews. Provider-side settings and cutover evidence
+are tracked in the deployment policy acceptance ledger below.
+
 Pulled settings/env and generated artifacts live only in disposable runner files,
 not the repository. See [Vercel's Actions guide](https://vercel.com/kb/guide/how-can-i-use-github-actions-with-vercel).
 

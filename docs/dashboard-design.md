@@ -4,6 +4,17 @@ The signed-in dashboard (`apps/dashboard/src/app/(app)`) is a work tool: a perso
 checks what is running or failed, launches an agent from a golden, and occasionally manages goldens,
 connections, keys and members. These notes keep later changes consistent with that job.
 
+Resource create and add flows use `CreateDialog` through
+`ResourceBrowser.actions`. Use one short, centered form and keep the resource
+list on the page. The dashboard uses the caller’s Supabase JWT. Use a
+dashboard SQL function for writes that row-level security cannot express.
+
+For fixture UI development, `bun run dev` runs the dashboard and
+`e2e/mock-supabase.ts` on ports 3100 and 54399. Sign in as
+`alice@example.com` with code `123456`. Free both ports before starting,
+and use Ctrl-C to stop both processes. The dashboard unit tests use
+`bun test` for pure logic; use `bun run e2e` for browser journeys.
+
 ## Principles
 
 - **Scope first.** The current organization and the person's role in it sit at the top of the navigation,
