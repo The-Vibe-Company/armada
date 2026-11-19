@@ -368,7 +368,6 @@
     "packages/provider-modal/test/modal.test.ts": 9.093,
     "packages/provider-modal/test/security.test.ts": 0.134,
     "packages/provider-modal/test/snapshot.test.ts": 0.155,
-    "packages/provider-modal/test/ssh-os.test.ts": 0.019,
     "scripts/armada-skill.test.ts": 0.265,
     "scripts/build-migration.test.ts": 0.11,
     "scripts/build.test.ts": 0.085,
