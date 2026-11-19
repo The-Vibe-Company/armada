@@ -7,6 +7,7 @@ import {
   mapSandboxRow,
   type ProviderRegistry,
   resolveCredentials,
+  type SandboxProviderId,
   type SandboxRow,
   type Sql,
   sandboxActivity,
@@ -39,7 +40,7 @@ export function createSandboxAccessServices(input: {
   providers: ProviderRegistry;
   credentials: NamedLaunchCredentials;
   connections: LaunchStores["connections"];
-  modalRuntimeDefault?: NonNullable<LaunchOptions["modalRuntimeDefault"]>;
+  runtimePlacements?: Partial<Record<SandboxProviderId, LaunchOptions["modalRuntimeDefault"]>>;
   runtimeSend?: RuntimeFollowup;
   runtimeCheckpoint?: RuntimeCheckpoint;
   encryptionKey: string;
@@ -96,7 +97,7 @@ export function createSandboxAccessServices(input: {
     async launch(operation, chosen) {
       const golden = (await stores.goldens.list(operation.orgId)).find((g) => g.id === chosen.goldenId);
       if (!golden) throw new ChildLaunchNotAllocated("preallocation_rejected");
-      const placement = golden.provider === "modal" ? input.modalRuntimeDefault : undefined;
+      const placement = input.runtimePlacements?.[golden.provider];
       const actor = { userId: operation.ownerId, orgId: operation.orgId, role: "member" as const };
       const credentials = placement?.credentials ?? input.credentials;
       const privateTarget = { ...golden, visibility: "private" as const, sourceGoldenVisibility: golden.visibility };

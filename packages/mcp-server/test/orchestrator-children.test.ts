@@ -986,37 +986,39 @@ test("scoped Modal children launch and accept follow-up through the enrolled run
           status: "running",
         };
       },
-      modalRuntimeDefault: {
-        async provider(_actor, target) {
-          expect(target).toMatchObject({ visibility: "private", sourceGoldenVisibility: "org" });
-          return host;
-        },
-        credentials,
-        connections: { async validate() {}, async bind() {} },
-        policy: {
-          async start({ sandbox }) {
-            logicalId = sandbox.id;
-            physicalId = sandbox.providerSandboxId;
-            expect(sandbox.runtimeTransport).toBe("dialout");
-            expect(sandbox.credentialId).toBe(selection.credentialId);
-            expect(sandbox.credentialVersion).toBe(selection.credentialVersion);
-            expect(sandbox.visibility).toBe("private");
-            const enrolments = createRuntimeEnrolments(sql, ENCRYPTION_KEY);
-            const ticket = await enrolments.issue({
-              sandboxId: sandbox.id,
-              ownerId: p.owner,
-              commandGrantExpiresAt: physicalDeadline.getTime(),
-              configuration: { grant: { expiresAt: physicalDeadline.getTime() } },
-            });
-            const active = await enrolments.enrol(ticket.enrolmentToken);
-            return {
-              epoch: active.epoch,
-              prepareWorkspace: async () => ({ status: "not_connected" }),
-              async prompt(request) {
-                expect(request.text).toStartWith("first turn");
-                return { promptId: "runtime-prompt", conversationId: "runtime-conversation", status: "running" };
-              },
-            };
+      runtimePlacements: {
+        modal: {
+          async provider(_actor, target) {
+            expect(target).toMatchObject({ visibility: "private", sourceGoldenVisibility: "org" });
+            return host;
+          },
+          credentials,
+          connections: { async validate() {}, async bind() {} },
+          policy: {
+            async start({ sandbox }) {
+              logicalId = sandbox.id;
+              physicalId = sandbox.providerSandboxId;
+              expect(sandbox.runtimeTransport).toBe("dialout");
+              expect(sandbox.credentialId).toBe(selection.credentialId);
+              expect(sandbox.credentialVersion).toBe(selection.credentialVersion);
+              expect(sandbox.visibility).toBe("private");
+              const enrolments = createRuntimeEnrolments(sql, ENCRYPTION_KEY);
+              const ticket = await enrolments.issue({
+                sandboxId: sandbox.id,
+                ownerId: p.owner,
+                commandGrantExpiresAt: physicalDeadline.getTime(),
+                configuration: { grant: { expiresAt: physicalDeadline.getTime() } },
+              });
+              const active = await enrolments.enrol(ticket.enrolmentToken);
+              return {
+                epoch: active.epoch,
+                prepareWorkspace: async () => ({ status: "not_connected" }),
+                async prompt(request) {
+                  expect(request.text).toStartWith("first turn");
+                  return { promptId: "runtime-prompt", conversationId: "runtime-conversation", status: "running" };
+                },
+              };
+            },
           },
         },
       },
@@ -1081,18 +1083,20 @@ test.each(["placement refusal", "parent revocation during configuration"] as con
         connections: undefined,
         encryptionKey: ENCRYPTION_KEY,
         scopedMcpUrl: "https://armada.example/mcp",
-        modalRuntimeDefault: {
-          async provider() {
-            if (scenario === "placement refusal") throw Error("Modal App is unavailable");
-            return host;
-          },
-          credentials,
-          connections: { async validate() {}, async bind() {} },
-          policy: {
-            async start(input) {
-              await authority.revoke(id);
-              await (input.host as typeof host).startRuntime();
-              throw Error("Revoked parent should have prevented bootstrap");
+        runtimePlacements: {
+          modal: {
+            async provider() {
+              if (scenario === "placement refusal") throw Error("Modal App is unavailable");
+              return host;
+            },
+            credentials,
+            connections: { async validate() {}, async bind() {} },
+            policy: {
+              async start(input) {
+                await authority.revoke(id);
+                await (input.host as typeof host).startRuntime();
+                throw Error("Revoked parent should have prevented bootstrap");
+              },
             },
           },
         },

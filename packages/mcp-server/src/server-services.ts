@@ -532,7 +532,7 @@ export async function createServerServices(env: Record<string, string | undefine
     credentials,
     runtimeSend,
     runtimeCheckpoint,
-    ...(launch.modalRuntimeDefault ? { modalRuntimeDefault: launch.modalRuntimeDefault } : {}),
+    runtimePlacements: { modal: launch.modalRuntimeDefault },
     encryptionKey: config.encryptionKey,
     connections: mcp.connections,
     publicUrl: config.publicUrl,
