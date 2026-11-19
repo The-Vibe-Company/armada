@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ControlError, createMcpControl } from "../src/lib/control.ts";
+import { ControlError, createMcpControl } from "./control.ts";
 
 const ORG = "00000000-0000-4000-8000-000000000010";
 const OTHER_ORG = "00000000-0000-4000-8000-000000000011";
@@ -20,7 +20,6 @@ const dto = (overrides: Record<string, unknown> = {}) => ({
 
 type Call = { url: string; headers: Record<string, string>; body: unknown };
 
-/** A fake Armada server answering every control call with `reply`. */
 function server(reply: (operation: string, body: Record<string, unknown>) => Response) {
   const calls: Call[] = [];
   const fakeFetch = (async (url: URL | string, init?: RequestInit) => {
@@ -35,7 +34,6 @@ function server(reply: (operation: string, body: Record<string, unknown>) => Res
 describe("MCP control client", () => {
   test("create posts the org-scoped request with the user's bearer and returns only contract fields", async () => {
     const { calls, control } = server(() =>
-      // A server that wrongly echoed a secret: the client must not hand it to the page.
       Response.json({ connection: dto({ authType: "bearer", authentication: "leaked", bearerToken: "leaked" }) }),
     );
     const request = {
@@ -202,12 +200,12 @@ describe("MCP control client", () => {
 });
 
 test("controlPost retains object validation and structured domain failure details", async () => {
-  const { controlPost } = await import("../src/lib/control.ts");
+  const { controlPost } = await import("./control.ts");
   let reply: Response;
   const options = {
     serverUrl: "https://armada.test",
     token: "user-jwt",
-    fetch: (async () => reply) as typeof fetch,
+    fetch: Object.assign(async () => reply, { preconnect: fetch.preconnect }),
   };
   for (const value of [null, [], 42, "text"]) {
     reply = Response.json(value);

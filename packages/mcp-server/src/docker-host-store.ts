@@ -41,7 +41,7 @@ import { authorizeSnapshotBuild, resolveDockerSnapshot } from "./docker-snapshot
 import { recordLaunchStageForActivation } from "./launch-stage-record.ts";
 import { collectOutputTransfers, DOCKER_RETAINED_OUTPUT_STOP } from "./output-transfers.ts";
 import { noteAdmission } from "./request-observability.ts";
-import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
+import { createRuntimeEnrolments, preserveResumeRefusalTicket, scopedRuntimeSql } from "./runtime-enrolment.ts";
 import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
 import { failDockerResumeActivation, requestRefusedDockerResumeStop } from "./sandbox-lifecycle.ts";
 import { deferTransactionWake } from "./wake-bus.ts";
@@ -477,6 +477,16 @@ export function createDockerHostStore(sql: Sql, key: string) {
       [row.id, message],
     );
   }
+  async function failResumeAck(tx: Sql, row: Sandbox, job: StoredJob, reason?: DockerJobFailureReason) {
+    const request = await readJob(job);
+    if (request.operation !== "resume") deny();
+    const fail = () => startupFailed(tx, row, job, reason);
+    if (row.status !== "starting") {
+      await fail();
+      return;
+    }
+    await preserveResumeRefusalTicket(tx, row.id, row.lifecycle_generation, request.bootstrap.enrolmentToken, fail);
+  }
   /** Retire queued work the server can no longer dispatch. This is cancellation,
    * never physical evidence: a bound startup becomes failed without stopped_at,
    * and stop/delete jobs stay dispatchable through reconcileHost. The caller
@@ -513,7 +523,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
         await tx.query<StoredJob>(
           `update public.docker_host_jobs j set refused_resume_generation=$2
            from public.sandboxes s join public.docker_resume_claims c on c.sandbox_id=s.id
-           where s.id=$1 and s.status='starting' and s.lifecycle_generation=$2::bigint
+           where s.id=$1 and ((s.status='starting' and s.lifecycle_generation=$2::bigint)
+             or (s.status='failed' and s.lifecycle_generation=$2::bigint+1 and j.outcome='failed'))
              and j.request_id=c.request_id and j.bound_sandbox_id=s.id and j.bound_operation='resume'
              and j.host_id=s.docker_host_id and c.host_id=j.host_id and c.installation_id=s.docker_installation_id
              and c.generation=s.docker_generation and c.accepted and c.lifecycle_generation+1=$2::bigint
@@ -528,7 +539,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
       if (refused.outcome !== null) {
         const row =
           (await tx.query<Sandbox>("select * from public.sandboxes where id=$1", [sandboxId])).rows[0] ?? deny();
-        await settleRefusedResume(tx, row, refused);
+        const settled = await settleRefusedResume(tx, row, refused);
+        return row.status !== "failed" || settled;
       }
       return true;
     },
@@ -1768,7 +1780,12 @@ export function createDockerHostStore(sql: Sql, key: string) {
           }
         } else if (result.imageId !== undefined) deny();
         if (logical && !(await settleRefusedResume(tx, logical, job)) && result.outcome === "failed") {
-          await startupFailed(tx, logical, job, result.reason);
+          if (job.bound_operation === "resume") {
+            if (job.outcome === null) await failResumeAck(tx, logical, job, result.reason);
+            else if (job.cancelled_at) await startupFailed(tx, logical, job, result.reason);
+          } else {
+            await startupFailed(tx, logical, job, result.reason);
+          }
         }
         // Persist terminal receipts below, but never replay old stop/delete
         // effects onto a lifecycle admitted after that job.

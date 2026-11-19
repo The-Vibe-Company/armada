@@ -842,6 +842,7 @@ const refusalOrders = [
   "refusal first",
   "failed ACK",
   "ACK first",
+  "failed ACK first",
   "previous server ACK",
   "previous server failed ACK",
   "ACK transaction rollback",
@@ -875,8 +876,8 @@ test.each(refusalOrders)(
     const resume = await admittedResume(f, randomUUID());
     const job = await hosts.poll(f.hostToken, f.installationId, "3.0.0");
     if (job?.operation !== "resume") throw Error("missing resume");
-    const refuse = () =>
-      authority.route(
+    const refuse = (enrolments = authority) =>
+      enrolments.route(
         new Request("https://armada.example/api/runtime/enrol", {
           method: "POST",
           headers: {
@@ -887,10 +888,44 @@ test.each(refusalOrders)(
       );
 
     if (order === "ACK first") await ack(job.requestId);
+    const failedAckFirst = order === "failed ACK first";
+    if (failedAckFirst) {
+      const failWrite = (fragment: string) =>
+        ({
+          query: sql.query,
+          transaction: (work) =>
+            sql.transaction!((tx) =>
+              work({
+                query: (statement, values) => {
+                  if (statement.includes(fragment)) throw Error("handoff write failed");
+                  return tx.query(statement, values);
+                },
+              }),
+            ),
+        }) satisfies Sql;
+      await expect(
+        createDockerHostStore(failWrite("set outcome=$2,completed_at=now()"), key).complete(
+          f.hostToken,
+          f.installationId,
+          { requestId: job.requestId, outcome: "failed" },
+        ),
+      ).rejects.toMatchObject({ cause: { message: "handoff write failed" } });
+      expect((await reservations.get(f.actor, id)).status).toBe("starting");
+      expect((await hosts.poll(f.hostToken, f.installationId))?.requestId).toBe(job.requestId);
+      await ack(job.requestId, "failed");
+      expect((await reservations.get(f.actor, id)).status).toBe("failed");
+      await expect(authority.enrol(job.bootstrap.enrolmentToken)).rejects.toThrow("runtime_enrolment_denied");
+      await expect(authority.withBootstrap(job.bootstrap.enrolmentToken, async () => {})).rejects.toThrow(
+        "runtime_enrolment_denied",
+      );
+      const failedStop = createRuntimeEnrolments(failWrite("insert into public.docker_host_jobs"), key);
+      expect((await refuse(failedStop))?.status).toBe(503);
+      expect((await reservations.get(f.actor, id)).status).toBe("failed");
+    }
     const response = await refuse();
     expect(response?.status).toBe(409);
     expect(await response?.json()).toEqual({ error: "runtime_protocol_unsupported" });
-    if (order !== "ACK first") {
+    if (order !== "ACK first" && !failedAckFirst) {
       expect((await reservations.get(f.actor, id)).status).toBe("starting");
       expect((await hosts.poll(f.hostToken, f.installationId))?.requestId).toBe(job.requestId);
       if (order === "previous server ACK" || order === "previous server failed ACK") {
@@ -950,7 +985,7 @@ test.each(refusalOrders)(
     expect(next.state).toBe("pending");
     const nextJob = await hosts.poll(f.hostToken, f.installationId);
     if (nextJob?.operation !== "resume") throw Error("missing replacement resume");
-    if (order === "previous server failed ACK") {
+    if (order === "previous server failed ACK" || failedAckFirst) {
       await ack(job.requestId, "failed");
       await ack(stop.requestId);
       expect((await reservations.get(f.actor, id)).status).toBe("starting");

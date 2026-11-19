@@ -1,12 +1,7 @@
 import { expect, test } from "bun:test";
-import { ControlError, createControlClient } from "../src/lib/control.ts";
-import {
-  connectedProviders,
-  parseProviderStatus,
-  providerSetupValue,
-  safeConnectMessage,
-} from "../src/lib/provider-setup.ts";
-import { explainSetupError, readSetupWith } from "../src/lib/provider-setup-read.ts";
+import { ControlError, createControlClient } from "./control.ts";
+import { connectedProviders, parseProviderStatus, providerSetupValue, safeConnectMessage } from "./provider-setup.ts";
+import { explainSetupError, readSetupWith } from "./provider-setup-read.ts";
 
 const ORG = "00000000-0000-4000-8000-000000000013";
 const status = (fields: Record<string, unknown> = {}) => ({
@@ -21,7 +16,7 @@ const status = (fields: Record<string, unknown> = {}) => ({
 
 test("a status is accepted only for the org asked about and only when it is self-consistent", () => {
   expect(parseProviderStatus(status(), ORG)?.ready).toBe(true);
-  // Another org's answer, a ready flag no provider backs, a duplicate or unknown provider: never read as ready.
+
   expect(parseProviderStatus(status(), "00000000-0000-4000-8000-000000000010")).toBeNull();
   expect(
     parseProviderStatus(
@@ -48,7 +43,7 @@ test("a status is accepted only for the org asked about and only when it is self
   expect(parseProviderStatus(status({ providers: [{ provider: "vercel", configured: true }] }), ORG)).toBeNull();
   expect(parseProviderStatus(status({ ready: "yes" }), ORG)).toBeNull();
   expect(parseProviderStatus(null, ORG)).toBeNull();
-  // A partial provider list is unexpected, not pending.
+
   expect(parseProviderStatus(status({ ready: false, providers: [] }), ORG)).toBeNull();
   expect(parseProviderStatus(status({ providers: [{ provider: "boat", configured: true }] }), ORG)).toBeNull();
   const pending = parseProviderStatus(
@@ -112,7 +107,7 @@ test("an edge 404 is a temporary outage, not a missing capability, and the next 
   });
 
   const outage = await readSetupWith(client, ORG);
-  // Fail closed (never ready or pending), with retry guidance and none of the upstream page.
+
   expect(outage).toEqual({
     state: "unavailable",
     message: "The Armada server could not be reached just now. Check again in a moment.",
@@ -131,7 +126,7 @@ test("only the Armada server's own unknown-route answer says provider setup is u
   expect(explainSetupError(new ControlError("The Armada server answered 404.", 404))).toBe(
     "The Armada server could not be reached just now. Check again in a moment.",
   );
-  // A coded missing organization remains distinct from an absent route without exposing its diagnostics.
+
   expect(explainSetupError(new ControlError("No such organization.", 404, "not_found"))).toContain(
     "choose an organization",
   );

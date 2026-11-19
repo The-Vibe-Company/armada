@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { COMMANDS, commandsForOrganization, matchCommands, modifierKey } from "../src/lib/command-menu.ts";
-import { NAV_GROUPS } from "../src/lib/navigation";
+import { COMMANDS, commandsForOrganization, matchCommands, modifierKey } from "./command-menu.ts";
+import { NAV_GROUPS } from "./navigation";
 
 const labels = (query: string) => matchCommands(query).map((command) => command.label);
 
@@ -9,15 +9,14 @@ test("an empty query lists every command in order", () => {
 });
 
 test("a label that starts with the query ranks before a word, a keyword and a substring", () => {
-  // A visible label prefix outranks keyword matches.
   expect(labels("YOUR")[0]).toBe("Your connections");
-  // A word inside a label: "Launch a sandbox" (word "sandbox") comes after "Sandboxes" (label start).
+
   expect(labels("sandbox")).toEqual(["Sandboxes", "Launch a sandbox", "Connect a sandbox provider"]);
-  // A keyword only: "mcp" finds Tools.
+
   expect(labels("mcp")).toEqual(["Tools"]);
-  // A substring anywhere, last.
+
   expect(labels("odel")).toEqual(["Models"]);
-  // The old page name remains searchable without keeping it in the menu.
+
   expect(labels("harness")).toEqual(["Models"]);
 });
 
