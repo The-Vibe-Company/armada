@@ -801,7 +801,7 @@ test("a staging run persists absent historical receipts as settled and never swe
               return Response.json({ error: { code: "not_found" } }, { status: 404 });
             }
             expect(url.endsWith("/launch")).toBe(true);
-            return Response.json({ error: { code: "unavailable" } }, { status: 503 });
+            return Response.json({ error: { code: "invalid_request" } }, { status: 400 });
           },
         },
       );
