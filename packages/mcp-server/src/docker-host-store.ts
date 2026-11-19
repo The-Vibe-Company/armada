@@ -1591,8 +1591,6 @@ export function createDockerHostStore(sql: Sql, key: string) {
               result.requestId,
             ])
           ).rows[0] ?? deny();
-        // A physical-only receipt describes the frozen container, even after the sandbox advances.
-        // Validate the bound payload without replaying logical lifecycle transitions.
         let logical: Sandbox | undefined;
         if (hint.bound_sandbox_id) {
           if (hint.bound_operation === "deletePhysical") await readJob(hint);
