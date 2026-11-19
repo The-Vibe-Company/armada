@@ -10,9 +10,10 @@ through Modal and preparing a workspace from a fresh checkout.
 
 1. Use a dedicated benchmark app in the staging Modal environment. Run while
    staging is idle. Set `COLD_MODAL_APP` and `COLD_MODAL_ENVIRONMENT` to that app
-   and environment, and supply `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` through
-   the coordinator's secret environment. The app must already exist. Use staging
-   credentials only. Start from the merged checkout and install dependencies
+   and environment. The app must already exist. Provide a JSON object with
+   `tokenId` and `tokenSecret` from the staging secret manager on private stdin.
+   The command below uses a private credential stream from the coordinator's
+   secret manager. Start from the merged checkout and install dependencies
    with `bun install --frozen-lockfile`.
 2. Resolve the staging release's official linux/amd64 image to its immutable
    GHCR digest. Select one public small repository with a real dependency
@@ -26,7 +27,7 @@ through Modal and preparing a workspace from a fresh checkout.
    bun packages/provider-modal/test/cold-launch-benchmark.ts \
      "$IMAGE_DIGEST_REF" "$ARMADA_REF" "$ARMADA_SHA" \
      "$SMALL_GITHUB_HTTPS_URL_ENDING_IN_DOT_GIT" "$SMALL_REF" "$SMALL_SHA" "$SMALL_INIT" \
-     > modal-cold-launch.jsonl
+     < "$STAGING_MODAL_CREDENTIAL_STREAM" > modal-cold-launch.jsonl
    ```
 
 3. Keep the JSONL and record its location, date, staging SHA, Modal environment,
@@ -37,7 +38,8 @@ through Modal and preparing a workspace from a fresh checkout.
    outside the timed interval. Each successful sample ends with confirmed
    termination. If a run fails or is interrupted, record the attempt and reason,
    check the named sandbox in the dedicated app, and confirm termination before
-   running a new full batch. The sandbox lifetime is capped at ten minutes.
+   running a new full batch. The sandbox lifetime and each guest command wait
+   are capped at ten minutes.
 4. Record first-use image timing separately when the digest was new to the
    environment. Modal can reuse imported image layers, and a fresh sandbox
    does not imply a forced registry cache miss. No snapshot, shared dependency

@@ -4,8 +4,9 @@ const usage =
   "Usage: bun packages/provider-modal/test/cold-launch-benchmark.ts IMAGE ARMADA_REF ARMADA_SHA SMALL_URL SMALL_REF SMALL_SHA SMALL_INIT";
 const checkout = "/tmp/armada-cold-launch";
 const sampleCount = 5;
+const timeoutMs = 600_000;
 
-function requiredEnv(name: string): string {
+function requiredEnv(name: string) {
   const value = process.env[name]?.trim();
   if (!value) throw new Error(`Set ${name} for the dedicated staging Modal app.`);
   return value;
@@ -46,14 +47,25 @@ async function main() {
   ];
   const appName = requiredEnv("COLD_MODAL_APP");
   const environment = requiredEnv("COLD_MODAL_ENVIRONMENT");
-  const client = modalConnection({
-    tokenId: requiredEnv("MODAL_TOKEN_ID"),
-    tokenSecret: requiredEnv("MODAL_TOKEN_SECRET"),
-  });
+  const credentials: { tokenId?: unknown; tokenSecret?: unknown } | null = await Bun.stdin.json().catch(() => null);
+  const tokenId = credentials?.tokenId;
+  const tokenSecret = credentials?.tokenSecret;
+  if (typeof tokenId !== "string" || !tokenId.trim() || typeof tokenSecret !== "string" || !tokenSecret.trim()) {
+    throw new Error("Supply the staging Modal tokenId and tokenSecret as private JSON on stdin.");
+  }
+  const client = (() => {
+    try {
+      return modalConnection({ tokenId, tokenSecret });
+    } catch {
+      throw new Error("Could not initialize the Modal client.");
+    }
+  })();
   const batch = crypto.randomUUID().slice(0, 12);
 
   try {
-    const app = await client.apps.fromName(appName, { environment, createIfMissing: false });
+    const app = await client.apps.fromName(appName, { environment, createIfMissing: false }).catch(() => {
+      throw new Error("Could not look up the benchmark app in the staging Modal environment.");
+    });
     console.log(JSON.stringify({ batch, appName, environment, imageRef, workloads, sampleCount }));
     const samples = workloads.map(() => [] as Record<string, number>[]);
     for (let run = 1; run <= sampleCount; run++) {
@@ -63,6 +75,7 @@ async function main() {
         let sandbox: Awaited<ReturnType<typeof client.sandboxes.create>> | undefined;
         let result: { sandboxId: string; times: Record<string, number> } | undefined;
         let failure: Error | undefined;
+        let guestExit: number | undefined;
         console.log(JSON.stringify({ event: "attempt", name }));
         try {
           const start = performance.now();
@@ -73,19 +86,20 @@ async function main() {
           sandbox = await client.sandboxes.create(app, image, {
             name,
             command: ["sleep", "infinity"],
-            timeoutMs: 600_000,
+            timeoutMs,
             includeOidcIdentityToken: false,
           });
           const machine = sandbox;
           async function exec(command: string[], workdir: string) {
             const child = await machine.exec(command, {
               workdir,
+              timeoutMs,
               env: { GIT_TERMINAL_PROMPT: "0", BUN_INSTALL_CACHE_DIR: "/tmp/armada-bun-cache" },
               stdout: "ignore",
               stderr: "ignore",
             });
-            const code = await child.wait();
-            if (code !== 0) throw new Error(`Guest command exited with code ${code}`);
+            guestExit = await child.wait();
+            if (guestExit !== 0) throw new Error("Guest command failed.");
           }
 
           await exec(["true"], "/tmp");
@@ -118,18 +132,19 @@ async function main() {
             totalMs: initialized - start,
           };
           result = { sandboxId: sandbox.sandboxId, times };
-        } catch (error) {
-          failure = new Error(`${name} failed during ${phase}`, { cause: error });
+        } catch {
+          const detail = guestExit ? ` (guest exit ${guestExit})` : "";
+          failure = new Error(`${name} failed during ${phase}${detail}`);
         }
         if (sandbox) {
           try {
             await sandbox.terminate({ wait: true });
-          } catch (error) {
-            const cleanup = new Error(`Cleanup failed for ${name} (${sandbox.sandboxId})`, { cause: error });
-            throw failure ? new AggregateError([failure, cleanup], `${name} failed and cleanup also failed`) : cleanup;
+          } catch {
+            const cleanup = `Cleanup failed for ${name} (${sandbox.sandboxId})`;
+            throw new Error(failure ? `${failure.message}. ${cleanup}` : cleanup);
           }
         }
-        if (!result) throw failure;
+        if (!result) throw failure ?? new Error(`No timing result for ${name}`);
         samples[index]?.push(result.times);
         console.log(
           JSON.stringify({ workload: workload.name, run, name, sandboxId: result.sandboxId, ...result.times }),
