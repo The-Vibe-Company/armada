@@ -164,8 +164,9 @@ Older check/server combinations fail before allocation, not a compatibility mode
 
 ## Diagnostics and recovery
 
-Server `event:"armada.runtime.stage"` logs contain only authenticated sandbox ID,
-epoch and fixed stages: `bootstrap_started`, `artifact_verified`, `enrolled`,
+Server `event:"armada.runtime.stage"` logs record the sandbox ID, epoch, server
+observation time (`observedAtMs`), and a fixed reason when present. Fixed stages
+include `bootstrap_started`, `artifact_verified`, `enrolled`,
 `harness_started`, `first_event`, `bootstrap_failed`, `runtime_failed`, or startup
 failure by bootstrap/enrolment/readiness phase. Stage reports are best effort,
 not inference proof. `first_event` means archive commit, possibly only queued state.
