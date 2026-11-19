@@ -53,7 +53,21 @@ export interface People {
 
 /** A fresh database with the migrations, two orgs, three people, three goldens and encrypted credentials. */
 export async function database(): Promise<{ db: PGlite; people: People }> {
-  return seedDatabase(await openMigratedDatabase());
+  const db = await openMigratedDatabase();
+  try {
+    return await seedDatabase(db);
+  } catch (error) {
+    return closeAfterSetupFailure(db, error);
+  }
+}
+
+async function closeAfterSetupFailure(db: PGlite, error: unknown): Promise<never> {
+  try {
+    await db.close();
+  } catch (closeError) {
+    throw new AggregateError([error, closeError], "Test database setup and cleanup failed");
+  }
+  throw error;
 }
 
 /** Seed the common launch fixtures into an empty database owned by the caller. */
@@ -407,25 +421,40 @@ export function bunLikeSql(db: PGlite, onQuery?: (text: string) => void): Sql {
   return sqlOver({ ...driver(db), begin: (work) => db.transaction((tx) => work(driver(tx))) });
 }
 
+interface HarnessOptions {
+  /** The `Sql` the data, the credentials and the auth lookups run on. Default: PGlite as is. */
+  sql?: (db: PGlite) => Sql;
+  routes?: readonly Route[];
+  buildSsh?: GoldenCreateOptions["ssh"];
+  /** The store `/mcp` authenticates against. Default: the in-memory one the helpers fill. */
+  authStore?: (db: PGlite) => AuthStore;
+  log?: (line: string) => void;
+  /** The Modal adapter, when a test configures one. Default: none, as on a server before #513. */
+  modalProviderFor?: HandlerOptions["modalProviderFor"];
+  providerFor?: HandlerOptions["providerFor"];
+  modelAuth?: (db: PGlite) => NonNullable<HandlerOptions["modelAuth"]>;
+  connections?: HandlerOptions["connections"];
+}
+
 export async function harness(
-  options: {
-    /** The `Sql` the data, the credentials and the auth lookups run on. Default: PGlite as is. */
-    sql?: (db: PGlite) => Sql;
-    routes?: readonly Route[];
-    buildSsh?: GoldenCreateOptions["ssh"];
-    /** The store `/mcp` authenticates against. Default: the in-memory one the helpers fill. */
-    authStore?: (db: PGlite) => AuthStore;
-    log?: (line: string) => void;
-    /** The Modal adapter, when a test configures one. Default: none, as on a server before #513. */
-    modalProviderFor?: HandlerOptions["modalProviderFor"];
-    providerFor?: HandlerOptions["providerFor"];
-    modelAuth?: (db: PGlite) => NonNullable<HandlerOptions["modelAuth"]>;
-    connections?: HandlerOptions["connections"];
-  } = {},
+  options: HarnessOptions = {},
   /** Caller-owned seeded database; its owner closes it after all clients are done. */
   fixture?: Awaited<ReturnType<typeof database>>,
 ): Promise<TestServer> {
-  const { db, people } = fixture ?? (await database());
+  const seeded = fixture ?? (await database());
+  try {
+    return createTestServer(options, seeded, fixture === undefined);
+  } catch (error) {
+    if (!fixture) return closeAfterSetupFailure(seeded.db, error);
+    throw error;
+  }
+}
+
+function createTestServer(
+  options: HarnessOptions,
+  { db, people }: Awaited<ReturnType<typeof database>>,
+  ownsDatabase: boolean,
+): TestServer {
   const boat = fakeBoat();
   const auth = createMemoryAuthStore();
   const clock = { now: new Date("2026-11-08T12:00:00.000Z") };
@@ -551,7 +580,7 @@ export async function harness(
     },
     async close() {
       for (const client of clients) await client.close();
-      if (!fixture) await db.close();
+      if (ownsDatabase) await db.close();
     },
   };
 }
