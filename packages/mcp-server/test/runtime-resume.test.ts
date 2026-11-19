@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { createMemoryAuthStore } from "@armada/auth";
-import { createSqlVaultStore, type Provider } from "@armada/core/server";
+import { createSqlVaultStore, DelegatedAuthority, type Provider } from "@armada/core/server";
 import { fakeBoat, retainedSandbox, sandbox as sdkSandbox } from "../../provider-boat/test/support.ts";
 import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import { boatRuntimeResume } from "../src/boat-runtime-resume.ts";
@@ -14,10 +14,11 @@ import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import { createRuntimeHistory } from "../src/runtime-history.ts";
 import { createRuntimeResume } from "../src/runtime-resume.ts";
 import { createRuntimeServing } from "../src/runtime-serving.ts";
+import { createSandboxArmadaAccess } from "../src/sandbox-armada-access.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { runtimeFixture } from "./runtime.fixture.ts";
-import { ENCRYPTION_KEY } from "./support.ts";
+import { ENCRYPTION_KEY, PUBLIC_URL } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
 
@@ -1004,6 +1005,37 @@ describe.each([
   });
   test("one fresh-epoch first conversation survives replay without inventing native history", async () => {
     expect(f.starts).toEqual([]);
+    const scoped = provider === "modal" && harness === "codex";
+    const authority = new DelegatedAuthority(f.sql, async () => {});
+    const access = createSandboxArmadaAccess({
+      sql: f.sql,
+      encryptionKey: ENCRYPTION_KEY,
+      publicUrl: PUBLIC_URL,
+      commands: f.bridge,
+    });
+    const admit = (turn: number) => {
+      const server = f.mcpSnapshots[turn]?.servers.armada_orchestrator;
+      const bearer = server?.type === "http" ? server.headers?.Authorization : undefined;
+      return authority.admit(
+        bearer?.slice("Bearer ".length) ?? "",
+        {
+          method: "launch",
+          goldenId: f.row.goldenId,
+          harness: "codex",
+          credentialId: f.account.id,
+          credentialVersion: f.account.version,
+        },
+        async (_tx, principal) => principal.ownerId,
+      );
+    };
+    if (scoped) {
+      await f.db.query("update sandboxes set visibility='private',access_owner_id=owner_id where id=$1", [f.row.id]);
+      await f.db.query(
+        `insert into armada_access_parents(id,kind,org_id,owner_id,sandbox_id,state,golden_ids,credential_ids)
+         values($1,'sandbox',$2,$3,$1,'ready',array[$4::uuid],array[$5::uuid])`,
+        [f.row.id, f.people.org, f.people.owner, f.row.goldenId, f.account.id],
+      );
+    }
     const old = f.active;
     let activations = 0,
       github = 0,
@@ -1030,8 +1062,9 @@ describe.each([
         github++;
         return { status: "not_connected", message: "offline" };
       },
+      access.restoreEnrolled,
     );
-    const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, undefined, resume);
+    const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, undefined, resume, access.restoreEnrolled);
     const request = f.input("first instruction after empty stop");
     const accepted = await send(f.caller, request);
     expect(accepted).toMatchObject({
@@ -1040,6 +1073,7 @@ describe.each([
       sourceCheckpoint: { epoch: "1", watermark: f.cp.checkpoint.watermark, empty: true },
     });
     expect(f.starts).toEqual([undefined]);
+    if (scoped) await expect(admit(0)).resolves.toBe(f.people.owner);
     expect(activations).toBe(1);
     expect(mcp).toBe(1);
     expect(github).toBe(1);
@@ -1048,9 +1082,16 @@ describe.each([
     expect(activations).toBe(1);
     expect(f.starts).toHaveLength(1);
     await expect(send(f.caller, { ...request, prompt: "changed" })).rejects.toThrow();
+    if (scoped) await authority.revoke(f.row.id);
     const next = await send(f.caller, f.input("follow up"));
+    if (scoped) {
+      await expect(admit(0)).rejects.toThrow("denied");
+      await expect(admit(1)).resolves.toBe(f.people.owner);
+      await send(f.caller, f.input("reuse the current grant"));
+      await expect(admit(1)).resolves.toBe(f.people.owner);
+    }
     expect(next.conversationId).toBe(accepted.conversationId);
-    expect(f.starts).toEqual([undefined, "native-thread"]);
+    expect(f.starts).toEqual(scoped ? [undefined, "native-thread", "native-thread"] : [undefined, "native-thread"]);
     expect((await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))?.conversationIds).toEqual([
       accepted.conversationId,
     ]);

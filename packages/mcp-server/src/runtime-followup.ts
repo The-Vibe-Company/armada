@@ -10,6 +10,7 @@ import { createRuntimeEnrolments, runtimeTransaction } from "./runtime-enrolment
 import type { RuntimeMcp } from "./runtime-mcp.ts";
 import type { RuntimeResume } from "./runtime-resume.ts";
 import { appendConversation } from "./sandbox-activity.ts";
+import type { RestoreScopedRuntimeAccess } from "./sandbox-armada-access.ts";
 import { refuseConversationSelector } from "./sandbox-conversation.ts";
 
 export interface RuntimeFollowupInput {
@@ -32,6 +33,7 @@ export function createRuntimeFollowup(
   commands: ReturnType<typeof createRuntimeCommands>,
   prepareMcp?: RuntimeMcp["prepare"],
   resume?: RuntimeResume,
+  restoreScopedAccess?: RestoreScopedRuntimeAccess,
 ) {
   const authority = createRuntimeEnrolments(sql, key);
   const environment = createGoldenRuntimeEnvironment(sql, key);
@@ -228,7 +230,17 @@ export function createRuntimeFollowup(
       {},
       async (signal) => {
         const existing = await commands.result(caller.userId, found.id, commandId, admitted.epoch);
-        if (existing.state === "missing") await prepareMcp?.(caller, found.id, signal);
+        if (existing.state === "missing") {
+          await prepareMcp?.(caller, found.id, signal);
+          if (found.runtimeTransport === "dialout")
+            await restoreScopedAccess?.(
+              caller.userId,
+              found.id,
+              admitted.epoch,
+              String(admitted.current.lifecycleGeneration),
+              signal,
+            );
+        }
         const accepted = await submit(signal);
         try {
           await store.recordTurnModel?.(found.id, accepted.promptId, found.model, pricingContext);

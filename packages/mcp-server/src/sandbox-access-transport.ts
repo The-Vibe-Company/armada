@@ -47,8 +47,15 @@ export function createDelegatedTransport(input: {
 }
 
 export function createEnrolledDelegatedTransport(
-  commands: Pick<ReturnType<typeof createRuntimeCommands>, "call">,
-  input: { ownerId: string; sandboxId: string; epoch: string; lifecycleGeneration: string; mcpUrl: string },
+  commands: Pick<ReturnType<typeof createRuntimeCommands>, "call" | "enqueue">,
+  input: {
+    ownerId: string;
+    sandboxId: string;
+    epoch: string;
+    lifecycleGeneration: string;
+    mcpUrl: string;
+    signal: AbortSignal;
+  },
 ) {
   const identity = () => ({ version: 1 as const, sandboxId: input.sandboxId, requestId: randomUUID() });
   async function acknowledged(command: RunnerRequest) {
@@ -60,7 +67,12 @@ export function createEnrolledDelegatedTransport(
       reply.body.requestId === command.requestId &&
       reply.body.error === undefined &&
       (reply.body.result as { acknowledged?: unknown } | undefined)?.acknowledged === true;
-    const reply = await commands.call(input.ownerId, command, { expectedEpoch: input.epoch, accept });
+    const reply = await commands.call(input.ownerId, command, {
+      expectedEpoch: input.epoch,
+      signal: input.signal,
+      accept,
+    });
+    input.signal.throwIfAborted();
     if (!accept(reply)) throw new DelegatedAccessError("unavailable");
   }
   return {
@@ -71,11 +83,16 @@ export function createEnrolledDelegatedTransport(
       await acknowledged({ ...identity(), op: "installOrchestratorEpoch", token, binding, url: input.mcpUrl });
       return { acknowledged: true };
     },
-    scrub: (tokenHash) =>
-      acknowledged({
-        ...identity(),
-        op: "scrubOrchestratorEpoch",
-        ...(tokenHash === undefined ? {} : { tokenHash }),
-      }),
+    async scrub(tokenHash) {
+      await commands.enqueue(
+        input.ownerId,
+        {
+          ...identity(),
+          op: "scrubOrchestratorEpoch",
+          ...(tokenHash === undefined ? {} : { tokenHash }),
+        },
+        input.epoch,
+      );
+    },
   } satisfies DelegatedAccessTransport;
 }

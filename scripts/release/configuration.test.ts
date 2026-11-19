@@ -15,7 +15,7 @@ const workflow = Bun.YAML.parse(
   readFileSync(resolve(import.meta.dir, "../../.github/workflows/release.yml"), "utf8"),
 ) as { jobs: Record<string, Job> };
 
-function script(step: Step | undefined): string {
+function script(step: Step | undefined) {
   if (!step?.run) throw new Error("The selected workflow step must execute its preflight");
   return step.run;
 }

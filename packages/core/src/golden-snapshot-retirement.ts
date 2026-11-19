@@ -361,6 +361,23 @@ export class GoldenSnapshotRetirements {
       ).rows.length
     )
       return "operation_unresolved";
+    // WARNING: Read template references after fences so a concurrent fence release cannot hide its registered child.
+    if (
+      (
+        await sql.query(
+          `select 1 from public.template_launch_requests r
+           join public.sandboxes s on s.id=r.sandbox_id and s.org_id=r.org_id
+             and s.golden_id::text=r.manifest#>>'{golden,id}'
+           where s.provider=$1::public.sandbox_provider
+             and r.manifest#>>'{golden,provider}'=$1::text
+             and r.manifest#>>'{golden,providerSnapshotId}'=$2
+             and s.status<>'deleted' and (s.status<>'failed' or s.stopped_at is null)
+           limit 1`,
+          [c.provider, c.old_snapshot],
+        )
+      ).rows.length
+    )
+      return "referenced";
     if (
       (
         await sql.query(
