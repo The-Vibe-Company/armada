@@ -8079,11 +8079,6 @@
                     "type": "string",
                     "minLength": 1
                   },
-                  "conversationId": {
-                    "description": "A conversation of the sandbox. Default: the latest.",
-                    "type": "string",
-                    "minLength": 1
-                  },
                   "follow": {
                     "type": "boolean",
                     "description": "Follow events within the bounded HTTP request."

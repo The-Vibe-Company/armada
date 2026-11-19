@@ -253,7 +253,6 @@ export interface SendResult {
 }
 export interface LogsInput extends SandboxRef {
   cursor?: string;
-  conversationId?: string;
   limit?: number;
   all?: boolean;
   follow?: boolean;
