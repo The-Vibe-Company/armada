@@ -208,7 +208,7 @@ function launchText(result: LaunchWireResult, now: Date) {
   return `${lines.join("\n")}\n`;
 }
 
-function githubLine(result: LaunchResult, now: Date) {
+function githubLine(result: Pick<LaunchResult, "sandbox" | "github">, now: Date) {
   const { github } = result;
   if (github.status === "connected") {
     const expiry = github.tokenExpiresAt ? new Date(github.tokenExpiresAt) : null;
