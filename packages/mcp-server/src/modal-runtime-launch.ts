@@ -15,8 +15,10 @@ export function modalRuntimeLaunch(
     async start(input) {
       const { host, actor, sandbox, credentials } = input;
       if (host.id !== "modal" || sandbox.runtimeTransport !== "dialout") throw Error("runtime_selection_required");
+      const resumeGeneration = input.restoreCheckpoint ? sandbox.lifecycleGeneration : undefined;
       return startRuntime({
         input,
+        ...(resumeGeneration === undefined ? {} : { expectedGeneration: resumeGeneration }),
         configure: () =>
           runtimeConfigurationWithVariables(
             options.sql,
@@ -42,7 +44,11 @@ export function modalRuntimeLaunch(
         bootstrap: () => {
           const start = (host as Partial<ModalProvider>).startRuntime;
           if (!start) throw Error("modal_runtime_host_required");
-          return (request) => start.call(host, request);
+          return (request) =>
+            start.call(host, {
+              ...request,
+              ...(resumeGeneration === undefined ? {} : { resumeGeneration }),
+            });
         },
       });
     },
