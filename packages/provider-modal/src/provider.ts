@@ -31,7 +31,7 @@ import {
 } from "@armada/core/server";
 import { chooseManagementAuthority, matchesManagementAuthority } from "./authority.ts";
 import { abortable, boundModalApp, type ModalConnection, modalConnection } from "./client.ts";
-import { lifecycleStep, ModalOperationError, modalError, refusal } from "./errors.ts";
+import { ModalOperationError, modalError, refusal } from "./errors.ts";
 import { executeGoldenCommand } from "./golden-exec.ts";
 import { createImageCollection, trackDetachedCollection } from "./image-collection.ts";
 import { createPhysicalLifecycle } from "./physical-lifecycle.ts";
@@ -49,10 +49,8 @@ import type {
 import { createRuntimeLifecycle } from "./runtime-lifecycle.ts";
 import { createSnapshotTombstones } from "./snapshot-tombstones.ts";
 import { createSshPreparation } from "./ssh.ts";
+import { createStopDeleteLifecycle } from "./stop-delete-lifecycle.ts";
 import { scopeKey } from "./store.ts";
-
-/** In-request retry delays after the first attempt for deletion's image cleanup. */
-const CLEANUP_RETRY_MS = [1_000, 5_000];
 
 export type ModalPromptPhase =
   | "modal_prepare"
@@ -246,7 +244,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       appName: options.appName,
     };
   }
-  const { physical, namedOwned, boundNotAbsence, create, sealBaselineBeforeAdmission } = createPhysicalLifecycle({
+  const physicalLifecycle = createPhysicalLifecycle({
     client,
     bound,
     appName: options.appName,
@@ -257,6 +255,24 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     measure,
     assertMachineSource,
     sandboxInfo,
+  });
+  const { physical, namedOwned, create, sealBaselineBeforeAdmission } = physicalLifecycle;
+  const {
+    checkpoint,
+    stop,
+    delete: deleteSandbox,
+  } = createStopDeleteLifecycle({
+    client,
+    store,
+    runner,
+    distribution,
+    bound,
+    physicalLifecycle,
+    assertMachineSource,
+    resourceReceipt,
+    collectImages,
+    detachCollection,
+    cleanupSleep: options.cleanupSleep,
   });
   async function launch(request: CreateGoldenRequest | ForkRequest, golden: boolean): Promise<SandboxInfo> {
     let size: Machine["size"];
@@ -441,23 +457,6 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     if (row.commonRuntime) throw refusal("invalid_request", "Enrolled runtime commands require the common transport.");
     return runner.call<T>(row, op, input);
   }
-  async function checkpoint(row: Machine, save: (row: Machine) => Promise<void>) {
-    const result = await runner.call<{ watermark: number; acknowledgedSequence: number; generation: string }>(
-      row,
-      "checkpoint",
-      {},
-    );
-    if (
-      result.generation !== String(row.generation) ||
-      !Number.isSafeInteger(result.watermark) ||
-      result.watermark < 0 ||
-      result.acknowledgedSequence !== result.watermark ||
-      (await store.watermark(row.info.id, row.generation)) !== result.watermark
-    )
-      throw refusal("conflict", "Checkpoint lacks a matching durably acknowledged event watermark; source retained.");
-    row.checkpointWatermark = result.watermark;
-    await save(row);
-  }
   async function verifyNativeSession(
     row: Machine,
     request: Parameters<NonNullable<Provider["verifyOrchestratorSession"]>>[0],
@@ -493,88 +492,6 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       nativeSessionId: request.nativeSessionId,
       verified: true as const,
     };
-  }
-  async function stopLeased(row: Machine, save: (row: Machine) => Promise<void>): Promise<void> {
-    if (row.phase === "stopped") return;
-    if (row.commonRuntime) {
-      assertMachineSource(row);
-      // An SDK create may have succeeded before its response was lost. Cleanup
-      // resolves only the persisted, ownership-tagged name; it never creates or boots.
-      if (!row.physicalId && row.phase !== "reserved") {
-        const reconciled = await namedOwned(row);
-        row.physicalId = reconciled.sandboxId;
-        await save(row);
-      }
-      // Explicit compute-only fallback must never retain an earlier recovery claim.
-      if (row.recoveryImageId) row.retainedRecoveryIds = [...(row.retainedRecoveryIds ?? []), row.recoveryImageId];
-      delete row.recoveryImageId;
-      delete row.runtimeCheckpoint;
-      row.phase = "terminate";
-      row.info.state = "stopping";
-      await save(row);
-      if (row.physicalId) {
-        const sb = await physical(row);
-        await sb.terminate({ wait: true });
-        if ((await sb.poll()) === null) throw refusal("unavailable", "Termination has not completed.");
-      }
-      row.phase = "stopped";
-      row.info.state = "stopped";
-      row.info.providerState = "stopped";
-      row.info.stoppedAt = new Date();
-      await save(row);
-      return;
-    }
-    const sb = await physical(row);
-    if (row.phase !== "terminate") {
-      if (!["active", "checkpoint"].includes(row.phase))
-        throw refusal("conflict", "Snapshot outcome unknown; source retained for reconciliation.");
-      row.phase = "checkpoint";
-      row.info.state = "stopping";
-      await save(row);
-      if (!row.quiesced) {
-        await lifecycleStep("modal_checkpoint_runner", () => checkpoint(row, save));
-        await lifecycleStep("modal_checkpoint_scrub", () => distribution.prepareSnapshot(sb, row));
-        row.quiesced = true;
-      }
-      row.phase = "snapshot";
-      await save(row);
-      const image = await lifecycleStep("modal_checkpoint_snapshot", () => sb.snapshotFilesystem({ ttlMs: null }));
-      if (row.recoveryImageId) row.retainedRecoveryIds = [...(row.retainedRecoveryIds ?? []), row.recoveryImageId];
-      row.recoveryImageId = image.imageId;
-      row.phase = "terminate";
-      await save(row);
-    }
-    await lifecycleStep("modal_checkpoint_terminate", () => sb.terminate({ wait: true }));
-    if ((await sb.poll()) === null) throw refusal("unavailable", "Termination has not completed.");
-    row.phase = "stopped";
-    row.info.state = "stopped";
-    row.info.providerState = "stopped";
-    row.info.stoppedAt = new Date();
-    await save(row);
-  }
-  /** Retries a transient image-service failure inside the delete request, so one DELETE
-   * completes. A persistent failure still fails the delete; the durable phase resumes it. */
-  async function cleanupStep(sandboxId: string, step: () => Promise<void>) {
-    for (let attempt = 1; ; attempt++) {
-      try {
-        return await step();
-      } catch (error) {
-        const safe = modalError(error);
-        const delay = CLEANUP_RETRY_MS[attempt - 1];
-        console.warn(
-          JSON.stringify({
-            event: "modal_delete_image_cleanup_failed",
-            sandboxId,
-            attempt,
-            code: safe.code,
-            ...(safe.providerCode ? { providerCode: safe.providerCode } : {}),
-            retrying: delay !== undefined,
-          }),
-        );
-        if (delay === undefined) throw error;
-        await (options.cleanupSleep ?? Bun.sleep)(delay);
-      }
-    }
   }
   function assertRecoveryTarget({ ownerId, target }: Parameters<NonNullable<Provider["findGoldenBuilder"]>>[0]) {
     if (
@@ -1333,45 +1250,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         return new Date(row.grantExpiresAt);
       });
     },
-    async stop({ sandboxId, requireRetention = false }) {
-      await bound();
-      let observed: Machine | undefined;
-      try {
-        await store.lease(sandboxId, async (row, save) => {
-          observed = row;
-          if (
-            requireRetention &&
-            (row.commonRuntime ||
-              row.info.stopNote === "checkpoint_failed_disk_not_retained" ||
-              (row.phase === "terminate" && !row.recoveryImageId))
-          )
-            throw refusal(
-              "conflict",
-              "Retained workspace is not proven; automatic idle stop refuses compute-only cleanup.",
-            );
-          // Golden builders retain their fail-closed contract.
-          // Dispatch is durable before any RPC, so a crash cannot reset the retry budget.
-          if (!row.golden && row.phase !== "stopped") {
-            if (row.ordinaryStopAttempted && row.phase !== "terminate" && !requireRetention) {
-              row.info.stopNote = "checkpoint_failed_disk_not_retained";
-              // Never allow resume to silently restore a stale recovery image.
-              if (row.recoveryImageId)
-                row.retainedRecoveryIds = [...(row.retainedRecoveryIds ?? []), row.recoveryImageId];
-              delete row.recoveryImageId;
-              row.phase = "terminate";
-              await save(row);
-            } else {
-              row.ordinaryStopAttempted = true;
-              await save(row);
-            }
-          }
-          await stopLeased(row, save);
-        });
-      } catch (error) {
-        if (observed) throw new ModalOperationError(error, await resourceReceipt(observed));
-        throw error;
-      }
-    },
+    stop,
     async findGoldenBuilder(request) {
       assertRecoveryTarget(request);
       const row = await store.findByRequestKey(request.requestKey);
@@ -1428,77 +1307,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       if (resume) return provider.delete({ sandboxId: request.sandboxId });
       return { status: "deleted" };
     },
-    async delete({ sandboxId }) {
-      await boundNotAbsence();
-      await store.lease(sandboxId, async (row, save) => {
-        if (row.phase === "deleted") return;
-        assertMachineSource(row);
-        // Stop confirms exit. A reservation without an ID is pre-create because SQL
-        // commits creating before issuing the remote request. Carry either proof,
-        // scoped to this physical generation, through an interrupted deletion so a
-        // retry never terminates and waits on a machine that has already exited.
-        if (row.phase === "stopped" || (row.phase === "reserved" && !row.physicalId))
-          row.deletePhysicalExitGeneration = row.generation;
-        const exitConfirmed = row.deletePhysicalExitGeneration === row.generation;
-        // Creating/booting/deleting without ID is NOT proof of absence, even if name lookup says 404.
-        if (!exitConfirmed && !row.physicalId) {
-          const reconciled = await namedOwned(row);
-          row.physicalId = reconciled.sandboxId;
-          await save(row);
-        }
-        // Durable before any remote mutation. Every resume path refuses a deleting record, so
-        // this phase and the store lease, not the server's activity lease, fence a failed delete.
-        row.phase = "deleting";
-        await save(row);
-        if (!exitConfirmed && row.physicalId) {
-          // Only the machine's own not_found proves exit; look the App up outside that catch.
-          await boundNotAbsence();
-          try {
-            const sb = await client.sandboxes.fromId(row.physicalId);
-            await sb.terminate({ wait: true });
-            if ((await sb.poll()) === null)
-              throw refusal("unavailable", "Owned machine termination is not complete; delete remains pending.");
-          } catch (error) {
-            if (modalError(error).code !== "not_found") throw error;
-          }
-          row.deletePhysicalExitGeneration = row.generation;
-          await save(row);
-        }
-        for (const imageId of new Set([
-          ...(row.retainedRecoveryIds ?? []),
-          ...(row.recoveryImageId ? [row.recoveryImageId] : []),
-        ])) {
-          await cleanupStep(sandboxId, async () => {
-            try {
-              await client.images.delete(imageId);
-            } catch (error) {
-              if (modalError(error).code !== "not_found") throw error;
-            }
-          });
-        }
-        row.phase = "deleted";
-        await save(row);
-      });
-      // The target's compute and recovery images are gone and durably recorded, so the receipt
-      // is published now. Retired images of other sources are collected detached, once. Each is
-      // claimed under its source's lease with the same scope, authority and reference checks. A slow,
-      // busy or failing source never holds this receipt or the caller's activity lease; its
-      // tombstones stay durable for the next collection in scope.
-      detachCollection(() =>
-        collectImages(true).catch((error) => {
-          const safe = modalError(error);
-          console.warn(
-            JSON.stringify({
-              event: "modal_delete_retired_collection_deferred",
-              sandboxId,
-              code: safe.code,
-              ...(safe.providerCode ? { providerCode: safe.providerCode } : {}),
-            }),
-          );
-        }),
-      );
-      return { status: "deleted" };
-    },
+    delete: deleteSandbox,
     async resourceReceipts() {
       const rows = (await store.list()).filter(
         (row) =>
