@@ -691,7 +691,7 @@ test("production scoped MCP/API gateway uses epoch child authority and never own
         return { operationId: op.id, sandboxId: op.sandboxId, state: "unknown" };
       },
     };
-    const route = createSandboxScopedGateway(createSandboxChildren(sql, authority, executor));
+    const route = createSandboxScopedGateway(createSandboxChildren(sql, authority, executor), authority);
     const clientFor = async (secret: string) => {
       const client = new Client({ name: "scoped-native-fixture", version: "1" });
       await client.connect(
@@ -815,6 +815,7 @@ test("production scoped MCP/API gateway uses epoch child authority and never own
       { scopes: ["worker:read"], goldenIds: [], credentialIds: [] },
     );
     const reader = await clientFor(readonly);
+    expect((await reader.listTools()).tools.map((tool) => tool.name)).toEqual(["read"]);
     expect((await reader.callTool({ name: "read", arguments: { sandboxId: receipt.sandboxId } })).isError).not.toBe(
       true,
     );

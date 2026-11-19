@@ -33,6 +33,8 @@ export { launchOptionsOperation, MAX_LOG_PAGES, readLogsOperation } from "./sand
 export { sandboxExtensionLifetime, sandboxRestOperations } from "./sandbox-rest.ts";
 export { sandboxViewerOperations, VIEWER_ACCESS_DENIED } from "./sandbox-viewer.ts";
 
+export { isScopedMethod, scopedOperations } from "./scoped.ts";
+
 export interface Operation<Input extends z.ZodType, Output extends z.ZodType | undefined = undefined> {
   readonly name: string;
   readonly toolName?: string;
