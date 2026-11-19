@@ -132,9 +132,9 @@ Linux run using Bun 1.4.2 on main at `5b591243`, after
 | File under `packages/agent-runtime/test` | Case | Local subprocess boundary | Local |
 | --- | --- | --- | ---: |
 | `runtime.test.ts` | real exec timeout reconciles missing birth evidence and detached PID retains terminal output | Runner starts Bash for the timed-out and detached commands. | 19.17 ms |
-| `runtime.test.ts` | revoking a dial-out request kills its synchronous exec before returning | Runner starts Bash. The shell signals readiness and then replaces itself with `sleep`, which request revocation terminates. | 6.29 ms |
+| `runtime.test.ts` | revoking a dial-out request kills its synchronous exec before returning | Runner starts Bash. The command writes a readiness file before `exec sleep`. The file watcher revokes the request and Runner terminates the process group. | 6.29 ms |
 | `readable-variables.test.ts` | readable bootstrap reaches only intended native harness, not init/exec or request journal | Runner starts Bash for the environment checks. The real Codex driver starts the local app-server fixture. | 37.27 ms |
-| `tool-cache.test.ts` | pinned runtime tool download prepares verified foreground binaries with clean env and repairs a corrupt warm cache | The installer starts local shell-script version probes on cold install, warm-cache use and cache repair. Fetch is stubbed. | 43.11 ms |
+| `tool-cache.test.ts` | pinned runtime tool download prepares verified foreground binaries with clean env and repairs a corrupt warm cache | The installer starts local shell-script version and help probes on cold install, warm-cache use and cache repair. Fetch is stubbed. | 43.11 ms |
 | `tool-cache.test.ts` | runtime tool preparation refuses unsafe redirects, changed bytes and failed version self-tests | The bad-version fixture reaches a real shell-script probe. Redirect and digest rejection happen before any probe starts. | 8.57 ms |
 
 The other five cases in `runtime.test.ts` run in process. The delayed detached
