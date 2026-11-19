@@ -1,10 +1,11 @@
-import { decryptSecret, type Sql, VaultError } from "@armada/core/server";
+import { DelegatedAuthority, decryptSecret, type Sql, VaultError } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import { createSqlData } from "./data.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import { runtimeHarnessSupported } from "./provider-runtime-admission.ts";
-import type { createRuntimeCommands } from "./runtime-commands.ts";
-import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
+import { createRuntimeCommands } from "./runtime-commands.ts";
+import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
+import { collectTransactionWakes } from "./wake-bus.ts";
 
 interface Intent {
   epoch: string;
@@ -212,6 +213,7 @@ export function createRuntimeCheckpoint(
     }
     if (!["ready", "running"].includes(sandbox.status) || sandbox.stopRequestedAt)
       throw new VaultError("conflict", "Stopped runtime has no acknowledged checkpoint; no compute was resumed.");
+    let publishWakes: (() => void) | undefined;
     const intent = await createRuntimeEnrolments(sql, key).withOwner(sandbox.id, caller.userId, async (tx, scope) => {
       const lease = (
         await tx.query<{ busy: boolean }>(
@@ -233,19 +235,47 @@ export function createRuntimeCheckpoint(
       ).rows[0];
       if (current && current.request_id !== requestId)
         throw new VaultError("conflict", "Reuse the original checkpoint request_id for this epoch.");
-      if (!current)
+      if (!current) {
+        const parent = (
+          await tx.query<{ id: string }>(
+            "select id from public.armada_access_parents where sandbox_id=$1 and kind='sandbox'",
+            [sandbox.id],
+          )
+        ).rows[0];
+        if (parent) {
+          await new DelegatedAuthority(tx, async () => {}).revoke(parent.id);
+          const local = scopedRuntimeSql(tx);
+          publishWakes = collectTransactionWakes(tx);
+          // Queue before publishing the intent. The intent fences later installs, and
+          // the runner itself refuses to checkpoint while a grant remains installed.
+          await createRuntimeCommands(createRuntimeEnrolments(local, key), key).enqueue(
+            caller.userId,
+            {
+              version: 1,
+              sandboxId: sandbox.id,
+              requestId: `scrub_checkpoint_${requestId}`,
+              op: "scrubOrchestratorEpoch",
+            },
+            scope.epoch,
+          );
+        }
         await tx.query(
           "insert into public.runtime_checkpoints(sandbox_id,epoch,request_id,merge_stop) values($1,$2,$3,$4)",
           [sandbox.id, scope.epoch, requestId, mergeStop],
         );
+      }
       return { epoch: scope.epoch, current_epoch: scope.epoch, request_id: requestId, watermark: null };
     });
+    publishWakes?.();
     try {
       // The boundary records `ok` only for the acknowledgement `finish` will publish.
       await commands.call(
         caller.userId,
         { version: 1, sandboxId: sandbox.id, requestId: `checkpoint_${requestId}`, op: "checkpoint" },
-        { accept: (reply) => checkpointProof(reply, intent.epoch, `checkpoint_${requestId}`) !== undefined },
+        {
+          expectedEpoch: intent.epoch,
+          accept: (reply) => checkpointProof(reply, intent.epoch, `checkpoint_${requestId}`) !== undefined,
+        },
       );
     } catch {
       throw new VaultError(
