@@ -1639,6 +1639,7 @@ test("an ordinary lifecycle launch continues on the sandbox observed after a res
   );
 });
 
+// The merged staging command combines these independently runnable families.
 test("the launch tracker records every launch handle, awaits launches in flight and flags a lost launch", async () => {
   const tracker = createLaunchTracker();
   let finish: (value: unknown) => void = () => {};
