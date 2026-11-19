@@ -32,7 +32,6 @@ test.setup(
   },
 );
 
-// Both sessions use the existing mock organizations; no synthetic inventory or stand-in.
 for (const organization of [
   { session: "alice", name: "Acme", id: running },
   { session: "large", name: "Large", id: "00000000-0000-4000-8000-000000011001" },

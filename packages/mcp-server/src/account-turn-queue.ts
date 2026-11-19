@@ -513,7 +513,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
               join public.account_turn_queue q on q.sandbox_id=s.id and q.request_id=$2
               where s.id=$1 and q.state='dispatching' and s.lifecycle_generation=q.dispatch_generation
               and s.activity_lease_id is null and s.stop_requested_at is null
-              and (s.status in ('ready','running') or ($3 and s.provider='modal' and s.status='stopped'))
+              and (s.status in ('ready','running') or ($3 and (s.provider='modal' or s.boat_runtime) and s.status='stopped'))
               and s.deleted_at is null and s.expires_at>now()
               and not exists(select 1 from public.runtime_commands where sandbox_id=s.id
                 and request_id in ('follow_'||$2::text,'docker_prompt_'||$2::text,'resume_'||$2::text))

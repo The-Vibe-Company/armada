@@ -42,7 +42,6 @@ for (const org of [
     screen,
     browser,
   }) => {
-    // Existing mock controls configure a connected Modal account, never a real provider credential.
     await ensureModal(org.id);
     await app.open("/snapshots");
     await expect(screen.getByRole("button", /^All/)).toHaveAttribute("aria-pressed", "true");

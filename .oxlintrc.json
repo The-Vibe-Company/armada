@@ -14,19 +14,6 @@
   },
   "overrides": [
     {
-      "files": ["scripts/post-deploy-smoke.test.ts"],
-      "rules": {
-        "landmines-testing/no-fixed-sleep": [
-          "error",
-          {
-            "allow": {
-              "scripts/post-deploy-smoke.test.ts": 1
-            }
-          }
-        ]
-      }
-    },
-    {
       "files": [
         "packages/core/src/routine-schedule.ts",
         "packages/core/test/github-reconnect-postgres.release.ts",
@@ -34,9 +21,7 @@
         "packages/core/test/golden-scan.probe.ts",
         "packages/mcp-server/test/github-boat-os.test.ts",
         "packages/mcp-server/test/mcp-codex-bridge.release.ts",
-        "packages/mcp-server/test/runtime-sockets.test.ts",
         "packages/mcp-server/test/serve-database-boot.test.ts",
-        "packages/mcp-server/test/wake-bus.test.ts",
         "packages/provider-boat/test/integration.coordinator.ts",
         "packages/provider-boat/test/native-claude-mcp.test.ts",
         "packages/provider-boat/test/native-install-race.conformance.ts",
@@ -54,9 +39,7 @@
               "packages/core/test/golden-scan.probe.ts": 1,
               "packages/mcp-server/test/github-boat-os.test.ts": 1,
               "packages/mcp-server/test/mcp-codex-bridge.release.ts": 1,
-              "packages/mcp-server/test/runtime-sockets.test.ts": 3,
               "packages/mcp-server/test/serve-database-boot.test.ts": 1,
-              "packages/mcp-server/test/wake-bus.test.ts": 2,
               "packages/provider-boat/test/integration.coordinator.ts": 1,
               "packages/provider-boat/test/native-claude-mcp.test.ts": 1,
               "packages/provider-boat/test/native-install-race.conformance.ts": 1,

@@ -8,7 +8,7 @@ Validation on source commit `e44bfe457fcc2ba3eca81c3892dfa338e0b8b71d`:
 
 - `bun run lint` and `bun run typecheck`: passed.
 - Targeted unit tests (`models-page`, `variables`, `resource-list`, `skillpack-key`): 48 passed.
-- `bun run e2e tests/dashboard/models.e2e.ts tests/dashboard/resources.e2e.ts tests/dashboard/sandboxes.e2e.ts --grep 'inspect|filter|long account|fixture sign-in'`: 20 passed across desktop/phone, including fixture setup.
+- Targeted e2e run: 20 passed across desktop/phone, including fixture setup. Equivalent command on current checkouts: `bun run e2e test/dashboard/models.e2e.ts test/dashboard/resources.e2e.ts test/dashboard/sandboxes.e2e.ts --grep 'inspect|filter|long account|fixture sign-in'`.
 - Full `bun run e2e`: 38 passed, 14 failed. Twelve failures match two existing “Launch a sandbox” buttons on unchanged Sandboxes; two desktop failures match duplicate sidebar/main sandbox links. This is an outstanding full-suite blocker, not a green journey run.
 - Independent Alibaba/OCR review: no outstanding findings. Every source file reviewed.
 

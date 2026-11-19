@@ -1,7 +1,6 @@
 import { test } from "@e2e-dev/web";
 import { expect } from "e2e";
 
-// Protects the account drawers and compact create form at their user-facing boundary.
 for (const session of ["alice", "large"]) {
   test(`${session}: inspect a provider and configure an API account`, { session }, async ({ app, screen, browser }) => {
     await app.open("/harness");
@@ -42,7 +41,6 @@ for (const session of ["alice", "large"]) {
   });
 }
 
-// Geometry is asserted at the rendered boundary: visibility alone misses clipped text.
 test("long account names and subscription fallback fit a phone", { session: "alice" }, async ({
   app,
   screen,
