@@ -1,6 +1,6 @@
 # Persisted repository context
 
-Select a repository configured on the starting snapshot. For a Boat snapshot named
+For a Boat or Modal launch, select a repository configured on the starting snapshot. For a Boat snapshot named
 `my-snapshot` with the configured directory `web`, an idle launch looks like this.
 
 ```sh
@@ -24,11 +24,11 @@ including for a launch without a prompt. It does not restrict filesystem access.
   **Repository context**.
 - To use the API default, omit `repo` entirely.
 
-The selection is stored before any prompt in immutable `sandboxes.repository_dir`. Existing metadata validation remains in `20261110020000_sandbox_repository_context.sql`; `20261110030000_repository_native_cwd_comment.sql` corrects its column description without editing the prior migration. Later edits to the snapshot cannot change an existing sandbox's selected repository.
+The selection is stored before any prompt in immutable `sandboxes.repository_dir`. Existing metadata validation remains in `20261110020000_sandbox_repository_context.sql`; `20261110050000_repository_native_cwd_comment.sql` corrects its column description without editing the prior migration. Later edits to the snapshot cannot change an existing sandbox's selected repository.
 
 ## Runtime and native behavior
 
-For snapshot launches using the Armada runtime, sandbox configuration sets the
+For Boat and Modal snapshot launches using the Armada runtime, sandbox configuration sets the
 working directory to `/home/user/<configured-dir>` from the stored
 `repositoryDir`. With no selection, the runtime starts in `/home/user`.
 

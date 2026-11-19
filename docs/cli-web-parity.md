@@ -22,7 +22,7 @@ Commands below start with `armada`. Select an organization with `org use NAME|UU
 | Snapshot builds | Build/rebuild workflow | Use `snapshot update` for Boat/Modal or `snapshot rebuild` for Docker |
 | Snapshot visibility | Owner/admin visibility controls | `snapshot visibility UUID --visibility private\|org` |
 | Launch | Snapshot, agent, model, effort, TTL and MCP connections | `launch PRIVATE_SNAPSHOT --provider boat --agent claude\|codex\|opencode [PROMPT] --model ID --reasoning-effort LEVEL --ttl 4h --connections UUID,UUID`. Ordinary cloud launches inherit snapshot visibility. |
-| Repository context | Select a configured repository directory | `launch ... --repo DIR` or `--repo owner/repo`; persisted initial working directory, including idle launches |
+| Repository context | Select a configured repository directory for a Boat or Modal snapshot | `launch ... --repo DIR` or `--repo owner/repo`; persisted initial working directory, including idle launches |
 | Sandbox list | Authorized filters and pages | `list --status STATUS --agent HARNESS --golden UUID --owner UUID\|me --page N --limit N [--json] [--page-info]` |
 | Sandbox detail / status | Sandbox page and prompt status | `detail ID`, `status ID`; actual stored privacy and repository context |
 | Agent turns | Send, steer and interrupt | `send ID PROMPT`, `steer ID TEXT`, `interrupt ID`; model/effort overrides where supported |
