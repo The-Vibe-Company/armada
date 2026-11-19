@@ -36,6 +36,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
         claimIdentity(job, owner),
       );
       if (rows[0]) return work(tx, rows[0].generation);
+      if (lockPrerequisites) throw new Error("Turn job lease is no longer current.");
     });
   }
 

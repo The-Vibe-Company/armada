@@ -91,89 +91,102 @@ test.each([1, 2])("a stale lifecycle lease is retired from claim generation %i",
   ]);
 });
 
-test.each(["complete", "takeover", "stale", "interrupted", "not advanced", "expired"] as const)(
-  "turn admission generation handoff handles %s",
-  async (scenario) => {
-    const f = await fixture();
-    const { db, people, store } = f;
-    const sandboxId = await sandbox(f);
-    const request = crypto.randomUUID();
-    const options = { orgId: people.org, maxAttempts: 2 };
-    const id = await store.enqueue("turn_dispatch", sandboxId, 2, request, null, options);
-    const advance = "update sandboxes set lifecycle_generation = lifecycle_generation + 1 where id = $1";
-    let firstOwner: string | undefined;
-    let handled: Job | undefined;
-    const runner = createJobsRunner(
-      {
-        ...store,
-        claim(kind, owner, seconds, concurrency) {
-          firstOwner = owner;
-          return store.claim(kind, owner, seconds, concurrency);
+test.each([
+  "complete",
+  "takeover",
+  "stale",
+  "interrupted",
+  "not advanced",
+  "expired",
+  "deadline",
+  "prerequisites",
+] as const)("turn admission generation handoff handles %s", async (scenario) => {
+  const f = await fixture();
+  const { db, people, store } = f;
+  const sandboxId = await sandbox(f);
+  const request = crypto.randomUUID();
+  const options = { orgId: people.org, maxAttempts: 2 };
+  const id = await store.enqueue("turn_dispatch", sandboxId, 2, request, null, options);
+  const advance = "update sandboxes set lifecycle_generation = lifecycle_generation + 1 where id = $1";
+  let firstOwner: string | undefined;
+  let handled: Job | undefined;
+  const runner = createJobsRunner(
+    {
+      ...store,
+      claim(kind, owner, seconds, concurrency) {
+        firstOwner = owner;
+        return store.claim(kind, owner, seconds, concurrency);
+      },
+    },
+    {
+      turn_dispatch: {
+        concurrency: 1,
+        async run(job, context) {
+          const handoff = context.handoffGeneration({
+            async lockPrerequisites(tx) {
+              if (scenario === "prerequisites")
+                await tx.query("update jobs set lease_until = '-infinity' where id = $1", [id]);
+            },
+            async advance(tx) {
+              if (scenario === "not advanced") return;
+              await tx.query(advance, [sandboxId]);
+              if (scenario === "interrupted") throw new Error("Admission interrupted.");
+              if (scenario === "expired")
+                await tx.query("update jobs set lease_until = '-infinity' where id = $1", [id]);
+              if (scenario === "deadline")
+                await tx.query("update jobs set deadline_at = '-infinity' where id = $1", [id]);
+            },
+          });
+          if (scenario === "interrupted") {
+            await expect(handoff).rejects.toThrow("Admission interrupted.");
+          } else if (scenario === "prerequisites") {
+            await expect(handoff).rejects.toThrow("Turn job lease is no longer current.");
+          } else if (scenario === "not advanced" || scenario === "expired" || scenario === "deadline") {
+            await expect(handoff).rejects.toThrow("Turn admission did not advance its fenced generation.");
+          } else {
+            expect(await handoff).toBe("3");
+            expect(await context.canDispatch()).toBe(true);
+            expect(await store.renew(job, firstOwner!, 30)).toBe(true);
+            if (scenario === "stale") await db.query(advance, [sandboxId]);
+          }
+          handled = job;
+          if (scenario === "takeover") throw new Error("Receipt was not committed.");
+          return { status: "done" };
         },
       },
-      {
-        turn_dispatch: {
-          concurrency: 1,
-          async run(job, context) {
-            const handoff = context.handoffGeneration({
-              async lockPrerequisites() {},
-              async advance(tx) {
-                if (scenario === "not advanced") return;
-                await tx.query(advance, [sandboxId]);
-                if (scenario === "interrupted") throw new Error("Admission interrupted.");
-                if (scenario === "expired")
-                  await tx.query("update jobs set lease_until = '-infinity' where id = $1", [id]);
-              },
-            });
-            if (scenario === "interrupted") {
-              await expect(handoff).rejects.toThrow("Admission interrupted.");
-            } else if (scenario === "not advanced" || scenario === "expired") {
-              await expect(handoff).rejects.toThrow("Turn admission did not advance its fenced generation.");
-            } else {
-              expect(await handoff).toBe("3");
-              expect(await context.canDispatch()).toBe(true);
-              expect(await store.renew(job, firstOwner!, 30)).toBe(true);
-              if (scenario === "stale") await db.query(advance, [sandboxId]);
-            }
-            handled = job;
-            if (scenario === "takeover") throw new Error("Receipt was not committed.");
-            return { status: "done" };
-          },
-        },
-      },
-      () => {},
-    );
-    expect(await runner.reconcileOne(signal)).toBe(true);
-    await runner.drain();
-    expect(handled?.id).toBe(id);
+    },
+    () => {},
+  );
+  expect(await runner.reconcileOne(signal)).toBe(true);
+  await runner.drain();
+  expect(handled?.id).toBe(id);
 
-    if (scenario === "takeover") {
-      await db.query("update jobs set lease_until = '-infinity' where id = $1", [id]);
-      const owner = crypto.randomUUID();
-      const successor = (await store.claim("turn_dispatch", owner, 30, 1))!;
-      expect(successor).toMatchObject({ id, generation: "3", lease_epoch: "2" });
-      expect(await store.complete(handled!, firstOwner!, { status: "done" })).toBe(false);
-      expect(await store.complete(successor, owner, { status: "done" })).toBe(true);
-      expect(await store.enqueue("turn_dispatch", sandboxId, 2, request, null, options)).toBe(id);
-    }
-    const rolledBack = scenario === "interrupted" || scenario === "not advanced" || scenario === "expired";
-    expect(
-      (
-        await db.query(
-          `select j.state, j.generation::text as job_generation, s.lifecycle_generation::text as sandbox_generation
+  if (scenario === "takeover") {
+    await db.query("update jobs set lease_until = '-infinity' where id = $1", [id]);
+    const owner = crypto.randomUUID();
+    const successor = (await store.claim("turn_dispatch", owner, 30, 1))!;
+    expect(successor).toMatchObject({ id, generation: "3", lease_epoch: "2" });
+    expect(await store.complete(handled!, firstOwner!, { status: "done" })).toBe(false);
+    expect(await store.complete(successor, owner, { status: "done" })).toBe(true);
+    expect(await store.enqueue("turn_dispatch", sandboxId, 2, request, null, options)).toBe(id);
+  }
+  const rolledBack = scenario !== "complete" && scenario !== "takeover" && scenario !== "stale";
+  expect(
+    (
+      await db.query(
+        `select j.state, j.generation::text as job_generation, s.lifecycle_generation::text as sandbox_generation
        from jobs j join sandboxes s on j.sandbox_id = s.id where j.id = $1`,
-          [id],
-        )
-      ).rows,
-    ).toEqual([
-      {
-        state: scenario === "stale" ? "failed" : "done",
-        job_generation: rolledBack ? "2" : "3",
-        sandbox_generation: rolledBack ? "2" : scenario === "stale" ? "4" : "3",
-      },
-    ]);
-  },
-);
+        [id],
+      )
+    ).rows,
+  ).toEqual([
+    {
+      state: scenario === "stale" ? "failed" : "done",
+      job_generation: rolledBack ? "2" : "3",
+      sandbox_generation: rolledBack ? "2" : scenario === "stale" ? "4" : "3",
+    },
+  ]);
+});
 
 test("internal enqueue scopes the same key to each sandbox incarnation", async () => {
   const { people, store } = await fixture();
