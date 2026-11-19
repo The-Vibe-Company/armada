@@ -3,6 +3,7 @@ import { applicationVaultRoutes } from "./application-vault-control.ts";
 import { logRoutes } from "./control-logs.ts";
 import { sandboxToolRoutes } from "./control-tool-routes.ts";
 import { credentialRoutes } from "./credential-control.ts";
+import { eventStreamRoutes } from "./event-stream.ts";
 import { githubAccountRoutes } from "./github-account.ts";
 import { githubSandboxRoutes } from "./github-rest-controls.ts";
 import { goldenRoutes } from "./golden-control.ts";
@@ -56,6 +57,7 @@ const controlModules = [
   logRoutes,
   applicationVaultRoutes,
   viewerRoutes,
+  eventStreamRoutes,
 ];
 
 export const { controlRoutes, assembleServer } = registerServer([
