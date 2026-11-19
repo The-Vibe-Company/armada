@@ -55,7 +55,11 @@ async function prepareConnection() {
     const reset = `truncate table ${tables.rows.map((row) => row.name).join(", ")} restart identity cascade`;
     return { db, reset };
   } catch (error) {
-    await db.close();
+    try {
+      await db.close();
+    } catch (closeError) {
+      throw new AggregateError([error, closeError], "Row-only database setup and cleanup failed");
+    }
     throw error;
   }
 }
