@@ -39,6 +39,7 @@ import { publishAccountSpend, unmeasuredUsage } from "./account-spend.ts";
 import type { Caller } from "./caller.ts";
 import { scopedOrg } from "./control-caller.ts";
 import { createResourceStore, type ResourceStore } from "./resource-store.ts";
+import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
 import { SANDBOX_MEMBER, SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 import { admittedTurnContexts, stampTurnPricing, withServerCost } from "./turn-pricing.ts";
 import { preserveBeforeStop, readWorkRecovery } from "./work-preservation.ts";
@@ -840,7 +841,8 @@ export function createSqlData(
         if (idleAdmission)
           fence += ` and s.status='ready' and s.stop_requested_at is null
             and not exists(select 1 from public.account_turn_queue q
-              where q.sandbox_id=s.id and q.state in ('queued','dispatching'))`;
+              where q.sandbox_id=s.id and q.state in ('queued','dispatching'))
+            and not exists(${unsettledRuntimeCommands("s.id", "s.lifecycle_generation")})`;
         const cancelTurns = patch.stopRequested === true && !idleAdmission;
         const wrapped = releaseReservation || cancelTurns;
         const admission = !!patch.advanceGeneration && !!patch.activityToken;

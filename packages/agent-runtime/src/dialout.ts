@@ -1,6 +1,6 @@
 import type { RuntimeOperatorDiagnostic } from "../../core/src/runtime-operator-diagnostic.ts";
 import type { RuntimeHarnessFailureStage, RuntimeStartupFailure } from "../../core/src/runtime-startup-failure.ts";
-import { type IngestClient, PROTOCOL_VERSION, type RunnerRequest } from "./protocol.ts";
+import { type IngestClient, MAX_COMMAND_RESPONSE_BYTES, PROTOCOL_VERSION, type RunnerRequest } from "./protocol.ts";
 
 const MAX_FRAME = 1048576;
 export class RuntimeChannelRevoked extends Error {
@@ -44,7 +44,7 @@ function origin(value: string): URL {
     throw Error("invalid_runtime_origin");
   return url;
 }
-async function json(response: Response, limit = MAX_FRAME): Promise<unknown> {
+async function json(response: Response, limit = MAX_COMMAND_RESPONSE_BYTES): Promise<unknown> {
   if (!response.body) throw Error("invalid_runtime_response");
   const chunks: Uint8Array[] = [];
   let bytes = 0;
