@@ -1,3 +1,4 @@
+import { sandboxViewerOperations, VIEWER_ACCESS_DENIED } from "@armada/core/contract";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
 import type { ControlOptions } from "./control.ts";
 import { readBody } from "./control-body.ts";
@@ -14,22 +15,25 @@ interface Grant {
   expires: number;
 }
 
-type ViewerAction = "mint" | "logs" | "status" | "send" | "events";
+type ViewerAction = keyof typeof sandboxViewerOperations;
 
-function viewerRoute(action: ViewerAction, method: "GET" | "POST") {
+function viewerRoute(action: ViewerAction) {
+  const { route } = sandboxViewerOperations[action];
   return {
-    methods: [method],
-    earlyRespond: (request: Request, options: ControlOptions, dispatch: Dispatch) =>
-      viewerControl(request, options, dispatch, { action, method }),
+    [route.path.slice("/api/v1/".length)]: {
+      methods: [route.method],
+      earlyRespond: (request: Request, options: ControlOptions, dispatch: Dispatch) =>
+        viewerControl(request, options, dispatch, action),
+    },
   };
 }
 
 export const viewerRoutes = defineRoutes("viewer", {
-  "sandbox/viewer-token": viewerRoute("mint", "POST"),
-  "viewer/logs": viewerRoute("logs", "POST"),
-  "viewer/status": viewerRoute("status", "POST"),
-  "viewer/send": viewerRoute("send", "POST"),
-  "viewer/events": viewerRoute("events", "GET"),
+  ...viewerRoute("mint"),
+  ...viewerRoute("logs"),
+  ...viewerRoute("status"),
+  ...viewerRoute("send"),
+  ...viewerRoute("events"),
 });
 
 /** Viewer grants are never principals for ordinary control routes. */
@@ -43,32 +47,32 @@ async function viewerControl(
   request: Request,
   options: ControlOptions,
   dispatch: Dispatch,
-  route?: { action: ViewerAction; method: string },
+  action?: ViewerAction,
 ): Promise<Response> {
   const url = new URL(request.url);
-  const action = route?.action;
   const authorization = request.headers.get("authorization") ?? "";
   const fail = (status: number) =>
-    Response.json({ error: "viewer_access_denied" }, { status, headers: { "cache-control": "no-store" } });
+    Response.json({ error: VIEWER_ACCESS_DENIED }, { status, headers: { "cache-control": "no-store" } });
   const now = () => (options.now?.() ?? new Date()).getTime();
   try {
-    if (route?.action === "mint") {
-      if (request.method !== route.method) return fail(405);
+    if (action === "mint") {
+      if (request.method !== sandboxViewerOperations[action].route.method) return fail(405);
       const caller = await authenticatedControlCaller(request, options);
       if (caller?.via !== "service") return fail(403);
-      const body = await readBody(request);
-      if (typeof body.id !== "string" || !/^[0-9a-f-]{36}$/i.test(body.id)) return fail(400);
+      const input = sandboxViewerOperations.mint.input.body.safeParse(await readBody(request));
+      if (!input.success) return fail(400);
+      const { id } = input.data;
       // Existing authorized log resolution checks membership and sandbox visibility on all providers.
       const probe = await dispatch(
         new Request(new URL("/api/v1/logs/read", url).href, {
           method: "POST",
           headers: { authorization, "content-type": "application/json" },
-          body: JSON.stringify({ id: body.id, limit: 1, maxBytes: 1024 }),
+          body: JSON.stringify({ id, limit: 1, maxBytes: 1024 }),
         }),
       );
       if (!probe?.ok) return fail(probe?.status ?? 403);
       const expires = now() + TTL;
-      const grant: Grant = { purpose: "sandbox-viewer-v1", id: body.id, authorization, expires };
+      const grant: Grant = { purpose: "sandbox-viewer-v1", id, authorization, expires };
       const sealed = await encryptSecret(JSON.stringify(grant), options.encryptionKey);
       return Response.json(
         { token: PREFIX + Buffer.from(sealed).toString("base64url"), expiresAt: new Date(expires).toISOString() },
@@ -99,18 +103,13 @@ async function viewerControl(
       grant.expires > now() + TTL
     )
       return fail(401);
-    if (!route) return fail(403);
-    if (request.method !== route.method) return fail(405);
-    const body = action === "events" ? {} : await readBody(request, action === "logs" ? 512 * 1024 : undefined);
-    // Explicit field selection prevents org, sandbox, lifecycle or tool overrides.
-    const cursor =
-      action === "events" ? (url.searchParams.get("cursor") ?? request.headers.get("last-event-id")) : body.cursor;
-    if (
-      cursor !== undefined &&
-      cursor !== null &&
-      (typeof cursor !== "string" || cursor.length > 262144 || /[\r\n]/.test(cursor))
-    )
-      return fail(400);
+    if (!action) return fail(403);
+    const operation = sandboxViewerOperations[action];
+    if (request.method !== operation.route.method) return fail(405);
+    const body =
+      action === "events"
+        ? { cursor: url.searchParams.get("cursor") ?? request.headers.get("last-event-id") }
+        : await readBody(request, action === "logs" ? 512 * 1024 : undefined);
     const invoke = async (route: string, fields: Record<string, unknown>) => {
       if (grant.expires <= now()) return fail(401);
       const caller = await authenticatedControlCaller(
@@ -129,17 +128,25 @@ async function viewerControl(
         )) ?? fail(403)
       );
     };
-    const page = (next: unknown) =>
+    if (action === "send") {
+      const input = sandboxViewerOperations.send.input.body.safeParse(body);
+      if (!input.success) return fail(400);
+      const { message, requestId } = input.data;
+      return invoke("sandbox/send", {
+        prompt: message,
+        ...(typeof requestId === "string" ? { request_id: requestId } : {}),
+      });
+    }
+    // The schemas select only viewer fields. The grant supplies the sandbox ID.
+    const input = (
+      action === "events" ? sandboxViewerOperations.events.input.query : sandboxViewerOperations[action].input.body
+    ).safeParse(body);
+    if (!input.success) return fail(400);
+    const { cursor } = input.data;
+    const page = (next: typeof cursor) =>
       invoke("logs/read", { ...(next ? { cursor: next } : {}), limit: 100, maxBytes: 65536 });
     if (action === "logs") return page(cursor);
     if (action === "status") return invoke("sandbox/status", {});
-    if (action === "send") {
-      if (typeof body.message !== "string" || !body.message.trim()) return fail(400);
-      return invoke("sandbox/send", {
-        prompt: body.message,
-        ...(typeof body.requestId === "string" ? { request_id: body.requestId } : {}),
-      });
-    }
     // Preflight authorization before committing streaming headers.
     let pending: Response | null = await page(cursor);
     if (!pending.ok) return pending;
@@ -191,7 +198,11 @@ async function viewerControl(
       { highWaterMark: 0 },
     );
     return new Response(stream, {
-      headers: { "content-type": "text/event-stream", "cache-control": "no-store", "x-accel-buffering": "no" },
+      headers: {
+        "content-type": sandboxViewerOperations.events.outputMediaType,
+        "cache-control": "no-store",
+        "x-accel-buffering": "no",
+      },
     });
   } catch {
     return fail(503);

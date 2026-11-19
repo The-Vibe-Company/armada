@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { enabledProviders, isOAuthProvider } from "../src/lib/auth-config.ts";
+import { enabledProviders, isOAuthProvider } from "./auth-config.ts";
 
 test("social login buttons follow the configuration and ignore unknown names", () => {
   expect(enabledProviders(undefined)).toEqual([]);

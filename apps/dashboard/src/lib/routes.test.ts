@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isPublicPath, originFromHeaders, safeNextPath } from "../src/lib/routes.ts";
+import { isPublicPath, originFromHeaders, safeNextPath } from "./routes.ts";
 
 const headers = (values: Record<string, string>) => ({ get: (name: string) => values[name.toLowerCase()] ?? null });
 
