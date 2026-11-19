@@ -469,9 +469,11 @@ test("configuration preparation commits queue order before waiting; an older ACK
   }
 });
 
-test("a connected pinned stdio definition reaches the runtime without a gateway lease", async () => {
+test("pinned stdio delivers its encrypted environment privately without a gateway lease", async () => {
   const x = await fixture(),
     { f } = x;
+  const secret = crypto.randomUUID();
+  const lines: string[] = [];
   try {
     const local = await x.registry.save(f.people.owner, f.people.org, {
       name: "local",
@@ -479,6 +481,7 @@ test("a connected pinned stdio definition reaches the runtime without a gateway 
       transport: "stdio",
       command: "npx",
       args: ["-y", "@example/mcp@1.2.3", "/workspace"],
+      stdioEnv: { MCP_PRIVATE_VALUE: secret },
     });
     await expect(x.service.preflight(f.caller, { org: f.people.org, connections: [local.id] })).resolves.toEqual({
       mcpReady: true,
@@ -487,17 +490,69 @@ test("a connected pinned stdio definition reaches the runtime without a gateway 
     await x.service.connections.validate({ userId: f.people.owner, orgId: f.people.org }, [local.id], "org");
     await x.service.connections.bind(f.row.id, [local.id]);
     const receipt = await x.service.prepare(f.caller, f.row.id);
-    expect((await x.api("sandbox/send", f.input("use configured MCP"))).status).toBe(200);
-    expect(f.mcpSnapshots.at(-1)?.servers[`armada_${local.id.replaceAll("-", "_")}`]).toEqual({
+    const response = await observeRequest(
+      () => x.api("sandbox/send", f.input("use configured MCP")),
+      (line) => lines.push(line),
+    );
+    expect(response.status).toBe(200);
+    const server = f.mcpSnapshots.at(-1)?.servers[`armada_${local.id.replaceAll("-", "_")}`];
+    expect(server).toMatchObject({
       type: "stdio",
       command: "npx",
       args: ["--yes", "--", "@example/mcp@1.2.3", "/workspace"],
     });
+    expect(server?.type === "stdio" && server.env?.MCP_PRIVATE_VALUE === secret).toBe(true);
+    f.journal.append({ id: "mcp-stderr", at: 1, kind: "other", type: "harness_stderr", data: { text: secret } });
+    expect(lines.length).toBeGreaterThan(0);
+    expect(JSON.stringify([receipt, await response.json(), lines, f.journal.events()]).includes(secret)).toBe(false);
     expect((await f.db.query("select 1 from mcp_leases where connection_id=$1", [local.id])).rows).toEqual([]);
-    await f.db.query("update mcp_grants set generation=generation+1 where connection_id=$1", [local.id]);
+    const replacement = crypto.randomUUID();
+    await f.db.query("update mcp_grants set value_enc=$2 where connection_id=$1", [
+      local.id,
+      await encryptSecret(JSON.stringify({ MCP_PRIVATE_VALUE: replacement }), ENCRYPTION_KEY),
+    ]);
     expect((await x.service.prepare(f.caller, f.row.id))?.revision).not.toBe(receipt?.revision);
     await x.registry.setEnabled(f.people.owner, f.people.org, local.id, false);
     await expect(x.service.prepare(f.caller, f.row.id)).rejects.toMatchObject({ code: "forbidden" });
+  } finally {
+    await f.close();
+  }
+});
+
+test("dispatch rejects a bound stdio environment changed to launcher settings after health", async () => {
+  const { f, registry, service } = await fixture();
+  try {
+    const local = await registry.save(f.people.owner, f.people.org, {
+      name: "local",
+      scope: "personal",
+      transport: "stdio",
+      command: "npx",
+      args: ["@example/mcp@1.2.3"],
+    });
+    await service.connections.validate({ userId: f.people.owner, orgId: f.people.org }, [local.id], "org");
+    await service.connections.bind(f.row.id, [local.id]);
+    const marker = crypto.randomUUID();
+    const raced = createRuntimeMcp({
+      sql: f.sql,
+      key: ENCRYPTION_KEY,
+      origin: "https://armada.test",
+      commands: {
+        ...f.bridge,
+        async call(owner, command, options) {
+          const reply = await f.bridge.call(owner, command, options);
+          if (command.op === "health")
+            await f.db.query("update mcp_grants set value_enc=$2 where connection_id=$1", [
+              local.id,
+              await encryptSecret(JSON.stringify({ npm_config_registry: marker }), ENCRYPTION_KEY),
+            ]);
+          return reply;
+        },
+      },
+    });
+    await expect(raced.prepare(f.caller, f.row.id)).rejects.toThrow(
+      /^MCP stdio environment cannot override launcher settings\.$/,
+    );
+    expect((await f.db.query("select 1 from mcp_bootstraps where sandbox_id=$1", [f.row.id])).rows).toEqual([]);
   } finally {
     await f.close();
   }
