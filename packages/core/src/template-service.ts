@@ -12,7 +12,7 @@ import { LaunchError } from "./launch-error.ts";
 import {
   assertLaunchSecretBindings,
   LaunchSecretRefusal,
-  ModalLaunchSecretRefusal,
+  RuntimeLaunchSecretRefusal,
   resolveLaunchSecrets,
 } from "./launch-secrets.ts";
 import { resolveLaunchVariables } from "./launch-variables.ts";
@@ -776,7 +776,6 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
                 {
                   ...runtime.options,
                   credentialVersion: m.account.version,
-                  templateHasSecretBindings: Boolean(def.secrets?.length),
                   newId: () => request.sandbox_id,
                   beforeFork: async (sandboxId) => {
                     await revalidate(actor, org, m);
@@ -842,7 +841,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       if (!fenceConsumed) await releaseFence();
       // Once dispatch might have occurred, no timeout/exception proves absence. Never resend.
       const refused = error instanceof ProviderError && isNonMutatingProviderRefusal(error);
-      const secretRefusal = error instanceof ModalLaunchSecretRefusal ? error.refusal : undefined;
+      const secretRefusal = error instanceof RuntimeLaunchSecretRefusal ? error.refusal : undefined;
       const state = allocating && !refused && !secretRefusal ? "reconciling" : "failed";
       const safeReason = refused
         ? error.code

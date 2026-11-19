@@ -200,37 +200,6 @@ describe("launch", () => {
         expect(world.forks[0]?.env).toEqual({});
       },
     );
-  test("Boat default refuses template secret bindings before runtime selection or allocation", async () => {
-    const world = setup({ golden: golden("org") });
-    await expect(
-      launchSandbox(
-        world.provider,
-        world.stores,
-        owner,
-        { golden: "web", harness: "codex" },
-        {
-          templateHasSecretBindings: true,
-          boatRuntimeDefault: {
-            provider: async () => {
-              throw Error("Runtime provider resolved before secret admission");
-            },
-            credentials: world.stores.credentials,
-            connections: { async validate() {}, async bind() {} },
-            policy: {
-              async start() {
-                throw Error("Runtime started before secret admission");
-              },
-            },
-          },
-        },
-      ),
-    ).rejects.toMatchObject({
-      code: "invalid_request",
-      message: expect.stringContaining("template application-secret bindings"),
-    });
-    expect(world.forks).toEqual([]);
-  });
-
   test.each(["startup", "account", "provider"] as const)(
     "Modal default refuses %s without native fallback",
     async (failure) => {
