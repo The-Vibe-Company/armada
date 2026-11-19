@@ -40,7 +40,7 @@ import { createArmadaServer, type ToolContext } from "./tools.ts";
 
 /** MCP input names that the REST adapters (`control.ts`, `control-logs.ts`) accept under another name. */
 export const REST_FIELD_NAMES: Readonly<Record<string, Readonly<Record<string, string>>>> = {
-  "logs/read": { since_cursor: "cursor", conversation_id: "conversationId" },
+  "logs/read": { since_cursor: "cursor" },
 };
 /** REST routes whose contract is the named MCP tool, beyond the dispatcher's shared-tool table. */
 const REST_TOOL_ROUTES: Readonly<Record<string, string>> = {
