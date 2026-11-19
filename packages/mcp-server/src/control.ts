@@ -112,9 +112,10 @@ import type { RuntimeMcp } from "./runtime-mcp.ts";
 import type { RuntimeResume } from "./runtime-resume.ts";
 import type { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 import { dispatchSandboxRestControl, isSandboxRestControl } from "./sandbox-rest-controls.ts";
+import { sandboxListInput } from "./sandbox-tool-schemas.ts";
 import { tokenCreateRoute, tokenListRoute, tokenRevokeRoute } from "./token-control.ts";
 import { callSharedTool, ToolApiError } from "./tool-api.ts";
-import { describeToolFailure, sandboxListInput, type ToolContext } from "./tools.ts";
+import { describeToolFailure, type ToolContext } from "./tools.ts";
 
 import { viewerControl } from "./viewer-control.ts";
 

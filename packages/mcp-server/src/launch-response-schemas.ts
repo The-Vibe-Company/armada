@@ -1,6 +1,6 @@
 import { type GoldenErrorCode, SANDBOX_PROVIDERS } from "@armada/core";
 import { z } from "zod";
-import { LOGS_OUTPUT } from "./tools.ts";
+import { LOGS_OUTPUT } from "./sandbox-tool-schemas.ts";
 
 /**
  * Public HTTP 200 envelope of the canonical sandbox launch route.
