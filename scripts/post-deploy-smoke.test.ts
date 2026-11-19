@@ -2392,6 +2392,8 @@ test("Modal smoke refuses a finished turn whose status never reports usage and s
   expect(fake.calls.some((call) => call.path === "sandbox/stop")).toBe(true);
 });
 
+// The staging acceptance check requires measured counters for this resumed prompt,
+// not an unknown receipt or totals belonging to an earlier turn.
 test.each(["unknown", "missing", "old", "partial", "measured", "null-totals", "complete-marker"])(
   "Modal resumed Codex usage contract: %s",
   async (mode) => {
