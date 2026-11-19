@@ -34,14 +34,27 @@ def successful_mcp_tool(tools, matching_calls, harness, connection, name):
     return success
 
 
-def normal_launch_receipt(api, launch, timeout, require_github=False):
+def is_sandbox_id(value):
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", value) is not None
+
+
+def normal_launch_receipt(api, launch, timeout, require_github=False, on_admission=None):
     """Replay one admitted request until preparation yields its original first-prompt receipt."""
     deadline = time.monotonic() + timeout
+    sandbox_id = None
     while True:
         result = api("sandbox/launch", launch, normal=True)
         sandbox = result.get("sandbox", {})
-        if sandbox.get("id") != launch["requestId"] or sandbox.get("provider") != "docker":
-            raise RuntimeError("Normal launch outcome unknown; retain sandbox/request ID")
+        received_id = sandbox.get("id")
+        if (not is_sandbox_id(received_id) or sandbox.get("provider") != "docker"
+                or sandbox.get("externalRef") != launch["externalRef"]):
+            raise RuntimeError("Normal launch outcome unknown; retain sandbox ID and launch key")
+        if sandbox_id is None:
+            sandbox_id = received_id
+            if on_admission:
+                on_admission(sandbox_id)
+        elif received_id != sandbox_id:
+            raise RuntimeError("Docker launch replay returned a different sandbox ID")
         if sandbox.get("status") == "failed":
             raise RuntimeError(sandbox.get("statusReason") or
                                "Normal Docker launch preparation failed; retain printed sandbox ID")
@@ -52,10 +65,16 @@ def normal_launch_receipt(api, launch, timeout, require_github=False):
                 raise RuntimeError("GitHub proof blocked: " + reason)
             return result
         if sandbox.get("status") not in ("starting", "ready", "running") or result.get("runtime") is not None:
-            raise RuntimeError("Normal launch outcome unknown; retain sandbox/request ID")
+            raise RuntimeError("Normal launch outcome unknown; retain sandbox ID and launch key")
         if time.monotonic() >= deadline:
-            raise RuntimeError("Normal launch preparation timed out; retain sandbox/request ID for reconciliation")
+            raise RuntimeError("Normal launch preparation timed out; retain sandbox ID and launch key for reconciliation")
         time.sleep(2)
+
+
+def sandbox_cleanup(api, operation, sandbox, request_id):
+    if operation == "delete":
+        return api("sandboxes/" + sandbox, {"requestId": request_id}, normal=True, method="DELETE")
+    return api("sandbox/stop", {"id": sandbox, "request_id": request_id}, normal=True)
 
 
 def placement_smoke(api, args, host_id, harness):
@@ -197,7 +216,7 @@ def placement_smoke(api, args, host_id, harness):
                 for operation in ("stop", "delete"):
                     request_id = str(uuid.uuid4())
                     print("PLACEMENT_" + operation.upper() + "_REQUEST_ID=" + request_id, flush=True)
-                    receipt = api("sandbox/" + operation, {"id": sandbox, "request_id": request_id}, normal=True)
+                    receipt = sandbox_cleanup(api, operation, sandbox, request_id)
                     if receipt.get("status") not in (("stopped", "failed", "deleted") if operation == "stop" else ("deleted",)):
                         raise RuntimeError("Placement cleanup unconfirmed; reconcile printed sandbox IDs")
             except RuntimeError as error:
@@ -356,12 +375,16 @@ def main():
 
     opener = urllib.request.build_opener(NoRedirect)
 
-    def api(path, body, normal=False):
-        request = urllib.request.Request(server + ("/api/v1/" if normal else "/api/v1/docker/") + path,
-            data=json.dumps({"org": args.org, **body}).encode(), method="POST",
+    def api(path, body, normal=False, method="POST"):
+        url = server + ("/api/v1/" if normal else "/api/v1/docker/") + path
+        fields = {"org": args.org, **body}
+        if method == "DELETE":
+            url += "?" + urllib.parse.urlencode(fields)
+        request = urllib.request.Request(url,
+            data=None if method == "DELETE" else json.dumps(fields).encode(), method=method,
             headers={"authorization": "Bearer " + token, "content-type": "application/json"})
         try:
-            with opener.open(request, timeout=600 if normal and path in ("sandbox/launch", "templates/launch") else 120 if normal and path in ("sandbox/stop", "sandbox/delete", "sandbox/resume") else 30) as response:
+            with opener.open(request, timeout=600 if normal and path in ("sandbox/launch", "templates/launch") else 120 if normal and (method == "DELETE" or path in ("sandbox/stop", "sandbox/resume")) else 30) as response:
                 return json.load(response)
         except urllib.error.HTTPError as error:
             # Do not print response bodies, request headers or private capabilities.
@@ -408,11 +431,16 @@ def main():
             'test -f "$state/state.json"; test ! -e "$state/daemon.lock"; test ! -L "$state/daemon.lock"; '
             'nohup setsid "$HOME/.local/bin/armada-docker-host" run --state-dir "$state" '
             '>"$state/daemon.log" 2>&1 </dev/null & echo $! >"$state/smoke.pid"')
-    sandbox_id = str(uuid.uuid4())  # Persist this printed identity across unknown HTTP outcomes.
-    print("SANDBOX_ID=" + sandbox_id, flush=True)
-    launch = {"requestId": sandbox_id, "hostId": host_id,
-              "credentialId": args.credential}
-    if not args.normal_launch:
+    sandbox_id = None
+    launch = {"hostId": host_id, "credentialId": args.credential}
+    if args.normal_launch:
+        launch["idempotencyKey"] = str(uuid.uuid4())
+        launch["externalRef"] = launch["idempotencyKey"]
+        print("LAUNCH_KEY=" + launch["idempotencyKey"], flush=True)
+    else:
+        sandbox_id = str(uuid.uuid4())
+        print("SANDBOX_ID=" + sandbox_id, flush=True)
+        launch["requestId"] = sandbox_id
         launch["image"] = args.image  # Existing operator preview only.
     if args.credential_version is not None or not args.normal_launch:
         launch["credentialVersion"] = args.credential_version if args.credential_version is not None else 1
@@ -490,7 +518,12 @@ def main():
         initial_task = first + snapshot_proof_task + "Then reply with exactly DOCKER_OK."
     if args.snapshot:
         initial_task = secret_task + variable_task + initial_task
-    cleanup_needed = True
+    def record_admission(admitted_id):
+        nonlocal sandbox_id
+        sandbox_id = admitted_id
+        print("SANDBOX_ID=" + sandbox_id, flush=True)
+
+    submitted_normal_launch = False
     try:
         launch_receipt = None
         if args.normal_launch:
@@ -502,13 +535,13 @@ def main():
                 raise RuntimeError("Requested Docker harness is not advertised by launch/options")
             launch.update({"provider": "docker", "harness": harness, "visibility": "private",
                            "prompt": initial_task})
-            launched = normal_launch_receipt(api, launch, args.timeout, require_github=args.snapshot or args.github)
-            if (launched.get("sandbox", {}).get("id") != sandbox_id
-                    or launched.get("sandbox", {}).get("provider") != "docker"
-                    or launched.get("sandbox", {}).get("image") != expected_image
-                    or (args.snapshot and launched.get("sandbox", {}).get("snapshotId") != snapshot_id)
-                    or not launched.get("promptId") or not launched.get("conversationId")):
-                raise RuntimeError("Normal launch outcome unknown; retain sandbox/request ID")
+            submitted_normal_launch = True
+            launched = normal_launch_receipt(api, launch, args.timeout,
+                                             require_github=args.snapshot or args.github,
+                                             on_admission=record_admission)
+            if (launched["sandbox"].get("image") != expected_image
+                    or (args.snapshot and launched["sandbox"].get("snapshotId") != snapshot_id)):
+                raise RuntimeError("Normal launch outcome unknown; retain sandbox ID and launch key")
             launch_receipt = {"promptId": launched["promptId"], "conversationId": launched["conversationId"]}
             if args.skills or args.skill_defaults:
                 receipts = launched.get("sandbox", {}).get("skills", [])
@@ -759,14 +792,25 @@ def main():
                 raise RuntimeError("Resume changed host or conversation identity")
             turn(secret_task + variable_task + github_task + "Reply with exactly the marker I asked you to remember.", marker, conversation, prove_github=args.github)
     finally:
-        if cleanup_needed:
+        if submitted_normal_launch and sandbox_id is None:
+            try:
+                rows = api("sandbox/list", {"owner": "me", "externalRef": launch["externalRef"]}, normal=True)["sandboxes"]
+                if (isinstance(rows, list) and len(rows) == 1 and isinstance(rows[0], dict)
+                        and rows[0].get("provider") == "docker"
+                        and rows[0].get("externalRef") == launch["externalRef"] and is_sandbox_id(rows[0].get("id"))):
+                    record_admission(rows[0]["id"])
+            except (RuntimeError, KeyError, TypeError):
+                pass
+            if sandbox_id is None:
+                print("Launch unconfirmed; look it up using the printed launch key as externalRef.", file=sys.stderr)
+        if sandbox_id is not None:
             # Never delete an unconfirmed running allocation. Offline cleanup remains honest/pending.
             try:
                 for operation in ("stop", "delete"):
                     request_id = str(uuid.uuid4())
                     print(operation.upper() + "_ID=" + request_id, flush=True)
                     if args.normal_controls:
-                        reply = api("sandbox/" + operation, {"id": sandbox_id, "request_id": request_id}, normal=True)
+                        reply = sandbox_cleanup(api, operation, sandbox_id, request_id)
                         expected = ("stopped", "failed", "deleted") if operation == "stop" else ("deleted",)
                         if reply.get("status") not in expected:
                             raise RuntimeError("Normal Docker cleanup ACK was not confirmed")

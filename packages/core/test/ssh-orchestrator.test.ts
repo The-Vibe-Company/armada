@@ -1,13 +1,22 @@
 import { expect, test } from "bun:test";
 import type { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
+import * as fs from "node:fs";
+import { tmpdir } from "node:os";
+import * as path from "node:path";
+import { runInNewContext } from "node:vm";
 import { type Provider, type SshExecDeps, sshDelegatedReceipt } from "../src/server.ts";
 
-test("private SSH captures only bounded nonsecret receipt, pins host and keeps payload out of argv/files", async () => {
+test.each([
+  { outcome: "successful", exitCode: 0 },
+  { outcome: "failed", exitCode: 7 },
+])("private SSH removes only its temporary authorization before $outcome guest control", async ({ exitCode }) => {
   const token = `armada_epoch_${"a".repeat(64)}`;
   const boot = "00000000-0000-4000-8000-000000000001";
-  const calls: { file: string; args: string[]; stdin?: string }[] = [],
-    writes: string[] = [];
+  const publicKey = "ssh-ed25519 TEMPORARY";
+  const unrelated = "ssh-ed25519 UNRELATED user-key\nssh-ed25519 TEMPORARY different-comment\n";
+  const calls: { file: string; args: string[]; stdin?: string }[] = [];
+  const writes: string[] = [];
   const run = ((file: string, args: string[]) => {
     const call = { file, args, stdin: "" };
     calls.push(call);
@@ -18,14 +27,22 @@ test("private SSH captures only bounded nonsecret receipt, pins host and keeps p
         end: (value: string) => {
           call.stdin = value;
           queueMicrotask(() => {
-            if (file === "ssh")
+            if (file === "ssh") {
+              const receipt = {
+                physicalGeneration: boot,
+                acknowledged: true,
+                port: 32100,
+                epoch: "2",
+                authorityInstalled: true,
+              };
               child.stdout.emit(
                 "data",
                 Buffer.from(
-                  `discarded ${token}\nARMADA_ORCHESTRATOR_RECEIPT ${Buffer.from(JSON.stringify({ physicalGeneration: boot, acknowledged: true, port: 32100, epoch: "2", authorityInstalled: true })).toString("base64url")}\n`,
+                  `discarded ${token}\nARMADA_ORCHESTRATOR_RECEIPT ${Buffer.from(JSON.stringify(receipt)).toString("base64url")}\n`,
                 ),
               );
-            child.emit("close", 0);
+            }
+            child.emit("close", file === "ssh" ? exitCode : 0);
           });
         },
       },
@@ -39,63 +56,57 @@ test("private SSH captures only bounded nonsecret receipt, pins host and keeps p
     writeFile: async (_p, v) => {
       writes.push(String(v));
     },
-    readPublicKey: async () => "ssh-ed25519 PUBLIC",
+    readPublicKey: async () => publicKey,
   };
-  const provider = {
-    sshKey: async () => ({ sshEndpoint: "ssh.test:2222", hostKey: "ssh-ed25519 PINNED" }),
-  } as unknown as Provider;
-  const response = await sshDelegatedReceipt(
-    provider,
-    { sandboxId: "fixture", token, script: "public-code-only" },
-    deps,
-  );
-  expect(response.physicalGeneration).toBe(boot);
-  expect(response.authorityInstalled).toBe(true);
-  expect(calls.find((c) => c.file === "ssh")?.args).toContain("StrictHostKeyChecking=yes");
-  expect(JSON.stringify(calls.map((c) => c.args))).not.toContain(token);
-  expect(writes.join("")).not.toContain(token);
-  expect(calls.find((c) => c.file === "ssh")?.stdin).toContain(token + "\n");
-});
-
-test("private SSH removes only its temporary guest authorization before success or failed control", async () => {
-  const { mkdtemp, mkdir, readFile, writeFile, rm } = await import("node:fs/promises");
-  const { tmpdir } = await import("node:os");
-  const { join } = await import("node:path");
-  const { spawn: realSpawn } = await import("node:child_process");
-  const home = await mkdtemp(join(tmpdir(), "armada-private-key-"));
-  const authorized = join(home, ".ssh/authorized_keys");
-  const unrelated = "ssh-ed25519 UNRELATED user-key\n";
-  await mkdir(join(home, ".ssh"));
-  await writeFile(authorized, unrelated, { mode: 0o600 });
+  const home = fs.mkdtempSync(path.join(tmpdir(), "armada-private-key-"));
+  const authorized = path.join(home, ".ssh", "authorized_keys");
   const provider = {
     sshKey: async ({ key }: { key: string }) => {
-      await writeFile(authorized, (await readFile(authorized, "utf8")) + key + "\n");
+      fs.writeFileSync(authorized, unrelated + key + "\n", { mode: 0o600 });
       return { sshEndpoint: "ssh.test:2222", hostKey: "ssh-ed25519 PINNED" };
     },
   } as unknown as Provider;
-  const run = ((file: string, args: string[], options: Parameters<typeof realSpawn>[2]) =>
-    file === "ssh"
-      ? realSpawn("bash", ["-c", `bash -c ${args.at(-1)}`], { ...options, env: { ...process.env, HOME: home } })
-      : realSpawn(file, args, options)) as typeof realSpawn;
-  const receipt = Buffer.from(
-    JSON.stringify({ physicalGeneration: "00000000-0000-4000-8000-000000000001", acknowledged: true }),
-  ).toString("base64url");
+  const control = "public-code-only";
   try {
-    for (const script of [
-      `printf 'ARMADA_ORCHESTRATOR_RECEIPT ${receipt}\\n'`,
-      "exit 7",
-      `printf 'ARMADA_ORCHESTRATOR_RECEIPT ${receipt}\\n'`,
-    ]) {
-      const result = sshDelegatedReceipt(
-        provider,
-        { sandboxId: "fixture", token: "private-payload", script },
-        { spawn: run },
-      );
-      if (script === "exit 7") await expect(result).rejects.toThrow("orchestrator_private_ssh_unavailable");
-      else expect((await result).acknowledged).toBe(true);
-      expect(await readFile(authorized, "utf8")).toBe(unrelated);
+    fs.mkdirSync(path.dirname(authorized));
+    const result = sshDelegatedReceipt(provider, { sandboxId: "fixture", token, script: control }, deps);
+    if (exitCode === 0) {
+      const response = await result;
+      expect(response.physicalGeneration).toBe(boot);
+      expect(response.acknowledged).toBe(true);
+      expect(response.authorityInstalled).toBe(true);
+    } else {
+      await expect(result).rejects.toThrow("orchestrator_private_ssh_unavailable");
     }
+
+    const ssh = calls.find((call) => call.file === "ssh");
+    expect(ssh?.args).toContain("StrictHostKeyChecking=yes");
+    expect(JSON.stringify(calls.map((call) => call.args))).not.toContain(token);
+    expect(writes.join("")).not.toContain(token);
+
+    const [stdinToken, stdinKey, ...script] = ssh?.stdin?.split("\n") ?? [];
+    expect(stdinToken).toBe(token);
+    expect(stdinKey).toBe(publicKey);
+    const beforeControl = script.join("\n").split(control)[0];
+    expect(script.join("\n")).toEndWith(control);
+    const cleanup = beforeControl?.match(
+      /node <<'ARMADA_PRIVATE_KEY_CLEANUP'\n([\s\S]*?)\nARMADA_PRIVATE_KEY_CLEANUP\n/,
+    );
+    expect(cleanup).toBeDefined();
+    expect(fs.readFileSync(authorized, "utf8")).toBe(unrelated + publicKey + "\n");
+    runInNewContext(cleanup?.[1] ?? "", {
+      require: (name: "node:fs" | "node:path") => ({ "node:fs": fs, "node:path": path })[name],
+      process: {
+        env: { ARMADA_KEY_HOME: home, ARMADA_SSH_PUBLIC_KEY: stdinKey },
+        pid: process.pid,
+        getuid: () => process.getuid?.() ?? 1,
+        exit: (code: number) => {
+          throw Error(`Guest cleanup exited with ${code}`);
+        },
+      },
+    });
+    expect(fs.readFileSync(authorized, "utf8")).toBe(unrelated);
   } finally {
-    await rm(home, { recursive: true, force: true });
+    fs.rmSync(home, { recursive: true, force: true });
   }
 });

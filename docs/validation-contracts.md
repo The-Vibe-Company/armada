@@ -24,7 +24,6 @@ Missing PostgreSQL/native prerequisites fail closed. No PR job/service is added.
 | mcp-server/runtime-native-auth-postgres | credential publication/lifecycle replacement |
 | mcp-server/sql | advisory lock exclusion across commit/rollback |
 | provider-modal/artifact | built native artifact bootstrap, checkpoint, journal reopening |
-| mcp-server/mcp-codex-bridge | pinned Codex process/thread continuity through MCP credential rotation |
 | cli/binary | compiled CLI packaging and argument/environment boundaries |
 
 `scripts/build-migration.release.ts` retains the standalone compiled migration
@@ -45,6 +44,10 @@ harness and finishes in about 0.1 s.
 These Linux guest-process checks run only when explicitly invoked with
 `bun test ./path/to/file.conformance.ts`. They use temporary local fixtures.
 
+- `packages/core/test/docker-snapshot-init.conformance.ts` checks that the
+  snapshot supervisor reaps a writer that starts a new session and runs init as
+  UID 1000 with no new privileges. It requires Linux pidfd support, Python 3,
+  and root or passwordless sudo.
 - `packages/mcp-server/test/boat-delegated-access-provider.conformance.ts`
   checks SSH authorization cleanup on guest-script success and conflict.
 - `packages/provider-boat/test/native-install-race.conformance.ts` checks
@@ -62,8 +65,8 @@ These Linux guest-process checks run only when explicitly invoked with
 Repository-wide search includes `skipIf`, `test.skip`, conditional test aliases,
 `describe.skip` and `todo`. No todo declarations were found. Dispositions:
 
-- Linux platform skips remain in core `docker-snapshot-init`, `golden-helper`,
-  `golden-scan`, `golden-script-shell`; provider-modal `distribution`;
+- Linux platform skips remain in core `golden-helper`, `golden-scan`,
+  `golden-script-shell`; provider-modal `distribution`;
   provider-boat `native-cwd`;
   mcp-server `templates`, `managed-inspection`, `runtime-native-auth`;
   agent-runtime `skills`, `runtime`, `readable-variables`, `exec-env`,
@@ -75,19 +78,24 @@ Repository-wide search includes `skipIf`, `test.skip`, conditional test aliases,
   opt-in container/image OS acceptance, not ordinary unit proof. They require
   `ARMADA_GOLDEN_OS_IMAGE` and remain on-demand acceptance checks; no provider
   or image build is introduced into PR CI. Run the Modal SSH probe with
-  `ARMADA_GOLDEN_OS_IMAGE=<fixture-image> bun packages/provider-modal/test/ssh-os.probe.ts`.
+  `ARMADA_GOLDEN_OS_IMAGE=<fixture-image> bun packages/provider-modal/test/ssh-os.probe.ts`. For the server GitHub SSH probe,
+  build the local image using the [golden OS fixture recipe](../scripts/fixtures/golden-os/README.md)
+  and run `bun scripts/prepare-runtime.ts` after installing dependencies. Then run
+  `ARMADA_GOLDEN_OS_IMAGE=<fixture-image> bun packages/mcp-server/test/github-boat-os.probe.ts`.
 - `provider-boat/integration.coordinator.ts` is no longer automatically
   discovered at all. Only the coordinator may explicitly invoke its documented
   billed-compute opt-in command. It is not part of release/staging acceptance:
   `boat: not part of the release gate`.
 - PostgreSQL skips and artifact portable-manifest skips were replaced by
   explicit release prerequisites. The native `mcp-codex-bridge` release
-  contract requires the pinned binary and a no-skip report.
+  probe (`packages/mcp-server/test/mcp-codex-bridge.release.probe.ts`) requires
+  the pinned binary and a successful process exit.
 
 ## Evidence owed after merge
 
 Run the existing publishing release validation on the exact release SHA. Verify
-all routed files print executed testcase counts with zero skips, native version
+routed Bun suites print executed testcase counts with zero skips, the native
+Codex probe reports success, and native version
 validation and checkpoint process boundaries pass. No production action or
 Boat lifecycle is required for this test-routing change. OS/container checks
 remain separately opt-in, not an implied pass from green unit CI.

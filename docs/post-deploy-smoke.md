@@ -1863,7 +1863,7 @@ separate dashboard `/github/callback` web flow remains intact.
 
 The authenticated control audit also repaired missing `creds/accounts/models`,
 `creds/defaults/set` and `skillpack/connection` forwarding, plus `golden/adopt`,
-`github/runtime-status`, `sandbox/resume` and the authenticated `sandbox/delete`
+`github/runtime-status`, `sandbox/resume` and the authenticated `DELETE /api/v1/sandboxes/{id}`
 control alias. Retired
 `launch/resolve` stays blocked. Experimental preflight routes (`sandbox/mcp-preflight-v1` and
 `sandbox/github-preflight-v1`) remain server-only;

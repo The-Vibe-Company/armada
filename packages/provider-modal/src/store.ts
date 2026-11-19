@@ -7,6 +7,7 @@ import {
   ProviderError,
   type Sql,
 } from "@armada/core";
+import { matchesManagementAuthority } from "./authority.ts";
 import { refusal } from "./errors.ts";
 import type { IngestPayload, Machine, ModalStore, SavedImage, Scope } from "./ports.ts";
 
@@ -63,19 +64,48 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
         throw refusal("forbidden", "Stored builder identity does not match its reservation.");
       return revive(row.record);
     },
-    async reserve(requestKey, machine) {
-      await authorize();
-      await sql.query(
-        `insert into public.modal_machines(scope,org_id,owner_id,visibility,id,request_key,record) values($1,$2,$3,$4,$5,$6,$7::jsonb) on conflict(scope,request_key) do nothing`,
-        [key, scope.orgId, scope.userId, scope.visibility, machine.info.id, requestKey, JSON.stringify(machine)],
-      );
-      const result = await sql.query<{ record: Machine }>(
-        `select record from public.modal_machines where scope=$1 and request_key=$2 and owner_id=$3`,
-        [key, requestKey, scope.userId],
-      );
-      const row = result.rows[0];
-      if (!row) throw refusal("conflict", "Launch reservation failed.");
-      return revive(row.record);
+    async reserve(requestKey, machine, runtimeSourceId) {
+      const reserve = async (db: Sql) => {
+        await authorize(db);
+        const { sourceImage, managementAuthority } = machine;
+        if (machine.commonRuntime && sourceImage) {
+          if (!runtimeSourceId || !managementAuthority)
+            throw refusal("forbidden", "Runtime reservation requires a verified source.");
+          const orgKey = scopeKey({ ...scope, visibility: "org" });
+          if (sourceImage.scopeKey !== key && !(scope.visibility === "private" && sourceImage.scopeKey === orgKey))
+            throw refusal("forbidden", "Snapshot source is outside this reservation scope.");
+          const locked = await db.query<{ record: SavedImage }>(
+            `select record from public.modal_images where scope=$1 and name=$2 for share`,
+            [sourceImage.scopeKey, sourceImage.name],
+          );
+          const image = locked.rows[0]?.record;
+          if (
+            !image ||
+            image.deleted ||
+            image.info.status !== "ready" ||
+            image.sourceId !== runtimeSourceId ||
+            image.imageId !== sourceImage.imageId
+          )
+            throw refusal("not_found", "Modal snapshot is no longer available.");
+          if (!matchesManagementAuthority(image.managementAuthority, managementAuthority))
+            throw refusal("forbidden", "Stored source management authority does not match this provider connection.");
+        }
+        await db.query(
+          `insert into public.modal_machines(scope,org_id,owner_id,visibility,id,request_key,record) values($1,$2,$3,$4,$5,$6,$7::jsonb) on conflict(scope,request_key) do nothing`,
+          [key, scope.orgId, scope.userId, scope.visibility, machine.info.id, requestKey, JSON.stringify(machine)],
+        );
+        const result = await db.query<{ record: Machine }>(
+          `select record from public.modal_machines where scope=$1 and request_key=$2 and owner_id=$3`,
+          [key, requestKey, scope.userId],
+        );
+        const row = result.rows[0];
+        if (!row) throw refusal("conflict", "Launch reservation failed.");
+        return revive(row.record);
+      };
+      if (!machine.commonRuntime || !machine.sourceImage) return reserve(sql);
+      if (!sql.transaction)
+        throw refusal("unavailable", "Runtime snapshot reservation requires a database transaction.");
+      return sql.transaction(reserve);
     },
     get,
     async watermark(id, generation) {
@@ -147,10 +177,34 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
     },
     async removeImage(name) {
       await authorize();
-      await sql.query(
-        `update public.modal_images set record=jsonb_set(record,'{deleted}','true') where scope=$1 and name=$2`,
-        [key, name],
-      );
+      if (!sql.transaction) throw refusal("unavailable", "Snapshot retirement requires a database transaction.");
+      await sql.transaction(async (tx) => {
+        const current = await tx.query<{ record: SavedImage }>(
+          `select record from public.modal_images where scope=$1 and name=$2 for update`,
+          [key, name],
+        );
+        const image = current.rows[0]?.record;
+        if (!image || image.deleted) return;
+        if (image.imageId) {
+          const references = await tx.query(
+            `select 1 from public.modal_machines where record->>'commonRuntime'='true'
+             and record->>'phase' is distinct from 'deleted' and record->'sourceImage' @> $1::jsonb limit 1`,
+            [JSON.stringify({ scopeKey: key, name, imageId: image.imageId })],
+          );
+          if (references.rows.length)
+            throw new ProviderError({
+              provider: "modal",
+              code: "conflict",
+              providerCode: "snapshot_source_busy",
+              message: "A runtime sandbox references this snapshot. Delete that sandbox before retiring the snapshot.",
+              retryable: true,
+            });
+        }
+        await tx.query(
+          `update public.modal_images set record=jsonb_set(record,'{deleted}','true') where scope=$1 and name=$2`,
+          [key, name],
+        );
+      });
     },
     async purgeImage(name, sourceId, imageId) {
       await authorize();

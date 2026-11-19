@@ -41,7 +41,7 @@ import { authorizeSnapshotBuild, resolveDockerSnapshot } from "./docker-snapshot
 import { recordLaunchStageForActivation } from "./launch-stage-record.ts";
 import { collectOutputTransfers, DOCKER_RETAINED_OUTPUT_STOP } from "./output-transfers.ts";
 import { noteAdmission } from "./request-observability.ts";
-import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
+import { createRuntimeEnrolments, preserveResumeRefusalTicket, scopedRuntimeSql } from "./runtime-enrolment.ts";
 import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
 import { failDockerResumeActivation, requestRefusedDockerResumeStop } from "./sandbox-lifecycle.ts";
 import { deferTransactionWake } from "./wake-bus.ts";
@@ -50,6 +50,20 @@ type Actor = { userId: string; orgId: string };
 type Job = DockerHostJob;
 export const DOCKER_JOB_REQUEST_OUTCOME_SQL =
   "case when j.refused_resume_generation is not null then 'failed' else j.outcome end";
+const settledRefusedResumeSql = `
+  j.refused_resume_generation is not null and j.bound_operation='resume'
+  and (j.outcome='completed' or j.outcome='failed') and j.cancelled_at is null
+  and s.docker_host_id=j.host_id and s.docker_installation_id=$2
+  and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>now()
+  and s.status='starting' and s.lifecycle_generation=j.refused_resume_generation`;
+
+const pendingRefusedResumeSql = `j.bound_operation='resume' and j.refused_resume_generation is not null
+  and exists(select 1 from public.sandboxes s where s.id=j.bound_sandbox_id and s.docker_host_id=j.host_id
+    and s.status='starting' and s.lifecycle_generation=j.refused_resume_generation
+    and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>now())`;
+const dispatchPriority = `case when j.bound_operation in ('stop','delete') then 0
+  when ${pendingRefusedResumeSql} then 1 else 2 end,(j.snapshot_id is not null),j.position`;
+
 type Host = { id: string; org_id: string; owner_id: string };
 type Bound = {
   snapshot_id?: string | null;
@@ -185,7 +199,13 @@ export function createDockerHostStore(sql: Sql, key: string) {
     );
     return result.rows[0] ?? deny();
   }
-  async function authenticate(tx: Sql, hostToken: string, installationId: string, actorId?: string) {
+  async function authenticate(
+    tx: Sql,
+    hostToken: string,
+    installationId: string,
+    actorId?: string,
+    refusalActors: readonly string[] = [],
+  ) {
     id(installationId);
     const result = await tx.query<Host>(
       `select id,org_id,owner_id from public.docker_hosts
@@ -194,8 +214,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
     );
     const host = result.rows[0] ?? deny();
     const member = await tx.query<{ user_id: string }>(
-      `select user_id from public.members where org_id=$1 and user_id in ($2,$3) order by user_id for update`,
-      [host.org_id, host.owner_id, actorId ?? host.owner_id],
+      `select user_id from public.members where org_id=$1 and user_id=any($2::uuid[]) order by user_id for update`,
+      [host.org_id, [host.owner_id, actorId ?? host.owner_id, ...refusalActors]],
     );
     if (!member.rows.some((row) => row.user_id === host.owner_id)) deny();
     // Membership -> host -> job is the lock order for every operation. Recheck the
@@ -208,14 +228,21 @@ export function createDockerHostStore(sql: Sql, key: string) {
     return locked.rows[0] ?? deny();
   }
   // Retained credentials accept physical facts, never new launch authority.
-  async function reconcileHost(tx: Sql, hostToken: string, installationId: string, actorId?: string) {
+  async function reconcileHost(
+    tx: Sql,
+    hostToken: string,
+    installationId: string,
+    actorId?: string,
+    refusalActors: readonly string[] = [],
+  ) {
     id(installationId);
-    if (actorId) {
+    const actorIds = actorId ? [actorId, ...refusalActors] : refusalActors;
+    if (actorIds.length) {
       // Preserve membership -> host lock order for cleanup dispatch authorization.
       await tx.query(
         `select m.user_id from public.members m join public.docker_hosts h on h.org_id=m.org_id
-         where h.hash=$1 and h.installation_id=$2 and m.user_id=$3 for update of m`,
-        [hash(hostToken), installationId, actorId],
+         where h.hash=$1 and h.installation_id=$2 and m.user_id=any($3::uuid[]) order by m.user_id for update of m`,
+        [hash(hostToken), installationId, actorIds],
       );
     }
     const result = await tx.query<Host>(
@@ -457,6 +484,16 @@ export function createDockerHostStore(sql: Sql, key: string) {
       [row.id, message],
     );
   }
+  async function failResumeAck(tx: Sql, row: Sandbox, job: StoredJob, reason?: DockerJobFailureReason) {
+    const request = await readJob(job);
+    if (request.operation !== "resume") deny();
+    const fail = () => startupFailed(tx, row, job, reason);
+    if (row.status !== "starting") {
+      await fail();
+      return;
+    }
+    await preserveResumeRefusalTicket(tx, row.id, row.lifecycle_generation, request.bootstrap.enrolmentToken, fail);
+  }
   /** Retire queued work the server can no longer dispatch. This is cancellation,
    * never physical evidence: a bound startup becomes failed without stopped_at,
    * and stop/delete jobs stay dispatchable through reconcileHost. The caller
@@ -493,7 +530,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
         await tx.query<StoredJob>(
           `update public.docker_host_jobs j set refused_resume_generation=$2
            from public.sandboxes s join public.docker_resume_claims c on c.sandbox_id=s.id
-           where s.id=$1 and s.status='starting' and s.lifecycle_generation=$2::bigint
+           where s.id=$1 and ((s.status='starting' and s.lifecycle_generation=$2::bigint)
+             or (s.status='failed' and s.lifecycle_generation=$2::bigint+1 and j.outcome='failed'))
              and j.request_id=c.request_id and j.bound_sandbox_id=s.id and j.bound_operation='resume'
              and j.host_id=s.docker_host_id and c.host_id=j.host_id and c.installation_id=s.docker_installation_id
              and c.generation=s.docker_generation and c.accepted and c.lifecycle_generation+1=$2::bigint
@@ -505,10 +543,11 @@ export function createDockerHostStore(sql: Sql, key: string) {
         )
       ).rows[0];
       if (!refused) return false;
-      if (refused.outcome === "completed") {
+      if (refused.outcome !== null) {
         const row =
           (await tx.query<Sandbox>("select * from public.sandboxes where id=$1", [sandboxId])).rows[0] ?? deny();
-        await settleRefusedResume(tx, row, refused);
+        const settled = await settleRefusedResume(tx, row, refused);
+        return row.status !== "failed" || settled;
       }
       return true;
     },
@@ -710,6 +749,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
           `select exists(select 1 from public.docker_host_jobs j join public.docker_hosts h on h.id=j.host_id
              where h.hash=$1 and h.installation_id=$2 and h.revoked_at is null and j.outcome is null
                and (not $3::boolean or j.snapshot_id is null) and ${notRunning(4)} and ${supportsJob(6)})
+           or exists(select 1 from public.docker_host_jobs j join public.docker_hosts h on h.id=j.host_id
+             join public.sandboxes s on s.id=j.bound_sandbox_id
+             where h.hash=$1 and h.installation_id=$2 and h.revoked_at is null and ${settledRefusedResumeSql})
            or ($5::boolean and exists(select 1 from public.docker_resume_claims c
              join public.docker_hosts h on h.id=c.host_id join public.sandboxes s on s.id=c.sandbox_id
              where h.hash=$1 and h.installation_id=$2 and h.revoked_at is null
@@ -1300,14 +1342,24 @@ export function createDockerHostStore(sql: Sql, key: string) {
         const hint = (
           await tx.query<StoredJob>(
             `select j.* from public.docker_host_jobs j join public.docker_hosts h on h.id=j.host_id
-           where h.hash=$1 and h.installation_id=$2 and j.outcome is null and (not $3::boolean or j.snapshot_id is null) and ${notRunning(4)} and ${supportsJob(5)} order by case when j.bound_operation in ('stop','delete') then 0 else 1 end,(j.snapshot_id is not null),j.position limit 1`,
+           where h.hash=$1 and h.installation_id=$2 and j.outcome is null and (not $3::boolean or j.snapshot_id is null) and ${notRunning(4)} and ${supportsJob(5)} order by ${dispatchPriority} limit 1`,
             [hash(hostToken), installationId, skipSnapshots, running, supportsPhysicalDelete],
           )
         ).rows[0];
+        const refusals = (
+          await tx.query<StoredJob>(
+            `select j.* from public.docker_host_jobs j join public.sandboxes s on s.id=j.bound_sandbox_id
+             join public.docker_hosts h on h.id=j.host_id
+             where h.hash=$1 and h.installation_id=$2 and ${settledRefusedResumeSql}
+             order by j.position`,
+            [hash(hostToken), installationId],
+          )
+        ).rows;
+        const refusalActors = refusals.flatMap((job) => (job.bound_actor_id ? [job.bound_actor_id] : []));
         const host =
           hint?.bound_sandbox_id && ["stop", "delete"].includes(hint.bound_operation ?? "")
-            ? await reconcileHost(tx, hostToken, installationId, hint.bound_actor_id ?? undefined)
-            : await authenticate(tx, hostToken, installationId, hint?.bound_actor_id ?? undefined);
+            ? await reconcileHost(tx, hostToken, installationId, hint.bound_actor_id ?? undefined, refusalActors)
+            : await authenticate(tx, hostToken, installationId, hint?.bound_actor_id ?? undefined, refusalActors);
         await tx.query(
           `update public.docker_hosts set last_seen_at=now(),daemon_version=$2,resource_policy_version=$3,available_cpus=null,available_memory_bytes=null,disk_free_bytes=$4,stopped_sandbox_bytes=$5,daemon_protocol=coalesce($6::integer,daemon_protocol) where id=$1`,
           [
@@ -1339,18 +1391,6 @@ export function createDockerHostStore(sql: Sql, key: string) {
           "update public.docker_host_jobs j set outcome='failed',completed_at=now() from public.docker_snapshots s where j.snapshot_id=s.id and j.host_id=$1 and j.outcome is null and s.status='failed'",
           [host.id],
         );
-        const refusals = (
-          await tx.query<StoredJob>(
-            `select j.* from public.docker_host_jobs j join public.sandboxes s on s.id=j.bound_sandbox_id
-             where j.host_id=$1 and j.refused_resume_generation is not null
-             and j.outcome='completed' and j.cancelled_at is null
-             and s.docker_host_id=$1 and s.docker_installation_id=$2
-             and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>now()
-             and s.status='starting' and s.lifecycle_generation=j.refused_resume_generation
-             order by j.position`,
-            [host.id, installationId],
-          )
-        ).rows;
         for (const refusal of refusals) {
           const logical = await boundMachine(tx, refusal, host, installationId);
           await settleRefusedResume(tx, logical, refusal);
@@ -1380,13 +1420,14 @@ export function createDockerHostStore(sql: Sql, key: string) {
           }
         }
         const row = (
-          await tx.query<StoredJob>(
-            `select j.* from public.docker_host_jobs j where j.host_id=$1 and j.outcome is null and (not $2::boolean or j.snapshot_id is null) and ${notRunning(3)} and ${supportsJob(4)} order by case when j.bound_operation in ('stop','delete') then 0 else 1 end,(j.snapshot_id is not null),j.position limit 1`,
+          await tx.query<StoredJob & { recovering_receipt: boolean }>(
+            `select j.*, (${pendingRefusedResumeSql}) as recovering_receipt
+            from public.docker_host_jobs j where j.host_id=$1 and j.outcome is null and (not $2::boolean or j.snapshot_id is null) and ${notRunning(3)} and ${supportsJob(4)} order by ${dispatchPriority} limit 1`,
             [host.id, skipSnapshots, running, supportsPhysicalDelete],
           )
         ).rows[0];
         if (!row || row.request_id !== hint?.request_id) return null;
-        if (!["stop", "delete"].includes(row.bound_operation ?? "")) {
+        if (!row.recovering_receipt && !["stop", "delete"].includes(row.bound_operation ?? "")) {
           const policyRow = (
             await tx.query<DockerPolicyRow>(
               "select machine_cpus,machine_memory_bytes,sandbox_cpus,sandbox_memory_bytes,max_sandboxes,available_cpus,available_memory_bytes from public.docker_hosts where id=$1",
@@ -1433,6 +1474,12 @@ export function createDockerHostStore(sql: Sql, key: string) {
           let verified: Sandbox | undefined;
           try {
             const logical = await boundMachine(tx, row, host, installationId);
+            if (
+              row.recovering_receipt &&
+              (logical.status !== "starting" ||
+                String(logical.lifecycle_generation) !== String(row.refused_resume_generation))
+            )
+              return null;
             verified = logical;
             await permission(
               tx,
@@ -1746,12 +1793,11 @@ export function createDockerHostStore(sql: Sql, key: string) {
             );
           }
         } else if (result.imageId !== undefined) deny();
-        // A repeated same-outcome machine fact also repairs a logical transition
-        // missed by an earlier server; conflicting facts still fail above.
-        if (logical) {
-          if (result.outcome === "completed") {
-            await settleRefusedResume(tx, logical, job);
-          } else if (job.outcome !== null || !(await settleRefusedResume(tx, logical, job))) {
+        if (logical && !(await settleRefusedResume(tx, logical, job)) && result.outcome === "failed") {
+          if (job.bound_operation === "resume") {
+            if (job.outcome === null) await failResumeAck(tx, logical, job, result.reason);
+            else if (job.cancelled_at) await startupFailed(tx, logical, job, result.reason);
+          } else {
             await startupFailed(tx, logical, job, result.reason);
           }
         }
@@ -1816,11 +1862,6 @@ export function createDockerHostStore(sql: Sql, key: string) {
               [job.bound_sandbox_id],
             );
         }
-        // The first host receipt is the terminal machine fact. Clearing
-        // cancelled_at in the same write makes later conflicting receipts fail
-        // the immutability check above, and lets capacity follow the normal rule:
-        // a completed create/resume reserves, a failed one stays reserved until a
-        // physical stop/delete/expiry proves the machine is gone.
         if (job.outcome === null || job.cancelled_at !== null) {
           await tx.query(
             `update public.docker_host_jobs set outcome=$2,completed_at=now(),result_image_id=$3,cancelled_at=null where request_id=$1`,

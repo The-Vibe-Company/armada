@@ -1046,6 +1046,71 @@ test("overlapping forks refuse source contention definitively before allocating"
     await first;
   }
 });
+test("enrolled Modal forks from one snapshot can boot concurrently", async () => {
+  const f = fixture(scope, fixtureSql, undefined, undefined, true);
+  const { name } = await savedGolden(f);
+  const entered = deferred();
+  const release = deferred();
+  const prepare = f.distribution.prepareFreshMachine!;
+  let firstBoot = true;
+  f.distribution.prepareFreshMachine = async (sandbox, row) => {
+    if (firstBoot) {
+      firstBoot = false;
+      entered.resolve();
+      await release.promise;
+    }
+    await prepare(sandbox, row);
+  };
+  const first = f.provider.fork({ from: name });
+  await Promise.race([entered.promise, first]);
+  try {
+    const second = await f.provider.fork({ from: name });
+    expect(second.state).toBe("ready");
+    release.resolve();
+    expect((await first).id).not.toBe(second.id);
+  } finally {
+    release.resolve();
+    await first;
+  }
+});
+
+test("enrolled Modal fork refuses a snapshot retired before reservation", async () => {
+  const source = fixture();
+  const { name } = await savedGolden(source);
+  const fork = fixture(
+    scope,
+    {
+      query: fixtureSql.query,
+      async transaction(work) {
+        await source.provider.deleteSnapshot(name);
+        return db.transaction(work);
+      },
+    },
+    undefined,
+    undefined,
+    true,
+  );
+  const requestKey = crypto.randomUUID();
+  await expect(fork.provider.fork({ from: name, idempotencyKey: requestKey })).rejects.toMatchObject({
+    code: "not_found",
+  });
+  expect(await fork.store.findByRequestKey(requestKey)).toBeNull();
+  expect(fork.creates).toBe(0);
+});
+
+test("snapshot retirement refuses a live enrolled Modal fork reference", async () => {
+  const f = fixture(scope, fixtureSql, undefined, undefined, true);
+  const { name } = await savedGolden(f);
+  const child = await f.provider.fork({ from: name });
+  const error = await f.provider.deleteSnapshot(name).catch((failure: unknown) => failure);
+  expect(error).toMatchObject({ code: "conflict", providerCode: "snapshot_source_busy" });
+  expect(isNonMutatingProviderRefusal(error)).toBe(true);
+  expect((await f.provider.getSnapshot(name)).name).toBe(name);
+  await f.provider.delete({ sandboxId: child.id });
+  await f.provider.deleteSnapshot(name);
+  await expect(f.provider.getSnapshot(name)).rejects.toMatchObject({ code: "not_found" });
+});
+
 test("enrolled Modal forks mount the environment artifact cache read-only", async () => {
   const f = fixture(scope, db, undefined, undefined, true);
   const volume = new Volume("vo_public_artifacts");

@@ -20,6 +20,7 @@ import {
 import { AuthUnavailable, authenticateCaller, type CallerResult, type SupabaseProject } from "./caller.ts";
 import type { DataSource } from "./data.ts";
 import { exposedSecrets, type GitHubLaunchOptions, launchCredentials } from "./launch-credentials.ts";
+import type { LaunchDiscoveryOptions } from "./launch-options.ts";
 import { observeNativeFirstToken } from "./launch-stage-record.ts";
 import type { ModelAuthOwnership } from "./model-auth.ts";
 import { createObservedMcpTransport } from "./observed-mcp-transport.ts";
@@ -101,6 +102,7 @@ export interface HandlerOptions {
   now?: () => Date;
   sleep?: (ms: number) => Promise<void>;
   launch?: LaunchOptions;
+  launchDiscovery?: LaunchDiscoveryOptions;
   ordinaryLaunchReceipts?: ReturnType<typeof createOrdinaryLaunchReceipts>;
   skillDefaults?: import("@armada/core/server").SkillDefaultsService;
   connections?: LaunchStores["connections"];
@@ -203,6 +205,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
         ...(options.launch ? { launch: options.launch } : {}),
       },
       VERSION,
+      options.launchDiscovery ?? options,
     );
     const transport = createObservedMcpTransport();
     await server.connect(transport);

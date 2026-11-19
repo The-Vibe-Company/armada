@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { parityRequest, sandboxDeletePath } from "./provider-parity-delete.fixture.ts";
 import { providerParitySmoke } from "./provider-parity-smoke.ts";
 
 // Owns real dashboard JSON-RPC and CLI command request paths, native correlation and cleanup.
@@ -51,7 +52,7 @@ for (const mode of [
         },
         out: (line) => lines.push(line),
         fetch: async (url, init) => {
-          const body = JSON.parse(String(init.body));
+          const body = parityRequest(url, init).body;
           const headers = new Headers(init.headers);
           expect(headers.get("authorization")).toBe("Bearer placeholder");
           if (new URL(url).pathname === "/mcp") {
@@ -104,7 +105,7 @@ for (const mode of [
               result: { content: [{ type: "text", text: JSON.stringify({ promptId }) }] },
             });
           }
-          const route = url.split("/api/v1/")[1]!;
+          const { path: route } = parityRequest(url, init);
           const provider = body.org === orgs.modal ? "modal" : "docker";
           calls.push(`${provider}:${route}`);
           switch (route) {
@@ -126,10 +127,9 @@ for (const mode of [
             case "docker/hosts/list":
               return Response.json({ hosts: [{ id: "30000000-0000-4000-8000-000000000001", state: "online" }] });
             case "sandbox/launch":
-              if (provider === "docker") ids.docker = body.requestId;
               active = provider;
               states.set(provider, "ready");
-              return Response.json({ sandbox: { id: ids[provider], provider } });
+              return Response.json({ sandbox: { id: ids[provider], provider, externalRef: body.externalRef } });
             case "sandbox/status":
               return Response.json({
                 id: body.id,
@@ -208,7 +208,7 @@ for (const mode of [
             case "sandbox/stop":
               states.set(provider, "stopped");
               return Response.json({ id: body.id, status: "stopped" });
-            case "sandbox/delete":
+            case sandboxDeletePath:
               states.set(provider, "deleted");
               return Response.json({ id: body.id, status: "deleted" });
             default:

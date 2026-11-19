@@ -16,7 +16,14 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogTrigger } from "@/components/ui/dialog";
 import type { ActionResult } from "@/lib/action";
 import { CONNECTION_CHOICE_FIELD } from "@/lib/connections";
-import { dockerLaunchKeyStorage, preferredHarness, UNKNOWN_DOCKER_LAUNCH } from "@/lib/docker-launch";
+import {
+  createDockerLaunchKey,
+  dockerLaunchKeyStorage,
+  isDockerLaunchKey,
+  PREVIOUS_DOCKER_LAUNCH,
+  preferredHarness,
+  UNKNOWN_DOCKER_LAUNCH,
+} from "@/lib/docker-launch";
 import { launchHoldIds } from "@/lib/launch-composer";
 import { LAUNCH_KEY_FIELD, type LaunchKey, launchKeyFor } from "@/lib/launch-key";
 import { initialLaunchSelection, type LaunchStartTarget } from "@/lib/launch-picker";
@@ -143,14 +150,15 @@ export function DockerLaunchForm({
       event.preventDefault();
       event.stopPropagation();
     };
-    // The request key is the server's `requestId`. It is reused only after a launch with no definite answer, only
+    // The request key is the server's `idempotencyKey`. It is reused only after a launch with no definite answer, only
     // with the same choices and within KEY_TTL_MS, even if the dialog was closed in between: the server then
     // reconciles it instead of starting a second sandbox. A refusal makes the next launch a new request.
     const keyed = (event: Event) => {
       if (!(event instanceof FormDataEvent)) return;
-      const key = launchKeyFor(readKey(storage), event.formData.entries());
+      const previous = readKey(storage);
+      const key = launchKeyFor(previous, event.formData.entries(), createDockerLaunchKey);
       // Kept from now until a definite answer: a reload, a lost connection or a closed tab mid-launch keeps it too.
-      writeKey(storage, key);
+      if (key !== previous || isDockerLaunchKey(key.key)) writeKey(storage, key);
       event.formData.set(LAUNCH_KEY_FIELD, key.key);
     };
     node.addEventListener("reset", keep, true);
@@ -166,7 +174,8 @@ export function DockerLaunchForm({
       // A thrown call (connection lost) is no answer: the stored key stays for the retry.
       const result = await launchOnDockerHost(previous, data);
       // A definite answer: the next launch is a new request.
-      if (result.ok || result.error !== UNKNOWN_DOCKER_LAUNCH) writeKey(storage, null);
+      if (result.ok || (result.error !== UNKNOWN_DOCKER_LAUNCH && result.error !== PREVIOUS_DOCKER_LAUNCH))
+        writeKey(storage, null);
       if (result.ok && result.sandboxId) router.push(`/sandboxes/${result.sandboxId}`);
       return result;
     },

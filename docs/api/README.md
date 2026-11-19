@@ -81,9 +81,8 @@ for receipt lookup and template launch keys.
 ### Docker launches
 
 A launch with `"provider":"docker"` takes a host or Docker snapshot as its
-source. Send one replay identifier, either an `idempotencyKey` or a caller-chosen
-`requestId` UUID. The request UUID becomes the sandbox ID when supplied.
-Replay the same inputs with the same identifier. A changed normalized request
+source. Send an `idempotencyKey` of 16–128 characters. Read the assigned sandbox
+ID from `sandbox.id`. Replay the same inputs with the same key. A changed normalized request
 returns 409 `conflict`. Set `externalRef` to look up the sandbox later.
 
 - Select `org` by slug or UUID with a personal session. A scoped token can
@@ -111,8 +110,8 @@ returned sandbox ID. Replaying the same identifier and body starts at most one l
   never carries them before.
 
 After a dropped response, reissue the same request with the original replay
-identifier to recover the receipt. If you used `requestId`, you can also query
-`sandbox/status` with that UUID as `id`.
+key to recover the receipt. If you have the assigned sandbox ID, you can also
+query `sandbox/status`.
 For a launch that sent a prompt, read the prompt receipt by replaying the same
 request and checking the response for `promptId` and `conversationId`, not its
 status. A `starting` response without
@@ -124,7 +123,7 @@ It may also have ended after the worker sent the prompt but before it recorded
 the receipt, so the agent may already have acted on it. Treat the prompt outcome
 as uncertain: inspect the original sandbox with `sandbox/status` and its
 transcript with `logs/read` before you repeat the work. Do not launch with a
-new `requestId` until you know that the first launch failed or ended.
+new `idempotencyKey` until you know that the first launch failed or ended.
 See
 [Docker hosts](../docker-host-daemon.md) for an example body.
 
@@ -181,6 +180,9 @@ appropriate. See [sandbox viewers](sandbox-viewer.md) for proxy and polling
 details.
 
 ## Drive a turn over MCP
+
+Call `launch_options` with `{}` to read the same server-wide launch catalog as
+`POST /api/v1/launch/options`. MCP `launch` accepts Boat and Modal goldens.
 
 | Tool | Mode | Result |
 | --- | --- | --- |
@@ -300,6 +302,15 @@ before a turn starts, and status can report a turn as `running`, `finished`,
 the lifecycle transition. Check status for completion. Resuming a stopped
 sandbox depends on retaining recoverable work. See the
 [lifecycle state model](../state-model.md).
+
+## Delete a stopped sandbox
+
+Send `DELETE /api/v1/sandboxes/{id}` with your bearer token. Use the optional
+`org` query parameter to select an organization. For Docker, send a UUID as
+`requestId` and reuse it after an uncertain response to identify the same
+deletion request. A confirmed deletion returns
+`{"id":"<sandbox-id>","status":"deleted"}` and removes the sandbox's recovery
+archives.
 
 ## Receive signed webhooks
 

@@ -72,13 +72,13 @@ export function countArchitecture(files: ReadonlyMap<string, string>) {
   };
 }
 
-export function gitText(root: string, args: string[]): string {
+export function gitText(root: string, args: string[]) {
   const result = Bun.spawnSync(["git", ...args], { cwd: root, stderr: "ignore" });
   if (!result.success) throw new Error("Unable to read Git data for architecture metrics.");
   return result.stdout.toString();
 }
 
-export async function readArchitectureTree(root: string): Promise<Map<string, string>> {
+export async function readArchitectureTree(root: string) {
   const paths = gitText(root, ["ls-files", "--cached", "-z"])
     .split("\0")
     .filter((path) => isNonTestSource(path) || migrationPath.test(path));

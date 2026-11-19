@@ -101,7 +101,6 @@ test("registered command routes preserve their HTTP methods and names", () => {
       "POST /sandbox/advice",
       "POST /sandbox/bind-credential",
       "POST /sandbox/checkpoint-runtime-v1",
-      "POST /sandbox/delete",
       "POST /sandbox/exec",
       "POST /sandbox/extend",
       "POST /sandbox/github-preflight-v1",

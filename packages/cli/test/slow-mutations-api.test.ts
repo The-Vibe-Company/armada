@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, jest, test } from "bun:test";
 import { run } from "../src/run.ts";
 import { memorySessionStore } from "../src/session.ts";
 
@@ -24,27 +24,17 @@ const cases = [
   },
 ];
 
-// The fake server advances an injected deadline clock, with no real timers/network.
-// These CLI-boundary cases own the long-mutation deadline and reconciliation contract.
 test.each(cases)("$name survives slow success and reconciles a true timeout without replay", async (scenario) => {
-  let now = 0;
-  const timers: { at: number; controller: AbortController }[] = [];
-  const timeout = spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
-    const controller = new AbortController();
-    timers.push({ at: now + ms, controller });
-    return controller.signal;
-  });
-  try {
-    for (const duration of [310_000, 661_000]) {
-      now = 0;
-      timers.length = 0;
+  for (const duration of [310_000, 661_000]) {
+    jest.useFakeTimers();
+    try {
       let out = "";
       let err = "";
       const requests: Request[] = [];
       const auth = {
         env: { ARMADA_TOKEN: "fixture-token", ARMADA_URL: "https://armada.test" },
         session: memorySessionStore(),
-        now: () => new Date(now),
+        now: () => new Date(),
         open: () => {},
         out: (text: string) => {
           out += text;
@@ -56,10 +46,7 @@ test.each(cases)("$name survives slow success and reconciles a true timeout with
           const request = input instanceof Request ? new Request(input, init) : new Request(String(input), init);
           requests.push(request);
           expect(new URL(request.url).pathname).toBe(scenario.path);
-          now += duration;
-          for (const timer of timers) {
-            if (timer.at <= now) timer.controller.abort(new DOMException("Deadline", "TimeoutError"));
-          }
+          jest.advanceTimersByTime(duration);
           request.signal.throwIfAborted();
           return Response.json(scenario.response);
         },
@@ -76,8 +63,8 @@ test.each(cases)("$name survives slow success and reconciles a true timeout with
         expect(message).toContain(scenario.check);
         expect(message).not.toContain("could not reach");
       }
+    } finally {
+      jest.useRealTimers();
     }
-  } finally {
-    timeout.mockRestore();
   }
 });

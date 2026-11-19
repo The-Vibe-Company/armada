@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { fileURLToPath } from "node:url";
 
 // Exercise the real Python HTTP request through the real public-origin proxy. A
-// backend-only fake accepting POST sandbox/delete cannot protect this boundary.
+// backend-only fake accepting DELETE sandboxes/{id} cannot protect this boundary.
 test("routine cleanup DELETE reaches the configured control API through the public origin", async () => {
   const org = "00000000-0000-4000-8000-000000000010";
   const id = "00000000-0000-4000-8000-000000000030";

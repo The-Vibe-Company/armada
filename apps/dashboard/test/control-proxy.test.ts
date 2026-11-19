@@ -34,13 +34,13 @@ test("forwards allowed control paths with the bearer and preserves status/body",
   expect(seen[0]?.headers.get("authorization")).toBe("Bearer masked");
 });
 
-test("DELETE proxy forwards only the authenticated sandbox deletion shape and organization scope", async () => {
+test("DELETE proxy forwards only the authenticated sandbox deletion shape and organization scope and replay ID", async () => {
   process.env.ARMADA_MCP_URL = "https://armada.test/mcp";
   const id = "11111111-1111-4111-8111-111111111111";
   const seen: Request[] = [];
   const send = async (method: string, path: string[], bearer = true) =>
     forwardControl(
-      new Request(`https://dashboard.test/api/v1/${path.join("/")}?org=${id}`, {
+      new Request(`https://dashboard.test/api/v1/${path.join("/")}?org=${id}&requestId=${id}`, {
         method,
         headers: bearer ? { authorization: "Bearer masked" } : {},
       }),
@@ -53,9 +53,10 @@ test("DELETE proxy forwards only the authenticated sandbox deletion shape and or
   expect((await send("DELETE", ["sandboxes", id], false)).status).toBe(401);
   expect((await send("DELETE", ["sandboxes", id])).status).toBe(200);
   expect(seen[0]?.method).toBe("DELETE");
-  expect(seen[0]?.url).toBe(`https://armada.test/api/v1/sandboxes/${id}?org=${id}`);
+  expect(seen[0]?.url).toBe(`https://armada.test/api/v1/sandboxes/${id}?org=${id}&requestId=${id}`);
   expect(seen[0]?.headers.get("authorization")).toBe("Bearer masked");
   for (const [method, path] of [
+    ["POST", ["sandbox", "delete"]],
     ["POST", ["sandboxes", id]],
     ["GET", ["sandboxes", id]],
     ["DELETE", ["sandboxes", "not-a-uuid"]],
@@ -124,7 +125,6 @@ test("forwards authenticated CLI operations and MCP control routes", async () =>
     ["golden", "adopt"],
     ["github", "runtime-status"],
     ["sandbox", "resume"],
-    ["sandbox", "delete"],
     ["skillpack", "connection"],
     ["creds", "accounts", "models"],
     ["creds", "defaults", "set"],

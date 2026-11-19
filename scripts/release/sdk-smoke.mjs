@@ -51,7 +51,13 @@ export async function smokeSdk({ Armada, ArmadaError, verifyWebhookSignature }) 
   ) {
     throw new Error("webhook signature rejected");
   }
-  const docker = { org: "o", provider: "docker", hostId: "h", harness: "codex", requestId: "r" };
+  const docker = {
+    org: "o",
+    provider: "docker",
+    hostId: "h",
+    harness: "codex",
+    idempotencyKey: "saved-launch-key-0001",
+  };
   let launchBody;
   const receipt = await new Armada({
     token: "smoke",

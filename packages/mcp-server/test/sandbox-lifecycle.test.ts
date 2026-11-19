@@ -5,6 +5,8 @@ import { retainedSandbox, sandbox } from "../../provider-boat/test/support.ts";
 import { createSqlData } from "../src/data.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
 import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
+import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
+import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { sandboxActivity } from "../src/sandbox-activity.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
@@ -704,10 +706,13 @@ for (const blocked of ["boat", "modal"] as const) {
   });
 }
 
-test("runtime lifecycle stops compute with explicit no-checkpoint note, without native quiescence or capture", async () => {
+test("runtime lifecycle stops compute without claiming a checkpoint invalidated by a late journal event", async () => {
   const { db, people } = await sharedDatabase();
 
-  const sql = bunLikeSql(db);
+  const sql: Sql = {
+    ...bunLikeSql(db),
+    transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
+  };
   const store = createSqlData(sql)({
     userId: people.owner,
     orgs: [{ orgId: people.org, role: "member" }],
@@ -727,6 +732,18 @@ test("runtime lifecycle stops compute with explicit no-checkpoint note, without 
     model: "gpt-5.4",
     reasoningEffort: "high",
     boatRuntime: true,
+  });
+  const enrolments = createRuntimeEnrolments(sql, ENCRYPTION_KEY);
+  const ticket = await enrolments.issue({ sandboxId: row.id, ownerId: people.owner, configuration: {} });
+  const active = await enrolments.enrol(ticket.enrolmentToken);
+  await db.query(
+    "insert into runtime_checkpoints(sandbox_id,epoch,request_id,watermark,completed_at) values($1,$2,$3,0,now())",
+    [row.id, active.epoch, crypto.randomUUID()],
+  );
+  await createRuntimeEvents(enrolments, ENCRYPTION_KEY).append(active.runtimeToken, active.epoch, {
+    sandboxId: row.id,
+    generation: active.epoch,
+    events: [{ sequence: 1, event: { id: "late", at: 1, kind: "other", type: "late-notification", data: {} } }],
   });
   await db.query("update sandboxes set stop_requested_at=now(),reconcile_after=now() where id=$1", [row.id]);
   let stopped = false;
