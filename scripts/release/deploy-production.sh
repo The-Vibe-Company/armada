@@ -93,8 +93,9 @@ server_done=false
 dashboard_done=false
 if [[ "${RELEASE_RESUME:-}" == true ]]; then
   if deployments=$(list_deployments) \
-      && status=$(jq -er --arg message "$deployment_message" '.[0] | select(.meta.commitMessage == $message) | .status' <<< "$deployments") \
-      && curl --fail --silent --show-error --max-time 15 "${ARMADA_SERVER_URL%/}/healthz" | bun "$skip_tool" server "$status"; then
+      && latest_deployment=$(jq -ce '.[0] | select(. != null) | {status, meta: {commitMessage: .meta.commitMessage}}' <<< "$deployments") \
+      && curl --fail --silent --show-error --max-time 15 "${ARMADA_SERVER_URL%/}/healthz" \
+        | bun "$skip_tool" server "$latest_deployment" "$deployment_message"; then
     server_done=true
     echo "::notice::Skipping Railway upload: latest deployment succeeded and health reports $RELEASE_SHA."
   fi

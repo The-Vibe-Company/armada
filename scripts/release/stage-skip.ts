@@ -7,7 +7,9 @@ const releaseStages = ["check", "binaries", "staging-smoke", "production", "npm"
 type ReleaseStage = (typeof releaseStages)[number];
 
 interface ReleaseJob {
+  name: string;
   run_id: number;
+  run_attempt: number;
   head_sha: string;
   conclusion: string;
   steps: { name: string; conclusion: string }[];
@@ -39,17 +41,41 @@ export function recordedStageSucceeded(
 ) {
   const image = stage === "staging-smoke" ? `, ${description}` : "";
   const name = `Record release/${stage} success (${sha}${image})`;
-  return jobs.some(
+  const runJobs = jobs.filter((job) => job.run_id === run.id && job.head_sha === run.head_sha);
+  const records = runJobs.filter(
     (job) =>
-      job.run_id === run.id &&
-      job.head_sha === run.head_sha &&
-      job.conclusion === "success" &&
-      job.steps?.some((step) => step.name === name && step.conclusion === "success"),
+      job.conclusion === "success" && job.steps?.some((step) => step.name === name && step.conclusion === "success"),
+  );
+  if (stage !== "binaries") return records.length > 0;
+  const receiptAttempt = Math.max(...records.map((job) => job.run_attempt));
+  return (
+    Number.isSafeInteger(receiptAttempt) &&
+    !runJobs.some(
+      (job) =>
+        job.run_attempt > receiptAttempt &&
+        job.conclusion !== "skipped" &&
+        (job.name.startsWith("Binary (") || job.name === "Build candidate sandbox image (linux/amd64)"),
+    )
   );
 }
 
-export function canReuseServer(status: string, health: unknown, version: string, sha: string) {
-  return status === "SUCCESS" && matchesDeploymentHealth(health, version, sha);
+interface RailwayDeployment {
+  status: string;
+  meta?: { commitMessage?: string };
+}
+
+export function canReuseServer(
+  deployment: RailwayDeployment | null,
+  message: string,
+  health: unknown,
+  version: string,
+  sha: string,
+) {
+  return (
+    deployment?.status === "SUCCESS" &&
+    deployment.meta?.commitMessage === message &&
+    matchesDeploymentHealth(health, version, sha)
+  );
 }
 
 export function canReuseDashboard(project: unknown, sha: string) {
@@ -61,10 +87,11 @@ export function canReuseDashboard(project: unknown, sha: string) {
 
 if (import.meta.main) {
   const { RELEASE_SHA = "", RELEASE_VERSION = "", GITHUB_OUTPUT, GITHUB_SERVER_URL, GITHUB_REPOSITORY } = process.env;
-  const [mode, railwayStatus] = process.argv.slice(2);
+  const [mode, latestDeployment, message] = process.argv.slice(2);
   if (mode === "server") {
+    const deployment = JSON.parse(latestDeployment ?? "null") as RailwayDeployment | null;
     const health: unknown = await Bun.stdin.json().catch(() => null);
-    process.exit(canReuseServer(railwayStatus ?? "", health, RELEASE_VERSION, RELEASE_SHA) ? 0 : 1);
+    process.exit(canReuseServer(deployment, message ?? "", health, RELEASE_VERSION, RELEASE_SHA) ? 0 : 1);
   }
   if (mode === "dashboard") {
     const { VERCEL_TOKEN, VERCEL_ORG_ID, VERCEL_PROJECT_ID } = process.env;
@@ -105,8 +132,10 @@ if (import.meta.main) {
       !authenticateReleaseCompletion(run, GITHUB_REPOSITORY ?? "")
     )
       return;
-    const result = await github<{ jobs: ReleaseJob[] }>(`actions/runs/${id}/jobs?filter=all&per_page=100`);
-    if (result) return { run, jobs: result.jobs };
+    const result = await github<{ total_count: number; jobs: ReleaseJob[] }>(
+      `actions/runs/${id}/jobs?filter=all&per_page=100`,
+    );
+    if (result && result.jobs.length === result.total_count) return { run, jobs: result.jobs };
   }
 
   const evidence = new Map<string, ReturnType<typeof inspectRun>>();
@@ -120,6 +149,9 @@ if (import.meta.main) {
     if (!source || !recordedStageSucceeded(source.jobs, source.run, stage, RELEASE_SHA, description)) continue;
     console.log(`Recorded success for release/${stage} at ${RELEASE_SHA}: ${prefix}${run}`);
     outputs.push(`${stage}=${run}`);
+    if (stage === "check" || stage === "production" || stage === "npm") {
+      console.log(`Skipping release/${stage} using recorded success.`);
+    }
     if (stage === "staging-smoke" && /^(?:none|sha256:[a-f0-9]{64})$/.test(description ?? "")) {
       outputs.push(`staging-digest=${description}`);
     }

@@ -103,8 +103,9 @@ Each successful stage records its run URL as a commit status on the release SHA:
 A matching staging receipt also proves the immutable image digest. When the
 binary artifacts are still available, recovery downloads the original image
 pin and the smoke-tested npm tarballs and verifies the checksum manifests.
-If those artifacts have expired, recovery rebuilds and smoke-tests packages
-from the selected SHA before publishing them.
+If those artifacts are unavailable or a newer attempt could have replaced them,
+recovery rebuilds and smoke-tests packages from the selected SHA before
+publishing them.
 
 When staging or production stopped mid-deploy, recovery keeps the exact-source
 migration checks. It reuses the server if the latest Railway deployment
@@ -311,8 +312,8 @@ SHA after the triggering Release finished and staging health still identifies
 it as live. This protects recovery when a newer completion supersedes the
 wakeup from a failed or cancelled Release. This includes existing push runs
 during the transition. Coalescing reports a neutral summary. Unavailable or
-ambiguous evidence falls back to deployment. Pinned release calls always require
-fresh exact-schema acceptance and never use this optimization.
+ambiguous evidence falls back to deployment. Pinned releases use their own
+exact-source, exact-image staging receipt.
 Manual workflow_dispatch uses the same lock and proceeds too. Waiting admission
 is visibly queued in Actions, never a green deployment with every mutation skipped.
 There is no manual merge pause. API or main-resolution failure
@@ -442,11 +443,10 @@ must keep independent database/provider writers disabled.
 
 ### Exact-commit staging evidence
 
-Pinned release calls always deploy and smoke directly under the reservation.
-Historical ordinary staging evidence cannot authorize the new exact-inventory
-policy: a successful old run may have accepted newer SQL under the former
-forward-history exception. Official-image releases also require the generated pin
-from their calling release. No historical smoke success bypasses this check.
+A pinned release requires smoke under the reservation or an authenticated
+`release/staging-smoke` receipt for the same SHA and image digest. Only pinned
+release smoke records that receipt after exact-schema acceptance. Official-image
+releases use the generated pin from their calling release.
 
 ### Docker normal-launch production prerequisite check
 
@@ -568,8 +568,9 @@ The release sequence follows the design in [#2838](https://github.com/The-Vibe-C
    as the final publication step before production. A failed smoke leaves the
    version and stable image unpublished. A failure between image promotion and
    release creation can leave a stable image. Until release creation, only a
-   candidate with fresh successful smoke may reconcile it. Once the release
-   exists, verify the peeled tag commit and stable image digest on recovery.
+   candidate with successful smoke for the selected SHA and image may reconcile
+   it. Once the release exists, verify the peeled tag commit and stable image
+   digest on recovery.
    `--target` only sets the commit when the tag is missing, so check any
    existing tag explicitly and reject conflicts.
    [GitHub CLI release creation](https://cli.github.com/manual/gh_release_create)
