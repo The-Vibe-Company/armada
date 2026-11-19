@@ -4,7 +4,6 @@ import {
   DOCKER_JOB_FAILURE_REASONS,
   type DockerJobFailureReason,
   OUTPUT_ARCHIVE_LIMIT,
-  type ProviderInventoryMachine,
 } from "@armada/core";
 import { isSnapshotBaselineTool } from "@armada/core/server";
 import { type DockerHostResources, validDockerAvailability } from "../../core/src/docker-resource-policy.ts";
@@ -73,12 +72,7 @@ function deadlinesOf(value: unknown): { sandboxId: string; generation: string; d
   });
 }
 
-type DockerInventoryMachine = ProviderInventoryMachine & {
-  sandboxId: string;
-  generation: string;
-  containerName: string;
-};
-function containersOf(value: unknown): DockerInventoryMachine[] {
+function containersOf(value: unknown) {
   if (!Array.isArray(value) || value.length > 4096) throw new InvalidInput();
   return value.map((entry) => {
     if (!object(entry)) throw new InvalidInput();
@@ -129,10 +123,10 @@ export function createDockerHostRoutes(
     log?: (line: string) => void;
     configureArchiveTimeout?: (request: Request) => void;
   } = {},
-): Route {
+) {
   const clock = options.clock ?? pollClock;
   let uploadingOutputs = false;
-  return async (request) => {
+  const route: Route = async (request) => {
     const path = new URL(request.url).pathname;
     const owner = ownerPaths.includes(path);
     if (!owner && path !== reusePath && !machinePaths.includes(path)) return null;
@@ -577,4 +571,5 @@ export function createDockerHostRoutes(
       );
     }
   };
+  return route;
 }
