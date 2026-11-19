@@ -99,6 +99,7 @@ import { createFinishedDockerCleanup } from "./sandbox-finish.ts";
 import { createSandboxLifecycle } from "./sandbox-lifecycle.ts";
 import { createSandboxOutputs } from "./sandbox-outputs.ts";
 import { createSandboxPullRequests } from "./sandbox-pull-requests.ts";
+import { scriptedModelRoute } from "./scripted-model.ts";
 import { createServerRequestDrain } from "./server-request-drain.ts";
 import { createServerRoutineScheduler } from "./server-routines.ts";
 import { installServerShutdown } from "./server-shutdown.ts";
@@ -125,6 +126,7 @@ export async function startServer(
   } = {},
 ) {
   const config = configFromEnv(env);
+  const scriptedModel = await scriptedModelRoute(env, config);
   const boatDeploymentId = env.ARMADA_BOAT_DEPLOYMENT_ID?.trim();
   const boatInventory = boatDeploymentId ? { deploymentId: boatDeploymentId } : {};
   const runtimeHostFor = (apiKey: string) => createObservedBoatProvider({ apiKey, ...boatInventory });
@@ -628,6 +630,7 @@ export async function startServer(
     storedProviderFor: modal.storedProviderFor,
     modalTokensFor: modal.modalTokensFor,
     routes: [
+      ...(scriptedModel ? [scriptedModel] : []),
       inboundTriggerRoute(createInboundTriggerStore(sql, jobs, config.encryptionKey)),
       inboundTriggerAdminRoute(
         sql,

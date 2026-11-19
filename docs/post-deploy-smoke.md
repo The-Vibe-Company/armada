@@ -1976,3 +1976,36 @@ For Docker the inventory row must also match the submitted sandbox UUID.
 An unresolved result retains the reference and any server request ID in the
 parity diagnostic. Docker snapshot parity still requires the launch receipt's
 snapshot provenance.
+
+### Scripted scoped-child model
+
+The server's scripted Responses endpoint is for the Modal Codex scoped-child
+probe. Its script covers launch, message, observing the child's answer, and stop,
+plus the no-access control. The probe must still check actual gateway receipts
+and sandbox events. The server endpoint can ship independently. The smoke
+runner still needs the scripted account selection and marker wiring before the
+coordinator starts the 50-run measurement.
+
+The coordinator provisions the endpoint on the pinned Railway staging server
+only. Use a dedicated random base64url bearer with at least 32 bytes of entropy.
+Seal it with the staging `ARMADA_ENCRYPTION_KEY` using `encryptSecret` from
+`packages/core/src/crypto.ts`. Set the base64-encoded ciphertext in the staging
+secret `ARMADA_SCRIPTED_MODEL_BEARER_ENC`, then set `ARMADA_SCRIPTED_MODEL=1`.
+Startup requires the Railway environment name `staging` and the pinned staging
+public origin. Leave the flag unset in production.
+
+Provision a staging named OpenAI API-key account using
+`armada creds set openai --name scripted --base-url
+https://armada-mcp-staging.up.railway.app/internal/scripted-model/v1`. Pass the
+same bearer privately on stdin. Keep the bearer out of the smoke configuration,
+logs and command arguments. The smoke case needs only the account identifier and
+its model selector.
+
+The marker is a user message beginning with `ARMADA_SCOPED_SMOKE_V1 ` followed
+by a JSON object. For the parent, send `lane: "parent"`, `launch` with the
+original `idempotencyKey` and `selection`, `messageKey`, `stopKey`, `answer`,
+and `noAccess`. Use one fresh nonce per key or answer, retaining the existing
+`smoke-scoped-`, `SCOPED_CHILD_`, and `NO_ACCESS_` prefixes. The endpoint emits
+the child prompt with the same prefix and a `lane: "child"` marker containing
+`answer`. The smoke runner should compare that exact child prompt in the
+message receipt before checking the child's answer.
