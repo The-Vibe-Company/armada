@@ -20,23 +20,15 @@ import * as z from "zod";
 import type { Caller } from "./caller.ts";
 import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
 import type { SandboxView, ScopedData } from "./data.ts";
-import { MAX_LOG_PAGES, readEventPages } from "./event-pagination.ts";
 import type { GoldenLaunchCredentials } from "./launch-account-admission.ts";
 import { mcpLaunchContract, runMcpLaunch } from "./mcp-launch-tool.ts";
-import { registerListTool, registerStatusTools } from "./mcp-read-tools.ts";
-import { publicLogEvents } from "./model-usage.ts";
+import { registerListTool, registerLogsTool, registerStatusTools } from "./mcp-read-tools.ts";
 import type { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import { recordOperatorFailure } from "./request-observability.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
 import { appendConversation, sandboxActivity } from "./sandbox-activity.ts";
 import { refuseConversationSelector } from "./sandbox-conversation.ts";
-import {
-  sandboxIdInput as id,
-  LOGS_OUTPUT,
-  SANDBOX_STATUSES,
-  statusOutput,
-  taskOutcome,
-} from "./sandbox-tool-schemas.ts";
+import { sandboxIdInput as id, SANDBOX_STATUSES, statusOutput, taskOutcome } from "./sandbox-tool-schemas.ts";
 import { ToolError } from "./tool-error.ts";
 import { errorResult, publicationFailure, unknownMutationOutcome } from "./tool-failure.ts";
 import { createToolRegistration } from "./tool-registration.ts";
@@ -164,49 +156,7 @@ function createToolServer(
 
   const { statusOf, readStatusTool, waitTool } = registerStatusTools(context, tool, visible, measure);
 
-  tool(
-    "logs",
-    {
-      title: "Read events",
-      description:
-        "The agent's events oldest first: prompts (with status and failure reason), messages and tool calls, " +
-        "steers. The default is one bounded page (100 events). Set all to read every available page (up to " +
-        `${MAX_LOG_PAGES} pages) in one response. Pass the returned cursor as since_cursor to read only what is new. ` +
-        "An event read twice has the same id and the newer body; each id appears once per response.",
-      input: {
-        id,
-        since_cursor: z.string().min(1).optional().describe("The cursor of the previous page."),
-        limit: z.number().int().min(1).max(500).optional(),
-        all: z.boolean().optional().describe("Read up to 100 pages. Use forward direction only."),
-        direction: z.enum(["forward", "backward"]).optional(),
-        maxBytes: z.number().int().min(256).max(1048576).optional(),
-        coalesce: z.boolean().optional(),
-      },
-      output: {
-        ...LOGS_OUTPUT,
-        settled:
-          surface === "rest"
-            ? LOGS_OUTPUT.settled.describe("Docker only. Use status or wait to check whether a turn has settled.")
-            : LOGS_OUTPUT.settled.describe("Docker only. Use status to check whether a turn has settled."),
-      },
-      readOnly: true,
-    },
-    async (args) => {
-      const found = await visible(args.id);
-      if (found.status === "deleted") throw new ToolError("conflict", "Sandbox is deleted.");
-      const storedProvider = context.storedProviders?.[found.provider];
-      const provider = storedProvider ? await storedProvider(found) : await context.provider(found);
-      const page = await readLogs(provider, found.providerSandboxId, {
-        ...(args.since_cursor ? { since_cursor: args.since_cursor } : {}),
-        ...(args.limit ? { limit: args.limit } : {}),
-        ...(args.all ? { all: true } : {}),
-        ...(args.direction ? { direction: args.direction } : {}),
-        ...(args.maxBytes ? { maxBytes: args.maxBytes } : {}),
-        ...(args.coalesce !== undefined ? { coalesce: args.coalesce } : {}),
-      });
-      return { ...page, events: page.events.map((item) => ({ ...item })) };
-    },
-  );
+  registerLogsTool(context, tool, visible, surface);
 
   tool(
     "report",
@@ -874,41 +824,6 @@ function createToolServer(
   }
 
   return server;
-}
-
-async function readLogs(
-  provider: Provider,
-  sandboxId: string,
-  args: {
-    since_cursor?: string;
-    limit?: number;
-    all?: boolean;
-    direction?: "forward" | "backward";
-    maxBytes?: number;
-    coalesce?: boolean;
-  },
-) {
-  const { events, cursor, hasMore, olderCursor, source, runtimeFailure } = await readEventPages(
-    (cursor) =>
-      provider.events({
-        sandboxId,
-        ...(args.direction ? { direction: args.direction } : {}),
-        ...(args.maxBytes ? { maxBytes: args.maxBytes } : {}),
-        ...(args.coalesce !== undefined ? { coalesce: args.coalesce } : {}),
-        ...(cursor ? { cursor } : {}),
-        ...(args.limit ? { limit: args.limit } : {}),
-      }),
-    args.since_cursor,
-    args.all === true,
-  );
-  return {
-    ...(olderCursor ? { olderCursor } : {}),
-    ...(source ? { source } : {}),
-    ...(runtimeFailure ? { runtimeFailure } : {}),
-    events: publicLogEvents(events),
-    cursor,
-    hasMore,
-  };
 }
 
 /** The run a successful steer left in progress, or "" when it cannot be proven.
