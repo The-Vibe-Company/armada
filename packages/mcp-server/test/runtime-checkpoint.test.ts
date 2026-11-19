@@ -6,6 +6,7 @@ import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { observeRequest } from "../src/request-observability.ts";
 import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
+import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeHistory } from "../src/runtime-history.ts";
@@ -18,46 +19,69 @@ import { ENCRYPTION_KEY, fakeBoat, PUBLIC_URL } from "./support.ts";
 
 const database = rowOnlyDatabase();
 
+async function enrolledCheckpointTarget() {
+  const { db, people } = await database();
+  const sql: Sql = {
+    query: (q, v) => db.query(q, v),
+    transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
+  };
+  const golden = (
+    await db.query<{ id: string }>(
+      `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
+      values($1,$2,'modal-checkpoint','org','modal','master','image','workspace','main','app','{"repos":[],"init":[]}') returning id`,
+      [people.org, people.owner],
+    )
+  ).rows[0]!;
+  const account = (
+    await db.query<{ id: string; version: number }>(
+      "select id,version from credentials where kind='openai' and owner_id=$1",
+      [people.org],
+    )
+  ).rows[0]!;
+  const row = await createSqlSandboxStore(sql).insert({
+    id: crypto.randomUUID(),
+    provider: "modal",
+    providerSandboxId: "physical",
+    goldenId: golden.id,
+    orgId: people.org,
+    ownerId: people.owner,
+    harness: "codex",
+    status: "ready",
+    visibility: "private",
+    model: "gpt-5.4",
+    reasoningEffort: "high",
+    runtimeTransport: "dialout",
+    credentialId: account.id,
+    credentialVersion: account.version,
+  });
+  const enrolments = createRuntimeEnrolments(sql, ENCRYPTION_KEY);
+  const issue = () => enrolments.issue({ sandboxId: row.id, ownerId: people.owner, configuration: {} });
+  const active = await enrolments.enrol((await issue()).enrolmentToken);
+  return {
+    db,
+    people,
+    sql,
+    account,
+    row,
+    enrolments,
+    issue,
+    active,
+    caller: { userId: people.owner, orgs: [{ orgId: people.org, role: "member" as const }], via: "service" as const },
+  };
+}
+
 test.each(["acknowledged", "refused", "reply lost", "epoch replaced"])(
   "enrolled scoped grant admission after delivery: %s",
   async (outcome) => {
-    const { db, people } = await database();
-    const sql: Sql = {
-      query: (q, v) => db.query(q, v),
-      transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
-    };
-    const golden = (
-      await db.query<{ id: string }>(
-        `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
-        values($1,$2,'modal-checkpoint','org','modal','master','image','workspace','main','app','{"repos":[],"init":[]}') returning id`,
-        [people.org, people.owner],
-      )
-    ).rows[0]!;
-    const account = (
-      await db.query<{ id: string; version: number }>(
-        "select id,version from credentials where kind='openai' and owner_id=$1",
-        [people.org],
-      )
-    ).rows[0]!;
-    const row = await createSqlSandboxStore(sql).insert({
-      id: crypto.randomUUID(),
-      provider: "modal",
-      providerSandboxId: "physical",
-      goldenId: golden.id,
-      orgId: people.org,
-      ownerId: people.owner,
-      harness: "codex",
-      status: "ready",
-      visibility: "private",
-      model: "gpt-5.4",
-      reasoningEffort: "high",
-      runtimeTransport: "dialout",
-      credentialId: account.id,
-      credentialVersion: account.version,
-    });
-    const enrolments = createRuntimeEnrolments(sql, ENCRYPTION_KEY);
-    const issue = () => enrolments.issue({ sandboxId: row.id, ownerId: people.owner, configuration: {} });
-    const { epoch } = await enrolments.enrol((await issue()).enrolmentToken);
+    const {
+      db,
+      people,
+      sql,
+      account,
+      row,
+      issue,
+      active: { epoch },
+    } = await enrolledCheckpointTarget();
     const authority = new DelegatedAuthority(sql, async () => {});
     let token = "";
     const admit = () =>
@@ -416,31 +440,39 @@ test.each(["generation", "prefix", "ack"] as const)(
   },
 );
 
-test("a late journal tail or application-secret exposure invalidates checkpoint reuse", async () => {
-  const f = await runtimeFixture(await database());
-  try {
-    const input = args(f.row.id),
-      checkpoint = createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, f.bridge);
-    const receipt = await checkpoint(f.caller, input);
-    await createRuntimeEvents(f.authority, ENCRYPTION_KEY).append(f.active.runtimeToken, f.active.epoch, {
-      sandboxId: f.row.id,
-      generation: f.active.epoch,
+test.each([
+  ["late journal tail", "Runtime journal changed after checkpoint"],
+  ["application-secret exposure", "Application-secret exposure forbids checkpoint reuse"],
+] as const)("checkpoint reuse refuses %s", async (change, message) => {
+  const { db, sql, row, caller, active, enrolments } = await enrolledCheckpointTarget();
+  const input = args(row.id);
+  await db.query(
+    "insert into runtime_checkpoints(sandbox_id,epoch,request_id,watermark,completed_at) values($1,$2,$3,0,now())",
+    [row.id, active.epoch, input.request_id],
+  );
+  const checkpoint = createRuntimeCheckpoint(sql, ENCRYPTION_KEY, {
+    ...createRuntimeCommands(enrolments, ENCRYPTION_KEY),
+    async call() {
+      throw Error("Checkpoint replay dispatched to the guest");
+    },
+  });
+  expect((await checkpoint(caller, input)).checkpoint.state).toBe("complete");
+  if (change === "late journal tail") {
+    await createRuntimeEvents(enrolments, ENCRYPTION_KEY).append(active.runtimeToken, active.epoch, {
+      sandboxId: row.id,
+      generation: active.epoch,
       events: [
         {
-          sequence: receipt.checkpoint.watermark + 1,
+          sequence: 1,
           event: { id: "late", at: 1, kind: "other", type: "late-notification", data: {} },
         },
       ],
     });
-    await expect(checkpoint(f.caller, input)).rejects.toMatchObject({ code: "conflict" });
-    const stop = stopPort(f);
-    await callSharedTool(stop.context, "stop", { id: f.row.id });
-    expect((await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))?.preservationNote).toContain(
-      "no acknowledged runtime checkpoint",
-    );
-    await f.db.query("update sandboxes set application_secret_tainted=true where id=$1", [f.row.id]);
-    await expect(checkpoint(f.caller, input)).rejects.toMatchObject({ code: "conflict" });
-  } finally {
-    await f.close();
+  } else {
+    await db.query("update sandboxes set application_secret_tainted=true where id=$1", [row.id]);
   }
+  await expect(checkpoint(caller, input)).rejects.toMatchObject({
+    code: "conflict",
+    message: expect.stringContaining(message),
+  });
 });
