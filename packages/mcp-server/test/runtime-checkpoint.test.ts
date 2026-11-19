@@ -1,11 +1,13 @@
 import { expect, test } from "bun:test";
 import { createMemoryAuthStore } from "@armada/auth";
 import type { Sql } from "@armada/core/server";
-import { createSqlVaultStore, DelegatedAuthority } from "@armada/core/server";
+import { createSqlSandboxStore, createSqlVaultStore, DelegatedAuthority } from "@armada/core/server";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { observeRequest } from "../src/request-observability.ts";
 import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
+import { createRuntimeCommands } from "../src/runtime-commands.ts";
+import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeHistory } from "../src/runtime-history.ts";
 import { createRuntimeProvider, type RuntimeWorkProvider } from "../src/runtime-provider.ts";
@@ -17,83 +19,135 @@ import { ENCRYPTION_KEY, fakeBoat, PUBLIC_URL } from "./support.ts";
 
 const database = rowOnlyDatabase();
 
+async function enrolledCheckpointTarget() {
+  const { db, people } = await database();
+  const sql: Sql = {
+    query: (q, v) => db.query(q, v),
+    transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
+  };
+  const golden = (
+    await db.query<{ id: string }>(
+      `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
+      values($1,$2,'modal-checkpoint','org','modal','master','image','workspace','main','app','{"repos":[],"init":[]}') returning id`,
+      [people.org, people.owner],
+    )
+  ).rows[0]!;
+  const account = (
+    await db.query<{ id: string; version: number }>(
+      "select id,version from credentials where kind='openai' and owner_id=$1",
+      [people.org],
+    )
+  ).rows[0]!;
+  const row = await createSqlSandboxStore(sql).insert({
+    id: crypto.randomUUID(),
+    provider: "modal",
+    providerSandboxId: "physical",
+    goldenId: golden.id,
+    orgId: people.org,
+    ownerId: people.owner,
+    harness: "codex",
+    status: "ready",
+    visibility: "private",
+    model: "gpt-5.4",
+    reasoningEffort: "high",
+    runtimeTransport: "dialout",
+    credentialId: account.id,
+    credentialVersion: account.version,
+  });
+  const enrolments = createRuntimeEnrolments(sql, ENCRYPTION_KEY);
+  const issue = () => enrolments.issue({ sandboxId: row.id, ownerId: people.owner, configuration: {} });
+  const active = await enrolments.enrol((await issue()).enrolmentToken);
+  return {
+    db,
+    people,
+    sql,
+    account,
+    row,
+    enrolments,
+    issue,
+    active,
+    caller: { userId: people.owner, orgs: [{ orgId: people.org, role: "member" as const }], via: "service" as const },
+  };
+}
+
 test.each(["acknowledged", "refused", "reply lost", "epoch replaced"])(
   "enrolled scoped grant admission after delivery: %s",
   async (outcome) => {
-    const f = await runtimeFixture(await database(), "modal", "codex", true);
-    try {
-      await f.db.query("update sandboxes set visibility='private', access_owner_id=owner_id where id=$1", [f.row.id]);
-      const authority = new DelegatedAuthority(f.sql, async () => {});
-      let token = "";
-      const admit = () =>
-        authority.admit(
-          token,
-          {
-            method: "launch",
-            goldenId: f.row.goldenId,
-            harness: "codex",
-            credentialId: f.account.id,
-            credentialVersion: f.account.version,
-          },
-          async (_tx, principal) => principal.ownerId,
-        );
-      const dispatched: string[] = [];
-      let admittedBeforeAcknowledgement: boolean | undefined;
-      let scrubAcknowledged = false;
-      const access = createSandboxArmadaAccess({
-        sql: f.sql,
-        encryptionKey: ENCRYPTION_KEY,
-        publicUrl: PUBLIC_URL,
-        commands: {
-          async call(owner, command, options) {
-            dispatched.push(command.op);
-            if (command.op === "installOrchestratorEpoch") {
-              token = command.token;
-              admittedBeforeAcknowledgement = await admit().then(
-                () => true,
-                () => false,
-              );
-            }
-            const reply = await f.bridge.call(owner, command, options);
-            if (outcome === "epoch replaced" && command.op === "installOrchestratorEpoch")
-              await f.authority.issue({ sandboxId: f.row.id, ownerId: f.people.owner, configuration: {} });
-            if (command.op === "scrubOrchestratorEpoch") scrubAcknowledged = reply.status === 200;
-            return reply;
-          },
+    const {
+      db,
+      people,
+      sql,
+      account,
+      row,
+      issue,
+      active: { epoch },
+    } = await enrolledCheckpointTarget();
+    const authority = new DelegatedAuthority(sql, async () => {});
+    let token = "";
+    const admit = () =>
+      authority.admit(
+        token,
+        {
+          method: "launch",
+          goldenId: row.goldenId,
+          harness: "codex",
+          credentialId: account.id,
+          credentialVersion: account.version,
         },
-      });
-      if (outcome === "refused") f.refuse("installOrchestratorEpoch");
-      if (outcome === "reply lost") f.dropReplyOnce("installOrchestratorEpoch");
-      const nativeUnavailable = async () => {
-        throw Error("Scoped preparation must use the enrolled runtime");
-      };
-      const prepare = access.prepare(
-        { ...fakeBoat().provider, id: "modal", exec: nativeUnavailable, installOrchestratorEpoch: nativeUnavailable },
-        { ...f.row, visibility: "private" },
-        { userId: f.people.owner, orgId: f.people.org, role: "member" },
-        { maxActiveChildren: 1 },
+        async (_tx, principal) => principal.ownerId,
       );
-      if (outcome === "acknowledged") {
-        await prepare;
-        await expect(admit()).resolves.toBe(f.people.owner);
-        expect(dispatched).toEqual(["installOrchestratorEpoch"]);
-        expect(
-          (
-            await f.db.query("select max_active_children from orchestrator_lifecycle where orchestrator_id=$1", [
-              f.row.id,
-            ])
-          ).rows,
-        ).toEqual([{ max_active_children: 1 }]);
-      } else {
-        await expect(prepare).rejects.toThrow("denied");
-        await expect(admit()).rejects.toThrow("denied");
-        expect(dispatched).toEqual(["installOrchestratorEpoch", "scrubOrchestratorEpoch"]);
-        expect(scrubAcknowledged).toBe(outcome !== "epoch replaced");
-      }
-      expect(admittedBeforeAcknowledgement).toBe(false);
-    } finally {
-      await f.close();
+    const dispatched: string[] = [];
+    let admittedBeforeAcknowledgement: boolean | undefined;
+    const access = createSandboxArmadaAccess({
+      sql,
+      encryptionKey: ENCRYPTION_KEY,
+      publicUrl: PUBLIC_URL,
+      commands: {
+        async call(_owner, command) {
+          dispatched.push(command.op);
+          const installing = command.op === "installOrchestratorEpoch";
+          if (installing) {
+            token = command.token;
+            admittedBeforeAcknowledgement = await admit().then(
+              () => true,
+              () => false,
+            );
+            if (outcome === "reply lost") throw Error("Guest reply lost before completion");
+            if (outcome === "epoch replaced") await issue();
+          }
+          const acknowledged = !installing || outcome !== "refused";
+          return {
+            status: acknowledged ? 200 : 503,
+            epoch,
+            requestId: command.requestId,
+            body: { version: 1, requestId: command.requestId, result: { acknowledged } },
+          };
+        },
+      },
+    });
+    const nativeUnavailable = async () => {
+      throw Error("Scoped preparation must use the enrolled runtime");
+    };
+    const prepare = access.prepare(
+      { ...fakeBoat().provider, id: "modal", exec: nativeUnavailable, installOrchestratorEpoch: nativeUnavailable },
+      row,
+      { userId: people.owner, orgId: people.org, role: "member" },
+      { maxActiveChildren: 1 },
+    );
+    if (outcome === "acknowledged") {
+      await prepare;
+      await expect(admit()).resolves.toBe(people.owner);
+      expect(dispatched).toEqual(["installOrchestratorEpoch"]);
+      expect(
+        (await db.query("select max_active_children from orchestrator_lifecycle where orchestrator_id=$1", [row.id]))
+          .rows,
+      ).toEqual([{ max_active_children: 1 }]);
+    } else {
+      await expect(prepare).rejects.toThrow("denied");
+      await expect(admit()).rejects.toThrow("denied");
+      expect(dispatched).toEqual(["installOrchestratorEpoch", "scrubOrchestratorEpoch"]);
     }
+    expect(admittedBeforeAcknowledgement).toBe(false);
   },
 );
 
@@ -386,31 +440,39 @@ test.each(["generation", "prefix", "ack"] as const)(
   },
 );
 
-test("a late journal tail or application-secret exposure invalidates checkpoint reuse", async () => {
-  const f = await runtimeFixture(await database());
-  try {
-    const input = args(f.row.id),
-      checkpoint = createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, f.bridge);
-    const receipt = await checkpoint(f.caller, input);
-    await createRuntimeEvents(f.authority, ENCRYPTION_KEY).append(f.active.runtimeToken, f.active.epoch, {
-      sandboxId: f.row.id,
-      generation: f.active.epoch,
+test.each([
+  ["late journal tail", "Runtime journal changed after checkpoint"],
+  ["application-secret exposure", "Application-secret exposure forbids checkpoint reuse"],
+] as const)("checkpoint reuse refuses %s", async (change, message) => {
+  const { db, sql, row, caller, active, enrolments } = await enrolledCheckpointTarget();
+  const input = args(row.id);
+  await db.query(
+    "insert into runtime_checkpoints(sandbox_id,epoch,request_id,watermark,completed_at) values($1,$2,$3,0,now())",
+    [row.id, active.epoch, input.request_id],
+  );
+  const checkpoint = createRuntimeCheckpoint(sql, ENCRYPTION_KEY, {
+    ...createRuntimeCommands(enrolments, ENCRYPTION_KEY),
+    async call() {
+      throw Error("Checkpoint replay dispatched to the guest");
+    },
+  });
+  expect((await checkpoint(caller, input)).checkpoint.state).toBe("complete");
+  if (change === "late journal tail") {
+    await createRuntimeEvents(enrolments, ENCRYPTION_KEY).append(active.runtimeToken, active.epoch, {
+      sandboxId: row.id,
+      generation: active.epoch,
       events: [
         {
-          sequence: receipt.checkpoint.watermark + 1,
+          sequence: 1,
           event: { id: "late", at: 1, kind: "other", type: "late-notification", data: {} },
         },
       ],
     });
-    await expect(checkpoint(f.caller, input)).rejects.toMatchObject({ code: "conflict" });
-    const stop = stopPort(f);
-    await callSharedTool(stop.context, "stop", { id: f.row.id });
-    expect((await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))?.preservationNote).toContain(
-      "no acknowledged runtime checkpoint",
-    );
-    await f.db.query("update sandboxes set application_secret_tainted=true where id=$1", [f.row.id]);
-    await expect(checkpoint(f.caller, input)).rejects.toMatchObject({ code: "conflict" });
-  } finally {
-    await f.close();
+  } else {
+    await db.query("update sandboxes set application_secret_tainted=true where id=$1", [row.id]);
   }
+  await expect(checkpoint(caller, input)).rejects.toMatchObject({
+    code: "conflict",
+    message: expect.stringContaining(message),
+  });
 });

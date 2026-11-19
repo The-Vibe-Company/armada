@@ -30,6 +30,7 @@ import { ModalClient } from "modal";
 import type { HandlerOptions } from "./http.ts";
 import type { GitHubLaunchOptions } from "./launch-credentials.ts";
 import { observeNativeFirstToken } from "./launch-stage-record.ts";
+import type { createModalArtifactCache, ModalArtifactBinding } from "./modal-artifact-cache.ts";
 import { projectModalEventUsage } from "./modal-event-usage.ts";
 import { modalLaunchEnvironment } from "./modal-launch-environment.ts";
 import { createModalReaper, modalReaperSql } from "./modal-reaper.ts";
@@ -163,6 +164,42 @@ export async function createModalIntegration(options: {
       throw new VaultError("unavailable", "The bound Modal credential is invalid. Replace that credential slot.");
     }
   }
+  async function warmRegisteredArtifactCaches(
+    cache: ReturnType<typeof createModalArtifactCache>,
+    startupSql: Sql,
+    logError: (line: string) => void,
+  ) {
+    const startupBudget = AbortSignal.timeout(120_000);
+    const vault = createSqlVaultStore(startupSql);
+    const { rows } = await startupSql.query<{
+      app_id: string;
+      app_name: string;
+      environment: string;
+      authority_scope: "org" | "user";
+      authority_owner_id: string;
+    }>(
+      "select distinct app_id, app_name, environment, authority_scope, authority_owner_id from public.modal_server_apps",
+    );
+    for (let offset = 0; offset < rows.length && !startupBudget.aborted; offset += 4) {
+      await Promise.all(
+        rows.slice(offset, offset + 4).map(async (row) => {
+          try {
+            const { tokenId, tokenSecret } = await resolveManagementCredentials(
+              { credentialScope: row.authority_scope, credentialOwnerId: row.authority_owner_id },
+              vault,
+            );
+            startupBudget.throwIfAborted();
+            await cache.warm(
+              { appId: row.app_id, appName: row.app_name, environment: row.environment, tokenId, tokenSecret },
+              startupBudget,
+            );
+          } catch {
+            logError("Modal startup artifact warming failed for a registered App. Retrying on enrolled allocation.");
+          }
+        }),
+      );
+    }
+  }
   const modalTokensFor: NonNullable<HandlerOptions["modalTokensFor"]> = async (target, caller) => {
     const authority = await managementAuthority(target, caller);
     const pair = await resolveManagementCredentials(authority);
@@ -173,6 +210,7 @@ export async function createModalIntegration(options: {
     binding: Parameters<NonNullable<HandlerOptions["modalProviderFor"]>>[1],
     context: Parameters<NonNullable<HandlerOptions["modalProviderFor"]>>[2],
     storedReads = false,
+    onRuntimeBinding?: (binding: ModalArtifactBinding) => void,
   ): Promise<Provider> => {
     const authority = await options.sql.query<{ app_name: string }>(
       "select app_name from public.modal_server_apps where org_id=$1 and app_id=$2 and environment=$3",
@@ -250,6 +288,7 @@ export async function createModalIntegration(options: {
       undefined,
       sandbox,
     );
+    onRuntimeBinding?.({ appId: binding.appId, appName, environment: binding.environment, ...tokens });
     return observeProvider("modal", provider, sandbox);
   };
   async function goldenTarget(
@@ -370,6 +409,7 @@ export async function createModalIntegration(options: {
   }
   return {
     inventoryReaper,
+    warmRegisteredArtifactCaches,
     modalProviderFor,
     storedProviderFor: async (target: ProviderTarget, caller: { userId: string }) => {
       if (target.provider !== "modal" || !target.modal) throw new VaultError("invalid", "Expected Modal binding.");

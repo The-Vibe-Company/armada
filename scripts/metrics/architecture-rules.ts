@@ -6,7 +6,7 @@ export const testPaths =
 export const generatedPaths =
   /(?:^|\/)(?:generated|Generated)\/|(?:^|\/)(?:database\.types\.ts|next-env\.d\.ts)$|\.generated\./;
 
-export function isNonTestSource(path: string): boolean {
+export function isNonTestSource(path: string) {
   return sourceRoots.test(path) && sourceExtensions.test(path) && !testPaths.test(path) && !generatedPaths.test(path);
 }
 

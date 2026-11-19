@@ -304,8 +304,6 @@ test("revocation and a fresh connect generation fence a callback already exchang
   });
 });
 
-// These are protocol HTTP responses at the real broker boundary, not endpoint
-// helper tests: neither the SDK nor the broker may follow or reuse credentials.
 for (const redirect of ["metadata", "registration", "token", "revocation"] as const) {
   test(`${redirect} redirect cannot move an OAuth operation to another purpose or endpoint`, async () => {
     const f = fixture(redirect === "registration" ? "dcr" : "preregistered", true, {

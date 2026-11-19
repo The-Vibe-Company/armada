@@ -172,7 +172,7 @@ and Docker host daemon protocol retain their own rollout rules.
 | POST | `sandbox/test-model-connection` | `testSandboxModelConnection` (admin) | #2774 |
 | POST | `sandbox/viewer-token` | `createSandboxViewerToken` (public) | #2774 |
 | POST | `sandbox/detail` | Removed; use `sandbox/status` | #2774 |
-| POST | `sandbox/delete` | Delete alias after callers move to `deleteSandbox` | #2774 |
+| POST | `sandbox/delete` | Removed; use `deleteSandbox` | #2774 |
 | DELETE | `sandboxes/{id}` | `deleteSandbox` (public); accept optional `requestId` query for Docker replay, preserving the former POST request identity | #2774 |
 | GET | `sandboxes/{id}/outputs` | `listSandboxOutputs` (agent) | #2774 |
 | GET | `sandboxes/{id}/outputs/{name}` | `readSandboxOutput` (agent); preserve byte ranges | #2774 |

@@ -64,6 +64,7 @@ export async function startServer(env: Record<string, string | undefined>, optio
       workers.stop();
     },
     workersDone: workers.done,
+    drainModalArtifacts: () => services.modalArtifactCache?.drain(),
     requests,
   });
   // Expose the tracked task for hosts that gracefully drain before process termination.

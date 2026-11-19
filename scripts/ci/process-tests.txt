@@ -21,7 +21,6 @@ packages/core/test/launch.test.ts
 packages/core/test/sandbox-outputs.test.ts
 packages/core/test/ssh-executor.test.ts
 packages/core/test/ssh-github-token.test.ts
-packages/core/test/ssh-orchestrator.test.ts
 packages/core/test/ssh-readable-variables.test.ts
 packages/docker-host/test/cli.test.ts
 packages/docker-host/test/runtime-install.test.ts

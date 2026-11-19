@@ -1046,6 +1046,19 @@ test("overlapping forks refuse source contention definitively before allocating"
     await first;
   }
 });
+test("snapshot retirement refuses a live enrolled Modal fork reference", async () => {
+  const f = fixture(scope, fixtureSql, undefined, undefined, true);
+  const { name } = await savedGolden(f);
+  const child = await f.provider.fork({ from: name });
+  const error = await f.provider.deleteSnapshot(name).catch((failure: unknown) => failure);
+  expect(error).toMatchObject({ code: "conflict", providerCode: "snapshot_source_busy" });
+  expect(isNonMutatingProviderRefusal(error)).toBe(true);
+  expect((await f.provider.getSnapshot(name)).name).toBe(name);
+  await f.provider.delete({ sandboxId: child.id });
+  await f.provider.deleteSnapshot(name);
+  await expect(f.provider.getSnapshot(name)).rejects.toMatchObject({ code: "not_found" });
+});
+
 test("enrolled Modal forks mount the environment artifact cache read-only", async () => {
   const f = fixture(scope, db, undefined, undefined, true);
   const volume = new Volume("vo_public_artifacts");
