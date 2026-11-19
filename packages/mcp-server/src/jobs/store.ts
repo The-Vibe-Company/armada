@@ -29,8 +29,14 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
     ) {
       const db = tx ?? sql;
       const { orgId, request, deadline, maxAttempts } = options;
-      const key = JSON.stringify([orgId, kind, request?.ownerId ?? null, idemKey]);
-      const sealed = payload === null ? null : toBytea(await encryptSecret(JSON.stringify(payload), encryptionKey));
+      const key = JSON.stringify(
+        request
+          ? ["request", orgId, kind, request.ownerId, idemKey]
+          : ["internal", orgId, kind, sandboxId, generation, idemKey],
+      );
+      const serialized = JSON.stringify(payload);
+      if (serialized === undefined) throw new Error("Job payload must be JSON.");
+      const sealed = payload === null ? null : toBytea(await encryptSecret(serialized, encryptionKey));
       const {
         rows: [inserted],
       } = await db.query<{ id: string }>(
@@ -59,9 +65,8 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
       const {
         rows: [existing],
       } = await db.query<{ id: string }>(
-        `select id from public.jobs where idem_key = $1 and request_digest is not distinct from $2
-           and ($2 is not null or (sandbox_id is not distinct from $3 and generation is not distinct from $4))`,
-        [key, request?.digest ?? null, sandboxId, generation],
+        `select id from public.jobs where idem_key = $1 and request_digest is not distinct from $2`,
+        [key, request?.digest ?? null],
       );
       if (!existing) throw new Error("Conflicting job request.");
       return existing.id;

@@ -49,7 +49,7 @@ export function createJobsRunner(
   const registrations = Object.entries(kinds).map(([kind, handler]) => {
     if (!Number.isSafeInteger(handler.concurrency) || handler.concurrency <= 0)
       throw new Error("Invalid jobs concurrency.");
-    return { kind, handler, active: 0 };
+    return { kind, handler };
   });
   const pending = new Set<Promise<void>>();
   let nextKind = 0;
@@ -57,6 +57,7 @@ export function createJobsRunner(
   async function run(job: Job, handler: JobKind, cancelClaimExpiry: () => void, lease: AbortController) {
     const signal = AbortSignal.any([lease.signal, shutdown.signal]);
     let cancelExpiry = cancelClaimExpiry;
+    let renewal: Promise<void> | undefined;
     let cancelRenewal: (() => void) | undefined;
     async function renew() {
       if (signal.aborted) return;
@@ -75,7 +76,9 @@ export function createJobsRunner(
       }
     }
     function scheduleRenewal() {
-      cancelRenewal = schedule((LEASE_SECONDS * 1000) / 3, () => void renew());
+      cancelRenewal = schedule((LEASE_SECONDS * 1000) / 3, () => {
+        renewal = renew();
+      });
     }
     try {
       if (signal.aborted) return;
@@ -97,6 +100,7 @@ export function createJobsRunner(
       lease.abort();
       cancelExpiry();
       cancelRenewal?.();
+      await renewal;
     }
   }
 
@@ -106,8 +110,6 @@ export function createJobsRunner(
         const registration = registrations[nextKind]!;
         nextKind = (nextKind + 1) % registrations.length;
         const { kind, handler } = registration;
-        if (registration.active >= handler.concurrency) continue;
-        registration.active++;
         const lease = new AbortController();
         const cancelExpiry = schedule(LEASE_SECONDS * 1000, () => lease.abort());
         let claimed = false;
@@ -118,16 +120,12 @@ export function createJobsRunner(
           const work = run(job, handler, cancelExpiry, lease)
             .catch(() => log("armada: job execution unavailable; durable lease remains fenced."))
             .finally(() => {
-              registration.active--;
               pending.delete(work);
             });
           pending.add(work);
           return true;
         } finally {
-          if (!claimed) {
-            cancelExpiry();
-            registration.active--;
-          }
+          if (!claimed) cancelExpiry();
         }
       }
       return false;

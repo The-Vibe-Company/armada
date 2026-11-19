@@ -79,3 +79,13 @@ test("a stale lifecycle lease is retired in migrated SQL", async () => {
     { state: "failed", outcome: { reason: "stale_generation" } },
   ]);
 });
+
+test("internal enqueue scopes the same key to each sandbox incarnation", async () => {
+  const { people, store } = await fixture();
+  const first = crypto.randomUUID();
+  const second = crypto.randomUUID();
+  const enqueue = (id: string, generation: number) =>
+    store.enqueue("sample", id, generation, "event", null, { orgId: people.org, maxAttempts: 1 });
+  const ids = await Promise.all([enqueue(first, 1), enqueue(first, 2), enqueue(second, 1)]);
+  expect(new Set(ids).size).toBe(3);
+});

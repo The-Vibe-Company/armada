@@ -3,7 +3,7 @@ import { createJobsRunner, type Job, type JobStore } from "./runner.ts";
 
 function fixture() {
   let now = 0;
-  let generation = "1";
+  let renewalUnavailable = false;
   const timers = new Map<() => void, number>();
   const rows = ["one", "two"].map((id) => ({
     id,
@@ -24,7 +24,7 @@ function fixture() {
       (row) => row.id === job.id && row.owner === owner && row.lease_epoch === job.lease_epoch && row.expires > now,
     );
   const completed: string[] = [];
-  const retired: string[] = [];
+  let renewalGate: Promise<void> | undefined;
   let loseCompletion = false;
   const store: JobStore = {
     async claim(kind, owner, seconds, concurrency) {
@@ -39,19 +39,13 @@ function fixture() {
     },
     async inspect(job, owner) {
       if (!current(job, owner)) return "lost";
-      if (job.generation !== generation) return "stale";
       return job.attempts <= job.max_attempts ? "dispatch" : "reconcile";
     },
-    async retireStale(job, owner) {
-      const row = current(job, owner);
-      if (row) {
-        row.terminal = true;
-        retired.push(row.id);
-      }
-    },
+    async retireStale() {},
     async renew(job, owner, seconds) {
+      if (renewalGate) await renewalGate;
       const row = current(job, owner);
-      if (!row || job.generation !== generation) return false;
+      if (!row || renewalUnavailable) return false;
       row.expires = now + seconds * 1000;
       return true;
     },
@@ -59,7 +53,7 @@ function fixture() {
       if (loseCompletion) throw new Error("Database disconnected before commit.");
       completed.push(job.id);
       const row = current(job, owner);
-      if (row && job.generation === generation) row.terminal = true;
+      if (row) row.terminal = true;
     },
   };
   return {
@@ -82,25 +76,28 @@ function fixture() {
         callback();
       }
     },
-    changeGeneration() {
-      generation = "2";
+    loseRenewal() {
+      renewalUnavailable = true;
     },
     loseCompletion(value: boolean) {
       loseCompletion = value;
     },
     completed,
-    retired,
+    holdRenewal(gate: Promise<void>) {
+      renewalGate = gate;
+    },
   };
 }
 
 const tick = new AbortController().signal;
 
-test("lease loss aborts an active handler and ignores its late result", async () => {
+test("lease loss aborts the active handler, allows takeover, and ignores the late result", async () => {
   const f = fixture();
   const started = Promise.withResolvers<void>();
   const aborted = Promise.withResolvers<void>();
   const finish = Promise.withResolvers<void>();
-  const runner = f.runner(async (_job, { signal }) => {
+  const runner = f.runner(async (job, { signal }) => {
+    if (job.attempts > 1) return { status: "done" };
     signal.addEventListener("abort", () => aborted.resolve(), { once: true });
     started.resolve();
     await finish.promise;
@@ -108,23 +105,38 @@ test("lease loss aborts an active handler and ignores its late result", async ()
   });
   await runner.reconcileOne(tick);
   await started.promise;
-  f.changeGeneration();
+  f.loseRenewal();
   f.advance(10_000);
   await aborted.promise;
+  f.advance(20_000);
+  expect(await runner.reconcileOne(tick)).toBe(true);
   finish.resolve();
   await runner.drain();
-  expect(f.completed).toEqual([]);
+  expect(f.completed).toEqual(["one"]);
 });
 
-test("a claimed stale generation is retired without invoking its handler", async () => {
+test("shutdown drains a renewal that is still in flight", async () => {
   const f = fixture();
-  f.changeGeneration();
-  const runner = f.runner(async () => {
-    throw new Error("A stale handler must never run.");
+  const renewal = Promise.withResolvers<void>();
+  const started = Promise.withResolvers<void>();
+  f.holdRenewal(renewal.promise);
+  const runner = f.runner(async (_job, { signal }) => {
+    started.resolve();
+    await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+    return { status: "done" };
   });
-  expect(await runner.reconcileOne(tick)).toBe(true);
-  await runner.drain();
-  expect(f.retired).toEqual(["one"]);
+  await runner.reconcileOne(tick);
+  await started.promise;
+  f.advance(10_000);
+  runner.stopAdmission();
+  const drained = runner.drain();
+  try {
+    const nextTurn = new Promise<string>((resolve) => setImmediate(() => resolve("pending")));
+    expect(await Promise.race([drained.then(() => "drained"), nextTurn])).toBe("pending");
+  } finally {
+    renewal.resolve();
+    await drained;
+  }
 });
 
 test("a crash before completion replays the same identity under a new epoch", async () => {
