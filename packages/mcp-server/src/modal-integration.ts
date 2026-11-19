@@ -332,7 +332,9 @@ export async function createModalIntegration(options: {
             const sandbox = await inventoryClient.sandboxes.fromId(machineId);
             signal.throwIfAborted();
             try {
-              await observeProviderCall("modal", "sandbox.terminate", () => sandbox.terminate({ wait: true }));
+              await sandbox.terminate();
+              signal.throwIfAborted();
+              if ((await sandbox.poll()) === null) throw new Error("Modal termination is not yet confirmed.");
             } catch (error) {
               if (
                 !(error instanceof NotFoundError) &&
