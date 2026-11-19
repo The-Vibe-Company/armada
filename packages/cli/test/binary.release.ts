@@ -36,8 +36,6 @@ test("compiled invitation CLI is discoverable and rejects token argv without ser
   expect(JSON.parse(rejected.stderr.toString()).error.message).toContain("stdin or a file");
 });
 
-// Packaging boundary: compiled requests retain account/default semantics and contact only the fixture API.
-// No provider implementation, database or external resource is invoked by this executable test.
 test("compiled launch preserves account selection and owner defaults without allocating resources", async () => {
   const requests: { path: string; body: Record<string, unknown> }[] = [];
   const credentialId = "33333333-3333-4333-8333-333333333333";

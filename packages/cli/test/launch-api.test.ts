@@ -195,7 +195,6 @@ describe("launch through the Armada API", () => {
   });
 });
 
-// The parser must preserve producer-owned defaults: omitted, explicit and empty are distinct.
 for (const visibility of [undefined, "private", "org"]) {
   for (const selection of [undefined, "selected", "none"]) {
     test(`launch keeps connection selection ${selection ?? "default"} with legacy visibility ${visibility ?? "omitted"}`, async () => {

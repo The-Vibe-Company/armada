@@ -12,13 +12,11 @@ const runtime = Bun.which("node") ?? process.execPath;
 beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), "armada-npm-"));
   mkdirSync(join(dir, "binaries"));
-  // A stand-in for the compiled binary: it echoes its arguments and exits 3.
   writeFileSync(join(dir, "binaries", `armada-${hostTarget()}`), '#!/bin/sh\necho "args: $*"\nexit 3\n');
 });
 
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
-/** Lays the staged packages out as npm installs them, and returns the main package's bin. */
 function install(root: string, withPlatform: boolean): string {
   const staged = stageNpm({ binaries: join(dir, "binaries"), out: join(dir, "npm"), targets: [hostTarget()] });
   for (const { name, dir: source } of staged) {

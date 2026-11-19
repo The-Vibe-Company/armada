@@ -92,7 +92,7 @@ test.each([
       Response.json({ error: { code, message } }, { status }),
     );
     expect(result.code).toBe(1);
-    expect(result.calls).toHaveLength(1); // No replacement fallback or blind retries.
+    expect(result.calls).toHaveLength(1);
     const json = JSON.parse(result.errors.trim().split("\n").at(-1)!);
     expect(json.error.code).toBe(status === 404 ? "unavailable" : code);
     expect(json.error.message).toContain(remedy);
