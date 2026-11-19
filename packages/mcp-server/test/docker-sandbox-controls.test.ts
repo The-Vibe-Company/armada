@@ -916,6 +916,7 @@ test("resuming on a draining host names the uninstall, not a generic unavailable
       {
         store: createSqlVaultStore(sql),
         authStore: createSqlAuthStore(sql),
+        supabase: { supabaseUrl: "https://project.supabase.co", anonKey: "fixture-anon" },
         encryptionKey: key,
         data: createSqlData(sql),
         providers: {
