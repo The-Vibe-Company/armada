@@ -87,7 +87,6 @@ export class Runner {
     this.publishNativeAuth = execution.publishNativeAuth;
     this.exclusiveNativeAuth = execution.exclusiveNativeAuth ?? false;
     const execEnv = validateExecEnvironment(execution.execEnv, this.credentialFreeBuilder);
-    // Template readables are already delivered to the selected harness environment.
     validateExecReadables(execution.readableVariables, this.credentialFreeBuilder);
     journal.registerSecrets(execCredentialValues(execEnv));
     this.execEnvironment = Object.freeze({
@@ -898,7 +897,6 @@ export class Runner {
     const done = new Promise<ExecResult>((resolve) =>
       child.once("close", (exitCode) => {
         clearTimeout(timer);
-        // Synchronous commands own their whole process group, including background descendants.
         terminate();
         signal?.removeEventListener("abort", terminate);
         try {
