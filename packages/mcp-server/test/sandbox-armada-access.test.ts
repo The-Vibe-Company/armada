@@ -11,6 +11,7 @@ import { createMcpLifecycle } from "../src/mcp-lifecycle.ts";
 import { createSandboxChildren } from "../src/sandbox-access-children.ts";
 import { createSandboxAccessServices } from "../src/sandbox-access-services.ts";
 import { createSandboxArmadaAccess } from "../src/sandbox-armada-access.ts";
+import { transitionSandbox } from "../src/sandbox-lifecycle.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 import { ENCRYPTION_KEY, fakeBoat, PUBLIC_URL, SECRETS } from "./support.ts";
 
@@ -227,6 +228,23 @@ test("ordinary sandbox opt-in bounds child admission and scrubs authority before
         body: JSON.stringify(body),
       }),
     );
+  const generationBefore = (
+    await db.query<{ lifecycle_generation: number; stop_generation: number }>(
+      "select lifecycle_generation, stop_generation from sandboxes where id=$1",
+      [saved.id],
+    )
+  ).rows[0]!;
+  expect(
+    await transitionSandbox(sql, {
+      sandboxId: saved.id,
+      expectedGeneration: generationBefore.lifecycle_generation - 1,
+      fromStates: ["running"],
+      toState: "stopping",
+      actor: "finish",
+      code: "agent_finished",
+      effects: [],
+    }),
+  ).toEqual({ kind: "conflict" });
   expect((await finish({ sandboxId: saved.id }))?.status).toBe(400);
   const reply = await finish({});
   expect(reply?.status).toBe(200);
@@ -239,5 +257,22 @@ test("ordinary sandbox opt-in bounds child admission and scrubs authority before
       )
     ).rows[0],
   ).toEqual({ status: "stopping", status_reason: "agent_finished", requested: true });
+  const journal = (
+    await db.query(
+      `select t.from_status,t.to_status,t.actor,t.code,t.generation,s.stop_generation
+       from sandbox_transitions t join sandboxes s on s.id=t.sandbox_id where s.id=$1 and t.actor='finish'`,
+      [saved.id],
+    )
+  ).rows;
+  expect(journal).toEqual([
+    {
+      from_status: "running",
+      to_status: "stopping",
+      actor: "finish",
+      code: "agent_finished",
+      generation: generationBefore.lifecycle_generation + 1,
+      stop_generation: generationBefore.stop_generation + 1,
+    },
+  ]);
   expect((await finish({}))?.status).toBe(403);
 });
