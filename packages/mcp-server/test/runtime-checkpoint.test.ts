@@ -209,6 +209,26 @@ function stopPort(f: Awaited<ReturnType<typeof runtimeFixture>>) {
 }
 const args = (id: string) => ({ id, request_id: crypto.randomUUID(), runtimeVersion: 1 as const });
 
+test("a definite runtime checkpoint refusal still allows compute cleanup", async () => {
+  const f = await checkpointFixture("modal");
+  try {
+    f.github(async () => {
+      throw Error("checkpoint runtime teardown refused");
+    });
+    const stop = stopPort(f);
+    await expect(callSharedTool(stop.context, "stop", { id: f.row.id })).resolves.toMatchObject({
+      status: "stopped",
+      preservationNote: "Runtime checkpoint was refused. No resumable checkpoint was recorded.",
+    });
+    expect(stop.calls()).toBe(1);
+    expect(
+      (await f.db.query("select watermark from runtime_checkpoints where sandbox_id=$1", [f.row.id])).rows,
+    ).toEqual([{ watermark: null }]);
+  } finally {
+    await f.close();
+  }
+});
+
 test("idle-only stop refuses a queued turn before creating a checkpoint", async () => {
   const f = await checkpointFixture("modal", true);
   try {

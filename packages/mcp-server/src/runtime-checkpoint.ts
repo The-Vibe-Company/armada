@@ -15,19 +15,26 @@ interface Intent {
   watermark: string | null;
   archive?: string;
 }
-/** The runtime checkpoint acknowledgement for this epoch and command, or undefined when Armada rejects it. */
-function checkpointProof(reply: unknown, epoch: string, commandId: string): { watermark: number } | undefined {
-  const result = reply as {
-    status?: number;
-    epoch?: string;
+type CheckpointReply = {
+  status?: number;
+  epoch?: string;
+  requestId?: string;
+  body?: {
+    version?: number;
     requestId?: string;
-    body?: {
-      version?: number;
-      requestId?: string;
-      error?: unknown;
-      result?: { generation?: string; watermark?: number; acknowledgedSequence?: number };
-    };
+    error?: unknown;
+    result?: { generation?: string; watermark?: number; acknowledgedSequence?: number };
   };
+};
+
+export class RuntimeCheckpointRejected extends VaultError {
+  constructor() {
+    super("conflict", "Runtime refused the checkpoint. No resume proof was recorded.");
+  }
+}
+
+/** The runtime checkpoint acknowledgement for this epoch and command, or undefined when Armada rejects it. */
+function checkpointProof(result: CheckpointReply, epoch: string, commandId: string): { watermark: number } | undefined {
   const proof = result?.body?.result;
   if (
     result?.status !== 200 ||
@@ -167,13 +174,22 @@ export function createRuntimeCheckpoint(
         )
       ).rows[0];
       if (!row?.result_enc) return undefined;
-      let body: unknown;
+      let reply: CheckpointReply;
       try {
-        body = JSON.parse(await decryptSecret(row.result_enc, key));
+        reply = JSON.parse(await decryptSecret(row.result_enc, key));
       } catch {
         throw new VaultError("unavailable", "Runtime checkpoint receipt is unavailable.");
       }
-      const proof = checkpointProof(body, intent.epoch, `checkpoint_${requestId}`);
+      const commandId = `checkpoint_${requestId}`;
+      if (
+        reply?.status === 409 &&
+        reply.epoch === intent.epoch &&
+        reply.requestId === commandId &&
+        typeof reply.body?.error === "string" &&
+        reply.body.error !== "request_outcome_unknown"
+      )
+        throw new RuntimeCheckpointRejected();
+      const proof = checkpointProof(reply, intent.epoch, commandId);
       if (!proof)
         throw new VaultError(
           "conflict",

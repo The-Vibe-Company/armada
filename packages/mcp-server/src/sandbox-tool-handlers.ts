@@ -17,6 +17,7 @@ import type { SandboxView, ServerSandboxPatch } from "./data.ts";
 import { mcpLaunchContract, runMcpLaunch } from "./mcp-launch-tool.ts";
 import { DEFAULT_WAIT_SECONDS, registerListTool, registerLogsTool, registerStatusTools } from "./mcp-read-tools.ts";
 import { recordOperatorFailure } from "./request-observability.ts";
+import { RuntimeCheckpointRejected } from "./runtime-checkpoint.ts";
 import { appendConversation, sandboxActivity } from "./sandbox-activity.ts";
 import { refuseConversationSelector } from "./sandbox-conversation.ts";
 
@@ -472,7 +473,10 @@ export function configureTools(
       if (needsCheckpoint && !context.runtimeStopCheckpoint)
         throw new VaultError("unavailable", "Runtime stop checkpoint is unavailable.");
       const checkpoint = needsCheckpoint
-        ? await context.runtimeStopCheckpoint!(caller, found, args.only_if_idle === true)
+        ? await context.runtimeStopCheckpoint!(caller, found, args.only_if_idle === true).catch((error) => {
+            if (error instanceof RuntimeCheckpointRejected) return null;
+            throw error;
+          })
         : undefined;
       const idleGuard: Pick<ServerSandboxPatch, "onlyIfIdle"> = { onlyIfIdle: args.only_if_idle === true };
       const retainedGuard: Pick<ServerSandboxPatch, "retainedRuntimeStop"> = checkpoint
@@ -514,7 +518,8 @@ export function configureTools(
             };
           let terminal = false;
           let stoppedAt: Date | undefined;
-          let preservationNote: string | undefined;
+          let preservationNote =
+            checkpoint === null ? "Runtime checkpoint was refused. No resumable checkpoint was recorded." : undefined;
           try {
             if (provider.collectTurnUsage) await collectSandboxUsage(provider, data.sandboxes, found);
             signal.throwIfAborted();
@@ -524,13 +529,13 @@ export function configureTools(
               found.providerSandboxId,
               "user_stop",
               signal,
-              checkpoint !== undefined,
+              Boolean(checkpoint),
             );
             terminal =
               observed.state === "stopped" &&
               (provider.id !== "boat" || observed.retainedSnapshot === "usable" || found.status === "failed");
             stoppedAt = observed.stoppedAt;
-            preservationNote = observed.stopNote;
+            preservationNote = observed.stopNote ?? preservationNote;
           } catch (error) {
             if (checkpoint || !(error instanceof ProviderError && error.code === "not_found")) throw error;
             terminal = provider.id !== "boat";
