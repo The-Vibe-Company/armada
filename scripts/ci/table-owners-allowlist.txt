@@ -31,7 +31,6 @@ packages/mcp-server/src/data.ts	sandboxes	update
 packages/mcp-server/src/data.ts	sandboxes	update
 packages/mcp-server/src/data.ts	sandboxes	update
 packages/mcp-server/src/docker-bootstrap-service.ts	sandbox_launch_stages	insert
-packages/mcp-server/src/docker-bootstrap-service.ts	sandboxes	update
 packages/mcp-server/src/docker-host-store.ts	sandboxes	update
 packages/mcp-server/src/docker-host-store.ts	sandboxes	update
 packages/mcp-server/src/docker-host-store.ts	sandboxes	update
