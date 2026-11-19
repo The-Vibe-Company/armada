@@ -13,7 +13,6 @@ export function startServerWorkers(
   lifecycle: ServerLifecycleLane,
   log: (line: string) => void = console.error,
   retirements?: { runOne(signal: AbortSignal): Promise<boolean> },
-  maintenance?: () => Promise<void>,
   managed: readonly ServerLifecycleLane[] | ServerLifecycleLane = [],
   isolated: readonly ServerLifecycleLane[] = [],
 ) {
@@ -107,28 +106,7 @@ export function startServerWorkers(
     }
     await Promise.allSettled(retirementPending);
   })();
-  const maintenanceDone = (async () => {
-    if (!maintenance) return;
-    while (!shutdown.signal.aborted) {
-      try {
-        await maintenance();
-      } catch {
-        log("armada: retention maintenance unavailable; retrying.");
-      }
-      if (!shutdown.signal.aborted)
-        await new Promise<void>((resolve) => {
-          const finish = () => {
-            clearTimeout(timer);
-            shutdown.signal.removeEventListener("abort", finish);
-            resolve();
-          };
-          const timer = setTimeout(finish, 10 * 60_000);
-          timer.unref();
-          shutdown.signal.addEventListener("abort", finish, { once: true });
-        });
-    }
-  })();
-  const done = Promise.all([lifecycleDone, retirementDone, maintenanceDone, isolatedDone]).then(() => {});
+  const done = Promise.all([lifecycleDone, retirementDone, isolatedDone]).then(() => {});
   return {
     lifecycleWorker: { done: lifecycleDone },
     retirementWorker: { done: retirementDone },
