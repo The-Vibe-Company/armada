@@ -2456,7 +2456,7 @@ test("access launch resolves an omitted account and grants only its persisted bi
       "--json",
     ]);
     expect(result).toMatchObject({ code: 0 });
-    const launched = JSON.parse(result.out);
+    const { sandbox: launched } = launchEnvelope.parse(JSON.parse(result.out));
     expect(statusAtInstall).toBe("starting");
     expect(launched.harness).toBe("codex");
     expect(launched.credentialId).toBe(account.id);
@@ -2530,7 +2530,7 @@ test("access launch resolves an omitted account and grants only its persisted bi
       "--json",
     ]);
     expect(ordinary.code).toBe(0);
-    const ordinaryId = JSON.parse(ordinary.out).providerSandboxId;
+    const ordinaryId = launchEnvelope.parse(JSON.parse(ordinary.out)).sandbox.providerSandboxId;
     expect((await db.query("select scope,visibility from modal_machines where id=$1", [ordinaryId])).rows).toEqual([
       { scope: scopeKey(orgScope), visibility: "org" },
     ]);

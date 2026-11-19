@@ -166,21 +166,7 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
         "invalid_config",
         "Docker launch outcome unknown: server did not confirm the requested logical sandbox.",
       );
-    if (args.options.has("--json"))
-      io.out(
-        `${JSON.stringify(
-          {
-            ...result,
-            id: result.sandbox.id,
-            provider: result.sandbox.provider,
-            status: result.sandbox.status,
-            promptId: result.promptId ?? null,
-            conversationId: result.conversationId ?? null,
-          },
-          null,
-          2,
-        )}\n`,
-      );
+    if (flag(args, "--json")) io.out(`${JSON.stringify(result, null, 2)}\n`);
     else
       io.out(
         `Docker sandbox: ${result.sandbox.providerSandboxId}\nArmada id: ${result.sandbox.id}\nStatus: ${result.sandbox.status}\n${result.promptId ? `Prompt: ${result.promptId}\n` : ""}${result.github?.message ? `Note: ${result.github.message}\n` : ""}${result.sandbox.statusReason ? `Reason: ${result.sandbox.statusReason}\n` : ""}`,

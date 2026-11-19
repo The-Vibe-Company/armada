@@ -74,8 +74,8 @@ armada launch GOLDEN --agent codex "Implement the agreed change; push the branch
 ```
 
 Launch without a prompt creates an idle sandbox. Capture its returned sandbox
-ID immediately; a terminal disconnect is not proof that creation failed. Before
-launching again, inspect `armada list --owner me --json` and detail to avoid paid
+ID from `sandbox.id` in `armada launch --json` output immediately. If the
+terminal disconnects before you capture the ID, inspect `armada list --owner me --json` and detail to avoid paid
 duplicates. Skill pins are repeatable, exact launch-time references, not floating
 latest versions. Private pins use bare slug@exact-version in the credential’s workspace; qualified
 org/slug@exact-version pins always use the anonymous public catalog, even when

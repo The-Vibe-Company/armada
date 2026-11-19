@@ -1,11 +1,4 @@
-import {
-  GoldenError,
-  HARNESSES,
-  type LaunchResult,
-  launchResponse,
-  MODEL_CATALOG,
-  resolveModelChoice,
-} from "@armada/core";
+import { GoldenError, HARNESSES, type LaunchResult, MODEL_CATALOG, resolveModelChoice } from "@armada/core";
 import { requireLaunchAgent } from "../agent-validation.ts";
 import { flag, parseArgs, providerFlag, single, values } from "../args.ts";
 import { createArmadaApiClient } from "../armada-api.ts";
@@ -16,14 +9,6 @@ import { printOptionalResourceAdvice } from "../resource-advice.ts";
 import type { Command } from "./command.ts";
 
 type LaunchWireResult = Omit<LaunchResult, "expiresAt"> & { expiresAt?: string | null };
-
-function decodeLaunchResult(result: LaunchWireResult) {
-  const { expiresAt, ...launch } = result;
-  return {
-    ...launch,
-    ...(expiresAt === null || expiresAt === undefined ? {} : { expiresAt: new Date(expiresAt) }),
-  } satisfies LaunchResult;
-}
 
 const run: Command["run"] = async (argv, { io, deps, auth }) => {
   argv = await prepareLaunch(argv, { ...auth, ...io });
@@ -93,52 +78,36 @@ const run: Command["run"] = async (argv, { io, deps, auth }) => {
     session: auth.session,
     ...(auth.timeoutMs === undefined ? {} : { timeoutMs: auth.timeoutMs }),
   });
-  const result = decodeLaunchResult(
-    await client.sandboxes.launch<LaunchWireResult>(
-      {
-        ...(flag(args, "--no-connections") ? { connections: [] } : {}),
-        ...(flag(args, "--keep-after-merge") ? { stopWhenWorkMerged: false } : {}),
-        ...(values(args, "--skill").length ? { skills: values(args, "--skill") } : {}),
-        ...(connections === undefined ? {} : { connections: connections.split(",") }),
-        ...(flag(args, "--armada-access")
-          ? {
-              armadaAccessVersion: 1,
-              armadaAccess: {
-                ...(maxActiveChildren === undefined ? {} : { maxActiveChildren: Number(maxActiveChildren) }),
-              },
-            }
-          : {}),
-        credentialId: single(args, "--credential-id"),
-        golden: name,
-        ...(repo === undefined ? {} : { repo }),
-        provider,
-        harness,
-        ...(single(args, "--model") === undefined ? {} : { model: single(args, "--model") }),
-        ...(single(args, "--reasoning-effort") === undefined
-          ? {}
-          : { reasoningEffort: single(args, "--reasoning-effort") }),
-        ...(prompt === undefined ? {} : { prompt }),
-        ...(ttlSeconds === undefined ? {} : { ttlSeconds }),
-        ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
-      },
-      { signal: AbortSignal.timeout(10 * 60_000) },
-    ),
+  const result = await client.sandboxes.launch<LaunchWireResult>(
+    {
+      ...(flag(args, "--no-connections") ? { connections: [] } : {}),
+      ...(flag(args, "--keep-after-merge") ? { stopWhenWorkMerged: false } : {}),
+      ...(values(args, "--skill").length ? { skills: values(args, "--skill") } : {}),
+      ...(connections === undefined ? {} : { connections: connections.split(",") }),
+      ...(flag(args, "--armada-access")
+        ? {
+            armadaAccessVersion: 1,
+            armadaAccess: {
+              ...(maxActiveChildren === undefined ? {} : { maxActiveChildren: Number(maxActiveChildren) }),
+            },
+          }
+        : {}),
+      credentialId: single(args, "--credential-id"),
+      golden: name,
+      ...(repo === undefined ? {} : { repo }),
+      provider,
+      harness,
+      ...(single(args, "--model") === undefined ? {} : { model: single(args, "--model") }),
+      ...(single(args, "--reasoning-effort") === undefined
+        ? {}
+        : { reasoningEffort: single(args, "--reasoning-effort") }),
+      ...(prompt === undefined ? {} : { prompt }),
+      ...(ttlSeconds === undefined ? {} : { ttlSeconds }),
+      ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
+    },
+    { signal: AbortSignal.timeout(10 * 60_000) },
   );
-  io.out(
-    flag(args, "--json")
-      ? `${JSON.stringify(
-          {
-            ...launchResponse(result),
-            sandbox: result.sandbox,
-            runtime: result.runtime ?? null,
-            helper: result.helper ?? null,
-            conversationId: result.conversationId ?? null,
-          },
-          null,
-          2,
-        )}\n`
-      : launchText(result, auth.now()),
-  );
+  io.out(flag(args, "--json") ? `${JSON.stringify(result, null, 2)}\n` : launchText(result, auth.now()));
   if (!flag(args, "--json"))
     await printOptionalResourceAdvice(client, result.sandbox.id, single(args, "--org"), io.err);
   return 0;
@@ -206,7 +175,7 @@ Example: armada launch "Inspect the repository" --provider docker --host worksta
   run,
 } satisfies Command;
 
-function launchText(result: LaunchResult, now: Date) {
+function launchText(result: LaunchWireResult, now: Date) {
   const { sandbox, golden } = result;
   const lines = [
     `Launched ${sandbox.harness} sandbox from snapshot ${golden.name}.`,
@@ -239,7 +208,7 @@ function launchText(result: LaunchResult, now: Date) {
   return `${lines.join("\n")}\n`;
 }
 
-function githubLine(result: LaunchResult, now: Date) {
+function githubLine(result: Pick<LaunchResult, "sandbox" | "github">, now: Date) {
   const { github } = result;
   if (github.status === "connected") {
     const expiry = github.tokenExpiresAt ? new Date(github.tokenExpiresAt) : null;
