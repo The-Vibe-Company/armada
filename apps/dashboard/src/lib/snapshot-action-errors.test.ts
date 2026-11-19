@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { ControlError } from "../src/lib/control";
-import { snapshotActionFailure } from "../src/lib/snapshot-action-errors";
+import { ControlError } from "./control";
+import { snapshotActionFailure } from "./snapshot-action-errors";
 
 const diagnostic = "HTTP 503: provider_snapshot_id digest sha256:example";
 

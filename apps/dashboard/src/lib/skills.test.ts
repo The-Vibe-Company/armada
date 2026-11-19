@@ -5,7 +5,7 @@ import {
   parseSkillVersions,
   skillCatalogFailure,
   skillPinProblem,
-} from "../src/lib/skills.ts";
+} from "./skills.ts";
 
 test("additional skills require distinct exact pins, exclude Armada tools and cap the selection", () => {
   expect(skillPinProblem(["team/review@1.2.3", "testing@2.0.0-beta.1"])).toBeNull();
@@ -142,8 +142,8 @@ test.each([
     { ...catalogItem, versions: [null] },
     { ...catalogItem, versions: ["latest"] },
     { ...catalogItem, versions: ["^2.0.0"] },
-  ].map((item, index) => [`malformed item ${index}`, { items: [item], nextOffset: null }]),
-])("runtime catalog parser rejects %s without partial data", (_name, value) => {
+  ].map<[string, unknown]>((item, index) => [`malformed item ${index}`, { items: [item], nextOffset: null }]),
+] satisfies [string, unknown][])("runtime catalog parser rejects %s without partial data", (_name, value) => {
   expect(parseSkillCatalogPage(value, "private", 50)).toBeNull();
 });
 

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { EncryptionKeyError, type GitHubInstallation } from "@armada/core";
-import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
+import { captureGitHubAuditLogs } from "../../../../scripts/test-support/github-audit.ts";
 import {
   type ConnectDeps,
   completeGitHubConnection,
@@ -16,7 +16,7 @@ import {
   newGitHubState,
   sameState,
   storedGitHubInstallations,
-} from "../src/lib/github.ts";
+} from "./github.ts";
 
 const auditEvents = captureGitHubAuditLogs();
 
