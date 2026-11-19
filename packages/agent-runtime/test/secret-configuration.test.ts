@@ -14,7 +14,9 @@ test.each([
   { secret: "ess", prefix: "prefix", suffix: "suffix" },
   { secret: "stderr", prefix: "prefix", suffix: "suffix" },
   { secret: "abc", prefix: "prefix", suffix: "suffix", overlap: "bc12345", extension: "12345" },
-])("masks marked values in event text ($secret)", async ({ secret, prefix, suffix, overlap, extension = "" }) => {
+  { secret: "abc", prefix: "", suffix: "suffix", overlap: "bc!xyz", extension: "!xyz", wholeField: true },
+])("masks marked values in event text ($secret)", async (fixture) => {
+  const { secret, prefix, suffix, overlap, extension = "", wholeField } = fixture;
   const journal = new Journal(":memory:", (text) => text);
   const variables = { APP_TOKEN: secret, APP_REGION: "fixture_region", ...(overlap ? { APP_OTHER: overlap } : {}) };
   let environment: Record<string, string> = {};
@@ -51,7 +53,7 @@ test.each([
     expect(prompt.status).toBe(200);
     const events = await runner.handleDialout({ ...command, requestId: "events_fixture", op: "events" });
     const body = await events.json();
-    const text = `${prefix}[REDACTED]${suffix} fixture_region`;
+    const text = wholeField ? "[REDACTED]" : `${prefix}[REDACTED]${suffix} fixture_region`;
     expect(body).toMatchObject({
       result: {
         events: expect.arrayContaining([
