@@ -75,13 +75,15 @@ export function createEventStream(time = { now: () => performance.now(), wait: w
       const stream = new ReadableStream<Uint8Array>(
         {
           start(controller) {
-            finish = () => {
-              signal.removeEventListener("abort", finish!);
+            const endStream = () => {
+              signal.removeEventListener("abort", endStream);
               wake.close();
               if (!cancel.signal.aborted) controller.close();
             };
-            signal.addEventListener("abort", finish, { once: true });
+            finish = endStream;
+            signal.addEventListener("abort", endStream, { once: true });
             if (initial.length) emit(controller, initial);
+            else controller.enqueue(encoder.encode(": connected\n\n"));
           },
           async pull(controller) {
             try {

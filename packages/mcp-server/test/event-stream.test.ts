@@ -105,6 +105,8 @@ test("rechecks for commits without a local wake and sends an idle heartbeat afte
   })(f.request(), f.options);
   const reader = response.body!.getReader();
   try {
+    expect(decoder.decode((await reader.read()).value)).toBe(": connected\n\n");
+    expect(now).toBe(0);
     expect(frames((await reader.read()).value)).toEqual(["1"]);
     expect(now).toBe(1000);
     expect(decoder.decode((await reader.read()).value)).toBe(": heartbeat\n\n");
@@ -134,6 +136,7 @@ test("server drain ends an idle feed so the client can reconnect", async () => {
       }),
   })(f.request(), { ...f.options, eventStreamShutdown: drain.signal });
   const reader = response.body!.getReader();
+  await reader.read();
   const pending = reader.read();
   await waiting;
   drain.abort();

@@ -2,7 +2,8 @@ import { z } from "zod";
 import type { Operation } from "./index.ts";
 
 const position = z.string().regex(/^(0|[1-9][0-9]{0,18})$/);
-const cursor = position.refine((value) => value.length < 19 || value <= "9223372036854775807").optional();
+const maxId = "9223372036854775807";
+const cursor = position.refine((value) => value.length < 19 || value <= maxId).optional();
 
 export const streamSandboxEvents = {
   name: "streamSandboxEvents",
