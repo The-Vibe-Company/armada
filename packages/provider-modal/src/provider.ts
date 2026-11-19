@@ -502,39 +502,49 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       throw refusal("invalid_request", "Modal machine TTL must be 1–86400 seconds (maximum 24 hours).");
     let imageId: string | undefined;
     let sourceImage: Machine["sourceImage"];
+    let runtimeSourceId: string | undefined;
     if ("from" in request) {
       const snapshot = await source.store.image(request.from);
       assertAuthority(snapshot);
       if (snapshot.info.status !== "ready" || !snapshot.imageId)
         throw refusal("sandbox_not_ready", "Snapshot is not ready.");
+      if (options.commonRuntime) {
+        const sourceRow = await source.store.get(snapshot.sourceId);
+        if (sourceRow.commonRuntime) throw refusal("invalid_request", "Enrolled Modal forks are not enabled.");
+        runtimeSourceId = snapshot.sourceId;
+      }
       imageId = snapshot.imageId;
       sourceImage = { scopeKey: scopeKey(source.scope), name: request.from, imageId };
     }
     const key = request.idempotencyKey ?? randomUUID();
     const id = `modal_${randomUUID()}`;
-    const row = await store.reserve(key, {
-      info: {
-        id,
-        name: request.name ?? id,
-        state: "starting",
-        providerState: "reserved",
-        labels: request.labels ?? {},
-        createdAt: new Date(),
+    const row = await store.reserve(
+      key,
+      {
+        info: {
+          id,
+          name: request.name ?? id,
+          state: "starting",
+          providerState: "reserved",
+          labels: request.labels ?? {},
+          createdAt: new Date(),
+        },
+        generation: 1,
+        ...(!golden && options.commonRuntime ? { commonRuntime: true as const } : {}),
+        ...(!golden ? { runtimePolicy: "explicit-vm-v1" as const } : {}),
+        launchUserId: options.scope.userId,
+        managementAuthority: { ...managementAuthority },
+        modelDefaults: mapHarnesses((_, harness) => resolveModelChoice(harness, {})),
+        phase: "reserved",
+        golden,
+        ttlSeconds: ttl,
+        ...(size === undefined ? {} : { size }),
+        physicalName: `armada-${createHash("sha256").update(id).digest("hex").slice(0, 32)}-1`,
+        ...(imageId ? { imageId } : {}),
+        ...(sourceImage ? { sourceImage } : {}),
       },
-      generation: 1,
-      ...(!golden && options.commonRuntime ? { commonRuntime: true as const } : {}),
-      ...(!golden ? { runtimePolicy: "explicit-vm-v1" as const } : {}),
-      launchUserId: options.scope.userId,
-      managementAuthority: { ...managementAuthority },
-      modelDefaults: mapHarnesses((_, harness) => resolveModelChoice(harness, {})),
-      phase: "reserved",
-      golden,
-      ttlSeconds: ttl,
-      ...(size === undefined ? {} : { size }),
-      physicalName: `armada-${createHash("sha256").update(id).digest("hex").slice(0, 32)}-1`,
-      ...(imageId ? { imageId } : {}),
-      ...(sourceImage ? { sourceImage } : {}),
-    });
+      runtimeSourceId,
+    );
     const needsBoot = (row: Machine) => {
       if (
         row.golden !== golden ||
@@ -924,6 +934,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           throw refusal("invalid_request", "Size must be small, medium, large or xlarge.");
         }
       }
+      if (options.commonRuntime) return launch(r, false);
       const snapshot = await source.store.image(r.from);
       assertAuthority(snapshot);
       let admitted = false;
