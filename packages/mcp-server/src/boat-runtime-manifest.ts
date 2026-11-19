@@ -1,6 +1,6 @@
 import { lstat } from "node:fs/promises";
 import { join } from "node:path";
-import { runtimeArtifactSet } from "./runtime-artifacts.ts";
+import { runtimeArtifactPin } from "./runtime-artifacts.ts";
 
 /** Installed server image metadata, never a client-controlled path. Native
  * rollback must boot even when runtime-only artifacts are missing/corrupt. */
@@ -11,23 +11,22 @@ export async function readBoatRuntimeManifest(
 ) {
   try {
     const row = await Bun.file(path).json();
+    const runtime = runtimeArtifactPin(row?.runtime);
     if (
       row?.protocol !== 1 ||
       row.platform !== "linux" ||
       row.libc !== "glibc" ||
       !["x64", "arm64"].includes(row.architecture) ||
-      typeof row.runtime?.sha256 !== "string" ||
-      !/^[a-f0-9]{64}$/.test(row.runtime.sha256) ||
-      !Number.isSafeInteger(row.runtime.bytes) ||
-      row.runtime.bytes < 1 ||
-      row.runtime.bytes > 512 * 1024 * 1024
+      !runtime
     )
       throw Error();
     if (mode === "runtime") {
-      const set = runtimeArtifactSet(row);
-      if (!set || !artifactDirectory) throw Error();
+      const claude = runtimeArtifactPin(row.harnesses?.claude?.archive);
+      const codex = runtimeArtifactPin(row.harnesses?.codex?.archive);
+      const opencode = runtimeArtifactPin(row.opencode);
+      if (!claude || !codex || !opencode || !artifactDirectory) throw Error();
       await Promise.all(
-        [set.runtime, ...set.artifacts].map(async ({ sha256, bytes }) => {
+        [runtime, claude, codex, opencode].map(async ({ sha256, bytes }) => {
           const file = await lstat(join(artifactDirectory, sha256));
           if (!file.isFile() || file.size !== bytes) throw Error();
         }),
