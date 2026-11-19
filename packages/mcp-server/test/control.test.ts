@@ -2655,12 +2655,13 @@ test("CLI/API connection checks require the owner and current bound revision, ex
         }),
         options,
       );
-    receipt = { ok: true, status: 200, error: null, code: null };
+    const success = { ok: true, status: 200, error: null, code: null };
+    receipt = success;
     const accepted = await checkModel({ id, model: "deployment" });
     expect(accepted?.status).toBe(200);
     expect(sandboxCheckOperations.testSandboxModelConnection.output.parse(await accepted?.json())).toEqual({
       id,
-      test: receipt,
+      test: success,
     });
     expect(
       (await db.query<{ conversation_ids: string[] }>("select conversation_ids from sandboxes where id=$1", [id]))
