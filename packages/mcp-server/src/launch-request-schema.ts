@@ -1,11 +1,21 @@
-import { MACHINE_SIZES, MAX_LAUNCH_TTL_SECONDS, SANDBOX_PROVIDERS } from "@armada/core";
+import { MACHINE_SIZES, MAX_LAUNCH_TTL_SECONDS, SANDBOX_PROVIDERS, SKILL_PIN_PATTERN } from "@armada/core";
+import { launch } from "@armada/core/contract";
 import { z } from "zod";
-import {
-  DOCKER_LAUNCH_VARIANTS,
-  launchCorrelationFields,
-  launchUuid,
-  sharedRestLaunchFields,
-} from "./docker-launch-request-schema.ts";
+
+const dockerLaunchVariants = launch.input.body.options.filter((variant) => variant.shape.provider.value === "docker");
+
+const [boatLaunch] = launch.input.body.options;
+const { credentialId, connections, externalRef, harness, idempotencyKey, skipSkillDefaults, stopWhenWorkMerged } =
+  boatLaunch.shape;
+const launchUuid = credentialId.unwrap();
+const sharedRestLaunchFields = {
+  harness,
+  credentialId,
+  skills: z.array(z.string().regex(SKILL_PIN_PATTERN)).max(20).optional(),
+  skipSkillDefaults,
+  connections,
+  stopWhenWorkMerged,
+};
 
 const goldenFields = {
   golden: z.string().min(1).describe("The name returned by golden/list."),
@@ -19,7 +29,8 @@ const goldenFields = {
   repo: z.string().min(1).optional().describe("Configured directory or owner/repo from the golden."),
   visibility: z.enum(["private", "org"]).optional(),
   ...sharedRestLaunchFields,
-  ...launchCorrelationFields,
+  idempotencyKey,
+  externalRef,
 };
 
 const goldenLaunch = z
@@ -72,7 +83,7 @@ const pinnedTemplateFields = {
   repo: z.string().min(1).max(200).optional(),
   skills: sharedRestLaunchFields.skills.nullable(),
   skipSkillDefaults: sharedRestLaunchFields.skipSkillDefaults,
-  externalRef: launchCorrelationFields.externalRef,
+  externalRef,
   stopWhenWorkMerged: sharedRestLaunchFields.stopWhenWorkMerged,
 };
 
@@ -82,7 +93,7 @@ export const PINNED_MODAL_LAUNCH_REQUEST = z
   .strictObject({
     ...pinnedTemplateFields,
     provider: z.literal("modal"),
-    harness: z.enum(["codex", "claude", "opencode"]),
+    harness,
     runtimeVersion: z.literal(1),
     runtimeTransport: z.literal("dialout"),
   })
@@ -95,5 +106,5 @@ export const LAUNCH_REQUEST_VARIANTS = [
   boatRuntimeLaunch,
   modalRuntimeLaunch,
   PINNED_MODAL_LAUNCH_REQUEST,
-  ...DOCKER_LAUNCH_VARIANTS,
+  ...dockerLaunchVariants,
 ] as const;

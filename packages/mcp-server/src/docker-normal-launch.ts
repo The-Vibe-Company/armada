@@ -9,9 +9,7 @@ import {
   type GitHubLaunchInfo,
   type GoldenActor,
   type GoldenRepo,
-  HARNESSES,
   type Harness,
-  isExternalRef,
   type LaunchCredentialResolver,
   LaunchError,
   normalizeGitHubGoldenConfig,
@@ -28,6 +26,7 @@ import {
   validateReadableVariables,
   validateSkillPins,
 } from "@armada/core";
+import { type LaunchInput, launch as launchOperation } from "@armada/core/contract";
 import {
   applyLaunchAccountDefaults,
   createSkillDefaultsService,
@@ -36,7 +35,6 @@ import {
   createSqlSandboxStore,
   decryptSecret,
   encryptSecret,
-  isLaunchTtlSeconds,
   prepareLaunchPlan,
   prepareLaunchWorkspace,
   resolveLaunchConnections,
@@ -51,13 +49,11 @@ import type { createDockerBootstrapService } from "./docker-bootstrap-service.ts
 import { resolveDockerLaunchAccount } from "./docker-launch-account.ts";
 import { createDockerLaunchEnvironment } from "./docker-launch-environment.ts";
 import { dockerLaunchRequestHash, matchesDockerLaunchRequestHash } from "./docker-launch-identity.ts";
-import { DOCKER_LAUNCH_FIELDS } from "./docker-launch-request-schema.ts";
 import { createDockerPromptWorker } from "./docker-prompt-worker.ts";
 import { dockerRepositoryCheckout } from "./docker-repository-checkout.ts";
 import { reservationDatabaseDiagnostic, reservationSql } from "./docker-reservation-sql.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
-import { DOCKER_PROMPT } from "./docker-send-request-schema.ts";
 import { resolveDockerSnapshot } from "./docker-snapshot-data.ts";
 import { recordLaunchStageQuietly } from "./launch-stage-record.ts";
 import {
@@ -191,34 +187,10 @@ function identifier(value: unknown): string {
   if (typeof value !== "string" || !UUID.test(value)) throw failure("invalid_request");
   return value.toLowerCase();
 }
-function normalize(body: Record<string, unknown>, image: string): Request {
-  if (body && typeof body === "object" && Object.hasOwn(body, "image"))
-    throw failure(
-      "invalid_request",
-      "Remove the image field and retry. Armada chooses the Docker environment automatically.",
-    );
-  if (
-    !body ||
-    typeof body !== "object" ||
-    Array.isArray(body) ||
-    Object.keys(body).some((field) => !DOCKER_LAUNCH_FIELDS.includes(field)) ||
-    body.provider !== "docker" ||
-    body.idempotencyKey !== undefined ||
-    (body.externalRef !== undefined && !isExternalRef(body.externalRef)) ||
-    (body.stopWhenWorkMerged !== undefined && typeof body.stopWhenWorkMerged !== "boolean") ||
-    !HARNESSES.includes(body.harness as Harness) ||
-    (body.visibility !== undefined && body.visibility !== "private") ||
-    (body.credentialVersion !== undefined &&
-      (!Number.isSafeInteger(body.credentialVersion) || (body.credentialVersion as number) < 1)) ||
-    (body.model !== undefined && typeof body.model !== "string") ||
-    (body.reasoningEffort !== undefined && typeof body.reasoningEffort !== "string") ||
-    (body.prompt !== undefined && !DOCKER_PROMPT.safeParse(body.prompt).success)
-  )
-    throw failure("invalid_request");
-  const ttlSeconds = body.ttlSeconds === undefined ? DEFAULT_LAUNCH_TTL_SECONDS : body.ttlSeconds;
-  if (!isLaunchTtlSeconds("docker", ttlSeconds)) throw failure("invalid_request");
-  if (body.skipSkillDefaults !== undefined && typeof body.skipSkillDefaults !== "boolean")
-    throw failure("invalid_request");
+type DockerAdmissionInput = Extract<LaunchInput, { provider: "docker"; requestId: string }>;
+
+function normalize(body: DockerAdmissionInput, org: string, hostId: string, image: string): Request {
+  const ttlSeconds = body.ttlSeconds ?? DEFAULT_LAUNCH_TTL_SECONDS;
   if (body.skills !== undefined) {
     try {
       validateLaunchSkillPins(body.skills);
@@ -226,12 +198,11 @@ function normalize(body: Record<string, unknown>, image: string): Request {
       throw failure("invalid_request");
     }
   }
-  if (body.connections !== undefined && !isLaunchConnectionList(body.connections)) throw failure("invalid_request");
   let choice: ReturnType<typeof resolveModelChoice>;
   try {
-    choice = resolveModelChoice(body.harness as Harness, {
-      model: body.model as string | undefined,
-      reasoningEffort: body.reasoningEffort as string | undefined,
+    choice = resolveModelChoice(body.harness, {
+      model: body.model,
+      reasoningEffort: body.reasoningEffort,
     });
   } catch {
     throw failure("invalid_request");
@@ -258,7 +229,7 @@ function normalize(body: Record<string, unknown>, image: string): Request {
   )
     throw failure("invalid_request");
   let repos: GoldenRepo[] | undefined;
-  if (body.repos !== undefined) {
+  if ("repos" in body && body.repos !== undefined) {
     try {
       const config = parseGoldenConfig({ repos: body.repos, init: [] });
       repos = normalizeGitHubGoldenConfig(config).repos.map((r) => ({
@@ -274,24 +245,24 @@ function normalize(body: Record<string, unknown>, image: string): Request {
     ...(repos ? { repos } : {}),
     ...(variables ? { variables } : {}),
     ...(secrets ? { secrets } : {}),
-    ...(body.snapshotId === undefined ? {} : { snapshotId: identifier(body.snapshotId) }),
-    org: identifier(body.org),
+    ...("snapshotId" in body ? { snapshotId: identifier(body.snapshotId) } : {}),
+    org,
     provider: "docker",
-    harness: body.harness as Harness,
+    harness: body.harness,
     visibility: "private",
-    hostId: identifier(body.hostId),
+    hostId,
     image,
     credentialId: body.credentialId === undefined ? null : identifier(body.credentialId),
-    credentialVersion: (body.credentialVersion as number | undefined) ?? null,
+    credentialVersion: body.credentialVersion ?? null,
     requestId: identifier(body.requestId),
-    ...(isExternalRef(body.externalRef) ? { externalRef: body.externalRef } : {}),
+    ...(body.externalRef === undefined ? {} : { externalRef: body.externalRef }),
     model: choice.model,
     reasoningEffort: choice.reasoningEffort,
     ttlSeconds,
-    prompt: (body.prompt as string | undefined) ?? null,
-    ...(body.skills === undefined ? {} : { skills: [...(body.skills as string[])] }),
+    prompt: body.prompt ?? null,
+    ...(body.skills === undefined ? {} : { skills: [...body.skills] }),
     ...(body.stopWhenWorkMerged === false ? { stopWhenWorkMerged: false } : {}),
-    ...(body.skipSkillDefaults === undefined ? {} : { skipSkillDefaults: body.skipSkillDefaults as boolean }),
+    ...(body.skipSkillDefaults === undefined ? {} : { skipSkillDefaults: body.skipSkillDefaults }),
     ...(body.connections === undefined
       ? {}
       : { connections: [...new Set(body.connections.map((id) => id.toLowerCase()))].sort() }),
@@ -471,13 +442,22 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
     let reason = "request_validation";
     let diagnosticSandboxId: string | undefined;
     const validate = () => {
-      const snapshotId = body.snapshotId === undefined ? undefined : identifier(body.snapshotId);
-      if (snapshotId && (body.image !== undefined || body.repos !== undefined)) throw failure("invalid_request");
-      const org = identifier(body.org);
-      if (!caller.orgs.some((member) => member.orgId === org)) throw failure("not_found");
-      return { snapshotId, org };
+      const parsed = launchOperation.input.body.safeParse(body);
+      if (!parsed.success || parsed.data.provider !== "docker" || !("requestId" in parsed.data))
+        throw failure(
+          "invalid_request",
+          body && Object.hasOwn(body, "image")
+            ? "Remove the image field and retry. Armada chooses the Docker environment automatically."
+            : undefined,
+        );
+      const request = parsed.data;
+      const snapshotId = "snapshotId" in request ? identifier(request.snapshotId) : undefined;
+      const org = identifier(request.org);
+      const member = caller.orgs.find((entry) => entry.orgId === org);
+      if (!member) throw failure("not_found");
+      return { request, snapshotId, org, role: member.role };
     };
-    const resolve = async ({ snapshotId, org }: ReturnType<typeof validate>) => {
+    const resolve = async ({ request: input, snapshotId, org, role }: ReturnType<typeof validate>) => {
       reason = "launch_receipt_lookup";
       // Until the read succeeds, a retry may refer to an already dispatched launch.
       dispatchPossible = true;
@@ -487,7 +467,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
            join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
            join public.mcp_actor_epochs e on e.org_id=s.org_id and e.user_id=s.owner_id and e.epoch=d.actor_epoch
            where s.id=$1 and s.owner_id=$2 and s.org_id=$3 and s.provider='docker' and ($4::uuid is null or s.docker_snapshot_id=$4)`,
-          [identifier(body.requestId), caller.userId, org, snapshotId ?? null],
+          [identifier(input.requestId), caller.userId, org, snapshotId ?? null],
         )
       ).rows[0];
       dispatchPossible = Boolean(retained);
@@ -500,7 +480,8 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           : undefined;
       const sourceHost = snapshotId ? (frozen?.hostId ?? source?.host_id) : undefined,
         sourceImage = frozen?.image ?? source?.image_id;
-      if (sourceHost && body.hostId !== undefined && identifier(body.hostId) !== sourceHost) throw failure("not_found");
+      if (sourceHost && input.hostId !== undefined && identifier(input.hostId) !== sourceHost)
+        throw failure("not_found");
       reason = "official_image";
       let image: string;
       try {
@@ -517,17 +498,11 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       // Resolve personal choices before normalization supplies catalog defaults. Explicit
       // account/model selections and replayed frozen manifests retain their authority.
       reason = "account_defaults";
-      let selected = body;
-      if (HARNESSES.includes(body.harness as Harness)) {
-        const preference = frozen
-          ? { credentialId: frozen.credentialId ?? null, model: frozen.model }
-          : await options.credentials.defaults?.(
-              { userId: caller.userId, orgId: org, role: caller.orgs.find((entry) => entry.orgId === org)!.role },
-              body.harness as Harness,
-            );
-        selected = applyLaunchAccountDefaults(body, preference);
-      }
-      const request = normalize(sourceHost ? { ...selected, hostId: sourceHost } : selected, image);
+      const preference = frozen
+        ? { credentialId: frozen.credentialId ?? null, model: frozen.model }
+        : await options.credentials.defaults?.({ userId: caller.userId, orgId: org, role }, input.harness);
+      const selected = applyLaunchAccountDefaults(input, preference);
+      const request = normalize(selected, org, sourceHost ?? identifier(input.hostId), image);
       const actor = { userId: identifier(caller.userId), orgId: request.org };
       if (!caller.orgs.some((org) => org.orgId.toLowerCase() === request.org)) throw failure("not_found");
       const hash = dockerLaunchRequestHash(request);
