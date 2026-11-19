@@ -826,3 +826,60 @@ test("a failed Docker resume ACK only fails the activation admitted for that req
   await fail(current.requestId);
   expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("failed");
 });
+
+test.each(["pending", "completed", "old server failure"] as const)(
+  "Docker protocol refusal with a %s resume ACK waits for a retained stop",
+  async (ack) => {
+    const f = await fixture();
+    const stop = await hosts.enqueueSandbox(f.actor, f.sandbox.id, { operation: "stop", requestId: randomUUID() });
+    await hosts.complete(f.hostToken, f.installationId, { requestId: stop.requestId, outcome: "completed" });
+    const attempt = await admittedResume(f, randomUUID());
+    const job = await hosts.poll(f.hostToken, f.installationId);
+    if (job?.operation !== "resume") throw Error("Missing resume job");
+    const outcome = ack === "old server failure" ? "failed" : "completed";
+    const acknowledge = () => hosts.complete(f.hostToken, f.installationId, { requestId: attempt.requestId, outcome });
+    if (ack === "completed") await acknowledge();
+
+    const enrolments = createRuntimeEnrolments(sql, key, { refuseDockerResume: hosts.refuseRuntimeResume });
+    const enrol = (version: string) =>
+      enrolments.route(
+        new Request("https://armada.example/api/runtime/enrol", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${job.bootstrap.enrolmentToken}`,
+            "x-armada-runtime-protocol": version,
+          },
+        }),
+      );
+    expect((await enrol("0"))?.status).toBe(409);
+    expect((await enrol(String(manifest.protocol)))?.status).toBe(401);
+    expect((await service.resume(f.actor, f.sandbox.id, attempt.requestId)).state).toBe("failed");
+
+    if (ack === "pending") {
+      expect((await hosts.poll(f.hostToken, f.installationId))?.requestId).toBe(attempt.requestId);
+      await acknowledge();
+    }
+    if (ack === "old server failure") {
+      // Persist the prior server's ACK effects, which had no refusal handoff.
+      await sql.transaction!(async (tx) => {
+        await tx.query("update public.docker_host_jobs set outcome='failed',completed_at=now() where request_id=$1", [
+          attempt.requestId,
+        ]);
+        await tx.query(
+          "update public.sandboxes set status='failed',lifecycle_generation=lifecycle_generation+1 where id=$1",
+          [f.sandbox.id],
+        );
+      });
+      await hosts.poll(f.hostToken, f.installationId);
+    }
+    expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("stopping");
+    const cleanup = await hosts.poll(f.hostToken, f.installationId);
+    if (cleanup?.operation !== "stop") throw Error("Missing refused-resume stop");
+    expect(cleanup.request.generation).toBe(job.request.generation);
+    await hosts.complete(f.hostToken, f.installationId, { requestId: cleanup.requestId, outcome: "completed" });
+    expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("stopped");
+    expect((await admittedResume(f, randomUUID())).state).toBe("pending");
+    await acknowledge();
+    expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("starting");
+  },
+);

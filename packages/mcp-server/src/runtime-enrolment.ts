@@ -49,7 +49,14 @@ export const runtimeTransaction = (tx: Sql): Sql => ({
 export const scopedRuntimeSql = (tx: Sql): Sql => ({ query: tx.query.bind(tx), transaction: (work) => work(tx) });
 
 /** Internal launcher authority, never a user-facing configuration/credential API. */
-export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options: { allowDockerIssue?: boolean } = {}) {
+export function createRuntimeEnrolments(
+  sql: Sql,
+  encryptionKey: string,
+  options: {
+    allowDockerIssue?: boolean;
+    refuseDockerResume?: (tx: Sql, sandboxId: string, generation: string) => Promise<boolean>;
+  } = {},
+) {
   const token = (kind: "enrol" | "runtime") => `armada_${kind}_${randomBytes(32).toString("hex")}`;
   const valid = (value: string, kind: "enrol" | "runtime") => new RegExp(`^armada_${kind}_[a-f0-9]{64}$`).test(value);
   async function transaction<T>(work: (tx: Sql) => Promise<T>): Promise<T> {
@@ -178,7 +185,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
     const hash = await sha256Hex(enrolmentToken);
     const runtimeToken = token("runtime");
     const runtimeHash = await sha256Hex(runtimeToken);
-    return transaction(async (tx) => {
+    const result = await transaction(async (tx) => {
       const candidate = (
         await tx.query<{ sandbox_id: string }>(
           "select sandbox_id from public.runtime_enrolments where enrolment_hash=$1",
@@ -197,7 +204,19 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
         )
       ).rows[0];
       if (!row) throw new RuntimeEnrolmentDenied();
-      if (!supported) throw new RuntimeProtocolUnsupported(sandbox.id);
+      if (!supported) {
+        if (
+          sandbox.provider === "docker" &&
+          (await options.refuseDockerResume?.(tx, sandbox.id, sandbox.lifecycle_generation))
+        ) {
+          await tx.query(
+            `update public.runtime_enrolments set enrolment_hash=null,enrolment_expires_at=null,configuration_enc=null
+             where sandbox_id=$1 and lifecycle_generation=$2`,
+            [sandbox.id, sandbox.lifecycle_generation],
+          );
+        }
+        return new RuntimeProtocolUnsupported(sandbox.id);
+      }
       if (!row.configuration_enc) throw new RuntimeEnrolmentDenied();
       const configuration: unknown = JSON.parse(await decryptSecret(row.configuration_enc, encryptionKey));
       const updated = (
@@ -211,6 +230,8 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
       if (!updated) throw new RuntimeEnrolmentDenied();
       return { sandboxId: sandbox.id, epoch: updated.epoch, runtimeToken, configuration };
     });
+    if (result instanceof RuntimeProtocolUnsupported) throw result;
+    return result;
   }
   /** Read-only bootstrap reporting does not consume or extend the one-use ticket. */
   async function withBootstrap<T>(enrolmentToken: string, work: (tx: Sql, scope: RuntimeSessionScope) => Promise<T>) {

@@ -43,7 +43,7 @@ import { collectOutputTransfers, DOCKER_RETAINED_OUTPUT_STOP } from "./output-tr
 import { noteAdmission } from "./request-observability.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
 import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
-import { failDockerResumeActivation } from "./sandbox-lifecycle.ts";
+import { failDockerResumeActivation, stopRefusedDockerResume } from "./sandbox-lifecycle.ts";
 import { deferTransactionWake } from "./wake-bus.ts";
 
 type Actor = { userId: string; orgId: string };
@@ -64,6 +64,7 @@ type StoredJob = Bound & {
   outcome: string | null;
   result_image_id?: string | null;
   cancelled_at?: string | null;
+  refused_runtime_generation: string | number | null;
 };
 type Sandbox = {
   id: string;
@@ -394,6 +395,20 @@ export function createDockerHostStore(sql: Sql, key: string) {
     if (input(delivered) !== input({ ...delivered, request: frozen })) deny();
     return logical;
   }
+  async function settleRefusedResume(tx: Sql, row: Sandbox, job: StoredJob, acknowledgedFailure = false) {
+    if (!(await stopRefusedDockerResume(tx, row.id, job.request_id, acknowledgedFailure))) return;
+    await insert(
+      tx,
+      job.host_id,
+      { requestId: randomUUID(), operation: "stop", request: await machine(tx, row, "stop") },
+      {
+        bound_sandbox_id: row.id,
+        bound_actor_id: job.bound_actor_id,
+        bound_actor_epoch: job.bound_actor_epoch,
+        bound_operation: "stop",
+      },
+    );
+  }
   async function startupFailed(tx: Sql, row: Sandbox, job: StoredJob, reason?: DockerJobFailureReason) {
     const operation = job.bound_operation;
     const message =
@@ -442,6 +457,33 @@ export function createDockerHostStore(sql: Sql, key: string) {
     );
   }
   return {
+    /** Enrolment already holds the member, host, sandbox and ticket locks. */
+    async refuseRuntimeResume(tx: Sql, sandboxId: string, generation: string) {
+      const job = (
+        await tx.query<StoredJob>(
+          `update public.docker_host_jobs j set refused_runtime_generation=$2
+           from public.docker_resume_claims c join public.sandboxes s on s.id=c.sandbox_id
+           where s.id=$1 and s.status='starting' and s.lifecycle_generation=$2 and not s.application_secret_tainted
+             and c.accepted and c.lifecycle_generation+1=s.lifecycle_generation
+             and c.host_id=s.docker_host_id and c.installation_id=s.docker_installation_id
+             and c.generation=s.docker_generation and c.actor_id=s.owner_id
+             and j.bound_operation='resume' and j.request_id=c.request_id and j.bound_sandbox_id=s.id
+             and j.host_id=c.host_id and j.bound_actor_id=c.actor_id
+             and j.cancelled_at is null and j.outcome is distinct from 'failed'
+           returning j.*`,
+          [sandboxId, generation],
+        )
+      ).rows[0];
+      if (!job) return false;
+      if (job.outcome === "completed") {
+        const row =
+          (await tx.query<Sandbox>("select * from public.sandboxes where id=$1", [sandboxId])).rows[0] ?? deny();
+        const delivered = await readJob(job);
+        if (input(delivered) !== input({ ...delivered, request: await machine(tx, row, "stop") })) deny();
+        await settleRefusedResume(tx, row, job);
+      }
+      return true;
+    },
     list(actor: Actor): Promise<DockerHostSummary[]> {
       return transaction(async (tx) => {
         exact(actor, ["userId", "orgId"]);
@@ -1243,6 +1285,26 @@ export function createDockerHostStore(sql: Sql, key: string) {
           "update public.docker_host_jobs j set outcome='failed',completed_at=now() from public.docker_snapshots s where j.snapshot_id=s.id and j.host_id=$1 and j.outcome is null and s.status='failed'",
           [host.id],
         );
+        // During server overlap, an older ACK handler can record the terminal fact
+        // without handing off the refusal. Reconcile it through the same fenced writer.
+        const refused = (
+          await tx.query<StoredJob>(
+            `select j.* from public.docker_host_jobs j join public.sandboxes s on s.id=j.bound_sandbox_id
+             where j.host_id=$1 and j.bound_operation='resume' and j.cancelled_at is null
+               and s.docker_host_id=$1 and s.docker_installation_id=$2 and s.expires_at>now()
+               and s.stop_requested_at is null and s.deleted_at is null
+               and ((j.outcome in ('completed','failed') and s.status='starting'
+                 and s.lifecycle_generation=j.refused_runtime_generation)
+                 or (j.outcome='failed' and s.status='failed'
+                   and s.lifecycle_generation=j.refused_runtime_generation+1))
+             order by j.position limit 1`,
+            [host.id, installationId],
+          )
+        ).rows[0];
+        if (refused) {
+          const logical = await boundMachine(tx, refused, host, installationId);
+          await settleRefusedResume(tx, logical, refused, refused.outcome === "failed");
+        }
         // Older servers acknowledged failed startup without terminalizing the
         // logical row. Reconcile that saved fact without replaying the machine.
         const histories = (
@@ -1619,7 +1681,11 @@ export function createDockerHostStore(sql: Sql, key: string) {
         } else if (result.imageId !== undefined) deny();
         // A repeated same-outcome machine fact also repairs a logical transition
         // missed by an earlier server; conflicting facts still fail above.
-        if (result.outcome === "failed" && logical) await startupFailed(tx, logical, job, result.reason);
+        if (logical && job.refused_runtime_generation != null) {
+          await settleRefusedResume(tx, logical, job, result.outcome === "failed");
+        } else if (result.outcome === "failed" && logical) {
+          await startupFailed(tx, logical, job, result.reason);
+        }
         // Persist terminal receipts below, but never replay old stop/delete
         // effects onto a lifecycle admitted after that job.
         const staleCleanup =

@@ -64,6 +64,34 @@ export async function failDockerResumeActivation(
   );
 }
 
+export async function stopRefusedDockerResume(
+  tx: Sql,
+  sandboxId: string,
+  requestId: string,
+  acknowledgedFailure: boolean,
+) {
+  const changed = await tx.query(
+    `update public.sandboxes s set status='stopping',status_reason=null,
+       stop_requested_at=clock_timestamp(),lifecycle_generation=s.lifecycle_generation+1
+     from public.docker_host_jobs resumed
+     where s.id=$1 and s.provider='docker' and s.stop_requested_at is null
+       and s.deleted_at is null and s.expires_at>clock_timestamp()
+       and not s.application_secret_tainted
+       and resumed.request_id=$2 and resumed.bound_sandbox_id=s.id and resumed.host_id=s.docker_host_id
+       and resumed.bound_operation='resume'
+       and ((s.status='starting' and s.lifecycle_generation=resumed.refused_runtime_generation)
+         or ($3 and s.status='failed' and resumed.outcome='failed' and resumed.cancelled_at is null
+           and s.lifecycle_generation=resumed.refused_runtime_generation+1))
+       and not exists (
+         select 1 from public.docker_host_jobs later where later.bound_sandbox_id=s.id
+           and later.host_id=resumed.host_id and later.bound_operation in ('resume','bootstrap')
+           and later.position>resumed.position
+       ) returning s.id`,
+    [sandboxId, requestId, acknowledgedFailure],
+  );
+  return changed.rows.length > 0;
+}
+
 async function recoverInterruptedBoatResume(
   tx: Sql,
   sandboxId: string,

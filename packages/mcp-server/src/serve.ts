@@ -140,7 +140,9 @@ export async function startServer(
   const sql = bunSql(config.databaseUrl, config.databasePoolMax);
   const jobs = createJobsStore(sql, config.encryptionKey);
   const webhooks = createOutboundWebhooks(sql, config.encryptionKey, config.dashboardUrl);
-  const runtimeEnrolments = createRuntimeEnrolments(sql, config.encryptionKey);
+  const runtimeEnrolments = createRuntimeEnrolments(sql, config.encryptionKey, {
+    refuseDockerResume: createDockerHostStore(sql, config.encryptionKey).refuseRuntimeResume,
+  });
   const runtimeCommands = createRuntimeCommands(runtimeEnrolments, config.encryptionKey);
   const runtimeCheckpoint = createRuntimeCheckpoint(sql, config.encryptionKey, runtimeCommands, {
     docker: env.ARMADA_DOCKER_HOSTS === "1" && env.ARMADA_DOCKER_PLACEMENT === "1",
