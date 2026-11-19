@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import type { AgentEvent } from "@armada/core";
+import { RequestRefused } from "../src/errors.ts";
 import { type Driver, Journal, Runner } from "../src/index.ts";
+import { executeWithReceipt } from "../src/request-receipts.ts";
 
 const grant = {
   token: "runtime_fixture_grant",
@@ -76,6 +78,101 @@ test.each([
       JSON.stringify(`${prefix}${secret}${extension}${suffix}`).slice(1, -1),
     );
     expect(journal.db.query("select 1 from requests where id=?").get(command.requestId)).toBeNull();
+  } finally {
+    await runner.close();
+    journal.close();
+  }
+});
+
+test("fallback events mask short application values before append, on read, and at checkpoint", async () => {
+  const journal = new Journal(":memory:", (text) => text);
+  const runner = new Runner(journal, grant, {});
+  try {
+    const event = {
+      id: "original",
+      at: 1,
+      kind: "other",
+      type: "diagnostic_fixture",
+      data: { nested: [{ prefixvalue: "prefixvalue" }] },
+    } satisfies AgentEvent;
+    journal.append(event);
+    journal.registerApplicationSecrets(["value"]);
+    journal.append({ ...event, id: "new" });
+    const expected = { ...event, data: { nested: [{ "prefix[REDACTED]": "prefix[REDACTED]" }] } };
+    expect(journal.events().at(-1)?.event).toEqual({ ...expected, id: "new" });
+    const read = await runner.handleDialout({ ...command, op: "events" });
+    expect(await read.json()).toMatchObject({ result: { events: [expected, { ...expected, id: "new" }] } });
+    journal.sanitize();
+    expect(journal.events()[0]?.event).toEqual(expected);
+  } finally {
+    await runner.close();
+    journal.close();
+  }
+});
+
+test("prompt and process rows mask short text without changing recovery fields", () => {
+  const journal = new Journal(":memory:", (text) => text);
+  try {
+    journal.registerApplicationSecrets(["run"]);
+    const prompt = {
+      promptId: "run-prompt",
+      conversationId: "run-conversation",
+      status: "running" as const,
+      request: { sandboxId: "logical", harness: "codex" as const, text: "prefixrun" },
+    };
+    journal.transition(prompt, "running");
+    expect(journal.get(prompt.promptId)).toEqual({
+      ...prompt,
+      request: { ...prompt.request, text: "prefix[REDACTED]" },
+    });
+    journal.registerApplicationSecrets(["auth"]);
+    journal.transition(prompt, "failed", "authentication_failed:authentication");
+    const process = {
+      pid: 12,
+      status: "running",
+      identity: { boot: "fixture-run", start: "123", group: 12 },
+      stderr: "prefixrun",
+    };
+    journal.db.query("INSERT INTO processes VALUES(?,?)").run(process.pid, JSON.stringify(process));
+    journal.sanitize();
+    expect(journal.events().at(-1)?.event).toMatchObject({
+      status: "failed",
+      reason: "authentication_failed:authentication",
+    });
+    const row = journal.db.query("SELECT body FROM processes WHERE pid=?").get(process.pid) as { body: string };
+    expect(JSON.parse(row.body)).toEqual({ ...process, stderr: "prefix[REDACTED]" });
+  } finally {
+    journal.close();
+  }
+});
+
+test("receipts and command errors mask short text while retaining command correlation", async () => {
+  const journal = new Journal(":memory:", (text) => text);
+  const runner = new Runner(journal, grant, {});
+  try {
+    const uncertain = { ...command, requestId: "uncertain", op: "interrupt" as const };
+    await expect(
+      executeWithReceipt(journal, uncertain, () => Promise.reject(Error("dispatch interrupted"))),
+    ).rejects.toThrow("dispatch interrupted");
+    journal.registerSecrets(["outcome"]);
+    const fenced = await executeWithReceipt(journal, uncertain, () => Promise.reject(Error("unexpected dispatch")));
+    expect(fenced.status).toBe(200);
+    expect(await fenced.json()).toMatchObject({ error: "request_outcome_unknown" });
+    journal.registerApplicationSecrets(["value", "cursor"]);
+    const request = { ...command, requestId: "value-request", op: "interrupt" as const };
+    const first = await executeWithReceipt(journal, request, async () => ({ description: "prefixvalue" }));
+    const expected = { version: 1, requestId: request.requestId, result: { description: "prefix[REDACTED]" } };
+    expect(await first.json()).toEqual(expected);
+    const replay = await executeWithReceipt(journal, request, () => Promise.reject(Error("unexpected dispatch")));
+    expect(await replay.json()).toEqual(expected);
+    const refused = await executeWithReceipt(journal, { ...request, requestId: "refused" }, async () => {
+      throw new RequestRefused("prefixvalue");
+    });
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toEqual({ error: "prefix[REDACTED]" });
+    const failed = await runner.handleDialout({ ...command, op: "events", cursor: "bad" });
+    expect(failed.status).toBe(409);
+    expect(await failed.json()).toEqual({ error: "invalid_cursor" });
   } finally {
     await runner.close();
     journal.close();
@@ -520,7 +617,7 @@ test("proof truncation persists only scrubbed correlation metadata", () => {
       data: { tool: "bash", output: "x".repeat(30_000) },
     } satisfies AgentEvent;
     journal.append(event);
-    journal.registerApplicationSecrets(["x", "fixturevalue"]);
+    journal.registerApplicationSecrets(["x", "trunca", "fixturevalue"]);
     journal.append(event);
     expect(journal.events().at(-1)?.event).toMatchObject({
       kind: "other",
