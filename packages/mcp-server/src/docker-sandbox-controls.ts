@@ -704,13 +704,8 @@ export function createDockerSandboxControls(
     if (row.owner_id !== caller.userId) throw denied();
     if (!["ready", "running"].includes(row.status)) throw failure("conflict", "Docker sandbox must be running.");
     const requestId = (args.request_id as string | undefined) ?? randomUUID();
-    if (
-      args.conversation_id !== undefined &&
-      (typeof args.conversation_id !== "string" || !UUID.test(args.conversation_id))
-    )
-      throw invalid();
-    let conversationId = (args.conversation_id as string | undefined) ?? row.conversation_ids.at(-1);
-    if (name === "steer" && args.conversation_id === undefined) {
+    let conversationId = row.conversation_ids.at(-1);
+    if (name === "steer") {
       const previous = (
         await sql.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
           "select request_enc from public.runtime_commands where sandbox_id=$1 and request_id=$2",
@@ -776,10 +771,7 @@ export function createDockerSandboxControls(
       },
     );
     if (name === "interrupt") {
-      await agent.interrupt(
-        { sandboxId: row.id, ...(args.conversation_id ? { conversationId: args.conversation_id as string } : {}) },
-        requestId,
-      );
+      await agent.interrupt({ sandboxId: row.id }, requestId);
       return { id: row.id, interrupted: true };
     }
     if (name === "steer") {

@@ -35,11 +35,9 @@ export async function operation(
     recovery: [],
     advice: [],
     send: ["--request-id", "--conversation", "--model", "--reasoning-effort"],
-    steer: ["--conversation"],
     exec: ["--cwd", "--timeout"],
     stop: [],
     wait: ["--timeout", "--prompt-id"],
-    interrupt: ["--conversation"],
     report: [
       "--prompt-id",
       ...(args.positionals[1] === "blocked" ? ["--reason"] : ["--pr-number", "--pr-url", "--head-sha"]),

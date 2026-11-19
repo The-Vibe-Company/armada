@@ -185,3 +185,17 @@ test.each([
   });
   expect(provider).not.toHaveBeenCalled();
 });
+
+test.each(["steer", "interrupt"])("REST %s refuses a conversation selector before dispatch", async (operation) => {
+  const ctx = context(new Error(), ["current"]);
+  const provider = spyOn(ctx, "provider");
+
+  await expect(
+    callSharedTool(ctx, operation, { id: "sandbox", text: "Continue", conversation_id: "current" }),
+  ).rejects.toMatchObject({
+    code: "invalid_request",
+    status: 400,
+    message: "Turn controls target the sandbox by ID. Omit conversation_id.",
+  });
+  expect(provider).not.toHaveBeenCalled();
+});

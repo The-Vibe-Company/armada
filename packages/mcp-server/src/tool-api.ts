@@ -86,6 +86,8 @@ import { createRestToolServer, type ToolContext } from "./tools.ts";
 
 /** HTTP and MCP run precisely the same validated operations and authorization context. */
 export async function callSharedTool(context: ToolContext, name: string, args: Record<string, unknown>) {
+  if ((name === "steer" || name === "interrupt") && Object.hasOwn(args, "conversation_id"))
+    throw new ToolApiError("invalid_request", "Turn controls target the sandbox by ID. Omit conversation_id.");
   const measure: NonNullable<ToolContext["measure"]> = context.measure ?? ((_phase, work) => work());
   const server = await measure("tool_register", async () =>
     createRestToolServer(context, VERSION, name === "list" ? "list" : undefined),

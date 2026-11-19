@@ -47,6 +47,11 @@ test("published OpenAPI matches current server contracts and preserves REST fiel
   const logsInput = paths["/api/v1/logs/read"]!.post.requestBody.content["application/json"].schema.properties!;
   expect(logsInput).not.toHaveProperty("conversationId");
   expect(logsInput).not.toHaveProperty("conversation_id");
+  for (const route of ["sandbox/steer", "sandbox/interrupt"]) {
+    const input = paths[`/api/v1/${route}`]!.post.requestBody.content["application/json"].schema.properties!;
+    expect(input).not.toHaveProperty("conversationId");
+    expect(input).not.toHaveProperty("conversation_id");
+  }
   expect(logsInput.follow).toEqual({
     type: "boolean",
     description: "Follow events within the bounded HTTP request.",

@@ -278,7 +278,7 @@ test("help detection leaves malformed operations and literal payloads to their p
     ["status", "sandbox-id", "--help"],
     ["wait", "--timeout", "-h"],
     ["stop", "sandbox-id", "--help"],
-    ["interrupt", "--conversation", "-h"],
+    ["interrupt", "sandbox-id", "-h"],
     ["steer", "sandbox-id", "--help"],
     ["exec", "sandbox-id", "--", "-h"],
     ["list", "--status", "-h"],
