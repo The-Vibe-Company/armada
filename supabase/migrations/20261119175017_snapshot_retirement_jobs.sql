@@ -1,6 +1,10 @@
 -- Hand the retirement backlog to the shared runner. Existing claims may finish
 -- during deploy overlap. Prevent new claims, including a claim already selected
 -- by an old worker that has yet to update the row.
+-- Drain transactions that already selected a retirement FOR UPDATE before
+-- installing triggers and updating the backlog under the same lock.
+lock table public.golden_snapshot_retirements in exclusive mode;
+
 create function public.handoff_snapshot_retirement() returns trigger
 language plpgsql set search_path = '' as $$
 begin
