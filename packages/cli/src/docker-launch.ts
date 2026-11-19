@@ -29,7 +29,7 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
     "--golden",
     "--credential-id",
     "--credential-version",
-    "--request-id",
+    "--idempotency-key",
     "--agent",
     "--org",
     "--model",
@@ -62,10 +62,10 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
     throw new GoldenError("invalid_config", "--host requires a UUID or exact host name.");
   if (snapshotId && values(args, "--repo").length)
     throw new GoldenError("invalid_config", "A snapshot cannot be combined with --repo.");
-  const supplied = single(args, "--request-id");
-  if (supplied !== undefined && !uuid.test(supplied))
-    throw new GoldenError("invalid_config", "--request-id requires a UUID.");
-  const requestId = supplied?.toLowerCase() ?? crypto.randomUUID();
+  const supplied = single(args, "--idempotency-key");
+  if (supplied !== undefined && (supplied.length < 16 || supplied.length > 128))
+    throw new GoldenError("invalid_config", "--idempotency-key requires 16–128 characters.");
+  const idempotencyKey = supplied ?? crypto.randomUUID();
   const version = single(args, "--credential-version");
   if (version !== undefined && (!/^[1-9][0-9]*$/.test(version) || !Number.isSafeInteger(Number(version))))
     throw new GoldenError("invalid_config", "--credential-version must be a positive integer.");
@@ -140,7 +140,7 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
     ...(snapshotId ? { snapshotId } : {}),
     harness,
     ...(credentialId === undefined ? {} : { credentialId }),
-    requestId,
+    idempotencyKey,
     ...(single(args, "--model") === undefined ? {} : { model: single(args, "--model")! }),
     ...(single(args, "--reasoning-effort") === undefined
       ? {}
@@ -158,7 +158,7 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
     });
     if (
       result?.sandbox?.provider !== "docker" ||
-      result.sandbox.id !== requestId ||
+      !uuid.test(result.sandbox.id) ||
       result.golden !== null ||
       (!result.runtime?.epoch && !(result.runtime === null && ["starting", "failed"].includes(result.sandbox.status)))
     )
@@ -184,7 +184,7 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
       !(error instanceof AuthError && error.code === "unauthorized")
     )
       io.err(
-        `Docker launch request ${requestId}. Inspect this sandbox or retry with --request-id ${requestId} and the same body; do not create a replacement while outcome is unknown.\n`,
+        `Docker launch key ${JSON.stringify(idempotencyKey)}. Retry with --idempotency-key and the same key and body; do not create a replacement while outcome is unknown.\n`,
       );
     throw error;
   }

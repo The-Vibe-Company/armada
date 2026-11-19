@@ -101,7 +101,7 @@ remain Boat/Modal. The explicit preview API below is unchanged.
   "hostId": "HOST_UUID",
   "harness": "codex",
   "credentialId": "MODEL_ACCOUNT_UUID",
-  "requestId": "FRESH_SANDBOX_UUID",
+  "idempotencyKey": "saved-launch-key-0001",
   "visibility": "private",
   "model": "gpt-6.1-sol",
   "reasoningEffort": "medium",
@@ -123,9 +123,9 @@ when runtime information is available and is null otherwise. The `promptId` and
 `conversationId` fields are null when their IDs are unavailable. Read the prompt
 output through `/api/v1/logs/read` and status through `/api/v1/sandbox/status`.
 
-`requestId` is the logical sandbox ID and durable replay key. Identical retries
-resume the original phase IDs; changed input conflicts. Store this UUID before
-launch. A timeout is an unknown outcome, not permission to allocate a replacement.
+Store the `idempotencyKey` before launch and use the returned `sandbox.id`
+for sandbox operations. Identical retries resume the original phase IDs.
+Changed input conflicts. A timeout is an unknown outcome, not permission to allocate a replacement.
 The request and receipt are encrypted in a service-only ledger; no model secret
 is copied into it. A completed retry returns its original admission receipt with
 current sandbox metadata (even after stop/delete), never restarts the sandbox.
@@ -144,7 +144,7 @@ progress, and a failed fetch is reported in plain language.
 ```sh
 bun run armada launch --provider docker --org "$ARMADA_ORG" \
   --host "$DOCKER_HOST_ID" \
-  --credential-id "$ARMADA_CREDENTIAL" --request-id "$REQUEST_ID" \
+  --credential-id "$ARMADA_CREDENTIAL" --idempotency-key "$LAUNCH_KEY" \
   --agent codex --json 'Reply with exactly DOCKER_OK.'
 ```
 

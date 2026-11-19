@@ -38,19 +38,20 @@ class McpReceiptTest(unittest.TestCase):
 class NormalLaunchReceiptTest(unittest.TestCase):
     def test_pending_launch_replays_the_same_request_until_its_original_receipt(self):
         from unittest.mock import patch
-        request = {"requestId": "sandbox", "prompt": "original prompt"}
+        request = {"idempotencyKey": "original-launch-key", "prompt": "original prompt"}
         pending = {"sandbox": {"id": "sandbox", "provider": "docker", "status": "starting"}, "runtime": None}
         complete = {"sandbox": {"id": "sandbox", "provider": "docker", "status": "running"},
                     "runtime": {"kind": "armada", "epoch": "1"},
                     "promptId": "original-prompt", "conversationId": "original-conversation"}
-        calls, replies = [], iter([pending, complete])
+        calls, admissions, replies = [], [], iter([pending, complete])
         def api(path, body, normal=False):
             calls.append((path, body, normal))
             return next(replies)
         with patch.object(module.time, "monotonic", return_value=0), patch.object(module.time, "sleep") as sleep:
-            self.assertEqual(module.normal_launch_receipt(api, request, 10), complete)
+            self.assertEqual(module.normal_launch_receipt(api, request, 10, on_admission=admissions.append), complete)
         self.assertEqual(calls, [("sandbox/launch", request, True)] * 2)
         self.assertTrue(all(body is request for _, body, _ in calls))
+        self.assertEqual(admissions, ["sandbox"])
         sleep.assert_called_once_with(2)
 
     def test_failed_preparation_reports_the_plain_reason_without_another_launch(self):
@@ -58,7 +59,7 @@ class NormalLaunchReceiptTest(unittest.TestCase):
         api = Mock(return_value={"sandbox": {"id": "sandbox", "provider": "docker", "status": "failed",
                                              "statusReason": "Repository checkout failed or timed out."}})
         with self.assertRaisesRegex(RuntimeError, "Repository checkout failed or timed out"):
-            module.normal_launch_receipt(api, {"requestId": "sandbox"}, 10)
+            module.normal_launch_receipt(api, {"idempotencyKey": "original-launch-key"}, 10)
         api.assert_called_once()
 
     def test_github_proof_reports_the_launch_connection_reason_before_misattributing_a_missing_tool(self):
@@ -68,18 +69,18 @@ class NormalLaunchReceiptTest(unittest.TestCase):
                    "github": {"status": "not_connected", "message": "This caller has no GitHub connection."}}
         api = Mock(return_value=receipt)
         with self.assertRaisesRegex(RuntimeError, "GitHub proof blocked: This caller has no GitHub connection"):
-            module.normal_launch_receipt(api, {"requestId": "sandbox"}, 10, require_github=True)
+            module.normal_launch_receipt(api, {"idempotencyKey": "original-launch-key"}, 10, require_github=True)
         api.assert_called_once()
         receipt["github"] = {"status": "connected", "login": "owner"}
-        self.assertIs(module.normal_launch_receipt(api, {"requestId": "sandbox"}, 10, require_github=True), receipt)
+        self.assertIs(module.normal_launch_receipt(api, {"idempotencyKey": "original-launch-key"}, 10, require_github=True), receipt)
 
     def test_pending_preparation_has_a_bounded_deadline(self):
         from unittest.mock import Mock, patch
         api = Mock(return_value={"sandbox": {"id": "sandbox", "provider": "docker", "status": "starting"},
                                 "runtime": None})
         with patch.object(module.time, "monotonic", side_effect=[0, 10]), patch.object(module.time, "sleep") as sleep:
-            with self.assertRaisesRegex(RuntimeError, "preparation timed out; retain sandbox/request ID"):
-                module.normal_launch_receipt(api, {"requestId": "sandbox"}, 10)
+            with self.assertRaisesRegex(RuntimeError, "preparation timed out; retain sandbox ID and launch key"):
+                module.normal_launch_receipt(api, {"idempotencyKey": "original-launch-key"}, 10)
         api.assert_called_once()
         sleep.assert_not_called()
 

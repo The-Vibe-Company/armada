@@ -87,10 +87,10 @@ export async function launchFromDockerSnapshot(_previous: ActionResult | null, d
   const selected = await selectedOrganization(),
     org = formString(data, "org"),
     snapshotId = formString(data, "snapshotId"),
-    requestId = formString(data, LAUNCH_KEY_FIELD),
+    idempotencyKey = formString(data, LAUNCH_KEY_FIELD),
     harness = formString(data, "harness") as Harness;
   if (!selected || org !== selected.org.id) return fail("Switch to that organization first.");
-  if (!isUuid(snapshotId) || !isUuid(requestId) || !HARNESSES.includes(harness))
+  if (!isUuid(snapshotId) || !isUuid(idempotencyKey) || !HARNESSES.includes(harness))
     return fail("That launch request is not valid.");
   if (formString(data, "armada_access")) return fail("Armada delegation is not supported for host snapshots yet.");
   const ttl = ttlChoice(formString(data, "ttl"), "docker");
@@ -141,7 +141,7 @@ export async function launchFromDockerSnapshot(_previous: ActionResult | null, d
         org,
         provider: "docker",
         snapshotId,
-        requestId,
+        idempotencyKey,
         harness,
         credentialId: account.id,
         model: choice.args.model,

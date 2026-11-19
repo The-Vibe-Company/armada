@@ -143,7 +143,7 @@ export function DockerLaunchForm({
       event.preventDefault();
       event.stopPropagation();
     };
-    // The request key is the server's `requestId`. It is reused only after a launch with no definite answer, only
+    // The request key is the server's `idempotencyKey`. It is reused only after a launch with no definite answer, only
     // with the same choices and within KEY_TTL_MS, even if the dialog was closed in between: the server then
     // reconciles it instead of starting a second sandbox. A refusal makes the next launch a new request.
     const keyed = (event: Event) => {

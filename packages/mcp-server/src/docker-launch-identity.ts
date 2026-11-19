@@ -1,9 +1,13 @@
 import { createHash, createHmac } from "node:crypto";
 
 /** Translate a canonical launch key into Docker's durable reservation identifier. */
-export function dockerLaunchRequestId(secret: string, userId: string, orgId: string, key: string): string {
-  // Clients can choose legacy reservation UUIDs. A server key prevents another
-  // caller from computing a keyed launch's UUID and claiming it first.
+export function dockerLaunchRequestId(
+  secret: string,
+  userId: string,
+  orgId: string,
+  key: string,
+): ReturnType<Crypto["randomUUID"]> {
+  // Use a keyed hash so caller-controlled identifiers on other paths cannot predict a reservation UUID.
   const digest = createHmac("sha256", Buffer.from(secret, "base64"))
     .update(JSON.stringify(["docker-launch-key-v1", userId.toLowerCase(), orgId, key]))
     .digest("hex");

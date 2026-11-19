@@ -76,7 +76,9 @@ class Opener:
             assert mode == "preview-follow-up" and body["sandboxId"] == sandbox
             value = {"state": "ready" if path.endswith("ready") else "completed"}
         elif path == "sandbox/launch":
-            sandbox = body["requestId"]
+            uuid.UUID(body["idempotencyKey"])
+            assert "requestId" not in body
+            sandbox = "00000000-0000-4000-8000-000000000001"
             assert timeout == 600
             assert body["hostId"] == "retained-host"
             assert "image" not in body

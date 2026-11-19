@@ -160,7 +160,7 @@ export type DockerLaunchArgs = {
   hostId: string;
   harness: Harness;
   credentialId: string;
-  requestId: string;
+  idempotencyKey: string;
   model: string;
   reasoningEffort: string;
   prompt?: string;
@@ -169,7 +169,7 @@ export type DockerLaunchArgs = {
 
 /** The `sandbox/launch` body for a Docker host: an agent in the official Armada environment, private, with no image override. */
 export function dockerLaunchBody(args: DockerLaunchArgs): DockerLaunchRequest {
-  if (![args.org, args.hostId, args.credentialId, args.requestId].every(isUuid))
+  if (![args.org, args.hostId, args.credentialId, args.idempotencyKey].every(isUuid))
     throw new Error("Docker launch identifiers must be UUIDs.");
   return {
     org: args.org,
@@ -177,7 +177,7 @@ export function dockerLaunchBody(args: DockerLaunchArgs): DockerLaunchRequest {
     hostId: args.hostId,
     harness: args.harness,
     credentialId: args.credentialId,
-    requestId: args.requestId,
+    idempotencyKey: args.idempotencyKey,
     model: args.model,
     reasoningEffort: args.reasoningEffort,
     visibility: "private",

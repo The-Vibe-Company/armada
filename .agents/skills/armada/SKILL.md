@@ -59,7 +59,10 @@ any receipt UUID returned. On success, pass `sandbox.id` to subsequent tools.
   A malformed request returns HTTP 400 with error code `invalid`.
   For REST golden and Docker launches, read the Armada ID from `sandbox.id`.
   The TypeScript SDK uses the same `LaunchResult` envelope for ordinary launches.
-  Docker returns `golden: null`. Pinned template launches return a template receipt.
+  Docker returns `golden: null`. Docker REST launches require `idempotencyKey`.
+  Save the key and replay the identical request after an uncertain launch.
+  With `armada launch --provider docker`, pass the saved key as `--idempotency-key`.
+  Pinned template launches return a template receipt.
 - Ordinary Modal launches default to the enrolled runtime. To confirm the deployed
   default, check `modalRuntime.defaultPath` in the authenticated response to
   `POST /api/v1/launch/options`.

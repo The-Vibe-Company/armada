@@ -112,7 +112,8 @@ type DockerLaunchFields = {
   connections?: string[];
   variables?: { key: string; variableId: string; version: number }[];
   secrets?: { key: string; secretId: string; version: number }[];
-} & ({ requestId: string; idempotencyKey?: never } | { idempotencyKey: string; requestId?: never });
+  idempotencyKey: string;
+};
 /** Launch on a registered Docker host from the official Armada environment. There is no golden. */
 export type DockerHostLaunchInput = DockerLaunchFields & {
   hostId: string;

@@ -111,14 +111,14 @@ test("the dialog offers the agents the server launches on Docker, Codex chosen f
   expect(preferredHarness(["claude"], "codex", () => false)).toBe("claude");
 });
 
-test("the launch body omits image overrides: the chosen agent, private, the form key as requestId", () => {
+test("the launch body omits image overrides: the chosen agent, private, the form key as idempotencyKey", () => {
   expect(
     dockerLaunchBody({
       org: ORG,
       hostId: HOST,
       harness: "codex",
       credentialId: ACCOUNT,
-      requestId: REQUEST,
+      idempotencyKey: REQUEST,
       model: "gpt-5",
       reasoningEffort: "medium",
       prompt: "Say Hello",
@@ -130,7 +130,7 @@ test("the launch body omits image overrides: the chosen agent, private, the form
     hostId: HOST,
     harness: "codex",
     credentialId: ACCOUNT,
-    requestId: REQUEST,
+    idempotencyKey: REQUEST,
     model: "gpt-5",
     reasoningEffort: "medium",
     visibility: "private",
@@ -143,7 +143,7 @@ test("the launch body omits image overrides: the chosen agent, private, the form
       hostId: HOST,
       harness: "codex",
       credentialId: ACCOUNT,
-      requestId: "x",
+      idempotencyKey: "x",
       model: "m",
       reasoningEffort: "e",
     }),
@@ -154,7 +154,7 @@ test("the launch body omits image overrides: the chosen agent, private, the form
       hostId: HOST,
       harness: "claude",
       credentialId: ACCOUNT,
-      requestId: REQUEST,
+      idempotencyKey: REQUEST,
       model: "m",
       reasoningEffort: "e",
     }).harness,
