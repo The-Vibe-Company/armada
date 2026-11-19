@@ -39,6 +39,7 @@ import {
 let db: Awaited<ReturnType<typeof openMigratedDatabase>>;
 let workerSnapshot: string;
 let goldenTemplate: Machine;
+let checkpointedGoldenTemplate: Machine;
 let workerTemplate: Machine;
 let imageTemplate: Awaited<ReturnType<ReturnType<typeof fixture>["store"]["image"]>>;
 const scope: Scope = {
@@ -64,19 +65,16 @@ beforeAll(async () => {
   goldenTemplate = await store.get(builder.id);
   workerSnapshot = crypto.randomUUID();
   await provider.snapshot({ sandboxId: builder.id, name: workerSnapshot });
+  checkpointedGoldenTemplate = await store.get(builder.id);
   imageTemplate = await store.image(workerSnapshot);
   const worker = await provider.fork({ from: workerSnapshot });
   workerTemplate = await store.get(worker.id);
-  // The template worker is captured in JS. It must not keep a live image reference.
   await db.query("delete from public.modal_machines where id=$1", [worker.id]);
 });
 afterAll(async () => {
   await db.close();
 });
 const prepared = new Map<string, Promise<string>>();
-// PGlite's regular query path sends several WASM protocol messages for
-// every statement. Reuse PostgreSQL plans for the fake SDK fixture's scalar
-// store calls. Keep transaction and error-injection cases on the regular client.
 const fixtureSql: Sql = {
   transaction: (work) => db.transaction(work),
   async query<T>(statement: string, params: unknown[] = []) {
@@ -322,7 +320,7 @@ function fixture(
     },
   });
   return {
-    async seedActive(template: Machine) {
+    async seedMachine(template: Machine) {
       const id = crypto.randomUUID();
       const physicalName = `fixture-${id}`;
       const { sandboxId: physicalId } = await fakeClient.sandboxes.create(undefined, undefined, {
@@ -415,8 +413,6 @@ function fixture(
     },
   };
 }
-// Read-path cases need committed history. The HTTP ingest and replay cases
-// below exercise how the writer commits and acknowledges those rows.
 async function seedHistory(sandboxId: string, events: AgentEvent[]) {
   await db.query(
     `insert into public.modal_events(scope,sandbox_id,generation,producer_sequence,event)
@@ -984,16 +980,14 @@ test("invalid Modal size is refused without a physical create", async () => {
 function runningFork(f: ReturnType<typeof fixture>) {
   return f.provider.fork({ from: workerSnapshot });
 }
-// A read or a turn on an already active worker need not replay launch, boot
-// and admission. The launch tests still call fork against the real store.
 function activeWorker(f: ReturnType<typeof fixture>) {
-  return f.seedActive(workerTemplate);
+  return f.seedMachine(workerTemplate);
 }
 
 async function savedGolden(f: ReturnType<typeof fixture>) {
   const name = crypto.randomUUID();
   const imageId = `im_${crypto.randomUUID()}`;
-  const builder = await f.seedActive({ ...goldenTemplate, snapshotImages: [{ name, imageId }] });
+  const builder = await f.seedMachine({ ...checkpointedGoldenTemplate, snapshotImages: [{ name, imageId }] });
   const image = {
     ...imageTemplate,
     sourceId: builder.id,
@@ -1429,7 +1423,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("snapshot failure never terminates or reports a durable stop", async () => {
     const f = fixture();
-    const row = await f.seedActive(goldenTemplate);
+    const row = await f.seedMachine(goldenTemplate);
     f.failSnapshot(true);
     await expect(f.provider.stop({ sandboxId: row.id })).rejects.toMatchObject({ code: "unknown" });
     expect(f.log).not.toContain("terminate");
@@ -1992,14 +1986,14 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("concurrent lifecycle lease cannot write through the active holder", async () => {
     const f = fixture();
-    const row = await f.seedActive(goldenTemplate);
+    const row = await f.seedMachine(goldenTemplate);
     await f.store.lease(row.id, async () => {
       await expect(f.store.lease(row.id, async () => undefined)).rejects.toMatchObject({ code: "conflict" });
     });
   });
   test("HTTP ingest retains message semantics through SQL replay, pagination and conversation filtering", async () => {
     const f = fixture();
-    const row = await f.seedActive(goldenTemplate);
+    const row = await f.seedMachine(goldenTemplate);
     const handler = createModalIngestHandler({
       sql: db,
       verifyGrant: async () => ({
@@ -2064,7 +2058,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("native outbox drains large UTF-8 conversations through HTTP ingest and remains readable after stop", async () => {
     const f = fixture();
-    const row = await f.seedActive(goldenTemplate);
+    const row = await f.seedMachine(goldenTemplate);
     const grant = {
       token: "fixture-ingest-private-grant",
       sandboxId: row.id,
@@ -2171,7 +2165,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("tail history, older history and live follow stitch without gaps or duplicates", async () => {
     const f = fixture();
-    const row = await f.seedActive(goldenTemplate);
+    const row = await f.seedMachine(goldenTemplate);
     expect(await f.provider.events({ sandboxId: row.id, direction: "backward" })).toEqual({
       events: [],
       hasMore: false,
@@ -2223,7 +2217,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("events dedupe, acknowledge only contiguous commit and fence old generation", async () => {
     const f = fixture();
-    const row = await f.seedActive(goldenTemplate);
+    const row = await f.seedMachine(goldenTemplate);
     const event = { id: "event", at: 1, kind: "other" as const, type: "test", data: {} };
     expect(await appendModalEvents(db, scope, row.id, "1", [{ sequence: 2, event }])).toBe(0);
     expect(
@@ -2239,7 +2233,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("restored producer sequences continue checkpoint watermark instead of waiting for sequence one", async () => {
     const f = fixture();
-    const row = await f.seedActive(goldenTemplate);
+    const row = await f.seedMachine(goldenTemplate);
     await f.store.lease(row.id, async (current, save) => {
       current.generation = 2;
       current.eventBase = 42;
@@ -2731,7 +2725,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("golden history cleanup and filesystem save never run before the exact durable event ACK", async () => {
     const f = fixture();
-    const builder = await f.seedActive(goldenTemplate);
+    const builder = await f.seedMachine(goldenTemplate);
     f.onRpc(async (row, op) =>
       op === "checkpoint" ? { generation: String(row.generation), watermark: 1, acknowledgedSequence: 1 } : undefined,
     );
@@ -2788,7 +2782,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       },
     };
     const f = fixture(scope, sql);
-    const builder = await f.seedActive(goldenTemplate);
+    const builder = await f.seedMachine(goldenTemplate);
     const name = crypto.randomUUID();
     fail = true;
     let receipt: ReturnType<typeof modalFailureReceipt>;
@@ -2888,7 +2882,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     ).rejects.toMatchObject({ code: "conflict" });
     expect((await f.store.get(row.id)).generation).toBe(2);
     expect(f.log).not.toContain("prompt");
-    const builder = await f.seedActive(goldenTemplate);
+    const builder = await f.seedMachine(goldenTemplate);
     const before = calls;
     await expect(
       f.provider.prompt({ sandboxId: builder.id, harness: "claude", text: "no hook on builder" }),
@@ -2917,7 +2911,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     const f = fixture(scope, fixtureSql, undefined, undefined, undefined, async (ms) => {
       delays.push(ms);
     });
-    const builder = await f.seedActive(goldenTemplate);
+    const builder = await f.seedMachine(goldenTemplate);
     await f.provider.exec({ sandboxId: builder.id, command: "root scanner", timeoutSeconds: 600 });
     expect(f.log).toContain("root-exec");
     expect(f.log).not.toContain("exec");
@@ -2939,7 +2933,6 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
         throw new Error("Busy lease unexpectedly acquired");
       }).catch((error: unknown) => error);
       expect(conflict).toMatchObject({ providerCode: "lifecycle_lease_busy" });
-      // The holder remains active for this entire retry-budget assertion.
       f.store.lease = async () => {
         throw conflict;
       };
@@ -3294,7 +3287,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("tenant and membership isolation; user roles cannot read control or event tables", async () => {
     const f = fixture();
-    const row = await f.seedActive(goldenTemplate);
+    const row = await f.seedMachine(goldenTemplate);
     const other = createSqlModalStore(db, { ...scope, binding: { ...scope.binding, appId: "ap_other" } });
     await expect(other.get(row.id)).rejects.toMatchObject({ code: "not_found" });
     const outsider = createSqlModalStore(db, { ...scope, userId: "00000000-0000-0000-0000-000000000003" });
@@ -3327,7 +3320,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("runner uses nested prompt input, distinct proxy bearer and application header, validates response identity", async () => {
     const f = fixture();
-    const info = await f.seedActive(goldenTemplate);
+    const info = await f.seedMachine(goldenTemplate);
     const row = await f.store.get(info.id);
     const transport = createRunnerTransport(
       async () => ({
