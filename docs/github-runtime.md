@@ -122,8 +122,8 @@ and the runtime repair in #719 passes process-level regression coverage. A succe
 broker bootstrap or an isolated `gh auth status` is not sufficient evidence: neither
 exercises Git inside a native harness process tree.
 
-Before enabling it for general use, an authorized operator must run this smoke in a
-non-production environment with disposable repositories and credentials:
+Before enabling it for general use, run the Modal staging checks with disposable
+repositories and credentials. The coordinator owns on-demand Boat checks.
 
 1. With the setting off, launch both Claude and Codex and confirm stock Git/gh behavior.
 2. With the setting on, launch a fresh sandbox for each harness. In the first turn run
@@ -133,9 +133,10 @@ non-production environment with disposable repositories and credentials:
    run them again in a second agent turn. Confirm the original harness remains usable.
 4. Exercise access-token expiry/renewal without replacing the VM or native session;
    repeat the remote operation and verify it uses renewed authorization.
-5. Stop, stall, and restart the private broker. Local Git must continue to work;
-   authenticated network operations may fail with a sanitized, bounded error, but
-   neither harness may exit. Repeat exec and a second turn after recovery.
+5. For on-demand Boat verification, the coordinator checks private broker
+   stop, stall, and restart. Confirm local Git and the harness survive, then repeat
+   exec and a second turn. Record isolated broker-fault coverage as unsupported
+   for Modal.
 6. Remove scratch branches and stop disposable sandboxes. Do not copy personal or
    manager credentials into the guest, print tokens, or enable production as a test.
 
@@ -203,16 +204,17 @@ First run `bun scripts/post-deploy-smoke.ts` with the staging server gate off
 and both Modal cases to record the stock baseline (step 1). Retire these workers,
 turn the gate on on every staging replica and run `--github-runtime` with fresh
 workers. The default smoke covers stock native harness completion and exec Git;
-it is not native-tool Git evidence. Use the staging procedure below for Modal renewal (step 4). Boat broker fault
-checks (step 5) are on demand and coordinator-only. Modal's isolated broker restart is unavailable
+it is not native-tool Git evidence. Use the staging procedure below for Modal
+renewal (step 4). Boat broker fault checks (step 5) are on demand and
+coordinator-only. Modal's isolated broker restart is unavailable
 for the architectural reason below; this is a concrete remaining #822/#825 gap,
 not a sanctioned reason to kill the Runner or enable production.
 
 The rollout requires the automated Modal slice and staging renewal checks to
 pass. The coordinator tracks on-demand Boat evidence separately. After enabling
 production, the coordinator runs authorized read-only Git verification. To roll
-back, turn the gate off on every replica and retire affected workers as described above. A partial or failed smoke blocks
-this rollout. This script never deploys, applies migrations, or changes a gate.
+back, turn the gate off on every replica and retire affected workers as described
+above. A partial or failed smoke blocks this rollout. This script never deploys, applies migrations, or changes a gate.
 
 #### Manual renewal: force server cache expiry, not GitHub revocation
 
@@ -320,8 +322,8 @@ It simulates cache expiry, not the actual passage of eight hours at GitHub.
 #### Manual broker fault/recovery: Boat; Modal limitation
 
 For an on-demand check, the coordinator uses a separate dedicated **Boat**
-worker per harness after a successful native Git turn. The Boat broker is a detached `bun .../github-<generation>/broker.js`
-process (`packages/mcp-server/src/github-boat.ts`); the harness is a different
+worker per harness after a successful native Git turn. The Boat broker is a
+detached `bun .../github-<generation>/broker.js` process (`packages/mcp-server/src/github-boat.ts`); the harness is a different
 process. Signal only that exact broker, never a native child or a process group.
 Do not use a broad `pkill bun`. Preflight `pgrep -f` for the generation's exact
 broker path and require **one** PID; abort on zero/multiple matches. The generation

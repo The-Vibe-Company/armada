@@ -56,7 +56,9 @@ Then, on the app's page:
 2. **Generate a new client secret** and copy it once.
 3. Install the app (Install App) on every account or org whose repositories sandboxes push to, selecting those repositories.
 
-The App ID and a private key are **not** needed: nothing uses installation tokens.
+User OAuth needs the client ID and secret. To let snapshot builds mint
+repository-limited installation tokens, also configure the App ID and a private
+key on the server.
 
 ## Environment variables
 
@@ -65,7 +67,8 @@ The App ID and a private key are **not** needed: nothing uses installation token
 | `GITHUB_APP_CLIENT_ID` | yes, build and runtime | yes |
 | `GITHUB_APP_CLIENT_SECRET` | yes, runtime | yes |
 | `GITHUB_APP_SLUG` | the slug of the App (`https://github.com/apps/<slug>`). Connect redirects there when the person has no installation, and Your connections links to it | no |
-| `GITHUB_APP_ID` | optional numeric App ID (not the client id). When set together with the slug, an installation must match both | no |
+| `GITHUB_APP_ID` | optional numeric App ID (not the client id). When set together with the slug, an installation must match both | optional numeric App ID for snapshot checkout |
+| `GITHUB_APP_PRIVATE_KEY` | no | optional PEM key for snapshot checkout, paired with `GITHUB_APP_ID` |
 | `ARMADA_ENCRYPTION_KEY` | already set (seals the refresh token) | already set (opens it) |
 
 The two services must hold the same client id and secret and the same `ARMADA_ENCRYPTION_KEY`. Apply the migrations `supabase/migrations/20261108180000_github_connections.sql`, `20261108190000_revoke_default_grants.sql`, `20261108200000_token_hash_column_grants.sql` and `20261108210000_github_installations.sql` to the Supabase project. `20261108190000` removes Supabase's default table grants, without which a user JWT can read `refresh_token_enc`. `20261108210000` adds the `installations` column and the `installation_list` argument of `save_github_connection`; without it Connect cannot store which accounts have the App. If either variable is missing, Your connections says GitHub is not configured and launches report GitHub as `unavailable`.
@@ -109,9 +112,9 @@ overlap budget in [Production readiness](production-readiness.md#connection-resi
 
 GitHub advertises eight-hour access tokens, but refreshing the shared owner
 connection invalidates older copies. Armada uses the returned expiry, not a
-hardcoded eight-hour lifetime. Launch and Modal restore require more than one
-hour remaining; snapshot creation, account status and managed-runtime brokering
-use five minutes; legacy repair/prompt hydration uses zero. Repair may reuse an
+hardcoded eight-hour lifetime. Launch, Modal restore, and cloud and Docker snapshot creation require more than
+one hour remaining. Account status and managed-runtime brokering use five
+minutes. Legacy repair and prompt hydration use zero. Repair may reuse an
 older token and does not reset its issuance time. See [#952](https://github.com/The-Vibe-Company/armada/issues/952)
 for the historical investigation and expiry/fence code trace.
 

@@ -104,21 +104,22 @@ are best-effort as described above; explicit repair still fails closed for unsaf
 filesystem/private-transport failures. This
 availability policy does not make a stale inherited token valid.
 
-## Operator production check (not run by this PR)
+## On-demand Boat verification
+
+The coordinator runs this check with pre-approved infrastructure and a dedicated
+test account. Record the existing server settings before testing.
 
 1. Record deployed revision and runtime gate state, without recording tokens.
 2. Launch twelve idle sandboxes as one owner, mixing concurrent and sequential
    launches. Run `gh api user --jq .login` in each; record status and login only.
 3. Launch a thirteenth, then recheck all thirteen. Every login must still match.
-4. For an on-demand Boat check, the coordinator uses a dedicated test account and
-   enables the legacy automatic flag for the check. Verify actual image/SSH/sudo
-   behavior and exercise expiry-driven renewal. Confirm the
-   next prompt automatically repairs every older running Boat sandbox, without
-   relaunching or twelve manual repair commands. Also check the explicit refresh
-   command for an already-active turn,
-   including agents whose inherited environment is stale. Recheck `gh api user`
-   and a git credential operation. With managed runtime enabled, also test
-   next-prompt and resume recovery. Do not force rotation in production.
+4. Verify image, SSH, and sudo behavior. If legacy automatic preparation is
+   already enabled, confirm the next prompt repairs each older running sandbox
+   after normal expiry-driven renewal. For an already-active turn on the legacy
+   path, check the explicit refresh command and repeat `gh api user` and a Git
+   credential operation. If the managed runtime is enabled, check next-prompt
+   and resume recovery. Leave production settings in place and allow tokens to
+   expire normally.
 5. A rejected or short-lived launch token must produce a non-connected GitHub
    status/message, never a successful GitHub setup claim. Provider/model launch
    may still succeed.
