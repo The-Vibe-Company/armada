@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { IncomingMessage } from "node:http";
 import { Socket } from "node:net";
-import { publicFetch, restrictedFetch } from "../src/index.ts";
+import { GatewayError, publicFetch, restrictedFetch } from "../src/index.ts";
 import { receivePublicResponse } from "../src/network-response.ts";
 
 test("outbound boundary rejects unsafe URLs, origin escape and redirects before forwarding secrets", async () => {
@@ -94,6 +94,7 @@ test("malformed peer status rejects the request and closes the response", async 
     queueMicrotask(() => receivePublicResponse(incoming, resolve, reject));
   });
 
+  await expect(response).rejects.toBeInstanceOf(GatewayError);
   await expect(response).rejects.toMatchObject({
     code: "upstream",
     action: "Upstream returned an invalid HTTP status.",
