@@ -227,7 +227,6 @@ function schedule(cron: unknown, timezone: unknown): { cron: string; timezone: s
     timezone.includes("\0")
   )
     throw invalid("Provide both --cron and --timezone, or cron and timezone in configuration JSON.");
-  // The API is the only cron/calendar validator; the CLI never imports a server parser.
   return { cron, timezone };
 }
 function format(item: Routine): string {
