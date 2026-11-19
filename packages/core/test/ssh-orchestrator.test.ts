@@ -3,7 +3,7 @@ import type { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { type Provider, type SshExecDeps, sshDelegatedReceipt } from "../src/server.ts";
 
-test("private SSH captures only bounded nonsecret receipt, pins host and keeps payload out of argv/files", async () => {
+test("private SSH pins the host, keeps secrets private, and cleans up before running guest control", async () => {
   const token = `armada_epoch_${"a".repeat(64)}`;
   const boot = "00000000-0000-4000-8000-000000000001";
   const calls: { file: string; args: string[]; stdin?: string }[] = [],
@@ -51,8 +51,10 @@ test("private SSH captures only bounded nonsecret receipt, pins host and keeps p
   );
   expect(response.physicalGeneration).toBe(boot);
   expect(response.authorityInstalled).toBe(true);
-  expect(calls.find((c) => c.file === "ssh")?.args).toContain("StrictHostKeyChecking=yes");
+  const ssh = calls.find((call) => call.file === "ssh");
+  expect(ssh?.args).toContain("StrictHostKeyChecking=yes");
+  expect(ssh?.args.at(-1)).toMatch(/ARMADA_PRIVATE_KEY_CLEANUP[\s\S]*public-code-only/);
   expect(JSON.stringify(calls.map((c) => c.args))).not.toContain(token);
   expect(writes.join("")).not.toContain(token);
-  expect(calls.find((c) => c.file === "ssh")?.stdin).toContain(token + "\n");
+  expect(ssh?.stdin).toContain(token + "\n");
 });
