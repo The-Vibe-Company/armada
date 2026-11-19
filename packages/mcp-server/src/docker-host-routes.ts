@@ -376,6 +376,7 @@ export function createDockerHostRoutes(
         let resumeClaims: Awaited<ReturnType<typeof store.resumeClaimsForHost>>;
         let job: Awaited<ReturnType<typeof store.poll>>;
         const skipSnapshots = body.skipSnapshots === true;
+        const supportsPhysicalDelete = request.headers.get("x-armada-docker-host-delete-physical") === "1";
         const runningIds = (running as string[] | undefined) ?? [];
         let probed = false;
         const wake = runtimeWakes.watch(`host:${hostId}`);
@@ -393,6 +394,7 @@ export function createDockerHostRoutes(
               body.stoppedSandboxBytes as number | null | undefined,
               runningIds,
               protocol,
+              supportsPhysicalDelete,
             );
             if (job || resumeClaims.length) break;
             // Recheck every second with a read-only probe; the full poll above
@@ -416,6 +418,7 @@ export function createDockerHostRoutes(
                 skipSnapshots,
                 runningIds,
                 body.resumeClaimProtocol === 1,
+                supportsPhysicalDelete,
               );
             }
             if (!ready) break;

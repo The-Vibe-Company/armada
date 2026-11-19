@@ -734,6 +734,39 @@ test("a host reporting many retained deadlines still fits the poll body limit", 
   expect(response.status).toBe(200);
 });
 
+test("physical-only mailbox delivery requires the capability on the current poll", async () => {
+  const { userId, orgId, store, post } = await fixture();
+  const actor = { userId, orgId };
+  const ticket = await store.issueRegistration(actor);
+  const installationId = randomUUID();
+  const host = await store.exchangeRegistration(ticket.registrationToken, installationId);
+  const job = {
+    requestId: randomUUID(),
+    operation: "deletePhysical" as const,
+    machineId: "a".repeat(64),
+    request: {
+      sandboxId: randomUUID(),
+      generation: randomUUID(),
+      image: `example/worker@sha256:${"a".repeat(64)}`,
+      ttlSeconds: 300,
+    },
+  };
+  await store.enqueue(actor, host.hostId, job);
+  const poll = async (capability?: string) => {
+    const response = await post(
+      "/api/docker-host/poll",
+      host.hostToken,
+      { installationId, version: "2.51.0" },
+      capability === undefined ? {} : { "x-armada-docker-host-delete-physical": capability },
+    );
+    expect(response.status).toBe(200);
+    return response.json();
+  };
+  expect(await poll()).toMatchObject({ job: null });
+  expect(await poll("1")).toMatchObject({ job });
+  expect(await poll("1, 1")).toMatchObject({ job: null });
+});
+
 test("a held host poll returns a locally enqueued job with the clock frozen", async () => {
   const { userId, orgId, store, authenticate, post } = await fixture();
   const actor = { userId, orgId };
