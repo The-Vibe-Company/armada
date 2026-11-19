@@ -253,3 +253,34 @@ test("the integration projection merges methods on one path and excludes admin o
     },
   });
 });
+
+test("scoped REST advertises the grants, idempotency headers and body refusal used on the server", () => {
+  const prefix = "/api/v1/orchestrator-tools";
+  for (const [method, needsKey] of [
+    ["finish", false],
+    ["launch", true],
+    ["read", false],
+    ["message", true],
+    ["stop", true],
+    ["extend", true],
+  ] as const) {
+    const operation = published.paths[`${prefix}/${method}`].post;
+    expect(operation.security).toEqual(
+      method === "finish" ? [{ epochGrant: [] }, { finishGrant: [] }] : [{ epochGrant: [] }],
+    );
+    expect(operation).toMatchObject({
+      "x-armada-direct-server": true,
+      requestBody: { "x-max-body-bytes": 128 * 1024, "x-oversized-body-status": 400 },
+      responses: { "400": expect.any(Object) },
+    });
+    expect(operation.responses).not.toHaveProperty("413");
+    if (needsKey) {
+      expect(operation).toHaveProperty("parameters", [
+        expect.objectContaining({ name: "Idempotency-Key", in: "header", required: true }),
+      ]);
+    } else {
+      expect(operation).not.toHaveProperty("parameters");
+    }
+  }
+  expect(published.paths).not.toHaveProperty(`${prefix}/mcp`);
+});

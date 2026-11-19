@@ -13,6 +13,7 @@ import { createSandboxAccessServices } from "../src/sandbox-access-services.ts";
 import { createSandboxArmadaAccess } from "../src/sandbox-armada-access.ts";
 import { transitionSandbox } from "../src/sandbox-lifecycle.ts";
 import { migratedDatabase } from "./migrated-database.ts";
+import { publishedResponse } from "./published-response.ts";
 import { ENCRYPTION_KEY, fakeBoat, PUBLIC_URL, SECRETS } from "./support.ts";
 
 let pendingDatabase: ReturnType<typeof migratedDatabase> | undefined;
@@ -248,7 +249,9 @@ test("ordinary sandbox opt-in bounds child admission and scrubs authority before
   expect((await finish({ sandboxId: saved.id }))?.status).toBe(400);
   const reply = await finish({});
   expect(reply?.status).toBe(200);
-  expect(await reply?.json()).toEqual({ result: { id: saved.id, status: "stopping" } });
+  const completed = await reply?.json();
+  expect(completed).toEqual({ result: { id: saved.id, status: "stopping" } });
+  expect(publishedResponse("orchestrator-tools/finish").safeParse(completed).success).toBe(true);
   expect(
     (
       await db.query(

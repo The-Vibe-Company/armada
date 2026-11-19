@@ -240,7 +240,9 @@ export function generateOpenApi(table: readonly OpenApiOperation[] = Object.valu
       operationId,
       description,
       ...(operation.directServer && { "x-armada-direct-server": true }),
-      security: operation.anonymous ? [] : [{ [viewer ? "viewerGrant" : "serviceToken"]: [] }],
+      security: operation.anonymous
+        ? []
+        : (operation.scopedAuth ?? [viewer ? "viewerGrant" : "serviceToken"]).map((scheme) => ({ [scheme]: [] })),
       ...(parameters.length ? { parameters } : {}),
       ...(request && {
         requestBody: {
@@ -289,7 +291,8 @@ export function generateOpenApi(table: readonly OpenApiOperation[] = Object.valu
             }
           : {}),
         ...(request &&
-          !viewerControl && {
+          !viewerControl &&
+          !operation.scopedAuth && {
             "413": {
               description: `The serialized request body exceeds ${CONTROL_BODY_MAX_BYTES} bytes. Nothing was dispatched.`,
               content: { "application/json": { schema: { $ref: "#/components/schemas/Failure" } } },
@@ -344,6 +347,16 @@ export function generateOpenApi(table: readonly OpenApiOperation[] = Object.valu
       securitySchemes: {
         serviceToken: { type: "http", scheme: "bearer" },
         viewerGrant: { type: "http", scheme: "bearer", description: "A short-lived sandbox viewer grant." },
+        epochGrant: {
+          type: "http",
+          scheme: "bearer",
+          description: "A scoped epoch grant for the required worker authority.",
+        },
+        finishGrant: {
+          type: "http",
+          scheme: "bearer",
+          description: "A sandbox runtime grant that authorizes self-finish.",
+        },
       },
       schemas: {
         DrainRefusal: {
