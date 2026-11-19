@@ -50,7 +50,6 @@ export const runtimeTransaction = (tx: Sql): Sql => ({
 /** Query-only reentry: preserve synchronous forwarding and pass the original owner-held transaction. */
 export const scopedRuntimeSql = (tx: Sql): Sql => ({ query: tx.query.bind(tx), transaction: (work) => work(tx) });
 
-/** Keep refusal authentication across the sandbox revocation trigger in the ACK transaction. */
 export async function preserveResumeRefusalTicket(
   tx: Sql,
   sandboxId: string,

@@ -890,18 +890,19 @@ test.each(refusalOrders)(
     if (order === "ACK first") await ack(job.requestId);
     const failedAckFirst = order === "failed ACK first";
     if (failedAckFirst) {
-      const failWrite = (fragment: string): Sql => ({
-        query: sql.query,
-        transaction: (work) =>
-          sql.transaction!((tx) =>
-            work({
-              query: (statement, values) => {
-                if (statement.includes(fragment)) throw Error("handoff write failed");
-                return tx.query(statement, values);
-              },
-            }),
-          ),
-      });
+      const failWrite = (fragment: string) =>
+        ({
+          query: sql.query,
+          transaction: (work) =>
+            sql.transaction!((tx) =>
+              work({
+                query: (statement, values) => {
+                  if (statement.includes(fragment)) throw Error("handoff write failed");
+                  return tx.query(statement, values);
+                },
+              }),
+            ),
+        }) satisfies Sql;
       await expect(
         createDockerHostStore(failWrite("set outcome=$2,completed_at=now()"), key).complete(
           f.hostToken,
