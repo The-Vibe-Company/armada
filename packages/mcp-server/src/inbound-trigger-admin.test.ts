@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
+import { createdInboundTrigger } from "@armada/core/contract";
 import { decryptSecret, type Sql } from "@armada/core/server";
 import { PGlite } from "@electric-sql/pglite";
 import { AuthUnavailable, type CallerResult } from "./caller.ts";
@@ -92,9 +93,10 @@ beforeAll(async () => {
       ('${template}', '${org}', 'personal', '${templateOwner}'),
       ('${sharedTemplate}', '${org}', 'org', '${id}'),
       ('${foreignTemplate}', '${otherOrg}', 'org', null);
-    insert into public.launch_template_revisions values
-      (gen_random_uuid(), '${sharedTemplate}', 1,
-       '{"provider":"docker","harness":"codex","hostId":"${host}","variables":[],"connections":[]}', 'digest');
+    insert into public.launch_template_revisions
+      select gen_random_uuid(), id, 1,
+        '{"provider":"docker","harness":"codex","hostId":"${host}","variables":[],"connections":[]}'::jsonb, 'digest'
+      from public.launch_templates;
     insert into public.docker_hosts values ('${host}', '${org}', '${id}', gen_random_uuid(), null, 'opaque', null);
     insert into public.credentials values ('${credential}', 1, 'openai', 'active', null, 'org', '${org}');
     insert into public.agent_defaults values ('${id}', 'codex', '${credential}');
@@ -272,9 +274,7 @@ test("creates an audited trigger and discloses the signing key once", async () =
   const response = await manage(createRequest());
   expect(response?.status).toBe(201);
   expect(response?.headers.get("cache-control")).toBe("no-store");
-  const result = (await response?.json()) as { triggerId: string; signingSecret: string };
-  expect(Object.keys(result).sort()).toEqual(["signingSecret", "triggerId"]);
-  const { triggerId, signingSecret } = result;
+  const { triggerId, signingSecret } = createdInboundTrigger.parse(await response?.json());
   const key = await ingress.signingKey(triggerId);
   expect(key?.revision).toBe(1);
   expect(key?.key.byteLength).toBe(32);
@@ -288,7 +288,7 @@ test("creates an audited trigger and discloses the signing key once", async () =
       )
     ).rows,
   ).toEqual([{ launch_owner_id: id, actor_id: id, action: "create" }]);
-  const list = (await (await manage(request()))?.json()) as { triggers: { id: string }[] };
+  const list = (await (await manage(request()))?.json()) as { triggers: Record<string, unknown>[] };
   expect(list.triggers.find((entry) => entry.id === triggerId)).toEqual({
     ...configuration,
     id: triggerId,
@@ -322,5 +322,31 @@ test("refuses trigger creation with an account outside the organization's pool",
     expect((await manage(createRequest()))?.status).toBe(409);
   } finally {
     await db.query("update public.credentials set owner_id = $1 where id = $2", [org, credential]);
+  }
+});
+
+test("a stale admin claim cannot create a trigger after membership revocation", async () => {
+  const stale = inboundTriggerAdminRoute(
+    db,
+    async () => ({
+      ok: true,
+      caller: { ...admin, userId: templateOwner },
+    }),
+    encryptionKey,
+  );
+  expect((await stale(createRequest()))?.status).toBe(403);
+});
+
+test("a failed creation audit leaves no new trigger", async () => {
+  const count = () => db.query("select count(*)::int as count from public.triggers");
+  const before = await count();
+  await db.exec(
+    "alter table public.trigger_admin_audit add constraint block_creation check (action <> 'create') not valid",
+  );
+  try {
+    await expect(manage(createRequest())).rejects.toMatchObject({ code: "23514" });
+    expect(await count()).toEqual(before);
+  } finally {
+    await db.exec("alter table public.trigger_admin_audit drop constraint block_creation");
   }
 });

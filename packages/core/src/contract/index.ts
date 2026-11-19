@@ -1,6 +1,11 @@
 import type { z } from "zod";
 import { launchInput } from "./launch.ts";
 
+export {
+  type CreatedInboundTrigger,
+  createdInboundTrigger,
+  createInboundTriggerBody,
+} from "./inbound-trigger.ts";
 export type { LaunchInput } from "./launch.ts";
 
 export interface Operation<Input extends z.ZodType, Output extends z.ZodType | undefined = undefined> {

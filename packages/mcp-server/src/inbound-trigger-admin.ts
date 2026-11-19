@@ -1,5 +1,6 @@
 import { BodyTooLargeError } from "@armada/auth";
-import { HARNESS_KINDS, isHarness } from "@armada/core";
+import { HARNESS_KINDS } from "@armada/core";
+import { type CreatedInboundTrigger, createInboundTriggerBody } from "@armada/core/contract";
 import {
   createTemplateService,
   EncryptionKeyError,
@@ -46,10 +47,6 @@ async function signingKey(encryptionKey: string | undefined) {
   }
 }
 
-function positiveInt(value: unknown): value is number {
-  return typeof value === "number" && Number.isInteger(value) && value > 0 && value <= 2_147_483_647;
-}
-
 async function create(sql: Sql, org: string, actor: Caller, request: Request, encryptionKey: string | undefined) {
   let body: Record<string, unknown>;
   try {
@@ -59,28 +56,22 @@ async function create(sql: Sql, org: string, actor: Caller, request: Request, en
       return fail(400, "invalid_request", "Supply a JSON trigger configuration of at most 4096 bytes.");
     throw error;
   }
-  const { templateId, poolHarness, ratePerMinute, concurrency } = body;
-  if (
-    Object.keys(body).length !== 4 ||
-    typeof templateId !== "string" ||
-    !UUID.test(templateId) ||
-    !isHarness(poolHarness) ||
-    !positiveInt(ratePerMinute) ||
-    !positiveInt(concurrency)
-  ) {
+  const parsed = createInboundTriggerBody.safeParse(body);
+  if (!parsed.success) {
     return fail(
       400,
       "invalid_request",
       "Supply a template UUID, pool harness, and positive integer rate and concurrency.",
     );
   }
+  const { templateId, poolHarness, ratePerMinute, concurrency } = parsed.data;
   if (!sql.transaction) return fail(503, "dependency_unavailable", "Trigger creation is temporarily unavailable.");
   const key = await signingKey(encryptionKey);
   if (key instanceof Response) return key;
   let triggerId: string | undefined;
   try {
     triggerId = await sql.transaction(async (tx) => {
-      const binding = await createTemplateService(sql).validateBinding(tx, actor, org, templateId);
+      const binding = await createTemplateService(sql).validateBindingInTransaction(tx, actor, org, templateId);
       if (binding.harness !== poolHarness) return;
       const {
         rows: [pool],
@@ -113,12 +104,15 @@ async function create(sql: Sql, org: string, actor: Caller, request: Request, en
       return trigger.id;
     });
   } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "55P03")
+      return fail(503, "dependency_unavailable", "The template's Docker host is being updated. Try again.");
     if (!(error instanceof VaultError)) throw error;
     if (error.code === "forbidden") return fail(403, "forbidden", "Organization admin access is required.");
     if (!["invalid", "not_found", "conflict"].includes(error.code)) throw error;
   }
   if (!triggerId) return fail(409, "conflict", "The template or account pool is unavailable for this trigger.");
-  return Response.json({ triggerId, signingSecret: key.secret }, { status: 201, headers: noStore });
+  const payload: CreatedInboundTrigger = { triggerId, signingSecret: key.secret };
+  return Response.json(payload, { status: 201, headers: noStore });
 }
 
 async function mutate(
