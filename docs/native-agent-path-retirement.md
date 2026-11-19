@@ -78,12 +78,12 @@ The coordinator owns the drain run. Existing turn, stop/resume, retention and de
 | Staging | Unverified | Unverified | Unverified | Pending coordinator record |
 | Production | Unverified | Unverified | Unverified | Pending coordinator record |
 
-Before #2737, record a read-only count of unbound legacy model credentials by environment. Keep credential identifiers and values out of the ledger.
+For #2737, the coordinator ran a read-only count from CLI source on main (`9773b5fad`). The inventory covered the single real user's personal credentials and every organization returned by `armada org list --json` for that owner. The coordinator used `armada creds list --json` for personal credentials and `armada creds list --org <id> --json` for each organization, then counted model-kind rows missing an ID or version. Credential identifiers, names and values were omitted from the record.
 
-| Environment | Unbound legacy credential count before #2737 | SHA / UTC / evidence |
-| --- | --- | --- |
-| Staging | Unverified | Pending coordinator record |
-| Production | Unverified | Pending coordinator record |
+| Environment | Unbound legacy model credentials | Measured at (UTC) | Evidence |
+| --- | --- | --- | --- |
+| Staging | 0 | 2026-11-19 02:34 | [Coordinator measurement](https://github.com/The-Vibe-Company/armada/issues/2737#issuecomment-6997917557) |
+| Production | 0 | 2026-11-19 02:34 | [Coordinator measurement](https://github.com/The-Vibe-Company/armada/issues/2737#issuecomment-6997917557) |
 
 Before #2742, capture a read-only aggregate grouped by provider and status for rows on the persisted native route. Include all observed statuses, including stopped and retained cohorts, and explicit zero counts for empty cohorts. Repeat after the drain. Keep identifiers, credentials and manifest contents out of the shared ledger.
 
