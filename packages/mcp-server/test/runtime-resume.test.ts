@@ -408,7 +408,9 @@ test.each(interruptedResumeProofs)(
         expect((await store.get(f.row.id))?.status).toBe("starting");
         expect(outcome).toBe(interruption);
         expect(await worker.reconcileOne()).toBe(false);
-        await f.db.query("update sandboxes set reconcile_lease_until=now() where id=$1", [f.row.id]);
+        await f.db.query("update sandboxes set reconcile_lease_until=now()-interval '1 second' where id=$1", [
+          f.row.id,
+        ]);
       }
       expect(await worker.reconcileOne()).toBe(true);
       if (observationError || inconclusiveState) {

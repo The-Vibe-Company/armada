@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { createMemoryAuthStore } from "@armada/auth";
+import type { Provider } from "@armada/core";
 import { createSqlMcpLeasePort, createSqlMcpRegistry, createSqlVaultStore, encryptSecret } from "@armada/core/server";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -10,6 +11,7 @@ import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { createMcpHttpIntegration } from "../src/mcp-http-integration.ts";
+import { createMcpLifecycle } from "../src/mcp-lifecycle.ts";
 import { observeRequest } from "../src/request-observability.ts";
 import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
 import { createRuntimeFollowup } from "../src/runtime-followup.ts";
@@ -22,8 +24,8 @@ import { ENCRYPTION_KEY } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
 
-async function fixture(provider: "boat" | "modal" = "boat") {
-  const f = await runtimeFixture(await sharedDatabase(), provider),
+async function fixture(provider: "boat" | "modal" = "boat", commandGrantExpiresAt?: number) {
+  const f = await runtimeFixture(await sharedDatabase(), provider, "codex", false, commandGrantExpiresAt),
     registry = createSqlMcpRegistry(f.sql, ENCRYPTION_KEY);
   const secret = `upstream-private-${crypto.randomUUID()}`;
   const c = await registry.save(f.people.owner, f.people.org, {
@@ -101,6 +103,50 @@ async function fixture(provider: "boat" | "modal" = "boat") {
     },
   };
 }
+
+test("Modal runtime MCP lease spans the command ceiling but follows live sandbox admission", async () => {
+  const ceiling = new Date(Date.now() + 6 * 60 * 60_000);
+  const x = await fixture("modal", ceiling.getTime()),
+    { f } = x;
+  try {
+    await x.send(f.caller, f.input());
+    const { hash } = x.configuration();
+    expect((await f.db.query("select expires_at from mcp_leases where hash=$1", [hash])).rows[0]).toEqual({
+      expires_at: ceiling,
+    });
+    const leases = createSqlMcpLeasePort(f.sql);
+    expect(await leases.validate(hash, "tools")).not.toBeNull();
+    await f.db.query("update sandboxes set expires_at=now()-interval '1 second' where id=$1", [f.row.id]);
+    expect(await leases.validate(hash, "tools")).toBeNull();
+  } finally {
+    await f.close();
+  }
+});
+
+test("native lease renewal leaves an epoch-bound runtime gateway lease active", async () => {
+  const x = await fixture("modal"),
+    { f } = x;
+  try {
+    await x.send(f.caller, f.input());
+    const { hash } = x.configuration();
+    const lifecycle = createMcpLifecycle({
+      sql: f.sql,
+      encryptionKey: ENCRYPTION_KEY,
+      origin: "https://armada.test",
+      registry: x.registry,
+    });
+    const provider = {
+      id: "modal",
+      async get() {
+        return { state: "stopped" };
+      },
+    } as unknown as Provider;
+    await lifecycle.renewLeases(provider, f.row.id);
+    expect(await createSqlMcpLeasePort(f.sql).validate(hash, "tools")).not.toBeNull();
+  } finally {
+    await f.close();
+  }
+});
 
 describe.each(["boat", "modal"] as const)("enrolled runtime remote MCP (%s)", (provider) => {
   let current: Awaited<ReturnType<typeof fixture>> | undefined;
