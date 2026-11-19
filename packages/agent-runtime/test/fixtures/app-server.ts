@@ -219,7 +219,6 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         last: { inputTokens: 40, outputTokens: 5, cachedInputTokens: 10 },
       },
     });
-    if (params.input[0]?.type === "text" && params.input[0].text === "usage-process-lost") process.exit(0);
     if (process.env.ARMADA_USAGE_REROUTE) {
       notify("model/rerouted", {
         threadId: process.env.ARMADA_USAGE_REROUTE === "foreign" ? "another-thread" : thread,
