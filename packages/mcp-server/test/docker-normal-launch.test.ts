@@ -430,7 +430,6 @@ async function fixture(
     github,
     service,
     mcp,
-    // Only an explicit resume can publish a claim for this fixture's host.
     async resume(controls: ReturnType<typeof createDockerSandboxControls>) {
       pollResumeClaims = true;
       try {
