@@ -127,10 +127,7 @@ test("launch sends a Docker request and returns the Docker receipt without a gol
     }) as import("../src/index.ts").Fetch,
   });
   const launched = await client.launch(input);
-  const golden: null = launched.golden;
-  expect(golden).toBeNull();
-  expect(launched.sandbox.hostId).toBe(input.hostId);
-  expect(launched.promptId).toBeNull();
+  expect(launched).toEqual(receipt);
   expect(sent).toEqual(input);
 });
 

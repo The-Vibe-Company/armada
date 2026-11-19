@@ -26,6 +26,8 @@ export const launchEnvelope = z.strictObject({
   armadaAccess: z.object({ enabled: z.literal(true), maxActiveChildren: z.number().int() }).optional(),
 });
 
+export type LaunchEnvelope = z.infer<typeof launchEnvelope>;
+
 const TEMPLATE_LAUNCH_STATES = ["claimed", "allocating", "succeeded", "failed", "reconciling"] as const;
 
 const TEMPLATE_LAUNCH_RECEIPT = z

@@ -1010,6 +1010,16 @@ export function createDockerHostStore(sql: Sql, key: string) {
         const known =
           (await tx.query(`select 1 from public.docker_host_jobs where request_id=$1`, [selection.requestId])).rows
             .length > 0;
+        if (!known && selection.operation === "stop" && selection.onlyIfIdle && row.status === "ready") {
+          const pendingTurns = await tx.query(
+            `select 1 from public.account_turn_queue where sandbox_id=$1 and state in ('queued','dispatching')
+             union all
+             select 1 from public.docker_queued_prompts where sandbox_id=$1 and status in ('queued','dispatching')
+             limit 1`,
+            [sandboxId],
+          );
+          if (pendingTurns.rows.length) deny();
+        }
         // A drain refuses new bootstrap/resume work with its own reason, but an already-admitted
         // request replays: admission is historical and a lost response must not become a refusal.
         if (!known && (selection.operation === "bootstrap" || selection.operation === "resume")) {

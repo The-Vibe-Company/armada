@@ -408,8 +408,10 @@ This mode adds one tiny model turn and one retained stop/resume physical incarna
 per selected pair, not a new logical sandbox. Expect roughly 1–4 extra minutes
 per pair; provider cold-start/model rates determine cost. Extension requests
 1860 seconds from now (initial logical TTL 1800), within existing Modal physical
-headroom, then cleanup stops compute; no TTL wall-clock wait is added. Shared
-35-minute work / five-minute cleanup deadlines and 120-poll bounds remain.
+headroom, then cleanup stops compute; no TTL wall-clock wait is added.
+The run reserves 35 minutes for work and five minutes for cleanup.
+Lifecycle polling uses the measured step deadline when available and the
+existing poll limit otherwise.
 Lifecycle alone is not expiry-as-stop proof; use the expiry check below.
 
 ### Personal vault
@@ -1959,10 +1961,10 @@ allocations for cleanup after an ambiguous response. Snapshot, default-skill,
 scoped-parent and template-install checks still require their launch-specific
 proof before they can pass. Scoped child evidence comes from the parent's
 keyed tool receipt when its delivery is delayed, and scheduled routine
-evidence comes from occurrence history. Lifecycle turn completion and
-token usage polling use the `wait`, `resume_wait`, `usage`, and
-`resume_usage` entries. Each read is capped at the time remaining for the
-step. A step without a measured entry keeps its existing poll limit. Cleanup
+evidence comes from occurrence history. Lifecycle readiness, prompt admission,
+turn completion and token usage use their respective `ready`, `send`,
+`resume_send`, `wait`, `resume_wait`, `usage`, and `resume_usage` entries. Each
+request is capped at the time remaining for the step. A step without a measured entry keeps its existing poll limit. Cleanup
 has a separate budget.
 
 Ordinary provider parity records launch latency as `parity_modal_launch` and

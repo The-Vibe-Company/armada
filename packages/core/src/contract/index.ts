@@ -5,7 +5,7 @@ import { launchOutput } from "./launch-response.ts";
 
 export type { CreatedInboundTrigger } from "./inbound-trigger.ts";
 export type { LaunchInput } from "./launch.ts";
-export { launchEnvelope, templateLaunchResponse } from "./launch-response.ts";
+export { type LaunchEnvelope, launchEnvelope, templateLaunchResponse } from "./launch-response.ts";
 
 export interface Operation<Input extends z.ZodType, Output extends z.ZodType | undefined = undefined> {
   readonly name: string;

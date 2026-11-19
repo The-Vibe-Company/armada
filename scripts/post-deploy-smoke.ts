@@ -1010,11 +1010,12 @@ async function runPostDeploySmoke(
       });
       await step("ready", () =>
         poll(
-          () => sandbox<{ status: string }>("status", { id: sandboxId }),
+          (timeoutMs) => sandbox<{ status: string }>("status", { id: sandboxId }, timeoutMs),
           (result) => {
             if (result.status === "failed" || result.status === "stopped") fail("sandbox_not_ready");
             return result.status === "ready";
           },
+          { step: "ready" },
         ),
       );
       if (lifecycle && !dirty)
@@ -1093,16 +1094,21 @@ async function runPostDeploySmoke(
           await checkedExec(`rm -f ${quote(receipt)}`);
           if (!second) pushAttempted = true;
         }
-        const turn = await step(phase ? `${phase}_send` : second ? "send_second" : "send", async () => {
+        const sendStep = phase ? `${phase}_send` : second ? "send_second" : "send";
+        const turn = await step(sendStep, async () => {
           const result = await poll(
-            async () => {
+            async (timeoutMs) => {
               try {
-                return await sandbox<{ promptId: string }>("send", {
-                  id: sandboxId,
-                  prompt: github
-                    ? `Run exactly this shell command using your terminal tool, without reading credentials or making other changes: ${commands}`
-                    : PROMPT,
-                });
+                return await sandbox<{ promptId: string }>(
+                  "send",
+                  {
+                    id: sandboxId,
+                    prompt: github
+                      ? `Run exactly this shell command using your terminal tool, without reading credentials or making other changes: ${commands}`
+                      : PROMPT,
+                  },
+                  timeoutMs,
+                );
               } catch (error) {
                 // Only this closed rejection guarantees the prompt was not admitted.
                 if (!(error instanceof SmokeFailure) || error.code !== "sandbox_not_ready") throw error;
@@ -1110,6 +1116,7 @@ async function runPostDeploySmoke(
               }
             },
             (result) => result !== null,
+            { step: sendStep },
           );
           if (!result?.promptId || typeof result.promptId !== "string") fail("invalid_response");
           return result;

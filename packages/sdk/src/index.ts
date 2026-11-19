@@ -6,6 +6,7 @@ import {
   type ProviderErrorCode,
   type VaultErrorCode,
 } from "@armada/core";
+import type { LaunchEnvelope } from "@armada/core/contract";
 import { apiUrl, jsonPost, requestApi, TEMPLATE_LAUNCH_ROUTE } from "./request.ts";
 import { sandboxClient } from "./sandboxes.ts";
 
@@ -125,33 +126,8 @@ export type DockerSnapshotLaunchInput = DockerLaunchFields & {
 };
 export type DockerLaunchInput = DockerHostLaunchInput | DockerSnapshotLaunchInput;
 export type LaunchInput = GoldenLaunchInput | DockerLaunchInput;
-export interface GoldenLaunchResult {
-  sandbox: { id: string; provider: string; status: string; [key: string]: unknown };
-  golden: { id: string; [key: string]: unknown };
-  promptId: string | null;
-  conversationId: string | null;
-  ttlSeconds: number;
-  expiresAt: string | null;
-  [key: string]: unknown;
-}
-/** A Docker launch has no golden; the prompt and conversation IDs are null until a first prompt is recorded. */
-export interface DockerLaunchResult {
-  sandbox: {
-    id: string;
-    provider: "docker";
-    status: string;
-    hostId: string;
-    externalRef?: string;
-    [key: string]: unknown;
-  };
-  golden: null;
-  promptId?: string | null;
-  conversationId?: string | null;
-  ttlSeconds: number;
-  expiresAt: string;
-  [key: string]: unknown;
-}
-export type LaunchResult = GoldenLaunchResult | DockerLaunchResult;
+/** The ordinary launch envelope for Boat, Modal and Docker. */
+export type LaunchResult = LaunchEnvelope;
 export interface TemplateLaunchInput {
   org: string;
   id: string;
@@ -314,9 +290,6 @@ export class Armada {
   }
   readonly #sandboxes = sandboxClient(this.request.bind(this));
 
-  launch(input: DockerLaunchInput, options?: RequestOptions): Promise<DockerLaunchResult>;
-  launch(input: GoldenLaunchInput, options?: RequestOptions): Promise<GoldenLaunchResult>;
-  launch(input: LaunchInput, options?: RequestOptions): Promise<LaunchResult>;
   launch(input: LaunchInput, options?: RequestOptions): Promise<LaunchResult> {
     return this.#sandboxes.launch(input, options);
   }

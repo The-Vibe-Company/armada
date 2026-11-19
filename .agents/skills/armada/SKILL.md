@@ -56,6 +56,7 @@ any receipt UUID returned.
   and harness. Personal sessions can select the organization by slug or UUID. For a scoped token, omit `org` or send its org UUID.
   A malformed request returns HTTP 400 with error code `invalid`.
   For REST golden and Docker launches, read the Armada ID from `sandbox.id`.
+  The TypeScript SDK uses the same `LaunchResult` envelope for ordinary launches.
   Docker returns `golden: null`. Pinned template launches return a template receipt.
 - Choose the harness and a model/effort it supports. Launch selections persist
   for later turns. Do not assume provider sizes have equal price or performance.
