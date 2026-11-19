@@ -918,11 +918,12 @@ test("registered failed child with confirmed stopped compute releases explicit c
   }
 });
 
-test("scoped Modal children launch and accept follow-up through the enrolled runtime", async () => {
+test.each([false, true])("scoped Modal stop replay (compute reply lost: %s)", async (loseStopReply) => {
   const { close, sql, p, id, token, selection } = await fixture("running", "anthropic", "modal");
   try {
     const fake = fakeBoat();
     let checkpointRequest: string | undefined;
+    let checkpointCalls = 0;
     let hostAvailable = true;
     let logicalId: string;
     const physicalDeadline = new Date(Date.now() + 16_000_000);
@@ -951,6 +952,7 @@ test("scoped Modal children launch and accept follow-up through the enrolled run
           ).rows[0],
         ).toEqual({ status_reason: "idle_paused", captured: true });
         await fake.provider.stop(request);
+        if (loseStopReply) throw Error("synthetic lost compute stop response");
       },
     };
     const credentials = launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY);
@@ -977,6 +979,18 @@ test("scoped Modal children launch and accept follow-up through the enrolled run
         expect(caller.userId).toBe(p.owner);
         expect((await createSqlData(sql)(caller).sandboxes.get(request.id))?.status).toBe("running");
         checkpointRequest = request.request_id;
+        checkpointCalls++;
+        if (checkpointCalls === 1) {
+          await sql.query("insert into runtime_checkpoints(sandbox_id,epoch,request_id) values($1,1,$2)", [
+            request.id,
+            request.request_id,
+          ]);
+          throw Error("synthetic lost response after checkpoint intent");
+        }
+        await sql.query(
+          "update runtime_checkpoints set watermark=0,completed_at=now() where sandbox_id=$1 and epoch=1 and request_id=$2",
+          [request.id, request.request_id],
+        );
         return {
           id: request.id,
           requestId: request.request_id,
@@ -1061,11 +1075,18 @@ test("scoped Modal children launch and accept follow-up through the enrolled run
       ).rows,
     ).toEqual([{ orchestrator_id: id, owner_id: p.owner, org_id: p.org, task_prompt_id: "runtime-prompt" }]);
     expect((await services.childWorker.extend(token, "extend", receipt.sandboxId, 15_000)).state).toBe("succeeded");
+    const first = await services.childWorker.stop(token, "stop", receipt.sandboxId);
+    expect(first.state).toBe("uncertain");
+    expect(fake.stops).toHaveLength(0);
     const stopped = await services.childWorker.stop(token, "stop", receipt.sandboxId);
-    expect(stopped.state).toBe("succeeded");
+    expect(stopped.id).toBe(first.id);
+    expect(stopped.state).toBe(loseStopReply ? "uncertain" : "succeeded");
     expect(checkpointRequest).toBe(stopped.id);
+    expect(await services.childWorker.stop(token, "stop", receipt.sandboxId)).toEqual(stopped);
+    expect(checkpointCalls).toBe(2);
+    expect(fake.stops).toHaveLength(1);
     await expect(services.childWorker.read(token, receipt.sandboxId)).resolves.toMatchObject({
-      status: "stopped",
+      status: loseStopReply ? "stopping" : "stopped",
     });
   } finally {
     await close();
