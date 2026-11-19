@@ -5,6 +5,7 @@
 export type NavIcon =
   | "sandboxes"
   | "routines"
+  | "triggers"
   | "templates"
   | "environments"
   | "skills"
@@ -18,7 +19,7 @@ export type NavIcon =
 /** A destination behind a server opt-in: the entry appears only once the server says it offers it. */
 export type NavOptIn = "dockerHosts";
 
-export type NavLink = { href: string; label: string; icon: NavIcon; optIn?: NavOptIn };
+export type NavLink = { href: string; label: string; icon: NavIcon; optIn?: NavOptIn; adminOnly?: boolean };
 export type NavGroup = { label: string; links: readonly NavLink[] };
 
 export const NAV_GROUPS: readonly NavGroup[] = [
@@ -27,6 +28,7 @@ export const NAV_GROUPS: readonly NavGroup[] = [
     links: [
       { href: "/sandboxes", label: "Sandboxes", icon: "sandboxes" },
       { href: "/routines", label: "Routines", icon: "routines" },
+      { href: "/triggers", label: "Inbound triggers", icon: "triggers", adminOnly: true },
     ],
   },
   {

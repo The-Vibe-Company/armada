@@ -4,7 +4,7 @@ import { isActiveLink, NAV_GROUPS, organizationSwitchDestination, showsOrganizat
 describe("sidebar navigation", () => {
   test("lists the owner's groups and destinations in order", () => {
     expect(NAV_GROUPS.map((group) => [group.label, group.links.map((link) => link.label)])).toEqual([
-      ["Running", ["Sandboxes", "Routines"]],
+      ["Running", ["Sandboxes", "Routines", "Inbound triggers"]],
       ["Launch from", ["Templates", "Snapshots"]],
       ["What agents have", ["Models", "Tools", "Skills", "Variables"]],
       ["Setup", ["Machines", "Organization", "Your connections"]],

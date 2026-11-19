@@ -75,12 +75,17 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
           fallback={
             <NavLinks
               organizationId={selected?.org.id ?? null}
+              organizationAdmin={selected?.role === "admin"}
               className="px-3 pb-4"
               optIns={{ dockerHosts: dockerHostsEnabled() }}
             />
           }
         >
-          <ShellNavigation organizationId={selected?.org.id ?? null} sandboxes={liveSandboxes} />
+          <ShellNavigation
+            organizationId={selected?.org.id ?? null}
+            organizationAdmin={selected?.role === "admin"}
+            sandboxes={liveSandboxes}
+          />
         </Suspense>
       </AppSidebar>
       <CommandMenu />
@@ -130,13 +135,16 @@ async function loadLiveSandboxes(orgId: string) {
 async function ShellNavigation({
   sandboxes,
   organizationId,
+  organizationAdmin,
 }: {
   sandboxes: ReturnType<typeof loadLiveSandboxes>;
   organizationId: string | null;
+  organizationAdmin: boolean;
 }) {
   return (
     <NavLinks
       organizationId={organizationId}
+      organizationAdmin={organizationAdmin}
       className="px-3 pb-4"
       optIns={{ dockerHosts: dockerHostsEnabled() }}
       sandboxes={await sandboxes}
