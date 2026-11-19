@@ -1,3 +1,4 @@
+import type { Command } from "./commands/command.ts";
 import { commands, findCommand } from "./commands/index.ts";
 
 // Exact command boundaries only: never interpret payload or remote arguments as help.
@@ -293,37 +294,6 @@ Never put the token in command arguments. --org is not accepted by this command.
 The server validates the invitation and signed-in identity; the token is not printed.
 Example: armada org invitations accept --file /private/invitation-token
 `,
-  token: `Usage: armada token <command> [arguments]
-Manage Armada service tokens for authenticated scripts, not model/provider keys.
-Use leaf --help/-h for exact flags and server authorization requirements.
-  create  Create a token; stdout contains the secret even with --json.
-  list    List metadata, IDs and revocation state, never secret values.
-  revoke  Revoke using the token ID from list, not the secret value.
-Store new tokens securely when printed; Armada stores only their hashes.
-Never commit tokens or send creation output to public logs.
-Supply ARMADA_TOKEN through a secure environment, never command arguments.
-Help does not create, list or revoke tokens.
-Example: armada token list --json
-Example: armada token create --help
-`,
-  "token create": `Usage: armada token create [--org <name>] [--label <label>] [--json]
-Create a service token with authenticated access and server authorization.
-An explicit --org overrides a saved organization selection.
-Warning: stdout contains the new secret, including with --json. Store it securely now;
-Armada stores only its hash. Never commit it or send output to public logs.
-Supply the token to scripts using ARMADA_TOKEN through a secure environment, not arguments.
-Example: armada token create --org my-team --label automation
-`,
-  "token list": `Usage: armada token list [--json]
-List service-token metadata with authenticated access and server authorization.
-Output includes IDs and revocation state, not token values. Use an ID with token revoke.
-Example: armada token list --json
-`,
-  "token revoke": `Usage: armada token revoke <id> [--json]
-Revoke a service token with authenticated access and server authorization.
-Use its ID from armada token list --json, never the secret token value.
-Example: armada token revoke TOKEN_UUID
-`,
   github: `Usage: armada github <command> [arguments]
 Manage your GitHub connection after Armada login.
 Use leaf --help/-h for exact flags, timeouts and server authorization requirements.
@@ -362,38 +332,6 @@ Example: armada github refresh SANDBOX_UUID --json
 Disconnect your GitHub connection after Armada login and server authorization.
 Output is JSON even without --json. To connect again, use armada github connect.
 Example: armada github disconnect
-`,
-  account: `Usage: armada account <command> [arguments]
-Inspect your Armada account or sign out a personal session remotely.
-Use leaf --help/-h for exact syntax and authorization requirements.
-  status  Read account status from the server as JSON.
-  logout  Sign out the current personal session remotely, then clear local login.
-For local-only session clearing, use armada logout instead.
-Account logout requires a personal session, not service-token authentication;
-remove ARMADA_TOKEN from that command's environment when using saved personal login.
-Help makes no server requests and does not sign anything out.
-Example: armada account status --json
-Example: armada account logout --help
-`,
-  "account status": `Usage: armada account status [--json]
-Read account status with authenticated access and server authorization.
-Output is JSON even without --json. This is not a local session-file inspection.
-Example: armada account status --json
-`,
-  "account logout": `Usage: armada account logout [--json]
-Sign out the current personal login session remotely, then clear its local session.
-Requires a personal login session; service-token authentication is not supported.
-If ARMADA_TOKEN is set, remove it from this command's environment to use your personal session.
-To clear only the saved local session, use armada logout.
---json returns {authenticated:false}.
-Example: armada account logout
-`,
-  logout: `Usage: armada logout [--json]
-Clear the saved local Armada login without a server request.
---json returns {authenticated:false}.
-This does not revoke service tokens or remove ARMADA_TOKEN from your environment.
-To sign out a personal session remotely first, use armada account logout.
-Example: armada logout
 `,
   mcp: `Usage: armada mcp <command> [arguments]
 Manage MCP registry connections and inspect sandbox bindings.
@@ -503,15 +441,6 @@ Read the object from stdin or --file. Keep authentication values out of command 
 Updates cannot change scope; --scope is not accepted. Output is always JSON.
 Example: armada mcp update CONNECTION_UUID --file /private/connection.json --org ORG_UUID
 `,
-  doctor: `Usage: armada doctor [--org UUID] [--json]
-Inspect setup metadata and report check statuses with next-step guidance.
-Checks include session/server, GitHub, organization selection, Docker-host and model-account metadata.
-Use --org to override a saved selection; a sole organization can be selected automatically.
-This is not a full provider lifecycle test or proof that a model request will work.
---json returns a checks array; otherwise output is a table.
-Exits 1 if any check is failed, otherwise 0; warnings and unknowns are not passes.
-Example: armada doctor --org ORG_UUID --json
-`,
   "bind-credential": `Usage: armada bind-credential <sandbox-id> --credential-id UUID [--org UUID] [--json]
 Owner-only legacy Modal credential-binding recovery after Armada login.
 Stop the sandbox safely before rebinding; this command does not restart it.
@@ -539,20 +468,6 @@ Omit --file for stdin; --file - is not the stdin spelling for this command.
 Server rechecks authority, history and references; eligible work is queued, not proof of deletion.
 Output is always JSON. Use the snapshot record UUID, not a provider artifact ID.
 Example: armada snapshot retirement reconcile SNAPSHOT_UUID --org ORG_UUID --file reviewed.json
-`,
-  login: `Usage: armada login [--json] [--email <address> | --provider github|google] [--url <server-origin>]
-Sign in to Armada, not directly to a sandbox provider.
-Use --email for email code/link sign-in; --provider chooses an enabled browser method.
-Do not combine --email and --provider. Without either, discover enabled server methods.
-Server selection: --url, then ARMADA_URL, then the default Armada API origin.
-Global --profile NAME (or ARMADA_PROFILE) isolates saved login and preferences;
-use login --url to configure a new profile's server.
-Keep the terminal open while completing sign-in. Use an interactive terminal for email code entry.
-ARMADA_TOKEN supplies service-token authentication to API commands; a saved login
-does not unset that environment variable. Keep tokens in a secure environment, never arguments.
---json returns {authenticated:true} on success; progress remains on stderr.
-Example: armada login --email you@example.com
-Example: armada --profile staging login --url https://staging.example.com --provider github
 `,
   snapshot: `Usage: armada snapshot <command> [arguments]
 Manage provider-scoped snapshots. Use a leaf command with --help or -h for syntax.
@@ -888,15 +803,6 @@ Example: armada mcp ${action} CONNECTION_UUID --org ORG_UUID --no-browser --time
 `;
 }
 
-function completionHelp(shell?: "bash" | "zsh" | "fish"): string {
-  return `Usage: armada completion ${shell ?? "bash|zsh|fish"}
-Print a shell-completion script to stdout. No login or network request is needed.
-Choose the shell you actually use; inspect the generated script before sourcing it.
-This command does not install completion or modify your shell configuration.
-Example: armada completion ${shell ?? "bash"} > armada-completion.${shell ?? "bash"}
-`;
-}
-
 function templateDefinitionHelp(action: "create" | "publish"): string {
   const creating = action === "create";
   return `Usage: armada template ${action} ${creating ? "NAME" : "NAME|ID --expected-revision N"} [definition input] [--org NAME|UUID] [--json]
@@ -1059,6 +965,8 @@ export function onboardingHelp(argv: readonly string[]): string | undefined {
   const command = parts.join(" ");
   const focused = findCommand(command);
   if (focused) return focused.help;
+  const nested = findCommand(command.split(" ", 1)[0] ?? "")?.subcommandHelp;
+  if (nested && Object.hasOwn(nested, command)) return nested[command];
   return Object.hasOwn(GENERATED_HELP, command)
     ? GENERATED_HELP[command]
     : Object.hasOwn(HELP, command)
@@ -1081,10 +989,6 @@ const GENERATED_HELP: Record<string, string> = {
   "secrets delete": secretLifecycleHelp("delete"),
   vars: vaultFamilyHelp("vars"),
   secrets: vaultFamilyHelp("secrets"),
-  completion: completionHelp(),
-  "completion bash": completionHelp("bash"),
-  "completion zsh": completionHelp("zsh"),
-  "completion fish": completionHelp("fish"),
   "mcp connect": mcpAuthorizationHelp("connect"),
   "mcp reconnect": mcpAuthorizationHelp("reconnect"),
   "github connect": githubAuthorizationHelp("connect"),
@@ -1095,16 +999,20 @@ const GENERATED_HELP: Record<string, string> = {
   "creds import codex": importHelp("codex"),
 };
 
+function commandHelp({ help, subcommandHelp }: Command): string[] {
+  return [help, ...Object.values(subcommandHelp ?? {})];
+}
+
 /** Flags from the command help registry also drive shell discovery. */
 export const helpOptionWords = [
   ...new Set(
     [
       ...Object.entries(HELP).flatMap(([key, help]) => [
-        ...commands.filter((command) => command.completionBefore === key).map((command) => command.help),
+        ...commands.filter((command) => command.completionBefore === key).flatMap(commandHelp),
         help,
       ]),
       ...Object.values(GENERATED_HELP),
-      ...commands.filter((command) => command.completionBefore === undefined).map((command) => command.help),
+      ...commands.filter((command) => command.completionBefore === undefined).flatMap(commandHelp),
     ].flatMap((help) => [...help.matchAll(/--[a-z][a-z-]*/g)].map((match) => match[0])),
   ),
 ];
