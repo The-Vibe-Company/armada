@@ -78,7 +78,9 @@ export class Journal {
       };
       if (event.kind === "message") {
         if (typeof masked.text === "string") masked.text = redactText(event.text, masked.text);
-        masked.tools?.forEach((tool, index) => redactTool(event.tools[index], tool));
+        masked.tools?.forEach((tool, index) => {
+          redactTool(event.tools[index], tool);
+        });
       } else if (masked.data) {
         if (event.type === "armada/opencodeMcp") redactTool(event.data as ToolPayload | null, masked.data);
         else {
