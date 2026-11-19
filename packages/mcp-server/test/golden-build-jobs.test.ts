@@ -215,6 +215,7 @@ test("a late builder identity remains recoverable after shutdown and a failed st
     await builderResponse.promise;
     return builder;
   };
+  // oxlint-disable-next-line landmines-testing/no-test-doubles -- Simulate a transient stop refusal on the in-memory Boat provider without network I/O.
   provider.stop = async () => {
     throw new Error("stop unavailable");
   };
