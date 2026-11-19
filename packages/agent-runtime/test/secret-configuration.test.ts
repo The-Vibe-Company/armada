@@ -181,3 +181,46 @@ test("checkpoint sanitation keeps expanding stderr within the journal row limit"
     journal.close();
   }
 });
+
+test.each([
+  {
+    type: "armada/opencodeShell",
+    data: { command: "echo prefixvalue", output: "prefixvalue", exitCode: 0, truncated: false },
+    masked: { command: "echo prefix[REDACTED]", output: "prefix[REDACTED]", exitCode: 0, truncated: false },
+  },
+  {
+    type: "armada/opencodeMcp",
+    data: {
+      server: "prefixvalue",
+      nativeToolName: "prefixvalue",
+      input: { prefixvalue: 1 },
+      result: { output: "prefixvalue", isError: false },
+    },
+    masked: {
+      server: "prefix[REDACTED]",
+      nativeToolName: "prefix[REDACTED]",
+      input: { "prefix[REDACTED]": 1 },
+      result: { output: "prefix[REDACTED]", isError: false },
+    },
+  },
+])("masks typed $type proof content at each journal boundary", async ({ type, data, masked }) => {
+  const journal = new Journal(":memory:", (text) => text);
+  const runner = new Runner(journal, grant, {});
+  try {
+    const event = { id: "proof", at: 1, kind: "other", type, data } satisfies AgentEvent;
+    journal.append(event);
+    journal.registerApplicationSecrets(["value", type]);
+    journal.append({ ...event, id: "new-proof" });
+    const expected = { ...event, data: masked };
+    const newer = { ...expected, id: "new-proof" };
+    expect(journal.events().map(({ event }) => event)).toEqual([event, newer]);
+
+    const response = await runner.handleDialout({ ...command, op: "events" });
+    expect(await response.json()).toMatchObject({ result: { events: [expected, newer] } });
+    journal.sanitize();
+    expect(journal.events().map(({ event }) => event)).toEqual([expected, newer]);
+  } finally {
+    await runner.close();
+    journal.close();
+  }
+});

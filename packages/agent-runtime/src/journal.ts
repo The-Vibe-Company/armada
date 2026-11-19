@@ -8,6 +8,22 @@ import { createRedactor, createShortSecretTextRedactor } from "./state.ts";
 
 const MAX_EVENT_BYTES = 262144;
 
+function isToolProof(type: string) {
+  return type === "armada/opencodeShell" || type === "armada/opencodeMcp";
+}
+
+function truncatedEvent(event: AgentEvent, bytes: number, terminal = false) {
+  return JSON.stringify({
+    id: event.id,
+    at: event.at,
+    conversationId: event.conversationId,
+    promptId: event.promptId,
+    kind: "other",
+    type: "event_truncated",
+    data: { originalKind: event.kind, bytes, ...(terminal ? { terminal: true } : {}) },
+  });
+}
+
 /** Cut a preview without splitting a surrogate pair into a lone UTF-16 code unit. */
 function boundedPreview(text: string, limit: number): string {
   if (text.length <= limit) return text;
@@ -32,6 +48,31 @@ const maskPayload: (value: unknown, mask: (text: string) => string) => unknown =
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [mask(key), maskPayload(item, mask)]));
   return value;
 };
+
+function maskProofData(original: unknown, scrubbed: unknown, mask: (text: string) => string) {
+  if (!original || typeof original !== "object" || !scrubbed || typeof scrubbed !== "object") return scrubbed;
+  const source = original as Record<string, unknown>;
+  const data = scrubbed as Record<string, unknown>;
+  for (const key of ["command", "output", "server", "nativeToolName", "nativeMessageId", "callId"]) {
+    const before = source[key];
+    const after = data[key];
+    if (typeof before === "string" && typeof after === "string") data[key] = maskText(before, after, mask);
+  }
+  if (source.input !== undefined) {
+    const short = maskPayload(source.input, mask);
+    const before = JSON.stringify(source.input);
+    const after = JSON.stringify(data.input);
+    const masked = JSON.stringify(short);
+    if (masked !== before && masked !== after) data.input = before === after ? short : "[REDACTED]";
+  }
+  if (source.result && data.result) {
+    const before = (source.result as { output?: unknown }).output;
+    const result = data.result as { output?: unknown };
+    if (typeof before === "string" && typeof result.output === "string")
+      result.output = maskText(before, result.output, mask);
+  }
+  return data;
+}
 
 export class Journal {
   readonly db: Database;
@@ -89,16 +130,7 @@ export class Journal {
       control = { ...event, text: `${boundedPreview(this.redact(event.text), 16000)}… [truncated]` };
     let body = this.eventBody(control, true);
     const oversized = Buffer.byteLength(body) > MAX_EVENT_BYTES;
-    if (oversized)
-      body = JSON.stringify({
-        id: event.id,
-        at: event.at,
-        conversationId: event.conversationId,
-        promptId: event.promptId,
-        kind: "other",
-        type: "event_truncated",
-        data: { originalKind: event.kind, bytes: body.length, ...(terminalSnapshot ? { terminal: true } : {}) },
-      });
+    if (oversized) body = truncatedEvent(event, body.length, terminalSnapshot);
     const sequence = Number(this.db.query("INSERT INTO events(body) VALUES(?)").run(body).lastInsertRowid);
     this.onAppend?.(sequence);
     // A terminal snapshot is an answer receipt. Never acknowledge a finished answer whose full text
@@ -142,14 +174,11 @@ export class Journal {
         ? redacted
         : JSON.stringify({ ...diagnostic, data: { truncated: true } });
     }
-    if (!mask) return JSON.stringify(scrubbed);
-    if (event.type === "armada/opencodeMcp") {
-      const proof = scrubbed as typeof event & {
-        data: { input?: unknown; result?: { output: unknown } };
-      };
-      if (proof.data?.input !== undefined) proof.data.input = maskPayload(proof.data.input, mask);
-      if (proof.data?.result) proof.data.result.output = maskPayload(proof.data.result.output, mask);
-      return JSON.stringify(proof);
+    if (isToolProof(event.type)) {
+      scrubbed.type = event.type;
+      if (mask) scrubbed.data = maskProofData(event.data, scrubbed.data, mask);
+      const proof = JSON.stringify(scrubbed);
+      return !appending && Buffer.byteLength(proof) > MAX_EVENT_BYTES ? truncatedEvent(scrubbed, proof.length) : proof;
     }
     return JSON.stringify(scrubbed);
   }
@@ -161,7 +190,7 @@ export class Journal {
       return this.redact(body);
     }
     return event?.kind === "message" ||
-      (event?.kind === "other" && (event.type === "armada/opencodeMcp" || event.type === "harness_stderr"))
+      (event?.kind === "other" && (isToolProof(event.type) || event.type === "harness_stderr"))
       ? this.eventBody(event, false)
       : this.redact(body);
   }
