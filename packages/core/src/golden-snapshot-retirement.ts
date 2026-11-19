@@ -375,9 +375,10 @@ export class GoldenSnapshotRetirements {
                or (s.id is null and r.golden_operation_fence_id is null and r.state in ('allocating','reconciling'))
              )
            union all
-           select 1 from public.sandboxes
-           where provider=$1::public.sandbox_provider and source_snapshot_id=$2
-             and status<>'deleted' and (status<>'failed' or stopped_at is null)
+           select 1 from public.sandbox_source_snapshots pin
+           join public.sandboxes s on s.id=pin.sandbox_id
+           where s.provider=$1::public.sandbox_provider and pin.snapshot_id=$2
+             and s.status<>'deleted' and (s.status<>'failed' or s.stopped_at is null)
            limit 1`,
           [c.provider, c.old_snapshot],
         )

@@ -4847,6 +4847,29 @@ export type Database = {
           },
         ];
       };
+      sandbox_source_snapshots: {
+        Row: {
+          sandbox_id: string;
+          snapshot_id: string;
+        };
+        Insert: {
+          sandbox_id: string;
+          snapshot_id: string;
+        };
+        Update: {
+          sandbox_id?: string;
+          snapshot_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "sandbox_source_snapshots_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: true;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       sandbox_transitions: {
         Row: {
           id: number;
@@ -5055,7 +5078,6 @@ export type Database = {
           transition_context: Json | null;
           outputs_retained_generation: number | null;
           outputs_attempt_count: number;
-          source_snapshot_id: string | null;
         };
         Insert: {
           id?: string;
@@ -5133,7 +5155,6 @@ export type Database = {
           transition_context?: Json | null;
           outputs_retained_generation?: number | null;
           outputs_attempt_count?: number;
-          source_snapshot_id?: string | null;
         };
         Update: {
           id?: string;
@@ -5211,7 +5232,6 @@ export type Database = {
           transition_context?: Json | null;
           outputs_retained_generation?: number | null;
           outputs_attempt_count?: number;
-          source_snapshot_id?: string | null;
         };
         Relationships: [
           {
