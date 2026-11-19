@@ -57,17 +57,25 @@ export function decideInventoryMachine(
   return "keep";
 }
 
-/** One isolated server worker lane per bound source. Structured log counts can be aggregated by provider. */
 export function createProviderReaper(
   source: ProviderReaperSource,
+  log?: (line: string) => void,
+  now?: () => number,
+): ServerLifecycleLane {
+  return createProviderReaperLane(async () => [source], log, now);
+}
+
+/** Refresh the registry each sweep. Each source reports independently. */
+export function createProviderReaperLane(
+  discover: (signal: AbortSignal) => Promise<readonly ProviderReaperSource[]>,
   log: (line: string) => void = console.log,
   now: () => number = Date.now,
-): ServerLifecycleLane {
-  const labels = { provider: source.provider, source: source.sourceId };
+) {
   let active: Promise<void> | undefined;
   let nextSweepAt = Number.NEGATIVE_INFINITY;
 
-  async function sweep(signal: AbortSignal) {
+  async function sweep(source: ProviderReaperSource, signal: AbortSignal) {
+    const labels = { provider: source.provider, source: source.sourceId };
     const seen = new Set<string>();
     const deleted: Record<DeleteReason, number> = { unknown: 0, terminal: 0 };
     let unknown = 0;
@@ -124,7 +132,12 @@ export function createProviderReaper(
     isolatedSweep: true,
     async reconcileOne(signal) {
       if (active || signal.aborted || now() < nextSweepAt) return false;
-      active = sweep(signal);
+      active = (async () => {
+        for (const source of await discover(signal)) {
+          if (signal.aborted) return;
+          await sweep(source, signal);
+        }
+      })();
       try {
         await active;
       } finally {
@@ -136,5 +149,5 @@ export function createProviderReaper(
     async drain() {
       await active;
     },
-  };
+  } satisfies ServerLifecycleLane;
 }

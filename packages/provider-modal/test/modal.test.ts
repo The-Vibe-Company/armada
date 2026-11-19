@@ -1128,15 +1128,62 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await expect(f.provider.createGolden({})).rejects.toMatchObject({ code: "forbidden" });
     expect(f.creates).toBe(0);
   });
-  test("unknown create response reconciles deterministic name without second create", async () => {
+  test.each([false, true])("keyed fork reuses its physical machine (lost response=%s)", async (lostResponse) => {
     const f = fixture();
-    const key = crypto.randomUUID();
+    const builder = await f.provider.createGolden({});
+    const from = crypto.randomUUID();
+    await f.provider.snapshot({ sandboxId: builder.id, name: from });
+    const request = { from, idempotencyKey: crypto.randomUUID() };
+    const creates = f.creates;
+    if (lostResponse) {
+      f.failCreate(true);
+      await expect(f.provider.fork(request)).rejects.toMatchObject({ code: "unknown" });
+      f.failCreate(false);
+    } else {
+      await f.provider.fork(request);
+    }
+    const physicalName = f.resourceRequests.at(-1)?.name;
+    if (typeof physicalName !== "string") throw new Error("Expected a named Modal create");
+    const original = await f.client.sandboxes.fromName("pinned", physicalName, {
+      environment: scope.binding.environment,
+      includeTerminated: true,
+    });
+    const replay = await f.provider.fork(request);
+    expect(replay.state).toBe("ready");
+    expect(f.creates - creates).toBe(1);
+    expect((await f.store.get(replay.id)).physicalId).toBe(original.sandboxId);
+  });
+  test("keyed fork cannot reactivate a machine deleted before its child lease", async () => {
+    const f = fixture();
+    const builder = await f.provider.createGolden({});
+    const from = crypto.randomUUID();
+    await f.provider.snapshot({ sandboxId: builder.id, name: from });
+    const idempotencyKey = crypto.randomUUID();
+    const request = { from, idempotencyKey };
     f.failCreate(true);
-    await expect(f.provider.createGolden({ idempotencyKey: key })).rejects.toMatchObject({ code: "unknown" });
+    await expect(f.provider.fork(request)).rejects.toMatchObject({ code: "unknown" });
     f.failCreate(false);
-    const row = await f.provider.createGolden({ idempotencyKey: key });
-    expect(row.state).toBe("ready");
-    expect(f.creates).toBe(1);
+    const child = await f.store.findByRequestKey(idempotencyKey);
+    if (!child) throw new Error("Expected a saved fork reservation");
+    const lease = f.store.lease.bind(f.store);
+    f.store.lease = async (id, work) => {
+      if (id === child.info.id) {
+        f.store.lease = lease;
+        await f.provider.delete({ sandboxId: id });
+      }
+      return lease(id, work);
+    };
+    await expect(f.provider.fork(request)).rejects.toMatchObject({ code: "conflict" });
+    expect((await f.store.get(child.info.id)).phase).toBe("deleted");
+  });
+  test("a shared-scope reservation key cannot be replayed by another owner", async () => {
+    const orgScope: Scope = { ...scope, visibility: "org" };
+    const first = fixture(orgScope);
+    const other = fixture({ ...orgScope, userId: "00000000-0000-0000-0000-000000000004" });
+    const request = { idempotencyKey: crypto.randomUUID() };
+    await first.provider.createGolden(request);
+    await expect(other.provider.createGolden(request)).rejects.toMatchObject({ code: "conflict" });
+    expect(other.creates).toBe(0);
   });
   test("delete reconciles a lost create response under the pinned App before changing creating phase", async () => {
     const f = fixture();

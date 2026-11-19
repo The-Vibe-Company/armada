@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type { ModalBinding, Sql } from "@armada/core";
 import { HARNESS_CAPABILITIES } from "@armada/core";
 import { chooseManagementAuthority } from "./authority.ts";
@@ -10,7 +9,12 @@ import { createGenerationGrants } from "./grants.ts";
 import { createModalIngestHandler } from "./ingest.ts";
 import type { ExecEnvironment, Machine, McpConfiguration, ModalManagementProvenance, Scope } from "./ports.ts";
 import { captureProcessBaseline, sealProcessBaseline } from "./process-scope.ts";
-import { assertSourceTargetScopes, createModalProvider, type ModalProviderOptions } from "./provider.ts";
+import {
+  assertSourceTargetScopes,
+  createModalProvider,
+  type ModalProviderOptions,
+  modalDeploymentId,
+} from "./provider.ts";
 import { prepareFilesystemSnapshot, prepareFreshFilesystem } from "./snapshot.ts";
 import { createSqlModalStore, scopeKey } from "./store.ts";
 import { createRunnerTransport } from "./transport.ts";
@@ -167,9 +171,7 @@ async function composeModalProvider(options: ComposedModalOptions) {
     ...options,
     ...connection,
     // Keep the deployment identity stable without spending a variable share of Modal's tag budget.
-    deploymentId: createHash("sha256")
-      .update(JSON.stringify([options.scope.binding.environment, ingestUrl.origin]))
-      .digest("hex"),
+    deploymentId: modalDeploymentId(options.scope.binding.environment, ingestUrl.origin),
     managementAuthority: provenance,
     source: { scope: sourceScope, store: sourceStore },
     store,

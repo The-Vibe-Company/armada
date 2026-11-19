@@ -13,7 +13,7 @@ Frontend #563 should use that operation, remove the item from local launch selec
 after success, and explain that existing sandboxes and history are retained. User-JWT
 snapshot queries must filter `removed_at=is.null` for selections (the tombstone remains
 readable for historical joins). Do not implement this as a direct table DELETE.
-The control API/MCP list and SQL snapshot lookup already exclude tombstones.
+The control API list and SQL snapshot lookup already exclude tombstones.
 
 ## Atomicity and ownership
 

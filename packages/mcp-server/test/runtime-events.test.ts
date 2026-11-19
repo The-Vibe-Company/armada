@@ -205,6 +205,43 @@ test("ACK follows contiguous encrypted persistence and shared usage projection; 
   }
 });
 
+test("the runtime archive links only visible model text to its prompt UUID", async () => {
+  const f = await fixture();
+  try {
+    const active = await f.enrol();
+    const promptId = crypto.randomUUID();
+    const message = (sequence: number, extra: Partial<Extract<AgentEvent, { kind: "message" }>> = {}) => ({
+      sequence,
+      event: {
+        id: `message-${sequence}`,
+        at: 1,
+        kind: "message" as const,
+        promptId,
+        text: "hello",
+        partial: true,
+        tools: [],
+        ...extra,
+      },
+    });
+    const response = await f.publish(active, [
+      { sequence: 1, event: { ...f.other("status"), promptId } },
+      message(2, { text: "  " }),
+      message(3, { responseKind: "tool_result" }),
+      message(4, { retracted: true }),
+      message(5, { promptId: "non-uuid" }),
+      message(6),
+    ]);
+    expect(await response.json()).toEqual({ acknowledgedSequence: 6 });
+    const { rows } = await f.db.query<{ visible_text_prompt_id: string | null }>(
+      "select visible_text_prompt_id from runtime_events where sandbox_id=$1 order by sequence",
+      [f.id],
+    );
+    expect(rows.map((row) => row.visible_text_prompt_id)).toEqual([null, null, null, null, null, promptId]);
+  } finally {
+    await f.close();
+  }
+});
+
 // #2560: the first model output dates the activation's first token by the model event's own time, not the upload
 // time (a journal buffered while disconnected keeps its timestamps). Other events, tool results and output from
 // before the activation was accepted do not count; the earliest output wins.

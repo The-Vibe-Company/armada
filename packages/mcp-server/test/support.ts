@@ -398,7 +398,6 @@ export async function harness(
     sql?: (db: PGlite) => Sql;
     routes?: readonly Route[];
     buildSsh?: GoldenCreateOptions["ssh"];
-    goldenAdoption?: HandlerOptions["goldenAdoption"];
     /** The store `/mcp` authenticates against. Default: the in-memory one the helpers fill. */
     authStore?: (db: PGlite) => AuthStore;
     log?: (line: string) => void;
@@ -464,7 +463,6 @@ export async function harness(
   });
   const handler = createHandler({
     publicUrl: PUBLIC_URL,
-    goldenBuilds: builds,
     oauth,
     authStore: options.authStore ? options.authStore(db) : auth,
     supabase: { supabaseUrl: "https://project.supabase.co", anonKey: "anon", fetch: supabaseFetch },
@@ -475,7 +473,6 @@ export async function harness(
     providerFor: options.providerFor ?? boat.providerFor,
     ...(options.modelAuth ? { modelAuth: options.modelAuth(db) } : {}),
     ...(options.connections ? { connections: options.connections } : {}),
-    ...(options.goldenAdoption ? { goldenAdoption: options.goldenAdoption } : {}),
     ...(options.modalProviderFor ? { modalProviderFor: options.modalProviderFor } : {}),
     ...(options.routes ? { routes: options.routes } : {}),
     log: options.log ?? (() => {}),
