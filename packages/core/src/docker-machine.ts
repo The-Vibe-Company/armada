@@ -363,7 +363,7 @@ export function createDockerMachineExecutor(options: {
         "--security-opt",
         "no-new-privileges",
         "--mount",
-        `type=volume,src=${state.volumeName},dst=/home/user`,
+        `type=volume,src=${state.volumeName},dst=/home/user${predecessor ? ",volume-nocopy" : ""}`,
         ...(mountShared && shared
           ? ["--mount", `type=bind,src=${shared.dir},dst=${SHARED_ARTIFACT_CACHE_PATH},readonly`]
           : []),
@@ -396,21 +396,39 @@ export function createDockerMachineExecutor(options: {
         state.containerName,
       ]);
       await ensureShared();
+      if (state.expiresAt <= now()) fail("expired");
       await checked(["container", "start", state.containerName]);
     }
     return { containerName: state.containerName, volumeName: state.volumeName, expiresAt: state.expiresAt };
   }
 
   async function copyWorkspace(sourceId: string, volumeName: string) {
-    // The stopped source container pins its own volume. A missing source ID cannot
-    // silently create an empty volume. The helper can only write the target volume.
+    const name = `${volumeName}-restore`;
+    const helper = await inspect("container", name);
+    if (helper) {
+      const id = helper.Id;
+      const config = object(helper.Config);
+      const status = object(helper.State);
+      if (
+        helper.Name !== `/${name}` ||
+        typeof id !== "string" ||
+        !dockerContainerId.test(id) ||
+        object(config.Labels)[restoredFrom] !== sourceId
+      )
+        fail("ownership_mismatch");
+      if (status.Running !== false || (status.Status !== "created" && status.Status !== "exited"))
+        fail("docker_failed");
+      await checked(["container", "rm", id]);
+    }
     const result = await options.cli
       .run(
         [
           "run",
           "--rm",
           "--name",
-          `${volumeName}-restore`,
+          name,
+          "--label",
+          `${restoredFrom}=${sourceId}`,
           "--network",
           "none",
           "--read-only",

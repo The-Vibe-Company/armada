@@ -53,10 +53,23 @@ function fixture(
         };
       }
       if (kind === "run") {
+        const name = argv[argv.indexOf("--name") + 1];
+        if (!name || containers.has(name)) return { exitCode: 1, stdout: "" };
         const sourceId = argv[argv.indexOf("--volumes-from") + 1]?.replace(/:ro$/, "");
         const source = [...containers.values()].find((container) => container.Id === sourceId);
         const destination = argv[argv.indexOf("--mount") + 1]?.match(/^type=volume,src=([^,]+),/)?.[1];
         if (!source || !destination || !volumes.has(destination)) return { exitCode: 1, stdout: "" };
+        if (failCommand === "copy helper start") {
+          const label = argv[argv.indexOf("--label") + 1] ?? "";
+          const equals = label.indexOf("=");
+          containers.set(name, {
+            Id: String(nextContainerId++).padStart(64, "0"),
+            Name: `/${name}`,
+            Config: { Labels: { [label.slice(0, equals)]: label.slice(equals + 1) } },
+            State: { Status: "created", Running: false },
+          });
+          return { exitCode: 1, stdout: "" };
+        }
         const workspace = workspaces.get(source.Mounts[0].Name) ?? "";
         workspaces.set(destination, failCommand === "copy" ? workspace.slice(0, 1) : workspace);
         return { exitCode: failCommand === "copy" ? 1 : 0, stdout: "" };
@@ -95,14 +108,17 @@ function fixture(
         if (store.has(name)) return { exitCode: 1, stdout: "name already exists" };
         if (refuseBinds && argv.some((arg) => arg.startsWith("type=bind,")))
           return { exitCode: 1, stdout: "bind source path does not exist" };
-        const mounts = argv
+        const mountOptions = argv
           .flatMap((arg, i) => (arg === "--mount" ? [argv[i + 1]!] : []))
-          .map((spec) => Object.fromEntries(spec.split(",").map((part) => part.split("="))))
-          .map((mount) =>
-            mount.type === "bind"
-              ? { Type: "bind", Source: mount.src, Destination: mount.dst, RW: !("readonly" in mount) }
-              : { Type: mount.type, Name: mount.src, Destination: mount.dst, RW: true },
-          );
+          .map((spec) => Object.fromEntries(spec.split(",").map((part) => part.split("="))));
+        const home = mountOptions.find((mount) => mount.type === "volume")?.src;
+        if (home && !workspaces.get(home) && !mountOptions.some((mount) => "volume-nocopy" in mount))
+          workspaces.set(home, "image default workspace");
+        const mounts = mountOptions.map((mount) =>
+          mount.type === "bind"
+            ? { Type: "bind", Source: mount.src, Destination: mount.dst, RW: !("readonly" in mount) }
+            : { Type: mount.type, Name: mount.src, Destination: mount.dst, RW: true },
+        );
         store.set(name, {
           Id: String(nextContainerId++).padStart(64, "0"),
           Name: `/${name}`,
@@ -171,11 +187,15 @@ describe("Docker machine executor", () => {
     expect(f.containers.size).toBe(1);
     await expect(f.executor.create(target)).rejects.toThrow("ownership_mismatch");
 
+    f.fail("copy helper start");
+    await expect(f.executor.restore(target, predecessor)).rejects.toThrow("docker_failed");
+    expect(f.containers.size).toBe(2);
+
     f.fail("container start");
     await expect(f.executor.restore(target, predecessor)).rejects.toThrow("docker_failed");
     const replacement = [...f.containers.values()].find((container) => container.Id !== predecessor.machineId);
     expect(replacement?.State.Status).toBe("created");
-    f.fail("copy"); // A replay after create must skip the copy.
+    f.fail("copy");
     const restored = await f.executor.restore(target, predecessor);
     expect(f.containers.get(restored.containerName).Id).toBe(replacement?.Id);
     expect(await f.executor.isRunning(target)).toBe(true);
@@ -199,6 +219,39 @@ describe("Docker machine executor", () => {
     expect(f.volumes.size).toBe(1);
     await f.executor.create(target);
     await expect(f.executor.restore(target, predecessor)).rejects.toThrow("ownership_mismatch");
+  });
+
+  test("restore preserves an empty workspace even when the image has home contents", async () => {
+    const f = fixture();
+    const source = await f.executor.create(request);
+    const predecessor = { request, machineId: f.containers.get(source.containerName).Id };
+    const target = { ...request, generation: "55555555-5555-5555-5555-555555555555" };
+    f.workspaces.set(source.volumeName, "");
+    await f.executor.stop(request);
+    const restored = await f.executor.restore(target, predecessor);
+    expect(f.workspaces.get(restored.volumeName)).toBe("");
+  });
+
+  test("restore refuses to start after its deadline expires during cache preparation", async () => {
+    let prepare = () => {};
+    const f = fixture(undefined, {
+      dir: "/state/artifact-cache",
+      ensure: async () => {
+        prepare();
+        return true;
+      },
+    });
+    const source = await f.executor.create(request);
+    const predecessor = { request, machineId: f.containers.get(source.containerName).Id };
+    const target = { ...request, generation: "55555555-5555-5555-5555-555555555555", expiresAt: 2000 };
+    await f.executor.stop(request);
+    let preparations = 0;
+    prepare = () => {
+      if (++preparations === 2) f.setTime(2000);
+    };
+    await expect(f.executor.restore(target, predecessor)).rejects.toThrow("expired");
+    expect(await f.executor.isRunning(target)).toBe(false);
+    expect(await f.executor.isStopped(request)).toBe(true);
   });
 
   test("new containers mount the host's shared artifact cache read-only; retained ones without it stay owned", async () => {
