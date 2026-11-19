@@ -14,10 +14,12 @@ import {
   DISPATCHING_TURN_CANCELLED,
   type DispatchTurn,
   dispatchAccountTurn,
+  NATIVE_DISPATCH_UNCERTAIN,
   QUEUED_DISPATCH_EVIDENCE,
   QUEUED_TURN_CANCELLED,
   RUNTIME_LANE,
   RUNTIME_REQUEST_EVIDENCE,
+  UNCERTAIN_DISPATCH_MESSAGE,
 } from "./account-turn-dispatch.ts";
 import type { Caller } from "./caller.ts";
 import { DOCKER_SEND_REFUSAL, DOCKER_SEND_REQUEST } from "./docker-send-request-schema.ts";
@@ -420,11 +422,9 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         // Native admission advances the generation before calling the provider. An expired
         // changed-generation claim is uncertain, never safe to replay or leave dispatching.
         await sql.query(`update public.account_turn_queue q set state='failed',dispatch_until=null,
-          failure_reason='Dispatch outcome uncertain; inspect sandbox history before resending.'
+          failure_reason='${UNCERTAIN_DISPATCH_MESSAGE}'
           from public.sandboxes s where s.id=q.sandbox_id and q.state='dispatching'
-          and q.dispatch_until<=now() and not coalesce(${RUNTIME_LANE},false)
-          and (s.lifecycle_generation is distinct from q.dispatch_generation
-            or s.activity_lease_id is not null or coalesce(${RUNTIME_REQUEST_EVIDENCE},false))`);
+          and q.dispatch_until<=now() and ${NATIVE_DISPATCH_UNCERTAIN}`);
         const candidates = (
           await sql.query<Entry>(
             `select q.* from public.account_turn_queue q join public.sandboxes s on s.id=q.sandbox_id
