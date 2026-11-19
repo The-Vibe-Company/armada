@@ -343,7 +343,13 @@ for (const outcome of [
     });
     const readStopIntent = async () =>
       (
-        await db.query(
+        await db.query<{
+          status: string;
+          stop_requested_at: Date | null;
+          stop_generation: number;
+          lifecycle_generation: number;
+          provider_sandbox_id: string;
+        }>(
           `select status,stop_requested_at,stop_generation,lifecycle_generation,provider_sandbox_id
              from sandboxes where id=$1`,
           [id],
