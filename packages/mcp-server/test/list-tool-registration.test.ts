@@ -80,16 +80,13 @@ test("owner MCP publishes the bound agent operations and their descriptions", as
         }),
       ),
     );
-    const agentOperations = Object.values(operations).filter(
-      (operation) => operation.audience === "agent" && "toolName" in operation,
+    const agentDescriptions = Object.values(operations).flatMap((operation) =>
+      operation.audience === "agent" && "toolName" in operation
+        ? [[operation.toolName, "mcpDescription" in operation ? operation.mcpDescription : operation.description]]
+        : [],
     );
     expect(Object.fromEntries(tools.map((tool) => [tool.name, tool.description]))).toEqual(
-      Object.fromEntries(
-        agentOperations.map((operation) => [
-          operation.toolName,
-          "mcpDescription" in operation ? operation.mcpDescription : operation.description,
-        ]),
-      ),
+      Object.fromEntries(agentDescriptions),
     );
   } finally {
     await client.close();
