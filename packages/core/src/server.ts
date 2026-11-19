@@ -64,6 +64,7 @@ export {
 export { assertLaunchSecretBindings, resolveLaunchSecrets } from "./launch-secrets.ts";
 export { isLaunchTtlSeconds, validateLaunchSkillPins } from "./launch-validation.ts";
 export { resolveLaunchVariables } from "./launch-variables.ts";
+export * from "./machine.ts";
 export { type FailureDiagnostic, failureDiagnostic, retainFailureDiagnostic } from "./operator-failure.ts";
 export {
   installPrivateSkill,
