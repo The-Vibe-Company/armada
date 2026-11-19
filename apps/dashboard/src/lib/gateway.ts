@@ -1,5 +1,5 @@
 import { isRecord, VERSION } from "@armada/core";
-import { controlFallback } from "./control.ts";
+import { type ControlClient, controlFallback } from "./control.ts";
 import { describeFailure } from "./failure.ts";
 import type { SendArgs } from "./model-choice.ts";
 
@@ -150,10 +150,10 @@ async function readMessage(response: Response, id?: number): Promise<Record<stri
 }
 
 /**
- * What the dashboard asks of the server, by the tool names of the spec. `send` opens a new turn or redirects
+ * Dashboard sandbox operations across MCP and REST. `send` opens a new turn or redirects
  * the running one with `steer`. `stop` with `turn` interrupts it. The server applies the harness's capabilities.
  */
-export function sandboxGateway(gateway: Gateway) {
+export function sandboxGateway(gateway: Gateway, control: ControlClient) {
   return {
     logs: (
       sandboxId: string,
@@ -163,7 +163,8 @@ export function sandboxGateway(gateway: Gateway) {
     status: (sandboxId: string) => gateway.call("status", { id: sandboxId }),
     stop: (sandboxId: string) => gateway.call("stop", { id: sandboxId }),
     /** Permanent; the server refuses it unless the sandbox is stopped or failed. */
-    delete: (sandboxId: string) => gateway.call("delete", { id: sandboxId }),
+    delete: (sandboxId: string) => control.post("sandbox/delete", { id: sandboxId }),
+    extend: (sandboxId: string, ttlSeconds: number) => control.post("sandbox/extend", { id: sandboxId, ttlSeconds }),
     /** Runtime-backed sends require a stable requestId. Native accepts the field for compatibility only, without deduplication. */
     send: (sandboxId: string, prompt: string, override: SendArgs = {}, requestId?: string) =>
       gateway.call("send", {

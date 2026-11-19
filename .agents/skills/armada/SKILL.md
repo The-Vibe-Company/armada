@@ -180,7 +180,8 @@ a substitute for a pushed branch. Modal retains disk only after a successful
 checkpoint; checkpoint_failed_disk_not_retained means it cannot resume. `armada rm SANDBOX --yes` permanently deletes
 a stopped sandbox and recovery archives: require explicit user authorization
 and confirmed recovery first. For direct API callers, use
-`DELETE /api/v1/sandboxes/:id` or `POST /api/v1/sandbox/delete`.
+`DELETE /api/v1/sandboxes/:id` or `POST /api/v1/sandbox/delete`. The dashboard
+uses the REST operations for extension and stopped Docker sandbox deletion.
 
 For resource advice and preserved archives, use `armada advice SANDBOX --json`
 and `armada recovery SANDBOX`. Explicit runtime checkpoint and resume use the
