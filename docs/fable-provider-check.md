@@ -27,7 +27,7 @@ standard Anthropic API key or Claude subscription), and
 names. The Boat probe checks the native path. Confirm that the existing
 deployment and selected account use that path before running it. In
 `POST /api/v1/launch/options`, confirm `boatRuntime.defaultPath: "native"`
-and `modalRuntime.defaultPath: "runtime"` for the selected organization.
+and `modalRuntime.defaultPath: "runtime"` on the target server.
 
 ```sh
 armada launch "$BOAT_SNAPSHOT_NAME" --agent claude --provider boat --org "$ORG_UUID" --credential-id "$CLAUDE_ACCOUNT_UUID" --model claude-fable-5-2 "Reply with probe only. Do not use tools."

@@ -357,7 +357,7 @@ parity table.
 
 ## Repository/init runtime check
 
-The operator-only workspace check reuses an existing snapshot recipe; no new
+The coordinator-only workspace check reuses an existing snapshot recipe; no new
 canary, branch, repository or secret input is required. With the same existing
 Armada origin, token, organization, snapshot and Codex account:
 
