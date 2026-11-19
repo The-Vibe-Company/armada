@@ -47,6 +47,8 @@ import { createSqlGoldenList } from "./golden-list.ts";
 import { createHandler, providerRegistry, type Route } from "./http.ts";
 import { idlePauseDelayMs } from "./idle-pause-policy.ts";
 import { invitationsFromEnv, startInvitationWorker } from "./invitations.ts";
+import { createJobsRunner } from "./jobs/runner.ts";
+import { createJobsStore } from "./jobs/store.ts";
 import { createLangfuse } from "./langfuse.ts";
 import { launchCredentials } from "./launch-credentials.ts";
 import { catalogAuthenticationFromEnv } from "./mcp-catalog-client.ts";
@@ -780,6 +782,7 @@ export async function startServer(
             ),
           ]
         : []),
+      createJobsRunner(createJobsStore(sql, config.encryptionKey), {}, options.logError),
       outputs,
       webhooks,
       nativePrompts,

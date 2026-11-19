@@ -16,7 +16,7 @@ Authority: `docs/state-model.md`.
 7. **No new cleanup loop.** Do not add per-path cleanup loops, in-process retry timers or fire-and-forget promises to cover a crash. Make the operation reconcilable instead.
 8. **Side effects never gate state.** Output capture, exports, webhooks, PR scans and image collection run after the transition, under their own deadline. They never delay a stop, delete or receipt. A timed-out side effect commits nothing.
 9. **Readiness on the Armada runtime path comes only from runtime enrolment**, never from a provider observation, a host ACK or a job completing.
-10. **No new claim loop.** New background work extends an existing lane in `packages/mcp-server/src/server-workers.ts`. Never write a new claim loop, outbox table or lane.
+10. **No new claim loop.** New background work extends an existing lane in `packages/mcp-server/src/server-workers.ts`. Register new job kinds with the shared jobs runner in `src/jobs/runner.ts`. Never write a bespoke claim loop, outbox table or lane.
 11. **Three providers.** A lifecycle change states its Boat × Modal × Docker behaviour. Staging proves Modal and Docker; Boat evidence is the coordinator's.
 
 ### Design note (required for every change in scope)
