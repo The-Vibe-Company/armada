@@ -108,6 +108,7 @@ export const sandboxRestOperations = {
   },
   postSandboxCheckpointRuntimeV1: {
     name: "postSandboxCheckpointRuntimeV1",
+    directServer: true,
     route: { method: "POST", path: "/api/v1/sandbox/checkpoint-runtime-v1" },
     readOnly: false,
     destructive: false,
@@ -128,6 +129,7 @@ export const sandboxRestOperations = {
   },
   postSandboxResumeRuntimeV1: {
     name: "postSandboxResumeRuntimeV1",
+    directServer: true,
     route: { method: "POST", path: "/api/v1/sandbox/resume-runtime-v1" },
     readOnly: false,
     destructive: false,
