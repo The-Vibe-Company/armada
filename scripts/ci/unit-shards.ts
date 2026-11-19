@@ -14,7 +14,7 @@ const workerKey = (files: readonly string[]) => [...files].sort().join(",");
 const root = fileURLToPath(new URL("../../", import.meta.url));
 
 // Bun's default discovery names; explicit ./ paths below are exact files, not filters.
-export function testFiles(): string[] {
+export function testFiles() {
   const result = Bun.spawnSync(["git", "ls-files", "-z"], { cwd: root });
   if (result.exitCode !== 0) throw new Error("Cannot discover tracked test files");
   return result.stdout
@@ -24,7 +24,7 @@ export function testFiles(): string[] {
     .sort();
 }
 
-export function validatePlan(files: string[], shards: string[][]): void {
+export function validatePlan(files: string[], shards: string[][]) {
   const expected = new Set(files);
   const assigned = shards.flat();
   if (
@@ -45,7 +45,7 @@ export function planShards(
   staticReserve: Record<number, number>,
   sources: Record<string, string> = {},
   observations: WorkerObservation[] = [],
-): string[][] {
+) {
   const shards: string[][] = Array.from({ length: SHARD_COUNT }, () => []);
   const loads = shards.map((_, index) => {
     const shard = index + 1;
@@ -87,7 +87,7 @@ export function planShards(
 }
 
 /** Reviewed helpers own per-suite SQL/row cleanup, never global hooks or mocks. */
-function shareSqlWorker(file: string, source: string): boolean {
+function shareSqlWorker(file: string, source: string) {
   return (
     /^(packages\/(core|mcp-server)\/test\/)/.test(file) &&
     (/\b(migratedDatabase|openMigratedDatabase|rowOnlyDatabase|rowOnlyConnection)\s*\(/.test(source) ||
@@ -103,7 +103,7 @@ export function workerBatches(
   files: readonly string[],
   sources: Record<string, string>,
   observations: WorkerObservation[] = [],
-): string[][] {
+) {
   const sql: string[] = [];
   const isolated: string[][] = [];
   for (const file of files) {

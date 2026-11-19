@@ -42,7 +42,7 @@ export function checkTableOwners(
   sources: Iterable<readonly [string, string]>,
   allowlist: readonly string[],
   baseAllowlist: readonly string[] = allowlist,
-): string[] {
+) {
   const errors: string[] = [];
   const remaining = counts(allowlist);
   const baseline = counts(baseAllowlist);

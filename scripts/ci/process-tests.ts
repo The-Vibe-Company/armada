@@ -6,15 +6,15 @@ import { testFiles } from "./unit-shards.ts";
 const root = join(import.meta.dir, "../..");
 const allowlistPath = "scripts/ci/process-tests.txt";
 
-function isChildProcessModule(node: ts.Node | undefined): boolean {
+function isChildProcessModule(node: ts.Node | undefined) {
   return !!node && ts.isStringLiteralLike(node) && /^(node:)?child_process$/.test(node.text);
 }
 
-function onlyTypeSpecifiers(list: ts.NamedImports | ts.NamedExports): boolean {
+function onlyTypeSpecifiers(list: ts.NamedImports | ts.NamedExports) {
   return list.elements.length > 0 && list.elements.every((element) => element.isTypeOnly);
 }
 
-function isTypeOnlyModuleReference(node: ts.ImportDeclaration | ts.ExportDeclaration): boolean {
+function isTypeOnlyModuleReference(node: ts.ImportDeclaration | ts.ExportDeclaration) {
   if (ts.isExportDeclaration(node)) {
     const clause = node.exportClause;
     return node.isTypeOnly || (!!clause && ts.isNamedExports(clause) && onlyTypeSpecifiers(clause));
@@ -28,12 +28,12 @@ function isTypeOnlyModuleReference(node: ts.ImportDeclaration | ts.ExportDeclara
 }
 
 // Scan direct syntax only. Fixtures, comments and type-only imports do not start processes.
-export function processRules(path: string, source: string): string[] {
+export function processRules(path: string, source: string) {
   const rules = new Set<string>();
-  function recordBunMember(member: string | undefined): void {
+  function recordBunMember(member: string | undefined) {
     if (member === "spawn" || member === "spawnSync") rules.add(`Bun.${member}`);
   }
-  function visit(node: ts.Node): void {
+  function visit(node: ts.Node) {
     if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
       if (!isTypeOnlyModuleReference(node) && isChildProcessModule(node.moduleSpecifier)) rules.add("child_process");
     }
@@ -99,7 +99,7 @@ export function checkProcessTests(
   sources: Iterable<readonly [string, string]>,
   allowlist: ReadonlySet<string>,
   baseline?: ReadonlySet<string>,
-): string[] {
+) {
   const unused = new Set(allowlist);
   const errors: string[] = [];
   for (const [path, source] of sources) {
@@ -116,11 +116,11 @@ export function checkProcessTests(
   return errors.sort();
 }
 
-function allowlist(text: string): Set<string> {
+function allowlist(text: string) {
   return new Set(text.split(/\r?\n/).filter(Boolean));
 }
 
-function baseAllowlist(ref: string): Set<string> | undefined {
+function baseAllowlist(ref: string) {
   const git = (args: string[]) => {
     const result = Bun.spawnSync(["git", ...args], { cwd: root });
     if (result.exitCode !== 0) throw new Error(result.stderr.toString().trim());

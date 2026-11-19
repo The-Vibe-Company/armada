@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { Golden } from "@armada/core";
-import { lookupsFrom } from "../src/lib/data/templates.ts";
+import { lookupsFrom } from "./templates.ts";
 
 test("a golden on a provider goldens do not support is left out of the template lookups, not a failed page", () => {
   const golden = (id: string, provider: string) =>

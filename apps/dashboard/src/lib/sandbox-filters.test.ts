@@ -6,10 +6,10 @@ import {
   parseSandboxFilters,
   sandboxFacetCounts,
   sortSandboxes,
-} from "../src/lib/sandbox-filters.ts";
+} from "./sandbox-filters.ts";
 
 const ALICE = "00000000-0000-4000-8000-000000000001";
-function row(id: string, overrides: Partial<SandboxListMetadata> = {}): SandboxListMetadata {
+function row(id: string, overrides: Partial<SandboxListMetadata> = {}) {
   return {
     id,
     orgId: "org",
@@ -30,7 +30,7 @@ function row(id: string, overrides: Partial<SandboxListMetadata> = {}): SandboxL
     canOpen: true,
     canManage: true,
     ...overrides,
-  };
+  } satisfies SandboxListMetadata;
 }
 const rows = [
   row("run"),
