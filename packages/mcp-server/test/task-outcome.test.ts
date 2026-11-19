@@ -160,7 +160,7 @@ test("send and steer clear outcomes before admission and fence replacement recei
       });
       return { ...receipt, promptId: "unpollable-steer-record", mode: "late" };
     };
-    expect((await call(mcp, "steer", { id, text: "continue with review" })).data.promptId).toBe(
+    expect((await call(mcp, "send", { id, steer: true, prompt: "continue with review" })).data.promptId).toBe(
       "unpollable-steer-record",
     );
     boat.finish("bx_1", "prompt_3", "finished");
@@ -200,7 +200,7 @@ test("a restart steer registers its replacement run so settlement exports it", a
       const receipt = await boat.provider.prompt({ sandboxId: input.sandboxId, harness: "codex", text: input.text });
       return { ...receipt, promptId: "unpollable-steer-record", mode: "restart" };
     };
-    expect((await call(mcp, "steer", { id, text: "change course" })).isError).toBe(false);
+    expect((await call(mcp, "send", { id, steer: true, prompt: "change course" })).isError).toBe(false);
     expect((await db.query("select task_prompt_id from sandboxes where id=$1", [id])).rows[0]).toEqual({
       task_prompt_id: "prompt_2",
     });
@@ -242,13 +242,13 @@ test("a new restart steer preserves an older unresolved replacement across downt
     const taskPromptId = async () =>
       (await db.query<{ task_prompt_id: string | null }>("select task_prompt_id from sandboxes where id=$1", [id]))
         .rows[0]?.task_prompt_id;
-    expect((await call(mcp, "steer", { id, text: "change course" })).isError).toBe(false);
+    expect((await call(mcp, "send", { id, steer: true, prompt: "change course" })).isError).toBe(false);
     expect(await taskPromptId()).toBe("");
     // The first replacement appears late, then a second steer interrupts it.
     await boat.provider.prompt({ sandboxId: "bx_1", harness: "codex", text: "change course" });
     await db.query("update native_steer_cursors set pending_since=now()-interval '2 hours' where sandbox_id=$1", [id]);
     interrupting = "prompt_2";
-    expect((await call(mcp, "steer", { id, text: "again" })).isError).toBe(false);
+    expect((await call(mcp, "send", { id, steer: true, prompt: "again" })).isError).toBe(false);
     expect(await taskPromptId()).toBe("");
     const native = createNativeWebhookPrompts(db, async () => boat.provider);
     // Run recovery and settlement, with the cursor's retry spacing elapsed.
@@ -302,7 +302,7 @@ for (const stopFirst of [false, true])
         boat.finish(input.sandboxId, "prompt_1", "interrupted");
         return { conversationId: "conv_1", promptId: "unpollable-steer-record", mode: "restart" };
       };
-      expect((await call(mcp, "steer", { id, text: "change course" })).isError).toBe(false);
+      expect((await call(mcp, "send", { id, steer: true, prompt: "change course" })).isError).toBe(false);
       expect((await db.query("select task_prompt_id from sandboxes where id=$1", [id])).rows[0]).toEqual({
         task_prompt_id: "",
       });

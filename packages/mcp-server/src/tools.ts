@@ -429,24 +429,50 @@ const mcpLaunchArguments = z.looseObject({}).meta({
 });
 
 /** One MCP server per request: the principal is fixed for its whole life, and nothing outlives the request. */
-export function createArmadaServer(context: ToolContext, version: string, options?: { onlyTool: "list" }): McpServer {
+export function createArmadaServer(context: ToolContext, version: string) {
+  return createToolServer(context, version, "mcp");
+}
+
+/** In-memory REST dispatch and schema discovery. Never exposed on the MCP transport. */
+export function createRestToolServer(context: ToolContext, version: string, onlyTool?: "list") {
+  return createToolServer(context, version, "rest", onlyTool);
+}
+
+type ToolInput = z.ZodRawShape | z.ZodObject;
+type ToolArgs<In extends ToolInput> = z.infer<In extends z.ZodRawShape ? z.ZodObject<In> : In>;
+
+type ToolContract<In extends ToolInput, Out extends z.ZodRawShape> = {
+  title: string;
+  description: string;
+  input: In;
+  output: Out;
+  readOnly?: boolean;
+  destructive?: boolean;
+};
+
+function createToolServer(
+  context: ToolContext,
+  version: string,
+  surface: "mcp" | "rest",
+  onlyTool?: "list",
+): McpServer {
   const server = new McpServer(
     { ...serverInfo, version },
     {
       instructions:
         "Armada launches Claude Code, Codex and OpenCode agents in sandboxes. " +
         "Provider and agent availability depend on server configuration. In these tools, a golden is a snapshot. " +
-        "Find a golden with the dashboard or POST /api/v1/golden/list. Then launch with a prompt, use wait or status, and use logs to read " +
+        "Find a golden with the dashboard or POST /api/v1/golden/list. Then launch with a prompt, use status, and use logs to read " +
         "what the agent did, send for the next instruction, and stop when done. Ids are Armada sandbox ids.",
     },
   );
   const { caller, data } = context;
   const orgIds = caller.orgs.map((org) => org.orgId);
 
-  const tool = <In extends z.ZodRawShape | z.ZodObject, Out extends z.ZodRawShape>(
+  const register = <In extends ToolInput, Out extends z.ZodRawShape>(
     name: string,
-    config: { title: string; description: string; input: In; output: Out; readOnly?: boolean; destructive?: boolean },
-    run: (args: z.infer<In extends z.ZodRawShape ? z.ZodObject<In> : In>) => Promise<z.infer<z.ZodObject<Out>>>,
+    config: ToolContract<In, Out>,
+    invoke: (args: ToolArgs<In>) => Promise<CallToolResult>,
   ) => {
     server.registerTool(
       name,
@@ -461,103 +487,109 @@ export function createArmadaServer(context: ToolContext, version: string, option
           openWorldHint: true,
         },
       },
-      // The SDK's callback type is generic over every schema flavour; the input is the parsed `In`.
-      (async (args: z.infer<In extends z.ZodRawShape ? z.ZodObject<In> : In>): Promise<CallToolResult> => {
-        try {
-          if (["send", "steer", "exec", "interrupt"].includes(name)) {
-            const input = args as Record<string, unknown>;
-            const found = data.sandboxes.controlState
-              ? await data.sandboxes.controlState(input.id as string)
-              : await visible(input.id as string);
-            if (!found) throw new ToolError("not_found", `No sandbox with id '${input.id}' that you can see.`);
-            // A retained legacy Modal workspace needs its owner's explicit account binding
-            // before any control, including controls that require running compute.
-            if (
-              found.provider === "modal" &&
-              !found.credentialId &&
-              !sandboxControlRefusal(found, context.now(), "send")
-            )
-              throw new VaultError("credential_binding_required", CREDENTIAL_BINDING_GUIDANCE);
-            const refusal = sandboxControlRefusal(found, context.now(), name);
-            if (refusal) throw new ToolError("sandbox_terminal", refusal);
-            if (name === "send" && !context.accountTurns && input.conversation_id !== undefined)
-              assertSendConversation(input.conversation_id, found.conversationIds.at(-1));
-          }
-          if (
-            name === "stop" &&
-            !(args as Record<string, unknown>).only_if_idle &&
-            typeof (args as Record<string, unknown>).id === "string"
-          )
-            await context.accountTurns?.cancelQueued(caller, (args as Record<string, unknown>).id as string);
-          if (name === "report") {
-            const input = args as Record<string, unknown>;
-            const queued = await context.accountTurns?.status(caller, input.id as string, input.prompt_id as string);
-            if (queued && "nativePromptId" in queued) input.prompt_id = queued.nativePromptId;
-          }
-          if (name === "logs") validateLogPagination(args as Record<string, unknown>);
-          const routed = ["send", "status", "wait"].includes(name)
-            ? undefined
-            : await context.dockerControls?.invoke(caller, name, args);
-          const raw = routed?.handled ? routed.result : await run(args);
-          if (["logs", "status", "wait", "list"].includes(name) && context.accountTurns?.publicPromptIds) {
-            type PublicReport = {
-              id?: string;
-              sandboxes?: PublicReport[];
-              events?: { promptId?: string }[];
-              prompt?: { promptId: string };
-              usage?: { turns: { promptId: string }[] };
-            };
-            const root = raw as PublicReport;
-            const reports = (name === "list" ? (root.sandboxes ?? []) : [root]).map((report) => {
-              const items = [
-                ...(report.events ?? []),
-                ...(report.prompt ? [report.prompt] : []),
-                ...(report.usage?.turns ?? []),
-              ];
-              return { sandboxId: report.id ?? ((args as Record<string, unknown>).id as string), items };
-            });
-            const aliases = await context.accountTurns.publicPromptIdsBatch(
-              caller,
-              reports.map(({ sandboxId, items }) => ({
-                sandboxId,
-                nativeIds: items.flatMap((item) => (item.promptId ? [item.promptId] : [])),
-              })),
-            );
-            for (const { sandboxId, items } of reports) {
-              const ids = aliases.get(sandboxId);
-              for (const item of items)
-                if (item.promptId && ids?.has(item.promptId)) item.promptId = ids.get(item.promptId)!;
-            }
-          }
-          const value =
-            routed?.handled && (name === "status" || name === "wait")
-              ? {
-                  ...(raw as Record<string, unknown>),
-                  ...logicalExpiry((raw as { expiresAt: string | null }).expiresAt, context.now()),
-                  providerExpiresAt: null,
-                }
-              : raw;
-          const sandboxId = (args as Record<string, unknown>).id;
-          const result =
-            (name === "status" || name === "wait") && context.sandboxBillingAccount && typeof sandboxId === "string"
-              ? {
-                  ...(value as Record<string, unknown>),
-                  billingAccount: await context.sandboxBillingAccount(sandboxId),
-                }
-              : value;
-          return {
-            structuredContent: result as Record<string, unknown>,
-            content: [{ type: "text", text: JSON.stringify(result) }],
-          };
-        } catch (error) {
-          return errorResult(error, name, context.logError ?? ((line) => console.error(line)));
-        }
-      }) as never,
+      invoke as never,
     );
   };
 
+  const tool = <In extends ToolInput, Out extends z.ZodRawShape>(
+    name: string,
+    config: ToolContract<In, Out>,
+    run: (args: ToolArgs<In>) => Promise<z.infer<z.ZodObject<Out>>>,
+    restOnly = false,
+  ) => {
+    const invoke: (args: ToolArgs<In>) => Promise<CallToolResult> = async (args) => {
+      try {
+        if (["send", "steer", "exec", "interrupt"].includes(name)) {
+          const input = args as Record<string, unknown>;
+          const found = data.sandboxes.controlState
+            ? await data.sandboxes.controlState(input.id as string)
+            : await visible(input.id as string);
+          if (!found) throw new ToolError("not_found", `No sandbox with id '${input.id}' that you can see.`);
+          // A retained legacy Modal workspace needs its owner's explicit account binding
+          // before any control, including controls that require running compute.
+          if (found.provider === "modal" && !found.credentialId && !sandboxControlRefusal(found, context.now(), "send"))
+            throw new VaultError("credential_binding_required", CREDENTIAL_BINDING_GUIDANCE);
+          const refusal = sandboxControlRefusal(found, context.now(), name);
+          if (refusal) throw new ToolError("sandbox_terminal", refusal);
+          if (name === "send" && !context.accountTurns && input.conversation_id !== undefined)
+            assertSendConversation(input.conversation_id, found.conversationIds.at(-1));
+        }
+        if (
+          name === "stop" &&
+          !(args as Record<string, unknown>).only_if_idle &&
+          typeof (args as Record<string, unknown>).id === "string"
+        )
+          await context.accountTurns?.cancelQueued(caller, (args as Record<string, unknown>).id as string);
+        if (name === "report") {
+          const input = args as Record<string, unknown>;
+          const queued = await context.accountTurns?.status(caller, input.id as string, input.prompt_id as string);
+          if (queued && "nativePromptId" in queued) input.prompt_id = queued.nativePromptId;
+        }
+        if (name === "logs") validateLogPagination(args as Record<string, unknown>);
+        const routed = ["send", "status", "wait"].includes(name)
+          ? undefined
+          : await context.dockerControls?.invoke(caller, name, args);
+        const raw = routed?.handled ? routed.result : await run(args);
+        if (["logs", "status", "wait", "list"].includes(name) && context.accountTurns?.publicPromptIds) {
+          type PublicReport = {
+            id?: string;
+            sandboxes?: PublicReport[];
+            events?: { promptId?: string }[];
+            prompt?: { promptId: string };
+            usage?: { turns: { promptId: string }[] };
+          };
+          const root = raw as PublicReport;
+          const reports = (name === "list" ? (root.sandboxes ?? []) : [root]).map((report) => {
+            const items = [
+              ...(report.events ?? []),
+              ...(report.prompt ? [report.prompt] : []),
+              ...(report.usage?.turns ?? []),
+            ];
+            return { sandboxId: report.id ?? ((args as Record<string, unknown>).id as string), items };
+          });
+          const aliases = await context.accountTurns.publicPromptIdsBatch(
+            caller,
+            reports.map(({ sandboxId, items }) => ({
+              sandboxId,
+              nativeIds: items.flatMap((item) => (item.promptId ? [item.promptId] : [])),
+            })),
+          );
+          for (const { sandboxId, items } of reports) {
+            const ids = aliases.get(sandboxId);
+            for (const item of items)
+              if (item.promptId && ids?.has(item.promptId)) item.promptId = ids.get(item.promptId)!;
+          }
+        }
+        const value =
+          routed?.handled && (name === "status" || name === "wait")
+            ? {
+                ...(raw as Record<string, unknown>),
+                ...logicalExpiry((raw as { expiresAt: string | null }).expiresAt, context.now()),
+                providerExpiresAt: null,
+              }
+            : raw;
+        const sandboxId = (args as Record<string, unknown>).id;
+        const result =
+          (name === "status" || name === "wait") && context.sandboxBillingAccount && typeof sandboxId === "string"
+            ? {
+                ...(value as Record<string, unknown>),
+                billingAccount: await context.sandboxBillingAccount(sandboxId),
+              }
+            : value;
+        return {
+          structuredContent: result as Record<string, unknown>,
+          content: [{ type: "text", text: JSON.stringify(result) }],
+        };
+      } catch (error) {
+        return errorResult(error, name, context.logError ?? ((line) => console.error(line)));
+      }
+    };
+    if (!restOnly || surface === "rest") register(name, config, invoke);
+    return { ...config, invoke };
+  };
+
   // HTTP list calls keep the same handler and SDK validation without building unrelated tools.
-  if (options?.onlyTool === "list") {
+  if (onlyTool === "list") {
     registerList();
     return server;
   }
@@ -890,7 +922,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
     );
   }
 
-  tool(
+  const readStatusTool = tool(
     "status",
     {
       title: "Sandbox status",
@@ -917,9 +949,10 @@ export function createArmadaServer(context: ToolContext, version: string, option
       const launch = data.sandboxes.launchTiming ? await data.sandboxes.launchTiming(report.id) : undefined;
       return launch === undefined ? report : { ...report, launch };
     },
+    true,
   );
 
-  tool(
+  const waitTool = tool(
     "wait",
     {
       title: "Wait for the agent",
@@ -941,6 +974,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
         now: context.now,
         sleep: context.sleep,
       }),
+    true,
   );
 
   tool(
@@ -963,7 +997,10 @@ export function createArmadaServer(context: ToolContext, version: string, option
       },
       output: {
         ...LOGS_OUTPUT,
-        settled: LOGS_OUTPUT.settled.describe("Docker only. Use status or wait to check whether a turn has settled."),
+        settled:
+          surface === "rest"
+            ? LOGS_OUTPUT.settled.describe("Docker only. Use status or wait to check whether a turn has settled.")
+            : LOGS_OUTPUT.settled.describe("Docker only. Use status to check whether a turn has settled."),
       },
       readOnly: true,
     },
@@ -988,8 +1025,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
     "report",
     {
       title: "Report a task outcome",
-      description:
-        "Explicit result for the latest finished turn. Call after wait; never inferred from message text. A new send clears it. Only the sandbox owner or current org admin may report or read it.",
+      description: `Explicit result for the latest finished turn. Call after ${surface === "rest" ? "wait" : "status confirms settlement"}; never inferred from message text. A new send clears it. Only the sandbox owner or current org admin may report or read it.`,
       input: { id, prompt_id: z.string().min(1), outcome: taskOutcome },
       output: { id: z.string(), taskOutcome },
     },
@@ -1181,7 +1217,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
       .finally(() => context.launchCredentials.releaseAdmission?.(found.id));
   }
 
-  tool(
+  const sendTool = tool(
     "send",
     {
       title: "Send a prompt",
@@ -1220,9 +1256,10 @@ export function createArmadaServer(context: ToolContext, version: string, option
       },
     },
     sendSandbox,
+    true,
   );
 
-  tool(
+  const steerTool = tool(
     "steer",
     {
       title: "Steer the running turn",
@@ -1324,9 +1361,10 @@ export function createArmadaServer(context: ToolContext, version: string, option
         },
       ).catch((error) => publicationFailure(error, acknowledged));
     },
+    true,
   );
 
-  tool(
+  const interruptTool = tool(
     "interrupt",
     {
       title: "Interrupt the running turn",
@@ -1358,6 +1396,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
         .catch(unknownMutationOutcome);
       return { id: found.id, interrupted: true };
     },
+    true,
   );
 
   tool(
@@ -1469,7 +1508,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
     },
   );
 
-  tool(
+  const stopTool = tool(
     "stop",
     {
       title: "Stop a sandbox",
@@ -1564,7 +1603,97 @@ export function createArmadaServer(context: ToolContext, version: string, option
         },
       );
     },
+    true,
   );
+
+  if (surface === "mcp") {
+    register(
+      "send",
+      {
+        title: sendTool.title,
+        description:
+          "Start a new turn, or set steer to redirect a running turn. Model and effort overrides apply only to new turns. " +
+          "Runtime follow-up requires a request ID. Reuse that ID with identical input after uncertain delivery.",
+        input: {
+          ...sendTool.input,
+          request_id: sendTool.input.request_id.describe(
+            "Required for runtime follow-up. Optional for runtime steer. Reuse with identical input after uncertain delivery. " +
+              "Native send accepts the field without deduplication. Omit it for native steer.",
+          ),
+          steer: z
+            .boolean()
+            .optional()
+            .describe("Redirect the running turn. Delivery is native or a restart in the same conversation."),
+        },
+        output: {
+          ...sendTool.output,
+          status: sendTool.output.status.optional(),
+          delivery: steerTool.output.delivery.optional(),
+          mode: steerTool.output.mode.optional(),
+        },
+      },
+      async ({ steer, ...args }) => {
+        if (!steer) return sendTool.invoke(args);
+        if (args.model !== undefined || args.reasoning_effort !== undefined)
+          return invalidToolInput("send", "Model and effort overrides require a new turn.");
+        return steerTool.invoke({
+          id: args.id,
+          text: args.prompt,
+          conversation_id: args.conversation_id,
+          request_id: args.request_id,
+        });
+      },
+    );
+
+    register(
+      "status",
+      {
+        ...readStatusTool,
+        description: `${readStatusTool.description} Set wait to block until settled or timed out.`,
+        input: {
+          ...readStatusTool.input,
+          timeout_seconds: waitTool.input.timeout_seconds,
+          wait: z.boolean().optional().describe("Wait for settlement. Default timeout: 60 seconds."),
+        },
+        output: { ...status, timedOut: waitTool.output.timedOut.optional() },
+      },
+      async ({ wait, timeout_seconds, ...args }) => {
+        if (!wait && timeout_seconds !== undefined) return invalidToolInput("status", "timeout_seconds requires wait.");
+        if (wait && args.recorded !== undefined)
+          return invalidToolInput("status", "Waiting uses the live turn state. Omit recorded.");
+        return wait ? waitTool.invoke({ ...args, timeout_seconds }) : readStatusTool.invoke(args);
+      },
+    );
+
+    register(
+      "stop",
+      {
+        ...stopTool,
+        description: `${stopTool.description} Set turn to interrupt the current turn and keep the machine up.`,
+        input: {
+          ...stopTool.input,
+          conversation_id: interruptTool.input.conversation_id,
+          turn: z.boolean().optional().describe("Interrupt the turn without stopping the sandbox."),
+        },
+        output: {
+          ...stopTool.output,
+          status: stopTool.output.status.optional(),
+          interrupted: interruptTool.output.interrupted.optional(),
+        },
+      },
+      async ({ turn, conversation_id, ...args }) => {
+        if (turn && args.only_if_idle) return invalidToolInput("stop", "Use turn without only_if_idle.");
+        if (!turn && conversation_id !== undefined) return invalidToolInput("stop", "conversation_id requires turn.");
+        return turn
+          ? interruptTool.invoke({ id: args.id, request_id: args.request_id, conversation_id })
+          : stopTool.invoke(args);
+      },
+    );
+  }
+
+  function invalidToolInput(name: string, message: string) {
+    return errorResult(new ToolError("invalid_request", message), name, context.logError ?? console.error);
+  }
 
   /** The org a launch acts in: the given one, else the one of the caller's orgs that has this golden. */
   async function launchActor(name: string, org: string | undefined) {

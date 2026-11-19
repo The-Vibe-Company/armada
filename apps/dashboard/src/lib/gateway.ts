@@ -150,8 +150,8 @@ async function readMessage(response: Response, id?: number): Promise<Record<stri
 }
 
 /**
- * What the dashboard asks of the server, by the tool names of the spec. `send` opens a new turn, `steer` redirects
- * the running one and `interrupt` stops it: the server applies the harness's capabilities, never the dashboard.
+ * What the dashboard asks of the server, by the tool names of the spec. `send` opens a new turn or redirects
+ * the running one with `steer`. `stop` with `turn` interrupts it. The server applies the harness's capabilities.
  */
 export function sandboxGateway(gateway: Gateway) {
   return {
@@ -172,7 +172,7 @@ export function sandboxGateway(gateway: Gateway) {
         ...override,
         ...(requestId ? { request_id: requestId } : {}),
       }),
-    steer: (sandboxId: string, text: string) => gateway.call("steer", { id: sandboxId, text }),
-    interrupt: (sandboxId: string) => gateway.call("interrupt", { id: sandboxId }),
+    steer: (sandboxId: string, text: string) => gateway.call("send", { id: sandboxId, prompt: text, steer: true }),
+    interrupt: (sandboxId: string) => gateway.call("stop", { id: sandboxId, turn: true }),
   };
 }

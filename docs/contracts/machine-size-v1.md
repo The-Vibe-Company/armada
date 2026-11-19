@@ -13,7 +13,7 @@ Source of truth: browser-safe `@armada/core` exports from
   the applied policy in `machineSize`.
 - The supported sizes are `small | medium | large | xlarge`. Boat's native
   `default` is canonical `medium`.
-- Evidence: HTTP launch `sandbox.machineSize`; MCP launch/list/status/wait
+- Evidence: HTTP launch `sandbox.machineSize`; MCP launch/list/status, including status wait mode
   `machineSize` (list: each sandbox). SQL `sandboxes.machine_size`.
 
 Override > explicitly selected repository default > golden default > legacy.
