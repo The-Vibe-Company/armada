@@ -78,7 +78,7 @@ test("server assembly preserves worker lane order and isolation", () => {
     ...services,
     env: {},
     options: {},
-    githubApp: undefined,
+    githubApp: null,
   }).planWorkers().description;
   expect(minimal.background).toEqual(["routines"]);
   expect(minimal.managed).not.toContain("pull-requests");
