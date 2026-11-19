@@ -32,6 +32,7 @@ import {
 import type { Provider } from "@armada/core/server";
 import { assertGoldenBackendBinding, assertSqlGoldenMutation } from "@armada/core/server";
 import { beginGoldenOperation, reconcileGoldenOperations } from "../../core/src/golden-store.ts";
+import { publishAccountSpend, unmeasuredUsage } from "./account-spend.ts";
 import type { Caller } from "./caller.ts";
 import { scopedOrg } from "./control-caller.ts";
 import { createResourceStore, type ResourceStore } from "./resource-store.ts";
@@ -83,6 +84,7 @@ export interface ServerSandboxStore extends SandboxStore {
       observations: readonly TurnTokenUsage[];
       /** Trusted service admission contexts, never guest monetary output. */
       contexts?: readonly TurnPriceContext[];
+      completed?: ReadonlyMap<string, string>;
     },
   ): Promise<void>;
   preserveWork?(id: string, provider: Provider, providerId: string): Promise<"pending" | void>;
@@ -581,15 +583,19 @@ export function createSqlData(
           const merged = (await mergeNative(tx, false)).rows[0]?.usage;
           if (!merged) return;
           const observations = options?.observations ?? [];
+          const completed = options?.completed ?? new Map<string, string>();
+          const unmeasured = [...completed.keys()].map(unmeasuredUsage);
+          const contextRows = [...observations, ...unmeasured];
           let contexts = options?.contexts;
-          if (contexts === undefined && observations.length) {
+          if (contexts === undefined && contextRows.length) {
             const admissions = await tx.query<{ prompt_id: string; context: unknown; captured: boolean }>(
               `select prompt_id,pricing_context as context,pricing_context is not null as captured
                from public.sandbox_turn_models where sandbox_id=$1 and prompt_id=any($2::text[])`,
-              [id, observations.map((row) => row.promptId)],
+              [id, [...new Set(contextRows.map((row) => row.promptId))]],
             );
             const byPrompt = new Map(admissions.rows.map((row) => [row.prompt_id, row]));
-            contexts = observations.flatMap((row) => {
+            const byShare = new Map(contextRows.map((row) => [JSON.stringify([row.promptId, row.model]), row]));
+            contexts = [...byShare.values()].flatMap((row) => {
               const captured = byPrompt.get(row.promptId);
               // Legacy turns retain the launch book. Missing provenance after a switch is unknown,
               // never an excuse to bill the old turn against the new account (or vice versa).
@@ -619,6 +625,14 @@ export function createSqlData(
             [...scope, id, JSON.stringify(priced)],
           );
           if (saved.rows.length !== 1) throw new DataError("Usage admission changed during recording.");
+          await publishAccountSpend(
+            tx,
+            id,
+            completed,
+            observations,
+            priced.turns,
+            stampTurnPricing(unmeasured, [], [], contexts ?? [], before.harness),
+          );
         });
       },
       async assertExecAllowed(id) {

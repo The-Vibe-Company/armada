@@ -20,6 +20,7 @@ import {
   turnModelEvidence,
   usageUnavailableReason,
 } from "@armada/core";
+import { completedUsageTurns } from "./account-spend.ts";
 import { DataError, type SandboxView, type ServerSandboxStore } from "./data.ts";
 
 export const INTERRUPTED_LAUNCH_REASON =
@@ -586,7 +587,7 @@ export async function collectSandboxUsage(
         turnCount: history === null && knownTurns === 0 ? null : knownTurns,
         turns: [...rows.values()],
       },
-      { observations },
+      { observations, completed: completedUsageTurns(events) },
     );
   } catch {
     /* Optional telemetry never changes lifecycle success. */

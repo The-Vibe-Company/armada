@@ -10,6 +10,7 @@ import {
   VaultError,
 } from "@armada/core";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
+import { completedUsageTurns, unmeasuredUsage } from "./account-spend.ts";
 import { UUID } from "./control-input.ts";
 import { createSqlData } from "./data.ts";
 import type { Route } from "./http.ts";
@@ -260,7 +261,8 @@ export function createRuntimeEvents(
       }
       await projectRuntimeIdle(tx, scope.sandboxId, key, initialAck, fresh, ack);
       const usage = reportedTurnUsage(fresh);
-      if (addedPrompt || usage.turns.length) {
+      const completed = completedUsageTurns(fresh);
+      if (addedPrompt || usage.turns.length || completed.size) {
         // recordUsage merges cumulative snapshots, not per-batch deltas. Prompt-only
         // failures/unknown turns must remain in the coverage denominator as well.
         usage.turnCount = Number(
@@ -295,8 +297,15 @@ export function createRuntimeEvents(
         ).rows[0];
         await data.sandboxes.recordUsage(scope.sandboxId, usage, {
           observations: usage.turns,
+          completed,
           ...(admission?.captured
-            ? { contexts: admittedTurnContexts(admission.context, usage.turns, owner.harness) }
+            ? {
+                contexts: admittedTurnContexts(
+                  admission.context,
+                  [...usage.turns, ...[...completed.keys()].map(unmeasuredUsage)],
+                  owner.harness,
+                ),
+              }
             : {}),
         });
       }
