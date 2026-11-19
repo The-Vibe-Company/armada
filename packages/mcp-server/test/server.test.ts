@@ -752,8 +752,8 @@ describe("tools", () => {
       ownerId: people.owner,
       harness: "claude",
       status: "ready",
-      model: null,
-      reasoningEffort: null,
+      model: "claude-sonnet-4-6",
+      reasoningEffort: "default",
       credentialId: replacement.id,
       credentialVersion: replacement.version,
     });
