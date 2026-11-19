@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
 import { PGlite } from "@electric-sql/pglite";
-import { statsRoute } from "../src/lib/stats";
+import { statsRoute } from "./stats";
 
 const TOKEN = "synthetic-stats-token";
 const NOW = new Date("2026-04-10T12:00:00Z");

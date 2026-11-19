@@ -181,6 +181,9 @@ details.
 
 ## Drive a turn over MCP
 
+Call `launch_options` with `{}` to read the same server-wide launch catalog as
+`POST /api/v1/launch/options`. MCP `launch` accepts Boat and Modal goldens.
+
 | Tool | Mode | Result |
 | --- | --- | --- |
 | `send` | `steer: true`, with the instruction in `prompt` | Redirect the running turn. The receipt includes `delivery` and `mode`. |
