@@ -200,6 +200,13 @@ async function fixture(
     },
   };
   const commands = createRuntimeCommands(authority, key, clock);
+  const runtimeClock = {
+    now: clock.now,
+    async wait(ms: number) {
+      now += ms;
+      if (drive) await stepRuntime();
+    },
+  };
   async function step() {
     let job: Awaited<ReturnType<typeof hosts.poll>> = null;
     if (await hosts.mayHaveWork(host.hostToken, installationId, false, [], true)) {
@@ -227,7 +234,10 @@ async function fixture(
         ]);
       }
     }
-    if (session && job?.operation !== "stop" && job?.operation !== "delete") {
+    await stepRuntime();
+  }
+  async function stepRuntime() {
+    if (session) {
       const next = await commands.next(session.runtimeToken, session.epoch);
       if (next.command) {
         const command = next.command;
@@ -360,12 +370,7 @@ async function fixture(
     sql,
     key,
     origin: "https://armada.example",
-    commands: createRuntimeCommands(authority, key, {
-      now: clock.now,
-      wait: async () => {
-        await step();
-      },
-    }),
+    commands: createRuntimeCommands(authority, key, runtimeClock),
     github: {
       store: createSqlVaultStore(sql),
       encryptionKey: key,
@@ -377,10 +382,7 @@ async function fixture(
     },
   });
   function mcp(target = sql) {
-    const bridge = createRuntimeCommands(createRuntimeEnrolments(target, key), key, {
-      now: clock.now,
-      wait: (ms) => clock.wait(ms),
-    });
+    const bridge = createRuntimeCommands(createRuntimeEnrolments(target, key), key, runtimeClock);
     return createRuntimeMcp({ sql: target, key, origin: "https://armada.example", commands: bridge });
   }
   function service(
@@ -425,7 +427,6 @@ async function fixture(
     github,
     service,
     mcp,
-    step,
     setDrive(value: boolean) {
       drive = value;
     },
