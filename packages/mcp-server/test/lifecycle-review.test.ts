@@ -1,7 +1,7 @@
 import { expect, jest, test } from "bun:test";
 import { createSqlVaultStore, launchSandbox } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
-import { sandbox } from "../../provider-boat/test/support.ts";
+import { retainedSandbox, sandbox } from "../../provider-boat/test/support.ts";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
@@ -180,7 +180,10 @@ test("actual Boat resume rearms deadline even when the earlier send sample was r
       }
       if (path.endsWith("/prompt"))
         return Response.json({ ok: true, promptId: "p", conversationId: "c", status: "queued" });
-      return Response.json({ ok: true, sandbox: sandbox({ state: ++gets === 1 || ready ? "idle" : "archived" }) });
+      return Response.json({
+        ok: true,
+        sandbox: ++gets === 1 || ready ? sandbox({ state: "idle" }) : retainedSandbox(),
+      });
     }) as unknown as typeof fetch,
   });
   try {
@@ -334,9 +337,13 @@ test("manual stop retires an interrupted registration whose exact provider ident
     await f.insert();
     await f.scoped.sandboxes.update(f.id, { status: "starting" });
     expect((await f.control("stop", provider))?.status).toBe(200);
-    const stopped = await f.scoped.sandboxes.get(f.id);
-    expect(stopped?.status).toBe("stopped");
-    expect(stopped?.stoppedAt).not.toBeNull();
+    const pending = await f.scoped.sandboxes.get(f.id);
+    expect(pending?.status).toBe("stopping");
+    expect(pending?.stoppedAt).toBeNull();
+    expect(await createSandboxLifecycle(f.sql, async () => provider).reconcileOne()).toBe(true);
+    const settled = await f.scoped.sandboxes.get(f.id);
+    expect(settled?.status).toBe("failed");
+    expect(settled?.stoppedAt).not.toBeNull();
   } finally {
     await f.server.close();
   }

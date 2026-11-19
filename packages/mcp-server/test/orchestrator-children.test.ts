@@ -11,6 +11,8 @@ import {
 import { createSqlData } from "../src/data.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { createNativeWebhookPrompts } from "../src/native-webhook-prompts.ts";
+import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
+import { createRuntimeProvider } from "../src/runtime-provider.ts";
 import { launchSandboxChild } from "../src/sandbox-access-child-launch.ts";
 import { createSandboxChildren, type SandboxChildExecutor } from "../src/sandbox-access-children.ts";
 import { createSandboxAccessServices } from "../src/sandbox-access-services.ts";
@@ -23,17 +25,27 @@ const sharedDatabase = rowOnlyDatabase();
 async function fixture(
   parentState: "ready" | "running" = "running",
   accountKind: "anthropic" | "codex_auth" = "anthropic",
+  provider: "boat" | "modal" = "boat",
 ) {
   const { db, people: p } = await sharedDatabase();
   const sql: Sql = {
     query: (q, v) => db.query(q, v),
     transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
   };
-  const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0];
+  const golden =
+    provider === "modal"
+      ? (
+          await db.query<{ id: string }>(
+            `insert into goldens(org_id,owner_id,name,visibility,provider,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
+             select $1,$2,'modal-child','org','modal','image','workspace','main','app',config from goldens where org_id=$1 and name='shared' returning id`,
+            [p.org, p.owner],
+          )
+        ).rows[0]
+      : (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0];
   if (!golden) throw Error("missing golden");
   const parent = await createSqlSandboxStore(sql).insert({
     id: crypto.randomUUID(),
-    provider: "boat",
+    provider,
     providerSandboxId: "parent-child-admission",
     goldenId: golden.id,
     orgId: p.org,
@@ -115,7 +127,7 @@ async function fixture(
       async scrub() {},
     },
     {
-      scopes: ["worker:launch", "worker:read", "worker:message", "worker:stop"],
+      scopes: ["worker:launch", "worker:read", "worker:message", "worker:stop", "worker:extend"],
       goldenIds: [golden.id],
       credentialIds: [account],
     },
@@ -905,6 +917,210 @@ test("registered failed child with confirmed stopped compute releases explicit c
     await close();
   }
 });
+
+test("scoped Modal children launch and accept follow-up through the enrolled runtime", async () => {
+  const { close, sql, p, id, token, selection } = await fixture("running", "anthropic", "modal");
+  try {
+    const fake = fakeBoat();
+    let checkpointRequest: string | undefined;
+    let hostAvailable = true;
+    let logicalId: string;
+    const physicalDeadline = new Date(Date.now() + 16_000_000);
+    const host = {
+      ...fake.provider,
+      id: "modal" as const,
+      async get(id: string) {
+        const info = await fake.provider.get(id);
+        return info.state === "ready"
+          ? { ...info, providerState: "active", expiresAt: physicalDeadline, physicalGeneration: "1" }
+          : info;
+      },
+      async captureRuntimeWork() {
+        expect(checkpointRequest).toBeDefined();
+        return { status: "clean" as const };
+      },
+      async stop(request: Parameters<typeof fake.provider.stop>[0] & { requireRetention?: boolean }) {
+        expect(checkpointRequest).toBeDefined();
+        expect(request.requireRetention).toBe(true);
+        expect(
+          (
+            await sql.query(
+              `select status_reason,preservation_stop_generation=stop_generation as captured from sandboxes where id=$1`,
+              [logicalId],
+            )
+          ).rows[0],
+        ).toEqual({ status_reason: "idle_paused", captured: true });
+        await fake.provider.stop(request);
+      },
+    };
+    const credentials = launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY);
+    const sends: { id: string; prompt: string; request_id?: string | undefined }[] = [];
+    let physicalId: string;
+    const services = createSandboxAccessServices({
+      sql,
+      providers: {
+        async resolve(target, caller) {
+          if (!hostAvailable) throw Error("Modal App is unavailable");
+          expect(target.id).toBeDefined();
+          expect(target.runtimeTransport).toBe("dialout");
+          expect(target.visibility).toBe("private");
+          expect(target.sourceGoldenVisibility).toBe("org");
+          expect(caller.userId).toBe(p.owner);
+          return createRuntimeProvider(host, physicalId, { events: host.events, getPrompt: host.getPrompt });
+        },
+      },
+      credentials,
+      connections: undefined,
+      encryptionKey: ENCRYPTION_KEY,
+      scopedMcpUrl: "https://armada.example/mcp",
+      async runtimeCheckpoint(caller, request) {
+        expect(caller.userId).toBe(p.owner);
+        expect((await createSqlData(sql)(caller).sandboxes.get(request.id))?.status).toBe("running");
+        checkpointRequest = request.request_id;
+        return {
+          id: request.id,
+          requestId: request.request_id,
+          runtime: { kind: "armada", epoch: "1" },
+          checkpoint: { state: "complete", watermark: 0, acknowledgedSequence: 0 },
+        };
+      },
+      async runtimeSend(caller, request) {
+        expect(caller.userId).toBe(p.owner);
+        expect(caller.orgs.map(({ orgId }) => orgId)).toEqual([p.org]);
+        sends.push(request);
+        return {
+          id: request.id,
+          requestId: request.request_id!,
+          runtime: { kind: "armada", epoch: "1" },
+          promptId: "runtime-follow-up",
+          conversationId: "runtime-conversation",
+          status: "running",
+        };
+      },
+      runtimePlacements: {
+        modal: {
+          async provider(_actor, target) {
+            expect(target).toMatchObject({ visibility: "private", sourceGoldenVisibility: "org" });
+            return host;
+          },
+          credentials,
+          connections: { async validate() {}, async bind() {} },
+          policy: {
+            async start({ sandbox }) {
+              logicalId = sandbox.id;
+              physicalId = sandbox.providerSandboxId;
+              expect(sandbox.runtimeTransport).toBe("dialout");
+              expect(sandbox.credentialId).toBe(selection.credentialId);
+              expect(sandbox.credentialVersion).toBe(selection.credentialVersion);
+              expect(sandbox.visibility).toBe("private");
+              const enrolments = createRuntimeEnrolments(sql, ENCRYPTION_KEY);
+              const ticket = await enrolments.issue({
+                sandboxId: sandbox.id,
+                ownerId: p.owner,
+                commandGrantExpiresAt: physicalDeadline.getTime(),
+                configuration: { grant: { expiresAt: physicalDeadline.getTime() } },
+              });
+              const active = await enrolments.enrol(ticket.enrolmentToken);
+              return {
+                epoch: active.epoch,
+                prepareWorkspace: async () => ({ status: "not_connected" }),
+                async prompt(request) {
+                  expect(request.text).toStartWith("first turn");
+                  return { promptId: "runtime-prompt", conversationId: "runtime-conversation", status: "running" };
+                },
+              };
+            },
+          },
+        },
+      },
+    });
+    const request = { ...selection, prompt: "first turn" };
+    const receipt = await services.childWorker.launch(token, "enrolled-child", request);
+    expect(receipt.state).toBe("succeeded");
+    expect((await services.childWorker.launch(token, "enrolled-child", request)).id).toBe(receipt.id);
+    expect(fake.forks).toHaveLength(1);
+    expect(fake.forks[0]?.idempotencyKey).toBe(receipt.id);
+    expect(fake.execs).toHaveLength(0);
+    await expect(services.childWorker.read(token, receipt.sandboxId)).resolves.toMatchObject({
+      id: receipt.sandboxId,
+      events: [],
+    });
+    hostAvailable = false;
+    const message = await services.childWorker.message(token, "message", receipt.sandboxId, "follow up");
+    hostAvailable = true;
+    expect(message.state).toBe("succeeded");
+    expect(sends).toEqual([{ id: receipt.sandboxId, prompt: "follow up", request_id: message.id }]);
+    expect(fake.prompts).toHaveLength(0);
+    expect(
+      (
+        await sql.query(
+          `select c.orchestrator_id,c.owner_id,c.org_id,s.task_prompt_id from orchestrator_children c
+           join sandboxes s on s.id=c.sandbox_id where c.sandbox_id=$1`,
+          [receipt.sandboxId],
+        )
+      ).rows,
+    ).toEqual([{ orchestrator_id: id, owner_id: p.owner, org_id: p.org, task_prompt_id: "runtime-prompt" }]);
+    expect((await services.childWorker.extend(token, "extend", receipt.sandboxId, 15_000)).state).toBe("succeeded");
+    const stopped = await services.childWorker.stop(token, "stop", receipt.sandboxId);
+    expect(stopped.state).toBe("succeeded");
+    expect(checkpointRequest).toBe(stopped.id);
+    await expect(services.childWorker.read(token, receipt.sandboxId)).resolves.toMatchObject({
+      status: "stopped",
+    });
+  } finally {
+    await close();
+  }
+});
+
+test.each(["placement refusal", "parent revocation during configuration"] as const)(
+  "scoped Modal launch fences host dispatch after %s",
+  async (scenario) => {
+    const { close, sql, authority, id, token, selection } = await fixture("running", "anthropic", "modal");
+    try {
+      const fake = fakeBoat();
+      const credentials = launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY);
+      let bootstraps = 0;
+      const host = {
+        ...fake.provider,
+        id: "modal" as const,
+        async startRuntime() {
+          bootstraps++;
+        },
+      };
+      const services = createSandboxAccessServices({
+        sql,
+        providers: { resolve: async () => host },
+        credentials,
+        connections: undefined,
+        encryptionKey: ENCRYPTION_KEY,
+        scopedMcpUrl: "https://armada.example/mcp",
+        runtimePlacements: {
+          modal: {
+            async provider() {
+              if (scenario === "placement refusal") throw Error("Modal App is unavailable");
+              return host;
+            },
+            credentials,
+            connections: { async validate() {}, async bind() {} },
+            policy: {
+              async start(input) {
+                await authority.revoke(id);
+                await (input.host as typeof host).startRuntime();
+                throw Error("Revoked parent should have prevented bootstrap");
+              },
+            },
+          },
+        },
+      });
+      const receipt = await services.childWorker.launch(token, scenario, selection);
+      expect(receipt.state).toBe(scenario === "placement refusal" ? "failed" : "uncertain");
+      expect(fake.forks).toHaveLength(scenario === "placement refusal" ? 0 : 1);
+      expect(bootstraps).toBe(0);
+    } finally {
+      await close();
+    }
+  },
+);
 
 // Real delegated stop and SQL fences: a completed stop must remain live-readable.
 test("managed child stop clears its epoch only after physical confirmation", async () => {

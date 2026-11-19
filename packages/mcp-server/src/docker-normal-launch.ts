@@ -9,9 +9,7 @@ import {
   type GitHubLaunchInfo,
   type GoldenActor,
   type GoldenRepo,
-  HARNESSES,
   type Harness,
-  isExternalRef,
   type LaunchCredentialResolver,
   LaunchError,
   normalizeGitHubGoldenConfig,
@@ -28,6 +26,7 @@ import {
   validateReadableVariables,
   validateSkillPins,
 } from "@armada/core";
+import { type LaunchInput, launch as launchOperation } from "@armada/core/contract";
 import {
   applyLaunchAccountDefaults,
   createSkillDefaultsService,
@@ -36,7 +35,6 @@ import {
   createSqlSandboxStore,
   decryptSecret,
   encryptSecret,
-  isLaunchTtlSeconds,
   prepareLaunchPlan,
   prepareLaunchWorkspace,
   resolveLaunchConnections,
@@ -51,13 +49,11 @@ import type { createDockerBootstrapService } from "./docker-bootstrap-service.ts
 import { resolveDockerLaunchAccount } from "./docker-launch-account.ts";
 import { createDockerLaunchEnvironment } from "./docker-launch-environment.ts";
 import { dockerLaunchRequestHash, matchesDockerLaunchRequestHash } from "./docker-launch-identity.ts";
-import { DOCKER_LAUNCH_FIELDS } from "./docker-launch-request-schema.ts";
 import { createDockerPromptWorker } from "./docker-prompt-worker.ts";
 import { dockerRepositoryCheckout } from "./docker-repository-checkout.ts";
 import { reservationDatabaseDiagnostic, reservationSql } from "./docker-reservation-sql.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
-import { DOCKER_PROMPT } from "./docker-send-request-schema.ts";
 import { resolveDockerSnapshot } from "./docker-snapshot-data.ts";
 import { recordLaunchStageQuietly } from "./launch-stage-record.ts";
 import {
@@ -101,6 +97,7 @@ type Manifest = {
   variables?: Record<string, string>;
   snapshotConfig?: import("@armada/core").GoldenConfig;
   request: Request;
+  accountModelDefaulted?: true;
   /** Resolved pin stays separate from the caller identity used by retries. */
   credentialId?: string;
   credentialVersion: number;
@@ -191,34 +188,10 @@ function identifier(value: unknown): string {
   if (typeof value !== "string" || !UUID.test(value)) throw failure("invalid_request");
   return value.toLowerCase();
 }
-function normalize(body: Record<string, unknown>, image: string): Request {
-  if (body && typeof body === "object" && Object.hasOwn(body, "image"))
-    throw failure(
-      "invalid_request",
-      "Remove the image field and retry. Armada chooses the Docker environment automatically.",
-    );
-  if (
-    !body ||
-    typeof body !== "object" ||
-    Array.isArray(body) ||
-    Object.keys(body).some((field) => !DOCKER_LAUNCH_FIELDS.includes(field)) ||
-    body.provider !== "docker" ||
-    body.idempotencyKey !== undefined ||
-    (body.externalRef !== undefined && !isExternalRef(body.externalRef)) ||
-    (body.stopWhenWorkMerged !== undefined && typeof body.stopWhenWorkMerged !== "boolean") ||
-    !HARNESSES.includes(body.harness as Harness) ||
-    (body.visibility !== undefined && body.visibility !== "private") ||
-    (body.credentialVersion !== undefined &&
-      (!Number.isSafeInteger(body.credentialVersion) || (body.credentialVersion as number) < 1)) ||
-    (body.model !== undefined && typeof body.model !== "string") ||
-    (body.reasoningEffort !== undefined && typeof body.reasoningEffort !== "string") ||
-    (body.prompt !== undefined && !DOCKER_PROMPT.safeParse(body.prompt).success)
-  )
-    throw failure("invalid_request");
-  const ttlSeconds = body.ttlSeconds === undefined ? DEFAULT_LAUNCH_TTL_SECONDS : body.ttlSeconds;
-  if (!isLaunchTtlSeconds("docker", ttlSeconds)) throw failure("invalid_request");
-  if (body.skipSkillDefaults !== undefined && typeof body.skipSkillDefaults !== "boolean")
-    throw failure("invalid_request");
+type DockerAdmissionInput = Extract<LaunchInput, { provider: "docker"; requestId: string }>;
+
+function normalize(body: DockerAdmissionInput, org: string, hostId: string, image: string): Request {
+  const ttlSeconds = body.ttlSeconds ?? DEFAULT_LAUNCH_TTL_SECONDS;
   if (body.skills !== undefined) {
     try {
       validateLaunchSkillPins(body.skills);
@@ -226,12 +199,11 @@ function normalize(body: Record<string, unknown>, image: string): Request {
       throw failure("invalid_request");
     }
   }
-  if (body.connections !== undefined && !isLaunchConnectionList(body.connections)) throw failure("invalid_request");
   let choice: ReturnType<typeof resolveModelChoice>;
   try {
-    choice = resolveModelChoice(body.harness as Harness, {
-      model: body.model as string | undefined,
-      reasoningEffort: body.reasoningEffort as string | undefined,
+    choice = resolveModelChoice(body.harness, {
+      model: body.model,
+      reasoningEffort: body.reasoningEffort,
     });
   } catch {
     throw failure("invalid_request");
@@ -258,7 +230,7 @@ function normalize(body: Record<string, unknown>, image: string): Request {
   )
     throw failure("invalid_request");
   let repos: GoldenRepo[] | undefined;
-  if (body.repos !== undefined) {
+  if ("repos" in body && body.repos !== undefined) {
     try {
       const config = parseGoldenConfig({ repos: body.repos, init: [] });
       repos = normalizeGitHubGoldenConfig(config).repos.map((r) => ({
@@ -274,24 +246,24 @@ function normalize(body: Record<string, unknown>, image: string): Request {
     ...(repos ? { repos } : {}),
     ...(variables ? { variables } : {}),
     ...(secrets ? { secrets } : {}),
-    ...(body.snapshotId === undefined ? {} : { snapshotId: identifier(body.snapshotId) }),
-    org: identifier(body.org),
+    ...("snapshotId" in body ? { snapshotId: identifier(body.snapshotId) } : {}),
+    org,
     provider: "docker",
-    harness: body.harness as Harness,
+    harness: body.harness,
     visibility: "private",
-    hostId: identifier(body.hostId),
+    hostId,
     image,
     credentialId: body.credentialId === undefined ? null : identifier(body.credentialId),
-    credentialVersion: (body.credentialVersion as number | undefined) ?? null,
+    credentialVersion: body.credentialVersion ?? null,
     requestId: identifier(body.requestId),
-    ...(isExternalRef(body.externalRef) ? { externalRef: body.externalRef } : {}),
+    ...(body.externalRef === undefined ? {} : { externalRef: body.externalRef }),
     model: choice.model,
     reasoningEffort: choice.reasoningEffort,
     ttlSeconds,
-    prompt: (body.prompt as string | undefined) ?? null,
-    ...(body.skills === undefined ? {} : { skills: [...(body.skills as string[])] }),
+    prompt: body.prompt ?? null,
+    ...(body.skills === undefined ? {} : { skills: [...body.skills] }),
     ...(body.stopWhenWorkMerged === false ? { stopWhenWorkMerged: false } : {}),
-    ...(body.skipSkillDefaults === undefined ? {} : { skipSkillDefaults: body.skipSkillDefaults as boolean }),
+    ...(body.skipSkillDefaults === undefined ? {} : { skipSkillDefaults: body.skipSkillDefaults }),
     ...(body.connections === undefined
       ? {}
       : { connections: [...new Set(body.connections.map((id) => id.toLowerCase()))].sort() }),
@@ -341,7 +313,13 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
     if (!membership) throw failure("not_found");
     return membership;
   }
-  async function load(tx: Sql, actor: { userId: string; orgId: string }, request: Request, hash: string) {
+  async function load(
+    tx: Sql,
+    actor: { userId: string; orgId: string },
+    request: Request,
+    hash: string,
+    explicitModel = false,
+  ) {
     const membership = await member(tx, actor);
     const row = (
       await tx.query<Row>(
@@ -370,6 +348,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       !manifest.request ||
       !matchesDockerLaunchRequestHash(manifest.request, claim.request_hash) ||
       dockerLaunchRequestHash(manifest.request) !== hash ||
+      (explicitModel && manifest.accountModelDefaulted) ||
       (manifest.credentialId !== undefined && !UUID.test(manifest.credentialId)) ||
       (!claim.result_enc &&
         (row.credential_version !== manifest.credentialVersion ||
@@ -471,13 +450,22 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
     let reason = "request_validation";
     let diagnosticSandboxId: string | undefined;
     const validate = () => {
-      const snapshotId = body.snapshotId === undefined ? undefined : identifier(body.snapshotId);
-      if (snapshotId && (body.image !== undefined || body.repos !== undefined)) throw failure("invalid_request");
-      const org = identifier(body.org);
-      if (!caller.orgs.some((member) => member.orgId === org)) throw failure("not_found");
-      return { snapshotId, org };
+      const parsed = launchOperation.input.body.safeParse(body);
+      if (!parsed.success || parsed.data.provider !== "docker" || !("requestId" in parsed.data))
+        throw failure(
+          "invalid_request",
+          body && Object.hasOwn(body, "image")
+            ? "Remove the image field and retry. Armada chooses the Docker environment automatically."
+            : undefined,
+        );
+      const request = parsed.data;
+      const snapshotId = "snapshotId" in request ? identifier(request.snapshotId) : undefined;
+      const org = identifier(request.org);
+      const member = caller.orgs.find((entry) => entry.orgId === org);
+      if (!member) throw failure("not_found");
+      return { request, snapshotId, org, role: member.role };
     };
-    const resolve = async ({ snapshotId, org }: ReturnType<typeof validate>) => {
+    const resolve = async ({ request: input, snapshotId, org, role }: ReturnType<typeof validate>) => {
       reason = "launch_receipt_lookup";
       // Until the read succeeds, a retry may refer to an already dispatched launch.
       dispatchPossible = true;
@@ -487,7 +475,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
            join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
            join public.mcp_actor_epochs e on e.org_id=s.org_id and e.user_id=s.owner_id and e.epoch=d.actor_epoch
            where s.id=$1 and s.owner_id=$2 and s.org_id=$3 and s.provider='docker' and ($4::uuid is null or s.docker_snapshot_id=$4)`,
-          [identifier(body.requestId), caller.userId, org, snapshotId ?? null],
+          [identifier(input.requestId), caller.userId, org, snapshotId ?? null],
         )
       ).rows[0];
       dispatchPossible = Boolean(retained);
@@ -499,8 +487,9 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           ? await resolveDockerSnapshot(sql, { userId: caller.userId, orgId: org }, snapshotId)
           : undefined;
       const sourceHost = snapshotId ? (frozen?.hostId ?? source?.host_id) : undefined,
-        sourceImage = snapshotId ? (frozen?.image ?? source?.image_id) : undefined;
-      if (sourceHost && body.hostId !== undefined && identifier(body.hostId) !== sourceHost) throw failure("not_found");
+        sourceImage = frozen?.image ?? source?.image_id;
+      if (sourceHost && input.hostId !== undefined && identifier(input.hostId) !== sourceHost)
+        throw failure("not_found");
       reason = "official_image";
       let image: string;
       try {
@@ -517,24 +506,19 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       // Resolve personal choices before normalization supplies catalog defaults. Explicit
       // account/model selections and replayed frozen manifests retain their authority.
       reason = "account_defaults";
-      let selected = body;
-      if (HARNESSES.includes(body.harness as Harness)) {
-        const preference = frozen
-          ? { credentialId: frozen.credentialId ?? null, model: frozen.model }
-          : await options.credentials.defaults?.(
-              { userId: caller.userId, orgId: org, role: caller.orgs.find((entry) => entry.orgId === org)!.role },
-              body.harness as Harness,
-            );
-        selected = applyLaunchAccountDefaults(body, preference);
-      }
-      const request = normalize(sourceHost ? { ...selected, hostId: sourceHost } : selected, image);
+      const preference = frozen
+        ? { credentialId: frozen.credentialId ?? null, model: frozen.model }
+        : await options.credentials.defaults?.({ userId: caller.userId, orgId: org, role }, input.harness);
+      const selected = applyLaunchAccountDefaults(input, preference);
+      const request = normalize(selected, org, sourceHost ?? identifier(input.hostId), image);
       const actor = { userId: identifier(caller.userId), orgId: request.org };
       if (!caller.orgs.some((org) => org.orgId.toLowerCase() === request.org)) throw failure("not_found");
       const hash = dockerLaunchRequestHash(request);
       reason = "membership_and_launch_state";
-      const state = await transaction((tx) => load(tx, actor, request, hash));
+      const explicitModel = workerId === undefined && input.model !== undefined;
+      const state = await transaction((tx) => load(tx, actor, request, hash, explicitModel));
       dispatchPossible ||= Boolean(state.row);
-      const plan = { request, actor, hash, state };
+      const plan = { request, actor, hash, state, explicitModel };
       if (state.row && state.receipt)
         return { ...plan, kind: "retained" as const, row: state.row, receipt: state.receipt };
       reason = "runtime_configuration";
@@ -546,10 +530,11 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       );
       // Resolve outside the reservation transaction; only the binding is retained.
       reason = "credential_resolution";
-      const { resolved, binding } = await resolveDockerLaunchAccount(
+      const { resolved, binding, modelChoice } = await resolveDockerLaunchAccount(
         options.credentials,
         { ...actor, role: state.membership.role },
         request,
+        selected,
       );
       const launchActor = { ...actor, role: state.membership.role };
       if (needsRepositoryPreflight) {
@@ -580,6 +565,9 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       const manifest: Manifest = {
         ...(source ? { snapshotConfig: source.config } : {}),
         request,
+        ...(selected.model === undefined && modelChoice && modelChoice.model !== request.model
+          ? { accountModelDefaulted: true }
+          : {}),
         credentialId: binding.credentialId,
         credentialVersion: binding.credentialVersion,
         bootstrapId: randomUUID(),
@@ -589,14 +577,15 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         preparation: { skills, connections },
         ...(correlationId ? { correlationId } : {}),
       };
-      return { ...plan, kind: "active" as const, bootstrap, fresh: { resolved, binding, manifest } };
+      return { ...plan, kind: "active" as const, bootstrap, fresh: { resolved, binding, manifest, modelChoice } };
     };
 
     const dockerPlacement = {
       async admit(plan: Awaited<ReturnType<typeof resolve>>, launchAdmission: typeof admission) {
-        const { actor, request, hash, state } = plan;
+        const { actor, request, hash, state, explicitModel } = plan;
         if (plan.kind === "retained" || !plan.fresh) return state;
-        const { resolved, binding, manifest } = plan.fresh;
+        const { resolved, binding, manifest, modelChoice } = plan.fresh;
+        const choice = modelChoice ?? request;
         // The transaction queues host work atomically; a lost commit reply is ambiguous.
         reason = "reservation";
         return transaction(async (connection) => {
@@ -610,7 +599,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
             (await tx.query(`select id from public.sandboxes where id=$1`, [request.requestId])).rows.length > 0;
           if (exists) {
             dispatchPossible = true;
-            return load(tx, actor, request, hash);
+            return load(tx, actor, request, hash, explicitModel);
           }
           await createDockerSandboxService(scopedRuntimeSql(tx), key, { enabled: true }).reserve(
             actor,
@@ -621,8 +610,8 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
               harness: request.harness,
               credentialId: binding.credentialId,
               credentialVersion: manifest.credentialVersion,
-              model: request.model,
-              reasoningEffort: request.reasoningEffort,
+              model: choice.model,
+              reasoningEffort: choice.reasoningEffort,
               ...(request.stopWhenWorkMerged === undefined ? {} : { stopWhenWorkMerged: request.stopWhenWorkMerged }),
               ...(body.ttlSeconds === undefined ? {} : { ttlSeconds: request.ttlSeconds }),
             },
@@ -681,6 +670,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       const manifest = state.manifest;
       diagnosticSandboxId = state.row?.id;
       if (!manifest || !state.row) throw failure("unavailable");
+      const defaults = { model: state.row.model, reasoningEffort: state.row.reasoning_effort };
       if (options.deferLaunch && !admission && !workerId) return envelope(state.row);
       // From here this call drives the host itself, even when it resumes a retried launch.
       noteAdmission();
@@ -775,7 +765,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
               sandboxId: request.requestId,
               providerSandboxId: request.requestId,
               cwd: "/home/user",
-              defaults: { model: request.model, reasoningEffort: request.reasoningEffort },
+              defaults,
             },
           );
           const warnings = await prepareLaunchWorkspace(
@@ -871,7 +861,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
               sandboxId: request.requestId,
               providerSandboxId: request.requestId,
               cwd: "/home/user",
-              defaults: { model: request.model, reasoningEffort: request.reasoningEffort },
+              defaults,
             },
           );
           const receipts = await agent.installSkills(selections.skills, skillKey, receipt.epoch);

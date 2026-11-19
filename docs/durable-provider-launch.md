@@ -40,9 +40,8 @@ the receipt ID as the sandbox ID. The new contract requires a client key.
 Legacy keyless REST stays synchronous and keyless MCP retains its generated
 key. Version the digest rules to preserve each legacy surface's comparison.
 Read the shared namespace before routing a replay. Completed legacy receipts
-remain replayable and incomplete ones inspect-only. `launch_receipt` keeps
-its legacy authority and allocation checks, and reads the owned sandbox and
-queue state for linked receipts. Retain immutable key, digest and outcome
+remain replayable. Incomplete legacy receipts stay fenced and require
+operator investigation. Retain immutable key, digest and outcome
 tombstones after purging encrypted payloads.
 
 Add a server-owned `provider_launch_requests` table keyed by sandbox ID.

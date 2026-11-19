@@ -27,6 +27,8 @@ const host = (overrides: Partial<DockerHost> = {}): DockerHost => ({
   createdAt: "2026-11-13T08:00:00Z",
   lastSeenAt: "2026-11-13T11:59:50Z",
   revokedAt: null,
+  protocol: 1,
+  upgradeRequired: false,
   sandboxes: 2,
   version: "1.4.0",
   ...overrides,

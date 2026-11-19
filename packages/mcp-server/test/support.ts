@@ -22,6 +22,7 @@ import type {
   SteerRequest,
 } from "@armada/core";
 import { encryptSecret, ProviderError, type Sql } from "@armada/core";
+import { launchEnvelope } from "@armada/core/contract";
 import { createSqlVaultStore, GoldenBuildJobs, type GoldenCreateOptions } from "@armada/core/server";
 import type { PGlite } from "@electric-sql/pglite";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -64,9 +65,7 @@ export async function seedDatabase(db: PGlite): Promise<{ db: PGlite; people: Pe
     member: crypto.randomUUID(),
     admin: crypto.randomUUID(),
   };
-  for (const user of [people.owner, people.member, people.admin]) {
-    await db.query("insert into auth.users (id) values ($1)", [user]);
-  }
+  await db.query("insert into auth.users (id) values ($1), ($2), ($3)", [people.owner, people.member, people.admin]);
   await db.query("insert into orgs (id, name, boat_api_key_enc) values ($1, 'Example', $2), ($3, 'Other', null)", [
     people.org,
     await encryptSecret(SECRETS.orgBoat, ENCRYPTION_KEY),
@@ -98,17 +97,19 @@ export async function seedDatabase(db: PGlite): Promise<{ db: PGlite; people: Pe
       people.member,
     ],
   );
-  const credential = async (scope: string, owner: string, kind: string, value: string) =>
-    db.query("insert into credentials (scope, owner_id, kind, value_enc) values ($1, $2, $3, $4)", [
-      scope,
-      owner,
-      kind,
-      await encryptSecret(value, ENCRYPTION_KEY),
-    ]);
-  await credential("user", people.owner, "claude_oauth", SECRETS.ownerClaude);
-  await credential("user", people.owner, "boat", SECRETS.personalBoat);
-  await credential("org", people.org, "claude_oauth", SECRETS.orgClaude);
-  await credential("org", people.org, "openai", SECRETS.orgOpenai);
+  const [ownerClaude, personalBoat, orgClaude, orgOpenai] = await Promise.all(
+    [SECRETS.ownerClaude, SECRETS.personalBoat, SECRETS.orgClaude, SECRETS.orgOpenai].map((value) =>
+      encryptSecret(value, ENCRYPTION_KEY),
+    ),
+  );
+  await db.query(
+    `insert into credentials (scope, owner_id, kind, value_enc) values
+      ('user', $1, 'claude_oauth', $3),
+      ('user', $1, 'boat', $4),
+      ('org', $2, 'claude_oauth', $5),
+      ('org', $2, 'openai', $6)`,
+    [people.owner, people.org, ownerClaude, personalBoat, orgClaude, orgOpenai],
+  );
   return { db, people };
 }
 
@@ -235,7 +236,12 @@ export function fakeBoat() {
     async stop(request: { sandboxId: string }) {
       stops.push(request.sandboxId);
       const sandbox = find(request.sandboxId);
-      sandbox.info = { ...sandbox.info, state: "stopped" as SandboxState, providerState: "archived" };
+      sandbox.info = {
+        ...sandbox.info,
+        state: "stopped" as SandboxState,
+        providerState: "archived",
+        retainedSnapshot: "usable",
+      };
     },
     async delete() {
       return { status: "pending" };
@@ -398,7 +404,6 @@ export async function harness(
     sql?: (db: PGlite) => Sql;
     routes?: readonly Route[];
     buildSsh?: GoldenCreateOptions["ssh"];
-    goldenAdoption?: HandlerOptions["goldenAdoption"];
     /** The store `/mcp` authenticates against. Default: the in-memory one the helpers fill. */
     authStore?: (db: PGlite) => AuthStore;
     log?: (line: string) => void;
@@ -464,7 +469,6 @@ export async function harness(
   });
   const handler = createHandler({
     publicUrl: PUBLIC_URL,
-    goldenBuilds: builds,
     oauth,
     authStore: options.authStore ? options.authStore(db) : auth,
     supabase: { supabaseUrl: "https://project.supabase.co", anonKey: "anon", fetch: supabaseFetch },
@@ -475,7 +479,6 @@ export async function harness(
     providerFor: options.providerFor ?? boat.providerFor,
     ...(options.modelAuth ? { modelAuth: options.modelAuth(db) } : {}),
     ...(options.connections ? { connections: options.connections } : {}),
-    ...(options.goldenAdoption ? { goldenAdoption: options.goldenAdoption } : {}),
     ...(options.modalProviderFor ? { modalProviderFor: options.modalProviderFor } : {}),
     ...(options.routes ? { routes: options.routes } : {}),
     log: options.log ?? (() => {}),
@@ -554,4 +557,8 @@ export async function call(client: Client, name: string, args: Record<string, un
     text,
     data: (result.structuredContent ?? {}) as Record<string, unknown>,
   };
+}
+
+export function launchSandboxId(data: unknown) {
+  return launchEnvelope.parse(data).sandbox.id;
 }

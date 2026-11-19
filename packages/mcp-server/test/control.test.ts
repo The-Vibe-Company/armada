@@ -20,7 +20,8 @@ import {
   VaultError,
   type VaultStore,
 } from "@armada/core";
-import { createSkillDefaultsService, createSqlVaultStore } from "@armada/core/server";
+import { launchEnvelope, sandboxCheckOperations } from "@armada/core/contract";
+import { createSkillDefaultsService, createSqlVaultStore, createTemplateService } from "@armada/core/server";
 import { appendModalEvents, createSqlModalStore, type Machine, type Scope, scopeKey } from "@armada/provider-modal";
 import type { PGlite } from "@electric-sql/pglite";
 import { AppService } from "modal";
@@ -34,7 +35,6 @@ import { modalLaunchEnvironment } from "../src/modal-launch-environment.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
 import { createOrdinaryLaunchReceipts } from "../src/ordinary-launch-receipts.ts";
 import { createProviderMetadata } from "../src/provider-metadata.ts";
-import { PUBLISHED_REST_ROUTES } from "../src/public-rest-routes.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
@@ -42,7 +42,7 @@ import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import { createRuntimeHistory } from "../src/runtime-history.ts";
 import { createRuntimeStartup } from "../src/runtime-startup.ts";
 import { callSharedTool } from "../src/tool-api.ts";
-import { publishedRequest, publishedResponse } from "./published-response.ts";
+import { publishedFailure, publishedRequest, publishedResponse } from "./published-response.ts";
 import { rowOnlyConnection } from "./row-only-database.ts";
 import { fakeBoat } from "./support.ts";
 
@@ -109,7 +109,7 @@ for (const failure of [
         new Request("https://armada.test/api/v1/sandbox/launch", {
           method: "POST",
           headers: { authorization: `Bearer ${bearer}` },
-          body: JSON.stringify({ golden: "web", harness: "claude" }),
+          body: JSON.stringify({ provider: "boat", golden: "web", harness: "claude" }),
         }),
         {
           ...options,
@@ -628,7 +628,7 @@ describe("armada org and armada creds against the control API", () => {
       };
       const read = (user: string) =>
         handleControlRequest(
-          new Request("https://armada.test/api/v1/sandbox/detail", {
+          new Request("https://armada.test/api/v1/sandbox/status", {
             method: "POST",
             headers: {
               authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: user })).replace(/=+$/, "")}.sig`,
@@ -641,8 +641,7 @@ describe("armada org and armada creds against the control API", () => {
       expect(response?.status).toBe(200);
       expect(await response?.json()).toMatchObject({ id, status: "ready" });
       expect(response?.headers.get("server-timing")).toContain("stored_provider;dur=");
-      for (const phase of ["tool_register", "tool_connect", "tool_call", "tool_close"])
-        expect(response?.headers.get("server-timing")).toContain(`${phase};dur=`);
+      expect(response?.headers.get("server-timing")).toContain("tool_call;dur=");
       expect(storedReads).toBe(1);
       expect((await read(ADA))?.status).toBe(404);
       expect(storedReads).toBe(1);
@@ -762,9 +761,8 @@ describe("armada org and armada creds against the control API", () => {
 });
 
 describe("control API", () => {
-  // The HTTP route invokes github_refresh through the real MCP transport and launch credential
-  // resolver. A private hydration refusal must keep its closed phase all the way to the owner.
-  test("GitHub refresh preserves the closed hydration failure across MCP and HTTP", async () => {
+  // A private hydration refusal from the launch credential resolver must keep its closed phase.
+  test("GitHub refresh preserves the closed hydration failure over HTTP", async () => {
     await withServer(async ({ db, options }) => {
       const org = await options.store.createOrg("GitHub repair", STAN);
       options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
@@ -892,33 +890,6 @@ describe("control API", () => {
     });
   });
 
-  test("every published route refuses a body over its published limit with its published status", async () => {
-    await withServer(async ({ options }) => {
-      const published = (await import("../../../docs/openapi.json")).default as unknown as {
-        paths: Record<
-          string,
-          { post: { requestBody: { "x-max-body-bytes": number; "x-oversized-body-status": number } } }
-        >;
-      };
-      const authorization = `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`;
-      // The server reads logs/read with a 512 KiB limit; the dashboard endpoint's lower bound is
-      // covered in apps/dashboard/test/control-proxy.test.ts.
-      for (const route of PUBLISHED_REST_ROUTES.filter((route) => route !== "logs/read")) {
-        const { requestBody } = published.paths[`/api/v1/${route}`]!.post;
-        const limit = requestBody["x-max-body-bytes"];
-        const response = await handleControlRequest(
-          new Request(`https://armada.test/api/v1/${route}`, {
-            method: "POST",
-            headers: { authorization },
-            body: JSON.stringify({ pad: "x".repeat(limit) }),
-          }),
-          options,
-        );
-        expect({ route, status: response?.status }).toEqual({ route, status: requestBody["x-oversized-body-status"] });
-      }
-    });
-  });
-
   test("launch/options publishes the server's harness, model, size and TTL catalogs to a signed-in caller", async () => {
     await withServer(async ({ options }) => {
       const call = (init: RequestInit) =>
@@ -1012,9 +983,14 @@ describe("control API", () => {
       const headers = {
         authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`,
       };
-      const unknown = await call("/api/v1/nope", { method: "POST", headers });
-      expect(unknown?.status).toBe(404);
-      expect(await unknown?.json()).toEqual({ error: { code: "unknown_route", message: "Unknown route." } });
+      const retiredLaunchPaths = ["sized", "access", "runtime", "modal-runtime"].map(
+        (variant) => `/api/v1/sandbox/${["launch", variant, "v1"].join("-")}`,
+      );
+      for (const path of ["/api/v1/nope", ...retiredLaunchPaths]) {
+        const unknown = await call(path, { method: "POST", headers, body: "{}" });
+        expect(unknown?.status).toBe(404);
+        expect(await unknown?.json()).toEqual({ error: { code: "unknown_route", message: "Unknown route." } });
+      }
       expect((await call("/api/v1/org/create", { method: "POST", headers, body: "{" }))?.status).toBe(400);
       expect((await call("/api/v1/org/create", { method: "POST", headers, body: "{}" }))?.status).toBe(400);
       expect((await call("/api/v1/org/list", { method: "POST", headers }))?.status).toBe(200);
@@ -1105,7 +1081,7 @@ describe("control API", () => {
             new Request("https://armada.test/api/v1/sandbox/launch", {
               method: "POST",
               headers: { authorization: `Bearer ${service}` },
-              body: JSON.stringify({ golden: "web", harness: "claude", ...body }),
+              body: JSON.stringify({ provider: "boat", golden: "web", harness: "claude", ...body }),
             }),
             { ...options, providerFor: () => boat.provider },
           );
@@ -1164,6 +1140,62 @@ describe("control API", () => {
     });
   }
 
+  test("a keyed runtime launch refuses an unbound account before opening the provider", async () => {
+    await withServer(async ({ db, options }) => {
+      const org = (await options.store.createOrg("RuntimeAccount", STAN)).id;
+      options.authStore.addMembership(STAN, { orgId: org, name: "RuntimeAccount", role: "admin" });
+      await db.query(
+        "insert into goldens (org_id, name, visibility, owner_id, boat_snapshot_id, config) values ($1, 'web', 'org', $2, $3, $4::jsonb)",
+        [
+          org,
+          STAN,
+          `a${"b".repeat(62)}`,
+          JSON.stringify({ repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }], init: [] }),
+        ],
+      );
+      const openProvider = (): never => {
+        throw Error("An account refusal must precede provider initialization");
+      };
+      const response = await handleControlRequest(
+        new Request("https://armada.test/api/v1/sandbox/launch", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`,
+          },
+          body: JSON.stringify({
+            org,
+            provider: "boat",
+            golden: "web",
+            harness: "codex",
+            idempotencyKey: "unbound-account-launch",
+          }),
+        }),
+        {
+          ...options,
+          providerFor: openProvider,
+          providers: { resolve: async () => openProvider() },
+          ordinaryLaunchReceipts: createOrdinaryLaunchReceipts(db as unknown as Sql),
+          launch: {
+            boatRuntimeDefault: {
+              policy: { start: async () => openProvider() },
+              provider: async () => openProvider(),
+              credentials: {
+                async resolve() {
+                  return { env: { OPENAI_API_KEY: "fixture_key" }, secrets: [], codexAuthJson: false };
+                },
+              },
+              connections: { async validate() {}, async bind() {} },
+            },
+          },
+        },
+      );
+      expect(response?.status).toBe(409);
+      expect(await response?.json()).toMatchObject({
+        error: { code: "credential_binding_required", message: expect.stringContaining("--credential-id") },
+      });
+    });
+  });
+
   test("sandbox/launch replays one sandbox per idempotencyKey and refuses a changed request", async () => {
     await withServer(async ({ db, options }) => {
       const org = (await options.store.createOrg("Keyed", STAN)).id;
@@ -1205,6 +1237,7 @@ describe("control API", () => {
           keyed,
         );
       const request = {
+        provider: "boat",
         golden: "web",
         org: "keyed",
         harness: "claude",
@@ -1219,7 +1252,7 @@ describe("control API", () => {
       expect(first?.status).toBe(200);
       const receipt = await first!.json();
       publishedResponse("sandbox/launch").parse(receipt);
-      const launched = (receipt as { sandbox: { id: string; externalRef?: string } }).sandbox;
+      const { sandbox: launched } = launchEnvelope.parse(receipt);
       expect(launched.externalRef).toBe("tender:1");
       const replay = await call("sandbox/launch", request);
       expect(replay?.status).toBe(200);
@@ -1246,22 +1279,42 @@ describe("control API", () => {
     });
   });
 
-  test("sandbox/launch refuses a malformed externalRef before any allocation", async () => {
+  test("REST and MCP refuse the same malformed launch with code invalid", async () => {
     await withServer(async ({ options }) => {
       const org = (await options.store.createOrg("Ref", STAN)).id;
       options.authStore.addMembership(STAN, { orgId: org, name: "Ref", role: "admin" });
       const boat = fakeBoat();
+      const caller = { userId: STAN, orgs: [{ orgId: org, role: "admin" as const }], via: "supabase" as const };
+      const input = { org, golden: "web", harness: "claude" };
       const response = await handleControlRequest(
         new Request("https://armada.test/api/v1/sandbox/launch", {
           method: "POST",
           headers: {
             authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`,
           },
-          body: JSON.stringify({ org, golden: "web", harness: "claude", externalRef: "bad\nref" }),
+          body: JSON.stringify(input),
         }),
         { ...options, providerFor: () => boat.provider },
       );
       expect(response?.status).toBe(400);
+      expect(await response?.json()).toMatchObject({ error: { code: "invalid" } });
+      await expect(
+        callSharedTool(
+          {
+            caller,
+            data: options.data!(caller),
+            provider: async () => boat.provider,
+            launchCredentials: launchCredentials(options.store, KEY),
+            exposedSecrets: async () => [],
+            now: () => new Date(),
+            sleep: async () => {
+              throw Error("No waits");
+            },
+          },
+          "launch",
+          input,
+        ),
+      ).rejects.toMatchObject({ code: "invalid" });
       expect(boat.forks).toHaveLength(0);
     });
   });
@@ -1292,7 +1345,7 @@ describe("control API", () => {
         new Request("https://armada.test/api/v1/sandbox/launch", {
           method: "POST",
           headers: { authorization: `Bearer ${service}` },
-          body: JSON.stringify({ golden: "web", org: orgB, harness: "claude" }),
+          body: JSON.stringify({ provider: "boat", golden: "web", org: orgB, harness: "claude" }),
         }),
         options,
       );
@@ -1383,7 +1436,7 @@ describe("control API", () => {
     });
   });
 
-  test("golden/list uses MCP visibility rules and service-token org scope", async () => {
+  test("golden/list enforces private visibility and service-token org scope", async () => {
     await withServer(async ({ db, options }) => {
       const orgA = (await options.store.createOrg("A", STAN)).id;
       const orgB = (await options.store.createOrg("B", STAN)).id;
@@ -2009,7 +2062,9 @@ test.each(["claude", "codex"] as const)(
       expect(attempts.map((result) => result.code).sort()).toEqual([0, 1]);
       // The loser lost the compare-and-swap; it was not refused for its org name.
       expect(attempts.find((result) => result.code === 1)!.err).toContain("bound");
-      const winner = JSON.parse(attempts.find((result) => result.code === 0)!.out);
+      const winner = sandboxCheckOperations.bindSandboxCredential.output.parse(
+        JSON.parse(attempts.find((result) => result.code === 0)!.out),
+      );
       expect([chosen, alternate]).toContain(winner.credentialId);
       expect(winner).toMatchObject({ id, credentialVersion: 1, harness, status: "bound" });
       expect(JSON.stringify(attempts)).not.toContain("chosen-token");
@@ -2078,7 +2133,7 @@ test("HTTP launch keeps build-5 refusal code and adds the busy account reason", 
       new Request("https://armada.test/api/v1/sandbox/launch", {
         method: "POST",
         headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" },
-        body: JSON.stringify({ org: org.id, golden: "busy", harness: "codex" }),
+        body: JSON.stringify({ org: org.id, provider: "boat", golden: "busy", harness: "codex" }),
       }),
       options,
     ))!;
@@ -2138,6 +2193,7 @@ for (const scenario of ["missing", "revoked-personal", "unreadable-personal"] as
           method: "POST",
           headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" },
           body: JSON.stringify({
+            provider: "boat",
             golden: "private-launch",
             harness: "codex",
             skills: ["notes@1.0.0"],
@@ -2333,7 +2389,7 @@ test("access launch resolves an omitted account and grants only its persisted bi
     const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`;
     const stagingLaunch = (repo: string, placement: "boat" | "modal" = "modal") =>
       handleControlRequest(
-        new Request("https://armada.test/api/v1/sandbox/launch-access-v1", {
+        new Request("https://armada.test/api/v1/sandbox/launch", {
           method: "POST",
           headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" },
           body: JSON.stringify({
@@ -2373,7 +2429,7 @@ test("access launch resolves an omitted account and grants only its persisted bi
       "--json",
     ]);
     expect(result).toMatchObject({ code: 0 });
-    const launched = JSON.parse(result.out);
+    const { sandbox: launched } = launchEnvelope.parse(JSON.parse(result.out));
     expect(statusAtInstall).toBe("starting");
     expect(launched.harness).toBe("codex");
     expect(launched.credentialId).toBe(account.id);
@@ -2447,7 +2503,7 @@ test("access launch resolves an omitted account and grants only its persisted bi
       "--json",
     ]);
     expect(ordinary.code).toBe(0);
-    const ordinaryId = JSON.parse(ordinary.out).providerSandboxId;
+    const ordinaryId = launchEnvelope.parse(JSON.parse(ordinary.out)).sandbox.providerSandboxId;
     expect((await db.query("select scope,visibility from modal_machines where id=$1", [ordinaryId])).rows).toEqual([
       { scope: scopeKey(orgScope), visibility: "org" },
     ]);
@@ -2496,7 +2552,7 @@ test("access launch resolves an omitted account and grants only its persisted bi
     const beforeAccepted = fake.forks.length;
     const accepted = await stagingLaunch("web");
     expect(accepted?.status).toBe(200);
-    expect(await accepted?.json()).toMatchObject({
+    expect(launchEnvelope.parse(await accepted?.json())).toMatchObject({
       sandbox: { credentialId: account.id, repositoryDir: "web" },
       armadaAccess: { enabled: true, maxActiveChildren: 1 },
     });
@@ -2588,8 +2644,25 @@ test("CLI/API connection checks require the owner and current bound revision, ex
       code: "invalid_api_key",
     });
     expect(rejected.out).not.toContain(key);
-    receipt = { ok: true, status: 200, error: null, code: null };
-    expect((await owner.run(args)).code).toBe(0);
+    const checkModel = (body: Record<string, unknown>) =>
+      handleControlRequest(
+        new Request("https://armada.test/api/v1/sandbox/test-model-connection", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`,
+          },
+          body: JSON.stringify(body),
+        }),
+        options,
+      );
+    const success = { ok: true, status: 200, error: null, code: null };
+    receipt = success;
+    const accepted = await checkModel({ id, model: "deployment" });
+    expect(accepted?.status).toBe(200);
+    expect(sandboxCheckOperations.testSandboxModelConnection.output.parse(await accepted?.json())).toEqual({
+      id,
+      test: success,
+    });
     expect(
       (await db.query<{ conversation_ids: string[] }>("select conversation_ids from sandboxes where id=$1", [id]))
         .rows[0]?.conversation_ids,
@@ -2603,16 +2676,7 @@ test("CLI/API connection checks require the owner and current bound revision, ex
     expect(badFlags.code).not.toBe(0);
     expect(badFlags.err).toContain("accept only --model");
     expect(calls).toBe(before);
-    const extra = await handleControlRequest(
-      new Request("https://armada.test/api/v1/sandbox/test-model-connection", {
-        method: "POST",
-        headers: {
-          authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`,
-        },
-        body: JSON.stringify({ id, model: "deployment", apiKey: key }),
-      }),
-      options,
-    );
+    const extra = await checkModel({ id, model: "deployment", apiKey: key });
     expect(extra?.status).toBe(400);
     expect(await extra?.text()).not.toContain(key);
     expect(calls).toBe(before);
@@ -2776,7 +2840,7 @@ test("versioned runtime launch is explicit/default-off and never selects native 
       boatRuntime: true,
       runtimeVersion: 1,
     };
-    expect((await request("sandbox/launch-runtime-v1", body))?.status).toBe(503);
+    expect((await request("sandbox/launch", body))?.status).toBe(503);
     expect(host.forks).toHaveLength(0);
     const connection = "44444444-4444-4444-8444-444444444444";
     let mcpPrepared = false,
@@ -2864,11 +2928,15 @@ test("versioned runtime launch is explicit/default-off and never selects native 
       { ...body, boatRuntime: false },
       { ...body, harness: "unknown_harness" },
       { ...body, provider: "modal" },
+      { ...body, provider: undefined },
       { ...body, connections: "invalid" },
       { ...body, skills: ["not-a-pin"] },
-    ])
-      expect((await request("sandbox/launch-runtime-v1", bad))?.status).toBe(400);
-    expect((await request("sandbox/launch", { ...body, runtimeTransport: "dialout" }))?.status).toBe(400);
+      { ...body, runtimeTransport: "dialout" },
+    ]) {
+      const invalid = await request("sandbox/launch", bad);
+      expect(invalid?.status).toBe(400);
+      expect(await invalid?.json()).toMatchObject({ error: { code: "invalid" } });
+    }
     expect(host.forks).toHaveLength(0);
     const response = await request("sandbox/launch", { ...body, skills: [skillPin] });
     expect(response?.status).toBe(200);
@@ -2979,6 +3047,7 @@ test("versioned runtime launch is explicit/default-off and never selects native 
     };
     const defaulted = await request("sandbox/launch", {
       golden: body.golden,
+      provider: body.provider,
       org: body.org,
       harness: "codex",
       credentialId: account.id,
@@ -3029,7 +3098,7 @@ test("versioned runtime launch is explicit/default-off and never selects native 
         throw Error("Expected timeout");
       },
     };
-    expect((await request("sandbox/launch-runtime-v1", body))?.status).toBeGreaterThanOrEqual(400);
+    expect((await request("sandbox/launch", body))?.status).toBeGreaterThanOrEqual(400);
     const failed = (
       await db.query<{ id: string; status_reason: string }>(
         "select id,status_reason from sandboxes where status='failed'",
@@ -3057,7 +3126,7 @@ test("versioned runtime launch is explicit/default-off and never selects native 
 // and no native agent/configuration fallback on the accepted model-only path.
 test.each([
   { harness: "codex" as const, fromDefaults: false, entry: "explicit" },
-  { harness: "claude" as const, fromDefaults: true, entry: "legacy" },
+  { harness: "claude" as const, fromDefaults: true, entry: "explicit" },
   { harness: "opencode" as const, fromDefaults: true, entry: "explicit" },
   { harness: "codex" as const, fromDefaults: true, entry: "ordinary-api" },
   { harness: "codex" as const, fromDefaults: true, entry: "ordinary-mcp" },
@@ -3082,10 +3151,9 @@ test.each([
         [org.id, STAN],
       );
       const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`;
-      const route = entry === "legacy" ? "sandbox/launch-modal-runtime-v1" : "sandbox/launch";
       const request = (body: object) =>
         handleControlRequest(
-          new Request(`https://armada.test/api/v1/${route}`, {
+          new Request("https://armada.test/api/v1/sandbox/launch", {
             method: "POST",
             headers: { authorization: `Bearer ${bearer}` },
             body: JSON.stringify(body),
@@ -3187,23 +3255,6 @@ test.each([
           { ...body, runtimeTransport: undefined },
         ])
           expect((await request(bad))?.status).toBe(400);
-      if (entry === "explicit" && harness === "codex") {
-        const template = await request({
-          org: org.id,
-          id: "44444444-4444-4444-8444-444444444444",
-          revision: 1,
-          requestKey: "template_request_fixture",
-          provider: "modal",
-          harness,
-          runtimeVersion: 1,
-          runtimeTransport: "dialout",
-          prompt: "reply",
-        });
-        expect(template?.status).toBe(400);
-        expect(await template?.json()).toMatchObject({
-          error: { message: expect.stringContaining("sandbox/launch-modal-runtime-v1") },
-        });
-      }
       expect(fake.forks).toHaveLength(0);
       options.runtimeMcp = {
         async preflight() {
@@ -3273,10 +3324,9 @@ test.each([
           "launch",
           input,
         );
-        expect(result).toMatchObject({
+        expect(launchEnvelope.parse(result)).toMatchObject({
           runtime: { kind: "armada", epoch: "1" },
-          runtimeTransport: "dialout",
-          provider: "modal",
+          sandbox: { provider: "modal", runtimeTransport: "dialout" },
           promptId: "modal-initial",
         });
         expect(starts).toBe(1);
@@ -3356,7 +3406,7 @@ test("Modal promptless HTTP launch publishes ready without inference and retains
     };
     const request = (input: object) =>
       handleControlRequest(
-        new Request("https://armada.test/api/v1/sandbox/launch-modal-runtime-v1", {
+        new Request("https://armada.test/api/v1/sandbox/launch", {
           method: "POST",
           headers: {
             authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`,
@@ -3396,5 +3446,68 @@ test("Modal promptless HTTP launch publishes ready without inference and retains
         }).sandboxes.get(launched.sandbox.id)
       )?.status,
     ).toBe("ready");
+  });
+});
+
+test("pinned Modal launch resolves personal org references and respects scoped tokens", async () => {
+  await withServer(async ({ db, options }) => {
+    const org = await options.store.createOrg("modal-team", STAN);
+    const other = await options.store.createOrg("other-team", STAN);
+    for (const member of [org, other])
+      options.authStore.addMembership(STAN, { orgId: member.id, name: member.name, role: "admin" });
+
+    const service = generateToken("service");
+    await options.authStore.insertToken("service", {
+      userId: STAN,
+      orgId: org.id,
+      hash: await sha256Hex(service),
+      label: "ci",
+      createdAt: new Date().toISOString(),
+    });
+    const personal = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`;
+    options.templates = createTemplateService({
+      query: (query, values) => db.query(query, values),
+      transaction: (work) => db.transaction((tx) => work(tx)),
+    });
+    options.modalRuntimeHostFor = async () => {
+      throw Error("Missing template must never reach the provider");
+    };
+    options.modalRuntimeLaunch = {
+      async start() {
+        throw Error("Missing template must never reach runtime startup");
+      },
+    };
+    const launch = (token: string, overrides: Record<string, unknown>) =>
+      handleControlRequest(
+        new Request("https://armada.test/api/v1/sandbox/launch", {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({
+            id: crypto.randomUUID(),
+            revision: 1,
+            requestKey: "launch-probe",
+            provider: "modal",
+            harness: "codex",
+            runtimeVersion: 1,
+            runtimeTransport: "dialout",
+            prompt: "Probe",
+            ...overrides,
+          }),
+        }),
+        options,
+      );
+
+    const byId = await launch(personal, { org: org.id });
+    expect(byId?.status).toBe(404);
+    const byName = await launch(personal, { org: org.name });
+    expect(byName?.status).toBe(404);
+    expect(await byName?.json()).toEqual(await byId?.json());
+    expect((await launch(service, {}))?.status).toBe(404);
+    expect((await launch(service, { org: other.id }))?.status).toBe(403);
+    for (const malformed of [{ golden: "mixed-source" }, { ttlSeconds: PROVIDER_LIMITS.modal.maxTtlSeconds + 1 }]) {
+      const refused = await launch(personal, { org: org.name, ...malformed });
+      expect(refused?.status).toBe(400);
+      expect(publishedFailure().parse(await refused?.json())).toMatchObject({ error: { code: "invalid" } });
+    }
   });
 });

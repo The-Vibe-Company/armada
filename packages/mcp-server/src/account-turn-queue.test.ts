@@ -121,6 +121,24 @@ test("queued sends recheck actor revocation without dispatching or reserving a s
   expect((await db.query("select * from account_agent_reservations")).rows).toEqual([]);
 });
 
+test("send replay keeps the original receipt while new sends target the current conversation", async () => {
+  const input = { id: ids[0]!, request_id: requests[0]!, prompt: "Original instruction" };
+  const receipt = { id: input.id, promptId: "original_turn", conversationId: "history", status: "running" };
+  await queue.accept(caller, input);
+  queue.setDispatch(async () => receipt);
+  expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
+  await queue.drain();
+  await db.query("update sandboxes set conversation_ids=array['history','current'] where id=$1", [input.id]);
+  try {
+    await expect(queue.accept(caller, input)).resolves.toMatchObject(receipt);
+    await expect(queue.accept(caller, { ...input, request_id: requests[1]! })).resolves.toMatchObject({
+      conversationId: "current",
+    });
+  } finally {
+    await db.query("update sandboxes set conversation_ids=array['history'] where id=$1", [input.id]);
+  }
+});
+
 test("uncertain native dispatch is not retried and confirmed stop releases the account for the next queued turn", async () => {
   for (const stopBeforeFailure of [false, true]) {
     await db.exec(
@@ -287,7 +305,7 @@ test("queued public receipts remain usable across server reads, evidence, outcom
           return { handled: true, result: { id: input.id, taskOutcome: args.outcome } };
         }
         if (name === "interrupt" || name === "steer") {
-          expect(args.conversation_id).toBe("history");
+          expect(args).not.toHaveProperty("conversation_id");
           return {
             handled: true,
             result:
@@ -410,12 +428,12 @@ test("queued public receipts remain usable across server reads, evidence, outcom
   };
   expect(status.usage.turns.map((turn) => turn.promptId)).toEqual(expectedIds);
   await callSharedTool(context, "report", { id: input.id, prompt_id: input.request_id, outcome });
-  expect(await callSharedTool(context, "interrupt", { id: input.id, conversation_id: "history" })).toMatchObject({
+  expect(await callSharedTool(context, "interrupt", { id: input.id })).toMatchObject({
     interrupted: true,
   });
-  expect(
-    await callSharedTool(context, "steer", { id: input.id, conversation_id: "history", text: "Continue" }),
-  ).toMatchObject({ promptId: "steer_native" });
+  expect(await callSharedTool(context, "steer", { id: input.id, text: "Continue" })).toMatchObject({
+    promptId: "steer_native",
+  });
 });
 
 test("bounded queue scans advance past full accounts without starving another account", async () => {

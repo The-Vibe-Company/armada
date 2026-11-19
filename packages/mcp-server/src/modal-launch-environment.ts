@@ -146,6 +146,17 @@ export function modalLaunchEnvironment(options: ModalLaunchEnvironmentOptions) {
         },
         userId,
       );
+      console.error(
+        JSON.stringify({
+          event: "github_token_modal_native_bootstrap",
+          sandboxId: publicId,
+          generation: machine.generation,
+          ownerId: userId,
+          harness: stored.harness,
+          status: github.status,
+          accessExpiresAt: github.status === "connected" ? (github.expiresAt?.toISOString() ?? null) : null,
+        }),
+      );
       if (github.status !== "connected")
         throw new VaultError(
           "unavailable",

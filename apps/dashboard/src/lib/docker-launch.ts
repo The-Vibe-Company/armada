@@ -6,6 +6,7 @@ import type {
   LaunchProviderOption,
 } from "@armada/core";
 import { DOCKER_DEFAULT_IMAGE, HARNESSES } from "@armada/core";
+import type { LaunchEnvelope } from "@armada/core/contract";
 import { isUuid } from "./action.ts";
 import type { DockerHost } from "./docker-hosts.ts";
 
@@ -186,10 +187,11 @@ export function dockerLaunchBody(args: DockerLaunchArgs): DockerLaunchRequest {
 }
 
 /** The launched sandbox's id from the normal launch envelope, checked to be a Docker sandbox. */
-export function launchedDockerSandbox(payload: unknown): string | null {
-  if (!isRecord(payload) || !isRecord(payload.sandbox)) return null;
-  const { id, provider } = payload.sandbox;
-  return typeof id === "string" && isUuid(id) && provider === "docker" ? id : null;
+export function launchedDockerSandbox(receipt: {
+  sandbox: Pick<LaunchEnvelope["sandbox"], "id" | "provider">;
+}): string | null {
+  const { id, provider } = receipt.sandbox;
+  return provider === "docker" && isUuid(id) ? id : null;
 }
 
 /** The capabilities that act on an existing sandbox, in the order its page names them. */

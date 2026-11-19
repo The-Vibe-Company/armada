@@ -46,6 +46,15 @@ type OutputReader = Pick<
 /** SDKs may ignore cancellation once a request reached the provider. Callers wait at most until
  * their signal aborts; the outstanding read stays tracked, bounded and fenced from persisting. */
 const OUTSTANDING_MAX = 4;
+const BOAT_RETAINED_CANDIDATE = `${BOAT_RETAINED_OUTPUT_STOP}
+  and not exists (select 1 from public.sandbox_transitions t where t.sandbox_id=sandboxes.id
+    and t.generation=sandboxes.lifecycle_generation and t.code='launch_interrupted')`;
+
+type OutputAttempt = {
+  provider: SandboxPlacementProviderId;
+  status: string;
+  attemptCount: number;
+};
 /** Deadline of one background periodic sample (the shared worker loop never waits for it). */
 const SAMPLE_DEADLINE_MS = 25_000;
 
@@ -66,20 +75,108 @@ export async function recordOutputFailure(
   event: string,
   reason: OutputFailureReason,
 ): Promise<void> {
-  const claim = await sql.query(
+  const claim = await sql.query<OutputAttempt>(
     `update public.sandboxes
      set outputs_failure_reasons=array_append(outputs_failure_reasons,$2)
      where id=$1 and status<>'deleted' and not application_secret_tainted
-     and not ($2 = any(outputs_failure_reasons)) returning id`,
+     and not ($2 = any(outputs_failure_reasons))
+     returning provider, status, outputs_attempt_count as "attemptCount"`,
     [id, reason],
   );
-  if (claim.rows.length) console.warn(JSON.stringify({ event, sandboxId: id, reason }));
+  const attempt = claim.rows[0];
+  if (!attempt) return;
+  if (reason === "output_directory_missing") {
+    console.info(JSON.stringify({ event: "sandbox_output_collection_empty", sandboxId: id, reason, ...attempt }));
+  } else {
+    console.warn(JSON.stringify({ event, sandboxId: id, reason, ...attempt }));
+  }
 }
 
 function failureReason(error: unknown, signal?: AbortSignal): OutputFailureReason {
   if (error instanceof OutputCollectionError) return error.reason;
   if (signal?.aborted) return "output_timeout";
+  if (collectorErrorKind(error) === "output_limit") return "output_limit";
   return "collector_failed";
+}
+
+function collectorErrorKind(error: unknown) {
+  if (error instanceof OutputCollectionError)
+    return error.reason === "output_limit" ? "collector_reported_limit" : "collector_reported_failure";
+  if (error instanceof SyntaxError) return "syntax_error";
+  if (!(error instanceof Error)) return "non_error";
+  if (error.message === "invalid_output" || error.message === "output_limit") return error.message;
+  return "error";
+}
+
+type OutputPhase =
+  | "resolve_reader"
+  | "claim_scan"
+  | "admit_read"
+  | "probe_collector"
+  | "list_entries"
+  | "read_chunk"
+  | "read_snapshot"
+  | "open_retained_snapshot"
+  | "store_transfers"
+  | "publish_snapshot"
+  | "record_failure";
+
+class OutputPhaseError extends Error {
+  constructor(
+    readonly phase: OutputPhase,
+    readonly failure: unknown,
+  ) {
+    super(phase);
+  }
+}
+
+async function outputPhase<T>(phase: OutputPhase, work: () => Promise<T>): Promise<T> {
+  try {
+    return await work();
+  } catch (error) {
+    // Preserve closed collector reasons so callers can still handle missing directories and protocol skew.
+    const reason = failureReason(error);
+    if (error instanceof OutputPhaseError || (reason !== "collector_failed" && reason !== "output_limit")) throw error;
+    throw new OutputPhaseError(phase, error);
+  }
+}
+
+const diagnosticAt = new Map<string, number>();
+
+function reportCaptureFailure(
+  sql: Sql,
+  id: string,
+  path: "live" | "retained" | "final",
+  provider: SandboxPlacementProviderId | undefined,
+  error: unknown,
+  signal?: AbortSignal,
+) {
+  const failure = error instanceof OutputPhaseError ? error.failure : error;
+  const reason = failureReason(failure, signal);
+  if (error instanceof OutputPhaseError && (reason === "collector_failed" || reason === "output_limit")) {
+    // Use a closed vocabulary because exceptions may carry command output, SQL, or credentials.
+    const errorKind = collectorErrorKind(failure);
+    // Existing rows may already have claimed collector_failed. Bound the new diagnostic
+    // independently by provider, path, phase and error kind, never by sandbox or exception text.
+    const key = JSON.stringify([provider, path, error.phase, errorKind]);
+    const now = performance.now();
+    const previous = diagnosticAt.get(key);
+    if (previous === undefined || now - previous >= 60_000) {
+      diagnosticAt.set(key, now);
+      console.warn(
+        JSON.stringify({
+          event: "sandbox_output_collector_diagnostic",
+          sandboxId: id,
+          provider,
+          path,
+          phase: error.phase,
+          errorKind,
+        }),
+      );
+    }
+  }
+  const event = path === "final" ? "sandbox_output_final_capture_failed" : "sandbox_output_collection_failed";
+  return recordOutputFailure(sql, id, event, reason).catch(() => {});
 }
 
 /** Claim the first capability probe across the sample and final paths. A crashed claim
@@ -102,12 +199,12 @@ async function probeOutputCapability(
   ).rows[0];
   if (!claim) return false;
   signal?.throwIfAborted();
-  const ready = await provider.probeOutputs!({ sandboxId: providerId, ...(signal ? { signal } : {}) }).catch(
-    (error: unknown) => {
-      signal?.throwIfAborted();
-      throw error;
-    },
-  );
+  const ready = await outputPhase("probe_collector", () =>
+    provider.probeOutputs!({ sandboxId: providerId, ...(signal ? { signal } : {}) }),
+  ).catch((error: unknown) => {
+    signal?.throwIfAborted();
+    throw error;
+  });
   if (!ready) throw new OutputCollectionError("output_unavailable");
   signal?.throwIfAborted();
   const verified = await sql.query(
@@ -134,9 +231,11 @@ async function collect(
   // against current taint, immediately before dispatch (the same check-then-act fence exec uses).
   // Docker additionally refuses dispatch and redacts replies under the runtime session lock.
   const admitted = (
-    await sql.query<{ outputs_collector_supported: boolean }>(
-      `select outputs_collector_supported from public.sandboxes where id=$1 and ${ELIGIBLE}`,
-      [id],
+    await outputPhase("admit_read", () =>
+      sql.query<{ outputs_collector_supported: boolean }>(
+        `select outputs_collector_supported from public.sandboxes where id=$1 and ${ELIGIBLE}`,
+        [id],
+      ),
     )
   ).rows[0];
   if (!admitted) return;
@@ -145,26 +244,28 @@ async function collect(
   // probe never costs that read. A recorded `collector_unsupported` was already excluded above:
   // a collector known to be unavailable adds no delay to stop.
   if (provider.probeOutputs && !admitted.outputs_collector_supported && !options.final) {
-    if (!(await probeOutputCapability(sql, provider, id, providerId, signal))) return;
+    if (!(await outputPhase("admit_read", () => probeOutputCapability(sql, provider, id, providerId, signal)))) return;
   }
   signal?.throwIfAborted();
   if (provider.listOutputEntries && provider.readOutputChunk) {
     try {
-      await collectOutputTransfers(
-        sql,
-        {
-          ...(provider.outputReadConcurrency !== undefined
-            ? { outputReadConcurrency: provider.outputReadConcurrency }
-            : {}),
-          ...(provider.outputReadBytes !== undefined ? { outputReadBytes: provider.outputReadBytes } : {}),
-          listOutputEntries: provider.listOutputEntries.bind(provider),
-          readOutputChunk: provider.readOutputChunk.bind(provider),
-        },
-        id,
-        { sandboxId: providerId, ...(signal ? { signal } : {}) },
-        scan,
-        key,
-        writes,
+      await outputPhase("store_transfers", () =>
+        collectOutputTransfers(
+          sql,
+          {
+            ...(provider.outputReadConcurrency !== undefined
+              ? { outputReadConcurrency: provider.outputReadConcurrency }
+              : {}),
+            ...(provider.outputReadBytes !== undefined ? { outputReadBytes: provider.outputReadBytes } : {}),
+            listOutputEntries: (request) => outputPhase("list_entries", () => provider.listOutputEntries!(request)),
+            readOutputChunk: (request) => outputPhase("read_chunk", () => provider.readOutputChunk!(request)),
+          },
+          id,
+          { sandboxId: providerId, ...(signal ? { signal } : {}) },
+          scan,
+          key,
+          writes,
+        ),
       );
       return;
     } catch (error) {
@@ -174,7 +275,9 @@ async function collect(
   }
   signal?.throwIfAborted();
   const read = provider.readOutputs
-    ? await provider.readOutputs({ sandboxId: providerId, ...(signal ? { signal } : {}) })
+    ? await outputPhase("read_snapshot", () =>
+        provider.readOutputs!({ sandboxId: providerId, ...(signal ? { signal } : {}) }),
+      )
     : null;
   // Not live or a failed read: keep the previous snapshot; running sandboxes retry after the fence.
   if (!read) throw new OutputCollectionError("output_unavailable");
@@ -277,12 +380,14 @@ export async function captureFinalOutputs(
     signal?.throwIfAborted();
     // Live compute only: an admitted stop keeps 'failed' rows failed while compute may still run.
     const row = (
-      await sql.query<{ provider: SandboxPlacementProviderId; provider_sandbox_id: string; scan: string }>(
-        `update public.sandboxes set outputs_checked_at=clock_timestamp()
-        where id=$1 and (status in ('ready','running','stopping') or (status='failed' and stop_requested_at is not null and stopped_at is null))
+      await outputPhase("claim_scan", () =>
+        sql.query<{ provider: SandboxPlacementProviderId; provider_sandbox_id: string; scan: string }>(
+          `update public.sandboxes set outputs_checked_at=clock_timestamp(), outputs_attempt_count=outputs_attempt_count+1
+        where id=$1 and stopped_at is null and (status in ('ready','running','stopping') or (status='failed' and stop_requested_at is not null))
         and provider_sandbox_id is not null and ${ELIGIBLE}
         returning provider,provider_sandbox_id,outputs_checked_at::text as scan`,
-        [id],
+          [id],
+        ),
       )
     ).rows[0];
     if (!row) return;
@@ -292,10 +397,17 @@ export async function captureFinalOutputs(
       throw new OutputCollectionError("output_busy");
     providerKind = row.provider;
     try {
-      await collect(sql, provider, id, row.provider_sandbox_id, row.scan, key, { signal, final: true });
+      await outputPhase("publish_snapshot", () =>
+        collect(sql, provider, id, row.provider_sandbox_id, row.scan, key, { signal, final: true }),
+      );
     } catch (error) {
-      if (error instanceof OutputCollectionError && error.reason === "collector_unsupported") {
-        await recordOutputFailure(sql, id, "sandbox_output_final_capture_failed", error.reason);
+      if (
+        error instanceof OutputCollectionError &&
+        (error.reason === "collector_unsupported" || error.reason === "output_directory_missing")
+      ) {
+        await outputPhase("record_failure", () =>
+          recordOutputFailure(sql, id, "sandbox_output_final_capture_failed", error.reason),
+        );
         return;
       }
       throw error;
@@ -310,17 +422,15 @@ export async function captureFinalOutputs(
       finalLate.set(work, providerKind);
       void work.catch(() => {}).finally(() => finalLate.delete(work));
     }
-    void recordOutputFailure(sql, id, "sandbox_output_final_capture_failed", failureReason(error, signal)).catch(
-      () => {},
-    );
-    throw error;
+    void reportCaptureFailure(sql, id, "final", providerKind, error, signal);
+    throw error instanceof OutputPhaseError ? error.failure : error;
   }
 }
 
 async function collectRetained(
   sql: Sql,
   provider: OutputReader,
-  row: { id: string; provider_sandbox_id: string; scan: string },
+  row: OutputAttempt & { id: string; provider_sandbox_id: string; scan: string },
   generation: string,
   key: string,
   signal: AbortSignal,
@@ -329,15 +439,35 @@ async function collectRetained(
   const fence = `id=$1 and outputs_checked_at=$2::timestamptz and lifecycle_generation=$3::bigint
     and provider_sandbox_id=$4 and not application_secret_tainted and ${BOAT_RETAINED_OUTPUT_STOP}`;
   const args = [row.id, row.scan, generation, row.provider_sandbox_id];
-  if (!(await sql.query(`select 1 from public.sandboxes where ${fence}`, args)).rows.length) return;
+  const admitted = await outputPhase("admit_read", () =>
+    sql.query(`select 1 from public.sandboxes where ${fence}`, args),
+  );
+  if (!admitted.rows.length) return;
   signal.throwIfAborted();
-  const snapshot = await provider.openRetainedOutputs?.({ sandboxId: row.provider_sandbox_id, signal });
+  const snapshot = await outputPhase("open_retained_snapshot", async () =>
+    provider.openRetainedOutputs?.({ sandboxId: row.provider_sandbox_id, signal }),
+  );
   signal.throwIfAborted();
+  if (snapshot === "pending") return;
   if (snapshot === "gone") {
-    const write = sql.query(`update public.sandboxes set outputs_retained_generation=$3::bigint where ${fence}`, args);
+    const write = sql.query(
+      `update public.sandboxes set outputs_retained_generation=$3::bigint where ${fence} returning id`,
+      args,
+    );
     writes.add(write);
     try {
-      await write;
+      if ((await write).rows.length) {
+        console.info(
+          JSON.stringify({
+            event: "sandbox_output_collection_empty",
+            sandboxId: row.id,
+            reason: "retained_outputs_absent",
+            provider: row.provider,
+            status: row.status,
+            attemptCount: row.attemptCount,
+          }),
+        );
+      }
     } finally {
       writes.delete(write);
     }
@@ -349,7 +479,7 @@ async function collectRetained(
     {
       outputReadBytes: OUTPUT_MAX_READ_BYTES,
       listOutputEntries: async () => snapshot.entries,
-      readOutputChunk: async ({ chunk }) => snapshot.readChunk(chunk),
+      readOutputChunk: ({ chunk }) => outputPhase("read_chunk", async () => snapshot.readChunk(chunk)),
     },
     row.id,
     { sandboxId: row.provider_sandbox_id, signal },
@@ -384,22 +514,23 @@ export function createSandboxOutputs(
         (kind) => outstanding.filter(({ provider }) => provider === kind).length >= OUTSTANDING_MAX,
       );
       const row = (
-        await sql.query<{
-          id: string;
-          provider: SandboxPlacementProviderId;
-          provider_sandbox_id: string;
-          scan: string;
-          retained_generation: string | null;
-        }>(
-          `update public.sandboxes set outputs_checked_at=clock_timestamp()
+        await sql.query<
+          OutputAttempt & {
+            id: string;
+            provider_sandbox_id: string;
+            scan: string;
+            retained_generation: string | null;
+          }
+        >(
+          `update public.sandboxes set outputs_checked_at=clock_timestamp(), outputs_attempt_count=outputs_attempt_count+1
         where id=(select id from public.sandboxes where not application_secret_tainted and provider_sandbox_id is not null
         and provider::text <> all($1::text[]) and (
-          (${ELIGIBLE} and status in ('running','ready')
+          (${ELIGIBLE} and status in ('running','ready') and stopped_at is null
             and (outputs_checked_at is null or outputs_checked_at<now()-interval '30 seconds'))
-          or ($2::boolean and ${BOAT_RETAINED_OUTPUT_STOP} and (outputs_checked_at is null or outputs_checked_at<now()-interval '2 minutes'))
+          or ($2::boolean and ${BOAT_RETAINED_CANDIDATE} and (outputs_checked_at is null or outputs_checked_at<now()-interval '2 minutes'))
         )
         order by outputs_checked_at nulls first for update skip locked limit 1)
-        returning id,provider::text,provider_sandbox_id,outputs_checked_at::text as scan,
+        returning id,provider::text,status,outputs_attempt_count as "attemptCount",provider_sandbox_id,outputs_checked_at::text as scan,
           case when ${BOAT_RETAINED_OUTPUT_STOP} then lifecycle_generation::text end as retained_generation`,
           [saturated, !outstanding.some(({ retained }) => retained)],
         )
@@ -410,18 +541,22 @@ export function createSandboxOutputs(
       // OUTSTANDING_MAX live samples share the worker, and a late one never persists.
       const deadline = AbortSignal.any([signal, AbortSignal.timeout(SAMPLE_DEADLINE_MS)]);
       if (deadline.aborted) return false;
-      const reader = row.provider === "docker" ? Promise.resolve(docker?.(row.id) ?? {}) : providerFor(row.id);
+      const generation = row.retained_generation;
+      const path = generation == null ? "live" : "retained";
+      const reader = outputPhase("resolve_reader", async () =>
+        row.provider === "docker" ? (docker?.(row.id) ?? {}) : providerFor(row.id),
+      );
       const work = reader
         .then((provider) =>
-          row.retained_generation != null
-            ? collectRetained(sql, provider, row, row.retained_generation, key, deadline, writes)
-            : collect(sql, provider, row.id, row.provider_sandbox_id, row.scan, key, { signal: deadline, writes }),
+          generation != null
+            ? outputPhase("store_transfers", () =>
+                collectRetained(sql, provider, row, generation, key, deadline, writes),
+              )
+            : outputPhase("publish_snapshot", () =>
+                collect(sql, provider, row.id, row.provider_sandbox_id, row.scan, key, { signal: deadline, writes }),
+              ),
         )
-        .catch((error: unknown) =>
-          recordOutputFailure(sql, row.id, "sandbox_output_collection_failed", failureReason(error, deadline)).catch(
-            () => {},
-          ),
-        )
+        .catch((error: unknown) => reportCaptureFailure(sql, row.id, path, row.provider, error, deadline))
         .then(() => true);
       pending.set(work, { deadline, provider: row.provider, retained: row.retained_generation != null });
       void work.then(() => pending.delete(work));

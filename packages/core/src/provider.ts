@@ -24,7 +24,20 @@ export interface GitHubRuntimeConfiguration {
   identity?: { name: string; email: string };
 }
 
+export interface ProviderInventoryMachine {
+  /** Immutable physical machine identity within this inventory source. */
+  machineId: string;
+  /** Provider-scoped logical sandbox identity, when available. */
+  sandboxId?: string;
+  /** Physical incarnation, independent of Armada's lifecycle activity counter. */
+  generation?: string;
+  deploymentId: string;
+  createdAt: Date;
+}
+
 export interface Provider {
+  /** Physical inventory belonging to this source's bound deployment and provider account. */
+  listInventory?(signal?: AbortSignal): AsyncIterable<ProviderInventoryMachine>;
   /** Private GitHub-only configuration, never exec argv or a public command receipt. */
   configureGitHub?(request: {
     sandboxId: string;
@@ -45,13 +58,15 @@ export interface Provider {
     signal?: AbortSignal;
   }): Promise<import("./sandbox-output-limits.ts").OutputEntry[] | null>;
   /** Fixed read of the declared directory of one retained stop. Never starts compute.
-   * Null is retryable. "gone" means the provider definitively has no readable retained workspace. */
+   * Null indicates a retryable failure. "pending" defers while the stop or snapshot is in progress.
+   * "gone" means no readable retained outputs for this stop. */
   openRetainedOutputs?(request: { sandboxId: string; signal: AbortSignal }): Promise<
     | {
         entries: import("./sandbox-output-limits.ts").OutputEntry[];
         readChunk(chunk: import("./sandbox-output-limits.ts").OutputChunkRequest): Uint8Array | null;
       }
     | "gone"
+    | "pending"
     | null
   >;
   /** Plaintext bytes allowed by this transport in one read. */
@@ -259,6 +274,7 @@ export interface SandboxInfo {
   labels: Readonly<Record<string, string>>;
   createdAt?: Date;
   stoppedAt?: Date;
+  retainedSnapshot?: "pending" | "unconfirmed" | "usable";
   /** SDK-confirmed physical exit, without claiming a fresh resumable checkpoint. */
   physicalExitConfirmed?: boolean;
   /** Closed ordinary-stop receipt: current disk was not saved. */

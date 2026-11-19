@@ -2,6 +2,7 @@ import {
   API_FAILURE_STATUS,
   CONTROL_BODY_MAX_BYTES,
   controlBodyMaxBytes,
+  MACHINE_SIZES,
   OUTPUT_DIRECTORY,
   OUTPUT_MAX_FILE_BYTES,
   OUTPUT_MAX_FILES,
@@ -10,60 +11,82 @@ import {
   VERSION,
   vaultControlRoute,
 } from "@armada/core";
+import { launch, operations, templateLaunchResponse } from "@armada/core/contract";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import type { z } from "zod";
-import { CONTROL_TOOL_ROUTES } from "./control-tool-routes.ts";
+import { z } from "zod";
 import { DOCKER_SEND_REQUEST } from "./docker-send-request-schema.ts";
-import { LAUNCH_REQUEST_VARIANTS } from "./launch-request-schema.ts";
+import { GITHUB_REST_CONTRACTS, isGitHubRestControl } from "./github-rest-controls.ts";
 import {
-  GOLDEN_LIST_RESPONSE,
-  LAUNCH_OPTIONS_RESPONSE,
-  REST_LAUNCH_RESPONSE,
-  REST_LOGS_RESPONSE,
-  requestJsonSchema,
-  responseJsonSchema,
-  TEMPLATE_LAUNCH_RESPONSE,
-} from "./launch-response-schemas.ts";
+  GOLDEN_ADOPTION_REQUEST,
+  GOLDEN_ADOPTION_RESPONSE,
+  GOLDEN_CAPABILITIES_REQUEST,
+  GOLDEN_CAPABILITIES_RESPONSE,
+} from "./golden-rest-schemas.ts";
+import { GOLDEN_LIST_RESPONSE, requestJsonSchema, responseJsonSchema } from "./launch-response-schemas.ts";
 import { PUBLISHED_REST_GET_ROUTES, PUBLISHED_REST_ROUTES } from "./public-rest-routes.ts";
+import { deleteSandboxAliasContract } from "./sandbox-rest-controls.ts";
 import { DRAIN_REFUSAL } from "./server-request-drain.ts";
-import { createArmadaServer, type ToolContext } from "./tools.ts";
+import { createRestToolServer, type ToolContext } from "./tools.ts";
 
-/** MCP input names that the REST adapters (`control.ts`, `control-logs.ts`) accept under another name. */
-export const REST_FIELD_NAMES: Readonly<Record<string, Readonly<Record<string, string>>>> = {
-  "sandbox/launch": { ttl_seconds: "ttlSeconds", reasoning_effort: "reasoningEffort" },
-  "sandbox/extend": { ttl_seconds: "ttlSeconds" },
-  "logs/read": { since_cursor: "cursor", conversation_id: "conversationId" },
-};
 /** REST routes whose contract is the named MCP tool, beyond the dispatcher's shared-tool table. */
 const REST_TOOL_ROUTES: Readonly<Record<string, string>> = {
-  ...CONTROL_TOOL_ROUTES,
-  "golden/list": "golden_list",
   "sandbox/launch": "launch",
-  "templates/launch": "template_launch",
-  "logs/read": "logs",
 };
 /** HTTP 200 bodies that differ from the MCP tool output (or that have no tool). */
 const REST_RESPONSES: Readonly<Record<string, z.ZodType>> = {
-  "launch/options": LAUNCH_OPTIONS_RESPONSE,
   "golden/list": GOLDEN_LIST_RESPONSE,
-  "sandbox/launch": REST_LAUNCH_RESPONSE,
-  "templates/launch": TEMPLATE_LAUNCH_RESPONSE,
-  "logs/read": REST_LOGS_RESPONSE,
+  "sandbox/delete": deleteSandboxAliasContract.output,
+  "golden/adopt": GOLDEN_ADOPTION_RESPONSE,
+  "golden/capabilities": GOLDEN_CAPABILITIES_RESPONSE,
+  "sandbox/launch": launch.output,
+  "templates/launch": templateLaunchResponse,
 };
 /** Handled directly by the REST dispatcher, not through an MCP tool. */
 const REST_ONLY: Readonly<
-  Record<string, { description: string; input: { type: "object"; properties: Record<string, object> } }>
+  Record<string, { description: string; input: { properties?: Record<string, unknown>; [key: string]: unknown } }>
 > = {
-  "launch/options": {
+  "sandbox/delete": {
+    description: deleteSandboxAliasContract.description,
+    input: requestJsonSchema(deleteSandboxAliasContract.input.extend({ org: z.string().optional() })),
+  },
+  "golden/list": {
     description:
-      "What a launch can ask for on this server: harnesses with their models and credential kinds, machine sizes, TTL limits, and each provider's launch sources and capabilities. Read it before offering launch choices.",
-    input: { type: "object", properties: {} },
+      "The goldens you can launch from: your orgs', and your own private ones. A golden without a providerSnapshotId cannot be launched yet. The same name may exist on several providers.",
+    input: requestJsonSchema(z.object({ org: z.string().optional() })),
+  },
+  "golden/adopt": {
+    description:
+      "Dry-run first: select an existing visible golden by id. Confirm with the returned receipt within ten minutes. Preserves all rows and ACLs.",
+    input: requestJsonSchema(GOLDEN_ADOPTION_REQUEST),
+  },
+  "golden/capabilities": {
+    description:
+      "Reads the selected provider adapter's golden capacity without creating an App or resource. Null is unknown/unbounded, not a workspace quota.",
+    input: requestJsonSchema(GOLDEN_CAPABILITIES_REQUEST),
+  },
+  "templates/launch": {
+    description:
+      "Launch an immutable template revision. requestKey is required: same key/body returns the recorded request and never allocates twice. Readable variables are NOT secrets; no secret bindings or authority-enlarging overrides.",
+    input: requestJsonSchema(
+      z.strictObject({
+        org: z.string().uuid(),
+        id: z.string().uuid(),
+        revision: z.number().int().positive().optional(),
+        requestKey: z.string(),
+        prompt: z.string().optional(),
+        ttlSeconds: z.number().int().positive().optional(),
+        size: z.enum(MACHINE_SIZES).optional(),
+        repo: z.string().optional(),
+        skills: z.array(z.string()).max(20).optional(),
+        skipSkillDefaults: z.boolean().optional(),
+        stopWhenWorkMerged: z.boolean().optional(),
+      }),
+    ),
   },
 };
-/** Fields a REST handler accepts beyond its MCP tool's input. */
+/** Additional request fields published for REST. */
 const REST_EXTRA_FIELDS: Readonly<Record<string, Readonly<Record<string, object>>>> = {
-  "logs/read": { follow: { type: "boolean", description: "Follow events within the bounded HTTP request." } },
   "templates/launch": {
     modelAccount: {
       type: "object",
@@ -94,21 +117,6 @@ function boundByBody(schema: Record<string, unknown>, field: string, maxBytes: n
   property.maxLength = Math.min(typeof property.maxLength === "number" ? property.maxLength : maxBytes, maxBytes);
   if (description) property.description = description;
 }
-/** MCP tool names in shared prose, as the REST routes that serve them. */
-const REST_PROSE_NAMES: Readonly<Record<string, string>> = { golden_list: "golden/list" };
-/** Rewrites every string (prose and `required` entries); object keys are renamed by the caller. */
-function restNames<T>(value: T, rename: Readonly<Record<string, string>>): T {
-  if (typeof value === "string")
-    return Object.entries(rename).reduce(
-      (text, [from, to]) => text.replace(new RegExp(`\\b${from}\\b`, "g"), to),
-      value as string,
-    ) as T;
-  if (Array.isArray(value)) return value.map((item) => restNames(item, rename)) as T;
-  if (value && typeof value === "object")
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, restNames(item, rename)])) as T;
-  return value;
-}
-
 /** Failures of the outputs routes: the server's bare code, or the dashboard endpoint's typed failure. */
 const OUTPUT_FAILURE = {
   "application/json": {
@@ -265,7 +273,7 @@ const OUTPUT_OPERATIONS: Record<(typeof PUBLISHED_REST_GET_ROUTES)[number], obje
  */
 export async function generateOpenApi() {
   const context = { caller: { userId: "", orgs: [] }, data: {} } as unknown as ToolContext;
-  const server = createArmadaServer(context, VERSION);
+  const server = createRestToolServer(context, VERSION);
   const client = new Client({ name: "armada-openapi", version: VERSION });
   const [a, b] = InMemoryTransport.createLinkedPair();
   try {
@@ -274,37 +282,37 @@ export async function generateOpenApi() {
     const { tools } = await client.listTools();
     const paths: Record<string, unknown> = {};
     for (const route of PUBLISHED_REST_ROUTES) {
-      const restOnly = REST_ONLY[route];
+      const github = isGitHubRestControl(route) ? GITHUB_REST_CONTRACTS[route] : undefined;
+      const sandbox = Object.values(operations).find((entry) => entry.route.path === `/api/v1/${route}`);
+      const restOnly: (typeof REST_ONLY)[string] | undefined = github
+        ? {
+            description: github.description,
+            input: requestJsonSchema(github.input.extend({ org: z.string().optional() })),
+          }
+        : sandbox
+          ? { description: sandbox.description, input: requestJsonSchema(sandbox.input.body) }
+          : REST_ONLY[route];
       const tool = tools.find((tool) => tool.name === REST_TOOL_ROUTES[route]);
       if (!tool && !restOnly) throw new Error(`No registered contract for ${route}`);
-      const rename = { ...REST_PROSE_NAMES, ...REST_FIELD_NAMES[route] };
-      // REST handlers read their own field names (an unknown name is ignored, not
-      // refused), so schema keys, required lists and prose must all use them.
-      const input = restNames(structuredClone(tool?.inputSchema ?? restOnly!.input), rename);
-      let description = restNames(tool?.description ?? restOnly!.description, rename);
-      for (const [from, to] of Object.entries(rename)) {
-        if (input.properties?.[from]) {
-          input.properties[to] = input.properties[from];
-          delete input.properties[from];
-        }
-      }
+      const input = structuredClone(tool?.inputSchema ?? restOnly!.input);
+      let description = tool?.description ?? restOnly!.description;
       if (REST_EXTRA_FIELDS[route]) input.properties = { ...input.properties, ...REST_EXTRA_FIELDS[route] };
       // REST selects org scope before calling shared tools.
-      if (tool && route !== "templates/launch") input.properties = { ...input.properties, org: { type: "string" } };
+      if (tool) input.properties = { ...input.properties, org: { type: "string" } };
       let request: object = input;
       const maxBodyBytes = controlBodyMaxBytes(route);
       // The server's own refusal of a body over maxBodyBytes: the vault reader's opaque 400, or 413.
       const oversizedStatus = vaultControlRoute(route) ? 400 : 413;
       if (route === "sandbox/launch") {
         request = {
-          oneOf: LAUNCH_REQUEST_VARIANTS.map((variant) => {
+          oneOf: launch.input.body.options.map((variant) => {
             const { $schema: _dialect, ...schema } = requestJsonSchema(variant);
             boundByBody(schema, "prompt", maxBodyBytes);
             return schema;
           }),
         };
         description +=
-          ' Docker uses the other request variants: provider "docker" with no golden, either on a hostId (optionally with repos) or from a snapshotId (no repos). launch/options reports each provider\'s launch sources.';
+          ' Docker uses the other request variants: provider "docker" with no golden, either on a hostId (optionally with repos) or from a snapshotId (no repos). launch/options reports each provider\'s launch sources. Explicit pinned Modal template requests return a durable template launch receipt.';
       }
       if (route === "sandbox/send") {
         // One public path, two admissions chosen by the sandbox's provider: Docker
@@ -349,9 +357,10 @@ export async function generateOpenApi() {
               description: "Success",
               content: {
                 "application/json": {
-                  schema: REST_RESPONSES[route]
-                    ? responseJsonSchema(REST_RESPONSES[route])
-                    : (tool?.outputSchema ?? {}),
+                  schema:
+                    github || sandbox || REST_RESPONSES[route]
+                      ? responseJsonSchema(github?.output ?? sandbox?.output ?? REST_RESPONSES[route]!)
+                      : (tool?.outputSchema ?? {}),
                 },
               },
             },
@@ -399,7 +408,7 @@ export async function generateOpenApi() {
         title: "Armada shared control API",
         version: VERSION,
         description:
-          "Generated integration REST contracts. Includes SDK operations, launch discovery (launch/options, golden/list) and shared-tool routes. sandbox/launch accepts a golden launch or a Docker launch. Administrative and provider-specific extensions are outside this description. Files use sandbox/exec while compute runs; declared output snapshots are listed and downloaded with GET sandboxes/{id}/outputs, also after stop. This description does not assert provider availability.",
+          "Generated integration REST contracts. Includes SDK operations, launch discovery (launch/options, golden/list) and shared-tool routes. sandbox/launch accepts golden, Docker and explicit pinned Modal template launches. Administrative and provider-specific extensions are outside this description. Files use sandbox/exec while compute runs; declared output snapshots are listed and downloaded with GET sandboxes/{id}/outputs, also after stop. This description does not assert provider availability.",
       },
       paths,
       components: {

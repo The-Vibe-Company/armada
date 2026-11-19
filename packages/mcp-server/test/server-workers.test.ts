@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { createBoatProvider } from "@armada/provider-boat";
 
-import { sandbox } from "../../provider-boat/test/support.ts";
+import { retainedSandbox } from "../../provider-boat/test/support.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { startServerWorkers } from "../src/server-workers.ts";
 import { rowOnlyConnection } from "./row-only-database.ts";
@@ -56,9 +56,8 @@ test("server lifecycle drains multiple rows while independent work is pending; s
     fetch: (async (input: Request | string | URL, _init?: RequestInit) =>
       Response.json({
         ok: true,
-        sandbox: sandbox({
+        sandbox: retainedSandbox({
           id: new URL(input instanceof Request ? input.url : String(input)).pathname.split("/").at(-1),
-          state: "archived",
         }),
       })) as typeof fetch,
   });
@@ -150,7 +149,7 @@ test("cancelled SDK observation stays tracked but cannot starve the next item or
         entered.resolve();
         return response.promise;
       }
-      return Response.json({ ok: true, sandbox: sandbox({ id: providerId, state: "archived" }) });
+      return Response.json({ ok: true, sandbox: retainedSandbox({ id: providerId }) });
     }) as typeof fetch,
   });
   const lifecycle = createSandboxLifecycle(sql, async () => provider);
@@ -178,12 +177,12 @@ test("cancelled SDK observation stays tracked but cannot starve the next item or
     });
     await Promise.resolve();
     expect(drained).toBe(false);
-    response.resolve(Response.json({ ok: true, sandbox: sandbox({ id: firstProviderId, state: "archived" }) }));
+    response.resolve(Response.json({ ok: true, sandbox: retainedSandbox({ id: firstProviderId }) }));
     await done;
     expect((await read(ids[0]!))?.status).toBe("running");
     expect(requests).toBe(2);
   } finally {
-    response.resolve(Response.json({ ok: true, sandbox: sandbox({ id: firstProviderId, state: "archived" }) }));
+    response.resolve(Response.json({ ok: true, sandbox: retainedSandbox({ id: firstProviderId }) }));
     await lifecycle.drain();
   }
 });

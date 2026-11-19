@@ -9,7 +9,12 @@ import { GOLDEN_SELECT, type GoldenRow, mapGoldenRow, type Sql } from "./golden-
 import { isHarness } from "./harnesses.ts";
 import { type LaunchOptions, type LaunchStores, launchSandbox } from "./launch.ts";
 import { LaunchError } from "./launch-error.ts";
-import { assertLaunchSecretBindings, resolveLaunchSecrets } from "./launch-secrets.ts";
+import {
+  assertLaunchSecretBindings,
+  LaunchSecretRefusal,
+  RuntimeLaunchSecretRefusal,
+  resolveLaunchSecrets,
+} from "./launch-secrets.ts";
 import { resolveLaunchVariables } from "./launch-variables.ts";
 import { parseMachineSize } from "./machine-size.ts";
 import { MAX_MCP_CONNECTIONS } from "./mcp-launch-selection.ts";
@@ -29,7 +34,7 @@ import { VaultError } from "./vault-error.ts";
 export interface TemplateRuntime {
   stores: LaunchStores;
   provider(golden: GoldenRecord): Promise<Provider>;
-  /** Trusted fresh-admission policy; historical receipts never revalidate mutable template sources. */
+  /** Validate the selected definition at admission and the frozen definition on replay. */
   validateDefinition?(definition: TemplateDefinition): void | Promise<void>;
   options?: LaunchOptions;
   launchDocker?(
@@ -545,7 +550,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
         )
       ).rows[0];
     });
-    if (existing) return replay(existing, bodyDigest);
+    if (existing) return replay(existing, bodyDigest, runtime);
     const selection = await transaction(async (tx) => {
       const a = await member(tx, actor, org);
       const h = await header(tx, a, id(input.id));
@@ -662,7 +667,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       claimed = true;
       return result;
     });
-    if (!claimed) return replay(request, bodyDigest);
+    if (!claimed) return replay(request, bodyDigest, runtime);
     const m = request.manifest;
     let allocating = false;
     let fenceConsumed = false;
@@ -771,7 +776,6 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
                 {
                   ...runtime.options,
                   credentialVersion: m.account.version,
-                  nativeSecretBindings: Boolean(def.secrets?.length),
                   newId: () => request.sandbox_id,
                   beforeFork: async (sandboxId) => {
                     await revalidate(actor, org, m);
@@ -837,10 +841,12 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       if (!fenceConsumed) await releaseFence();
       // Once dispatch might have occurred, no timeout/exception proves absence. Never resend.
       const refused = error instanceof ProviderError && isNonMutatingProviderRefusal(error);
-      const state = allocating && !refused ? "reconciling" : "failed";
+      const secretRefusal = error instanceof RuntimeLaunchSecretRefusal ? error.refusal : undefined;
+      const state = allocating && !refused && !secretRefusal ? "reconciling" : "failed";
       const safeReason = refused
         ? error.code
-        : (refusalReason(error) ??
+        : (secretRefusal?.reason ??
+          refusalReason(error) ??
           (error instanceof VaultError || error instanceof GoldenError || error instanceof ProviderRoutingError
             ? error.code
             : undefined) ??
@@ -868,6 +874,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
         id: request.sandbox_id,
         reason: safeReason,
         ...(message ? { message } : {}),
+        ...(secretRefusal ? { code: secretRefusal.code } : {}),
         manifest: m,
       };
       await sql.query(
@@ -879,12 +886,26 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
           state === "failed" || safeReason.startsWith("skillpack_") ? JSON.stringify(output) : null,
         ],
       );
+      if (secretRefusal) throw secretRefusal;
       return output;
     }
   }
-  async function replay(row: RequestRow, bodyDigest: string): Promise<Record<string, unknown>> {
+  async function replay(
+    row: RequestRow,
+    bodyDigest: string,
+    runtime: TemplateRuntime,
+  ): Promise<Record<string, unknown>> {
     if (row.digest !== bodyDigest)
       throw new VaultError("conflict", "Request key already used with a different request.");
+    // Validate explicit selectors against the frozen definition without reading a live template
+    // or changing historical request digests.
+    await runtime.validateDefinition?.(row.manifest.definition);
+    if (
+      row.state === "failed" &&
+      row.result?.code === "conflict" &&
+      (row.reason === "secret_unavailable" || row.reason === "secret_version_changed")
+    )
+      throw new LaunchSecretRefusal(row.reason);
     const output = row.result ?? {
       requestId: row.id,
       state: row.state,
@@ -960,6 +981,21 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       variables: await resolveEnvironment(actor, m),
     });
   }
-  return { command, prepare };
+  async function validateBindingInTransaction(tx: Sql, actor: ApplicationVaultActor, org: string, templateId: string) {
+    const a = await member(tx, actor, org);
+    if (a.role !== "admin") throw new VaultError("forbidden", "Organization admin access is required.");
+    const h = await header(tx, a, templateId);
+    const { definition } = await revision(tx, h);
+    const { host } = await references(tx, a, h.scope, definition);
+    if (host) {
+      const { rows } = await tx.query(
+        "select 1 from public.members where org_id = $1 and user_id = $2 for share nowait",
+        [org, host.ownerId],
+      );
+      if (!rows.length) unavailable("environment_unavailable");
+    }
+    return { harness: definition.harness, modelAccount: definition.modelAccount };
+  }
+  return { command, prepare, validateBindingInTransaction };
 }
 export type TemplateService = ReturnType<typeof createTemplateService>;

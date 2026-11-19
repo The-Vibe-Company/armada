@@ -1,10 +1,14 @@
 import type { GoldenBuildJobs } from "@armada/core/server";
 import { startGoldenWorker } from "./golden-worker.ts";
+import { JOBS_WAKE } from "./jobs/store.ts";
+import { runtimeWakes, waitForTimeout } from "./wake-bus.ts";
 
 export interface ServerLifecycleLane {
   reconcileOne(signal: AbortSignal): Promise<boolean>;
   drain(): Promise<void>;
   stopAdmission?(): void;
+  /** Isolated sweeps can bound provider calls individually and run until shutdown. */
+  isolatedSweep?: true;
 }
 
 /** Independent tracked lanes: a golden build can legitimately take an hour. */
@@ -20,12 +24,14 @@ export function startServerWorkers(
   const goldenWorker = startGoldenWorker(goldens, log);
   const lanes = [lifecycle, ...("reconcileOne" in managed ? [managed] : managed)];
   const shutdown = new AbortController();
-  async function runLanes(group: readonly ServerLifecycleLane[]) {
+  async function runLanes(group: readonly ServerLifecycleLane[], timebox = true, wakes = false) {
+    const wake = wakes ? runtimeWakes.watch(JOBS_WAKE) : undefined;
     let nextLane = 0;
     while (!shutdown.signal.aborted) {
-      const item = new AbortController();
-      const timeout = setTimeout(() => item.abort(), 30_000);
-      timeout.unref();
+      const item = timebox ? new AbortController() : undefined;
+      const timeout = item ? setTimeout(() => item.abort(), 30_000) : undefined;
+      timeout?.unref();
+      const signal = item ? AbortSignal.any([shutdown.signal, item.signal]) : shutdown.signal;
       try {
         // Drain a ready backlog without waiting for another build or an idle tick.
         let processed = false;
@@ -33,7 +39,7 @@ export function startServerWorkers(
           const lane = group[nextLane];
           nextLane = (nextLane + 1) % group.length;
           if (!lane) throw new Error("Lifecycle scheduling lane unavailable.");
-          if (await lane.reconcileOne(AbortSignal.any([shutdown.signal, item.signal]))) {
+          if (await lane.reconcileOne(signal)) {
             processed = true;
             break;
           }
@@ -44,24 +50,16 @@ export function startServerWorkers(
       } finally {
         clearTimeout(timeout);
       }
-      if (!shutdown.signal.aborted)
-        await new Promise<void>((resolve) => {
-          const idleTimer = setTimeout(finish, 1000);
-          idleTimer.unref();
-          function finish() {
-            clearTimeout(idleTimer);
-            shutdown.signal.removeEventListener("abort", finish);
-            resolve();
-          }
-          shutdown.signal.addEventListener("abort", finish, { once: true });
-        });
+      if (wake) await wake.wait(shutdown.signal, 1000, waitForTimeout);
+      else await waitForTimeout(1000, shutdown.signal);
     }
+    wake?.close();
     // SDKs may not support cancellation after a request has reached the provider. Keep
     // those operations tracked through shutdown; cancellation forbids subsequent actions.
     await Promise.all(group.map((lane) => lane.drain()));
   }
-  const lifecycleDone = runLanes(lanes);
-  const isolatedDone = Promise.all(isolated.map((lane) => runLanes([lane])));
+  const lifecycleDone = runLanes(lanes, true, true);
+  const isolatedDone = Promise.all(isolated.map((lane) => runLanes([lane], !lane.isolatedSweep)));
   const retirementPending = new Set<Promise<boolean>>();
   const retirementDone = (async () => {
     while (retirements && !shutdown.signal.aborted) {

@@ -17,7 +17,7 @@ observation, never interchangeable with this enum.
 | Stop (`tools.ts`, `sandbox-lifecycle.ts`) | Reserve stop, attempt bounded best-effort preservation, request provider stop; stopping is not proof of physical exit. |
 | Reconcile (`sandbox-lifecycle.ts`) | Lease and generation-fence observations; stop on explicit request, interrupted starting, or expiry. Confirmed terminal provider state records stopped; failed launches retain failed and their diagnostic. Physical exit without verified recovery records failed. |
 | Resume (`tools.ts`) | New activity/generation fences stale observations; restore retained compute and initialization before readiness. Not a fresh golden launch. |
-| Delete (`tools.ts`, `data.ts`) | Owner/current org admin, terminal unmanaged row only; provider deletion must be confirmed before metadata/archives are deleted. |
+| Delete (`sandbox-rest-controls.ts`, `data.ts`) | Owner/current org admin, terminal unmanaged row only; provider deletion must be confirmed before metadata/archives are deleted. |
 
 The reconciler retries unavailable observations without inventing deletion.
 A failed row with `stopped_at` is already terminal for reconciliation; a failed

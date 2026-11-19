@@ -12,7 +12,7 @@ export function boatRuntimeLaunch(
     modelAuth?: RuntimeConfigurationInput["modelAuth"];
   },
 ): NonNullable<LaunchOptions["boatRuntime"]> {
-  const startRuntime = createRuntimeLaunch(options);
+  const startRuntime = createRuntimeLaunch(options, "boat");
   const manifest = structuredClone(options.manifest);
   const { architecture, modelAuth } = options;
   return {

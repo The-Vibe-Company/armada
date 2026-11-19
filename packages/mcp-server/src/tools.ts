@@ -1,862 +1,129 @@
+import { sandboxOperations } from "@armada/core/contract";
 import {
-  GITHUB_REFRESH_MODAL_NATIVE,
-  GitHubHydrationError,
-  goldenForSettings,
-  goldenResponse,
-  idlePauseMessage,
-  isExternalRef,
-  LAUNCH_STAGES,
-  launchFailureHelp,
-  launchResponse,
-  MACHINE_SIZES,
-  MAX_MCP_CONNECTIONS,
-  parseMachineSizePolicy,
-  providerRateLimitDetails,
-  SANDBOX_PLACEMENT_PROVIDERS,
-  USAGE_UNAVAILABLE_CODES,
-} from "@armada/core";
-import {
-  type ApplicationVault,
-  assertGoldenMutation,
-  connectGolden,
-  DEFAULT_LAUNCH_TTL_SECONDS,
-  EncryptionKeyError,
-  type GoldenAdoption,
-  type GoldenBuildJobs,
-  GoldenError,
-  type GoldenRecord,
-  goldenForLaunch,
-  HARNESSES,
-  isNonMutatingProviderRefusal,
-  type LaunchCredentialResolver,
   LaunchError,
   type LaunchOptions,
   type LaunchStores,
-  launchSandbox,
-  MAX_LAUNCH_TTL_SECONDS,
-  MAX_SANDBOX_EXTENSION_TTL_SECONDS,
   type MemberRole,
-  MODEL_CATALOG,
-  PROVIDER_LIMITS,
   type Provider,
   ProviderError,
-  ProviderRoutingError,
   type ProviderTarget,
   redact,
   resolveModelChoice,
-  resolveRepositoryDir,
-  SANDBOX_PROVIDERS,
   type SandboxProviderId,
   type SandboxStatus,
   type SkillDefaultsService,
-  scanGoldenSandbox,
-  snapshotGolden,
-  type TemplateService,
   VaultError,
-  type Visibility,
 } from "@armada/core/server";
+import { BoatRetentionUnconfirmed } from "@armada/provider-boat";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod";
-import { validateProviderResourceObservation } from "../../core/src/resource-validation.ts";
-import { apiFailureCode } from "./api-failure.ts";
 import type { Caller } from "./caller.ts";
 import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
-import { DataError, type SandboxView, type ScopedData } from "./data.ts";
-import { MAX_LOG_PAGES, readEventPages } from "./event-pagination.ts";
-import { publicLogEvents } from "./model-usage.ts";
+import type { SandboxView, ScopedData, ServerSandboxPatch } from "./data.ts";
+import type { GoldenLaunchCredentials } from "./launch-account-admission.ts";
+import { mcpLaunchContract, runMcpLaunch } from "./mcp-launch-tool.ts";
+import { DEFAULT_WAIT_SECONDS, registerListTool, registerLogsTool, registerStatusTools } from "./mcp-read-tools.ts";
 import type { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
-import type { GoldenProviderMetadata } from "./provider-metadata.ts";
 import { recordOperatorFailure } from "./request-observability.ts";
-import { summarizeResourceHistory } from "./resource-advice.ts";
-import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
-import type { RuntimeGitHub } from "./runtime-github.ts";
-import type { RuntimeResume } from "./runtime-resume.ts";
 import { appendConversation, sandboxActivity } from "./sandbox-activity.ts";
-import { sandboxControlRefusal } from "./sandbox-control-refusal.ts";
-import { extendSandbox } from "./sandbox-extend.ts";
-import {
-  collectSandboxUsage,
-  isStatusReadFenced,
-  latestPrompt,
-  readStatus,
-  recordedStatus,
-  type StatusReport,
-  waitSettled,
-} from "./turns.ts";
-import { recordStopDispatch } from "./work-preservation.ts";
+import { refuseConversationSelector } from "./sandbox-conversation.ts";
+
+import { ToolError } from "./tool-error.ts";
+import { errorResult, publicationFailure, unknownMutationOutcome } from "./tool-failure.ts";
+import { createToolRegistration, type ToolBinding } from "./tool-registration.ts";
+import { collectSandboxUsage, latestPrompt, readStatus } from "./turns.ts";
+import { stopAndObserve } from "./work-preservation.ts";
 
 /** Everything a tool call may use, for one authenticated request. */
 export interface ToolContext {
   accountTurns?: import("./account-turn-queue.ts").AccountTurnQueue;
   sandboxBillingAccount?: (id: string) => Promise<import("./sandbox-billing-account.ts").SandboxBillingAccount | null>;
   dockerControls?: import("./docker-sandbox-controls.ts").DockerSandboxControls;
-  runtimeGitHub?: RuntimeGitHub;
-  runtimeResume?: RuntimeResume;
-  runtimeCheckpoint?: RuntimeCheckpoint;
   runtimeSend?: RuntimeFollowup;
   measure?: import("./request-timing.ts").RequestTiming["measure"];
   storedProviders?: Partial<Record<SandboxProviderId, ToolContext["provider"]>>;
-  templates?: TemplateService;
   skillDefaults?: SkillDefaultsService;
-  applicationVault?: ApplicationVault;
   caller: Caller;
   data: ScopedData;
   /** The launch's credentials: the caller's own for the harness, else the golden's org's. Decrypted in this process. */
-  launchCredentials: LaunchCredentialResolver;
+  launchCredentials: GoldenLaunchCredentials;
   /** The caller's own and one org's model credentials, decrypted, for redacting command output. */
   exposedSecrets(orgId: string): Promise<string[]>;
   /** A provider paying with the boat.dev key of a golden of this org and visibility. The key never leaves the server. */
   /** The provider of a golden's or a sandbox's own backend (see `ProviderRegistry`). Its key never leaves the server. */
   provider(target: ProviderTarget): Promise<Provider>;
-  /** Authorized lifecycle management: resolve the sandbox owner's immutable source management authority after authorization. */
-  deletionProvider?(sandbox: SandboxView): Promise<Provider>;
-  providerMetadata?: (selection: { orgId: string; provider: SandboxProviderId }) => Promise<GoldenProviderMetadata>;
-  goldenTarget?: (target: Omit<ProviderTarget, "modal">) => Promise<ProviderTarget>;
   now(): Date;
   sleep(ms: number): Promise<void>;
   launch?: LaunchOptions;
   ordinaryLaunchReceipts?: ReturnType<typeof createOrdinaryLaunchReceipts>;
   connections?: LaunchStores["connections"];
-  /** Secure, server-orchestrated multi-repo golden creation. Absent: `golden_create` refuses. */
-  goldenBuilds?: GoldenBuildJobs;
-  goldenAdoption?: GoldenAdoption;
   /** Where the real cause of an internal or unavailable tool error goes, redacted. Defaults to stderr. */
   logError?: (line: string) => void;
 }
 
-export const SANDBOX_STATUSES = ["starting", "ready", "running", "stopping", "stopped", "failed", "deleted"] as const;
-export const DEFAULT_WAIT_SECONDS = 60;
-export const MAX_WAIT_SECONDS = 600;
 const OUTPUT_LIMIT = 20_000;
-/** Mirrors `GoldenCreateService`'s own limit: one GitHub App installation token covers at most this many repos. */
-const MAX_CREATE_REPOS = 16;
-
-export class ToolError extends Error {
-  override readonly name = "ToolError";
-  readonly code: string;
-  constructor(code: string, message: string) {
-    super(message);
-    this.code = code;
-  }
-}
 
 export const serverInfo = { name: "armada" } as const;
 
-const buildOutput = {
-  jobId: z.string(),
-  provider: z.enum(SANDBOX_PROVIDERS).optional(),
-  state: z.enum(["queued", "running", "recovery_required", "succeeded", "failed"]),
-  phase: z.string(),
-  errorCode: z.literal("build_failed").nullable(),
-  failureReason: z.string().max(1024).nullable().optional(),
-  result: z.object({ name: z.string(), visibility: z.enum(["org", "private"]), snapshot: z.string() }).nullable(),
-};
-
-const id = z.string().describe("Armada's sandbox id (a uuid, as returned by launch and list).");
-const conversationId = z.string().min(1).optional().describe("A conversation of the sandbox. Default: the latest.");
-
-const modelCatalogText = Object.entries(MODEL_CATALOG)
-  .map(
-    ([harness, entry]) =>
-      `${harness}: ${entry.models.map((option) => `${option.id} (${option.reasoningEfforts.join("|")})`).join(", ")}; ` +
-      `default ${entry.defaultModel} ${entry.defaultReasoningEffort}`,
-  )
-  .join(". ");
-const modelInput = z.string().min(1).optional().describe(`The model, by id. ${modelCatalogText}.`);
-const effortInput = z.string().min(1).optional().describe("The reasoning effort; one the model accepts (see model).");
-const modelOutput = {
-  credentialId: z.string().nullable().optional(),
-  credentialVersion: z.number().int().nullable().optional(),
-  model: z.string().nullable().describe("The requested next-send default, not proof of the observed model."),
-  reasoningEffort: z.string().nullable(),
-};
-
-const providerOutput = z.enum(SANDBOX_PROVIDERS).describe("The sandbox provider it runs on, fixed for its life.");
-const compat = (name: string) =>
-  z.string().nullable().describe(`The same as ${name} on a Boat golden or sandbox; null on any other provider.`);
-
-const golden = z.object({
-  id: z.string(),
-  name: z.string(),
-  orgId: z.string(),
-  visibility: z.enum(["org", "private"]),
-  ownerId: z.string(),
-  provider: providerOutput,
-  providerSnapshotId: z.string().nullable(),
-  baselineVersion: z
-    .number()
-    .int()
-    .positive()
-    .nullable()
-    .describe("The developer baseline version the golden's snapshot was verified against; null when not recorded."),
-  baselineOutdated: z
-    .boolean()
-    .describe("True when the golden has a snapshot built against an older developer baseline than this server's."),
-  providerSandboxId: z.string().nullable(),
-  modal: z
-    .object({ workspace: z.string(), environment: z.string(), appId: z.string() })
-    .nullable()
-    .describe("The Modal workspace, environment and App id a Modal golden is pinned to."),
-  boatSnapshotId: compat("providerSnapshotId"),
-  boatSandboxId: compat("providerSandboxId"),
-  repos: z.number().int(),
-  config: z.object({
-    repos: z.array(z.object({ url: z.string(), branch: z.string(), dir: z.string() })),
-    init: z.array(z.string()),
-  }),
-});
-
-/** The golden record shared by the MCP tools and the REST golden list. */
-export { golden as GOLDEN_OUTPUT };
-
-const taskOutcome = z.discriminatedUnion("state", [
-  z
-    .object({
-      state: z.literal("ready"),
-      prNumber: z.number().int().positive().optional(),
-      prUrl: z.url().max(2048).optional(),
-      headSha: z
-        .string()
-        .regex(/^[A-Fa-f0-9]{40}$/)
-        .optional(),
-    })
-    .strict(),
-  z.object({ state: z.literal("blocked"), reason: z.string().trim().min(1).max(1000) }).strict(),
-]);
-
-const pullRequests = z.array(
-  z.object({
-    repository: z.string(),
-    number: z.number().int().positive(),
-    url: z.url(),
-    headBranch: z.string(),
-    state: z.enum(["open", "merged", "closed"]),
-    checkedAt: z.string(),
-  }),
-);
-
-const sandboxUsage = z
-  .object({
-    computeSeconds: z.number().nullable(),
-    turnCount: z.number().nullable(),
-    cost: z
-      .object({
-        classification: z.enum(["priced", "included_in_subscription", "unknown"]),
-        currency: z.literal("USD"),
-        usd: z.string().nullable(),
-        basis: z.enum(["estimated", "api_equivalent"]).nullable(),
-        unknown: z.enum(["admission", "coverage", "price", "tokens", "pricing_dimensions"]).nullable(),
-        unpricedTurns: z.number().int().nonnegative().nullable(),
-      })
-      .optional(),
-    tokenTotals: z
-      .object({
-        incomplete: z.boolean().optional(),
-        inputTokens: z.number().nullable(),
-        outputTokens: z.number().nullable(),
-        cachedTokens: z.number().nullable(),
-        cacheWriteTokens: z.number().nullable(),
-        reasoningTokens: z.number().nullable(),
-      })
-      .optional(),
-    turns: z.array(
-      z.object({
-        promptId: z.string(),
-        model: z.string().nullable(),
-        inputTokens: z.number().nullable(),
-        outputTokens: z.number().nullable(),
-        cachedTokens: z.number().nullable(),
-        cacheWriteTokens: z.number().nullable().optional(),
-        reasoningTokens: z.number().nullable().optional(),
-        // Versioned service-owned pricing metadata; native decoders never populate it.
-        pricing: z
-          .unknown()
-          .nullable()
-          .optional()
-          .describe("Versioned server USD quote from a frozen snapshot; null means unpriced, never zero."),
-        unavailableReason: z.object({ code: z.enum(USAGE_UNAVAILABLE_CODES), message: z.string().max(600) }).optional(),
-      }),
-    ),
-  })
-  .nullable()
-  .optional();
-
-// Logical Armada lifetime only; provider deadlines never drive this warning.
-function logicalExpiry(expiresAt: string | null | undefined, now: Date) {
-  const deadline = expiresAt ? Date.parse(expiresAt) : Number.NaN;
-  const timeLeftSeconds = Number.isFinite(deadline) ? Math.max(0, Math.ceil((deadline - now.getTime()) / 1000)) : null;
-  return {
-    expiresAt: expiresAt ?? null,
-    timeLeftSeconds,
-    expiringSoon: timeLeftSeconds !== null && timeLeftSeconds <= 300,
-  };
+/** One MCP server per request: the principal is fixed for its whole life, and nothing outlives the request. */
+export function createArmadaServer(context: ToolContext, version: string) {
+  return createToolServer(context, version, "mcp");
 }
 
-const expiryOutput = {
-  timeLeftSeconds: z
-    .number()
-    .int()
-    .nonnegative()
-    .nullable()
-    .describe("Seconds until persisted Armada logical expiry, rounded up and clamped to zero; null if unknown."),
-  expiringSoon: z
-    .boolean()
-    .describe("True when known logical time left is at most five minutes, including expired resources."),
-};
+/** In-memory REST dispatch and schema discovery. Never exposed on the MCP transport. */
+export function createRestToolServer(context: ToolContext, version: string, onlyTool?: "list") {
+  return createToolServer(context, version, "rest", onlyTool);
+}
 
-const externalRefOutput = z.string().optional().describe("Opaque reference given at launch; absent when none.");
-const externalRefInput = z
-  .string()
-  .refine(isExternalRef, "1 to 200 characters without control characters.")
-  .describe(
-    "Opaque caller reference, for example one business object id. Not unique; use idempotencyKey for exactly-once.",
-  );
-
-const sandboxListMetadata = z.object({
-  ...expiryOutput,
-  idlePaused: z.boolean().optional(),
-  statusMessage: z.string().nullable().optional(),
-  usage: sandboxUsage,
-  preservationNote: z.string().nullable().optional(),
-  providerSandboxId: z.string().nullable(),
-  boatId: z.string().nullable(),
-  id: z.string(),
-  orgId: z.string(),
-  ownerId: z.string(),
-  provider: z.enum(SANDBOX_PLACEMENT_PROVIDERS),
-  harness: z.enum(HARNESSES),
-  model: modelOutput.model,
-  reasoningEffort: modelOutput.reasoningEffort,
-  status: z.enum(SANDBOX_STATUSES),
-  createdAt: z.string(),
-  stoppedAt: z.string().nullable(),
-  expiresAt: z.string().nullable(),
-  effectiveTtlSeconds: z.number().nullable(),
-  machineSize: z.enum(["small", "medium", "large", "xlarge"]).nullable(),
-  displayLabel: z.string(),
-  taskOutcome: taskOutcome.nullable().optional(),
-  pullRequests: pullRequests.nullable().optional(),
-  externalRef: externalRefOutput,
-  canOpen: z.boolean(),
-  canManage: z.boolean(),
-});
-
-const prompt = z.object({
-  rateLimit: z
-    .object({
-      retryCount: z.number(),
-      delayMs: z.number(),
-      totalWaitMs: z.number(),
-      retryAt: z.number(),
-      waiting: z.boolean(),
-      message: z.string(),
-    })
-    .nullable()
-    .optional(),
-  promptId: z.string(),
-  conversationId: z.string().nullable(),
-  state: z.enum(["queued", "running", "finished", "interrupted", "failed"]),
-  reason: z.string().nullable(),
-  requestedModel: z.string().nullable().optional(),
-  observedModel: z.string().nullable().optional(),
-  modelSelectionReason: z.enum(["model_selection_mismatch", "model_selection_unverified"]).nullable().optional(),
-  modelSelectionMessage: z.string().nullable().optional(),
-});
-
-const skillReceipts = z
-  .array(
-    z.object({
-      reference: z.string(),
-      version: z.string(),
-      skillId: z.string(),
-      checksum: z.string(),
-      origin: z.string(),
-    }),
-  )
-  .optional();
-
-/** #2560: latest activation (launch or resume), stages in time order; ms is the time since the previous stage. */
-const launchTiming = z
-  .object({
-    activation: z.string().describe('"1" is the launch; a higher activation is a resume.'),
-    stages: z.array(z.object({ stage: z.enum(LAUNCH_STAGES), at: z.string(), ms: z.number().nullable() })),
-    ready: z.boolean().describe("Harness ready was recorded."),
-    totalMs: z
-      .number()
-      .nullable()
-      .describe(
-        "First stage to harness ready (or the last stage so far); first_token waits for a prompt and is excluded.",
-      ),
-    slowest: z.object({ stage: z.enum(LAUNCH_STAGES), ms: z.number() }).nullable(),
-  })
-  .nullable()
-  .optional()
-  .describe("Launch time per stage for the latest launch or resume; null before any stage is recorded.");
-
-const status = {
-  ...expiryOutput,
-  launch: launchTiming,
-  providerExpiresAt: z
-    .string()
-    .nullable()
-    .describe("Provider physical deadline, when observed; distinct from Armada logical expiry."),
-  billingAccount: z
-    .object({
-      id: z.string(),
-      name: z.string(),
-      kind: z.string(),
-      billing: z.enum(["subscription", "api-key"]),
-      version: z.number().int(),
-    })
-    .nullable()
-    .optional(),
-  skills: skillReceipts,
-  usage: sandboxUsage,
-  preservationNote: z.string().nullable().optional(),
-  externalRef: externalRefOutput,
-  id: z.string(),
-  golden: z.string().nullable(),
-  provider: z.enum(SANDBOX_PLACEMENT_PROVIDERS).optional(),
-  hostId: z.string().optional(),
-  image: z.string().optional(),
-  visibility: z.enum(["org", "private"]),
-  harness: z.enum(HARNESSES),
-  repositoryDir: z
-    .string()
-    .nullable()
-    .describe("Configured directory used to prepare native agent cwd; not confinement."),
-  ...modelOutput,
-  machineSize: z.unknown().nullable(),
-  status: z.enum(SANDBOX_STATUSES),
-  statusReason: z.string().nullable(),
-  statusMessage: z.string().nullable().optional(),
-  taskOutcome: taskOutcome.nullable().optional(),
-  pullRequests: pullRequests.nullable().optional(),
-  providerState: z.string().nullable(),
-  conversationIds: z.array(z.string()),
-  expiresAt: z.string().nullable(),
-  prompt: prompt.nullable(),
-  settled: z.boolean(),
-};
-
-const event = z.looseObject({
-  id: z.string(),
-  at: z.number(),
-  kind: z.enum(["prompt", "message", "steer", "other"]),
-  conversationId: z.string().optional(),
-  promptId: z.string().optional(),
-});
-
-/** Output of the `logs` tool, also published (open) as the REST `logs/read` response (`REST_LOGS_RESPONSE`). */
-export const LOGS_OUTPUT = {
-  events: z.array(event),
-  cursor: z.string().nullable(),
-  olderCursor: z.string().optional(),
-  hasMore: z.boolean(),
-  settled: z.boolean().optional(),
-  source: z.literal("armada-runtime").optional(),
-  threadStatus: z
-    .object({ status: z.string(), statusMessage: z.string().nullable(), prompt: z.unknown(), usage: z.unknown() })
-    .optional(),
-  runtimeFailure: z.object({ status: z.literal("failed"), reason: z.string() }).optional(),
-  queuedPrompt: z
-    .object({
-      promptId: z.string(),
-      conversationId: z.string().nullable(),
-      state: z.string(),
-      reason: z.string().nullable(),
-    })
-    .optional()
-    .describe(
-      "Docker only: the latest prompt while the runtime has not admitted it (queued behind startup, or failed before admission).",
-    ),
-};
-
-export const sandboxListInput = z.object({
-  harness: z.enum(HARNESSES).optional(),
-  golden: z.string().uuid().optional().describe("Golden UUID, not a name."),
-  owner: z.union([z.string().uuid(), z.literal("me")]).optional(),
-  page: z.number().int().min(1).max(1_000_000).optional().describe("1-based page, default 1."),
-  status: z.array(z.enum(SANDBOX_STATUSES)).min(1).optional().describe("Only these statuses."),
-  limit: z.number().int().min(1).max(200).optional().describe("At most this many. Default 25."),
-  externalRef: externalRefInput
-    .optional()
-    .describe("Only sandboxes launched with this reference that you own or administer."),
-});
-
-/** One MCP server per request: the principal is fixed for its whole life, and nothing outlives the request. */
-export function createArmadaServer(context: ToolContext, version: string, options?: { onlyTool: "list" }): McpServer {
+function createToolServer(
+  context: ToolContext,
+  version: string,
+  surface: "mcp" | "rest",
+  onlyTool?: "list",
+): McpServer {
   const server = new McpServer(
     { ...serverInfo, version },
     {
       instructions:
         "Armada launches Claude Code, Codex and OpenCode agents in sandboxes. " +
         "Provider and agent availability depend on server configuration. In these tools, a golden is a snapshot. " +
-        "Typical flow: golden_list, launch (with a prompt to start at once), then wait or status, logs to read " +
+        "Find a golden with the dashboard or POST /api/v1/golden/list. Then launch with a prompt, use status, and use logs to read " +
         "what the agent did, send for the next instruction, and stop when done. Ids are Armada sandbox ids.",
     },
   );
+  configureTools(context, surface, server, onlyTool);
+  return server;
+}
+
+export function bindRestTool(context: ToolContext, name: string, bind: ToolBinding) {
+  configureTools(context, "rest", undefined, name === "list" ? "list" : undefined, (candidate, config, invoke) => {
+    if (candidate === name) bind(candidate, config, invoke);
+  });
+}
+
+function configureTools(
+  context: ToolContext,
+  surface: "mcp" | "rest",
+  server?: McpServer,
+  onlyTool?: "list",
+  bind?: ToolBinding,
+) {
   const { caller, data } = context;
-  const orgIds = caller.orgs.map((org) => org.orgId);
-
-  const tool = <In extends z.ZodRawShape, Out extends z.ZodRawShape>(
-    name: string,
-    config: { title: string; description: string; input: In; output: Out; readOnly?: boolean; destructive?: boolean },
-    run: (args: z.infer<z.ZodObject<In>>) => Promise<z.infer<z.ZodObject<Out>>>,
-  ) => {
-    server.registerTool(
-      name,
-      {
-        title: config.title,
-        description: config.description,
-        inputSchema: config.input,
-        outputSchema: config.output,
-        annotations: {
-          readOnlyHint: config.readOnly ?? false,
-          destructiveHint: config.destructive ?? false,
-          openWorldHint: true,
-        },
-      },
-      // The SDK's callback type is generic over every schema flavour; the input is the parsed `In`.
-      (async (args: z.infer<z.ZodObject<In>>): Promise<CallToolResult> => {
-        try {
-          if (["send", "steer", "exec", "interrupt"].includes(name)) {
-            const input = args as Record<string, unknown>;
-            const found = data.sandboxes.controlState
-              ? await data.sandboxes.controlState(input.id as string)
-              : await visible(input.id as string);
-            if (!found) throw new ToolError("not_found", `No sandbox with id '${input.id}' that you can see.`);
-            // A retained legacy Modal workspace needs its owner's explicit account binding
-            // before any control, including controls that require running compute.
-            if (
-              found.provider === "modal" &&
-              !found.credentialId &&
-              !sandboxControlRefusal(found, context.now(), "send")
-            )
-              throw new VaultError("credential_binding_required", CREDENTIAL_BINDING_GUIDANCE);
-            const refusal = sandboxControlRefusal(found, context.now(), name);
-            if (refusal) throw new ToolError("sandbox_terminal", refusal);
-          }
-          if (
-            name === "stop" &&
-            !(args as Record<string, unknown>).only_if_idle &&
-            typeof (args as Record<string, unknown>).id === "string"
-          )
-            await context.accountTurns?.cancelQueued(caller, (args as Record<string, unknown>).id as string);
-          if (name === "report") {
-            const input = args as Record<string, unknown>;
-            const queued = await context.accountTurns?.status(caller, input.id as string, input.prompt_id as string);
-            if (queued && "nativePromptId" in queued) input.prompt_id = queued.nativePromptId;
-          }
-          const routed = ["send", "status", "wait"].includes(name)
-            ? undefined
-            : await context.dockerControls?.invoke(caller, name, args);
-          const raw = routed?.handled ? routed.result : await run(args);
-          if (["logs", "status", "wait", "list"].includes(name) && context.accountTurns?.publicPromptIds) {
-            type PublicReport = {
-              id?: string;
-              sandboxes?: PublicReport[];
-              events?: { promptId?: string }[];
-              prompt?: { promptId: string };
-              usage?: { turns: { promptId: string }[] };
-            };
-            const root = raw as PublicReport;
-            const reports = (name === "list" ? (root.sandboxes ?? []) : [root]).map((report) => {
-              const items = [
-                ...(report.events ?? []),
-                ...(report.prompt ? [report.prompt] : []),
-                ...(report.usage?.turns ?? []),
-              ];
-              return { sandboxId: report.id ?? ((args as Record<string, unknown>).id as string), items };
-            });
-            const aliases = await context.accountTurns.publicPromptIdsBatch(
-              caller,
-              reports.map(({ sandboxId, items }) => ({
-                sandboxId,
-                nativeIds: items.flatMap((item) => (item.promptId ? [item.promptId] : [])),
-              })),
-            );
-            for (const { sandboxId, items } of reports) {
-              const ids = aliases.get(sandboxId);
-              for (const item of items)
-                if (item.promptId && ids?.has(item.promptId)) item.promptId = ids.get(item.promptId)!;
-            }
-          }
-          const value =
-            routed?.handled && (name === "status" || name === "wait")
-              ? {
-                  ...(raw as Record<string, unknown>),
-                  ...logicalExpiry((raw as { expiresAt: string | null }).expiresAt, context.now()),
-                  providerExpiresAt: null,
-                }
-              : raw;
-          const sandboxId = (args as Record<string, unknown>).id;
-          const result =
-            (name === "status" || name === "wait") && context.sandboxBillingAccount && typeof sandboxId === "string"
-              ? {
-                  ...(value as Record<string, unknown>),
-                  billingAccount: await context.sandboxBillingAccount(sandboxId),
-                }
-              : value;
-          return {
-            structuredContent: result as Record<string, unknown>,
-            content: [{ type: "text", text: JSON.stringify(result) }],
-          };
-        } catch (error) {
-          return errorResult(error, name, context.logError ?? ((line) => console.error(line)));
-        }
-      }) as never,
-    );
-  };
-
-  // HTTP list calls keep the same handler and SDK validation without building unrelated tools.
-  if (options?.onlyTool === "list") {
-    registerList();
-    return server;
-  }
-
-  const vaultOrg = z.string().uuid().describe("Organization UUID; the caller must be a current member.");
-  const vaultId = z.string().uuid().describe("Application variable or secret UUID returned by its metadata list.");
-  const vaultVersion = z.number().int().min(1).describe("Current metadata version; stale writes fail with conflict.");
-  const vaultName = z
-    .string()
-    .regex(/^[A-Z][A-Z0-9_]{0,127}$/)
-    .describe("Application key; managed auth and execution names are reserved.");
-  const vaultValue = z
-    .string()
-    .describe(
-      "Intentionally readable configuration, at most 8 KiB UTF-8. Empty and multiline values are allowed. Never enter secrets.",
-    );
-  const vaultInputs = {
-    list: z.strictObject({ org: vaultOrg }),
-    read: z.strictObject({ org: vaultOrg, id: vaultId }),
-    set: z.strictObject({ org: vaultOrg, scope: z.enum(["personal", "org"]), name: vaultName, value: vaultValue }),
-    update: z.strictObject({
-      org: vaultOrg,
-      id: vaultId,
-      expectedVersion: vaultVersion,
-      name: vaultName.optional(),
-      value: vaultValue.optional(),
-    }),
-    delete: z.strictObject({ org: vaultOrg, id: vaultId, expectedVersion: vaultVersion }),
-    revoke: z.strictObject({ org: vaultOrg, id: vaultId, expectedVersion: vaultVersion }),
-    commit: z.strictObject({
-      org: vaultOrg,
-      uploadReference: z
-        .string()
-        .regex(/^[A-Za-z0-9_-]{43}$/)
-        .describe(
-          "One-use reference returned by authenticated POST /api/v1/secrets/upload; expires after five minutes and is bound to this actor and org. Never submit a secret value here.",
-        ),
-    }),
-  };
-  const templateDefinition = z
-    .object({
-      goldenId: z.string().uuid(),
-      provider: z.enum(["boat", "modal"]),
-      harness: z.enum(HARNESSES),
-      model: z.string().optional(),
-      reasoningEffort: z.string().optional(),
-      modelAccount: z.object({ id: z.string().uuid(), version: z.number().int().positive() }).strict().optional(),
-      connections: z.array(z.string().uuid()).max(MAX_MCP_CONNECTIONS).optional(),
-      variables: z
-        .array(
-          z.object({ key: z.string(), variableId: z.string().uuid(), version: z.number().int().positive() }).strict(),
-        )
-        .max(64)
-        .optional(),
-      secrets: z
-        .array(
-          z.object({ key: z.string(), secretId: z.string().uuid(), version: z.number().int().positive() }).strict(),
-        )
-        .max(64)
-        .optional(),
-      skills: z.array(z.string()).max(20).optional(),
-    })
-    .strict();
-  for (const operation of ["get", "set"] as const) {
-    server.registerTool(
-      `skill_defaults_${operation}`,
-      {
-        description:
-          "Read or replace exact personal, org or golden default skill pins. Org and shared golden writes require admin. Empty skills clears defaults.",
-        inputSchema: z
-          .object({
-            org: z.string().uuid(),
-            scope: z.enum(["personal", "org", "golden"]),
-            goldenId: z.string().uuid().optional(),
-            ...(operation === "set" ? { skills: z.array(z.string()).max(20) } : {}),
-          })
-          .strict(),
-        outputSchema: z.object({ skills: z.array(z.string()) }),
-      },
-      async (args: Record<string, unknown>) => {
-        try {
-          if (!context.skillDefaults) throw new VaultError("unavailable", "Skill defaults unavailable.");
-          const result = await context.skillDefaults.command(caller, operation, args);
-          return { structuredContent: result, content: [{ type: "text" as const, text: JSON.stringify(result) }] };
-        } catch (error) {
-          return {
-            isError: true,
-            content: [
-              {
-                type: "text" as const,
-                text: error instanceof VaultError ? error.message : "Skill defaults unavailable.",
-              },
-              {
-                type: "text" as const,
-                text: `error code: ${error instanceof VaultError ? error.code : "unavailable"}`,
-              },
-            ],
-          };
-        }
-      },
-    );
-  }
-  const templateInputs = {
-    create: z
-      .object({
-        org: z.string().uuid(),
-        name: z.string(),
-        scope: z.enum(["personal", "org"]),
-        definition: templateDefinition,
-      })
-      .strict(),
-    list: z.object({ org: z.string().uuid() }).strict(),
-    get: z
-      .object({ org: z.string().uuid(), id: z.string().uuid(), revision: z.number().int().positive().optional() })
-      .strict(),
-    publish: z
-      .object({
-        org: z.string().uuid(),
-        id: z.string().uuid(),
-        expectedRevision: z.number().int().positive(),
-        definition: templateDefinition,
-      })
-      .strict(),
-    delete: z
-      .object({ org: z.string().uuid(), id: z.string().uuid(), expectedRevision: z.number().int().positive() })
-      .strict(),
-    launch: z
-      .object({
-        org: z.string().uuid(),
-        id: z.string().uuid(),
-        revision: z.number().int().positive().optional(),
-        requestKey: z.string(),
-        prompt: z.string().optional(),
-        ttlSeconds: z.number().int().positive().optional(),
-        size: z.enum(MACHINE_SIZES).optional(),
-        repo: z.string().optional(),
-        skills: z.array(z.string()).max(20).optional(),
-        skipSkillDefaults: z.boolean().optional(),
-        stopWhenWorkMerged: z.boolean().optional(),
-      })
-      .strict(),
-  };
-  for (const operation of ["create", "list", "get", "publish", "delete", "launch"] as const) {
-    server.registerTool(
-      `template_${operation}`,
-      {
-        description:
-          operation === "launch"
-            ? "Launch an immutable template revision. requestKey is required: same key/body returns the recorded request and never allocates twice. Readable variables are NOT secrets; no secret bindings or authority-enlarging overrides."
-            : "Manage immutable personal/organization launch presets. Org writes require admin; bindings reference exact environment, tools, model account, readable variable versions and secret IDs/versions. Secret values are never accepted; secret values are delivered only to the selected native harness environment.",
-        inputSchema: templateInputs[operation],
-        outputSchema: z.object({}).passthrough(),
-      },
-      async (args: Record<string, unknown>) => {
-        try {
-          if (!context.templates) throw new VaultError("unavailable", "Templates unavailable.");
-          const result = await context.templates.command(caller, operation, args, {
-            stores: {
-              goldens: data.goldens,
-              sandboxes: data.sandboxes,
-              credentials: context.launchCredentials,
-              ...(context.connections ? { connections: context.connections } : {}),
-            },
-            provider: context.provider,
-            ...(context.launch ? { options: context.launch } : {}),
-          });
-          return { structuredContent: result, content: [{ type: "text" as const, text: JSON.stringify(result) }] };
-        } catch (error) {
-          return {
-            isError: true,
-            content: [
-              { type: "text" as const, text: error instanceof VaultError ? error.message : "Templates unavailable." },
-              {
-                type: "text" as const,
-                text: `error code: ${error instanceof VaultError ? error.code : "unavailable"}`,
-              },
-            ],
-          };
-        }
-      },
-    );
-  }
-
-  const vaultDescriptions = {
-    variable_list:
-      "List safe variable metadata, without values. Personal entries are owner-only; org entries require membership.",
-    variable_read:
-      "Read an active variable's intentionally readable value. Personal entries are owner-only; org entries require membership.",
-    variable_set:
-      "Create readable configuration in personal or org scope; org writes require admin. Values are intentionally readable: do not store secrets.",
-    variable_update:
-      "Rename or replace readable configuration using its current version. Supply name or value; org writes require admin.",
-    variable_delete:
-      "Delete a readable variable using its current version, retaining a value-free tombstone; org writes require admin.",
-    secret_list:
-      "List safe application-secret metadata only. Secret values, ciphertext and value fingerprints are never returned.",
-    secret_commit:
-      "Create or rotate a write-only application secret from an authenticated API upload reference. The upload fixes the operation, target and version. No plaintext secret arguments; returns safe metadata only.",
-    secret_revoke:
-      "Revoke a write-only application secret using its current version. Removes active ciphertext and advances the revocation epoch; org writes require admin.",
-    secret_delete:
-      "Delete a write-only application secret using its current version. Removes active ciphertext and retains a value-free tombstone; org writes require admin.",
-  };
-
-  // Secret plaintext ingress is API-only. MCP commits actor-bound one-use upload references.
-  for (const [kind, operations] of [
-    ["variable", ["list", "read", "set", "update", "delete"]],
-    ["secret", ["list", "commit", "revoke", "delete"]],
-  ] as const) {
-    for (const operation of operations) {
-      server.registerTool(
-        `${kind}_${operation}`,
-        {
-          description: vaultDescriptions[`${kind}_${operation}` as keyof typeof vaultDescriptions],
-          inputSchema: vaultInputs[operation],
-          outputSchema: z.object({}).passthrough(),
-        },
-        async (args: Record<string, unknown>) => {
-          try {
-            if (!context.applicationVault) throw new VaultError("unavailable", "Application vault unavailable.");
-            const result = await context.applicationVault.command(caller, kind, operation, args, "mcp");
-            return { structuredContent: result, content: [{ type: "text" as const, text: JSON.stringify(result) }] };
-          } catch (error) {
-            // Never log SDK/database causes or submitted vault arguments.
-            const code = error instanceof VaultError ? error.code : "unavailable";
-            const message = error instanceof VaultError ? error.message : "Application vault unavailable.";
-            return {
-              isError: true,
-              content: [
-                { type: "text" as const, text: message },
-                { type: "text" as const, text: `error code: ${code}` },
-              ],
-            };
-          }
-        },
-      );
-    }
-  }
 
   const visible = async (sandboxId: string): Promise<SandboxView> => {
     const found = await data.sandboxes.get(sandboxId);
     if (!found) throw new ToolError("not_found", `No sandbox with id '${sandboxId}' that you can see.`);
     return found;
   };
+  const { register, tool } = createToolRegistration(server, context, surface, visible, bind);
+
+  // HTTP list calls keep the same handler and SDK validation without building unrelated tools.
+  if (onlyTool === "list") {
+    registerListTool(context, tool);
+    return;
+  }
+
   const live = async (sandboxId: string, allowUnbound = false, known?: SandboxView, runtimeControl = false) => {
     const found = known ?? (await visible(sandboxId));
     if ((found.boatRuntime || found.runtimeTransport === "dialout") && !allowUnbound && !runtimeControl)
@@ -891,912 +158,39 @@ export function createArmadaServer(context: ToolContext, version: string, option
     return { ...target, enrolled };
   };
   const measure: NonNullable<ToolContext["measure"]> = context.measure ?? ((_phase, work) => work());
-  const statusOf = async (
-    sandboxId: string,
-    promptId: string | undefined,
-    stored = false,
-    allowRecordedFallback = false,
-    recorded = false,
-  ): Promise<StatusReport & ReturnType<typeof logicalExpiry>> => {
-    const queued = await context.accountTurns?.status(caller, sandboxId, promptId);
-    // Route reads with the native ID, but keep the receipt identity stable for clients.
-    const publicPromptId = queued && "nativePromptId" in queued ? (promptId ?? queued.publicPromptId) : undefined;
-    const publicReport = (report: StatusReport): StatusReport =>
-      publicPromptId
-        ? {
-            ...report,
-            ...(report.prompt ? { prompt: { ...report.prompt, promptId: publicPromptId } } : {}),
-            ...(report.usage
-              ? {
-                  usage: {
-                    ...report.usage,
-                    turns: report.usage.turns.map((turn) =>
-                      turn.promptId === promptId ? { ...turn, promptId: publicPromptId } : turn,
-                    ),
-                  },
-                }
-              : {}),
-          }
-        : report;
-    if (queued && "nativePromptId" in queued) promptId = queued.nativePromptId;
-    const waiting = queued && !("nativePromptId" in queued) ? queued : undefined;
-    const routed = await context.dockerControls?.invoke(caller, "status", {
-      id: sandboxId,
-      ...(promptId && !waiting ? { prompt_id: promptId } : {}),
-      ...(recorded ? { recorded: true } : {}),
-    });
-    const queuePatch = waiting
-      ? {
-          statusMessage: waiting.message,
-          settled: waiting.failed ?? false,
-          prompt: {
-            promptId: waiting.requestId!,
-            conversationId: waiting.conversationId!,
-            state: waiting.failed ? ("failed" as const) : ("running" as const),
-            reason: waiting.message,
-          },
-        }
-      : {};
-    if (routed?.handled) {
-      const report = publicReport(routed.result as StatusReport);
-      return { ...report, ...logicalExpiry(report.expiresAt, context.now()), providerExpiresAt: null, ...queuePatch };
-    }
-    const found = await measure("sandbox_read", () => visible(sandboxId));
-    if (waiting) return { ...recordedStatus(found), ...logicalExpiry(found.expiresAt, context.now()), ...queuePatch };
-    if (recorded)
-      return {
-        ...publicReport(recordedStatus(found)),
-        ...logicalExpiry(found.expiresAt, context.now()),
-        statusMessage: `Recorded state only; use armada status ${sandboxId} --live for provider and prompt details.`,
-      };
-    try {
-      const storedProvider = stored ? context.storedProviders?.[found.provider] : undefined;
-      const provider =
-        found.status === "deleted" || isStatusReadFenced(found)
-          ? null
-          : storedProvider
-            ? await storedProvider(found)
-            : await context.provider(found);
-      const result = await measure("state", () =>
-        readStatus(provider, data.sandboxes, found, {
-          stored: storedProvider !== undefined,
-          ...(promptId ? { promptId } : {}),
-          now: context.now(),
-        }),
-      );
-      return {
-        ...publicReport(result),
-        ...logicalExpiry(result.expiresAt, context.now()),
-        statusMessage: idlePauseMessage(result, context.now()),
-      };
-    } catch (error) {
-      if (!allowRecordedFallback || !(error instanceof ProviderError)) throw error;
-      return {
-        ...publicReport(recordedStatus(found)),
-        ...logicalExpiry(found.expiresAt, context.now()),
-        statusMessage: "Provider observation unavailable; showing recorded state.",
-      };
-    }
-  };
+  tool("launch", mcpLaunchContract, (input) => runMcpLaunch(context, input));
 
-  tool(
-    "github_refresh",
-    {
-      title: "Repair sandbox GitHub access",
-      description:
-        "Configure or refresh the owner's GitHub access in a running sandbox without relaunching. Enrolled Armada runtimes use current-epoch private RPC; native Boat keeps its existing setup. Reuses a validated unexpired token; rejection/expiry can require renewal. Only the sandbox owner may request this.",
-      input: { id },
-      output: {
-        id: z.string(),
-        login: z.string(),
-        status: z.literal("connected"),
-        runtime: z.object({ kind: z.literal("armada"), epoch: z.string() }).optional(),
-        revision: z.string().optional(),
-      },
-    },
-    async (args) => {
-      const selected = await visible(args.id);
-      if (selected.boatRuntime || selected.runtimeTransport === "dialout") {
-        if (!context.runtimeGitHub) throw new ToolError("unsupported", "Runtime GitHub is unavailable.");
-        return context.runtimeGitHub.prepare(caller, args.id);
-      }
-      const { sandbox: found, provider } = await live(args.id, false, selected);
-      if (found.ownerId !== caller.userId)
-        throw new ToolError("forbidden", "Only the sandbox owner may repair GitHub access.");
-      if (provider.id === "modal") throw new ToolError("unsupported", GITHUB_REFRESH_MODAL_NATIVE);
-      if (provider.id !== "boat")
-        throw new ToolError("unsupported", "Use the next prompt to reconcile this provider's managed GitHub runtime.");
-      const machine = await provider.get(found.providerSandboxId);
-      if (!["ready", "running"].includes(machine.state))
-        throw new ToolError("conflict", "GitHub repair requires a running sandbox.");
-      if (!context.launchCredentials.refreshGitHub)
-        throw new ToolError("unavailable", "GitHub repair is not configured.");
-      // Deliberately not the caller's role: only the verified owner identity is used for GitHub resolution.
-      const result = await context.launchCredentials.refreshGitHub(
-        { userId: found.ownerId, orgId: found.orgId, role: "member" },
-        provider,
-        found.providerSandboxId,
-      );
-      return { id: found.id, status: "connected" as const, login: result.login };
-    },
-  );
+  registerListTool(context, tool);
 
-  tool(
-    "golden_list",
-    {
-      title: "List goldens",
-      description:
-        "The goldens you can launch from: your orgs', and your own private ones. A golden without a " +
-        "providerSnapshotId cannot be launched yet. The same name may exist on several providers.",
-      input: {},
-      output: { goldens: z.array(golden) },
-      readOnly: true,
-    },
-    async () => {
-      const goldens: GoldenRecord[] = [];
-      for (const orgId of orgIds) goldens.push(...(await data.goldens.list(orgId)));
-      return { goldens: goldens.map(goldenResponse) };
-    },
-  );
+  const { statusOf, readStatusTool, waitTool } = registerStatusTools(context, tool, visible, measure);
 
-  tool(
-    "golden_capabilities",
-    {
-      title: "Golden provider capabilities",
-      description:
-        "Reads the selected provider adapter's golden capacity without creating an App or resource. Null is unknown/unbounded, not a workspace quota.",
-      input: { org: z.string().optional(), provider: z.enum(SANDBOX_PROVIDERS).optional() },
-      output: {
-        provider: z.enum(SANDBOX_PROVIDERS),
-        maxGoldens: z.number().int().positive().nullable(),
-        bindings: z
-          .array(
-            z.object({
-              goldenId: z.string().uuid(),
-              relation: z.enum(["current_backend", "other_backend", "unbound"]),
-            }),
-          )
-          .optional(),
-      },
-      readOnly: true,
-    },
-    async (args) => {
-      const member = resolveCreateOrg(caller.orgs, args.org);
-      if (!context.providerMetadata)
-        throw new ToolError("unsupported", "Read-only provider metadata is not configured.");
-      return context.providerMetadata({ orgId: member.orgId, provider: args.provider ?? "boat" });
-    },
-  );
+  registerLogsTool(context, tool, visible, surface);
 
-  tool(
-    "golden_adopt",
-    {
-      title: "Adopt canonical Boat golden",
-      description:
-        "Dry-run first: select an existing visible golden by id. Confirm with the returned receipt within ten minutes. Preserves all rows and ACLs.",
-      input: { id: z.string().uuid(), confirmation: z.string().uuid().optional() },
-      output: { goldenId: z.string(), dryRun: z.boolean(), confirmation: z.string() },
-    },
-    async (args) => {
-      if (!context.goldenAdoption) throw new ToolError("unsupported", "Canonical adoption is not configured.");
-      let golden: GoldenRecord | undefined;
-      for (const { orgId } of caller.orgs) {
-        golden = (await data.goldens.list(orgId)).find((row) => row.id === args.id);
-        if (golden) break;
-      }
-      if (!golden) throw new ToolError("not_found", "Canonical adoption unavailable.");
-      const member = caller.orgs.find((org) => org.orgId === golden.orgId)!;
-      const actor = { userId: caller.userId, orgId: member.orgId, role: member.role };
-      assertGoldenMutation(actor, golden);
-      return context.goldenAdoption(await context.provider(golden), actor, golden, args.confirmation);
-    },
-  );
-
-  tool(
-    "golden_build_status",
-    {
-      title: "Golden build status",
-      description: "Read a durable build job. Poll this bounded request; never resubmit a disconnected build.",
-      input: {
-        jobId: z.string().uuid().optional(),
-        idempotencyKey: z.string().min(16).max(128).optional(),
-        org: z.string().optional(),
-      },
-      readOnly: true,
-      output: buildOutput,
-    },
-    async ({ jobId, idempotencyKey, org }) => {
-      if (!context.goldenBuilds) throw new ToolError("unsupported", "Durable golden builds are not configured.");
-      if (!jobId && !idempotencyKey) throw new ToolError("invalid", "Pass jobId or idempotencyKey.");
-      return context.goldenBuilds.status(
-        caller.userId,
-        jobId ?? "",
-        idempotencyKey ? resolveCreateOrg(caller.orgs, org).orgId : undefined,
-        idempotencyKey,
-        caller.orgs.map((org) => org.orgId),
-      );
-    },
-  );
-
-  tool(
-    "golden_create",
-    {
-      title: "Create a golden",
-      description:
-        "Admits a durable build job; poll golden_build_status. Builds from one or more GitHub repositories you can access, in a disposable sandbox " +
-        "with none of the boat.dev account's credentials: clones each over your own cached GitHub connection " +
-        "(see `launch`'s `github`), optionally runs a setup script, scans the builder for leaked GitHub tokens, " +
-        "and only saves the snapshot when that scan passes. All repos must share one GitHub App installation.",
-      input: {
-        provider: z.enum(["boat", "modal"]).optional(),
-        idempotencyKey: z.string().min(16).max(128),
-        name: z.string().min(1).describe("The golden's name."),
-        repos: z
-          .array(z.string().min(1))
-          .min(1)
-          .max(MAX_CREATE_REPOS)
-          .describe("owner/repo, repeated, from one GitHub App installation."),
-        org: z
-          .string()
-          .optional()
-          .describe("The orgId to create it in, as in golden_list. Needed only when you belong to more than one."),
-        private: z.boolean().optional().describe("Default false: visible to your whole org. True: only you."),
-        setup: z.string().optional().describe("A shell script run in the builder after cloning, before the snapshot."),
-      },
-      output: buildOutput,
-    },
-    async (args) => {
-      if (!context.goldenBuilds) {
-        throw new ToolError("unsupported", "Secure golden creation is not configured on this server.");
-      }
-      const visibility: Visibility = args.private ? "private" : "org";
-      const member = resolveCreateOrg(caller.orgs, args.org);
-      const actor = { userId: caller.userId, orgId: member.orgId, role: member.role };
-      assertGoldenMutation(actor, { orgId: member.orgId, visibility, ownerId: caller.userId, name: args.name });
-      const input = { orgId: member.orgId, visibility, provider: args.provider ?? "boat" } as const;
-      const target = context.goldenTarget ? await context.goldenTarget(input) : { ...input, modal: null };
-      const provider = await context.provider(target);
-      return context.goldenBuilds.admit(
-        provider,
-        actor,
-        {
-          ...(target.modal ? { modal: target.modal } : {}),
-          name: args.name,
-          visibility,
-          repos: args.repos,
-          ...(args.setup ? { setup: args.setup } : {}),
-        },
-        args.idempotencyKey,
-      );
-    },
-  );
-
-  tool(
-    "golden_update",
-    {
-      title: "Rebuild a golden",
-      description:
-        "Admits a durable rebuild job; poll golden_build_status. Private goldens require their owner; org goldens require an org admin.",
-      input: {
-        provider: z.enum(["boat", "modal"]).optional(),
-        idempotencyKey: z.string().min(16).max(128),
-        name: z.string().min(1),
-        org: z.string().optional(),
-        repos: z.array(z.string().min(1)).min(1).max(MAX_CREATE_REPOS),
-        setup: z.string().optional(),
-      },
-      output: buildOutput,
-    },
-    async (args) => {
-      if (!context.goldenBuilds)
-        throw new ToolError("unsupported", "Secure golden creation is not configured on this server.");
-      const member = resolveCreateOrg(caller.orgs, args.org);
-      const rows = (await data.goldens.findByName(member.orgId, args.name)).filter(
-        (row) => !args.provider || row.provider === args.provider,
-      );
-      if (rows.length > 1) throw new ToolError("conflict", "Golden exists on multiple providers; select a provider.");
-      if (rows.length !== 1 || !rows[0]) throw new ToolError("not_found", `No golden named '${args.name}'.`);
-      const existingGolden = rows[0];
-      const actor = { userId: caller.userId, orgId: member.orgId, role: member.role };
-      assertGoldenMutation(actor, existingGolden);
-      const provider = await context.provider(existingGolden);
-      return context.goldenBuilds.admit(
-        provider,
-        actor,
-        {
-          name: existingGolden.name,
-          visibility: existingGolden.visibility,
-          repos: args.repos,
-          ...(args.setup ? { setup: args.setup } : {}),
-          existingGolden,
-        },
-        args.idempotencyKey,
-      );
-    },
-  );
-
-  tool(
-    "golden_snapshot",
-    {
-      title: "Snapshot a golden",
-      description: "Restores the golden master if needed, scans it for leaked GitHub tokens, then saves a snapshot.",
-      input: { name: z.string().min(1), org: z.string().optional(), provider: z.enum(SANDBOX_PROVIDERS).optional() },
-      output: { name: z.string(), snapshot: z.string() },
-    },
-    async (args) => {
-      const member = resolveCreateOrg(caller.orgs, args.org);
-      const rows = (await data.goldens.findByName(member.orgId, args.name)).filter(
-        (row) => !args.provider || row.provider === args.provider,
-      );
-      if (rows.length > 1) throw new ToolError("conflict", "Golden exists on multiple providers; select a provider.");
-      if (rows.length !== 1 || !rows[0]) throw new ToolError("not_found", `No golden named '${args.name}'.`);
-      const golden = rows[0];
-      const actor = { userId: caller.userId, orgId: member.orgId, role: member.role };
-      assertGoldenMutation(actor, golden);
-      const provider = await context.provider(golden);
-      await data.goldens.assertBackendBinding?.(golden, provider);
-      const target = (await connectGolden(provider, data.goldens, actor, golden.name)).golden;
-      if (!target.providerSandboxId) throw new ToolError("conflict", `Golden '${target.name}' has no sandbox yet.`);
-      await scanGoldenSandbox(provider, target.providerSandboxId);
-      const saved = await snapshotGolden(provider, data.goldens, actor, target.name, context.launch ?? {});
-      return { name: saved.golden.name, snapshot: saved.snapshotName };
-    },
-  );
-
-  tool(
-    "golden_size_policy",
-    {
-      title: "Golden machine size policy",
-      description:
-        "Read or replace defaults for this provider golden only. Org writes require admin; private writes require owner. Does not rebuild snapshots or resize machines.",
-      input: {
-        golden: z.string(),
-        org: z.string().optional(),
-        provider: z.enum(SANDBOX_PROVIDERS).optional(),
-        policy: z.unknown().optional(),
-      },
-      output: {
-        goldenId: z.string(),
-        provider: providerOutput,
-        repositories: z.array(z.object({ url: z.string(), branch: z.string(), dir: z.string() })),
-        policy: z.unknown().nullable(),
-      },
-    },
-    async (args) => {
-      const actor = await launchActor(args.golden, args.org);
-      const golden = await goldenForSettings(data.goldens, actor, args.golden, args.provider);
-      if (args.policy !== undefined) {
-        const policy = parseMachineSizePolicy(
-          args.policy,
-          golden.config.repos.map((r) => r.dir),
-        );
-        if (!data.goldens.setSizePolicy) throw new GoldenError("conflict", "Policy writes are unavailable.");
-        await data.goldens.setSizePolicy(golden, actor, policy);
-        return { goldenId: golden.id, provider: golden.provider, repositories: golden.config.repos, policy };
-      }
-      return {
-        goldenId: golden.id,
-        provider: golden.provider,
-        repositories: golden.config.repos,
-        policy: golden.sizePolicy ?? null,
-      };
-    },
-  );
-
-  for (const launchTool of ["launch", "launch_sized_v1"] as const) {
-    tool(
-      launchTool,
-      {
-        title: "Launch an agent",
-        description:
-          "Forks a golden into a new sandbox, pulls its repos, runs its init commands, and starts the agent. " +
-          "With `prompt` the agent starts working at once (status running). Without it the sandbox is left ready " +
-          "and the conversation starts at the first `send`. The sandbox gets only your (or your org's) Armada " +
-          "credentials for this agent, never the boat.dev account's. When the caller connected GitHub, git and gh in " +
-          "the sandbox act as that person (8 hour token): see `github` in the answer. Setup can take a few minutes.",
-        input: {
-          ...(launchTool === "launch_sized_v1" ? { size_policy_version: z.literal(1) } : {}),
-          idempotencyKey: z
-            .string()
-            .min(16)
-            .max(128)
-            .optional()
-            .describe("Reuse this key for retries; inspect launch_receipt after an unknown outcome."),
-          externalRef: externalRefInput.optional(),
-          stopWhenWorkMerged: z.boolean().optional(),
-          visibility: z.enum(["private", "org"]).optional(),
-          skills: z.array(z.string()).max(20).optional(),
-          skipSkillDefaults: z.boolean().optional(),
-          helperCapabilities: z.array(z.string().max(64)).max(8).optional(),
-          connections: z.array(z.string().uuid()).max(MAX_MCP_CONNECTIONS).optional(),
-          golden: z.string().min(1).describe("The golden's name, as in golden_list."),
-          org: z
-            .string()
-            .optional()
-            .describe("The golden's orgId, as in golden_list. Needed only when the name is in several of your orgs."),
-          provider: z
-            .enum(SANDBOX_PROVIDERS)
-            .optional()
-            .describe("The golden's provider. Needed only when the name exists on several providers."),
-          harness: z.enum(HARNESSES).describe("claude (Claude Code) or codex."),
-          model: modelInput,
-          reasoning_effort: effortInput,
-          size: z.enum(MACHINE_SIZES).optional(),
-          repo: z
-            .string()
-            .optional()
-            .describe(
-              "Configured directory or owner/repo from the golden. Prepares native agent cwd, including idle launches. Not confinement.",
-            ),
-          credentialId: z.string().uuid().optional(),
-          prompt: z.string().min(1).optional().describe("The first instruction. Leave out for an idle sandbox."),
-          ttl_seconds: z
-            .number()
-            .int()
-            .min(1)
-            .max(MAX_LAUNCH_TTL_SECONDS)
-            .optional()
-            .describe(
-              `Seconds before the machine stops by itself. Default ${DEFAULT_LAUNCH_TTL_SECONDS} (4 hours). At most ` +
-                `${providerLimitsText}; a longer TTL is refused.`,
-            ),
-        },
-        output: {
-          id: z.string(),
-          provider: providerOutput,
-          runtime: z.object({ kind: z.literal("armada"), epoch: z.string() }).optional(),
-          runtimeTransport: z.literal("dialout").optional(),
-          providerSandboxId: z.string(),
-          boatId: compat("providerSandboxId"),
-          golden: z.string(),
-          externalRef: externalRefOutput,
-          visibility: z.enum(["org", "private"]),
-          harness: z.enum(HARNESSES),
-          helper: z.unknown(),
-          skills: skillReceipts,
-          repositoryDir: z
-            .string()
-            .nullable()
-            .describe("Configured directory used to prepare native agent cwd; not confinement."),
-          ...modelOutput,
-          machineSize: z.unknown().nullable(),
-          status: z.enum(SANDBOX_STATUSES),
-          conversationIds: z.array(z.string()),
-          promptId: z.string().nullable(),
-          ttlSeconds: z.number().int(),
-          expiresAt: z.string().nullable(),
-          github: z
-            .object({
-              status: z.enum(["connected", "not_connected", "revoked", "unavailable"]),
-              login: z.string().nullable(),
-              tokenExpiresAt: z.string().nullable(),
-              message: z.string().nullable(),
-            })
-            .describe(
-              "Whether git and gh in the sandbox act as the caller. Anything but connected means they are not signed in; message says how to fix it.",
-            ),
-        },
-      },
-      async (args) => {
-        // Refused before any lookup or allocation.
-        resolveModelChoice(args.harness, { model: args.model, reasoningEffort: args.reasoning_effort });
-        const actor = await launchActor(args.golden, args.org);
-        const chosen: GoldenRecord = await goldenForLaunch(data.goldens, actor, args.golden, args.provider);
-        resolveRepositoryDir(chosen, args.repo);
-        const provider = await context.provider(chosen);
-        const dispatch = async (receiptId?: string) => {
-          const result = await launchSandbox(
-            provider,
-            {
-              ...(context.skillDefaults ? { skillDefaults: context.skillDefaults } : {}),
-              goldens: data.goldens,
-              sandboxes: data.sandboxes,
-              credentials: context.launchCredentials,
-              ...(context.connections ? { connections: context.connections } : {}),
-            },
-            actor,
-            {
-              golden: args.golden,
-              ...(args.size === undefined ? {} : { size: args.size }),
-              provider: chosen.provider,
-              harness: args.harness,
-              ...(args.repo === undefined ? {} : { repo: args.repo }),
-              ...(args.model === undefined ? {} : { model: args.model }),
-              ...(args.visibility === undefined ? {} : { visibility: args.visibility }),
-              ...(args.skipSkillDefaults === undefined ? {} : { skipSkillDefaults: args.skipSkillDefaults }),
-              ...(args.skills === undefined ? {} : { skills: args.skills }),
-              ...(args.helperCapabilities === undefined ? {} : { helperCapabilities: args.helperCapabilities }),
-              ...(args.connections === undefined ? {} : { connections: args.connections }),
-              ...(args.credentialId ? { credentialId: args.credentialId } : {}),
-              ...(args.reasoning_effort === undefined ? {} : { reasoningEffort: args.reasoning_effort }),
-              ...(args.prompt === undefined ? {} : { prompt: args.prompt }),
-              ...(args.ttl_seconds === undefined ? {} : { ttlSeconds: args.ttl_seconds }),
-              ...(args.stopWhenWorkMerged === undefined ? {} : { stopWhenWorkMerged: args.stopWhenWorkMerged }),
-              ...(args.externalRef === undefined ? {} : { externalRef: args.externalRef }),
-            },
-            { ...context.launch, ...(receiptId ? { newId: () => receiptId } : {}) },
-          );
-          return {
-            ...launchResponse(result),
-            helper: result.helper,
-            visibility: result.sandbox.visibility ?? result.golden.visibility,
-          };
-        };
-        if (!context.ordinaryLaunchReceipts) {
-          if (args.idempotencyKey) throw new ToolError("invalid", "Durable launch receipts are not configured.");
-          return dispatch();
-        }
-        return context.ordinaryLaunchReceipts.run(
-          actor,
-          args.idempotencyKey ?? crypto.randomUUID(),
-          { ...args, goldenId: chosen.id },
-          dispatch,
-          {
-            target: {
-              provider: chosen.provider,
-              orgId: chosen.orgId,
-              visibility: chosen.visibility,
-              modal: chosen.modal,
-            },
-            management:
-              (await provider.managementIdentity?.()) ??
-              (() => {
-                throw new ToolError("invalid", "Provider cannot pin management authority.");
-              })(),
-            backendId:
-              (await provider.backendIdentity?.())?.id ??
-              (() => {
-                throw new ToolError("invalid", "Provider cannot pin allocation authority.");
-              })(),
-          },
-        );
-      },
-    );
-  }
-
-  tool(
-    "launch_receipt",
-    {
-      title: "Inspect an ordinary launch receipt",
-      description:
-        "Owner-only allocation recovery by durable receipt id. An empty lookup is not proof of no allocation; never refork an unknown receipt. Discovered provider ids can be retired by an operator through provider controls.",
-      input: {
-        id: z.string().uuid(),
-        org: z.string().optional(),
-      },
-      output: {
-        id: z.string(),
-        response: z.unknown(),
-        allocations: z.array(z.object({ id: z.string(), state: z.string() })),
-        outcome: z.string(),
-      },
-    },
-    async (args) => {
-      const member = resolveCreateOrg(caller.orgs, args.org);
-      const actor = { orgId: member.orgId, userId: caller.userId };
-      if (!context.ordinaryLaunchReceipts)
-        throw new ToolError("invalid", "Durable launch receipts are not configured.");
-      return context.ordinaryLaunchReceipts.inspect(actor, args.id, context.provider);
-    },
-  );
-
-  registerList();
-
-  function registerList() {
-    tool(
-      "list",
-      {
-        title: "List sandboxes",
-        description:
-          "Allowlisted metadata of sandboxes in your current organizations, newest first. Interior is owner/admin only. " +
-          "Deleted ones are left out unless asked for. Statuses are as recorded; call status for a fresh read.",
-        input: sandboxListInput.shape,
-        output: {
-          sandboxes: z.array(sandboxListMetadata),
-          total: z.number().int(),
-          page: z.number().int(),
-          limit: z.number().int(),
-          hasMore: z.boolean(),
-          nextPage: z.number().int().nullable(),
-        },
-        readOnly: true,
-      },
-      async (args) => {
-        const statuses: readonly SandboxStatus[] = args.status ?? SANDBOX_STATUSES.filter((name) => name !== "deleted");
-        const limit = args.limit ?? 25;
-        const page = args.page ?? 1;
-        const { rows, total } = await data.sandboxes.list({
-          statuses,
-          limit,
-          page,
-          ...(args.harness === undefined ? {} : { harness: args.harness }),
-          ...(args.golden === undefined ? {} : { goldenId: args.golden }),
-          ...(args.owner === undefined ? {} : { ownerId: args.owner === "me" ? caller.userId : args.owner }),
-          ...(args.externalRef === undefined ? {} : { externalRef: args.externalRef }),
-        });
-        const hasMore = page * limit < total;
-        return {
-          total,
-          page,
-          limit,
-          hasMore,
-          nextPage: hasMore && page < 1_000_000 ? page + 1 : null,
-          sandboxes: rows.map((row) => ({
-            ...row,
-            ...logicalExpiry(row.expiresAt, context.now()),
-            statusMessage: idlePauseMessage(row, context.now()),
-          })),
-        };
-      },
-    );
-  }
-
-  tool(
-    "resource_advice",
-    {
-      title: "Resource sizing evidence",
-      description:
-        "Collects one bounded read-only VM observation and reports the last ten comparable repository sessions. Missing evidence causes abstention; never resizes or changes defaults.",
-      input: { id },
-      output: { advice: z.unknown() },
-    },
-    async (args) => {
-      const found = await visible(args.id);
-      const store = data.resourceObservations;
-      if (!store) throw new ToolError("dependency_unavailable", "Resource observation persistence is unavailable.");
-      const admission =
-        found.resourceProject && found.machineSize?.capacity && ["ready", "running"].includes(found.status)
-          ? await store.claim(found.id, context.now())
-          : null;
-      if (admission) {
-        let observation = null;
-        try {
-          observation = (await (await context.provider(found)).observeResources?.(found.providerSandboxId)) ?? null;
-        } catch {
-          /* Collection failure is unavailable; never ingest raw provider diagnostics. */
-        }
-        if (
-          observation &&
-          validateProviderResourceObservation(observation) &&
-          observation.reading.cpuLogicalCpus !== null &&
-          observation.reading.memoryTotalBytes !== null
-        ) {
-          try {
-            await store.append(found.id, observation, context.now(), admission);
-          } catch (error) {
-            if (!(error instanceof GoldenError && error.code === "conflict")) throw error;
-          }
-        }
-      }
-      return { advice: summarizeResourceHistory(await store.history(found.id, context.now()), context.now()) };
-    },
-  );
-
-  tool(
-    "status",
-    {
-      title: "Sandbox status",
-      description:
-        "Where a sandbox and its latest turn are. Modal uses authorized stored observations; physical state is refreshed by the lifecycle worker. Boat is read live. prompt.state is " +
-        "queued (accepted by a starting Docker sandbox, not yet admitted by its runtime), running, finished, interrupted or failed; failed includes a usage limit or an expired login, with " +
-        "the reason. settled is true when the agent is not working.",
-      input: {
-        id,
-        prompt_id: z.string().min(1).optional().describe("A specific turn. Default: the latest."),
-        recorded: z
-          .boolean()
-          .optional()
-          .describe(
-            "True: database-only state. False: live provider probe. Omitted: provider-specific detail read. CLI defaults to true; --live sets false.",
-          ),
-      },
-      output: status,
-      readOnly: true,
-    },
-    async (args) => {
-      const report = await statusOf(args.id, args.prompt_id, args.recorded === undefined, true, args.recorded === true);
-      // Read after statusOf so an invisible sandbox has already been refused.
-      const launch = data.sandboxes.launchTiming ? await data.sandboxes.launchTiming(report.id) : undefined;
-      return launch === undefined ? report : { ...report, launch };
-    },
-  );
-
-  tool(
-    "wait",
-    {
-      title: "Wait for the agent",
-      description:
-        `Blocks until the agent settles (its turn finished, failed or was interrupted, or the machine stopped) ` +
-        `or the timeout passes, then answers like status with timedOut. Default ${DEFAULT_WAIT_SECONDS}s, ` +
-        `at most ${MAX_WAIT_SECONDS}s: call again to keep waiting.`,
-      input: {
-        id,
-        timeout_seconds: z.number().int().min(0).max(MAX_WAIT_SECONDS).optional(),
-        prompt_id: z.string().min(1).optional().describe("A specific turn. Default: the latest."),
-      },
-      output: { ...status, timedOut: z.boolean() },
-      readOnly: true,
-    },
-    (args) =>
-      waitSettled(() => statusOf(args.id, args.prompt_id), {
-        timeoutMs: (args.timeout_seconds ?? DEFAULT_WAIT_SECONDS) * 1000,
-        now: context.now,
-        sleep: context.sleep,
-      }),
-  );
-
-  tool(
-    "logs",
-    {
-      title: "Read events",
-      description:
-        "The agent's events oldest first: prompts (with status and failure reason), messages and tool calls, " +
-        "steers. The default is one bounded page (100 events). Set all to read every available page (up to " +
-        `${MAX_LOG_PAGES} pages) in one response. Pass the returned cursor as since_cursor to read only what is new. ` +
-        "An event read twice has the same id and the newer body; each id appears once per response.",
-      input: {
-        id,
-        since_cursor: z.string().min(1).optional().describe("The cursor of the previous page."),
-        conversation_id: conversationId,
-        limit: z.number().int().min(1).max(500).optional(),
-        all: z.boolean().optional().describe("Read all available pages, bounded at 100 pages."),
-        direction: z.enum(["forward", "backward"]).optional(),
-        maxBytes: z.number().int().min(256).max(1048576).optional(),
-        coalesce: z.boolean().optional(),
-      },
-      output: LOGS_OUTPUT,
-      readOnly: true,
-    },
-    async (args) => {
-      const found = await visible(args.id);
-      if (found.status === "deleted") throw new ToolError("conflict", "Sandbox is deleted.");
-      const storedProvider = context.storedProviders?.[found.provider];
-      const provider = storedProvider ? await storedProvider(found) : await context.provider(found);
-      const page = await readLogs(provider, found.providerSandboxId, {
-        ...(args.since_cursor ? { since_cursor: args.since_cursor } : {}),
-        ...(args.conversation_id ? { conversation_id: args.conversation_id } : {}),
-        ...(args.limit ? { limit: args.limit } : {}),
-        ...(args.all ? { all: true } : {}),
-        ...(args.direction ? { direction: args.direction } : {}),
-        ...(args.maxBytes ? { maxBytes: args.maxBytes } : {}),
-        ...(args.coalesce !== undefined ? { coalesce: args.coalesce } : {}),
-      });
-      return { ...page, events: page.events.map((item) => ({ ...item })) };
-    },
-  );
-
-  tool(
-    "report",
-    {
-      title: "Report a task outcome",
-      description:
-        "Explicit result for the latest finished turn. Call after wait; never inferred from message text. A new send clears it. Only the sandbox owner or current org admin may report or read it.",
-      input: { id, prompt_id: z.string().min(1), outcome: taskOutcome },
-      output: { id: z.string(), taskOutcome },
-    },
-    async (args) => {
-      const found = await visible(args.id);
-      const provider =
-        found.status === "deleted" ||
-        found.status === "starting" ||
-        (found.status === "failed" && found.stoppedAt !== null)
-          ? null
-          : await context.provider(found);
-      // Empty is a successful-steer marker, not a provider run ID. Null remains
-      // unreportable after an ambiguous admission or for legacy rows.
-      const target =
-        found.taskPromptId === ""
-          ? provider
-            ? (await latestPrompt(provider, found.providerSandboxId, true))?.promptId
-            : null
-          : found.taskPromptId;
-      if (!target || target !== args.prompt_id)
-        throw new ToolError("conflict", "Report only the latest finished turn, using its prompt id.");
-      const report = await readStatus(provider, data.sandboxes, found, { promptId: target, now: context.now() });
-      if (report.prompt?.state !== "finished")
-        throw new ToolError("conflict", "Report only the latest finished turn, using its prompt id.");
-      if (!data.sandboxes.reportTaskOutcome) throw new ToolError("conflict", "Task reporting is unavailable.");
-      await data.sandboxes.reportTaskOutcome(args.id, found.taskPromptId!, args.outcome, found.lifecycleGeneration);
-      return { id: args.id, taskOutcome: args.outcome };
-    },
-  );
-
-  tool(
-    "runtime_github_status",
-    {
-      title: "Read runtime GitHub broker status",
-      description:
-        "Owner-only non-secret current-epoch configuration and credential-request count. Does not return credentials or probe GitHub.",
-      input: { id },
-      output: {
-        id: z.string(),
-        configured: z.boolean(),
-        revision: z.string().nullable(),
-        credentialRequests: z.number().int().nonnegative(),
-        lastAccessedAt: z.string().nullable(),
-        runtime: z.object({ kind: z.literal("armada"), epoch: z.string() }).optional(),
-      },
-      readOnly: true,
-    },
-    async (args) => {
-      if (!context.runtimeGitHub) throw new ToolError("unsupported", "Runtime GitHub is unavailable.");
-      return context.runtimeGitHub.status(caller, args.id);
-    },
-  );
-
-  tool(
-    "runtime_resume",
-    {
-      title: "Resume a checkpointed runtime",
-      description:
-        "Activates the retained sandbox under a fresh epoch and verifies its sealed checkpoint. Continues the saved native conversation, or starts the first only from a verified empty journal. Owner-only; stable request_id, no implicit retry of uncertain activation. Cached outcome is historical, not current machine state.",
-      input: {
-        id,
-        request_id: z.string().uuid(),
-        runtimeVersion: z.literal(1),
-        prompt: z.string().min(1),
-        conversation_id: conversationId,
-      },
-      output: {
-        id: z.string(),
-        requestId: z.string(),
-        promptId: z.string(),
-        conversationId: z.string(),
-        status: z.enum(["queued", "running", "finished", "failed", "interrupted"]),
-        resumed: z.literal(true),
-        runtime: z.object({ kind: z.literal("armada"), epoch: z.string() }),
-        sourceCheckpoint: z.object({
-          epoch: z.string(),
-          watermark: z.number().int().nonnegative(),
-          empty: z.literal(true).optional(),
-        }),
-      },
-      destructive: true,
-    },
-    async (args) => {
-      if (!context.runtimeResume) throw new ToolError("unsupported", "Runtime resume is unavailable.");
-      return context.runtimeResume(caller, args);
-    },
-  );
-
-  tool(
-    "runtime_checkpoint",
-    {
-      title: "Checkpoint an opted-in runtime",
-      description:
-        "Quiesce and seal the current Boat runtime journal/harness state before compute stop. Does not stop the VM or promise disk retention/resume. Owner-only; reuse request_id on uncertainty. New sends remain fenced until fresh enrolment.",
-      input: { id, request_id: z.string().uuid(), runtimeVersion: z.literal(1) },
-      output: {
-        id: z.string(),
-        requestId: z.string(),
-        runtime: z.object({ kind: z.literal("armada"), epoch: z.string() }),
-        checkpoint: z.object({
-          state: z.literal("complete"),
-          watermark: z.number().int().nonnegative(),
-          acknowledgedSequence: z.number().int().nonnegative(),
-        }),
-      },
-      destructive: true,
-    },
-    async (args) => {
-      if (!context.runtimeCheckpoint) throw new ToolError("unsupported", "Runtime checkpoint is unavailable.");
-      return context.runtimeCheckpoint(caller, args);
-    },
-  );
-
-  tool(
-    "resume",
-    {
-      title: "Resume a stopped Docker sandbox",
-      description:
-        "Owner-only. Restarts the same Docker allocation with fresh runtime enrolment, keeping history and the original TTL. Reuse request_id after uncertainty.",
-      input: { id, request_id: z.string().uuid() },
-      output: { id: z.string(), status: z.literal("ready") },
-    },
-    async () => {
-      throw new ToolError("unsupported", "Normal resume is currently available only for Docker sandboxes.");
-    },
-  );
+  tool("report", sandboxOperations.reportSandbox.tool, async (args) => {
+    const found = await visible(args.id);
+    const provider =
+      found.status === "deleted" ||
+      found.status === "starting" ||
+      (found.status === "failed" && found.stoppedAt !== null)
+        ? null
+        : await context.provider(found);
+    // Empty is a successful-steer marker, not a provider run ID. Null remains
+    // unreportable after an ambiguous admission or for legacy rows.
+    const target =
+      found.taskPromptId === ""
+        ? provider
+          ? (await latestPrompt(provider, found.providerSandboxId, true))?.promptId
+          : null
+        : found.taskPromptId;
+    if (!target || target !== args.prompt_id)
+      throw new ToolError("conflict", "Report only the latest finished turn, using its prompt id.");
+    const report = await readStatus(provider, data.sandboxes, found, { promptId: target, now: context.now() });
+    if (report.prompt?.state !== "finished")
+      throw new ToolError("conflict", "Report only the latest finished turn, using its prompt id.");
+    if (!data.sandboxes.reportTaskOutcome) throw new ToolError("conflict", "Task reporting is unavailable.");
+    await data.sandboxes.reportTaskOutcome(args.id, found.taskPromptId!, args.outcome, found.lifecycleGeneration);
+    return { id: args.id, taskOutcome: args.outcome };
+  });
 
   async function sendSandbox(args: import("./runtime-followup.ts").RuntimeFollowupInput) {
     if (context.accountTurns) {
@@ -1833,7 +227,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
     if (found.credentialId)
       pricingContext = (await measure("send_credentials", () => turnCredentials(found))).usagePricing ?? null;
     if (data.sandboxes.captureUsagePricingContext)
-      pricingContext = await data.sandboxes.captureUsagePricingContext(found.id);
+      pricingContext = (await data.sandboxes.captureUsagePricingContext(found.id)) ?? pricingContext;
     const stored =
       found.model !== null && found.reasoningEffort !== null
         ? { model: found.model, reasoningEffort: found.reasoningEffort }
@@ -1843,8 +237,10 @@ export function createArmadaServer(context: ToolContext, version: string, option
       args.model === undefined && args.reasoning_effort === undefined
         ? stored
         : resolveModelChoice(found.harness, { model: args.model, reasoningEffort: args.reasoning_effort }, stored);
-    const conversation = args.conversation_id ?? found.conversationIds.at(-1);
+    const conversation = found.conversationIds.at(-1);
     const machine = await measure("send_state", () => provider.get(found.providerSandboxId));
+    if (provider.id === "boat" && machine.state === "stopped" && machine.retainedSnapshot !== "usable")
+      throw new ToolError("conflict", "Boat retained data has not been verified.");
     if (machine.state === "stopped" && found.stoppedAt === null) {
       await data.sandboxes.update(found.id, {
         status: "stopped",
@@ -1909,7 +305,19 @@ export function createArmadaServer(context: ToolContext, version: string, option
                   }
                 : {}),
             })
-            .catch(unknownMutationOutcome),
+            .catch(async (error: unknown) => {
+              if (error instanceof BoatRetentionUnconfirmed && generation !== undefined) {
+                await data.sandboxes.update(found.id, {
+                  status: "stopping",
+                  stoppedAt: null,
+                  stopRequested: true,
+                  finishActivity: true,
+                  activityToken,
+                  expectedGeneration: generation + 1,
+                });
+              }
+              return unknownMutationOutcome(error);
+            }),
         );
         acknowledged = true;
         await data.sandboxes.recordNativePrompt?.(found.id, found.providerSandboxId, receipt.promptId, args.request_id);
@@ -1945,83 +353,24 @@ export function createArmadaServer(context: ToolContext, version: string, option
       .finally(() => context.launchCredentials.releaseAdmission?.(found.id));
   }
 
-  tool(
-    "send",
-    {
-      title: "Send a prompt",
-      description:
-        "Gives the agent its next instruction as a new turn. Without conversation_id the first send of an idle " +
-        "sandbox opens a conversation and later sends continue the latest one. To redirect a turn that is " +
-        "still running, use steer. The turn runs with the model and effort chosen at launch; model and " +
-        "reasoning_effort override them for this turn only. Experimental runtime follow-up requires request_id, " +
-        "an empty ready sandbox, existing conversation, or verified empty checkpoint; retained idle pauses wake automatically before expiry. Preserved stopped Boat/Modal sandboxes resume on send; terminal sandboxes refuse controls with recovery guidance. Model/effort remain pinned to launch.",
-      input: {
-        id,
-        request_id: z
-          .string()
-          .uuid()
-          .optional()
-          .describe(
-            "Required for runtime follow-up; reuse with identical input after uncertain delivery. Native providers accept the field for compatibility only; they do not deduplicate.",
-          ),
-        prompt: z.string().min(1).describe("The instruction."),
-        conversation_id: conversationId,
-        model: modelInput,
-        reasoning_effort: effortInput,
-      },
-      output: {
-        id: z.string(),
-        requestId: z.string().optional(),
-        runtime: z.object({ kind: z.literal("armada"), epoch: z.string() }).optional(),
-        promptId: z.string(),
-        conversationId: z.string(),
-        status: z.enum(["queued", "running", "finished", "failed", "interrupted"]),
-        statusMessage: z.string().optional(),
-      },
-    },
-    sendSandbox,
-  );
+  const sendTool = tool("send", sandboxOperations.sendPrompt.tool, sendSandbox, true);
 
-  tool(
+  const steerTool = tool(
     "steer",
-    {
-      title: "Steer the running turn",
-      description:
-        "Redirects the turn that is running now. delivery says how: native joins the turn (Claude Code); " +
-        "restart interrupts it and continues the same conversation with this text (Codex). Refused when no " +
-        "turn runs: use send then.",
-      input: {
-        id,
-        text: z.string().min(1),
-        conversation_id: conversationId,
-        request_id: z
-          .string()
-          .uuid()
-          .optional()
-          .describe(
-            "Optional durable runtime request ID (runtime sandboxes only); reuse identical input after uncertain delivery.",
-          ),
-      },
-      output: {
-        id: z.string(),
-        promptId: z.string(),
-        conversationId: z.string(),
-        delivery: z.enum(["native", "restart"]),
-        mode: z.string().nullable(),
-      },
-    },
+    sandboxOperations.steerSandbox.tool,
     async (args) => {
       const { sandbox: found, provider, enrolled } = await liveControl(args);
       const delivery = provider.capabilities[found.harness]?.steer ?? "none";
       if (delivery === "none") throw new ToolError("unsupported", `${found.harness} cannot be steered here.`);
       if (!enrolled && delivery === "restart" && found.credentialId) await turnCredentials(found);
+      const conversationId = enrolled ? undefined : found.conversationIds.at(-1);
       const dispatchSteer = () =>
         provider
           .steer({
             sandboxId: found.providerSandboxId,
             ...(args.request_id ? { requestId: args.request_id } : {}),
             text: args.text,
-            ...(args.conversation_id ? { conversationId: args.conversation_id } : {}),
+            ...(conversationId ? { conversationId } : {}),
           })
           .catch(unknownMutationOutcome);
       if (enrolled) {
@@ -2084,275 +433,112 @@ export function createArmadaServer(context: ToolContext, version: string, option
         },
       ).catch((error) => publicationFailure(error, acknowledged));
     },
+    true,
   );
 
-  tool(
+  const interruptTool = tool(
     "interrupt",
-    {
-      title: "Interrupt the running turn",
-      description: "Stops the running turn of one conversation, or of all. The sandbox stays up for the next send.",
-      input: {
-        id,
-        conversation_id: conversationId,
-        request_id: z
-          .string()
-          .uuid()
-          .optional()
-          .describe(
-            "Optional durable runtime request ID (runtime sandboxes only); reuse identical input after uncertain delivery.",
-          ),
-      },
-      output: { id: z.string(), interrupted: z.boolean() },
-    },
+    sandboxOperations.interruptSandbox.tool,
     async (args) => {
-      const { sandbox: found, provider } = await liveControl(args);
+      const { sandbox: found, provider, enrolled } = await liveControl(args);
       if (!provider.capabilities[found.harness]?.interrupt) {
         throw new ToolError("unsupported", `${found.harness} cannot be interrupted here.`);
       }
+      const conversationId = enrolled ? undefined : found.conversationIds.at(-1);
       await provider
         .interrupt({
           sandboxId: found.providerSandboxId,
           ...(args.request_id ? { requestId: args.request_id } : {}),
-          ...(args.conversation_id ? { conversationId: args.conversation_id } : {}),
+          ...(conversationId ? { conversationId } : {}),
         })
         .catch(unknownMutationOutcome);
       return { id: found.id, interrupted: true };
     },
+    true,
   );
 
-  tool(
-    "exec",
-    {
-      title: "Run a command",
-      description:
-        "Runs a shell command in the sandbox (cwd /home/user by default) and returns its output. Output that " +
-        "contains the agent's credentials is redacted. Use it to inspect the repos, not to drive the agent.",
-      input: {
-        id,
-        request_id: z
-          .string()
-          .uuid()
-          .optional()
-          .describe(
-            "Optional durable runtime request ID (runtime sandboxes only); reuse identical input after uncertain delivery.",
-          ),
-        command: z.string().min(1),
-        cwd: z.string().min(1).optional(),
-        timeout_seconds: z.number().int().min(1).max(600).optional().describe("Default 120."),
-      },
-      output: {
-        id: z.string(),
-        exitCode: z.number().int().nullable(),
-        stdout: z.string(),
-        stderr: z.string(),
-        timedOut: z.boolean(),
-        truncated: z.boolean(),
-      },
-    },
-    async (args) => {
-      const { sandbox: found, provider, enrolled } = await liveControl(args);
-      // Applies to managed and ordinary exec before any native preparation or
-      // provider command can implicitly resume a retained disk.
-      await data.sandboxes.assertExecAllowed?.(found.id);
-      const managedNative =
-        !enrolled &&
-        (await context.launchCredentials.assertExec?.(
-          { userId: found.ownerId, orgId: found.orgId, role: "member" },
-          found.id,
-        ));
-      let acknowledged = false;
-      const execute = async () => {
-        const membership = caller.orgs.find((member) => member.orgId === found.orgId);
-        if (!membership) throw new ToolError("forbidden", "No current organization membership.");
-        if (!enrolled) await prepareConnections(provider, found, membership.role);
-        const nativeActor = { userId: found.ownerId, orgId: found.orgId, role: "member" as const };
-        const readNativeSecrets = (phase: "before" | "after") =>
-          context.launchCredentials.nativeSecrets?.(nativeActor, found.id, provider, found.providerSandboxId, phase);
-        const nativeBefore = (!enrolled && (await readNativeSecrets("before"))) || [];
-        const result = await provider
-          .exec({
-            sandboxId: found.providerSandboxId,
-            ...(args.request_id ? { requestId: args.request_id } : {}),
-            command: args.command,
-            cwd: args.cwd ?? "/home/user",
-            timeoutSeconds: args.timeout_seconds ?? 120,
-          })
-          .catch(unknownMutationOutcome);
-        acknowledged = true;
-        if (result.detached)
-          throw new ToolError(
-            "outcome_unknown",
-            "The command started in the background. Check sandbox status before retrying.",
-          );
-        try {
-          const nativeAfter = (!enrolled && (await readNativeSecrets("after"))) || [];
-          const secrets = [...(await context.exposedSecrets(found.orgId)), ...nativeBefore, ...nativeAfter];
-          const clip = (text: string) => {
-            const safe = redact(text, secrets);
-            return safe.length <= OUTPUT_LIMIT ? safe : `...${safe.slice(-OUTPUT_LIMIT)}`;
-          };
-          return {
-            id: found.id,
-            exitCode: result.exitCode,
-            stdout: clip(result.stdout),
-            stderr: clip(result.stderr),
-            timedOut: result.timedOut,
-            truncated: result.truncated || result.stdout.length > OUTPUT_LIMIT || result.stderr.length > OUTPUT_LIMIT,
-          };
-        } catch (error) {
-          throw new LaunchError(
-            "outcome_unknown",
-            "The command ran but its result could not be safely published. Check sandbox status before retrying.",
-            { cause: error },
-          );
-        }
-      };
-      if (!managedNative) {
-        // Admission-only check: already-running ordinary commands remain concurrent
-        // and do not hold a lifecycle lease or delay stop/TTL reconciliation.
-        return execute();
+  tool("exec", sandboxOperations.execSandbox.tool, async (args) => {
+    const { sandbox: found, provider, enrolled } = await liveControl(args);
+    // Applies to managed and ordinary exec before any native preparation or
+    // provider command can implicitly resume a retained disk.
+    await data.sandboxes.assertExecAllowed?.(found.id);
+    const managedNative =
+      !enrolled &&
+      (await context.launchCredentials.assertExec?.(
+        { userId: found.ownerId, orgId: found.orgId, role: "member" },
+        found.id,
+      ));
+    let acknowledged = false;
+    const execute = async () => {
+      const membership = caller.orgs.find((member) => member.orgId === found.orgId);
+      if (!membership) throw new ToolError("forbidden", "No current organization membership.");
+      if (!enrolled) await prepareConnections(provider, found, membership.role);
+      const nativeActor = { userId: found.ownerId, orgId: found.orgId, role: "member" as const };
+      const readNativeSecrets = (phase: "before" | "after") =>
+        context.launchCredentials.nativeSecrets?.(nativeActor, found.id, provider, found.providerSandboxId, phase);
+      const nativeBefore = (!enrolled && (await readNativeSecrets("before"))) || [];
+      const result = await provider
+        .exec({
+          sandboxId: found.providerSandboxId,
+          ...(args.request_id ? { requestId: args.request_id } : {}),
+          command: args.command,
+          cwd: args.cwd ?? "/home/user",
+          timeoutSeconds: args.timeout_seconds ?? 120,
+        })
+        .catch(unknownMutationOutcome);
+      acknowledged = true;
+      if (result.detached)
+        throw new ToolError(
+          "outcome_unknown",
+          "The command started in the background. Check sandbox status before retrying.",
+        );
+      try {
+        const nativeAfter = (!enrolled && (await readNativeSecrets("after"))) || [];
+        const secrets = [...(await context.exposedSecrets(found.orgId)), ...nativeBefore, ...nativeAfter];
+        const clip = (text: string) => {
+          const safe = redact(text, secrets);
+          return safe.length <= OUTPUT_LIMIT ? safe : `...${safe.slice(-OUTPUT_LIMIT)}`;
+        };
+        return {
+          id: found.id,
+          exitCode: result.exitCode,
+          stdout: clip(result.stdout),
+          stderr: clip(result.stderr),
+          timedOut: result.timedOut,
+          truncated: result.truncated || result.stdout.length > OUTPUT_LIMIT || result.stderr.length > OUTPUT_LIMIT,
+        };
+      } catch (error) {
+        throw new LaunchError(
+          "outcome_unknown",
+          "The command ran but its result could not be safely published. Check sandbox status before retrying.",
+          { cause: error },
+        );
       }
-      // Stop and native-file mutation must not interleave: a stop receipt sampled
-      // before this command cannot authenticate output produced after auto-resume.
-      return sandboxActivity(
-        data.sandboxes,
-        found,
-        {},
-        async (signal) => {
-          signal.throwIfAborted();
-          const result = await execute();
-          signal.throwIfAborted();
-          return { result, patch: {} };
-        },
-        { deadlineMs: ((args.timeout_seconds ?? 120) + 60) * 1000 },
-      ).catch((error) => publicationFailure(error, acknowledged));
-    },
-  );
+    };
+    if (!managedNative) {
+      // Admission-only check: already-running ordinary commands remain concurrent
+      // and do not hold a lifecycle lease or delay stop/TTL reconciliation.
+      return execute();
+    }
+    // Stop and native-file mutation must not interleave: a stop receipt sampled
+    // before this command cannot authenticate output produced after auto-resume.
+    return sandboxActivity(
+      data.sandboxes,
+      found,
+      {},
+      async (signal) => {
+        signal.throwIfAborted();
+        const result = await execute();
+        signal.throwIfAborted();
+        return { result, patch: {} };
+      },
+      { deadlineMs: ((args.timeout_seconds ?? 120) + 60) * 1000 },
+    ).catch((error) => publicationFailure(error, acknowledged));
+  });
 
-  tool(
-    "work_recovery",
-    {
-      title: "Retrieve preserved work",
-      description: "Owner/admin only. Returns sensitive base64 recovery archive; never log it.",
-      input: { id, recovery_id: z.string().uuid().optional() },
-      output: { archive: z.string().nullable() },
-      readOnly: true,
-    },
-    async (args) => {
-      const found = await data.sandboxes.get(args.id);
-      if (!found) throw new ToolError("not_found", "No such sandbox.");
-      return { archive: (await data.sandboxes.readWorkRecovery?.(found.id, args.recovery_id)) ?? null };
-    },
-  );
-
-  tool(
-    "delete",
-    {
-      title: "Delete a stopped sandbox",
-      description:
-        "Owner/admin only. Permanently removes provider resources and recovery archives. Stop first. Legacy orchestrator parents and children are refused; ordinary delegated children require a deleted parent.",
-      input: { id, request_id: z.string().uuid().optional() },
-      output: { id: z.string(), status: z.literal("deleted") },
-      destructive: true,
-    },
-    async (args) => {
-      if (!data.sandboxes.assertDeletionAllowed)
-        throw new ToolError("unavailable", "Sandbox deletion is not configured.");
-      await data.sandboxes.assertDeletionAllowed(args.id);
-      const found = await visible(args.id);
-      if (found.status === "deleted") return { id: found.id, status: "deleted" as const };
-      const deletionProvider = context.deletionProvider;
-      if (found.providerSandboxId && !deletionProvider)
-        throw new ToolError("unavailable", "Sandbox deletion provider is not configured.");
-      const provider = found.providerSandboxId && deletionProvider ? await deletionProvider(found) : null;
-      // A failed delete must not refuse the caller's immediate retry for the two-minute lease.
-      // A definite refusal deleted nothing. Modal fences any failure itself: the adapter records
-      // the generation's exit proof and a deleting phase that every resume path refuses before
-      // any remote mutation, and its store lease serializes concurrent deletes. Other unknown
-      // outcomes and pending receipts retain the bounded activity lease.
-      const failurePatch = (error: unknown) => {
-        if (found.provider === "modal" || isNonMutatingProviderRefusal(error)) return {};
-        throw error;
-      };
-      return sandboxActivity(
-        data.sandboxes,
-        found,
-        { deleteRequested: true },
-        async (signal) => {
-          signal.throwIfAborted();
-          if (provider) {
-            try {
-              const receipt = await provider.delete({ sandboxId: found.providerSandboxId });
-              if (!["deleted", "completed"].includes(receipt.status))
-                throw new ToolError(
-                  "conflict",
-                  "Provider deletion is pending. Retry deletion to confirm completion; do not resume this sandbox.",
-                );
-            } catch (error) {
-              if (!(error instanceof ProviderError && error.code === "not_found")) throw error;
-            }
-          }
-          return {
-            result: { id: found.id, status: "deleted" as const },
-            patch: {
-              status: "deleted",
-              deletedAt: context.now().toISOString(),
-              ...(found.stoppedAt === null ? { usageRuntimeUnknown: true } : {}),
-            },
-          };
-        },
-        { failurePatch },
-      );
-    },
-  );
-
-  tool(
-    "extend",
-    {
-      title: "Extend a sandbox lifetime",
-      description:
-        "Set a later expiry, measured from now. Owner/admin only. Modal extensions must fit inside the current physical machine lifetime; stop and resume for a new physical lifetime.",
-      input: { id, ttl_seconds: z.number().int().positive().max(MAX_SANDBOX_EXTENSION_TTL_SECONDS) },
-      output: { id: z.string(), expiresAt: z.string(), ttlSeconds: z.number().int() },
-    },
-    async (args) => {
-      await data.sandboxes.assertExtensionAllowed?.(args.id).catch((error) => {
-        if (error instanceof GoldenError && ["not_found", "forbidden"].includes(error.code))
-          throw new ToolError(
-            error.code === "forbidden" ? "extension_not_allowed" : "extension_not_found",
-            error.message,
-          );
-        throw error;
-      });
-      const sandbox = await data.sandboxes.get(args.id);
-      if (!sandbox) throw new ToolError("extension_not_found", "Sandbox not found or not accessible.");
-      const provider = await (context.deletionProvider?.(sandbox) ?? context.provider(sandbox)).catch((error) => {
-        if (error instanceof ProviderError && error.code === "forbidden")
-          throw new ToolError("extension_not_allowed", "You are not allowed to extend this sandbox.");
-        throw error;
-      });
-      return extendSandbox(
-        data.sandboxes,
-        sandbox,
-        provider,
-        args.ttl_seconds,
-        () => context.connections?.renewLifetime?.(provider, sandbox.id) ?? Promise.resolve(),
-      );
-    },
-  );
-
-  tool(
+  const stopTool = tool(
     "stop",
-    {
-      title: "Stop a sandbox",
-      description:
-        "Stops the machine. Modal keeps its disk only if checkpoint succeeds; fallback termination returns " +
-        "checkpoint_failed_disk_not_retained and cannot resume. Other retained stops can resume on send. Use it when the " +
-        "agent is done, so the sandbox stops costing.",
-      input: { id, request_id: z.string().uuid().optional(), only_if_idle: z.boolean().optional() },
-      output: { id: z.string(), status: z.enum(SANDBOX_STATUSES), preservationNote: z.string().optional() },
-      destructive: true,
-    },
+    sandboxOperations.stopSandbox.tool,
     async (args) => {
       const found = await visible(args.id);
       if (args.only_if_idle && !["ready", "stopped"].includes(found.status))
@@ -2370,21 +556,28 @@ export function createArmadaServer(context: ToolContext, version: string, option
       if (found.stopRequestedAt || ["stopping", "stopped"].includes(found.status))
         return { id: found.id, status: found.status };
       const { provider } = await live(args.id, true);
+      const idleGuard: Pick<ServerSandboxPatch, "onlyIfIdle"> = { onlyIfIdle: args.only_if_idle === true };
       return sandboxActivity(
         data.sandboxes,
         found,
         {
+          ...idleGuard,
           status: found.status === "failed" ? "failed" : "stopping",
           stoppedAt: null,
           stopRequested: true,
           ...(found.statusReason === "expired" ? { statusReason: "expired" } : {}),
         },
-        async (signal) => {
+        async (signal, token) => {
           signal.throwIfAborted();
           // A historical warning is not proof that this stop has captured current work.
           const preservation = await data.sandboxes
-            .preserveWork?.(found.id, provider, found.providerSandboxId)
-            .catch(() => {});
+            .preserveWork?.(found.id, provider, found.providerSandboxId, {
+              kind: "activity",
+              token,
+              generation: found.lifecycleGeneration === undefined ? undefined : found.lifecycleGeneration + 1,
+              signal,
+            })
+            .catch(() => "pending" as const);
           signal.throwIfAborted();
           if (preservation === "pending")
             return {
@@ -2403,16 +596,15 @@ export function createArmadaServer(context: ToolContext, version: string, option
           try {
             if (provider.collectTurnUsage) await collectSandboxUsage(provider, data.sandboxes, found);
             signal.throwIfAborted();
-            recordStopDispatch(found.id, found.providerSandboxId, "user_stop");
-            await provider.stop({ sandboxId: found.providerSandboxId });
-            signal.throwIfAborted();
-            const observed = await provider.get(found.providerSandboxId);
-            terminal = observed.state === "stopped";
+            const observed = await stopAndObserve(provider, found.id, found.providerSandboxId, "user_stop", signal);
+            terminal =
+              observed.state === "stopped" &&
+              (provider.id !== "boat" || observed.retainedSnapshot === "usable" || found.status === "failed");
             stoppedAt = observed.stoppedAt;
             preservationNote = observed.stopNote;
           } catch (error) {
             if (!(error instanceof ProviderError && error.code === "not_found")) throw error;
-            terminal = true;
+            terminal = provider.id !== "boat";
           }
           signal.throwIfAborted();
           const status: SandboxStatus =
@@ -2437,205 +629,112 @@ export function createArmadaServer(context: ToolContext, version: string, option
         },
       );
     },
+    true,
   );
 
-  /** The org a launch acts in: the given one, else the one of the caller's orgs that has this golden. */
-  async function launchActor(name: string, org: string | undefined) {
-    const member = (orgId: string) => {
-      const found = caller.orgs.find((item) => item.orgId === orgId);
-      return found ? { userId: caller.userId, orgId: found.orgId, role: found.role } : null;
-    };
-    if (org !== undefined) {
-      const chosen = member(org);
-      if (!chosen) throw new ToolError("not_found", `You are not a member of org '${org}'.`);
-      return chosen;
-    }
-    const [first] = caller.orgs;
-    if (!first) throw new ToolError("not_found", "You are not a member of any org.");
-    if (caller.orgs.length === 1) return member(first.orgId) ?? fail();
-    const holders: string[] = [];
-    for (const orgId of orgIds) if ((await data.goldens.findByName(orgId, name)).length > 0) holders.push(orgId);
-    if (holders.length > 1) {
-      throw new ToolError("invalid_request", `'${name}' is a golden in several of your orgs. Pass org (an orgId).`);
-    }
-    return member(holders[0] ?? first.orgId) ?? fail();
-  }
-
-  return server;
-}
-
-const providerLimitsText = SANDBOX_PROVIDERS.map((provider) => {
-  const limits = PROVIDER_LIMITS[provider];
-  return `${limits.maxTtlSeconds} (${limits.maxTtlLabel}) on ${provider}`;
-}).join(", ");
-
-function fail(): never {
-  throw new ToolError("internal", "Armada could not complete the call.");
-}
-
-/** The org `golden_create` acts in: the given one, else the caller's only org. There is no existing golden to disambiguate by. */
-function resolveCreateOrg(
-  orgs: readonly { orgId: string; role: MemberRole }[],
-  org: string | undefined,
-): { orgId: string; role: MemberRole } {
-  if (org !== undefined) {
-    const found = orgs.find((item) => item.orgId === org);
-    if (!found) throw new ToolError("not_found", `You are not a member of org '${org}'.`);
-    return found;
-  }
-  const [first] = orgs;
-  if (!first) throw new ToolError("not_found", "You are not a member of any org.");
-  if (orgs.length > 1) throw new ToolError("invalid_request", "You belong to more than one org. Pass org (an orgId).");
-  return first;
-}
-
-async function readLogs(
-  provider: Provider,
-  sandboxId: string,
-  args: {
-    since_cursor?: string;
-    conversation_id?: string;
-    limit?: number;
-    all?: boolean;
-    direction?: "forward" | "backward";
-    maxBytes?: number;
-    coalesce?: boolean;
-  },
-) {
-  if (args.direction === "backward" && args.all) throw new Error("Backward reads cannot drain all pages.");
-  const { events, cursor, hasMore, olderCursor, source, runtimeFailure } = await readEventPages(
-    (cursor) =>
-      provider.events({
-        sandboxId,
-        ...(args.direction ? { direction: args.direction } : {}),
-        ...(args.maxBytes ? { maxBytes: args.maxBytes } : {}),
-        ...(args.coalesce !== undefined ? { coalesce: args.coalesce } : {}),
-        ...(cursor ? { cursor } : {}),
-        ...(args.conversation_id ? { conversationId: args.conversation_id } : {}),
-        ...(args.limit ? { limit: args.limit } : {}),
-      }),
-    args.since_cursor,
-    args.all === true,
-  );
-  return {
-    ...(olderCursor ? { olderCursor } : {}),
-    ...(source ? { source } : {}),
-    ...(runtimeFailure ? { runtimeFailure } : {}),
-    events: publicLogEvents(events),
-    cursor,
-    hasMore,
-  };
-}
-
-function errorResult(error: unknown, tool: string, logError: (line: string) => void): CallToolResult {
-  const { code, message } = describe(error);
-  if (
-    [
-      "internal",
-      "unavailable",
-      "provider_unavailable",
-      "dependency_unavailable",
-      "outcome_unknown",
-      "start_failed",
-    ].includes(code)
-  ) {
-    recordOperatorFailure(`tool.${tool}`, error, {
-      sandboxId: error instanceof LaunchError ? error.sandboxId : undefined,
-      log: logError,
-    });
-  }
-  return {
-    isError: true,
-    ...(error instanceof LaunchError && error.reason
-      ? {
-          structuredContent: {
-            error: {
-              code,
-              message,
-              details: { reason: error.reason, action: error.action, ...(error.stage ? { stage: error.stage } : {}) },
-            },
-          },
+  if (surface === "mcp") {
+    register(
+      "send",
+      {
+        title: sendTool.title,
+        description:
+          "Start a new turn, or set steer to redirect a running turn. Model and effort overrides apply only to new turns. " +
+          "Runtime follow-up requires a request ID. Reuse that ID with identical input after uncertain delivery.",
+        input: z.looseObject({
+          ...sendTool.input,
+          request_id: sendTool.input.request_id.describe(
+            "Required for runtime follow-up. Optional for runtime steer. Reuse with identical input after uncertain delivery. " +
+              "Native send accepts the field without deduplication. Omit it for native steer.",
+          ),
+          steer: z
+            .boolean()
+            .optional()
+            .describe("Redirect the running turn. Delivery is native or a restart in the same conversation."),
+        }),
+        output: {
+          ...sendTool.output,
+          status: sendTool.output.status.optional(),
+          delivery: steerTool.output.delivery.optional(),
+          mode: steerTool.output.mode.optional(),
+        },
+      },
+      async ({ steer, id, prompt, request_id, model, reasoning_effort, ...extra }) => {
+        try {
+          refuseConversationSelector(extra);
+        } catch (error) {
+          return errorResult(error, "send", context.logError ?? console.error);
         }
-      : {}),
-    ...(error instanceof ProviderError && code === "rate_limited"
-      ? {
-          structuredContent: {
-            error: {
-              code,
-              message,
-              details: providerRateLimitDetails({ ...error.details, retryAfterSeconds: error.retryAfterSeconds }),
-            },
-          },
+        if (!steer) return sendTool.invoke({ id, prompt, request_id, model, reasoning_effort });
+        if (model !== undefined || reasoning_effort !== undefined)
+          return invalidToolInput("send", "Model and effort overrides require a new turn.");
+        return steerTool.invoke({ id, text: prompt, request_id });
+      },
+    );
+
+    register(
+      "status",
+      {
+        ...readStatusTool,
+        description: `${readStatusTool.description} Set wait to block until settled or timed out.`,
+        input: {
+          ...readStatusTool.input,
+          timeout_seconds: waitTool.input.timeout_seconds,
+          wait: z.boolean().optional().describe("Wait for settlement. Default timeout: 60 seconds."),
+        },
+        output: { ...readStatusTool.output, timedOut: waitTool.output.timedOut.optional() },
+      },
+      async ({ wait, timeout_seconds, ...args }) => {
+        if (!wait && timeout_seconds !== undefined) return invalidToolInput("status", "timeout_seconds requires wait.");
+        if (wait && args.recorded !== undefined)
+          return invalidToolInput("status", "Waiting uses the live turn state. Omit recorded.");
+        return wait ? waitTool.invoke({ ...args, timeout_seconds }) : readStatusTool.invoke(args);
+      },
+    );
+
+    register(
+      "stop",
+      {
+        ...stopTool,
+        description:
+          `${stopTool.description} Set turn to interrupt the current turn and keep the machine up. ` +
+          "Set after to wait for settlement and stop only if still idle. On timeout this call does not request a stop.",
+        input: z.strictObject({
+          ...stopTool.input,
+          turn: z.boolean().optional().describe("Interrupt the turn without stopping the sandbox."),
+          after: z.boolean().optional().describe("Wait for settlement before attempting an idle-only stop."),
+          timeout_seconds: waitTool.input.timeout_seconds,
+        }),
+        output: {
+          ...stopTool.output,
+          status: stopTool.output.status.optional(),
+          interrupted: interruptTool.output.interrupted.optional(),
+          timedOut: waitTool.output.timedOut.optional(),
+        },
+      },
+      async ({ turn, after, timeout_seconds, ...args }) => {
+        if (!after && timeout_seconds !== undefined) return invalidToolInput("stop", "timeout_seconds requires after.");
+        if (after && (turn || args.only_if_idle !== undefined))
+          return invalidToolInput("stop", "Use after without turn or only_if_idle.");
+        if (turn && args.only_if_idle) return invalidToolInput("stop", "Use turn without only_if_idle.");
+        if (after) {
+          const seconds = timeout_seconds ?? DEFAULT_WAIT_SECONDS;
+          const deadline = context.now().getTime() + seconds * 1000;
+          const waited = await waitTool.invoke({ id: args.id, timeout_seconds: seconds });
+          if (waited.isError || !waited.structuredContent) return waited;
+          if (waited.structuredContent.timedOut || context.now().getTime() >= deadline) {
+            const result = { id: args.id, status: waited.structuredContent.status, timedOut: true };
+            return { structuredContent: result, content: [{ type: "text", text: JSON.stringify(result) }] };
+          }
+          return stopTool.invoke({ ...args, only_if_idle: true });
         }
-      : {}),
-    ...(error instanceof GitHubHydrationError ? { _meta: { error: { code, message, details: error.details } } } : {}),
-    content: [
-      { type: "text", text: message },
-      { type: "text", text: `error code: ${code}` },
-      ...(error instanceof GitHubHydrationError
-        ? [{ type: "text" as const, text: JSON.stringify({ error: { code, message, details: error.details } }) }]
-        : []),
-    ],
-  };
-}
-
-function describe(error: unknown): { code: string; message: string } {
-  const failure = apiFailureCode(error);
-  if (failure) return { code: failure, message: error instanceof Error ? error.message : failure };
-  if (error instanceof ToolError) return { code: error.code, message: error.message };
-  if (error instanceof LaunchError) {
-    const tail = error.sandboxId ? ` Sandbox ${error.sandboxId} is recorded as failed and its machine is stopped.` : "";
-    return {
-      code: error.code,
-      message: `${launchFailureHelp(error.code, undefined, error.message) ?? error.message}${tail}`,
-    };
-  }
-  if (error instanceof GoldenError) return { code: error.code, message: error.message };
-  if (error instanceof ProviderRoutingError)
-    return { code: error.code, message: launchFailureHelp(error.code, undefined, error.message) ?? error.message };
-  if (error instanceof ProviderError) {
-    if (error.code === "no_running_turn") {
-      return { code: error.code, message: "No turn is running. Use send to start one." };
-    }
-    return {
-      code: error.code,
-      message:
-        launchFailureHelp(error.code, { ...error.details, retryAfterSeconds: error.retryAfterSeconds }) ??
-        error.message,
-    };
-  }
-  if (error instanceof VaultError)
-    return {
-      // Shared typed classification above handles unavailable and credential refusal.
-      // All remaining vault codes already match the public HTTP categories.
-      code: error.code,
-      message: error.message,
-    };
-  if (error instanceof EncryptionKeyError) return { code: "dependency_unavailable", message: error.message };
-  if (error instanceof DataError)
-    return { code: error.code === "unavailable" ? "dependency_unavailable" : error.code, message: error.message };
-  return { code: "internal", message: "Armada could not complete the call." };
-}
-
-/** This catch belongs on the dispatch itself, never on preparation or provider reads. */
-function unknownMutationOutcome(error: unknown): never {
-  if (!(error instanceof ProviderError) || error.code === "unavailable" || error.code === "unknown")
-    throw new LaunchError(
-      "outcome_unknown",
-      "The operation outcome is unknown. Check sandbox status before retrying.",
-      { cause: error },
+        return turn ? interruptTool.invoke({ id: args.id, request_id: args.request_id }) : stopTool.invoke(args);
+      },
     );
-  throw error;
-}
+  }
 
-function publicationFailure(error: unknown, acknowledged: boolean): never {
-  if (acknowledged)
-    throw new LaunchError(
-      "outcome_unknown",
-      "The operation was accepted but its result could not be published. Check sandbox status before retrying.",
-      { cause: error },
-    );
-  throw error;
+  function invalidToolInput(name: string, message: string) {
+    return errorResult(new ToolError("invalid_request", message), name, context.logError ?? console.error);
+  }
 }
 
 /** The run a successful steer left in progress, or "" when it cannot be proven.

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { createArmadaServer, type ToolContext } from "../src/tools.ts";
+import { createArmadaServer, createRestToolServer, type ToolContext } from "../src/tools.ts";
 
 test("list-only registration retains SDK validation and listing while normal MCP retains its catalogue", async () => {
   const reads: unknown[] = [];
@@ -17,7 +17,7 @@ test("list-only registration retains SDK validation and listing while normal MCP
     },
   } as unknown as ToolContext;
   for (const onlyTool of [true, false]) {
-    const server = createArmadaServer(context, "test", onlyTool ? { onlyTool: "list" } : undefined);
+    const server = onlyTool ? createRestToolServer(context, "test", "list") : createArmadaServer(context, "test");
     const client = new Client({ name: "test", version: "test" });
     const [a, b] = InMemoryTransport.createLinkedPair();
     try {

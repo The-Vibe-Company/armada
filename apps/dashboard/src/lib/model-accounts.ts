@@ -23,13 +23,17 @@ export type AccountKind = (typeof ACCOUNT_KINDS)[number];
 export type AccountStatus = (typeof ACCOUNT_STATUSES)[number];
 export type AccountScope = (typeof ACCOUNT_SCOPES)[number];
 
+type MonthlySpend = { periodStart: string; usd: string; unpricedTurns: number };
+
 export interface ModelAccount {
+  monthlySpend?: MonthlySpend;
   maxAgents?: number | null;
   modelLimits?: Record<string, number>;
   modelCounts?: Record<string, { runningAgents: number; waitingAgents: number }>;
   runningAgents?: number;
   waitingAgents?: number;
   rateLimited?: boolean;
+  exhaustedUntil?: string;
   id: string;
   scope: AccountScope;
   kind: AccountKind;
@@ -138,6 +142,30 @@ function text(value: unknown, max: number): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim().slice(0, max) : undefined;
 }
 
+function parseMonthlySpend(value: unknown) {
+  if (!isRow(value)) return;
+  const { periodStart, usd, unpricedTurns } = value;
+  if (
+    typeof periodStart !== "string" ||
+    !/^\d{4}-(0[1-9]|1[0-2])-01$/.test(periodStart) ||
+    typeof usd !== "string" ||
+    !/^\d+(?:\.\d+)?$/.test(usd) ||
+    typeof unpricedTurns !== "number" ||
+    !Number.isSafeInteger(unpricedTurns) ||
+    unpricedTurns < 0
+  )
+    return;
+  return { periodStart, usd, unpricedTurns };
+}
+
+export function monthlyApiSpendLabel({ kind, monthlySpend }: ModelAccount) {
+  if (kind !== "openai" && kind !== "anthropic" && kind !== "opencode") return null;
+  const unpriced = monthlySpend?.unpricedTurns ?? 0;
+  const usd = monthlySpend && (monthlySpend.usd !== "0" || unpriced === 0) ? monthlySpend.usd : "—";
+  const note = unpriced ? ` (${unpriced} unpriced ${unpriced === 1 ? "turn" : "turns"})` : "";
+  return `API: ${usd} USD this month${note}`;
+}
+
 /** An account DTO, or null when it does not match the contract. An unknown status reads as `unknown`. */
 export function parseAccount(value: unknown): ModelAccount | null {
   if (!isRow(value)) return null;
@@ -145,10 +173,13 @@ export function parseAccount(value: unknown): ModelAccount | null {
   if (!oneOf(ACCOUNT_SCOPES, value.scope) || !oneOf(ACCOUNT_KINDS, value.kind)) return null;
   const name = text(value.name, MAX_ACCOUNT_NAME);
   const expiresAt = isoOrNull(value.expiresAt);
+  const exhaustedUntil = isoOrNull(value.exhaustedUntil);
   const updatedAt = isoOrNull(value.updatedAt);
   if (!name || expiresAt === undefined || !updatedAt) return null;
   if (typeof value.version !== "number" || !Number.isInteger(value.version) || value.version < 0) return null;
+  const monthlySpend = parseMonthlySpend(value.monthlySpend);
   return {
+    ...(monthlySpend ? { monthlySpend } : {}),
     id: value.id,
     scope: value.scope,
     kind: value.kind,
@@ -156,6 +187,7 @@ export function parseAccount(value: unknown): ModelAccount | null {
     isDefault: value.isDefault === true,
     status: oneOf(ACCOUNT_STATUSES, value.status) ? value.status : "unknown",
     expiresAt,
+    ...(exhaustedUntil ? { exhaustedUntil } : {}),
     updatedAt,
     version: value.version,
     maxAgents: typeof value.maxAgents === "number" ? value.maxAgents : null,
@@ -432,6 +464,12 @@ export type AccountList =
   | { state: "not-configured" }
   | { state: "error"; message: string };
 
+export function missingMorphModels(account: Pick<ModelAccount, "kind" | "models">) {
+  return account.kind === "morph" && !account.models?.length
+    ? "Morph models could not be loaded. Reload and try again."
+    : null;
+}
+
 /**
  * The account a launch request bills, as the server action decides it: `id` undefined only where no account is
  * sent (a server older than named accounts, or an agent with no account at all, which the server then refuses on
@@ -462,6 +500,8 @@ export function checkAccountChoice(
   if (!chosen) return { ok: false, error: "That account is not available for this agent. Reload and choose again." };
   const problem = accountProblem(chosen, now);
   if (problem) return { ok: false, error: `${chosen.name} is ${problem}. Replace its token or choose another.` };
+  const missingModels = missingMorphModels(chosen);
+  if (missingModels) return { ok: false, error: missingModels };
   return { ok: true, id: chosen.id };
 }
 

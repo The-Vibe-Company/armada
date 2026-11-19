@@ -1,11 +1,4 @@
-<p align="center">
-  <a href="https://armada.thevibecompany.co">
-    <picture>
-      <source media="(max-width: 600px)" srcset="docs/images/armada-masthead-mobile.svg">
-      <img src="docs/images/armada-masthead.svg" width="100%" alt="Armada. Run a fleet of coding agents. See every move. Claude Code, Codex and OpenCode on Boat, Modal and Docker.">
-    </picture>
-  </a>
-</p>
+# Armada
 
 <p align="center">
   <a href="https://armada.thevibecompany.co"><b>Open Armada in your browser</b></a>
@@ -40,13 +33,6 @@ Open source, MIT. Sandboxes run on a connected Boat or Modal account or on a reg
 - **Bring your tools and your team.** Attach the MCP servers you connected, share snapshots with your org or keep them private, and give bots a service token.
 
 ## How it works
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/images/armada-how-it-works-dark.svg">
-    <img src="docs/images/armada-how-it-works-light.svg" width="720" alt="How Armada works, in four steps. 1 Snapshot: your repositories and setup script, a fail-closed secret scan, a snapshot per provider. 2 Launch: Claude Code or Codex with your model and reasoning effort, on Boat or Modal, with your connected MCP servers. 3 Sandbox: a fresh fork with repositories pulled, git and gh acting as you, and only that agent's keys. 4 Drive: follow live events, send, steer, interrupt, stop and resume. The web dashboard, the armada CLI and MCP clients use the same server and rules.">
-  </picture>
-</p>
 
 For your own compute, [register a Docker host and choose fresh launch or a host-local snapshot](docs/own-machine-quickstart.md) instead of the cloud path below.
 
@@ -105,7 +91,7 @@ armada creds set codex-auth --file ~/.codex/auth.json              # Codex; or k
 armada creds list
 ```
 
-Morph is another model-account option for both Claude Code and Codex (not a sandbox provider):
+Morph is another model-account option for Claude Code, Codex and OpenCode:
 `armada creds connect morph --name shared --file /private/morph-key`.
 Select its account ID with `--credential-id ACCOUNT_UUID` and a Morph model such as
 `--model morph-kimik31`; use Modal, Docker or runtime-backed Boat, not native Boat.
@@ -138,7 +124,7 @@ A long build keeps running on the server: `armada snapshot build-status <job-id>
 **6. Launch an agent.** With a prompt the agent starts at once; without one the sandbox waits, ready, for your first prompt. In a snapshot with several repositories, `--repo owner/repo` starts the agent in that one ([details](docs/dave-onboarding.md#6-launch-from-the-cli)).
 
 ```sh
-armada launch web --agent claude --model claude-opus-5-5 --reasoning-effort high --ttl 4h \
+armada launch web --provider boat --agent claude --model claude-opus-5-5 --reasoning-effort high --ttl 4h \
   "Find why the checkout test is flaky and fix it"
 ```
 
@@ -168,7 +154,7 @@ Register an MCP server once, connect it (the browser opens when it asks for OAut
 ```sh
 armada mcp add Docs https://mcp.example.com/mcp      # personal; --scope org shares it with your org
 armada mcp connect <connection-id>
-armada launch private-web --agent codex --connections <connection-id> "Update the API reference"
+armada launch private-web --provider boat --agent codex --connections <connection-id> "Update the API reference"
 armada mcp sandbox-connections <sandbox-id>
 ```
 
@@ -176,7 +162,7 @@ Details: [docs/cli-capabilities-and-mcp-shortcuts.md](docs/cli-capabilities-and-
 
 ## Drive Armada from your own agent
 
-Armada is also a remote MCP server. Add it to Claude Code, Codex, Cursor or your own coordinator, and that agent can list and build snapshots, launch sandboxes and drive them with `golden_list`, `golden_create`, `launch`, `list`, `status`, `wait`, `logs`, `send`, `steer`, `interrupt`, `exec`, `extend` and `stop`.
+Armada is also a remote MCP server. Add it to Claude Code, Codex, Cursor or your own coordinator, and that agent can launch and drive sandboxes with `launch`, `list`, `status`, `wait`, `logs`, `send`, `steer`, `interrupt`, `exec`, `extend` and `stop`.
 
 MCP clients sign in with OAuth; bots and CI use a service token bound to one organization:
 

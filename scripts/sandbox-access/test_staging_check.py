@@ -333,7 +333,7 @@ class Safety(unittest.TestCase):
                     self.stopped.add(body["id"])
                     return {"id": body["id"], "status": "stopped"}
                 if route == "sandbox/send":
-                    self_test.assertEqual(body["conversation_id"], "same-conversation")
+                    self_test.assertNotIn("conversation_id", body)
                     self_test.assertNotIn(self.memory, body["prompt"])
                     self_test.assertNotIn(child, body["prompt"])
                     self.resumed = True

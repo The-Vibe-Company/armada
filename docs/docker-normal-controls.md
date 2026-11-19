@@ -26,7 +26,7 @@ and ignores the golden field in detail; it does not reject this new row value.
 
 With ARMADA_DOCKER_HOSTS=1, current owner/admin interior authorization:
 
-- POST /api/v1/sandbox/status or /sandbox/detail {id,org?,prompt_id?}; MCP status.
+- POST /api/v1/sandbox/status {id,org?,prompt_id?}; MCP status.
   The normal envelope adds provider=docker, hostId, image and golden=null. Status
   remains the persisted logical machine state; prompt/settled describe acknowledged
   native turn evidence. No live host/model request is made. A newer unknown or
@@ -34,12 +34,12 @@ With ARMADA_DOCKER_HOSTS=1, current owner/admin interior authorization:
   make a conversation permanently unsettled. Unknown/truncated evidence is not
   presented as settled. Retained archive reads survive stop/delete or host revoke.
 - POST /api/v1/logs/read keeps its normal cursor, direction, limit, maxBytes,
-  coalesce, conversationId/all/follow contract. MCP logs uses since_cursor and
-  conversation_id. Both reuse the existing archived-history paging and ar1 cursors,
+  coalesce, all, and follow options. MCP logs uses since_cursor.
+  Both read archived sandbox history using ar1 cursors,
   filter private model diagnostics after raw paging, and preserve forward progress
   through empty filtered pages. The shared SQL ordering is qualified numeric
   sequence order, not lexicographic ordering of its text output alias.
-- POST /api/v1/sandbox/stop and /sandbox/delete {id,org?,request_id?}; MCP stop/delete.
+- POST /api/v1/sandbox/stop and /sandbox/delete {id,org?,request_id?}; MCP also exposes stop.
   DELETE /api/v1/sandboxes/:id?org=... is the same normal delete path. No completed
   result precedes a genuine bound host ACK. Waiting releases SQL locks and has a
   45-second budget; timeout is pending/conflict, never fictional completion.

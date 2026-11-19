@@ -289,7 +289,6 @@ test("keeps unknown and runner secret callbacks outside the closed public allowl
     ["sandbox", "advice", "callback"],
     ["sandbox", "advice-extra"],
     ["sandbox", "launch-sized-v2"],
-    ["sandbox", "launch-sized-v1", "callback"],
     ["golden", "size-policy", "callback"],
     ["golden", "size-policies"],
   ]) {
@@ -374,8 +373,7 @@ test("provider setup and sizing cross the real public-origin POST proxy over HTT
     // These bytes must reach control validation unchanged; the launch has no
     // version. Only the upstream is a fixture; the public POST handler is real.
     for (const [path, body] of [
-      ["sandbox/launch-sized-v1", '{ "golden": "golden-id", "size": "medium" }'],
-      ["sandbox/launch-sized-v1", '{"sizePolicyVersion":1,"golden":"golden-id","size":"medium"}'],
+      ["sandbox/launch", '{ "golden": "golden-id", "size": "medium" }'],
       ["golden/size-policy", '{"golden":"golden-id"}'],
       [
         "golden/size-policy",
@@ -660,7 +658,7 @@ const fillParameters = (template: string) =>
   template.replace("{id}", "11111111-1111-4111-8111-111111111111").replace("{name}", "memo%20v2.pdf");
 
 test("every operation in the published OpenAPI description crosses the public proxy with a bearer", async () => {
-  const published = (await import("../../../docs/openapi.json")).default as {
+  const published = (await import("../../../packages/mcp-server/openapi.json")).default as {
     paths: Record<string, Record<string, unknown>>;
   };
   const env = process.env.ARMADA_MCP_URL;
@@ -696,7 +694,7 @@ test("every operation in the published OpenAPI description crosses the public pr
 });
 
 test("every route the public proxy forwards is published or has a recorded reason to stay outside the description", async () => {
-  const published = (await import("../../../docs/openapi.json")).default as {
+  const published = (await import("../../../packages/mcp-server/openapi.json")).default as {
     paths: Record<string, Record<string, unknown>>;
   };
   const { PARAMETERIZED_CONTROL_ROUTES, PRIVATE_POST_PATHS } = await import(

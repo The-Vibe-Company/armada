@@ -24,7 +24,6 @@ export function validApiReceipt(path: string, value: unknown): boolean {
         bool("truncated")
       );
     case "/api/v1/sandbox/status":
-    case "/api/v1/sandbox/detail":
     case "/api/v1/sandbox/wait":
       return (
         text("id") &&

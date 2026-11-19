@@ -1,3 +1,4 @@
+import { PUBLIC_CONTROL_ROUTES } from "@armada/core";
 import {
   createSqlVaultStore,
   encryptSecret,
@@ -12,6 +13,9 @@ import {
 } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import { dashboardOrigin } from "./config.ts";
+import type { ControlOptions } from "./control.ts";
+import { fail } from "./control-response.ts";
+import { type ControlRouteContext, defineRoutes } from "./routes.ts";
 
 export interface GitHubAccountApi {
   command(action: string, caller: Caller, body: Record<string, unknown>): Promise<unknown>;
@@ -348,3 +352,23 @@ async function callbackInput(request: Request): Promise<{ state: string; code: s
     throw new Error("Invalid callback.");
   return { state: values.state ?? "", code: values.code ?? "" };
 }
+
+function githubAccountCommand({ route, caller, body, options }: ControlRouteContext) {
+  if (!options.githubAccount) throw new VaultError("unavailable", "GitHub account authorization is not configured.");
+  return options.githubAccount.command(route.slice("github/".length), caller, body);
+}
+
+export const githubAccountRoutes = defineRoutes("github-account", {
+  "github/status": githubAccountCommand,
+  "github/disconnect": githubAccountCommand,
+  "github/install": githubAccountCommand,
+  "github/connect": githubAccountCommand,
+  "github/reconnect": githubAccountCommand,
+  "github/oauth/callback": {
+    methods: PUBLIC_CONTROL_ROUTES["github/oauth/callback"],
+    respond: (request: Request, options: ControlOptions) =>
+      options.githubAccount
+        ? options.githubAccount.callback(request)
+        : fail(503, "dependency_unavailable", "GitHub account authorization is not configured."),
+  },
+});

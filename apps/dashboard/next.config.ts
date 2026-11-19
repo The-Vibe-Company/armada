@@ -1,6 +1,10 @@
 import type { NextConfig } from "next";
 
 const config: NextConfig = {
+  // The fixture journey server can run alongside the development dashboard.
+  ...(process.env.ARMADA_FIXTURE_E2E === "1"
+    ? { distDir: ".e2e/next", typescript: { tsconfigPath: "tsconfig.e2e.json" } }
+    : {}),
   // @armada/core ships TypeScript source, which Next compiles with the app.
   transpilePackages: ["@armada/core"],
   reactStrictMode: true,

@@ -1,7 +1,6 @@
 interface RequestBody {
   command: string;
   connections: string[];
-  conversation_id: string;
   cursor?: string;
   goldenId: string;
   harness: string;
@@ -272,7 +271,6 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
     return Response.json({
       modalRuntime: {
         defaultPath: defects.includes("ordinary-default-off") ? "native" : "runtime",
-        version: 1,
         enabled: !defects.includes("disabled"),
         followupVersion: defects.includes("old-followup") && !claude && !opencode && !idle && !ordinary ? 0 : 1,
         claudeVersion: defects.includes("claude-old-version") ? 0 : 1,
@@ -395,18 +393,14 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
       credentialRequests: defects.includes("github-no-acquisition") ? 0 : 1,
     });
   }
-  if (
-    path === "/api/v1/sandbox/launch" ||
-    path === "/api/v1/templates/launch" ||
-    path === "/api/v1/sandbox/launch-modal-runtime-v1"
-  ) {
+  if (path === "/api/v1/sandbox/launch" || path === "/api/v1/templates/launch") {
     if (
       path === "/api/v1/templates/launch" &&
       ["runtimeVersion", "runtimeTransport"].some((key) => Object.hasOwn(body, key))
     )
       throw Error("templates/launch rejects explicit runtime selection");
     if (variables) {
-      if (path !== (ordinary ? "/api/v1/templates/launch" : "/api/v1/sandbox/launch-modal-runtime-v1"))
+      if (path !== (ordinary ? "/api/v1/templates/launch" : "/api/v1/sandbox/launch"))
         throw Error("wrong pinned template launch route");
     } else if (path !== "/api/v1/sandbox/launch") throw Error("direct golden launch must use the canonical route");
     if (ordinary && ["runtimeVersion", "runtimeTransport", "boatRuntime"].some((key) => Object.hasOwn(body, key)))
@@ -527,7 +521,7 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
     if (
       ++sends > (github && resume ? 2 : 1) ||
       body.id !== "worker" ||
-      body.conversation_id !== "conversation" ||
+      Object.hasOwn(body, "conversation_id") ||
       !/^[a-f0-9-]{36}$/.test(body.request_id) ||
       body.prompt.includes(memory)
     )
@@ -812,7 +806,7 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
       ++resumes !== 1 ||
       stops !== 1 ||
       body.id !== "worker" ||
-      body.conversation_id !== "conversation" ||
+      Object.hasOwn(body, "conversation_id") ||
       !body.request_id ||
       body.runtimeVersion !== 1 ||
       body.prompt.includes(memory)

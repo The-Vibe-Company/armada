@@ -5,12 +5,14 @@ import { AcpDriver, type DriverEvent } from "../src/index.ts";
 // The real stdio transport owns load replay, cancel-response races and multi-turn usage attribution.
 // The existing Runner tests cannot observe wire behavior inside a native harness process.
 for (const action of ["finish", "steer", "interrupt", "unknown"] as const) {
-  test(`ACP v1 ${action} preserves session identity and native usage without replay`, async () => {
+  const checkPinnedMcp = action === "finish";
+  const behavior = checkPinnedMcp ? " and sends pinned MCP configuration on load and new" : "";
+  test(`ACP v1 ${action} preserves session identity and native usage without replay${behavior}`, async () => {
     const driver = new AcpDriver({
       executable: process.execPath,
       args: ["run", `${import.meta.dir}/fixtures/acp.ts`],
       cwd: "/tmp",
-      env: {},
+      env: checkPinnedMcp ? { EXPECT_PINNED_MCP: "1" } : {},
     });
     const events: DriverEvent[] = [];
     let observed!: () => void;
@@ -24,7 +26,21 @@ for (const action of ["finish", "steer", "interrupt", "unknown"] as const) {
         text: action === "steer" || action === "interrupt" ? "hold" : action === "finish" ? "DOCKER_OK" : action,
         model: "test/model",
       },
-      sessionId: "session-1",
+      ...(checkPinnedMcp
+        ? {
+            mcp: {
+              revision: "fixture-mcp",
+              servers: {
+                local: {
+                  type: "stdio" as const,
+                  command: "npx",
+                  args: ["--yes", "--", "fixture-mcp@1.2.3", "--local"],
+                  env: { MCP_PRIVATE_VALUE: "fixture_private_value" },
+                },
+              },
+            },
+          }
+        : {}),
       signal: new AbortController().signal,
       emit: (event: DriverEvent) => {
         events.push(event);
@@ -33,10 +49,14 @@ for (const action of ["finish", "steer", "interrupt", "unknown"] as const) {
       session: (id: string) => expect(id).toBe("session-1"),
     };
     try {
-      await driver.resumeSession({ ...context });
+      await driver.resumeSession({ ...context, sessionId: "session-1" });
       expect(events).toEqual([]);
-      const turn = driver.start(context);
-      await emitted;
+      const turn = driver.start(
+        checkPinnedMcp
+          ? { ...context, session: (id) => expect(id).toBe("new-session") }
+          : { ...context, sessionId: "session-1" },
+      );
+      if (action === "steer" || action === "interrupt") await Promise.race([emitted, turn.done]);
       if (action === "steer") await turn.steer("next");
       if (action === "interrupt") await turn.interrupt();
       expect(await turn.done).toBe(action === "interrupt" ? "interrupted" : "finished");

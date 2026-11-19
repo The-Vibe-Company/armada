@@ -24,6 +24,10 @@ Inside every sandbox Armada launches, `git commit`, `git push` and the `gh` CLI 
 - Disconnect in Your connections deletes Armada's row. To invalidate tokens already issued, also revoke the authorization in GitHub (Settings, Applications, Authorized GitHub Apps).
 - No org-level fallback (an installation-token bot) is implemented. Someone who has not connected GitHub gets no GitHub identity.
 
+The normal server image includes `openssh-client` for the disposable golden
+builder's authenticated checkout. For builder ownership and cleanup, see
+[golden creation](golden-create.md).
+
 ## Create the GitHub App (owner, once)
 
 GitHub: Settings (of the account or org that owns the app), Developer settings, GitHub Apps, New GitHub App.

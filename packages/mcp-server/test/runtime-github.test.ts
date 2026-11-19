@@ -1,16 +1,27 @@
 import { beforeAll, describe, expect, test } from "bun:test";
+import { sandboxCheckOperations } from "@armada/core/contract";
 import { createSqlVaultStore, encryptSecret, type GitHubRuntimeConfiguration } from "@armada/core/server";
 import { GitHubBroker } from "../../agent-runtime/src/github-broker.ts";
+import { type ControlOptions, dispatchControlCommand } from "../src/control.ts";
 import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
 import { createRuntimeGitHub } from "../src/runtime-github.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { runtimeFixture } from "./runtime-fixture.ts";
+import { runtimeFixture } from "./runtime.fixture.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
 
-async function fixture(provider: "boat" | "modal" = "boat") {
-  const f = await runtimeFixture(await sharedDatabase(), provider);
+async function fixture(
+  provider: "boat" | "modal" = "boat",
+  options: { now?: () => number; commandGrantExpiresAt?: number; idle?: boolean } = {},
+) {
+  const f = await runtimeFixture(
+    await sharedDatabase(),
+    provider,
+    "codex",
+    options.idle,
+    options.commandGrantExpiresAt,
+  );
   await f.db.query("update goldens set provider_snapshot_id='offline-snapshot',config=$2::jsonb where id=$1", [
     f.row.goldenId,
     JSON.stringify({ repos: [{ url: "https://github.com/example/web.git", branch: "main", dir: "web" }], init: [] }),
@@ -48,6 +59,7 @@ async function fixture(provider: "boat" | "modal" = "boat") {
       (await service.route(
         url instanceof Request ? new Request(url, options) : new Request(url.toString(), options),
       )) ?? new Response(null, { status: 404 })) as unknown as typeof fetch,
+    options.now,
   );
   let configured: GitHubRuntimeConfiguration | undefined;
   f.github(async (value) => {
@@ -77,6 +89,26 @@ async function fixture(provider: "boat" | "modal" = "boat") {
     },
   };
 }
+
+test("Modal runtime GitHub credentials still work beyond the original deadline after extension", async () => {
+  let clock = Date.now();
+  const ceiling = new Date(clock + 20 * 60_000);
+  const x = await fixture("modal", { now: () => clock, commandGrantExpiresAt: ceiling.getTime(), idle: true }),
+    { f, service } = x;
+  try {
+    const { initial } = (
+      await f.db.query<{ initial: Date }>("select expires_at as initial from sandboxes where id=$1", [f.row.id])
+    ).rows[0]!;
+    await service.prepare(f.caller, f.row.id);
+    await f.db.query("update sandboxes set expires_at=$2 where id=$1", [f.row.id, ceiling]);
+    clock = initial.getTime() + 1;
+    expect((await x.broker.acquire("example/web", "git")) === x.access).toBe(true);
+    await f.db.query("update sandboxes set expires_at=now()-interval '1 second' where id=$1", [f.row.id]);
+    await expect(x.broker.acquire("example/web", "git")).rejects.toThrow();
+  } finally {
+    await f.close();
+  }
+});
 
 // Shared reissue runs on Modal; runtime-checkpoint.test.ts owns the broader Boat checkpoint matrix.
 test.each(["modal"] as const)(
@@ -115,6 +147,28 @@ test.each(["modal"] as const)(
     }
   },
 );
+
+test("GitHub preflight returns the verified repository and connection identity", async () => {
+  const { f, service } = await fixture("modal");
+  try {
+    const golden = (await f.db.query<{ name: string }>("select name from goldens where id=$1", [f.row.goldenId]))
+      .rows[0]!;
+    const result = await dispatchControlCommand(
+      "sandbox/github-preflight-v1",
+      f.caller,
+      { org: f.people.org, golden: golden.name, repository: "example/web", runtimeVersion: 1 },
+      { runtimeGitHub: service } as ControlOptions,
+    );
+    expect(sandboxCheckOperations.postSandboxGithubPreflightV1.output.parse(result)).toEqual({
+      githubReady: true,
+      provider: "modal",
+      repository: "example/web",
+      login: "owner",
+    });
+  } finally {
+    await f.close();
+  }
+});
 
 test("GitHub preflight rejects a cross-provider ambiguous golden name before requesting GitHub credentials", async () => {
   const x = await fixture("modal"),

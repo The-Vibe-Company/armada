@@ -384,14 +384,11 @@ bearer_token_env_var = "ARMADA_TOKEN"
 
 ## 8. Drive an agent through MCP
 
-The sandbox tools are `launch`, `list`, `status`, `wait`, `logs`, `send`, `steer`, `interrupt`, `exec` and `stop`. Snapshot tools (`golden_list`, `golden_capabilities`, `golden_create`, `golden_update`, `golden_build_status`, `golden_snapshot`, `golden_adopt`) list, build and maintain snapshots. You see your org's snapshots and sandboxes and your own private ones, never another member's private ones. Example arguments:
+The sandbox tools are `launch`, `list`, `status`, `logs`, `send`, `report`, `exec` and `stop`. Find and manage snapshots in the dashboard or through the REST API. For example, POST to `/api/v1/golden/list` to find the golden name and org ID. Example arguments:
 
 ```jsonc
-// golden_list: the snapshots you can launch, with their orgId
-{}
-
 // launch: fork a snapshot and start the agent (leave out prompt for an idle, ready sandbox)
-{ "golden": "<snapshot>", "harness": "claude", "prompt": "Fix the flaky test in packages/core", "ttl_seconds": 14400 }
+{ "provider": "boat", "golden": "<snapshot>", "harness": "claude", "prompt": "Fix the flaky test in packages/core", "ttlSeconds": 14400 }
 // → { "id": "<sandbox id>", "status": "running", "promptId": "…", "expiresAt": "…", … }
 // add "org": "<orgId>" when the snapshot name exists in several of your orgs
 
@@ -401,8 +398,8 @@ The sandbox tools are `launch`, `list`, `status`, `wait`, `logs`, `send`, `steer
 // status: a fresh read of one sandbox and its latest turn
 { "id": "<sandbox id>" }
 
-// wait: block until the latest turn settles, for at most 600 seconds; call again while timedOut is true
-{ "id": "<sandbox id>", "timeout_seconds": 600 }
+// status with wait: block until the latest turn settles. Call again if timedOut is true.
+{ "id": "<sandbox id>", "wait": true, "timeout_seconds": 600 }
 
 // logs: one bounded page by cursor; pass the returned cursor back to read the next page
 // pass all: true to collect available pages (bounded at 100 pages)
@@ -416,7 +413,7 @@ The sandbox tools are `launch`, `list`, `status`, `wait`, `logs`, `send`, `steer
 { "id": "<sandbox id>" }
 ```
 
-A typical coordination loop is `launch` with a prompt, then `wait` until `settled`, then `logs` with `all: true` to collect final output, then `send` for a follow-up or `stop`. A turn that ends on a usage limit or an expired login marks the sandbox `failed`, and `statusReason` says why.
+A typical coordination loop is `launch` with a prompt, then `status` with `wait: true` until `settled`, then `logs` with `all: true` to collect final output, then `send` for a follow-up or `stop`. A turn that ends on a usage limit or an expired login marks the sandbox `failed`, and `statusReason` says why.
 
 ## Troubleshooting
 

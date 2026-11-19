@@ -1,3 +1,4 @@
+import { createControlClient } from "../apps/dashboard/src/lib/control.ts";
 import { createGateway, GatewayError, sandboxGateway } from "../apps/dashboard/src/lib/gateway.ts";
 import { AuthError } from "../packages/auth/src/index.ts";
 import { ArmadaApiError, createArmadaApiClient } from "../packages/cli/src/armada-api.ts";
@@ -104,6 +105,7 @@ export async function createParityClients(
   const api = await createArmadaApiClient(auth);
   const dashboard = sandboxGateway(
     createGateway({ url: `${input.origin}/mcp`, token: input.token, fetch: relay as typeof fetch }),
+    createControlClient({ serverUrl: input.origin, token: input.token, fetch: relay as typeof fetch }),
   );
   return {
     api,

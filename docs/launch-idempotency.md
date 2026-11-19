@@ -6,9 +6,9 @@ fields serve that. Docker has its own [receipt lifecycle](#docker-launches).
 
 | Surface | Exactly-once field | External reference |
 | --- | --- | --- |
-| `POST /api/v1/sandbox/launch` for Boat and Modal (and the `launch-sized-v1`, `launch-access-v1`, runtime variants) | `idempotencyKey`, 16–128 characters | `externalRef` |
+| `POST /api/v1/sandbox/launch` for Boat and Modal | `idempotencyKey`, 16–128 characters | `externalRef` |
 | `POST /api/v1/sandbox/launch` for Docker | `idempotencyKey` or legacy `requestId` | `externalRef` |
-| MCP `launch` / `launch_sized_v1` | `idempotencyKey`, 16–128 characters | `externalRef` |
+| MCP `launch` | `idempotencyKey`, 16–128 characters | `externalRef` |
 | `POST /api/v1/templates/launch` | `requestKey` (required, see [templates](templates-cli.md)) | `externalRef` |
 
 `externalRef` is opaque: 1–200 characters without control characters. Armada
@@ -104,19 +104,25 @@ or may not exist. Never retry with a new key: that is how duplicates happen.
 2. Look the sandbox up by reference: `sandbox/list` with `externalRef` returns
    every sandbox you own or administer carrying it, including a launch whose
    answer was lost after the sandbox was recorded.
-3. If neither shows it and an `outcome_unknown` or `conflict` answer named a
-   receipt id, inspect it as the launching user with MCP `launch_receipt`
-   (`{"id":"<receipt UUID>"}`, plus `org` set to the organization UUID when
-   you belong to several). It lists
-   provider allocations labelled with that id, using the provider binding
-   recorded on the receipt, so a removed snapshot does not prevent the lookup.
-   An empty lookup is not proof of no allocation; keep the key and ask an
-   operator rather than relaunching.
-4. If you never received a receipt id (the first answer was lost and the replay
-   fails preflight, for example with `not_found`, or the receipt itself could
-   not be read), there is no self-service
-   lookup. Keep the original key, do not relaunch, and escalate to an operator
-   with the organization, the key and the `externalRef`.
+3. If the sandbox is still missing, escalate to an operator with the
+   organization, original key, `externalRef` and receipt UUID when available.
+   An unregistered allocation can exist even when the sandbox list is empty.
+
+Before deploying the shared MCP launch contract, reconcile outstanding
+launches sent without `provider` or with `ttl_seconds` or `reasoning_effort`.
+After deployment, sending the same key with the new fields can return
+`conflict` and the existing receipt UUID. Use that UUID with `status`, or look
+up the sandbox by `externalRef` and escalate to an operator if needed. Keep the
+original key throughout reconciliation.
+
+Before deploying the shared schema for explicit runtime golden REST launches,
+reconcile outstanding requests whose bodies it now rejects. For example, the
+previous explicit Modal golden schema accepted `null` for `org`, `model`, or
+`reasoningEffort`. After deployment those bodies return `invalid` before
+receipt lookup. Omitting the null fields can change the request fingerprint and
+return `conflict` with the original receipt UUID. Keep the original key, look
+up that UUID or the sandbox's `externalRef`, and escalate unresolved launches
+to an operator.
 
 Template launches follow the same rule with `requestKey`: a replay answers the
 recorded state (`succeeded`, `failed`, `reconciling`), and `reconciling` is
@@ -124,7 +130,7 @@ never re-dispatched.
 
 ## Reading the reference back
 
-- `sandbox/status` (and MCP `status`/`wait`) return `externalRef` when set.
+- `sandbox/status` (and MCP `status`, including wait mode) return `externalRef` when set.
 - `sandbox/list` returns `externalRef` and accepts it as a filter. Both are
   interior-only: a member who cannot open another member's sandbox sees the row
   without its reference, and filtering by reference never matches it.
@@ -135,43 +141,40 @@ each payload, with null when the sandbox has no reference.
 
 ## Canonical launch API
 
-The [OpenAPI contract](openapi.json) describes the validated request variants for
+The [OpenAPI contract](../packages/mcp-server/openapi.json) describes the validated request variants for
 `POST /api/v1/sandbox/launch`: golden, explicit Boat runtime, explicit Modal
-runtime, Docker host and Docker snapshot, each with its supported replay fields. Unknown fields are rejected. Use
+runtime from a golden or pinned template, Docker host and Docker snapshot, each
+with its supported replay fields. Every variant requires `provider` and `harness`.
+Before upgrading, reconcile outstanding golden launch requests that omitted the provider
+or included null optional fields. If sending the corrected body with the original
+key conflicts, keep the key and recover the original attempt by receipt ID or
+`externalRef`. Unknown fields are rejected. Use
 `ttlSeconds` and `reasoningEffort` for REST launch requests. Provider-specific
 settings and server opt-ins still apply.
 
-All three providers return the same envelope. Read the placement and Armada ID
+Golden and Docker launches share an envelope. Read the placement and Armada ID
 at `sandbox.provider` and `sandbox.id`. The `golden` record is null for Docker.
 `promptId`, `conversationId`, `runtime` and `helper` are null when unavailable.
 CLI JSON includes `sandbox.id` and the top-level `id` alias on all three
 providers. The CLI's `golden` field remains a name or null.
 
-## Launch route compatibility
+## Explicit runtime launch
 
 For explicit runtime launches from a golden, send the selectors to `POST /api/v1/sandbox/launch`.
-Use `runtimeVersion: 1` and `boatRuntime: true` for Boat. Use `runtimeVersion: 1`,
-`provider: "modal"` and `runtimeTransport: "dialout"` for Modal. The existing
-runtime admission checks and server opt-ins apply on both the canonical and
-compatibility routes. Pinned Modal runtime templates still use
-`sandbox/launch-modal-runtime-v1`.
+Use `provider: "boat"`, `runtimeVersion: 1` and `boatRuntime: true` for Boat. Use
+`provider: "modal"`, `runtimeVersion: 1` and `runtimeTransport: "dialout"` for Modal.
+Both golden paths require a harness and are subject to runtime admission checks
+and server opt-ins. For a pinned Modal template, send the same Modal selectors
+with `id`, `revision`, `requestKey` and the template's `harness` to `sandbox/launch`.
+Personal sessions can provide an org slug or UUID. Scoped tokens can omit `org`
+or send their scoped UUID. The shared schema refuses TTLs above 86,400 seconds
+before template admission or replay lookup. When admission records a request,
+it returns a durable template launch receipt, including the frozen manifest on
+success. Replay the same body
+and request key to recover that receipt, and use its top-level `id` for sandbox
+operations. A pre-admission refusal has no request ID or sandbox ID. Ordinary
+template launches continue to use `templates/launch`.
 
 For REST extensions, use `ttlSeconds` on `POST /api/v1/sandbox/extend`
 as well. The server accepts the older `ttl_seconds` spelling for existing
 clients. Send only one field.
-
-| Compatibility route | Known released or external callers |
-| --- | --- |
-| `sandbox/launch-sized-v1` | Released CLI, dashboard and iOS builds with sizing or repository selection |
-| `sandbox/launch-access-v1` | Released CLI and dashboard builds with scoped access, and older scoped-access probes |
-| `sandbox/launch-runtime-v1` | Older Boat runtime probes and direct API integrations |
-| `sandbox/launch-modal-runtime-v1` | Older Modal runtime probes, direct API integrations and pinned Modal runtime template requests |
-
-The CLI, dashboard, iOS app and direct golden smoke probes now send these
-selectors to `sandbox/launch`. Pinned Modal runtime templates keep their
-versioned entry point when explicitly selecting Modal dial-out, including
-the Modal readable-variable probe's explicit mode. Its ordinary mode uses
-`templates/launch`. Keep golden launch aliases available for at least 90
-days after the first release carrying the first-party golden launch migration.
-Review remaining released-client usage and migrate the pinned template
-entry point before retiring its alias.

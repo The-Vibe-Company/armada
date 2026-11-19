@@ -1,7 +1,9 @@
 import { sha256Hex } from "@armada/auth";
 import { type PromptReceipt, type Sql, sandboxActivity, VaultError } from "@armada/core/server";
+import { BoatRetentionUnconfirmed } from "@armada/provider-boat";
 import type { Caller } from "./caller.ts";
 import { createSqlData, type SandboxView } from "./data.ts";
+import { createGoldenRuntimeEnvironment } from "./golden-runtime-environment.ts";
 import { recordLaunchStageQuietly } from "./launch-stage-record.ts";
 import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 import { lockRuntimeAccount } from "./runtime-account-admission.ts";
@@ -10,13 +12,14 @@ import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
+import { refuseConversationSelector, SINGLE_CONVERSATION_GUIDANCE } from "./sandbox-conversation.ts";
+import { deferAmbiguousBoatResume, requestFailedRuntimeResumeStop } from "./sandbox-lifecycle.ts";
 
 export interface RuntimeResumeInput {
   id: string;
   request_id: string;
   runtimeVersion: 1;
   prompt: string;
-  conversation_id?: string | undefined;
 }
 export interface RuntimeResumeReceipt {
   id: string;
@@ -41,10 +44,17 @@ interface Operation {
   verified_at: string | null;
   receipt: RuntimeResumeReceipt | null;
 }
+export class BoatResumeActivationUncertain extends Error {
+  constructor(cause: unknown) {
+    super("Boat runtime activation outcome is uncertain.", { cause });
+  }
+}
+
 export interface RuntimeResumePlacement {
   start(
     signal: AbortSignal,
     restore: { epoch: string; watermark: number; conversationId: string | null },
+    confirmActivation?: () => Promise<void>,
   ): Promise<{ epoch: string }>;
   /** Exact previously authorized compute identity; no activation/reissue on failure. */
   stop(): Promise<void>;
@@ -64,6 +74,7 @@ export function createRuntimeResume(
   prepareGitHub?: RuntimeGitHub["prepareLaunch"],
 ) {
   const authority = createRuntimeEnrolments(sql, key);
+  const environment = createGoldenRuntimeEnvironment(sql, key);
   const read = async (tx: Sql, id: string, request: string) =>
     (
       await tx.query<Operation>(
@@ -73,6 +84,7 @@ export function createRuntimeResume(
       )
     ).rows[0];
   return async (caller: Caller, input: RuntimeResumeInput): Promise<RuntimeResumeReceipt> => {
+    refuseConversationSelector(input);
     const requestId = input.request_id.toLowerCase();
     if (input.runtimeVersion !== 1 || !uuid.test(input.id) || !uuid.test(requestId) || !input.prompt.trim())
       throw new VaultError("invalid", "Runtime resume v1 requires UUIDs and a nonempty instruction.");
@@ -81,15 +93,10 @@ export function createRuntimeResume(
     if (!found || found.ownerId !== caller.userId || !runtimeBridgeTarget(found) || found.deletedAt)
       throw new VaultError("not_found", "No owned runtime resume target.");
     const prior = await read(sql, found.id, requestId);
-    const empty =
-      prior?.empty_checkpoint ??
-      (found.conversationIds.length === 0 && !found.taskPromptId && input.conversation_id === undefined);
+    const empty = prior?.empty_checkpoint ?? (found.conversationIds.length === 0 && !found.taskPromptId);
     const conversation =
-      input.conversation_id ??
-      prior?.conversation_id ??
-      found.conversationIds.at(-1) ??
-      (empty ? `first_${requestId}` : undefined);
-    if (!conversation || (!empty && !found.conversationIds.includes(conversation)))
+      prior?.conversation_id ?? found.conversationIds.at(-1) ?? (empty ? `first_${requestId}` : undefined);
+    if (!conversation)
       throw new VaultError("invalid", "Resume an existing conversation or a verified empty checkpoint.");
     const hash = await sha256Hex(JSON.stringify({ id: found.id, requestId, conversation, prompt: input.prompt }));
     if (prior?.request_hash !== undefined && prior.request_hash !== hash)
@@ -98,6 +105,11 @@ export function createRuntimeResume(
       if (!(await store.get(found.id))) throw new VaultError("not_found", "Runtime membership was revoked.");
       return prior.receipt;
     } // Historical accepted outcome, not a new activation.
+    if (!empty && conversation !== found.conversationIds.at(-1))
+      throw new VaultError("conflict", SINGLE_CONVERSATION_GUIDANCE);
+    const actor = { userId: caller.userId, orgId: found.orgId };
+    if (!prior && (found.provider === "modal" || found.provider === "boat"))
+      await environment.validate(found.provider, actor, found.id);
     if (!sql.transaction) throw new VaultError("unavailable", "Runtime resume requires transactional admission.");
     const pricingContext = await store.captureUsagePricingContext?.(found.id);
     const admitted = await sql.transaction(async (tx) => {
@@ -119,12 +131,15 @@ export function createRuntimeResume(
         !current.reasoningEffort ||
         current.deletedAt ||
         current.credentialId !== found.credentialId ||
-        current.credentialVersion !== found.credentialVersion ||
-        (empty
-          ? current.conversationIds.length !== 0 || Boolean(current.taskPromptId)
-          : !current.conversationIds.includes(conversation))
+        current.credentialVersion !== found.credentialVersion
       )
         throw new VaultError("conflict", "Runtime resume target changed or cannot retain secrets safely.");
+      if (
+        empty
+          ? current.conversationIds.length !== 0 || Boolean(current.taskPromptId)
+          : current.conversationIds.at(-1) !== conversation
+      )
+        throw new VaultError("conflict", SINGLE_CONVERSATION_GUIDANCE);
       const epoch = (
         await tx.query<{ epoch: string; live: boolean }>(
           "select epoch::text,(runtime_hash is not null) as live from public.runtime_enrolments where sandbox_id=$1 for update",
@@ -257,7 +272,25 @@ export function createRuntimeResume(
         async (signal) => {
           if (admitted.first) {
             placement = await prepare!(caller, admitted.current);
-            const ready = await placement.start(signal, restore);
+            const confirmActivation =
+              found.provider === "boat"
+                ? async () => {
+                    const saved = await sql.query(
+                      `with active as (
+                  select id from public.sandboxes where id=$1 and status='starting'
+                    and activity_lease_id=$2 and lifecycle_generation=$3 and activity_until>clock_timestamp()
+                    and (reconcile_lease_until is null or reconcile_lease_until<=clock_timestamp())
+                    and stop_requested_at is null and deleted_at is null for update
+                )
+                update public.runtime_resumes r set activated_at=coalesce(r.activated_at,clock_timestamp())
+                from active where r.sandbox_id=active.id and r.request_id=$2 and r.phase='dispatched'
+                returning r.request_id`,
+                      [found.id, requestId, admitted.current.lifecycleGeneration],
+                    );
+                    if (!saved.rows.length) throw new VaultError("conflict", "Resume activation authority changed.");
+                  }
+                : undefined;
+            const ready = await placement.start(signal, restore, confirmActivation);
             if (ready.epoch !== admitted.op.target_epoch) throw new VaultError("conflict", "Unexpected resume epoch.");
           }
           await agent.health(signal, restore); // Also required on reconciliation; old binaries cannot echo an unverified restore.
@@ -277,6 +310,8 @@ export function createRuntimeResume(
           if (existing.state === "missing") {
             // Restored disk state carries revoked epoch authority. Reauthorize before
             // inference, never on a replay of an already dispatched prompt.
+            if (!admitted.first && (found.provider === "modal" || found.provider === "boat"))
+              await environment.deliver(found.provider, actor, found.id, admitted.op.target_epoch, signal);
             await prepareGitHub?.(caller, found.id);
             await prepareMcp?.(caller, found.id, signal);
           }
@@ -328,40 +363,61 @@ export function createRuntimeResume(
         },
         { initialLeaseId: requestId, deadlineMs: 600_000 },
       );
-    } catch {
+    } catch (error) {
+      const preActivationArchive = error instanceof BoatRetentionUnconfirmed;
       const completed = await read(sql, found.id, requestId).catch(() => undefined);
       if (completed?.receipt && (await store.get(found.id))) return completed.receipt;
       // Preserve recoverable live-epoch uncertainty. Never re-activate or reissue a ticket.
-      const owned = await sql
+      const cleanup = await sql
         .transaction(async (tx) => {
-          await tx.query("select user_id from public.members where user_id=$1 and org_id=$2 for update", [
-            caller.userId,
-            found.orgId,
-          ]);
+          const member = await tx.query(
+            "select user_id from public.members where user_id=$1 and org_id=$2 for update",
+            [caller.userId, found.orgId],
+          );
+          if (!member.rows.length) return;
           await tx.query("select id from public.sandboxes where id=$1 for update", [found.id]);
-          const live = (
-            await tx.query<{ epoch: string; live: boolean }>(
-              "select epoch::text,(runtime_hash is not null) as live from public.runtime_enrolments where sandbox_id=$1 for update",
-              [found.id],
+          const runtime = (
+            await tx.query<{ epoch: string; live: boolean; activation_confirmed: boolean }>(
+              `select epoch::text,(runtime_hash is not null) as live,
+                  ((enrolment_hash is not null and lifecycle_generation=$2) or exists(
+                    select 1 from public.runtime_resumes where sandbox_id=$1 and request_id=$3
+                      and phase='dispatched' and activated_at is not null
+                  )) as activation_confirmed
+               from public.runtime_enrolments where sandbox_id=$1 for update`,
+              [found.id, admitted.current.lifecycleGeneration, requestId],
             )
           ).rows[0];
-          if (live?.live && live.epoch === admitted.op.target_epoch) return false;
-          const changed = await tx.query(
-            `update public.sandboxes set status='failed',
-          transition_context=jsonb_build_object('actor','runtime_resume','code','restore_unconfirmed'),
-          status_reason='Runtime resume failed before a restored worker was confirmed; cleanup requested.',stop_requested_at=coalesce(stop_requested_at,now()),activity_lease_id=null,activity_until=null,lifecycle_generation=lifecycle_generation+1,reconcile_after=now()
-          where id=$1 and activity_lease_id=$2 and lifecycle_generation=$3 and stop_requested_at is null returning id`,
-            [found.id, requestId, admitted.current.lifecycleGeneration],
+          if (runtime?.live && runtime.epoch === admitted.op.target_epoch) return;
+          const boatSourceEpoch =
+            found.provider === "boat" && runtime && !runtime.live && runtime.epoch === admitted.op.source_epoch;
+          const retained = Boolean(boatSourceEpoch && (runtime.activation_confirmed || preActivationArchive));
+          if (boatSourceEpoch && !retained && error instanceof BoatResumeActivationUncertain) {
+            await deferAmbiguousBoatResume(tx, found.id, requestId, admitted.current.lifecycleGeneration);
+            return;
+          }
+          const status = await requestFailedRuntimeResumeStop(
+            tx,
+            found.id,
+            requestId,
+            admitted.current.lifecycleGeneration,
+            retained,
           );
-          if (changed.rows.length)
+          if (status)
             await tx.query(
-              "update public.runtime_resumes set phase='failed' where sandbox_id=$1 and request_id=$2 and receipt is null",
-              [found.id, requestId],
+              "update public.runtime_resumes set phase=$3 where sandbox_id=$1 and request_id=$2 and receipt is null",
+              [found.id, requestId, status === "stopping" ? "abandoned" : "failed"],
             );
-          return changed.rows.length > 0;
+          return status;
         })
-        .catch(() => false);
-      if (owned && placement) await placement.stop().catch(() => {});
+        .catch(() => undefined);
+      if (cleanup === "failed" && placement && !preActivationArchive) await placement.stop().catch(() => {});
+      if (cleanup === "stopping")
+        throw new VaultError(
+          "conflict",
+          preActivationArchive
+            ? "Boat retained data has not been verified. Wait for a confirmed retained stop before resuming with a new request_id."
+            : "Runtime did not enrol. Wait for a confirmed retained stop before resuming with a new request_id.",
+        );
       throw new VaultError(
         "conflict",
         "Runtime resume outcome is uncertain; retain the original request_id, inspect status/stop, and do not launch or activate again.",

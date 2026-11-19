@@ -22,7 +22,6 @@ export async function mcpCommand(
     "--org": "org",
     "--model": "model",
     "--reasoning-effort": "reasoning_effort",
-    "--conversation": "conversation_id",
     "--cwd": "cwd",
     "--prompt-id": "prompt_id",
   })) {

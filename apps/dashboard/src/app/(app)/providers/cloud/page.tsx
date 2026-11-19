@@ -1,10 +1,4 @@
-import {
-  type DockerSnapshotRecord,
-  dockerHostMeetsVersion,
-  dockerHostResourceDisplay,
-  dockerHostUpgradeMessage,
-  type Harness,
-} from "@armada/core";
+import { API_FAILURE_HELP, type DockerSnapshotRecord, dockerHostResourceDisplay, type Harness } from "@armada/core";
 import { CircleAlertIcon, ServerIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -223,7 +217,6 @@ async function OwnServers({
         launch,
         snapshots.state === "ready" ? snapshots.snapshots : null,
         hosts.list.targetVersion ?? hosts.list.serverVersion,
-        hosts.list.minimumVersion,
       ),
     ),
   );
@@ -323,7 +316,6 @@ function row(
   launch: Launch,
   snapshots: DockerSnapshotRecord[] | null,
   targetVersion?: string,
-  minimumVersion?: string,
 ): ResourceRow & { bucket: Bucket; actionLabel: string } {
   const resources = dockerHostResourceDisplay(host);
   const name = host.name ?? "Unnamed machine";
@@ -331,17 +323,10 @@ function row(
   const state = hostState(host, now);
   const seen = host.lastSeenAt ? relativeAge(host.lastSeenAt, now) : null;
   const upgrade =
-    host.state !== "pending" && host.state !== "revoked"
-      ? dockerHostUpgradeMessage(host.version, targetVersion, minimumVersion, host.snapshotBuildSupported)
+    host.state !== "pending" && host.state !== "revoked" && host.upgradeRequired
+      ? API_FAILURE_HELP.docker_host_upgrade_required
       : null;
-  const updateRequired =
-    host.snapshotBuildSupported === false ||
-    (host.version && minimumVersion && !dockerHostMeetsVersion(host.version, minimumVersion));
-  const upgradeLabel = updateRequired
-    ? "Daemon update required"
-    : host.version
-      ? "Daemon update available"
-      : "Version unknown";
+  const upgradeLabel = "Daemon update required";
   return {
     key: host.id,
     name,
@@ -455,12 +440,6 @@ function row(
                 <>
                   <dt className="text-muted-foreground">Target version</dt>
                   <dd>{targetVersion}</dd>
-                </>
-              )}
-              {minimumVersion && (
-                <>
-                  <dt className="text-muted-foreground">Minimum supported version</dt>
-                  <dd>{minimumVersion}</dd>
                 </>
               )}
             </dl>

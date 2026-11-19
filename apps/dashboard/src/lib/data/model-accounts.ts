@@ -31,11 +31,9 @@ export const listSelectedAccounts = cache(async (): Promise<AccountList> => {
   const control = await viewerAccountControl();
   if (!control) return { state: "not-configured" };
   try {
-    const [{ accounts: listed, legacy, defaults }, models] = await Promise.all([
-      control.list(selected.org.id),
-      control.connectionModels(selected.org.id),
-    ]);
+    const { accounts: listed, legacy, defaults } = await control.list(selected.org.id);
     if (legacy && listed.length === 0) return { state: "legacy" };
+    const models = await control.connectionModels(selected.org.id);
     const accounts = listed.map((account) => {
       const declared = models.get(account.id);
       return declared ? { ...account, models: declared } : account;

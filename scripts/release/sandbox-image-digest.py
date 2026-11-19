@@ -7,7 +7,7 @@ import urllib.error
 import urllib.request
 
 repository = "the-vibe-company/armada-sandbox"
-version = os.environ["VERSION"]
+version = os.environ["IMAGE_TAG"]
 if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?", version):
     raise SystemExit("Invalid release version")
 credential = base64.b64encode(

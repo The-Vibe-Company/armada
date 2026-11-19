@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { HARNESS_CATALOG } from "@armada/core";
+import { MODEL_CATALOG } from "@armada/core";
 import { connectionModelsFrom } from "../src/lib/model-accounts";
 import { chosenConnection, launchArgs } from "../src/lib/model-choice";
 import {
@@ -13,7 +13,7 @@ import {
 const ACCOUNT = "11111111-1111-4111-8111-111111111111";
 
 test("the picker lists the agent's models with the default marked, then each connection's models grouped", () => {
-  const entry = HARNESS_CATALOG.opencode;
+  const entry = MODEL_CATALOG.opencode;
   const groups = pickerGroups("OpenCode", entry, [
     {
       accountId: ACCOUNT,
@@ -45,7 +45,7 @@ test("the picker lists the agent's models with the default marked, then each con
       isDefault: false,
     },
   ]);
-  const claude = pickerGroups("Claude Code", HARNESS_CATALOG.claude, []);
+  const claude = pickerGroups("Claude Code", MODEL_CATALOG.claude, []);
   expect(claude[0]?.options.some((option) => option.price !== null)).toBe(true);
 
   // Search matches the model or the connection name; the current choice is never hidden.

@@ -4,6 +4,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
+import { destructiveStatements, dropSafety } from "./check-migrations";
+
 test("migration CLI rejects collisions, placeholder versions and non-increasing additions against the current base", () => {
   const script = resolve(import.meta.dir, "check-migrations.ts");
   // The guard's clock is fixed; new versions may lead it by at most 24 hours.
@@ -72,5 +74,88 @@ test("migration CLI rejects collisions, placeholder versions and non-increasing 
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
+  }
+});
+
+test("finds top-level drops and renames, including quoted names and multi-object statements", () => {
+  expect(
+    destructiveStatements(String.raw`
+      -- DROP TABLE ignored;
+      /* /* nested */ DROP TYPE ignored; */
+      select 'DROP TYPE ignored;';
+      select ${"$é$"}ignored; DROP TABLE ignored; ${"$é$"};
+      do $body$ begin raise notice 'DROP TABLE ignored;'; end $body$;
+      DROP TABLE IF EXISTS postgres.public.OLD_TABLE, "old.schema"."Old Table",
+        public.U&"retired!005fitems" UESCAPE '!' CASCADE;
+      drop view public.report;
+      drop function public.old_lookup(numeric(10, 2), text), public.old_count();
+      drop type public.report_state;
+      drop trigger old_trigger on public.sandboxes;
+      alter table only public.old_rows rename to new_rows;
+      -- contract: last-used-in v2.57.1
+      alter table postgres.public.sandboxes drop column if exists foo cascade, drop bar;
+      alter table public.sandboxes rename other to replacement;
+      -- contract: last-used-in v2.57.1
+      alter type public.state rename value U&'ol\0064; value' to 'new';
+      alter type public.mode rename value 'old'
+        ' mode' to 'new';
+      alter table public.sandboxes drop constraint unused_check;
+    `),
+  ).toEqual([
+    ...[
+      "old_table",
+      "Old Table",
+      "retired_items",
+      "report",
+      "old_lookup",
+      "old_count",
+      "report_state",
+      "old_trigger",
+      "old_rows",
+    ].map((name) => ({ kind: "object" as const, name })),
+    { kind: "column", name: "sandboxes.foo", lastUsedIn: "v2.57.1" },
+    { kind: "column", name: "sandboxes.bar", lastUsedIn: "v2.57.1" },
+    { kind: "column", name: "sandboxes.other", lastUsedIn: undefined },
+    { kind: "enum value", name: String.raw`state.U&'ol\0064; value'`, lastUsedIn: "v2.57.1" },
+    { kind: "enum value", name: "mode.'old'", lastUsedIn: undefined },
+  ]);
+});
+
+test("object drops require both the base and release to be clean", () => {
+  const statements = destructiveStatements("drop table public.retired_items;");
+  const file = "packages/mcp-server/src/items.ts";
+  for (const refWithReference of ["base", "v2.57.1", undefined]) {
+    const files = new Map(refWithReference ? [[refWithReference, new Map([["retired_items", [file]]])]] : []);
+    expect(
+      dropSafety(statements, {
+        base: "base",
+        latestRelease: "v2.57.1",
+        packageVersion: "v2.57.2",
+        references: (name, ref) => files.get(ref)?.get(name) ?? [],
+      }),
+    ).toEqual(refWithReference ? [`retired_items is still referenced at ${refWithReference}: ${file}`] : []);
+  }
+});
+
+test("column drops require an adjacent contract version covered by the release and older than the candidate", () => {
+  const header = "-- contract: last-used-in v2.57.1";
+  for (const { prefix, latestRelease, packageVersion, allowed } of [
+    { prefix: "", latestRelease: "v2.57.1", packageVersion: "v2.57.2", allowed: false },
+    { prefix: `${header}\n\n`, latestRelease: "v2.57.1", packageVersion: "v2.57.2", allowed: false },
+    { prefix: `${header}\n`, latestRelease: "v2.57.0", packageVersion: "v2.57.2", allowed: false },
+    { prefix: `${header}\n`, latestRelease: "v2.57.1", packageVersion: "v2.57.1", allowed: false },
+    { prefix: `${header}\n`, latestRelease: "v2.57.1", packageVersion: "v2.57.2", allowed: true },
+    { prefix: `${header}\r\n`, latestRelease: "v2.57.10", packageVersion: "v2.58.0", allowed: true },
+  ]) {
+    const errors = dropSafety(destructiveStatements(`${prefix}alter table public.sandboxes drop column foo;`), {
+      base: "base",
+      latestRelease,
+      packageVersion,
+      references: () => {
+        throw new Error("Column names must not be searched");
+      },
+    });
+    expect(errors).toHaveLength(allowed ? 0 : 1);
+    if (!allowed) expect(errors[0]).toContain("column sandboxes.foo requires -- contract: last-used-in");
   }
 });

@@ -1,6 +1,12 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
-import { DOCKER_IMAGE_UNAVAILABLE_MESSAGE, DOCKER_LAUNCH_FAILURE_MESSAGES, type Sql } from "@armada/core";
+import {
+  DOCKER_HOST_PROTOCOL,
+  DOCKER_HOST_PROTOCOL_HEADER,
+  DOCKER_IMAGE_UNAVAILABLE_MESSAGE,
+  DOCKER_LAUNCH_FAILURE_MESSAGES,
+  type Sql,
+} from "@armada/core";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
 import { admitDockerDisk, DockerHostDraining } from "../src/docker-capacity.ts";
 import { createDockerHostRoutes } from "../src/docker-host-routes.ts";
@@ -377,6 +383,126 @@ async function boundFixture(registered?: Awaited<ReturnType<typeof fixture>>) {
   return { ...host, sandboxId, generation, owner, create };
 }
 
+function failPhysicalJobCommit(requestId: string, outcome: "failed" | null) {
+  const failure = new Error("Physical job transaction interrupted before commit");
+  const faultingStore = createDockerHostStore(
+    {
+      query: sql.query,
+      transaction: (work) =>
+        database().transaction(async (tx) => {
+          const result = await work({ query: (query, params) => tx.query(query, params) });
+          const written = await tx.query(
+            `select 1 from docker_host_jobs where request_id=$1 and outcome is not distinct from $2::text`,
+            [requestId, outcome],
+          );
+          if (written.rows.length) throw failure;
+          return result;
+        }),
+    },
+    key,
+  );
+  return { faultingStore, failure };
+}
+
+test("a physical-delete enqueue interrupted before commit can be retried without a conflicting intent", async () => {
+  const a = await boundFixture();
+  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+  await store.complete(a.hostToken, a.installationId, { requestId: a.create.requestId, outcome: "completed" });
+  await database().query("update sandboxes set status='failed' where id=$1", [a.sandboxId]);
+  const deletion = {
+    requestId: randomUUID(),
+    operation: "deletePhysical" as const,
+    machineId: "a".repeat(64),
+    lifecycleGeneration: 1,
+  };
+  const { faultingStore, failure } = failPhysicalJobCommit(deletion.requestId, null);
+  await expect(faultingStore.enqueueSandbox(a.owner, a.sandboxId, deletion)).rejects.toMatchObject({ cause: failure });
+  const replacementIntent = { ...deletion, machineId: "b".repeat(64) };
+  await store.enqueueSandbox(a.owner, a.sandboxId, replacementIntent);
+  await store.enqueueSandbox(a.owner, a.sandboxId, replacementIntent);
+  await denied(store.enqueueSandbox(a.owner, a.sandboxId, deletion));
+});
+
+test("physical deletion rechecks its lifecycle fence, while late receipts record only physical facts", async () => {
+  const db = database();
+  const a = await boundFixture();
+  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+  await store.complete(a.hostToken, a.installationId, { requestId: a.create.requestId, outcome: "completed" });
+  const deletion = {
+    requestId: randomUUID(),
+    operation: "deletePhysical" as const,
+    machineId: "a".repeat(64),
+    lifecycleGeneration: 1,
+  };
+  await db.query(`update sandboxes set status='stopped',stopped_at=now() where id=$1`, [a.sandboxId]);
+  await denied(store.enqueueSandbox(a.owner, a.sandboxId, deletion));
+  await db.query(`update sandboxes set status='failed' where id=$1`, [a.sandboxId]);
+  await denied(store.enqueueSandbox(a.owner, a.sandboxId, { ...deletion, lifecycleGeneration: 2 }));
+  await store.enqueueSandbox(a.owner, a.sandboxId, deletion);
+  const poll = (mailbox = store) =>
+    mailbox.poll(a.hostToken, a.installationId, undefined, false, undefined, undefined, null, null, [], null, true);
+  expect(await poll()).toMatchObject({ requestId: deletion.requestId, machineId: deletion.machineId });
+  await denied(store.cleaned(a.hostToken, a.installationId, { requestId: deletion.requestId }));
+  await db.query(`update sandboxes set lifecycle_generation=2 where id=$1`, [a.sandboxId]);
+  const { faultingStore, failure } = failPhysicalJobCommit(deletion.requestId, "failed");
+  await expect(poll(faultingStore)).rejects.toMatchObject({ cause: failure });
+  const receipt = () =>
+    db.query(
+      `select j.outcome,j.cancelled_at,s.status,s.lifecycle_generation::text as generation,s.docker_generation from docker_host_jobs j
+       join sandboxes s on s.id=j.bound_sandbox_id where j.request_id=$1`,
+      [deletion.requestId],
+    );
+  expect((await receipt()).rows).toEqual([
+    { outcome: null, cancelled_at: null, status: "failed", generation: "2", docker_generation: a.generation },
+  ]);
+  expect(await poll()).toBeNull();
+  expect((await receipt()).rows).toEqual([
+    {
+      outcome: "failed",
+      cancelled_at: expect.anything(),
+      status: "failed",
+      generation: "2",
+      docker_generation: a.generation,
+    },
+  ]);
+  const result = { requestId: deletion.requestId, outcome: "completed" as const };
+  await denied(store.complete(a.hostToken, randomUUID(), result));
+  await store.complete(a.hostToken, a.installationId, result);
+  await store.complete(a.hostToken, a.installationId, result);
+  await denied(store.complete(a.hostToken, a.installationId, { ...result, outcome: "failed" }));
+  expect((await receipt()).rows).toEqual([
+    { outcome: "completed", cancelled_at: null, status: "failed", generation: "2", docker_generation: a.generation },
+  ]);
+});
+
+test("uninstall cancels pending optional physical deletion even without a capable poll", async () => {
+  const db = database();
+  const a = await boundFixture();
+  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+  await store.complete(a.hostToken, a.installationId, { requestId: a.create.requestId, outcome: "completed" });
+  await db.query(`update sandboxes set status='deleted',deleted_at=now() where id=$1`, [a.sandboxId]);
+  const deletion = {
+    requestId: randomUUID(),
+    operation: "deletePhysical" as const,
+    machineId: "a".repeat(64),
+    lifecycleGeneration: 1,
+  };
+  await store.enqueueSandbox(a.owner, a.sandboxId, deletion);
+  const { faultingStore, failure } = failPhysicalJobCommit(deletion.requestId, "failed");
+  await expect(faultingStore.unregister(a.hostToken, a.installationId)).rejects.toMatchObject({ cause: failure });
+  const state = () =>
+    db.query(
+      `select j.outcome,j.cancelled_at,h.draining_at,h.revoked_at from docker_host_jobs j
+        join docker_hosts h on h.id=j.host_id where j.request_id=$1`,
+      [deletion.requestId],
+    );
+  expect((await state()).rows).toEqual([{ outcome: null, cancelled_at: null, draining_at: null, revoked_at: null }]);
+  expect(await store.unregister(a.hostToken, a.installationId)).toBe(true);
+  expect((await state()).rows).toEqual([
+    { outcome: "failed", cancelled_at: expect.anything(), draining_at: null, revoked_at: expect.anything() },
+  ]);
+});
+
 // The migrated SQL boundary owns binding, actor fencing, lifecycle intent and capabilities.
 test("bound member admission derives immutable machine fields and cannot redirect or adopt mailbox IDs", async () => {
   const db = database();
@@ -521,6 +647,80 @@ test("bound bootstrap requires ACKed creation and the exact pending capability, 
   expect(await store.poll(a.hostToken, a.installationId)).toEqual(first);
   await denied(store.enqueueSandbox(a.owner, a.sandboxId, { ...selection, requestId: randomUUID() }));
 });
+
+test.each(["account", "docker", "runtime", "revoked runtime", "revoked issuer"] as const)(
+  "idle-only stop checks %s work",
+  async (queue) => {
+    const db = database();
+    const a = await boundFixture();
+    await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+    await db.query("update public.sandboxes set status='ready' where id=$1", [a.sandboxId]);
+    const turn = randomUUID();
+    const sealed = await encryptSecret("queued turn", key);
+    if (queue === "account") {
+      const credential = randomUUID();
+      await db.query(
+        "insert into public.credentials(id,scope,owner_id,kind,value_enc) values($1,'user',$2,'openai',$3)",
+        [credential, a.owner.userId, sealed],
+      );
+      await db.query(
+        `insert into public.account_turn_queue
+        (sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id)
+       values($1,$2,$3,$4,$5,1,1,$6,$7,'first')`,
+        [a.sandboxId, turn, credential, a.owner.userId, a.owner.orgId, "a".repeat(64), sealed],
+      );
+    } else if (queue === "docker") {
+      await db.query(
+        `insert into public.docker_queued_prompts
+        (sandbox_id,request_id,prompt_id,owner_id,actor_epoch,lifecycle_generation,input_hash,input_enc)
+       select id,$2,$3,owner_id,1,lifecycle_generation,$4,$5 from public.sandboxes where id=$1`,
+        [a.sandboxId, turn, randomUUID(), "a".repeat(64), sealed],
+      );
+    }
+    if (queue === "runtime" || queue === "revoked runtime" || queue === "revoked issuer") {
+      await db.query(
+        `insert into public.runtime_enrolments(sandbox_id,lifecycle_generation,epoch,runtime_hash,docker_issuer_fence)
+       select id,lifecycle_generation,1,encode(sha256(uuid_send(id)),'hex'),$2
+       from public.sandboxes where id=$1`,
+        [a.sandboxId, `${a.actor.userId}:1`],
+      );
+      await db.query(
+        "insert into public.runtime_commands(sandbox_id,request_id,epoch,request_enc) values($1,$2,1,$3)",
+        [a.sandboxId, turn, sealed],
+      );
+    }
+    const stop = { requestId: randomUUID(), operation: "stop" as const };
+    if (queue === "revoked runtime") {
+      await db.query("update public.runtime_enrolments set runtime_hash=null where sandbox_id=$1", [a.sandboxId]);
+      await store.enqueueSandbox(a.owner, a.sandboxId, { ...stop, onlyIfIdle: true });
+      return;
+    }
+    if (queue === "revoked issuer") {
+      await db.query("update public.mcp_actor_epochs set epoch=epoch+1 where org_id=$1 and user_id=$2", [
+        a.actor.orgId,
+        a.actor.userId,
+      ]);
+      await store.enqueueSandbox(a.owner, a.sandboxId, { ...stop, onlyIfIdle: true });
+      return;
+    }
+    await denied(store.enqueueSandbox(a.owner, a.sandboxId, { ...stop, onlyIfIdle: true }));
+    expect(
+      (await db.query("select status,stop_requested_at from public.sandboxes where id=$1", [a.sandboxId])).rows,
+    ).toEqual([{ status: "ready", stop_requested_at: null }]);
+    expect(
+      (await db.query("select 1 from public.docker_host_jobs where request_id=$1", [stop.requestId])).rows,
+    ).toEqual([]);
+    if (queue === "runtime") {
+      await db.query(
+        "update public.runtime_commands set request_id='outputs_9999999999999_sample' where sandbox_id=$1 and request_id=$2",
+        [a.sandboxId, turn],
+      );
+      await store.enqueueSandbox(a.owner, a.sandboxId, { ...stop, onlyIfIdle: true });
+      return;
+    }
+    await store.enqueueSandbox(a.owner, a.sandboxId, stop);
+  },
+);
 
 test("stop commits runtime revocation once; cleanup retains the create deadline and ACKs only terminal transitions", async () => {
   const db = database();
@@ -699,6 +899,7 @@ test("a complete stopped Docker archive replaces the live sample, while a trunca
         method: "POST",
         headers: {
           authorization: `Bearer ${a.hostToken}`,
+          [DOCKER_HOST_PROTOCOL_HEADER]: String(DOCKER_HOST_PROTOCOL),
           "x-armada-installation-id": a.installationId,
           "x-armada-request-id": a.startup.requestId,
           ...(body ? { "content-type": "application/x-tar" } : {}),
@@ -1088,7 +1289,7 @@ test("retention belongs to the adding member and reports physical cleanup deadli
   const deadline = "2026-11-20T12:00:00.000Z";
   expect(
     await store.retentionForHost(a.hostToken, a.installationId, { retentionSeconds: 86400, nextCleanupAt: deadline }),
-  ).toBe(0);
+  ).toEqual({ hostId: a.hostId, retentionSeconds: 0 });
   let host = (await store.list(a.actor)).find((h) => h.id === a.hostId)!;
   expect(host.retentionSeconds).toBe(86400);
   expect(host.nextCleanupAt).toBeNull();
@@ -1136,7 +1337,7 @@ test("retired registrants retain only bound reconciliation and admin cleanup", a
     // The HTTP poll composes these policy endpoints around mailbox delivery.
     await expect(
       store.retentionForHost(a.hostToken, a.installationId, { retentionSeconds: 86400, nextCleanupAt: null }),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({ hostId: a.hostId, retentionSeconds: undefined });
     await expect(store.limitsForHost(a.hostToken, a.installationId)).resolves.toBeUndefined();
     await denied(store.expired(a.hostToken, randomUUID(), { requestId: a.startup.requestId }));
     await store.expired(a.hostToken, a.installationId, { requestId: a.startup.requestId });
@@ -1560,7 +1761,7 @@ test("docker launch stages come from host pickup and create ACK, not from ticket
   const stages = async () =>
     (
       await database().query<{ activation: string; stage: string }>(
-        "select activation::text,stage from public.sandbox_launch_stages where sandbox_id=$1 order by at,stage",
+        "select activation::text,stage from public.sandbox_launch_stages where sandbox_id=$1 order by stage",
         [a.sandboxId],
       )
     ).rows.map((row) => `${row.activation}:${row.stage}`);
@@ -1570,7 +1771,7 @@ test("docker launch stages come from host pickup and create ACK, not from ticket
   expect((await store.poll(a.hostToken, a.installationId))?.operation).toBe("create");
   expect(await stages()).toEqual(["1:accepted", "1:provider_claimed"]);
   await store.complete(a.hostToken, a.installationId, { requestId: a.create.requestId, outcome: "completed" });
-  expect(await stages()).toEqual(["1:accepted", "1:provider_claimed", "1:machine_started"]);
+  expect(await stages()).toEqual(["1:accepted", "1:machine_started", "1:provider_claimed"]);
   // A later activation (resume) whose ticket is issued before the host restores the machine.
   await database().query("update public.sandboxes set status='stopped',stopped_at=now() where id=$1", [a.sandboxId]);
   await database().query("update public.sandboxes set status='starting',stopped_at=null where id=$1", [a.sandboxId]);
@@ -1585,7 +1786,7 @@ test("docker launch stages come from host pickup and create ACK, not from ticket
   expect((await stages()).filter((stage) => stage.startsWith("2:"))).toEqual(["2:accepted"]);
   expect((await stages()).filter((stage) => stage.startsWith("1:"))).toEqual([
     "1:accepted",
-    "1:provider_claimed",
     "1:machine_started",
+    "1:provider_claimed",
   ]);
 });

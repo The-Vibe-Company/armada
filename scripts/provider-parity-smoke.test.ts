@@ -1,7 +1,10 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { postDeploySmoke } from "./post-deploy-smoke.ts";
-import { smokeReceipts } from "./smoke-sandbox-cleanup.ts";
+import { readSmokeJournal, smokeReceipts } from "./smoke-sandbox-cleanup.ts";
 
 const boatNotice = "boat: not part of the release gate";
 const boatNotRun = { status: "not-run", reason: "not_part_of_release_gate" };
@@ -43,6 +46,7 @@ for (const mode of [
   "snapshot_wrong_org",
   "snapshot_wrong_owner",
   "snapshot_wrong_receipt",
+  "snapshot_lost_receipt",
   "snapshot_org_visibility",
   "snapshot_host_unavailable",
   "snapshot_invalid_id",
@@ -140,6 +144,14 @@ for (const mode of [
   "quota",
   "resume_quota",
   "server_failure",
+  "docker_launch_recovers",
+  "docker_launch_unresolved",
+  "docker_launch_incomplete",
+  "modal_launch_recovers",
+  "modal_launch_unresolved",
+  "modal_launch_malformed",
+  "modal_launch_missing_provider",
+  "modal_launch_top_level_id",
   "delete_retry",
   "journal_failure",
   "stop_response_lost",
@@ -188,6 +200,20 @@ for (const mode of [
     const controlled = new Set<string>();
     const journaled: string[] = [];
     const journalClaims: string[] = [];
+    const dockerLaunchScenario = mode.startsWith("docker_launch_");
+    let dockerLaunchKey: string | undefined;
+    let dockerInventoryReads = 0;
+    const modalLaunchScenario = mode.startsWith("modal_launch_");
+    const ordinaryModalId = "30000000-0000-4000-8000-000000000004";
+    const recoveredSandbox = "30000000-0000-4000-8000-000000000005";
+    const launchRequestId = "30000000-0000-4000-8000-000000000006";
+    let modalLaunchKey: string | undefined;
+    let modalExternalRef: string | undefined;
+    const ordinaryIds = new Map<string, string>();
+    const sandboxId = (provider: string) => ordinaryIds.get(provider) ?? provider;
+    const modalJournalKeys: string[] = [];
+    let modalInventoryReads = 0;
+
     const routines = new Map<string, Record<string, unknown>>();
     const dueDates = new Map<string, number>();
     const routineSandbox = (p: string) => `30000000-0000-4000-8000-00000000000${p === "modal" ? "1" : "2"}`;
@@ -214,24 +240,24 @@ for (const mode of [
     const clientAnswers = new Map<string, string>();
     const clientStops = new Map<string, number>();
     function acceptStop(provider: string, args: Record<string, unknown>) {
-      expect(args.id).toBe(provider);
+      expect(args.id).toBe(sandboxId(provider));
       expect(["ready", "running"]).toContain(states.get(provider)!);
       clientStops.set(provider, (clientStops.get(provider) ?? 0) + 1);
       states.set(provider, "stopped");
-      return { id: provider, status: "stopped" };
+      return { id: sandboxId(provider), status: "stopped" };
     }
     function acceptClient(provider: string, args: Record<string, unknown>) {
-      expect(args.id).toBe(provider);
-      expect(args.conversation_id).toBe("client_conversation");
+      expect(args.id).toBe(sandboxId(provider));
       expect(args.request_id).toMatch(/^[a-f0-9-]{36}$/);
       const marker = String(args.prompt).match(/PARITY_CLIENT_(?:DASHBOARD|CLI)_[a-f0-9-]{36}/)![0];
       const client = marker.includes("DASHBOARD") ? "dashboard" : "cli";
+      expect(args).not.toHaveProperty("conversation_id");
       const promptId = `client_${client}_${provider}`;
       clientAnswers.set(promptId, marker);
       const history = turns.get(provider) ?? [];
       history.push(promptId);
       turns.set(provider, history);
-      return { id: provider, promptId, conversationId: "client_conversation", status: "queued" };
+      return { id: sandboxId(provider), promptId, conversationId: "client_conversation", status: "queued" };
     }
 
     const deletes = new Map<string, number>();
@@ -243,11 +269,20 @@ for (const mode of [
     const snapshotId = "10000000-0000-4000-8000-000000000009";
     const snapshotOwner = "10000000-0000-4000-8000-000000000008";
     const snapshotImage = `sha256:${"a".repeat(64)}`;
+    const journalDir =
+      mode === "modal_launch_missing_provider" ||
+      mode === "modal_launch_top_level_id" ||
+      mode === "docker_launch_recovers" ||
+      mode === "docker_launch_incomplete"
+        ? await mkdtemp(join(tmpdir(), "parity-journal-"))
+        : undefined;
+    const journalPath = journalDir ? join(journalDir, "sandboxes.json") : undefined;
     const passed = await postDeploySmoke(
       {
         ARMADA_URL: "https://armada-mcp-staging.up.railway.app",
         ARMADA_TOKEN: "fake",
         ARMADA_SMOKE: "create_real_compute",
+        ...(journalPath ? { ARMADA_SMOKE_JOURNAL: journalPath } : {}),
         ARMADA_SMOKE_CASES: JSON.stringify([
           { provider: "boat", org: null },
           ...(mode.startsWith("accounts") ? ["modal", "docker"] : providers).flatMap((provider) =>
@@ -315,48 +350,52 @@ for (const mode of [
           { provider: "boat", harness: "invalid" },
         ]),
       },
-      mode.startsWith("subscription_probe") && mode !== "subscription_probe_full"
-        ? ["--parity", "--feature", "subscription-account"]
-        : mode === "readable_full"
-          ? ["--parity"]
-          : mode.startsWith("readable_")
-            ? ["--parity", "--feature", "readable-variables"]
-            : mode.startsWith("idle_")
-              ? ["--parity", "--feature", mode === "idle_pause" ? "idle-pause" : "wake-on-send"]
-              : mode.startsWith("snapshot_")
-                ? ["--parity", "--feature", "launch-snapshot"]
-                : mode === "routine_full"
-                  ? ["--parity"]
-                  : mode.startsWith("routine_")
-                    ? ["--parity", "--feature", "routines"]
-                    : mode === "template_full"
-                      ? ["--parity"]
-                      : mode.startsWith("template_")
-                        ? ["--parity", "--feature", "templates"]
-                        : mode.startsWith("h_")
-                          ? ["--parity", "--feature", requestedHarness]
-                          : ["control_api_unsupported", "control_full"].includes(mode)
-                            ? ["--parity"]
-                            : mode.startsWith("control_")
-                              ? ["--parity", "--feature", controlFeature]
-                              : mode.startsWith("github")
-                                ? ["--parity", "--feature", "github"]
-                                : mode.startsWith("accounts")
-                                  ? ["--parity", "--accounts"]
-                                  : mode === "usage_filter"
-                                    ? ["--parity", "--only", "docker", "--feature", "exact-cost"]
-                                    : mode === "filtered"
-                                      ? ["--parity", "--only", "docker", "--feature", "exec"]
-                                      : debtFeature
-                                        ? ["--parity", "--feature", debtFeature]
-                                        : mode === "invalid_filter"
-                                          ? ["--parity", "--feature", "typo"]
-                                          : ["--parity"],
+      dockerLaunchScenario || modalLaunchScenario
+        ? ["--parity", "--only", dockerLaunchScenario ? "docker" : "modal", "--feature", "codex"]
+        : mode.startsWith("subscription_probe") && mode !== "subscription_probe_full"
+          ? ["--parity", "--feature", "subscription-account"]
+          : mode === "readable_full"
+            ? ["--parity"]
+            : mode.startsWith("readable_")
+              ? ["--parity", "--feature", "readable-variables"]
+              : mode.startsWith("idle_")
+                ? ["--parity", "--feature", mode === "idle_pause" ? "idle-pause" : "wake-on-send"]
+                : mode.startsWith("snapshot_")
+                  ? ["--parity", "--feature", "launch-snapshot"]
+                  : mode === "routine_full"
+                    ? ["--parity"]
+                    : mode.startsWith("routine_")
+                      ? ["--parity", "--feature", "routines"]
+                      : mode === "template_full"
+                        ? ["--parity"]
+                        : mode.startsWith("template_")
+                          ? ["--parity", "--feature", "templates"]
+                          : mode.startsWith("h_")
+                            ? ["--parity", "--feature", requestedHarness]
+                            : ["control_api_unsupported", "control_full"].includes(mode)
+                              ? ["--parity"]
+                              : mode.startsWith("control_")
+                                ? ["--parity", "--feature", controlFeature]
+                                : mode.startsWith("github")
+                                  ? ["--parity", "--feature", "github"]
+                                  : mode.startsWith("accounts")
+                                    ? ["--parity", "--accounts"]
+                                    : mode === "usage_filter"
+                                      ? ["--parity", "--only", "docker", "--feature", "exact-cost"]
+                                      : mode === "filtered"
+                                        ? ["--parity", "--only", "docker", "--feature", "exec"]
+                                        : debtFeature
+                                          ? ["--parity", "--feature", debtFeature]
+                                          : mode === "invalid_filter"
+                                            ? ["--parity", "--feature", "typo"]
+                                            : ["--parity"],
       {
         now: () => clock,
+        ...(modalLaunchScenario || dockerLaunchScenario ? { deadline: 3_500 } : {}),
         sleep: advance,
         out: (line) => lines.push(line),
         recordSandbox: async (org, _id, requestKey, provider) => {
+          if (modalLaunchScenario) modalJournalKeys.push(requestKey);
           journaled.push(org);
           journalClaims.push(_id);
           // Exercise the real journal validator, not a permissive callback.
@@ -368,7 +407,8 @@ for (const mode of [
           if (new URL(url).pathname === "/mcp") {
             expect(clientFull || clientStopFull).toBe(true);
             const rpc = JSON.parse(String(init.body));
-            const dashboardProvider = rpc.params?.arguments?.id ?? "initializing";
+            const target = rpc.params?.arguments?.id;
+            const dashboardProvider = providers.find((provider) => sandboxId(provider) === target) ?? "initializing";
             calls.push(`${dashboardProvider}:mcp:${rpc.method}`);
             if (rpc.method === "initialize")
               return Response.json({
@@ -384,7 +424,7 @@ for (const mode of [
             expect(rpc.method).toBe("tools/call");
             if (clientStopFull) {
               expect(rpc.params.name).toBe("stop");
-              expect(rpc.params.arguments).toEqual({ id: dashboardProvider });
+              expect(rpc.params.arguments).toEqual({ id: sandboxId(dashboardProvider) });
               return Response.json({
                 jsonrpc: "2.0",
                 id: rpc.id,
@@ -411,6 +451,14 @@ for (const mode of [
             return Response.json(
               mode.startsWith("idle_") ? { idlePauseDelayMs: mode === "idle_budget" ? 35 * 60_000 : 1000 } : {},
             );
+          if (init.method === "DELETE") {
+            const target = new URL(url);
+            const provider = target.searchParams.get("org") as "modal" | "docker";
+            const id = target.pathname.split("/").at(-1);
+            expect(id).toBe(dockerLaunchScenario ? sandboxId(provider) : recoveredSandbox);
+            expect(states.get(provider)).toBe("deleted");
+            return Response.json({ id, status: "deleted" });
+          }
           const path = url.split("/api/v1/")[1]!;
           const body = JSON.parse(String(init.body));
           const p = body.org;
@@ -660,7 +708,82 @@ for (const mode of [
               };
               break;
             }
+            case "sandbox/list":
+              if (mode === "snapshot_lost_receipt" && p === "docker") {
+                expect(body.externalRef).toBe(dockerLaunchKey);
+                result = {
+                  sandboxes: [{ id: sandboxId(p), provider: p, externalRef: dockerLaunchKey, status: "ready" }],
+                };
+                break;
+              }
+              if (dockerLaunchScenario) {
+                expect(body).toEqual({ org: "docker", owner: "me", externalRef: dockerLaunchKey });
+                dockerInventoryReads++;
+                result = {
+                  sandboxes: [
+                    {
+                      id:
+                        mode !== "docker_launch_unresolved" && dockerInventoryReads > 1
+                          ? sandboxId(p)
+                          : recoveredSandbox,
+                      provider: "docker",
+                      externalRef: dockerLaunchKey,
+                      status: "ready",
+                    },
+                  ],
+                };
+                break;
+              }
+              expect(modalLaunchScenario).toBe(true);
+              expect(body).toEqual({ org: "modal", owner: "me", externalRef: modalLaunchKey });
+              modalInventoryReads++;
+              result = {
+                sandboxes:
+                  mode !== "modal_launch_unresolved" && modalInventoryReads > 1
+                    ? [{ id: recoveredSandbox, provider: "modal", externalRef: modalExternalRef, status: "ready" }]
+                    : [],
+              };
+              break;
             case "sandbox/launch":
+              if (dockerLaunchScenario) {
+                ordinaryIds.set(p, String(body.requestId));
+                dockerLaunchKey = body.externalRef;
+                await advance(500);
+                if (mode !== "docker_launch_unresolved") {
+                  states.set(p, "ready");
+                  if (mode === "docker_launch_recovers") throw new DOMException("Timed out", "TimeoutError");
+                  return Response.json({ sandbox: { id: body.requestId }, provider: "docker" });
+                }
+                return Response.json(
+                  { error: { code: "outcome_unknown", message: "The launch may still be in flight." } },
+                  { status: 504, headers: { "x-request-id": launchRequestId } },
+                );
+              }
+              if (modalLaunchScenario) {
+                modalLaunchKey = body.idempotencyKey;
+                modalExternalRef = body.externalRef;
+                await advance(500);
+                if (mode === "modal_launch_malformed") {
+                  states.set(p, "ready");
+                  return Response.json({ sandbox: { id: "malformed", provider: "modal" } });
+                }
+                if (mode === "modal_launch_missing_provider") {
+                  states.set(p, "ready");
+                  return Response.json({ sandbox: { id: recoveredSandbox } });
+                }
+                if (mode === "modal_launch_top_level_id") {
+                  states.set(p, "ready");
+                  return Response.json({ id: ordinaryModalId, sandbox: { provider: "modal" } });
+                }
+                if (mode === "modal_launch_recovers") {
+                  states.set(p, "ready");
+                  throw new DOMException("Timed out", "TimeoutError");
+                }
+                return Response.json(
+                  { error: { code: "outcome_unknown", message: "The launch may still be in flight." } },
+                  { status: 504, headers: { "x-request-id": launchRequestId } },
+                );
+              }
               if (mode.startsWith("snapshot_")) {
                 if (p === "docker") {
                   expect(body.snapshotId).toBe(snapshotId);
@@ -701,9 +824,15 @@ for (const mode of [
                 );
               if (mode === "client_send_full_slow" || mode === "client_stop_full_slow") await advance(110_001);
               states.set(p, "ready");
+              if (p === "modal") ordinaryIds.set(p, ordinaryModalId);
+              else if (p === "docker" && body.externalRef) ordinaryIds.set(p, String(body.requestId));
+              if (mode === "snapshot_lost_receipt" && p === "docker") {
+                dockerLaunchKey = body.externalRef;
+                throw new DOMException("Timed out", "TimeoutError");
+              }
               result = {
                 sandbox: {
-                  id: p,
+                  id: sandboxId(p),
                   provider: p,
                   ...(p === "docker" && mode.startsWith("snapshot_")
                     ? {
@@ -746,12 +875,12 @@ for (const mode of [
                 );
               expect(body.text).toContain("Cancel the waiting task");
               controlMarkers.set(p, body.text.match(/PARITY_STEER_[a-z0-9]+/)[0]);
-              result = { id: p, promptId: "steer-record", delivery: "restart" };
+              result = { id: sandboxId(p), promptId: "steer-record", delivery: "restart" };
               break;
             case "sandbox/interrupt":
               if (mode.startsWith("control_queued_")) expect(controlActiveReads.get(p)).toBeGreaterThanOrEqual(2);
               controlled.add(p);
-              result = { id: p, interrupted: true };
+              result = { id: sandboxId(p), interrupted: true };
               break;
             case "mcp/list":
             case "mcp/sandbox-connections":
@@ -1021,7 +1150,6 @@ for (const mode of [
               }
               result = { exitCode: 0, timedOut: false, stdout: "PARITY_EXEC_OK" };
               break;
-            case "sandbox/detail":
             case "sandbox/status":
               if (mode.startsWith("idle_")) {
                 const n = (idleReads.get(p) ?? 0) + 1;
@@ -1029,7 +1157,7 @@ for (const mode of [
                 const paused = !woken.has(p) && n > 2;
                 if (paused) states.set(p, "stopped");
                 result = {
-                  id: p,
+                  id: sandboxId(p),
                   status: paused ? "stopped" : states.get(p),
                   idlePaused: paused,
                   statusReason: paused ? (mode === "idle_wrong_reason" ? "explicit_stop" : "idle_paused") : null,
@@ -1054,14 +1182,20 @@ for (const mode of [
                 break;
               }
               detailReads.set(p, (detailReads.get(p) ?? 0) + 1);
-              if (mode === "baseline_quota" && path === "sandbox/detail" && detailReads.get(p) === 1)
+              if (mode === "baseline_quota" && detailReads.get(p) === 1)
                 return Response.json(
                   { error: { code: "rate_limited", message: "Read quota reached." } },
                   { status: 429 },
                 );
               if (mode === "subscription_probe_budget") clock += 110_001;
               result = {
-                id: mode === "template_identity" || mode.startsWith("routine_") || deepFull ? body.id : p,
+                id:
+                  ["template_identity", "template_full", "readable_full"].includes(mode) ||
+                  mode.startsWith("routine_") ||
+                  deepFull ||
+                  modalLaunchScenario
+                    ? body.id
+                    : sandboxId(p),
                 settled: true,
                 prompt: null,
                 status: states.get(p),
@@ -1154,8 +1288,13 @@ for (const mode of [
               };
               break;
             case "sandbox/stop":
+              if (journalPath) {
+                expect(body.id).toBe(dockerLaunchScenario ? sandboxId(p) : recoveredSandbox);
+                if (states.get(p) === "deleted")
+                  return Response.json({ error: { code: "not_found" } }, { status: 404 });
+              }
               if (clientStopFull && !body.request_id) {
-                expect(body).toEqual({ org: p, id: p });
+                expect(body).toEqual({ org: p, id: sandboxId(p) });
                 result = acceptStop(p, body);
                 break;
               }
@@ -1187,11 +1326,15 @@ for (const mode of [
                 id:
                   mode === "wrong_delete_id"
                     ? "another-sandbox"
-                    : mode === "template_identity" || mode.startsWith("routine_") || deepFull
+                    : ["template_identity", "template_full", "readable_full"].includes(mode) ||
+                        mode.startsWith("routine_") ||
+                        deepFull ||
+                        modalLaunchScenario
                       ? body.id
-                      : p,
+                      : sandboxId(p),
                 status: mode === "delete_failure" && p === "docker" ? "pending" : "deleted",
               };
+              if (journalPath) states.set(p, "deleted");
               break;
             default:
               throw new Error(`Unexpected route ${path}`);
@@ -1199,7 +1342,14 @@ for (const mode of [
           return Response.json(result);
         },
       },
-    );
+    ).finally(async () => {
+      if (!journalDir || !journalPath) return;
+      try {
+        expect(await readSmokeJournal(journalPath)).toEqual([]);
+      } finally {
+        await rm(journalDir, { recursive: true, force: true });
+      }
+    });
     expect(lines.filter((line) => line === boatNotice)).toHaveLength(1);
     expect(calls.some((call) => call.startsWith("boat:"))).toBe(false);
     if (mode.startsWith("accounts")) {
@@ -1285,6 +1435,91 @@ for (const mode of [
       return;
     }
     const report = JSON.parse(lines.find((line) => line.startsWith('{"step":"provider_parity"'))!);
+    if (dockerLaunchScenario) {
+      expect(calls.filter((call) => call === "docker:sandbox/launch")).toHaveLength(1);
+      expect(sandboxId("docker")).toMatch(/^[0-9a-f-]{36}$/);
+      expect(dockerLaunchKey).toBe(`post-deploy-smoke:${sandboxId("docker")}`);
+      if (mode !== "docker_launch_unresolved") {
+        expect(passed).toBe(true);
+        expect(report.features.cleanup.docker.status).toBe("pass");
+        const receipts = lines.filter((line) => line.startsWith("{")).map((line) => JSON.parse(line));
+        expect(receipts.some((receipt) => receipt.step === "smoke_sandbox_receipt")).toBe(false);
+        expect(receipts.find((receipt) => receipt.step === "smoke_cleanup_summary")).toMatchObject({
+          pass: true,
+          deferredRows: 0,
+          launchOutcomeUnknown: false,
+        });
+        expect(lines).toContain(
+          JSON.stringify({
+            step: "parity_docker_launch",
+            provider: "docker",
+            pass: true,
+            elapsedMs: 1_500,
+          }),
+        );
+      } else {
+        expect(passed).toBe(false);
+        expect(report.features["prerequisite:launch"].docker).toMatchObject({
+          status: "fail",
+          diagnostic: {
+            code: "outcome_unknown",
+            message: "The launch may still be in flight.",
+            requestId: launchRequestId,
+            requestKey: dockerLaunchKey,
+          },
+        });
+        expect(report.features.cleanup.docker.reason).toBe("allocation_unconfirmed");
+        expect(journalClaims).toEqual([]);
+        expect(calls).not.toContain("docker:sandbox/delete");
+      }
+      return;
+    }
+    if (modalLaunchScenario) {
+      expect(calls.filter((call) => call === "modal:sandbox/launch")).toHaveLength(1);
+      expect(modalLaunchKey).toMatch(/^post-deploy-smoke:[0-9a-f-]{36}$/);
+      expect(modalExternalRef).toBe(modalLaunchKey);
+      if (mode !== "modal_launch_unresolved") {
+        expect(passed).toBe(true);
+        expect(report.features["prerequisite:launch"].modal.status).toBe("pass");
+        expect(report.features.cleanup.modal.status).toBe("pass");
+        if (journalPath) {
+          const receipts = lines.filter((line) => line.startsWith("{")).map((line) => JSON.parse(line));
+          expect(receipts.some((receipt) => receipt.step === "smoke_sandbox_receipt")).toBe(false);
+          expect(receipts.find((receipt) => receipt.step === "smoke_cleanup_summary")).toMatchObject({
+            pass: true,
+            deferredRows: 0,
+            launchOutcomeUnknown: false,
+          });
+        } else {
+          expect(journalClaims).toEqual([recoveredSandbox]);
+          expect(modalJournalKeys).toHaveLength(1);
+          expect(modalJournalKeys[0]).toBe(modalLaunchKey);
+        }
+        expect(lines.map((line) => (line.startsWith("{") ? JSON.parse(line) : null))).toContainEqual({
+          step: "parity_modal_launch",
+          provider: "modal",
+          pass: true,
+          elapsedMs: 1_500,
+        });
+      } else {
+        expect(passed).toBe(false);
+        expect(report.features["prerequisite:launch"].modal).toMatchObject({
+          status: "fail",
+          diagnostic: {
+            code: "outcome_unknown",
+            message: "The launch may still be in flight.",
+            requestId: launchRequestId,
+            requestKey: modalLaunchKey,
+            elapsedMs: 3_500,
+          },
+        });
+        expect(modalInventoryReads).toBe(3);
+        expect(report.features.cleanup.modal.reason).toBe("allocation_unconfirmed");
+        expect(journalClaims).toEqual([]);
+        expect(calls).not.toContain("modal:sandbox/delete");
+      }
+      return;
+    }
     for (const cells of Object.values(report.features) as Record<string, unknown>[])
       expect(cells.boat).toEqual(boatNotRun);
     if (mode === "github_unbound") {
@@ -1458,7 +1693,7 @@ for (const mode of [
         expect(report.features.cleanup[provider].status).toBe("pass");
         expect(calls.filter((call) => call === `${provider}:sandbox/launch`)).toHaveLength(1);
         expect(calls).not.toContain(`${provider}:sandbox/resume`);
-        const firstDetail = calls.indexOf(`${provider}:sandbox/detail`);
+        const firstDetail = calls.indexOf(`${provider}:sandbox/status`);
         expect(calls.indexOf(`${provider}:sandbox/stop`)).toBeGreaterThan(firstDetail);
       }
       return;
@@ -1518,7 +1753,12 @@ for (const mode of [
     }
     if (mode.startsWith("snapshot_")) {
       const modalAllocated = mode !== "snapshot_missing" && mode !== "snapshot_wrong_provider";
-      const dockerAllocated = ["snapshot_valid", "snapshot_answer_missing", "snapshot_wrong_receipt"].includes(mode);
+      const dockerAllocated = [
+        "snapshot_valid",
+        "snapshot_answer_missing",
+        "snapshot_wrong_receipt",
+        "snapshot_lost_receipt",
+      ].includes(mode);
       const pass = [
         "snapshot_valid",
         "snapshot_unconfigured",
@@ -1536,7 +1776,12 @@ for (const mode of [
         expect(calls.includes(`${provider}:sandbox/launch`)).toBe(allocated);
         if (allocated) {
           expect(report.features.cleanup[provider].status).toBe("pass");
-          if (mode !== "snapshot_wrong_receipt" || provider !== "docker") expect(turns.get(provider)).toHaveLength(1);
+          if (provider === "docker" && mode === "snapshot_lost_receipt") {
+            expect(calls).toContain("docker:sandbox/list");
+            expect(calls.filter((call) => call === "docker:sandbox/launch")).toHaveLength(1);
+            expect(turns.get(provider)).toBeUndefined();
+          } else if (mode !== "snapshot_wrong_receipt" || provider !== "docker")
+            expect(turns.get(provider)).toHaveLength(1);
         }
       }
       if (mode === "snapshot_unconfigured") expect(calls).not.toContain("docker:docker/snapshots/list");
@@ -1548,7 +1793,14 @@ for (const mode of [
       expect(passed).toBe(true);
       expect(report.starts).toBe(6);
       expect(new Set(journalClaims)).toEqual(
-        new Set(["modal", "docker", "modal-template-1", "docker-template-1", "modal-template-2", "docker-template-2"]),
+        new Set([
+          ordinaryModalId,
+          sandboxId("docker"),
+          "modal-template-1",
+          "docker-template-1",
+          "modal-template-2",
+          "docker-template-2",
+        ]),
       );
       for (const provider of ["modal", "docker"]) {
         expect(templateCalls.get(provider)).toBe(2);
@@ -1996,8 +2248,10 @@ function productionBoatFixture(
               { kind: "message", promptId: turns.at(-1), text: `SMOKE_OK ${memory}` },
             ],
           });
-        case "sandbox/detail":
+        case "sandbox/status":
           return Response.json({
+            id: "new-production-boat",
+            status,
             usage: {
               turnCount: turns.length,
               turns: turns.map((promptId) => ({
@@ -2016,8 +2270,6 @@ function productionBoatFixture(
               },
             },
           });
-        case "sandbox/status":
-          return Response.json({ id: "new-production-boat", status });
         case "sandbox/exec":
           return Response.json({
             exitCode: 0,

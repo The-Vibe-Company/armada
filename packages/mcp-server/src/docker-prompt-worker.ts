@@ -81,9 +81,10 @@ export function createDockerPromptWorker(sql: Sql, key: string, options: Paramet
             {
               request_id: q.request_id,
               prompt: payload.prompt,
-              ...(conversationId === undefined ? {} : { conversation_id: conversationId }),
             },
             row,
+            undefined,
+            conversationId,
           ),
         );
         if (!result.conversationId) throw Error("queued prompt dispatch unavailable");

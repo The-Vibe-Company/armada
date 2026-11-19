@@ -1,6 +1,6 @@
 # Skillpack skills at sandbox launch
 
-`armada launch GOLDEN --agent codex --skill example/notes@1.0.0 --skill example/other@2.0.0`
+`armada launch GOLDEN --provider boat --agent codex --skill example/notes@1.0.0 --skill example/other@2.0.0`
 installs public catalog exact pins before the first turn, including idle launches.
 API/MCP launch accepts `skills: string[]`; delegated child launch accepts the
 same array in `selection`. At most 20 distinct slugs are accepted; ambiguous

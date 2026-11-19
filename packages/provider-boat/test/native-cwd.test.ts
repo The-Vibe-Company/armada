@@ -731,10 +731,7 @@ for line in sys.stdin:
             ),
           ).toMatchObject({
             state: "failed",
-            reason:
-              source === "unknown"
-                ? `${expectedReason} Wait for the limit to reset, or switch to another account before sending the prompt again.`
-                : expect.any(String),
+            reason: source === "unknown" ? expectedReason : expect.any(String),
           });
           return;
         }
@@ -762,7 +759,7 @@ for line in sys.stdin:
         );
         expect(outcome).toEqual({
           state: "failed",
-          reason: `${reason} Wait for the limit to reset, or switch to another account before sending the prompt again.`,
+          reason,
           limit: { code: "usage_limit_exceeded", ...(resetsAt ? { resetsAt } : {}) },
         });
       } finally {

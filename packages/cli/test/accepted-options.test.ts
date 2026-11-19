@@ -27,8 +27,6 @@ test("command boundaries reject recognized but unused flags before making reques
       "build-status",
       "create",
       "update",
-      "connect",
-      "snapshot",
       "list",
     ].map((command) => ["snapshot", command, "--ttl", "4h"]),
     ["snapshot", "retirement", "dry-run", "snapshot", "--file", "ignored"],

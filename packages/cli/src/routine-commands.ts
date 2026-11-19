@@ -18,37 +18,6 @@ function launchRefusalHelp(reason: string): string {
   return reason.startsWith("skillpack_") ? skillRefusalMessage(reason) : snapshotText(templateRefusalHelp(reason));
 }
 
-const HELP = `Scheduled template launches (run as the routine owner):
-  armada routine create NAME --file config.json [--scope personal|org] [--org NAME|UUID] [--json]
-  armada routine create NAME --template UUID --revision N (--prompt TEXT | --prompt-file PATH) --cron EXPRESSION --timezone IANA_ZONE [--ttl 1h] [--max-runs-per-day N] [--scope personal|org] [--org NAME|UUID] [--json]
-  armada routine list [--org NAME|UUID] [--json]
-  armada routine show NAME|ID [--org NAME|UUID] [--json]
-  armada routine update NAME|ID --expected-version N (--file config.json | --cron EXPRESSION --timezone IANA_ZONE) [--org NAME|UUID] [--json]
-  armada routine enable NAME|ID --expected-version N [--org NAME|UUID] [--json]
-  armada routine pause NAME|ID --expected-version N [--org NAME|UUID] [--json]
-  armada routine delete NAME|ID --expected-version N [--org NAME|UUID] [--json]
-  armada routine runs NAME|ID [--org NAME|UUID] [--json]
-
-Create JSON requires templateId, templateRevision, prompt, cron and timezone.
-Optional ttlSeconds and maxRunsPerDay default to 3600 seconds and 24 launches/day.
-Update JSON replaces ALL mutable configuration and requires every field above plus
-name. Inline update changes only the schedule, retaining current mutable fields;
---expected-version still guards that complete replacement. Create takes name from
-NAME. Neither file accepts org, owner, scope or intervalHours.
-With --org, create requires explicit --scope personal|org; otherwise scope defaults
-to personal in the organization selected by armada org use. Names must be exact
-and unambiguous. Use the ID for history of deleted routines.
---prompt-file reads UTF-8 bytes without trimming; use - for piped stdin. Prompts are
-readable configuration, not a place for secrets. Quote the standard five-field cron
-expression and choose an IANA time zone (for example Europe/Paris or UTC).
-Runs must remain at least ONE HOUR apart, including DST transitions.
-TTL is 5 minutes–24 hours; daily cap is 1–24 admitted launches.
-New routines are paused. Enable schedules the next occurrence, not an immediate manual launch.
-Updating an enabled routine selects the next matching cron occurrence. Copy version from show/list;
-conflicts are not retried. Pause/delete stop new admissions, not already admitted runs.
-Runs shows the latest 100 decisions, including readable skip/failure reasons and
-original-prompt outcomes. Launch success is not task success; unknown is not success.
-`;
 const ROUTES = {
   create: "create",
   list: "list",
@@ -74,14 +43,6 @@ const INLINE = [
 const invalid = (message = "Invalid routine command. Run armada routine --help.") => new VaultError("invalid", message);
 
 export async function routineCommand(argv: readonly string[], io: VaultIo): Promise<number> {
-  if (
-    !argv.length ||
-    (argv.length === 1 && ["--help", "-h"].includes(argv[0] ?? "")) ||
-    (argv.length === 2 && Object.hasOwn(ROUTES, argv[0] ?? "") && ["--help", "-h"].includes(argv[1] ?? ""))
-  ) {
-    io.auth.out(HELP);
-    return 0;
-  }
   const [action, ...rest] = argv;
   if (!action || !Object.hasOwn(ROUTES, action)) throw invalid();
   const args = parseArgs(rest, ["--scope", ...INLINE]);

@@ -1,5 +1,6 @@
 import type { Harness } from "../packages/core/src/contract.ts";
 import { redactForLog } from "../packages/mcp-server/src/log.ts";
+import { observeSmokeLaunch } from "./smoke-launch.ts";
 /** Ordinary sandbox access probe. The owner API only observes and safely cleans up; the native model exercises MCP. */
 export interface ScopedProbeCase {
   org: string;
@@ -11,7 +12,10 @@ export interface ScopedProbeCase {
   reasoningEffort?: string;
 }
 export interface ScopedProbeIo {
-  request<T>(path: string, body: object): Promise<T>;
+  request<T>(path: string, body: object, timeoutMs?: number): Promise<T>;
+  now(): number;
+  sleep(ms: number): Promise<void>;
+  deadline: number;
   poll<T>(read: () => Promise<T>, done: (value: T) => boolean): Promise<T>;
   step<T>(name: string, action: () => Promise<T>): Promise<T>;
   withCleanup<T>(action: () => Promise<T>): Promise<T>;
@@ -106,7 +110,7 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
   const stopKey = `smoke-scoped-${crypto.randomUUID()}`;
   const answer = `SCOPED_CHILD_${crypto.randomUUID()}`;
   const noAccess = `NO_ACCESS_${crypto.randomUUID()}`;
-  const childPrompt = `Reply with exactly ${answer} and nothing else. Do not use tools or modify files.`;
+  const childPrompt = `ARMADA_SCOPED_SMOKE_V1 ${JSON.stringify({ lane: "child", answer })}`;
   let before: Set<string> | undefined;
   let parentId: string | undefined;
   let promptId: string | undefined;
@@ -137,7 +141,7 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
     }
     return fail("scoped_incomplete_snapshot");
   }
-  async function logs(id: string) {
+  async function logs(id: string, until?: number) {
     // Re-read from the start: providers can complete a tool in an existing event.
     let cursor: string | undefined;
     const cursors = new Set<string>();
@@ -151,7 +155,9 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
       };
       let result: { events: Row[]; cursor: string | null; hasMore: boolean };
       try {
-        result = await api("logs/read", options);
+        const remaining = until === undefined ? undefined : until - io.now();
+        if (remaining !== undefined && remaining <= 0) fail("scoped_incomplete_logs");
+        result = await io.request("logs/read", { org: item.org, ...options }, remaining);
       } catch (error) {
         // Never serialize errors, cursor values, provider responses or tool text.
         const status = row(error).status;
@@ -290,7 +296,14 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
         skills: [],
         ...(item.reasoningEffort ? { reasoningEffort: item.reasoningEffort } : {}),
       };
-      const goal = `Use only the configured native MCP server armada_orchestrator tools launch, message, read, stop for this task. Never use CLI, HTTP, config, credential or grant reads. If needed, the ONLY terminal command allowed is exactly ${referenceCommand} to read the nonsecret tool reference; do not use other exec commands. Never retry a mutation or generate new keys. Launch at most ONE idle child using exactly ${JSON.stringify({ idempotencyKey: launchKey, selection })} (no initial prompt or TTL). After a succeeded launch, message that child's returned sandboxId with exactly ${JSON.stringify({ sandboxId: "CHILD_SANDBOX_ID", idempotencyKey: messageKey, text: childPrompt })}, replacing CHILD_SANDBOX_ID with the actual sandboxId returned by launch. Poll read with {sandboxId} at most 20 times until its events contain the child's actual nonpartial assistant answer ${answer}, not a prompt/tool echo. Then stop that same child using idempotencyKey ${stopKey}. If any mutation is pending/uncertain or fails, do not retry; stop this task and report the failure. If the native tools are unavailable or launch returns scoped_authority_denied, reply with exactly ${noAccess}. Do not fabricate tool results.`;
+      const goal = `ARMADA_SCOPED_SMOKE_V1 ${JSON.stringify({
+        lane: "parent",
+        launch: { idempotencyKey: launchKey, selection },
+        messageKey,
+        stopKey,
+        answer,
+        noAccess,
+      })}`;
       await io.step("scoped_native_turn", async () => {
         sendUnknown = true;
         evidenceUnknown = true;
@@ -357,7 +370,24 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
         await logs(id);
         evidenceUnknown = false;
         adopt();
-        const tools = calls(true);
+        let tools = calls(true);
+        const hasLaunchResult = (seen: Call[]) =>
+          seen.some(
+            (call) =>
+              call.name === "launch" &&
+              call.input.idempotencyKey === launchKey &&
+              (call.error || Object.keys(call.result).length > 0),
+          );
+        if (enabled && !hasLaunchResult(tools)) {
+          const until = Math.min(io.deadline, io.now() + 10_000);
+          const updated = await observeSmokeLaunch(until, io, async () => {
+            await logs(id, until);
+            adopt();
+            const seen = calls(true);
+            return hasLaunchResult(seen) ? seen : undefined;
+          });
+          if (updated) tools = updated;
+        }
         const launches = tools.filter((call) => call.name === "launch");
         const launch = launches[0];
         const correctLaunch =

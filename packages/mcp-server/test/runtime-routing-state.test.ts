@@ -8,6 +8,7 @@ import {
   type Sql,
 } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
+import { dispatchGitHubRestControl } from "../src/github-rest-controls.ts";
 import { providerRegistry } from "../src/http.ts";
 import {
   createHistoricalSandboxProviderResolver,
@@ -217,11 +218,10 @@ test("registry and active/historical SQL resolvers preserve immutable runtime ch
       throw Error("must not wait");
     },
   };
-  for (const [name, extra] of [
-    ["send", { prompt: "no" }],
-    ["github_refresh", {}],
-  ] as const)
-    await expect(callSharedTool(context, name, { id: record.id, ...extra })).rejects.toMatchObject({
-      code: "unsupported",
-    });
+  await expect(callSharedTool(context, "send", { id: record.id, prompt: "no" })).rejects.toMatchObject({
+    code: "unsupported",
+  });
+  await expect(dispatchGitHubRestControl(context, "github/refresh", { id: record.id })).rejects.toMatchObject({
+    code: "unsupported",
+  });
 });

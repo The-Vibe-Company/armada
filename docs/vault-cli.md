@@ -40,7 +40,7 @@ existing encryption key; no extra key/provider authority is needed.
   is 409. `revoke`/`delete` take `{org,id,expectedVersion}` and clear ciphertext.
   Revoked names are terminal: delete before reuse; rotation cannot revive them.
 - `secrets/upload`: set/rotate fields plus `operation`, returning only an opaque
-  upload reference with 300-second lifetime. MCP `secret_commit` accepts
+  upload reference with 300-second lifetime. REST `secrets/commit` accepts
   `{org,uploadReference}`, never a raw value. Wrong actor/org, expiry or replay
   refuses without creating an active secret. Upload rotation preserves expiry
   by the same omitted/null rules.

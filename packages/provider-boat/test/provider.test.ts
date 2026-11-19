@@ -11,7 +11,7 @@ import {
   scanGoldenSandbox,
 } from "@armada/core/server";
 import { BOAT_CAPABILITIES, createBoatProvider } from "../src/provider.ts";
-import { errorBody, fakeBoat, KEY, sandbox } from "./support.ts";
+import { errorBody, fakeBoat, KEY, retainedSandbox, sandbox } from "./support.ts";
 
 const ID = "bx_23456789";
 
@@ -695,7 +695,7 @@ test("native bootstrap follows actual resume readiness and precedes prompt; I/O 
         if (init?.method === "GET") {
           const state = ["archived", "provisioning", "ready"][gets++] ?? "ready";
           events.push(state);
-          return Response.json({ sandbox: sandbox({ state }) });
+          return Response.json({ sandbox: state === "archived" ? retainedSandbox() : sandbox({ state }) });
         }
         if (path.endsWith("/commands")) {
           events.push("bridge");
@@ -759,23 +759,26 @@ test("native bootstrap follows actual resume readiness and precedes prompt; I/O 
   }
 });
 
-test("a stopped-only beforeResume hook refuses the provider resume API on fence failure", async () => {
-  const methods: string[] = [];
-  const provider = createBoatProvider({
-    apiKey: KEY,
-    beforeResume: async () => {
-      throw Error("resume fence denied");
-    },
-    fetch: (async (_input, init) => {
-      methods.push(init?.method ?? "GET");
-      return Response.json({ sandbox: sandbox({ state: "archived" }) });
-    }) as typeof fetch,
-  });
-  await expect(provider.prompt({ sandboxId: ID, harness: "codex", text: "work" })).rejects.toThrow(
-    "resume fence denied",
-  );
-  expect(methods).toEqual(["GET"]);
-});
+test.each([true, false])(
+  "native resume requires verified retention before checking the owner fence (%s)",
+  async (usable) => {
+    const methods: string[] = [];
+    const provider = createBoatProvider({
+      apiKey: KEY,
+      beforeResume: async () => {
+        throw Error("resume fence denied");
+      },
+      fetch: (async (_input, init) => {
+        methods.push(init?.method ?? "GET");
+        return Response.json({ sandbox: retainedSandbox({ snapshotAvailable: usable }) });
+      }) as typeof fetch,
+    });
+    await expect(provider.prompt({ sandboxId: ID, harness: "codex", text: "work" })).rejects.toThrow(
+      usable ? "resume fence denied" : "Boat retained data has not been verified.",
+    );
+    expect(methods).toEqual(["GET"]);
+  },
+);
 
 test.each([true, false])("native private state ACK precedes Boat stop API (%s)", async (acknowledged) => {
   const order: string[] = [];
@@ -1328,7 +1331,7 @@ test.each([true, false])(
     const read = boat.provider.openRetainedOutputs!({ sandboxId: ID, signal: new AbortController().signal });
     if (complete) {
       const snapshot = await read;
-      if (!snapshot || snapshot === "gone") throw Error("missing retained outputs");
+      if (!snapshot || typeof snapshot === "string") throw Error("missing retained outputs");
       expect(snapshot.entries.map(({ name, size }) => ({ name, size }))).toEqual([
         { name: "late.pdf", size: report.length },
       ]);
@@ -1388,8 +1391,29 @@ test("Boat does not publish an older snapshot without verification for the curre
     },
   });
   const snapshot = await boat.provider.openRetainedOutputs!({ sandboxId: ID, signal: new AbortController().signal });
-  expect(snapshot).toBeNull();
+  expect(snapshot).toBe("gone");
   expect(boat.requests).toHaveLength(1);
+});
+
+test("Boat finishes retained collection if the sandbox disappears after its metadata lookup", async () => {
+  const completedAt = "2026-11-18T10:00:00Z";
+  const boat = fakeBoat(
+    {
+      body: {
+        sandbox: sandbox({
+          state: "archived",
+          snapshotAvailable: true,
+          snapshotCompletedAt: completedAt,
+          stoppedAt: completedAt,
+        }),
+      },
+    },
+    errorBody(404, "not_found", "Sandbox not found"),
+  );
+  expect(await boat.provider.openRetainedOutputs!({ sandboxId: ID, signal: new AbortController().signal })).toBe(
+    "gone",
+  );
+  expect(boat.requests).toHaveLength(2);
 });
 
 test("Boat reports a missing sandbox as a definitive retained-output result", async () => {

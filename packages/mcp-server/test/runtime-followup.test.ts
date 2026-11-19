@@ -3,7 +3,7 @@ import { createSqlData } from "../src/data.ts";
 import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import { callSharedTool } from "../src/tool-api.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { runtimeFixture as fixture } from "./runtime-fixture.ts";
+import { runtimeFixture as fixture } from "./runtime.fixture.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
@@ -170,7 +170,7 @@ describe.each([
   test("first send opens one conversation; uncertain replay and later follow-up retain it", async () => {
     expect(f.journal.prompts()).toHaveLength(0);
     const request = f.input("first instruction");
-    await expect(f.send(f.caller, { ...request, conversation_id: "foreign" })).rejects.toThrow();
+    await expect(f.send(f.caller, { ...request, ...{ conversation_id: "foreign" } })).rejects.toThrow();
     expect(f.starts).toHaveLength(0);
     f.lose();
     await expect(f.send(f.caller, request)).rejects.toMatchObject({ details: { runtimeOutcome: "unknown" } });

@@ -24,7 +24,7 @@ const launchStages: Record<string, readonly LaunchStage[]> = {
   enrolled: ["enrolled"],
 };
 /** Only fixed stage names and authenticated identities; never request/exception text. */
-export function logRuntimeStage(scope: RuntimeSessionScope, stage: string, reason?: string) {
+export function logRuntimeStage(scope: RuntimeSessionScope, stage: string, reason?: string, observedAtMs = Date.now()) {
   try {
     console.info(
       JSON.stringify({
@@ -32,6 +32,7 @@ export function logRuntimeStage(scope: RuntimeSessionScope, stage: string, reaso
         sandboxId: scope.sandboxId,
         epoch: scope.epoch,
         stage,
+        observedAtMs,
         ...(reason ? { reason } : {}),
       }),
     );
@@ -95,6 +96,7 @@ export function createRuntimeProgress(authority: ReturnType<typeof createRuntime
         ? RUNTIME_STARTUP_FAILURES[reason]
         : "Armada runtime process failed. Ask the server operator to inspect runtime startup before launching again.";
       const token = request.headers.get("authorization")?.match(/^Bearer (\S+)$/)?.[1] ?? "";
+      const observedAtMs = Date.now();
       const { scope, correlationId } = await (bootstrap.has(stage)
         ? authority.withBootstrap(token, async (tx, scope) => {
             for (const launch of launchStages[stage] ?? []) await recordLaunchStage(tx, scope.sandboxId, launch);
@@ -127,7 +129,7 @@ export function createRuntimeProgress(authority: ReturnType<typeof createRuntime
           { sandboxId: scope.sandboxId, correlationId },
         );
       }
-      logRuntimeStage(scope, stage, typeof reason === "string" ? reason : undefined);
+      logRuntimeStage(scope, stage, typeof reason === "string" ? reason : undefined, observedAtMs);
       return Response.json({ accepted: true, epoch: scope.epoch }, { headers });
     } catch (error) {
       return runtimeHttpFailure(error instanceof RuntimeEnrolmentDenied ? 401 : 400, "runtime_progress_refused");

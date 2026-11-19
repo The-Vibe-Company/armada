@@ -8,11 +8,9 @@ the separate explicit opt-in in [deployed checks](post-deploy-smoke.md#coordinat
 
 The repository does not define or own the live **`prod-smoke`** Boat snapshot.
 When the owner explicitly authorizes maintenance of that exact resource, select
-its organization and stored provider. Connect through Armada:
-
-```sh
-armada snapshot connect prod-smoke --provider boat --org ORG_UUID --json
-```
+its organization and stored provider. Use the [Armada maintenance API](golden-create.md#connect-and-scanned-maintenance-snapshot)
+to open the canonical master. Send `{"name":"prod-smoke","provider":"boat","org":"ORG_UUID"}`
+to `POST /api/v1/golden/connect`.
 
 Using the coordinator's authorized master access, run the setup script from
 the checked-out Armada repository before taking the scanned snapshot:
@@ -27,11 +25,8 @@ version, installs that Bun version if necessary, installs with the committed loc
 file, then installs Chromium and its Linux dependencies for that Playwright
 version. It does not read or write credentials.
 
-Then snapshot the master sandbox using the normal operator flow:
-
-```sh
-armada snapshot snapshot prod-smoke --provider boat --org ORG_UUID
-```
+Then send the same request body to `POST /api/v1/golden/snapshot` to scan and save
+the master sandbox.
 
 Run the script again whenever the checkout's pinned Bun or Playwright version
 changes before an owner-authorized rebuild of this snapshot.

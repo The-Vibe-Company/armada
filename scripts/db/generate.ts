@@ -40,8 +40,15 @@ const ROW_ALIASES: Record<string, string> = {
   agent_defaults: "AgentDefaultsRow",
   account_turn_queue: "AccountTurnQueueRow",
   account_agent_reservations: "AccountAgentReservationRow",
+  account_exhaustion: "AccountExhaustionRow",
+  account_spend: "AccountSpendRow",
+  account_spend_turns: "AccountSpendTurnRow",
   ordinary_launch_receipts: "OrdinaryLaunchReceiptRow",
   provider_launch_requests: "ProviderLaunchRequestRow",
+  jobs: "JobRow",
+  trigger_admin_audit: "TriggerAdminAuditRow",
+  trigger_deliveries: "TriggerDeliveryRow",
+  triggers: "TriggerRow",
   sandbox_account_usage_pricing: "SandboxAccountUsagePricingRow",
   runtime_github_capabilities: "RuntimeGitHubCapabilityRow",
   runtime_resumes: "RuntimeResumeRow",
@@ -78,7 +85,6 @@ const ROW_ALIASES: Record<string, string> = {
   orchestrator_runtime: "OrchestratorRuntimeRow",
   orchestrator_runtime_create_keys: "OrchestratorRuntimeCreateKeyRow",
   orchestrator_runtime_events: "OrchestratorRuntimeEventRow",
-  model_auth_ownership: "ModelAuthOwnershipRow",
   model_auth_state: "ModelAuthStateRow",
   modal_events: "ModalEventRow",
   modal_images: "ModalImageRow",
@@ -138,11 +144,10 @@ const ENUM_ALIASES: Record<string, string> = {
   sandbox_status: "SandboxStatus",
 };
 
-/** Renders `packages/core/src/database.types.ts` from the migrations on a fresh database. */
-export async function generateDatabaseTypes(): Promise<string> {
+export async function generateDatabaseTypes(directory?: string) {
   const db = await openDatabase();
   try {
-    await applyMigrations(db);
+    await applyMigrations(db, directory);
     return render(await introspect(db));
   } finally {
     await db.close();
@@ -297,6 +302,7 @@ function scalarType(name: string, kind: string): string {
   switch (name) {
     case "uuid":
     case "text":
+    case "date":
     case "timestamptz":
     case "bytea":
     case "varchar":
@@ -378,10 +384,9 @@ ${table.columns.map((column) => field(column.name, column.tsType, true, column.n
     .join("\n");
 
   const aliases = [
-    ...schema.tables.map((table) => {
+    ...schema.tables.flatMap((table) => {
       const alias = ROW_ALIASES[table.name];
-      if (!alias) throw new Error(`no row alias for table ${table.name}`);
-      return `export type ${alias} = Database["public"]["Tables"]["${table.name}"]["Row"];`;
+      return alias ? [`export type ${alias} = Database["public"]["Tables"]["${table.name}"]["Row"];`] : [];
     }),
     ...schema.enums.flatMap((item) => {
       const alias = ENUM_ALIASES[item.name];

@@ -12,32 +12,6 @@ import { control } from "./control.ts";
 import { parseTtl } from "./operations.ts";
 import type { VaultIo } from "./vault-commands.ts";
 
-const HELP = `Launch templates (readable variables and secret references):
-  armada template create NAME --file definition.json [--scope personal|org] [--org NAME|UUID] [--json]
-  armada template create NAME --golden UUID --provider boat|modal --agent claude|codex [definition flags]
-  armada template create NAME --host UUID --provider docker --agent claude|codex [definition flags]
-  armada template list [--org NAME|UUID] [--json]
-  armada template get NAME|ID [--revision N] [--org NAME|UUID] [--json]
-  armada template publish NAME|ID --expected-revision N --file definition.json [--org NAME|UUID] [--json]
-  armada template delete NAME|ID --expected-revision N [--org NAME|UUID] [--json]
-  armada template launch NAME|ID --request-key KEY [--revision N] [--prompt TEXT] [--ttl 30m] [--size SIZE] [--repo REPO] [--model-account UUID --model-account-version N] [--keep-after-merge] [--org NAME|UUID] [--json]
-
-Create/publish accept either a JSON definition file (the definition object, not an API envelope)
-or --golden UUID --provider boat|modal --agent claude|codex,
-or --host UUID --provider docker --agent claude|codex, optionally --model ID,
---reasoning-effort LEVEL, --connection UUID (repeatable), --variable KEY:UUID:VERSION
-(repeatable), --secret KEY:UUID:VERSION (repeatable, references only), --skill PIN (repeatable),
---model-account UUID --model-account-version N. Publish creates a new immutable template version.
-With --org, create requires explicit --scope personal|org; otherwise scope defaults to personal
-in the organization selected by armada org use. Other actions use the target's existing scope.
-Names must be exact and unambiguous; use an ID if names collide across scopes.
-Launch uses a required request key: retry the SAME key and body after an unknown outcome.
-For name-based launches, the resolved template ID is printed before submission; use that ID
-for retries so a later rename or deletion cannot prevent recovery.
-Never invent a new key while the original outcome is unknown. Only prompt, TTL, size, repository and an unpinned model account can be overridden. No local environment expansion is supported. Secret references deliver environment values to the selected native harness.
-Docker --host takes a host UUID, not a name; it selects the official environment, not a snapshot.
-Readable values may appear in launch manifests; they are not secrets.
-`;
 const ACTIONS = ["create", "list", "get", "publish", "delete", "launch"];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DEFINITION_FLAGS = [
@@ -57,14 +31,6 @@ const DEFINITION_FLAGS = [
 const usage = (message = "Invalid template command. Run armada template --help.") => new VaultError("invalid", message);
 
 export async function templateCommand(argv: readonly string[], io: VaultIo): Promise<number> {
-  if (
-    !argv.length ||
-    (argv.length === 1 && ["--help", "-h"].includes(argv[0] ?? "")) ||
-    (argv.length === 2 && ACTIONS.includes(argv[0] ?? "") && ["--help", "-h"].includes(argv[1] ?? ""))
-  ) {
-    io.auth.out(HELP);
-    return 0;
-  }
   const [action, ...rest] = argv;
   if (!ACTIONS.includes(action ?? "")) throw usage();
   const args = parseArgs(

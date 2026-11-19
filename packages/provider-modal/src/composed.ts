@@ -9,7 +9,12 @@ import { createGenerationGrants } from "./grants.ts";
 import { createModalIngestHandler } from "./ingest.ts";
 import type { ExecEnvironment, Machine, McpConfiguration, ModalManagementProvenance, Scope } from "./ports.ts";
 import { captureProcessBaseline, sealProcessBaseline } from "./process-scope.ts";
-import { assertSourceTargetScopes, createModalProvider, type ModalProviderOptions } from "./provider.ts";
+import {
+  assertSourceTargetScopes,
+  createModalProvider,
+  type ModalProviderOptions,
+  modalDeploymentId,
+} from "./provider.ts";
 import { prepareFilesystemSnapshot, prepareFreshFilesystem } from "./snapshot.ts";
 import { createSqlModalStore, scopeKey } from "./store.ts";
 import { createRunnerTransport } from "./transport.ts";
@@ -165,6 +170,8 @@ async function composeModalProvider(options: ComposedModalOptions) {
   const provider = createModalProvider({
     ...options,
     ...connection,
+    // Keep the deployment identity stable without spending a variable share of Modal's tag budget.
+    deploymentId: modalDeploymentId(options.scope.binding.environment, ingestUrl.origin),
     managementAuthority: provenance,
     source: { scope: sourceScope, store: sourceStore },
     store,

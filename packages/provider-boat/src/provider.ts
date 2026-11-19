@@ -58,6 +58,7 @@ import {
   type CreateSandboxRequest,
   type PromptRequestProviderEnum,
   type Sandbox,
+  type SandboxListResponse,
   SandboxStateEnum,
   type SavedSnapshot,
   type StopOperationResponse,
@@ -67,7 +68,7 @@ import {
   VM_RESOURCE_MAX_FILE_BYTES,
   VM_RESOURCE_PATHS,
 } from "../../core/src/vm-resource-reading.ts";
-import { invalidRequest, PROVIDER_ID, toProviderError, unexpectedAnswer } from "./errors.ts";
+import { BoatRetentionUnconfirmed, invalidRequest, PROVIDER_ID, toProviderError, unexpectedAnswer } from "./errors.ts";
 import { readEventCursor, writeEventCursor } from "./event-cursor.ts";
 import { eventCursor, normalizeEvent, promptStatus } from "./events.ts";
 import { installNativeCwdWrapper, type NATIVE_HARNESS_PATHS } from "./native-cwd.ts";
@@ -121,6 +122,17 @@ function sandboxState(providerState: string): SandboxState {
   return "starting";
 }
 
+function archivedRetention(sandbox: Sandbox) {
+  if (sandbox.dataExpiredAt || sandbox.snapshots === false) return "unconfirmed";
+  if (sandbox.stop || sandbox.lastSnapshotStatus === "queued" || sandbox.lastSnapshotStatus === "in_progress")
+    return "pending";
+  if (sandbox.snapshotAvailable !== true || (sandbox.lastSnapshotStatus && sandbox.lastSnapshotStatus !== "completed"))
+    return "unconfirmed";
+  const stoppedAt = sandbox.stoppedAt?.getTime();
+  const verifiedAt = (sandbox.snapshotVerifiedAt ?? sandbox.snapshotCompletedAt)?.getTime();
+  return stoppedAt !== undefined && verifiedAt !== undefined && verifiedAt >= stoppedAt ? "usable" : "unconfirmed";
+}
+
 function sandboxInfo(sandbox: Sandbox): SandboxInfo {
   const info: SandboxInfo = {
     id: sandbox.id,
@@ -129,6 +141,7 @@ function sandboxInfo(sandbox: Sandbox): SandboxInfo {
     providerState: sandbox.state,
     labels: sandbox.labels ?? {},
   };
+  if (sandbox.state === "archived") info.retainedSnapshot = archivedRetention(sandbox);
   if (sandbox.error) info.error = sandbox.error;
   if (sandbox.createdAt) info.createdAt = sandbox.createdAt;
   if (sandbox.stoppedAt && Number.isFinite(sandbox.stoppedAt.getTime())) info.stoppedAt = sandbox.stoppedAt;
@@ -152,6 +165,8 @@ export interface BoatProviderOptions {
 
   /** The boat API key. It stays in this object: no error or event carries it. */
   apiKey: string;
+  /** Stable, nonsecret environment + server identity. Omit to leave inventory unbound. */
+  deploymentId?: string;
   /** Recheck/fence stopped authority before resume; false skips a stale observed resume. */
   resumeRefused?: (provider: Provider, sandboxId: string) => Promise<void>;
   beforeResume?: (provider: Provider, sandboxId: string) => Promise<boolean>;
@@ -200,6 +215,12 @@ interface BoatRuntimeHost {
 
 /** The boat.dev placement, over `@boatdev/sdk`. Every failure is a `ProviderError`. */
 export interface BoatProvider extends Provider {
+  /** Report-only observations from Boat's label-filtered sandbox API. The timestamps
+   * and IDs describe logical sandboxes. Resume can replace the underlying machine. */
+  listSandboxInventory(request?: {
+    cursor?: string;
+    signal?: AbortSignal;
+  }): Promise<Page<{ sandboxId: string; deploymentId: string; createdAt: Date }>>;
   /** Ordinary VM activation only. Does not restore or verify a native harness session. */
   resumeBestEffort(sandboxId: string): Promise<void>;
   /** One ordinary stop dispatch followed by bounded reads of its exact archival operation. */
@@ -212,8 +233,12 @@ export interface BoatProvider extends Provider {
   ): Promise<readonly { id: string; running: boolean; lastHarness: string | null; lastModel: string | null }[]>;
 }
 
+const DEPLOYMENT_LABEL = "armada.deployment";
+
 export function createBoatProvider(options: BoatProviderOptions): BoatProvider & BoatRuntimeHost {
   const defaultTtl = options.defaultTtlSeconds ?? DEFAULT_TTL_SECONDS;
+  const deploymentId = options.deploymentId?.trim();
+  const deploymentLabel = deploymentId ? createHash("sha256").update(deploymentId).digest("hex") : undefined;
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const api = new BoatApi(
     new Configuration({
@@ -232,6 +257,12 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
   }
 
   async function start(body: CreateSandboxRequest, idempotencyKey: string | undefined): Promise<SandboxInfo> {
+    if (body.labels) {
+      const labels = { ...body.labels };
+      delete labels[DEPLOYMENT_LABEL];
+      if (body.from && deploymentLabel && labels.armada === "sandbox") labels[DEPLOYMENT_LABEL] = deploymentLabel;
+      body = { ...body, labels };
+    }
     try {
       const response = await call(() =>
         api.create({ createSandboxRequest: body, ...(idempotencyKey ? { idempotencyKey } : {}) }),
@@ -457,27 +488,23 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
     // Match the bounded concurrency of Boat work preservation's chunk reads.
     outputReadConcurrency: 8,
     async openRetainedOutputs({ sandboxId, signal }) {
-      const observed = await call(() => api.get({ sandboxId }, { signal })).catch((error: unknown) => {
+      function missingRetainedResource(error: unknown): null {
         if (error instanceof ProviderError && error.status === 404 && error.code === "not_found") return null;
         throw error;
-      });
+      }
+      const observed = await call(() => api.get({ sandboxId }, { signal })).catch(missingRetainedResource);
       if (!observed) return "gone";
       const current = observed.sandbox;
-      if (current?.id !== sandboxId || current.state !== "archived") return null;
-      if (current.dataExpiredAt || current.snapshots === false) return "gone";
-      if (
-        !current.snapshotAvailable ||
-        current.stop ||
-        (current.lastSnapshotStatus && current.lastSnapshotStatus !== "completed")
-      )
-        return null;
-      // A forced or provider-initiated stop can leave an older completed snapshot.
-      // Require a verification at the stop boundary, allowing no-change saves to
-      // verify an older snapshot without creating a new one.
-      const stoppedAt = current.stoppedAt?.getTime();
-      const verifiedAt = (current.snapshotVerifiedAt ?? current.snapshotCompletedAt)?.getTime();
-      if (stoppedAt === undefined || verifiedAt === undefined || !(verifiedAt >= stoppedAt)) return null;
-      const { snapshot } = await call(() => api.getLatestSandboxSnapshot({ sandboxId }, { signal }));
+      if (current?.id !== sandboxId) throw unexpectedAnswer("retained sandbox");
+      if (current.state === "cancelled" || current.dataExpiredAt || current.snapshots === false) return "gone";
+      if (current.state !== "archived") return "pending";
+      const retention = archivedRetention(current);
+      if (retention !== "usable") return retention === "pending" ? "pending" : "gone";
+      const latest = await call(() => api.getLatestSandboxSnapshot({ sandboxId }, { signal })).catch(
+        missingRetainedResource,
+      );
+      if (!latest) return "gone";
+      const { snapshot } = latest;
       // The latest endpoint can race the stop observation. Bind it to the completed
       // snapshot reported by the archived sandbox, including no-change archives.
       if (
@@ -493,10 +520,16 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       ).catch((error: unknown) => {
         if (
           error instanceof ProviderError &&
-          ["legacy_snapshot", "snapshot_data_expired"].includes(error.providerCode ?? "")
+          [
+            "legacy_snapshot",
+            "snapshot_not_indexed",
+            "snapshot_data_expired",
+            "base_image_file",
+            "is_symlink",
+          ].includes(error.providerCode ?? "")
         )
           return null;
-        throw error;
+        return missingRetainedResource(error);
       });
       if (!response) return "gone";
       const { entries, files } = await readRetainedOutputArchive(response.raw, signal);
@@ -654,6 +687,36 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       return page((response.sandboxes ?? []).map(sandboxInfo), response.pageInfo);
     },
 
+    async listSandboxInventory({ cursor, signal } = {}) {
+      if (!deploymentId || !deploymentLabel) return { items: [], cursor: null };
+      signal?.throwIfAborted();
+      const timeout = AbortSignal.timeout(10_000);
+      const response = await call<SandboxListResponse>(() =>
+        api.sandboxes(
+          { label: [`${DEPLOYMENT_LABEL}=${deploymentLabel}`], sort: "desc", ...(cursor ? { cursor } : {}) },
+          { signal: signal ? AbortSignal.any([signal, timeout]) : timeout },
+        ),
+      );
+      signal?.throwIfAborted();
+      if (response.pageInfo?.hasMore && (!response.pageInfo.nextCursor || response.pageInfo.nextCursor === cursor)) {
+        throw unexpectedAnswer("sandbox inventory cursor");
+      }
+      const items = [];
+      for (const sandbox of response.sandboxes ?? []) {
+        if (
+          sandbox.labels?.[DEPLOYMENT_LABEL] === deploymentLabel &&
+          sandbox.labels.armada === "sandbox" &&
+          sandbox.machineProvider &&
+          sandbox.id?.trim() &&
+          sandbox.createdAt &&
+          Number.isFinite(sandbox.createdAt.getTime())
+        ) {
+          items.push({ sandboxId: sandbox.id, deploymentId, createdAt: sandbox.createdAt });
+        }
+      }
+      return page(items, response.pageInfo);
+    },
+
     async configureReadableVariables({ sandboxId, harness, variables }) {
       variables = validateReadableVariables(variables);
       if (harness !== "claude" && harness !== "codex") throw invalidRequest("Invalid readable variable harness.");
@@ -696,6 +759,7 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       if (options.beforePrompt || options.beforeResume) {
         let info = await provider.get(request.sandboxId, { signal });
         if (info.state === "stopped") {
+          if (info.retainedSnapshot !== "usable") throw new BoatRetentionUnconfirmed();
           await request.onResumeStage?.("accepted");
           const shouldResume = await options.beforeResume?.(provider, request.sandboxId);
           if (shouldResume !== false) {

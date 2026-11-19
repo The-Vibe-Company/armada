@@ -1,6 +1,6 @@
 import type { Harness } from "./contract.ts";
-import { mapHarnesses } from "./harnesses.ts";
 import { LaunchError } from "./launch-error.ts";
+import { GENERATED_HARNESS_MODELS } from "./pricing/model-options.generated.ts";
 
 /**
  * The models Armada suggests at launch, per harness, and the defaults. The model is a harness choice: it does
@@ -29,14 +29,7 @@ export interface HarnessModels {
   models: readonly ModelOption[];
 }
 
-export const MODEL_CATALOG: Readonly<Record<Harness, HarnessModels>> = mapHarnesses(
-  ({ defaultModel, defaultReasoningEffort, reasoningEfforts, models }) => ({
-    defaultModel,
-    defaultReasoningEffort,
-    reasoningEfforts,
-    models,
-  }),
-);
+export const MODEL_CATALOG: Readonly<Record<Harness, HarnessModels>> = GENERATED_HARNESS_MODELS;
 
 /** A model id Armada forwards: letters, digits and `.:_/-[]`, as harness and gateway ids are written. */
 const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:/[\]-]{0,199}$/;

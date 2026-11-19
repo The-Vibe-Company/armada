@@ -1,15 +1,20 @@
 import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
-import { createSqlVaultStore } from "@armada/core/server";
-import { sandbox as sdkSandbox } from "../../provider-boat/test/support.ts";
+import { createMemoryAuthStore } from "@armada/auth";
+import { createSqlVaultStore, type Provider } from "@armada/core/server";
+import { fakeBoat, retainedSandbox, sandbox as sdkSandbox } from "../../provider-boat/test/support.ts";
 import { boatRuntimeResume } from "../src/boat-runtime-resume.ts";
+import { dispatchControlCommand } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
+import { modalRuntimeLaunch } from "../src/modal-runtime-launch.ts";
+import { modalRuntimeResume } from "../src/modal-runtime-resume.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
 import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
 import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import { createRuntimeHistory } from "../src/runtime-history.ts";
 import { createRuntimeResume } from "../src/runtime-resume.ts";
+import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { runtimeFixture } from "./runtime-fixture.ts";
+import { runtimeFixture } from "./runtime.fixture.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
@@ -90,7 +95,38 @@ describe.each([
     const request = { id: f.row.id, request_id: crypto.randomUUID(), prompt: "continue the previous conversation" };
     const before = await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id);
     const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, undefined, resume);
-    const result = (await resume(f.caller, { ...request, runtimeVersion: 1 })) as Awaited<ReturnType<typeof resume>>;
+    const controls = {
+      authStore: createMemoryAuthStore(),
+      supabase: { supabaseUrl: "https://unused.test", anonKey: "fixture" },
+      store: createSqlVaultStore(f.sql),
+      encryptionKey: ENCRYPTION_KEY,
+      data: createSqlData(f.sql),
+      providers: {
+        async resolve() {
+          throw Error("Runtime resume uses its own placement");
+        },
+      },
+      runtimeResume: resume,
+    };
+    await expect(
+      dispatchControlCommand(
+        "sandbox/resume-runtime-v1",
+        f.caller,
+        { ...request, runtimeVersion: 1, conversation_id: f.first.conversationId },
+        controls,
+      ),
+    ).rejects.toMatchObject({
+      code: "conflict",
+      status: 409,
+      message: expect.stringContaining("Launch another sandbox"),
+    });
+    expect(activations).toBe(0);
+    const result = (await dispatchControlCommand(
+      "sandbox/resume-runtime-v1",
+      f.caller,
+      { ...request, runtimeVersion: 1 },
+      controls,
+    )) as Awaited<ReturnType<typeof resume>>;
     expect(result).toMatchObject({
       resumed: true,
       conversationId: f.first.conversationId,
@@ -208,6 +244,306 @@ test("activation uncertainty never dispatches again under another key or on retr
   }
 });
 
+test("an unenrolled Boat resume returns to a confirmed retained stop before another request can resume", async () => {
+  const f = await stopped();
+  try {
+    let retainedStops = 0;
+    const host = {
+      id: "boat",
+      get: async () => ({ id: "physical", state: "running" }),
+      async stop() {
+        retainedStops++;
+      },
+    } as unknown as Provider;
+    const callerStore = createSqlData(f.sql)(f.caller).sandboxes;
+    let starts = 0;
+    let refusedTicket = "";
+    let refusalStatus: number | undefined;
+    let requestSideStops = 0;
+    const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => ({
+      async start(_signal, restore) {
+        starts++;
+        if (starts > 1) return f.reboot(restore);
+        refusedTicket = (
+          await f.authority.issue({
+            sandboxId: f.row.id,
+            ownerId: f.caller.userId,
+            configuration: {},
+          })
+        ).enrolmentToken;
+        const response = await f.authority.route(
+          new Request("https://armada.example/api/runtime/enrol", {
+            method: "POST",
+            headers: { authorization: `Bearer ${refusedTicket}`, "x-armada-runtime-protocol": "0" },
+          }),
+        );
+        refusalStatus = response?.status;
+        throw Error("runtime_protocol_unsupported");
+      },
+      async stop() {
+        requestSideStops++;
+      },
+    }));
+    const first = input(f.row.id);
+    await expect(resume(f.caller, first)).rejects.toMatchObject({ code: "conflict" });
+    expect(refusalStatus).toBe(409);
+    expect(requestSideStops).toBe(0);
+    expect((await callerStore.get(f.row.id))?.status).toBe("stopping");
+    await expect(f.authority.enrol(refusedTicket)).rejects.toThrow("runtime_enrolment_denied");
+    await expect(resume(f.caller, input(f.row.id))).rejects.toMatchObject({ code: "conflict" });
+
+    const legacyDue = await f.db.query("select id from sandboxes where id=$1 and reconcile_after<=now()", [f.row.id]);
+    expect(legacyDue.rows).toHaveLength(0);
+    const worker = createSandboxLifecycle(f.sql, async () => host);
+    expect(await worker.reconcileOne()).toBe(true);
+    expect(retainedStops).toBe(1);
+    expect((await callerStore.get(f.row.id))?.status).toBe("stopping");
+
+    const archivedWorker = createSandboxLifecycle(
+      f.sql,
+      async () => fakeBoat({ body: { sandbox: sdkSandbox(archive) } }).provider,
+    );
+    const archivedAt = "2026-11-19T00:00:00Z";
+    let archive = {
+      id: f.row.providerSandboxId,
+      state: "archived",
+      snapshotAvailable: false,
+      stoppedAt: archivedAt,
+      snapshotVerifiedAt: archivedAt,
+    };
+    await f.db.query("update sandboxes set reconcile_lease_until=now()-interval '1 second' where id=$1", [f.row.id]);
+    expect(await archivedWorker.reconcileOne()).toBe(true);
+    expect((await callerStore.get(f.row.id))?.status).toBe("stopping");
+    await expect(resume(f.caller, input(f.row.id))).rejects.toMatchObject({ code: "conflict" });
+
+    archive = { ...archive, snapshotAvailable: true };
+    await f.db.query("update sandboxes set reconcile_lease_until=now()-interval '1 second' where id=$1", [f.row.id]);
+    expect(await archivedWorker.reconcileOne()).toBe(true);
+    expect((await callerStore.get(f.row.id))?.status).toBe("stopped");
+    await expect(resume(f.caller, first)).rejects.toMatchObject({ code: "conflict" });
+    expect((await resume(f.caller, input(f.row.id))).sourceCheckpoint.epoch).toBe(f.cp.runtime.epoch);
+    expect(starts).toBe(2);
+  } finally {
+    await f.close();
+  }
+});
+
+const observationErrors = new Map([
+  ["transient observation failure", 503],
+  ["unavailable observation without retry marker", 502],
+  ["non-retryable observation conflict", 409],
+]);
+
+const inconclusiveObservationStates = new Map([
+  ["unrecognized state", "unrecognized"],
+  ["archive in progress", "archiving"],
+  ["failed machine state without confirmed exit", "error"],
+]);
+
+const interruptedResumeProofs = [
+  "activation receipt",
+  "pending ticket",
+  "observed archive",
+  "observed running",
+  ...observationErrors.keys(),
+  "cancelled observation",
+  ...inconclusiveObservationStates.keys(),
+];
+
+test.each(interruptedResumeProofs)(
+  "the worker reconciles an interrupted Boat resume with %s evidence",
+  async (proof) => {
+    const f = await stopped();
+    try {
+      const first = input(f.row.id);
+      let ticket: string | undefined;
+      let started = false;
+      const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => ({
+        async start(_signal, restore, confirmActivation) {
+          if (started) return f.reboot(restore);
+          started = true;
+          if (proof === "activation receipt") await confirmActivation!();
+          else if (proof === "pending ticket") {
+            ticket = (await f.authority.issue({ sandboxId: f.row.id, ownerId: f.caller.userId, configuration: {} }))
+              .enrolmentToken;
+          }
+          await f.db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [f.row.id]);
+          throw Error("Owner lost its lease before it could hand off");
+        },
+        async stop() {
+          throw Error("The request has no cleanup authority");
+        },
+      }));
+      await expect(resume(f.caller, first)).rejects.toMatchObject({ code: "conflict" });
+      const store = createSqlData(f.sql)(f.caller).sandboxes;
+      expect((await store.get(f.row.id))?.status).toBe("starting");
+      const running = { body: { sandbox: sdkSandbox({ id: f.row.providerSandboxId, state: "running" }) } };
+      const cancelled = proof === "cancelled observation" ? new AbortController() : undefined;
+      const interruption = Error("Lifecycle lane cancelled");
+      const observationError = observationErrors.get(proof);
+      const inconclusiveState = inconclusiveObservationStates.get(proof);
+      const { provider, requests } = fakeBoat(
+        ...(observationError ? [{ status: observationError }] : []),
+        ...(inconclusiveState
+          ? [{ body: { sandbox: sdkSandbox({ id: f.row.providerSandboxId, state: inconclusiveState }) } }]
+          : []),
+        ...(proof === "observed archive" || observationError || cancelled || inconclusiveState
+          ? [{ body: { sandbox: retainedSandbox({ id: f.row.providerSandboxId, snapshotAvailable: false }) } }]
+          : []),
+        ...(proof === "observed running" ? [running, running, {}] : []),
+        { body: { sandbox: retainedSandbox({ id: f.row.providerSandboxId }) } },
+      );
+      const worker = createSandboxLifecycle(f.sql, async () => ({
+        ...provider,
+        async get(id) {
+          if (cancelled && !cancelled.signal.aborted) {
+            cancelled.abort(interruption);
+            throw interruption;
+          }
+          return provider.get(id);
+        },
+      }));
+      if (cancelled) {
+        const outcome = await worker.reconcileOne(cancelled.signal).catch((error) => error);
+        expect((await store.get(f.row.id))?.status).toBe("starting");
+        expect(outcome).toBe(interruption);
+        expect(await worker.reconcileOne()).toBe(false);
+        await f.db.query("update sandboxes set reconcile_lease_until=now()-interval '1 second' where id=$1", [
+          f.row.id,
+        ]);
+      }
+      expect(await worker.reconcileOne()).toBe(true);
+      if (observationError || inconclusiveState) {
+        expect(requests.map(({ method }) => method)).toEqual(["GET"]);
+        expect((await store.get(f.row.id))?.status).toBe("starting");
+        expect(await worker.reconcileOne()).toBe(false);
+        await f.db.query("update sandboxes set reconcile_after=now() where id=$1", [f.row.id]);
+        expect(await worker.reconcileOne()).toBe(true);
+      }
+      expect((await store.get(f.row.id))?.status).toBe("stopping");
+      if (proof === "observed running") expect(requests.map(({ method }) => method)).toEqual(["GET"]);
+      if (ticket) await expect(f.authority.enrol(ticket)).rejects.toThrow("runtime_enrolment_denied");
+      expect(await worker.reconcileOne()).toBe(true);
+      expect((await store.get(f.row.id))?.status).toBe("stopped");
+      await expect(resume(f.caller, first)).rejects.toMatchObject({ code: "conflict" });
+      expect((await resume(f.caller, input(f.row.id))).sourceCheckpoint.epoch).toBe(f.cp.runtime.epoch);
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test("rollback of an observed Boat archive handoff remains recoverable", async () => {
+  const f = await stopped();
+  try {
+    const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => ({
+      async start() {
+        await f.db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [f.row.id]);
+        throw Error("Request owner exited before activation");
+      },
+      async stop() {
+        throw Error("Request owner has no cleanup authority");
+      },
+    }));
+    await expect(resume(f.caller, input(f.row.id))).rejects.toMatchObject({ code: "conflict" });
+    const store = createSqlData(f.sql)(f.caller).sandboxes;
+    expect((await store.get(f.row.id))?.status).toBe("starting");
+
+    const archive = { id: f.row.providerSandboxId, snapshotAvailable: false };
+    const { provider, requests } = fakeBoat(
+      { body: { sandbox: retainedSandbox(archive) } },
+      { body: { sandbox: retainedSandbox(archive) } },
+      { body: { sandbox: retainedSandbox({ ...archive, snapshotAvailable: true }) } },
+    );
+    let archiveHandoffs = 0;
+    const rollback = Error("Injected handoff rollback");
+    const workerSql: typeof f.sql = {
+      ...f.sql,
+      transaction: (work) =>
+        f.sql.transaction!(async (tx) => {
+          const result = await work(tx);
+          if (result === true && ++archiveHandoffs === 1) throw rollback;
+          return result;
+        }),
+    };
+    const worker = createSandboxLifecycle(workerSql, async () => provider);
+
+    await expect(worker.reconcileOne()).rejects.toBe(rollback);
+    expect(archiveHandoffs).toBe(1);
+    expect((await store.get(f.row.id))?.status).toBe("starting");
+    expect(await worker.reconcileOne()).toBe(false);
+
+    await f.db.query("update sandboxes set reconcile_lease_until=now()-interval '1 second' where id=$1", [f.row.id]);
+    expect(await worker.reconcileOne()).toBe(true);
+    expect((await store.get(f.row.id))?.status).toBe("stopping");
+
+    expect(await worker.reconcileOne()).toBe(true);
+    expect((await store.get(f.row.id))?.status).toBe("stopped");
+    expect(requests.map(({ method }) => method)).toEqual(["GET", "GET", "GET"]);
+  } finally {
+    await f.close();
+  }
+});
+
+test("retained Modal resume enrols through bootstrap using the current deployment artifact", async () => {
+  const f = await stopped("codex", "modal");
+  try {
+    const retainedArtifact = { sha256: "a".repeat(64), bytes: 3 };
+    const currentArtifact = { sha256: "b".repeat(64), bytes: 5 };
+    let artifact = retainedArtifact;
+    let activated = false;
+    let enrolled: Awaited<ReturnType<typeof f.authority.enrol>> | undefined;
+    const physicalDeadline = new Date(Date.now() + 86_400_000);
+    const host = {
+      id: "modal",
+      get: async () =>
+        activated ? { state: "ready", providerState: "active", expiresAt: physicalDeadline } : { state: "stopped" },
+      async resumeRuntime() {
+        activated = true;
+      },
+      async startRuntime(request: { artifact: typeof artifact; enrolmentToken: string }) {
+        expect(activated).toBe(true);
+        artifact = request.artifact;
+        enrolled = await f.authority.enrol(request.enrolmentToken);
+        throw Error("Fixture ends after enrolment, before health");
+      },
+    } as unknown as import("@armada/provider-modal").ModalProvider;
+    const prepare = modalRuntimeResume({
+      sql: f.sql,
+      vault: createSqlVaultStore(f.sql),
+      key: ENCRYPTION_KEY,
+      hostFor: async () => host,
+      policy: modalRuntimeLaunch({
+        sql: f.sql,
+        encryptionKey: ENCRYPTION_KEY,
+        serverUrl: "https://armada.example",
+        architecture: "x64",
+        manifest: {
+          protocol: 1,
+          platform: "linux",
+          architecture: "x64",
+          libc: "glibc",
+          runtime: currentArtifact,
+          harnesses: { codex: { files: [{ path: "bin/codex" }] } },
+        },
+      }),
+    });
+    const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, prepare);
+    await expect(resume(f.caller, input(f.row.id))).rejects.toMatchObject({ code: "conflict" });
+    expect(artifact).toEqual(currentArtifact);
+    expect(enrolled?.epoch).toBe("2");
+    const configuration = enrolled?.configuration as Record<string, unknown> | undefined;
+    expect(configuration?.grant).toEqual({ expiresAt: physicalDeadline.getTime() });
+    expect(configuration?.artifactManifest).toMatchObject({ runtime: currentArtifact });
+    expect(configuration?.restoreCheckpoint).toMatchObject({
+      epoch: f.cp.runtime.epoch,
+      watermark: f.cp.checkpoint.watermark,
+    });
+  } finally {
+    await f.close();
+  }
+});
+
 test("failed GitHub reauthorization prevents resumed inference and can reconcile without reactivation", async () => {
   const f = await stopped();
   try {
@@ -265,20 +601,33 @@ test("an old runtime without verified restore health cannot receive a resumed pr
   }
 });
 
-test.each([false, true])(
-  "actual activation boundary dispatches only while retained disk remains untainted (%s)",
-  async (taint) => {
+test.each(["confirmed", "tainted", "lease expired", "archive unverified", "response lost", "handoff rollback"])(
+  "Boat resume activation and recovery respect retained disk and lease authority (%s)",
+  async (condition) => {
+    const taint = condition === "tainted";
+    const expired = condition === "lease expired";
+    const unverified = condition === "archive unverified";
+    const rollbackHandoff = condition === "handoff rollback";
+    const responseLost = condition === "response lost" || rollbackHandoff;
     const f = await stopped();
     const requests: string[] = [];
     let activated = false;
+    let canIssueTicket = false;
     const network = spyOn(globalThis, "fetch").mockImplementation((async (value: Parameters<typeof fetch>[0]) => {
       const url = String(value instanceof Request ? value.url : value);
       requests.push(url);
-      if (url.endsWith("/resume")) activated = true;
+      if (url.endsWith("/resume")) {
+        activated = true;
+        if (responseLost) return new Response(null, { status: 504 });
+        if (expired)
+          await f.db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [f.row.id]);
+      }
       if (url.endsWith("/stop")) activated = false;
       return Response.json({
         ok: true,
-        sandbox: sdkSandbox({ id: "physical", state: activated ? "running" : "archived" }),
+        sandbox: activated
+          ? sdkSandbox({ id: "physical", state: "running" })
+          : retainedSandbox({ id: "physical", snapshotAvailable: !unverified }),
       });
     }) as typeof fetch);
     try {
@@ -291,30 +640,106 @@ test.each([false, true])(
           async start(value) {
             if (taint) await f.db.query("update sandboxes set application_secret_tainted=true where id=$1", [f.row.id]);
             await value.activate?.(value.signal);
-            throw Error("Fixture ends after activation boundary");
+            canIssueTicket = true;
+            throw Error("Fixture ends before ticket issuance");
           },
         },
       });
+      let handoffRolledBack = false;
+      const requestSql: typeof f.sql = rollbackHandoff
+        ? {
+            ...f.sql,
+            transaction: (work) =>
+              f.sql.transaction!(async (tx) => {
+                const result = await work(tx);
+                if (result === undefined) {
+                  handoffRolledBack = true;
+                  throw Error("Injected request handoff rollback");
+                }
+                return result;
+              }),
+          }
+        : f.sql;
       const request = input(f.row.id);
-      await expect(createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, prepare)(f.caller, request)).rejects.toThrow();
+      await expect(
+        createRuntimeResume(requestSql, ENCRYPTION_KEY, f.bridge, prepare)(f.caller, request),
+      ).rejects.toThrow();
+      expect(handoffRolledBack).toBe(rollbackHandoff);
+      expect(canIssueTicket).toBe(!taint && !expired && !unverified && !responseLost);
       const { rows } = await f.db.query(
-        `select l.stage, l.at=r.created_at as at_admission
+        `select l.stage, case when l.stage='accepted' then l.at=r.created_at else l.at>=r.created_at end as dated_correctly
            from public.sandbox_launch_stages l
            join public.runtime_resumes r on r.sandbox_id=l.sandbox_id and r.request_id=$2
-          where l.sandbox_id=$1 and l.activation=2 order by l.at,l.stage`,
+          where l.sandbox_id=$1 and l.activation=2 order by l.stage`,
         [f.row.id, request.request_id],
       );
       expect(rows).toEqual([
-        { stage: "accepted", at_admission: true },
-        ...(taint
+        { stage: "accepted", dated_correctly: true },
+        ...(taint || unverified || responseLost
           ? []
           : [
-              { stage: "provider_claimed", at_admission: false },
-              { stage: "machine_started", at_admission: false },
+              ...(expired ? [] : [{ stage: "machine_started", dated_correctly: true }]),
+              { stage: "provider_claimed", dated_correctly: true },
             ]),
       ]);
-      expect(requests.some((path) => path.endsWith("/resume"))).toBe(!taint);
-      expect(f.starts).toHaveLength(1);
+      expect(requests.some((path) => path.endsWith("/resume"))).toBe(!taint && !unverified);
+      const store = createSqlData(f.sql)(f.caller).sandboxes;
+      expect((await store.get(f.row.id))?.status).toBe(
+        taint ? "failed" : expired || responseLost ? "starting" : "stopping",
+      );
+      if (!taint) expect(requests.some((path) => path.endsWith("/stop"))).toBe(false);
+      if (responseLost) {
+        const running = { body: { sandbox: sdkSandbox({ id: f.row.providerSandboxId, state: "running" }) } };
+        const archive = { body: { sandbox: retainedSandbox({ id: f.row.providerSandboxId }) } };
+        const starting = {
+          body: { sandbox: sdkSandbox({ id: f.row.providerSandboxId, state: "provisioning" }) },
+        };
+        const { provider, requests: observations } = fakeBoat(starting, running, running, {}, archive);
+        const worker = createSandboxLifecycle(f.sql, async () => provider);
+        if (rollbackHandoff) {
+          expect(await worker.reconcileOne()).toBe(false);
+          await f.db.query(
+            "update sandboxes set activity_until=now()-interval '1 second',reconcile_after=now() where id=$1",
+            [f.row.id],
+          );
+        }
+        expect(await worker.reconcileOne()).toBe(true);
+        expect((await store.get(f.row.id))?.status).toBe("starting");
+        expect(observations.map(({ method }) => method)).toEqual(["GET"]);
+        expect(await worker.reconcileOne()).toBe(false);
+        await f.db.query("update sandboxes set reconcile_after=now() where id=$1", [f.row.id]);
+        expect(await worker.reconcileOne()).toBe(true);
+        expect((await store.get(f.row.id))?.status).toBe("stopping");
+        expect(await worker.reconcileOne()).toBe(true);
+        expect((await store.get(f.row.id))?.status).toBe("stopped");
+        await expect(
+          createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, prepare)(f.caller, request),
+        ).rejects.toThrow();
+        expect(
+          (
+            await createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => ({
+              start: (_signal, restore) => f.reboot(restore),
+              stop: async () => {},
+            }))(f.caller, input(f.row.id))
+          ).sourceCheckpoint.epoch,
+        ).toBe(f.cp.runtime.epoch);
+      }
+      if (condition === "confirmed" || unverified) {
+        const { provider } = fakeBoat({
+          body: { sandbox: retainedSandbox({ id: f.row.providerSandboxId }) },
+        });
+        const worker = createSandboxLifecycle(f.sql, async () => provider);
+        expect(await worker.reconcileOne()).toBe(true);
+        expect((await store.get(f.row.id))?.status).toBe("stopped");
+        await expect(
+          createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => ({
+            start: (_signal, restore) => f.reboot(restore),
+            stop: async () => {},
+          }))(f.caller, input(f.row.id)),
+        ).resolves.toMatchObject({
+          sourceCheckpoint: { epoch: f.cp.runtime.epoch },
+        });
+      }
     } finally {
       network.mockRestore();
       await f.close();

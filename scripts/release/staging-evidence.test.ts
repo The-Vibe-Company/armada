@@ -21,7 +21,11 @@ test("only authentic exact-SHA deployment plus smoke evidence permits reuse", ()
     head_sha: sha,
     status: "completed",
     conclusion: "success",
-    steps: ["Migrate then deploy pinned server and dashboard", "Smoke pinned staging"].map((name) => ({
+    steps: [
+      "Migrate then deploy pinned server and dashboard",
+      "Smoke pinned staging",
+      "Record ordinary main staging smoke result",
+    ].map((name) => ({
       name,
       status: "completed",
       conclusion: "success",
@@ -50,7 +54,7 @@ test("only authentic exact-SHA deployment plus smoke evidence permits reuse", ()
     { steps: job.steps.slice(0, 1) },
     { steps: [...job.steps, job.steps[0]] },
     ...["skipped", "failure", "cancelled"].map((conclusion) => ({
-      steps: [job.steps[0], { ...job.steps[1], conclusion }],
+      steps: [job.steps[0], { ...job.steps[1], conclusion }, job.steps[2]],
     })),
   ])
     expect(accepts(run, [{ ...job, ...patch } as typeof job])).toBe(false);
@@ -72,7 +76,11 @@ test("repeated Release completions coalesce only when the successfully smoked so
     status: "completed",
     conclusion: "success",
   };
-  const steps = [`Migrate then deploy pinned server and dashboard (${sha})`, "Smoke pinned staging"].map((name) => ({
+  const steps = [
+    `Migrate then deploy pinned server and dashboard (${sha})`,
+    "Smoke pinned staging",
+    "Record ordinary main staging smoke result",
+  ].map((name) => ({
     name,
     status: "completed",
     conclusion: "success",
@@ -93,9 +101,10 @@ test("repeated Release completions coalesce only when the successfully smoked so
   expect(accepts()).toBe(true);
   expect(accepts(health, [job], "2026-11-16T20:54:15Z")).toBe(false);
   expect(accepts(health, [job], "")).toBe(false);
+  expect(accepts(health, [{ ...job, steps: steps.slice(0, 2) }])).toBe(false);
   expect(
     accepts(health, [
-      { ...job, steps: [{ ...steps[0]!, name: "Migrate then deploy pinned server and dashboard" }, steps[1]!] },
+      { ...job, steps: [{ ...steps[0]!, name: "Migrate then deploy pinned server and dashboard" }, ...steps.slice(1)] },
     ]),
   ).toBe(false);
   expect(accepts({ ...health, commit: "b".repeat(40) })).toBe(false);

@@ -3,6 +3,7 @@ import type { ExecRequest, ExecResult, Harness } from "@armada/core";
 import { HARNESSES, validOutputChunk } from "@armada/core";
 import { PRIVATE_SKILL_FAILURES } from "../../core/src/private-skill-error.ts";
 import { ChildOwner } from "./children.ts";
+import { captureCommandOutput, commandOutputLimit } from "./command-output.ts";
 import { validateHarnessCwd } from "./cwd.ts";
 import { HarnessError, RequestRefused } from "./errors.ts";
 import { execCredentialValues, validateExecEnvironment, validateExecReadables } from "./exec-env.ts";
@@ -30,7 +31,7 @@ import {
 } from "./protocol.ts";
 import { ReadableConfigurations } from "./readable-configurations.ts";
 import { readRuntimeJson } from "./request-framing.ts";
-import { executeWithReceipt } from "./request-receipts.ts";
+import { type EventSelection, executeWithReceipt } from "./request-receipts.ts";
 import { sampleVmResources } from "./resource-sampler.ts";
 import { installRuntimeSkills } from "./skills.ts";
 import { executeWorkspace, validateWorkspaceExec } from "./workspace-exec.ts";
@@ -38,6 +39,8 @@ export class Runner {
   private execChildren = new ChildOwner();
   private execReleases = new Set<Promise<void>>();
   private closing = false;
+  private outboxWindow: { timer: ReturnType<typeof setTimeout>; firstSequence: number } | undefined;
+  private outboxRetry: ReturnType<typeof setInterval> | undefined;
   private shutdown: Promise<void> | undefined;
   private requests = new Set<Promise<Response>>();
   private active = new Map<
@@ -78,7 +81,7 @@ export class Runner {
     if (execution.credentialFreeBuilder !== undefined && typeof execution.credentialFreeBuilder !== "boolean")
       throw Error("invalid_exec_environment");
     this.credentialFreeBuilder = execution.credentialFreeBuilder ?? false;
-    this.readableConfigurations = new ReadableConfigurations(drivers);
+    this.readableConfigurations = new ReadableConfigurations(drivers, journal);
     this.configureGitHub = execution.configureGitHub;
     this.refreshNativeSecrets = execution.refreshNativeSecrets;
     this.publishNativeAuth = execution.publishNativeAuth;
@@ -188,7 +191,16 @@ export class Runner {
         ...[...this.active.values()].map((active) => active.done),
       ]);
     }
-    await this.flushing?.catch(() => {});
+    if (this.outboxRetry !== undefined) {
+      clearInterval(this.outboxRetry);
+      this.outboxRetry = undefined;
+      this.journal.onAppend = undefined;
+    }
+    if (this.outboxWindow !== undefined) {
+      await this.flushOutbox().catch(() => {});
+    } else {
+      await this.flushing?.catch(() => {});
+    }
     const failed = [...releases, ...owners].find((result) => result.status === "rejected");
     if (failed?.status === "rejected") throw failed.reason;
   }
@@ -232,9 +244,12 @@ export class Runner {
           result = { acknowledged: true };
         }
         // Never put this private request/body or bearer in the replay cache.
-        return new Response(this.journal.redact(JSON.stringify({ version: 1, requestId: r.requestId, result })), {
-          headers: { "content-type": "application/json" },
-        });
+        return new Response(
+          this.journal.redact(JSON.stringify({ version: 1, requestId: r.requestId, result }), "requests"),
+          {
+            headers: { "content-type": "application/json" },
+          },
+        );
       }
       if (r.op === "testModelConnection") {
         if (
@@ -269,10 +284,12 @@ export class Runner {
           this.barrier ||
           this.journal.checkpointPending(this.grant) ||
           !(HARNESSES as readonly string[]).includes(r.harness) ||
-          Object.keys(r).some((k) => !["version", "requestId", "sandboxId", "op", "harness", "variables"].includes(k))
+          Object.keys(r).some(
+            (k) => !["version", "requestId", "sandboxId", "op", "harness", "variables", "secretKeys"].includes(k),
+          )
         )
           throw Error("invalid_request");
-        this.readableConfigurations.configure(r.harness, r.variables);
+        this.readableConfigurations.configure(r.harness, r.variables, r.secretKeys);
         return Response.json({ version: 1, requestId: r.requestId, result: { acknowledged: true } });
       }
       if (r.op === "configureGitHub") {
@@ -330,10 +347,11 @@ export class Runner {
       }
       return await executeWithReceipt(this.journal, r, () => this.dispatch(r, request.signal));
     } catch (error) {
-      return Response.json(
-        { error: this.journal.redact(error instanceof Error ? error.message : "runner_error") },
-        { status: error instanceof Error && error.message === "unauthorized" ? 401 : 409 },
-      );
+      const message = error instanceof Error ? error.message : "runner_error";
+      return new Response(this.journal.redact(JSON.stringify({ error: message }), "requests"), {
+        status: message === "unauthorized" ? 401 : 409,
+        headers: { "content-type": "application/json" },
+      });
     }
   }
   private configureMcp(value: unknown, epochControl = false): ConfigureMcpResult {
@@ -450,6 +468,7 @@ export class Runner {
         ...(this.execution.restoredFrom ? { restoredFrom: this.execution.restoredFrom } : {}),
         generation: this.grant.generation,
         mcpVersion: 1,
+        stdioMcpEnv: true,
         skillsVersion: 1,
         workspaceVersion: 1,
         ready: !this.barrier,
@@ -470,12 +489,7 @@ export class Runner {
       if (!Number.isSafeInteger(after) || after < 0) throw Error("invalid_cursor");
       const limit = Math.max(1, Math.min(r.limit ?? 100, 1000));
       const rows = this.journal.events(after, limit + 1, r.conversationId);
-      const page = rows.slice(0, limit);
-      return {
-        events: page.map((x) => x.event),
-        cursor: String(page.at(-1)?.sequence ?? after),
-        hasMore: rows.length > limit,
-      };
+      return { after, rows: rows.slice(0, limit), hasMore: rows.length > limit } satisfies EventSelection;
     }
     if (r.op === "getExec") {
       const row = this.journal.db.query("SELECT body FROM processes WHERE pid=?").get(r.processId) as {
@@ -689,14 +703,17 @@ export class Runner {
         ...(sessionId ? { sessionId } : {}),
         ...(this.mcp ? { mcp: this.mcp } : {}),
         session: (id) => this.journal.saveSession(p.conversationId, p.request.harness, id),
-        emit: (event) =>
+        emit: (event) => {
+          if (event.kind === "other" && event.rawDiagnostic && this.journal.hasShortApplicationSecrets) return;
+          const fields = event.kind === "other" ? { kind: event.kind, type: event.type, data: event.data } : event;
           this.journal.append({
-            ...event,
+            ...fields,
             id: crypto.randomUUID(),
             at: Date.now(),
             conversationId: p.conversationId,
             promptId: p.promptId,
-          }),
+          });
+        },
       });
       const active = { turn, controller, prompt: p, done: Promise.resolve(), terminal: false };
       const publish = async () => {
@@ -737,7 +754,6 @@ export class Runner {
         .catch(() => this.journal.transition(p, "failed", "native_auth_state_unacknowledged"))
         .finally(() => {
           this.active.delete(p.conversationId);
-          void this.flushOutbox().catch(() => {});
         });
       active.done = done;
       this.active.set(p.conversationId, active);
@@ -760,8 +776,31 @@ export class Runner {
       );
     }
   }
+  startOutboxDelivery(): void {
+    if (!this.ingest || this.closing || this.outboxRetry !== undefined) return;
+    const flush = () => {
+      void this.flushScheduledOutbox().catch(() => {});
+    };
+    this.journal.onAppend = (firstSequence) => {
+      if (this.outboxWindow) return;
+      const timer = setTimeout(() => {
+        this.outboxWindow = undefined;
+        flush();
+      }, 50).unref();
+      this.outboxWindow = { timer, firstSequence };
+    };
+    this.outboxRetry = setInterval(flush, 1000).unref();
+  }
   private flushing: Promise<void> | undefined;
-  flushOutbox(): Promise<void> {
+  async flushOutbox(): Promise<void> {
+    // Checkpoint and shutdown drain after writers quiesce.
+    clearTimeout(this.outboxWindow?.timer);
+    this.outboxWindow = undefined;
+    if (this.flushing) await this.flushing;
+    // The previous drain may have already stopped at the coalescing boundary.
+    await this.flushScheduledOutbox();
+  }
+  private flushScheduledOutbox(): Promise<void> {
     if (!this.flushing)
       this.flushing = this.drainOutbox().finally(() => {
         this.flushing = undefined;
@@ -770,9 +809,11 @@ export class Runner {
   }
   private async drainOutbox() {
     if (!this.ingest) return;
+    // Give writes during a POST their own window, even if the ACK arrives early.
     for (;;) {
       const pending = this.journal.events(this.journal.ack, 100);
-      if (!pending.length) return;
+      const firstCoalescingSequence = this.outboxWindow?.firstSequence ?? Infinity;
+      if (!pending.length || pending[0]!.sequence >= firstCoalescingSequence) return;
       const batch = {
         sandboxId: this.grant.sandboxId,
         generation: this.grant.generation,
@@ -783,6 +824,7 @@ export class Runner {
       // never truncate or skip a journal entry to make a batch fit.
       let bytes = Buffer.byteLength(JSON.stringify(batch));
       for (const item of pending) {
+        if (item.sequence >= firstCoalescingSequence) break;
         const size = Buffer.byteLength(JSON.stringify(item)) + (batch.events.length ? 1 : 0);
         if (bytes + size > 1048576) break;
         batch.events.push(item);
@@ -820,28 +862,11 @@ export class Runner {
     });
     child.stdin.on("error", () => {});
     child.stdin.end(r.command);
-    let stdout = "",
-      stderr = "",
-      truncated = false,
-      timedOut = false;
-    const collect = (stream: "stdout" | "stderr", chunk: Buffer) => {
-      const text = chunk.toString();
-      if (stream === "stdout") {
-        stdout += text;
-        if (stdout.length > 65536) {
-          stdout = stdout.slice(0, 65536);
-          truncated = true;
-        }
-      } else {
-        stderr += text;
-        if (stderr.length > 65536) {
-          stderr = stderr.slice(0, 65536);
-          truncated = true;
-        }
-      }
+    const output = {
+      stdout: captureCommandOutput(child.stdout),
+      stderr: captureCommandOutput(child.stderr),
     };
-    child.stdout.on("data", (c) => collect("stdout", c));
-    child.stderr.on("data", (c) => collect("stderr", c));
+    let timedOut = false;
     await new Promise<void>((resolve, reject) => {
       child.once("spawn", resolve);
       child.once("error", reject);
@@ -857,7 +882,7 @@ export class Runner {
     const save = (value: unknown) =>
       this.journal.db
         .query("INSERT OR REPLACE INTO processes VALUES(?,?)")
-        .run(pid, this.journal.redact(JSON.stringify(value)));
+        .run(pid, this.journal.redact(JSON.stringify(value), "processes"));
     const identity = processIdentity(pid);
     save({ pid, status: "running", identity });
     const timer = setTimeout(
@@ -890,13 +915,15 @@ export class Runner {
           resolve(safe);
           return;
         }
+        const stdout = this.journal.redactCommandOutput(output.stdout, commandOutputLimit);
+        const stderr = this.journal.redactCommandOutput(output.stderr, commandOutputLimit);
         const result: ExecResult = {
           detached: false,
           exitCode,
-          stdout: this.journal.redact(stdout),
-          stderr: this.journal.redact(stderr),
+          stdout: stdout.text,
+          stderr: stderr.text,
           timedOut,
-          truncated,
+          truncated: stdout.truncated || stderr.truncated,
         };
         save({ pid, status: "exited", identity, ...result });
         resolve(result);

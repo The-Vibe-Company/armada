@@ -78,7 +78,7 @@ for (const mode of [
             expect(body.params.name).toBe("send");
             const args = body.params.arguments;
             expect(args.id).toBe(ids[active]);
-            expect(args.conversation_id).toBe(conversation);
+            expect(args).not.toHaveProperty("conversation_id");
             expect(args.request_id).toMatch(/^[a-f0-9-]{36}$/);
             expect(args).not.toHaveProperty("model");
             expect(args).not.toHaveProperty("reasoning_effort");
@@ -126,13 +126,14 @@ for (const mode of [
             case "docker/hosts/list":
               return Response.json({ hosts: [{ id: "30000000-0000-4000-8000-000000000001", state: "online" }] });
             case "sandbox/launch":
+              if (provider === "docker") ids.docker = body.requestId;
               active = provider;
               states.set(provider, "ready");
               return Response.json({ sandbox: { id: ids[provider], provider } });
-            case "sandbox/detail":
+            case "sandbox/status":
               return Response.json({
                 id: body.id,
-                status: "ready",
+                status: states.get(provider),
                 settled: true,
                 prompt: null,
                 conversationIds: mode === "conversation_missing" ? [] : [conversation],
@@ -144,7 +145,7 @@ for (const mode of [
               }
               expect(body.id).toBe(ids[provider]);
               expect(body.org).toBe(orgs[provider]);
-              expect(body.conversation_id).toBe(conversation);
+              expect(body).not.toHaveProperty("conversation_id");
               expect(body.request_id).toMatch(/^[a-f0-9-]{36}$/);
               expect(body).not.toHaveProperty("model");
               expect(body).not.toHaveProperty("reasoning_effort");
@@ -204,8 +205,6 @@ for (const mode of [
                 ],
               });
             }
-            case "sandbox/status":
-              return Response.json({ id: body.id, status: states.get(provider), settled: true, prompt: null });
             case "sandbox/stop":
               states.set(provider, "stopped");
               return Response.json({ id: body.id, status: "stopped" });

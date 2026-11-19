@@ -1,17 +1,17 @@
 import { expect, test } from "bun:test";
 import { createMemoryAuthStore } from "@armada/auth";
-import type { Provider } from "@armada/core/server";
-import { createSqlVaultStore } from "@armada/core/server";
+import type { Sql } from "@armada/core/server";
+import { createSqlVaultStore, DelegatedAuthority } from "@armada/core/server";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { observeRequest } from "../src/request-observability.ts";
 import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeHistory } from "../src/runtime-history.ts";
-import { createRuntimeProvider } from "../src/runtime-provider.ts";
+import { createRuntimeProvider, type RuntimeWorkProvider } from "../src/runtime-provider.ts";
 import { callSharedTool } from "../src/tool-api.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { runtimeFixture } from "./runtime-fixture.ts";
+import { runtimeFixture } from "./runtime.fixture.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
 const database = rowOnlyDatabase();
@@ -20,15 +20,20 @@ function stopPort(f: Awaited<ReturnType<typeof runtimeFixture>>) {
   let stopped = false,
     calls = 0;
   const host = {
-    id: "boat",
+    id: f.row.provider,
     async get() {
-      return { id: "physical", state: stopped ? "stopped" : "running", stoppedAt: stopped ? new Date() : undefined };
+      return stopped
+        ? { id: "physical", state: "stopped", stoppedAt: new Date(), retainedSnapshot: "usable" }
+        : { id: "physical", state: "running", physicalGeneration: "2" };
+    },
+    async captureRuntimeWork() {
+      return { status: "clean" };
     },
     async stop() {
       calls++;
       stopped = true;
     },
-  } as unknown as Provider;
+  } as unknown as RuntimeWorkProvider;
   return {
     context: {
       ...f.context,
@@ -45,8 +50,8 @@ function stopPort(f: Awaited<ReturnType<typeof runtimeFixture>>) {
 }
 const args = (id: string) => ({ id, request_id: crypto.randomUUID(), runtimeVersion: 1 as const });
 
-test("undelivered checkpoint intent and a lost response reconcile after stop without waking the guest", async () => {
-  const f = await runtimeFixture(await database());
+test.each(["boat", "modal"] as const)("%s checkpoint retry after stop", async (provider) => {
+  const f = await runtimeFixture(await database(), provider);
   try {
     const input = args(f.row.id);
     const unavailable = {
@@ -120,12 +125,142 @@ test("undelivered checkpoint intent and a lost response reconcile after stop wit
       );
       expect(rows[0]?.ok).toBe(false);
     }
-    expect((await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))?.preservationNote).toContain(
-      "host stop is confirmed",
-    );
+    const final = await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id);
+    if (provider === "boat") expect(final?.preservationNote).toContain("host stop is confirmed");
+    else {
+      expect(final?.status).toBe("stopped");
+      expect(final?.preservationNote).toBeNull();
+      expect(
+        (
+          await f.db.query(
+            "select preservation_stop_generation=stop_generation as captured from sandboxes where id=$1",
+            [f.row.id],
+          )
+        ).rows,
+      ).toEqual([{ captured: true }]);
+    }
     expect(stop.calls()).toBe(1);
     expect(f.starts).toHaveLength(1);
   } finally {
+    await f.close();
+  }
+});
+
+test("an enrolled scoped parent loses its grant before checkpoint dispatch and scrubs on recovery", async () => {
+  const f = await runtimeFixture(await database(), "modal", "codex", true);
+  const done = Promise.withResolvers<"finished">();
+  try {
+    const id = f.row.id;
+    await f.db.query("update sandboxes set visibility='private', access_owner_id=owner_id where id=$1", [id]);
+    await f.db.query(
+      `insert into armada_access_parents(id,kind,org_id,owner_id,sandbox_id,state)
+       values($1,'sandbox',$2,$3,$1,'ready')`,
+      [id, f.people.org, f.people.owner],
+    );
+    const generation = (
+      await f.db.query<{ generation: string }>(
+        "select lifecycle_generation::text as generation from sandboxes where id=$1",
+        [id],
+      )
+    ).rows[0]!.generation;
+    const authority = new DelegatedAuthority(f.sql, async () => {});
+    let token = "";
+    await authority.installEpoch(
+      id,
+      {
+        lifecycleGeneration: generation,
+        physicalGeneration: f.active.epoch,
+        async deliver(bearer, binding) {
+          token = bearer;
+          const reply = await f.bridge.call(
+            f.people.owner,
+            {
+              version: 1,
+              sandboxId: id,
+              requestId: crypto.randomUUID(),
+              op: "installOrchestratorEpoch",
+              token: bearer,
+              binding,
+              url: "https://armada.test/mcp",
+            },
+            { expectedEpoch: f.active.epoch },
+          );
+          return { acknowledged: (reply.body.result as { acknowledged?: boolean })?.acknowledged === true };
+        },
+        async scrub() {
+          throw Error("Unexpected grant installation failure");
+        },
+      },
+      { scopes: ["worker:stop"], goldenIds: [], credentialIds: [] },
+    );
+    const admit = () => authority.admit(token, { method: "finish" }, async () => true);
+    await expect(admit()).resolves.toBe(true);
+
+    const input = args(id);
+    f.hold(done.promise);
+    await f.send(f.caller, f.input("hold the turn open"));
+    const failedIntent: Sql = {
+      ...f.sql,
+      transaction: (work) =>
+        f.sql.transaction!((tx) =>
+          work({
+            async query(statement, values) {
+              if (statement.startsWith("insert into public.runtime_checkpoints")) throw Error("intent write failed");
+              return tx.query(statement, values);
+            },
+          }),
+        ),
+    };
+    await expect(createRuntimeCheckpoint(failedIntent, ENCRYPTION_KEY, f.bridge)(f.caller, input)).rejects.toThrow(
+      "intent write failed",
+    );
+    await expect(admit()).resolves.toBe(true);
+
+    const beforeDispatch = {
+      ...f.bridge,
+      async call() {
+        throw Error("Interrupted after checkpoint intent");
+      },
+    };
+    await expect(createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, beforeDispatch)(f.caller, input)).rejects.toMatchObject(
+      {
+        code: "conflict",
+      },
+    );
+    await expect(admit()).rejects.toThrow("denied");
+    const checkpoint = createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, f.bridge);
+    await expect(checkpoint(f.caller, input)).rejects.toMatchObject({ code: "conflict" });
+    done.resolve("finished");
+    await f.runner.flushOutbox();
+    f.dropReplyOnce("scrubOrchestratorEpoch");
+    await expect(checkpoint(f.caller, input)).rejects.toMatchObject({ code: "conflict" });
+    const pending = (await f.bridge.next(f.active.runtimeToken, f.active.epoch)).command;
+    if (pending?.op !== "scrubOrchestratorEpoch") throw Error("Expected the pending scoped scrub command");
+    const lostScrubReply = {
+      ...f.bridge,
+      async call(...params: Parameters<typeof f.bridge.call>) {
+        expect(params[1].requestId).toBe(pending.requestId);
+        const reply = await f.bridge.call(...params);
+        if (params[1].op === "scrubOrchestratorEpoch" && reply.status === 200) throw Error("lost scrub reply");
+        return reply;
+      },
+    };
+    await expect(createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, lostScrubReply)(f.caller, input)).rejects.toMatchObject(
+      {
+        code: "conflict",
+      },
+    );
+    const checkpointOnly = {
+      ...f.bridge,
+      async call(...params: Parameters<typeof f.bridge.call>) {
+        expect(params[1].op).toBe("checkpoint");
+        return f.bridge.call(...params);
+      },
+    };
+    const recovered = await createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, checkpointOnly)(f.caller, input);
+    expect(recovered.checkpoint.state).toBe("complete");
+  } finally {
+    done.resolve("finished");
     await f.close();
   }
 });

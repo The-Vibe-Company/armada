@@ -10,7 +10,7 @@ import { sandboxListText } from "./sandbox-list.ts";
 
 /** API-only command boundary: server-side schemas and policy remain authoritative. */
 export async function operation(
-  command: Exclude<keyof ArmadaCommandClient["sandboxes"], "launch" | "logs"> | "rm" | "mcp",
+  command: Exclude<keyof ArmadaCommandClient["sandboxes"], "launch" | "logs"> | "detail" | "rm" | "mcp",
   argv: readonly string[],
   auth: AuthIo,
   read: (path?: string) => Promise<string>,
@@ -34,12 +34,10 @@ export async function operation(
     detail: ["--prompt-id"],
     recovery: [],
     advice: [],
-    send: ["--request-id", "--conversation", "--model", "--reasoning-effort"],
-    steer: ["--conversation"],
+    send: ["--request-id", "--model", "--reasoning-effort"],
     exec: ["--cwd", "--timeout"],
     stop: [],
     wait: ["--timeout", "--prompt-id"],
-    interrupt: ["--conversation"],
     report: [
       "--prompt-id",
       ...(args.positionals[1] === "blocked" ? ["--reason"] : ["--pr-number", "--pr-url", "--head-sha"]),
@@ -77,7 +75,6 @@ export async function operation(
     "--org": "org",
     "--model": "model",
     "--reasoning-effort": "reasoning_effort",
-    "--conversation": "conversation_id",
     "--cwd": "cwd",
     "--prompt-id": "prompt_id",
   })) {
@@ -155,7 +152,7 @@ export async function operation(
         ? undefined
         : AbortSignal.timeout((seconds + 15) * 1_000);
   const request = createArmadaApiClient(auth).then((client) =>
-    client.sandboxes[command](body, signal ? { signal } : undefined),
+    client.sandboxes[command === "detail" ? "status" : command](body, signal ? { signal } : undefined),
   );
   const result = await request.catch((error: unknown) => {
     // Stop previously collapsed these versioned reasons into an AuthError.

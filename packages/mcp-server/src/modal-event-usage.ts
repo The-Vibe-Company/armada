@@ -1,5 +1,6 @@
 import { type AgentEvent, type MemberRole, reportedTurnUsage, type Sql } from "@armada/core";
 import { type Scope, scopeKey } from "@armada/provider-modal";
+import { completedUsageTurns } from "./account-spend.ts";
 import { createSqlData } from "./data.ts";
 import { runtimeTransaction } from "./runtime-enrolment.ts";
 
@@ -42,5 +43,5 @@ export async function projectModalEventUsage(
     orgs: [{ orgId: scope.orgId, role: target.role }],
     via: "service",
   }).sandboxes;
-  await store.recordUsage!(target.id, usage, { observations: usage.turns });
+  await store.recordUsage!(target.id, usage, { observations: usage.turns, completed: completedUsageTurns(events) });
 }

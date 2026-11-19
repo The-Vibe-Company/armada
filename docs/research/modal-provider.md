@@ -209,8 +209,8 @@ security inference from snapshotting the filesystem. [Networking][networking],
 
 ### Interactive connect and SSH parity
 
-Current `armada golden connect` prints a boat-specific shell fallback, while the
-inspected PR #505 adds `Provider.sshKey()` returning `sshEndpoint` and `hostKey`
+At the time of this research, opening a canonical master through the CLI printed
+a Boat-specific shell fallback. The inspected PR #505 adds `Provider.sshKey()` returning `sshEndpoint` and `hostKey`
 and uses a real OpenSSH executor with a pinned host key. Interactive
 connect must therefore be an acceptance requirement alongside prompts; a Modal
 exec stream alone does not establish compatible SSH behavior.

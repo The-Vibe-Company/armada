@@ -64,6 +64,7 @@ export {
 export { assertLaunchSecretBindings, resolveLaunchSecrets } from "./launch-secrets.ts";
 export { isLaunchTtlSeconds, validateLaunchSkillPins } from "./launch-validation.ts";
 export { resolveLaunchVariables } from "./launch-variables.ts";
+export * from "./machine.ts";
 export { type FailureDiagnostic, failureDiagnostic, retainFailureDiagnostic } from "./operator-failure.ts";
 export {
   installPrivateSkill,
@@ -120,6 +121,7 @@ export {
   resolvePrice,
   type TokenRates,
 } from "./server-pricing.ts";
+export { SHARED_ARTIFACT_CACHE_PATH } from "./shared-artifact-cache.ts";
 export { createSkillCatalog } from "./skill-catalog.ts";
 export * from "./skill-defaults.ts";
 export { mergeSkillPins } from "./skill-merge.ts";

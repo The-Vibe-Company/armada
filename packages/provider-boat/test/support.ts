@@ -43,7 +43,7 @@ export function fakeBoat(...replies: Reply[]) {
       sleeps.push(ms);
     },
   });
-  return { provider, requests, sleeps, remaining: () => queue.length };
+  return { provider, fetch: fetchFake, requests, sleeps, remaining: () => queue.length };
 }
 
 export function sandbox(overrides: Record<string, unknown> = {}) {
@@ -58,6 +58,17 @@ export function sandbox(overrides: Record<string, unknown> = {}) {
     labels: { armada: "1" },
     ...overrides,
   };
+}
+
+export function retainedSandbox(overrides: Record<string, unknown> = {}) {
+  const stoppedAt = "2026-11-09T10:00:00Z";
+  return sandbox({
+    state: "archived",
+    snapshotAvailable: true,
+    stoppedAt,
+    snapshotVerifiedAt: stoppedAt,
+    ...overrides,
+  });
 }
 
 export function errorBody(

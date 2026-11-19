@@ -46,6 +46,7 @@ export type SandboxDetail = Omit<
   Sandbox,
   | "docker_retention_deadline"
   | "external_ref"
+  | "outputs_attempt_count"
   | "outputs_checked_at"
   | "outputs_published_scan"
   | "outputs_retained_generation"

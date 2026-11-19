@@ -46,6 +46,10 @@ Supabase/Armada server on **54399**; both ports must be free. Sign in as
 production credentials are needed. Ctrl-C stops both processes. This loop is for
 UI work, not evidence of a working provider lifecycle or deployment.
 
+`bun run e2e` starts a separate dashboard and mock on **3101** and
+**54400**, so the browser journeys can run while `bun run dev` is active.
+If a journey port is occupied, the runner exits and reports the collision.
+
 ### Validate your change
 
 From the repository root:
@@ -118,8 +122,37 @@ Optional:
 | `ARMADA_GITHUB_RUNTIME_ENABLED` | Managed GitHub broker/wrappers; default off. Only exact `true` enables it. See [github-runtime.md](github-runtime.md) for existing-worker limitations. |
 | `ARMADA_DASHBOARD_URL` | The dashboard origin, when it is not the production one. See [github-cli-relay.md](github-cli-relay.md). |
 | `ARMADA_AUTH_PROVIDERS` | Social login offered to CLI and MCP clients (`github,google`), only for providers enabled in Supabase. Empty: email only. |
+| `ARMADA_BOAT_DEPLOYMENT_ID` | Nonsecret Boat inventory identifier containing the environment and Armada server identity, for example `staging-armada-eu`. Use the same value across replicas and redeploys of one installation, and distinct values for installations sharing a Boat account. New managed Boat launches carry its digest in the `armada.deployment` label. An unset value leaves launches untagged. |
 
 Boat and Modal keys are not server environment: org admins connect them (`armada org connect boat|modal`), and they are stored encrypted per org or per person.
+
+### Boat inventory reporting
+
+The Boat SDK lists logical sandboxes for the selected account. Armada requests
+the `armada.deployment` label using the SHA-256 digest of
+`ARMADA_BOAT_DEPLOYMENT_ID`, then verifies that label and `armada=sandbox` on
+each returned record. The report includes tagged managed sandboxes with a
+machine provider and a valid logical creation timestamp. Sandboxes launched
+without the deployment label are omitted.
+
+A coordinator can run the read-only report on demand from the repository root
+with the production deployment's `ARMADA_BOAT_DEPLOYMENT_ID`,
+`ARMADA_DATABASE_URL` and `ARMADA_ENCRYPTION_KEY` set:
+
+```sh
+bun packages/mcp-server/src/boat-inventory-report.ts --production-boat org <org-uuid>
+```
+
+Use `user <user-uuid>` in place of `org <org-uuid>` for a personal Boat
+account. The command counts logical sandboxes with and without matching
+Armada rows. A launch can appear unmatched until Armada records it.
+
+Boat resume can replace the underlying VM while retaining the sandbox ID and
+creation timestamp. The SDK exposes neither an immutable VM ID nor the VM's
+creation time, so Boat inventory remains report-only. Any future reaper
+deletion requires both fields and coordinator-only production evidence.
+Live Boat checks are reserved for the coordinator in production, outside CI
+and staging acceptance.
 
 ### Start a local development server
 

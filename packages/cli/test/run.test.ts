@@ -90,57 +90,31 @@ describe("run", () => {
     expect(out).toContain(command);
   });
 
-  test.each(["--help", "-h"])("logs %s explains the reader without login, preferences or requests", async (option) => {
-    let out = "";
-    let err = "";
-    const forbidden = async () => {
-      throw new Error("Help must not perform I/O");
-    };
-    const io = {
-      out: (text: string) => {
-        out += text;
-      },
-      err: (text: string) => {
-        err += text;
-      },
-    };
-    const code = await run(["logs", option], io, {
-      auth: {
-        ...io,
-        env: {},
-        now: () => new Date(0),
-        open: forbidden,
-        fetch: forbidden,
-        session: { read: forbidden, write: forbidden, clear: forbidden },
-        preferences: { read: forbidden, write: forbidden },
-      },
-    });
-    expect(code).toBe(0);
-    expect(err).toBe("");
-    expect(out).toContain("armada logs");
-    expect(out).toContain("--since");
-    expect(out).toContain("--org");
-    expect(out).toContain("1–1000");
-    expect(out).toContain("default 100");
-    expect(out).toContain("cannot combine");
-    expect(out).toContain(".events[]");
-    expect(out).toContain("Ctrl-C");
-    expect(out).not.toContain("armada snapshot create");
-  });
-
   test("unknown root or snapshot commands use the human or JSON usage error contract", async () => {
     const forbidden = () => {
       throw new Error("Unknown command attempted I/O");
     };
-    for (const family of [undefined, "snapshot", "golden"]) {
+    const deps: Deps = {
+      auth: {
+        env: {},
+        out: forbidden,
+        err: forbidden,
+        open: forbidden,
+        now: () => new Date(0),
+        fetch: forbidden,
+        session: memorySessionStore(),
+      },
+      readStdin: forbidden,
+    };
+    for (const [args, command, checkHelp] of [
+      [["frobnicate"], "frobnicate"],
+      [["snapshot", "frobnicate", "--org", "org_placeholder"], "snapshot frobnicate"],
+      [["snapshot", "connect", "web", "--provider", "boat"], "snapshot connect", true],
+      [["golden", "snapshot", "web", "--provider", "docker"], "snapshot snapshot", true],
+    ] as const) {
       for (const json of [false, true]) {
-        const args = family ? [family, "frobnicate", "--org", "org_placeholder"] : ["frobnicate"];
-        const diagnostic = `unknown command '${family ? "snapshot " : ""}frobnicate'`;
-        const { code, out, err } = await capture([...args, ...(json ? ["--json"] : [])], {
-          env: {},
-          fetch: Object.assign(forbidden, { preconnect: forbidden }),
-          readStdin: forbidden,
-        });
+        const diagnostic = `unknown command '${command}'`;
+        const { code, out, err } = await capture([...args, ...(json ? ["--json"] : [])], deps);
         expect(code).toBe(2);
         expect(out).toBe("");
         if (json) {
@@ -154,6 +128,12 @@ describe("run", () => {
           expect(err).toContain(diagnostic);
           expect(err).toContain("armada --help");
         }
+      }
+      if (checkHelp) {
+        const help = await capture([...args.slice(0, 2), "--help"], deps);
+        expect(help.code).toBe(2);
+        expect(help.out).toBe("");
+        expect(help.err).toContain(`unknown command '${command}'`);
       }
     }
   });

@@ -1,4 +1,5 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
+import type { RunnerRequest } from "@armada/agent-runtime";
 import { createSqlAuthStore } from "@armada/auth";
 import {
   createApplicationVault,
@@ -9,13 +10,24 @@ import {
   resolveModelChoice,
   type Sql,
 } from "@armada/core/server";
-import { type ControlOptions, handleControlRequest } from "../src/control.ts";
+import * as boatProvider from "@armada/provider-boat";
+import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
+import { boatRuntimeLaunch } from "../src/boat-runtime-launch.ts";
+import { type ControlOptions, dispatchControlCommand, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
+import { createGoldenRuntimeEnvironment } from "../src/golden-runtime-environment.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeFollowup } from "../src/runtime-followup.ts";
-import { readRuntimeVariables, runtimeConfigurationWithVariables } from "../src/runtime-readable-variables.ts";
+import {
+  readRuntimeTemplateEnvironment,
+  runtimeConfigurationWithVariables,
+} from "../src/runtime-readable-variables.ts";
+import { createRuntimeResume } from "../src/runtime-resume.ts";
+import { sqlOver } from "../src/sql.ts";
+import { runtimeWakes } from "../src/wake-bus.ts";
+import { publishedFailure, publishedResponse } from "./published-response.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
@@ -27,9 +39,16 @@ async function fixture(
   provider: "boat" | "modal" = "modal",
   idle = false,
   entry: "explicit" | "ordinary" | "default" = "explicit",
+  deliverSecrets = false,
 ) {
   const { db, people } = await sharedDatabase();
-  const sql: Sql = { query: (q, v) => db.query(q, v), transaction: (work) => db.transaction((tx) => work(tx)) };
+  const driver = (connection: Pick<Sql, "query">) => ({
+    unsafe: async (query: string, params: never[]) => (await connection.query(query, params)).rows,
+  });
+  const sql = sqlOver({
+    ...driver(db),
+    begin: (work) => db.transaction((tx) => work(driver(tx))),
+  });
   const templates = createTemplateService(sql, ENCRYPTION_KEY);
   const application = createApplicationVault(sql, ENCRYPTION_KEY);
   const caller = {
@@ -94,6 +113,23 @@ async function fixture(
   let prompts = 0;
   const authority = createRuntimeEnrolments(sql, ENCRYPTION_KEY);
   let active: Awaited<ReturnType<typeof authority.enrol>> | undefined;
+  const deliveries: RunnerRequest[] = [];
+  const bridge = createRuntimeCommands(authority, ENCRYPTION_KEY);
+  const environment = createGoldenRuntimeEnvironment(sql, ENCRYPTION_KEY, {
+    now: () => 0,
+    async wait() {
+      if (!active) throw Error("Expected runtime admission");
+      const { command } = await bridge.next(active.runtimeToken, active.epoch);
+      if (!command) throw Error("Expected runtime configuration command");
+      deliveries.push(command);
+      await bridge.complete(active.runtimeToken, active.epoch, {
+        epoch: active.epoch,
+        requestId: command.requestId,
+        status: 200,
+        body: { version: 1, requestId: command.requestId, result: { acknowledged: true } },
+      });
+    },
+  });
   const options: ControlOptions = {
     templates,
     runtimeSend: createRuntimeFollowup(sql, ENCRYPTION_KEY, createRuntimeCommands(authority, ENCRYPTION_KEY)),
@@ -147,11 +183,15 @@ async function fixture(
           servers: {},
         });
         starts.push(Object.fromEntries(Object.entries(selectedEnv).filter(([key]) => key === "APP_REGION")));
-        if (idle)
+        if (idle || deliverSecrets)
           active = await authority.enrol(
             (await authority.issue({ sandboxId: sandbox.id, ownerId: actor.userId, configuration: plan.configuration }))
               .enrolmentToken,
           );
+        if (deliverSecrets) {
+          if (JSON.stringify(plan.configuration).includes("APP_TOKEN")) throw Error("Secret entered bootstrap");
+          await environment.deliver(provider, actor, sandbox.id, active?.epoch);
+        }
         return {
           epoch: active?.epoch ?? "7",
           async prepareWorkspace() {
@@ -200,7 +240,7 @@ async function fixture(
     ).item as LaunchTemplate;
   const api = async (
     body: Record<string, unknown>,
-    path = provider === "boat" || entry !== "explicit" ? "templates/launch" : "sandbox/launch-modal-runtime-v1",
+    path = provider === "boat" || entry !== "explicit" ? "templates/launch" : "sandbox/launch",
   ) => {
     const response = await handleControlRequest(
       new Request(`https://armada.test/api/v1/${path}`, {
@@ -242,6 +282,7 @@ async function fixture(
     definition,
     physical,
     starts,
+    deliveries,
     api,
     create,
     request,
@@ -258,43 +299,76 @@ for (const entry of ["explicit", "default"] as const)
     });
     const template = await f.create();
     const request = f.request(template.id);
-    const first = await f.api(request);
-    expect(first.status).toBe(200);
-    const launched = (await first.json()) as {
-      id: string;
-      state: string;
-      runtime: { kind: string; epoch: string };
-      manifest: { variables: Record<string, string> };
-    };
-    expect(launched).toMatchObject({ state: "succeeded", runtime: { kind: "armada", epoch: "7" } });
-    expect(f.starts).toEqual([{ APP_REGION: "original\n$(not-a-command)" }]);
-    const delivered = f.starts[0];
-    if (!delivered) throw Error("Missing enrolled variable delivery");
-    expect(launched.manifest.variables).toEqual(delivered);
-    await f.application.command(f.caller, "variable", "update", {
-      org: f.people.org,
-      id: f.variableId,
-      expectedVersion: 1,
-      value: "changed-source",
-    });
-    const replay = await f.api(request);
-    expect(replay.status).toBe(200);
-    expect(await replay.json()).toEqual(launched);
-    await f.templates.command(f.caller, "delete", { org: f.people.org, id: template.id, expectedRevision: 1 });
-    const tombstoneReplay = await f.api(request);
-    expect(tombstoneReplay.status).toBe(200);
-    expect(await tombstoneReplay.json()).toEqual(launched);
-    expect(f.physical.forks).toHaveLength(1);
-    expect(f.prompts()).toBe(1);
-    // Resume reads the admitted manifest, not the mutable current variable source.
-    expect(
-      await readRuntimeVariables(f.sql, { userId: f.people.owner, orgId: f.people.org }, launched.id, "modal"),
-    ).toEqual({
-      APP_REGION: "original\n$(not-a-command)",
-    });
+    const log = spyOn(console, "info");
+    try {
+      const first = await f.api(request);
+      expect(first.status).toBe(200);
+      const launched = (await first.json()) as {
+        id: string;
+        state: string;
+        runtime: { kind: string; epoch: string };
+        manifest: { variables: Record<string, string> };
+      };
+      if (entry === "explicit") publishedResponse("sandbox/launch").parse(launched);
+      expect(launched).toMatchObject({ state: "succeeded", runtime: { kind: "armada", epoch: "7" } });
+      expect(f.starts).toEqual([{ APP_REGION: "original\n$(not-a-command)" }]);
+      const delivered = f.starts[0];
+      if (!delivered) throw Error("Missing enrolled variable delivery");
+      expect(launched.manifest.variables).toEqual(delivered);
+      await f.application.command(f.caller, "variable", "update", {
+        org: f.people.org,
+        id: f.variableId,
+        expectedVersion: 1,
+        value: "changed-source",
+      });
+      const replay = await f.api(request);
+      expect(replay.status).toBe(200);
+      expect(await replay.json()).toEqual(launched);
+      await f.templates.command(f.caller, "delete", { org: f.people.org, id: template.id, expectedRevision: 1 });
+      if (entry === "explicit") {
+        const mismatched = await f.api({ ...request, harness: "codex" });
+        expect(mismatched.status).toBe(400);
+      }
+      const tombstoneReplay = await f.api(request);
+      expect(tombstoneReplay.status).toBe(200);
+      expect(await tombstoneReplay.json()).toEqual(launched);
+      expect(f.physical.forks).toHaveLength(1);
+      expect(f.prompts()).toBe(1);
+      // Resume reads the admitted manifest, not the mutable current variable source.
+      expect(
+        (
+          await readRuntimeTemplateEnvironment(
+            f.sql,
+            { userId: f.people.owner, orgId: f.people.org },
+            launched.id,
+            "modal",
+          )
+        ).variables,
+      ).toEqual({
+        APP_REGION: "original\n$(not-a-command)",
+      });
+      const samples = log.mock.calls
+        .map(([line]) => JSON.parse(String(line)))
+        .filter(({ event }) => event === "modal_golden_launch_timing");
+      expect(samples).toHaveLength(1);
+      const [sample] = samples;
+      expect(sample).toMatchObject({ surface: "template_rest", sandboxId: launched.id });
+      expect(sample.stages.map(({ name }: { name: string }) => name)).toEqual([
+        "admission",
+        "provider_resolution",
+        "template_execution",
+      ]);
+      expect(sample.stages[0].sqlStatements).toBeGreaterThan(0);
+      expect(sample.stages[2].sqlStatements).toBeGreaterThan(0);
+      expect(sample.sqlStatements).toBe(
+        sample.stages.reduce((sum: number, stage: { sqlStatements: number }) => sum + stage.sqlStatements, 0),
+      );
+    } finally {
+      log.mockRestore();
+    }
   });
 
-test("Modal template selection rejects secrets, foreign provider/harness, invalid pins and mixed source overrides before allocation", async () => {
+test("Modal template selection rejects foreign provider/harness, invalid pins and mixed source overrides before allocation", async () => {
   const f = await fixture();
   const valid = await f.create();
   const boat = (
@@ -307,19 +381,8 @@ test("Modal template selection rejects secrets, foreign provider/harness, invali
     harness: "claude",
     modelAccount: undefined,
   });
-  const secret = (
-    await f.db.query<{ id: string }>(
-      "insert into application_secrets(org_id,owner_id,scope,name,value_enc) values($1,$2,'personal','APP_TOKEN',$3) returning id",
-      [f.people.org, f.people.owner, await encryptSecret(crypto.randomUUID(), ENCRYPTION_KEY)],
-    )
-  ).rows[0]!;
-  const secretBound = await f.create({
-    ...f.definition,
-    secrets: [{ key: "APP_TOKEN", secretId: secret.id, version: 1 }],
-  });
   const base = f.request(valid.id);
   for (const request of [
-    { ...base, id: secretBound.id },
     { ...base, id: foreignProvider.id },
     { ...base, id: foreignHarness.id },
     { ...base, revision: undefined },
@@ -337,8 +400,264 @@ test("Modal template selection rejects secrets, foreign provider/harness, invali
   expect(f.starts).toEqual([]);
 });
 
+function fakeBoatRuntimeSink(f: Awaited<ReturnType<typeof fixture>>, acknowledged = true) {
+  f.options.launch!.boatRuntimeDefault!.policy = boatRuntimeLaunch({
+    sql: f.sql,
+    encryptionKey: ENCRYPTION_KEY,
+    serverUrl: "https://armada.test",
+    architecture: "x64",
+    manifest: {
+      protocol: 1,
+      platform: "linux",
+      libc: "glibc",
+      architecture: "x64",
+      runtime: { sha256: "a".repeat(64), bytes: 1 },
+      harnesses: { codex: { files: [{ path: "bin/codex" }] } },
+    },
+  });
+  const commands = createRuntimeCommands(f.authority, ENCRYPTION_KEY);
+  const handled: RunnerRequest["op"][] = [];
+  let unsubscribe = () => {};
+  let work = Promise.resolve();
+  // oxlint-disable-next-line landmines-testing/no-test-doubles -- Replace only external Boat SSH bootstrap to exercise the real launch adapter without a provider or process.
+  const bootstrap = spyOn(boatProvider, "startBoatRuntime").mockImplementation(async (_host, request) => {
+    const active = await f.authority.enrol(request.enrolmentToken);
+    expect(JSON.stringify(active.configuration).includes("APP_TOKEN")).toBe(false);
+    unsubscribe = runtimeWakes.subscribe(`socket:${active.sandboxId}`, () => {
+      work = work.then(async () => {
+        const { command } = await commands.next(active.runtimeToken, active.epoch);
+        if (!command) return;
+        let result: Record<string, unknown>;
+        switch (command.op) {
+          case "health":
+            result = { ready: true, generation: active.epoch, workspaceVersion: 1 };
+            break;
+          case "configureReadableVariables":
+            f.deliveries.push(command);
+            result = { acknowledged };
+            break;
+          case "workspaceExec":
+            result = { detached: false, exitCode: 0, stdout: "", stderr: "" };
+            break;
+          case "prompt":
+            result = { promptId: "prompt-1", conversationId: "conversation", status: "queued" };
+            break;
+          case "getPrompt":
+            result = { promptId: command.promptId, status: "finished", done: true };
+            break;
+          default:
+            throw Error("Unexpected fake runtime command.");
+        }
+        await commands.complete(active.runtimeToken, active.epoch, {
+          epoch: active.epoch,
+          requestId: command.requestId,
+          status: 200,
+          body: { version: 1, requestId: command.requestId, result },
+        });
+        handled.push(command.op);
+      });
+    });
+  });
+  return {
+    handled,
+    async close() {
+      bootstrap.mockRestore();
+      unsubscribe();
+      await work;
+    },
+  };
+}
+
 test.each(["modal", "boat"] as const)(
-  "frozen %s environment rejects reserved keys and secret manifests even if internal storage is corrupted",
+  "%s delivers a short raw binding only through the encrypted runtime command and preserves its receipt",
+  async (provider) => {
+    const f = await fixture("codex", provider, false, "explicit", true);
+    const canary = `v${crypto.randomUUID().slice(0, 6)}`;
+    const secret = (
+      await f.db.query<{ id: string }>(
+        "insert into application_secrets(org_id,owner_id,scope,name,value_enc) values($1,$2,'personal','APP_TOKEN',$3) returning id",
+        [f.people.org, f.people.owner, await encryptSecret(canary, ENCRYPTION_KEY)],
+      )
+    ).rows[0]!;
+    const template = await f.create({
+      ...f.definition,
+      secrets: [{ key: "APP_TOKEN", secretId: secret.id, version: 1 }],
+    });
+    const boat = provider === "boat" ? fakeBoatRuntimeSink(f) : undefined;
+    try {
+      const { prompt, ...args } = f.request(template.id);
+      const request = boat ? { ...args, prompt } : args;
+      const reply = await f.api(request);
+      expect(reply.status).toBe(200);
+      const receipt = await reply.text();
+      expect(receipt.includes(canary)).toBe(false);
+      const { id, state } = JSON.parse(receipt);
+      expect(state).toBe("succeeded");
+      if (boat) {
+        expect(boat.handled.slice(0, 3)).toEqual(["health", "configureReadableVariables", "health"]);
+        expect(boat.handled.at(-1)).toBe("prompt");
+        expect(f.physical.forks[0]?.env).toEqual({});
+      }
+      expect(f.deliveries).toHaveLength(1);
+      const command = f.deliveries[0];
+      expect(command).toMatchObject({
+        op: "configureReadableVariables",
+        sandboxId: id,
+        harness: "codex",
+        secretKeys: ["APP_TOKEN"],
+      });
+      if (command?.op !== "configureReadableVariables") throw Error("Missing configuration");
+      expect(command.variables.APP_TOKEN === canary).toBe(true);
+      expect(command.variables.APP_REGION).toBe("original\n$(not-a-command)");
+      const stored = (
+        await f.db.query<{ request_enc: Uint8Array; result_enc: Uint8Array }>(
+          "select request_enc,result_enc from runtime_commands where request_id=$1",
+          [command.requestId],
+        )
+      ).rows[0]!;
+      expect(Buffer.from(stored.request_enc).includes(canary)).toBe(false);
+      expect(Buffer.from(stored.result_enc).includes(canary)).toBe(false);
+      expect((await f.api(request)).status).toBe(200);
+      expect(f.deliveries).toHaveLength(1);
+
+      await f.db.query("update application_secrets set status='revoked',value_enc=null where id=$1", [secret.id]);
+      const send = f.options.runtimeSend!;
+      await expect(send(f.caller, { id, request_id: crypto.randomUUID(), prompt: "do work" })).rejects.toMatchObject({
+        code: "conflict",
+        message: "Template launch refused: secret_unavailable.",
+      });
+      expect((await f.db.query("select activity_lease_id from sandboxes where id=$1", [id])).rows).toEqual([
+        { activity_lease_id: null },
+      ]);
+      await f.db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [id]);
+      const queue = createAccountTurnQueue(f.sql, ENCRYPTION_KEY);
+      const commands = createRuntimeCommands(f.authority, ENCRYPTION_KEY);
+      const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, commands);
+      const runtimeSend = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, commands, undefined, resume);
+      queue.setDispatch((caller, input) =>
+        dispatchControlCommand("sandbox/send", caller, { ...input }, { ...f.options, runtimeSend }),
+      );
+      const requestId = crypto.randomUUID();
+      expect(await queue.accept(f.caller, { id, request_id: requestId, prompt: "do work" })).toMatchObject({
+        status: "queued",
+      });
+      expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
+      await queue.drain();
+      expect(await queue.status(f.caller, id, requestId)).toMatchObject({ failed: true });
+    } finally {
+      await boat?.close();
+    }
+  },
+);
+
+test("Boat launch withholds the first prompt when the runtime rejects secret configuration", async () => {
+  const f = await fixture("codex", "boat");
+  const secret = (
+    await f.db.query<{ id: string }>(
+      "insert into application_secrets(org_id,owner_id,scope,name,value_enc) values($1,$2,'personal','APP_TOKEN',$3) returning id",
+      [f.people.org, f.people.owner, await encryptSecret(crypto.randomUUID(), ENCRYPTION_KEY)],
+    )
+  ).rows[0]!;
+  const template = await f.create({
+    ...f.definition,
+    secrets: [{ key: "APP_TOKEN", secretId: secret.id, version: 1 }],
+  });
+  const boat = fakeBoatRuntimeSink(f, false);
+  try {
+    const reply = await f.api(f.request(template.id));
+    expect(reply.status).toBe(200);
+    expect(await reply.json()).toMatchObject({ state: "reconciling" });
+    expect(boat.handled).toEqual(["health", "configureReadableVariables"]);
+  } finally {
+    await boat.close();
+  }
+});
+
+test.each(["modal", "boat"] as const)(
+  "%s uses the vault conflict refusal for a pinned secret that is no longer available to its launcher",
+  async (provider) => {
+    const f = await fixture("codex", provider);
+    const secret = (
+      await f.db.query<{ id: string }>(
+        "insert into application_secrets(org_id,owner_id,scope,name,value_enc) values($1,$2,'personal','APP_TOKEN',$3) returning id",
+        [f.people.org, f.people.owner, await encryptSecret(crypto.randomUUID(), ENCRYPTION_KEY)],
+      )
+    ).rows[0]!;
+    const template = await f.create({
+      ...f.definition,
+      secrets: [{ key: "APP_TOKEN", secretId: secret.id, version: 1 }],
+    });
+    await f.db.query("update application_secrets set owner_id=$2 where id=$1", [secret.id, f.people.member]);
+    const response = await f.api(f.request(template.id));
+    expect(response.status).toBe(409);
+    expect(await response.text()).toContain("secret_unavailable");
+    expect(f.physical.forks).toHaveLength(0);
+  },
+);
+
+test.each([
+  ["explicit", "secret_version_changed"],
+  ["default", "secret_unavailable"],
+  ["boat", "secret_version_changed"],
+] as const)("%s launch returns the vault conflict after allocation and on replay", async (path, reason) => {
+  const f = await fixture("codex", path === "boat" ? "boat" : "modal", false, path === "boat" ? "default" : path, true);
+  const secret = (
+    await f.db.query<{ id: string }>(
+      "insert into application_secrets(org_id,owner_id,scope,name,value_enc) values($1,$2,'personal','APP_TOKEN',$3) returning id",
+      [f.people.org, f.people.owner, await encryptSecret(crypto.randomUUID(), ENCRYPTION_KEY)],
+    )
+  ).rows[0]!;
+  const template = await f.create({
+    ...f.definition,
+    secrets: [{ key: "APP_TOKEN", secretId: secret.id, version: 1 }],
+  });
+  const changeVersionAfterFork = (host: ReturnType<typeof fakeBoat>["provider"]) => ({
+    ...host,
+    async fork(request: Parameters<typeof host.fork>[0]) {
+      const child = await host.fork(request);
+      await f.db.query("update application_secrets set version=2 where id=$1", [secret.id]);
+      return child;
+    },
+  });
+  if (path === "boat") {
+    const runtime = f.options.launch!.boatRuntimeDefault!;
+    const resolveHost = runtime.provider;
+    runtime.provider = async (actor, golden) => changeVersionAfterFork(await resolveHost(actor, golden));
+  } else if (path === "explicit") {
+    const resolveHost = f.options.modalRuntimeHostFor!;
+    f.options.modalRuntimeHostFor = async (golden, caller) => changeVersionAfterFork(await resolveHost(golden, caller));
+  } else {
+    const policy = f.options.modalRuntimeLaunch!;
+    f.options.modalRuntimeLaunch = {
+      async start(input) {
+        const agent = await policy.start(input);
+        return {
+          ...agent,
+          async prepareWorkspace() {
+            await f.db.query("update application_secrets set status='revoked',value_enc=null where id=$1", [secret.id]);
+            return { status: "not_connected" };
+          },
+        };
+      },
+    };
+    f.enableDefault();
+  }
+  const request = f.request(template.id);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const response = await f.api(request);
+    expect(response.status).toBe(409);
+    expect(publishedFailure().parse(await response.json())).toMatchObject({
+      error: { code: "conflict", message: `Template launch refused: ${reason}.` },
+    });
+  }
+  expect(f.physical.forks).toHaveLength(1);
+  expect(f.physical.stops).toHaveLength(1);
+  expect(f.deliveries).toHaveLength(path === "default" ? 1 : 0);
+  expect(f.prompts()).toBe(0);
+});
+
+test.each(["modal", "boat"] as const)(
+  "frozen %s environment rejects reserved keys and invalid secret bindings even if internal storage is corrupted",
   async (provider) => {
     // Bypass the immutable-row trigger only while corrupting the fixture;
     // restore replication settings before invoking the reader.
@@ -367,7 +686,7 @@ test.each(["modal", "boat"] as const)(
           ...row.manifest,
           definition: {
             ...row.manifest.definition,
-            secrets: [{ key: "APP_TOKEN", secretId: crypto.randomUUID(), version: 1 }],
+            secrets: [{ key: "APP_REGION", secretId: crypto.randomUUID(), version: 1 }],
           },
         },
       ]) {
@@ -381,7 +700,7 @@ test.each(["modal", "boat"] as const)(
           await f.db.exec("set session_replication_role=origin");
         }
         await expect(
-          readRuntimeVariables(f.sql, { userId: f.people.owner, orgId: f.people.org }, launched.id, provider),
+          readRuntimeTemplateEnvironment(f.sql, { userId: f.people.owner, orgId: f.people.org }, launched.id, provider),
         ).rejects.toMatchObject({
           code: "unavailable",
           message: "Frozen runtime readable configuration is unavailable.",
@@ -451,7 +770,8 @@ test("promptless Modal template freezes its manifest and replays the empty launc
   expect(f.prompts()).toBe(0);
   expect(f.physical.forks).toHaveLength(1);
   expect(
-    await readRuntimeVariables(f.sql, { userId: f.people.owner, orgId: f.people.org }, launched.id, "modal"),
+    (await readRuntimeTemplateEnvironment(f.sql, { userId: f.people.owner, orgId: f.people.org }, launched.id, "modal"))
+      .variables,
   ).toEqual(launched.manifest.variables);
 });
 
@@ -471,33 +791,20 @@ for (const harness of ["codex", "claude"] as const)
       value: "changed",
     });
     expect(
-      await readRuntimeVariables(f.sql, { userId: f.people.owner, orgId: f.people.org }, launched.id, "boat"),
+      (
+        await readRuntimeTemplateEnvironment(
+          f.sql,
+          { userId: f.people.owner, orgId: f.people.org },
+          launched.id,
+          "boat",
+        )
+      ).variables,
     ).toEqual({ APP_REGION: "original\n$(not-a-command)" });
     const replay = await f.api(request);
     expect(replay.status).toBe(200);
     expect(await replay.json()).toEqual(launched);
     expect(f.physical.forks).toHaveLength(1);
     expect(f.starts).toHaveLength(1);
-  });
-
-for (const provider of ["boat", "modal"] as const)
-  test(`${provider} runtime default refuses application secrets before allocation`, async () => {
-    const f = await fixture("codex", provider, false, provider === "modal" ? "default" : "explicit");
-    const secret = (
-      await f.db.query<{ id: string }>(
-        "insert into application_secrets(org_id,owner_id,scope,name,value_enc) values($1,$2,'personal','APP_TOKEN',$3) returning id",
-        [f.people.org, f.people.owner, await encryptSecret("not-a-real-secret", ENCRYPTION_KEY)],
-      )
-    ).rows[0]!;
-    const template = await f.create({
-      ...f.definition,
-      secrets: [{ key: "APP_TOKEN", secretId: secret.id, version: 1 }],
-    });
-    const response = await f.api(f.request(template.id));
-    expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ state: "failed" });
-    expect(f.physical.forks).toHaveLength(0);
-    expect(f.starts).toEqual([]);
   });
 
 test("ordinary completed native template replay stays native after coordinator default selection", async () => {

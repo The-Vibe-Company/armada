@@ -46,7 +46,6 @@ interface Reply {
   goldens?: { id: string; name: string; provider: string; orgId: string }[];
   modalRuntime?: {
     defaultPath?: "native" | "runtime";
-    version?: number;
     enabled?: boolean;
     followupVersion?: number;
     idleLaunchVersion?: number;
@@ -108,11 +107,7 @@ async function api<T = Reply>(path: string, body: object): Promise<T> {
   }
 }
 const options = await api("launch/options", {});
-if (
-  options.modalRuntime?.version !== 1 ||
-  options.modalRuntime.enabled !== true ||
-  options.modalRuntime.followupVersion !== 1
-)
+if (options.modalRuntime?.enabled !== true || options.modalRuntime.followupVersion !== 1)
   throw Error("Modal dial-out v1 with same-conversation follow-up is unavailable; no launch attempted.");
 const ordinaryMode = process.argv.includes("--ordinary");
 if (ordinaryMode && options.modalRuntime.defaultPath !== "runtime")
@@ -608,9 +603,7 @@ try {
     mcpMode || variablesMode
       ? `Remember token ${memory}. ${[...(variablesMode ? [variableInstruction] : []), ...(mcpMode ? [mcpInstruction] : [])].join(" ")} After it succeeds, reply exactly ${answer}. Do not change files.`
       : `Remember token ${memory}. Reply exactly ${answer}. Do not use tools or change files.`;
-  // Explicit pinned templates have their own admission and manifest receipt.
-  let route = "sandbox/launch";
-  if (templateSource) route = ordinaryMode ? "templates/launch" : "sandbox/launch-modal-runtime-v1";
+  const route = templateSource && ordinaryMode ? "templates/launch" : "sandbox/launch";
   const raw = await api(route, {
     ...(!ordinaryMode
       ? { runtimeVersion: 1, runtimeTransport: "dialout", provider: "modal", harness }
@@ -818,7 +811,6 @@ try {
         ? toolsInstruction
         : "Reply exactly with the token I originally asked you to remember. Do not use tools or change files.",
     request_id: followupRequestId,
-    conversation_id: launched.conversationId,
   });
   if (
     followed.requestId !== followupRequestId ||
@@ -927,7 +919,6 @@ if (
       id,
       runtimeVersion: 1,
       request_id: requestId,
-      conversation_id: conversationId,
       prompt:
         mcpMode || variablesMode
           ? `${[...(variablesMode ? [variableInstruction] : []), ...(mcpMode ? [mcpInstruction] : [])].join(" ")} ${recallInstruction}`
@@ -971,7 +962,6 @@ if (
       const sent = await api("sandbox/send", {
         id,
         request_id: requestId,
-        conversation_id: conversationId,
         prompt: toolsInstruction,
       });
       if (

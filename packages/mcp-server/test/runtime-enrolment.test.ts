@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { PROTOCOL_VERSION } from "@armada/agent-runtime";
 import type { Sql } from "@armada/core/server";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { rowOnlyConnection } from "./row-only-database.ts";
@@ -33,11 +34,15 @@ async function fixture() {
     transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
   };
   const service = () => createRuntimeEnrolments(sql, ENCRYPTION_KEY);
-  const request = async (path: string, bearer: string, epoch?: string) => {
+  const request = async (path: string, bearer: string, epoch?: string, protocol?: string) => {
     const response = await service().route(
       new Request(`https://armada.example/api/runtime/${path}`, {
         method: "POST",
-        headers: { authorization: `Bearer ${bearer}`, ...(epoch ? { "x-armada-runtime-epoch": epoch } : {}) },
+        headers: {
+          authorization: `Bearer ${bearer}`,
+          ...(epoch ? { "x-armada-runtime-epoch": epoch } : {}),
+          ...(protocol !== undefined ? { "x-armada-runtime-protocol": protocol } : {}),
+        },
       }),
     );
     if (!response) throw Error("missing_runtime_route");
@@ -94,6 +99,54 @@ test("enrolment is single-use across replicas and replacement epochs fence every
   await expect(f.service().issue({ sandboxId: f.id, ownerId: f.people.member, configuration: {} })).rejects.toThrow(
     "runtime_enrolment_denied",
   );
+});
+
+test("enrolment refuses unsupported wire versions without spending the ticket", async () => {
+  const f = await fixture();
+  const { enrolmentToken } = await f.issue();
+  for (const version of [
+    String(Math.max(0, PROTOCOL_VERSION - 2)),
+    String(PROTOCOL_VERSION + 1),
+    `${PROTOCOL_VERSION}.0`,
+    "",
+  ]) {
+    const refusal = await f.request("enrol", enrolmentToken, undefined, version);
+    expect(refusal.status).toBe(409);
+    expect(await refusal.json()).toEqual({ error: "runtime_protocol_unsupported" });
+    expect(refusal.headers.get("cache-control")).toBe("no-store");
+  }
+  expect((await f.request("enrol", "invalid_ticket", undefined, "0")).status).toBe(401);
+  const accepted = await f.request("enrol", enrolmentToken, undefined, String(PROTOCOL_VERSION));
+  expect(accepted.status).toBe(200);
+  expect(await accepted.json()).toMatchObject({ epoch: "1", configuration: { marker: "offline-bootstrap" } });
+
+  if (PROTOCOL_VERSION > 1) {
+    const previous = await f.issue();
+    expect((await f.request("enrol", previous.enrolmentToken, undefined, String(PROTOCOL_VERSION - 1))).status).toBe(
+      200,
+    );
+  }
+});
+
+test("a live runtime outside the protocol window loses runtime and owner command authority", async () => {
+  const f = await fixture();
+  const enrolledVersion = Math.max(1, PROTOCOL_VERSION - 1);
+  const outsideWindow = PROTOCOL_VERSION > 2 ? PROTOCOL_VERSION - 2 : PROTOCOL_VERSION + 1;
+  const { enrolmentToken } = await f.issue();
+  const setStoredProtocol = (version: number) =>
+    f.db.query("update runtime_enrolments set runtime_protocol_version=$1 where sandbox_id=$2", [version, f.id]);
+
+  await setStoredProtocol(outsideWindow);
+  const authority = f.service();
+  const { runtimeToken, epoch } = await authority.enrol(enrolmentToken, String(enrolledVersion));
+  const ownerEpoch = () => authority.withOwner(f.id, f.people.owner, async (_tx, scope) => scope.epoch);
+
+  expect(await ownerEpoch()).toBe(epoch);
+  expect((await f.request("session", runtimeToken, epoch)).status).toBe(200);
+
+  await setStoredProtocol(outsideWindow);
+  expect((await f.request("session", runtimeToken, epoch)).status).toBe(401);
+  await expect(ownerEpoch()).rejects.toThrow("runtime_enrolment_denied");
 });
 
 test("stop, lifecycle replacement and membership removal irreversibly revoke pending and active runtime authority", async () => {

@@ -147,10 +147,6 @@ describe("golden command", () => {
         (org_id, name, visibility, owner_id, provider, provider_snapshot_id, modal_workspace, modal_environment, modal_app_id, config)
         select org_id, name, visibility, owner_id, 'modal', 'im-cli', 'ws-cli', 'main', 'ap-cli', config
         from goldens where provider = 'boat' and name = 'monorepo'`);
-      for (const command of ["connect", "snapshot"]) {
-        const ambiguous = await capture(["golden", command, "monorepo"], { auth });
-        expect(ambiguous.err).toContain("exists on boat and modal");
-      }
       const modalOnly = await asUser(db, people.owner, () =>
         capture(["golden", "list", "--provider", "modal", "--json"], { auth }),
       );

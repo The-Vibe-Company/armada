@@ -13,17 +13,16 @@ armada creds list
 
 Alternatively, dashboard **What agents have → Models → Add account → Morph**: name the
 account, paste the key and save. Select that same account for any of these harnesses.
-The model picker offers `morph-kimik31`, `morph-dsv41flash` and
-`morph-dsv41flash-1017`. The key is encrypted and is never returned by listing.
+The model picker offers the catalog’s Morph plan models. The key is encrypted and is never returned by listing.
 
 Use the ordinary launch flow for the target snapshot or Docker host, with
 `--credential-id ACCOUNT_UUID --model morph-kimik31` and the desired harness.
 For example (replace uppercase IDs; `MODAL_SNAPSHOT` is a Modal snapshot):
 
 ```sh
-armada launch MODAL_SNAPSHOT --agent claude "Reply briefly" --credential-id ACCOUNT_UUID --model morph-kimik31
-armada launch MODAL_SNAPSHOT --agent codex "Reply briefly" --credential-id ACCOUNT_UUID --model morph-kimik31
-armada launch MODAL_SNAPSHOT --agent opencode "Reply briefly" --credential-id ACCOUNT_UUID --model morph-kimik31
+armada launch MODAL_SNAPSHOT --provider modal --agent claude "Reply briefly" --credential-id ACCOUNT_UUID --model morph-kimik31
+armada launch MODAL_SNAPSHOT --provider modal --agent codex "Reply briefly" --credential-id ACCOUNT_UUID --model morph-kimik31
+armada launch MODAL_SNAPSHOT --provider modal --agent opencode "Reply briefly" --credential-id ACCOUNT_UUID --model morph-kimik31
 armada launch "Reply briefly" --provider docker --host HOST_UUID --org ORG_UUID --agent claude --credential-id ACCOUNT_UUID --model morph-kimik31
 armada launch "Reply briefly" --provider docker --host HOST_UUID --org ORG_UUID --agent codex --credential-id ACCOUNT_UUID --model morph-kimik31
 armada launch "Reply briefly" --provider docker --host HOST_UUID --org ORG_UUID --agent opencode --credential-id ACCOUNT_UUID --model morph-kimik31

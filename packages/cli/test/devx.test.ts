@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import { VERSION } from "@armada/core";
 import type { AuthIo } from "../src/auth-commands.ts";
-import { completion, doctor, prepareLaunch } from "../src/devx.ts";
+import { completion } from "../src/command-catalog.ts";
+import { doctor, prepareLaunch } from "../src/devx.ts";
 import { memorySessionStore } from "../src/session.ts";
 
 function fixture(responses: Record<string, unknown>) {
@@ -54,6 +55,8 @@ test.each([VERSION, "0.0.1", null])(
             state: "online",
             lastSeenAt: null,
             version: hostVersion,
+            protocol: 1,
+            upgradeRequired: false,
             sandboxes: 0,
           },
         ],
@@ -98,6 +101,8 @@ test("doctor names the uninstall for a draining host instead of telling the user
           state: "draining",
           lastSeenAt: null,
           version: VERSION,
+          protocol: 1,
+          upgradeRequired: false,
           sandboxes: 0,
         },
       ],
@@ -169,6 +174,7 @@ test.each(["bash", "zsh", "fish"])(
     expect(completion([shell], f.auth)).toBe(0);
     expect(f.output()).toContain("armada");
     expect(f.output()).toContain("launch");
+    expect(f.output()).toContain("keep-after-merge");
     expect(f.paths).toEqual([]);
   },
 );
@@ -218,8 +224,11 @@ test("noninteractive, JSON and fully specified launches never perform interactiv
   };
   expect(await prepareLaunch(["--json"], f.auth)).toEqual(["--json"]);
   expect(
-    await prepareLaunch(["app", "--agent", "codex", "--credential-id", "account", "--org", "org"], f.auth),
-  ).toEqual(["app", "--agent", "codex", "--credential-id", "account", "--org", "org"]);
+    await prepareLaunch(
+      ["app", "--provider", "boat", "--agent", "codex", "--credential-id", "account", "--org", "org"],
+      f.auth,
+    ),
+  ).toEqual(["app", "--provider", "boat", "--agent", "codex", "--credential-id", "account", "--org", "org"]);
   expect(f.paths).toEqual([]);
 });
 
@@ -240,6 +249,8 @@ test("guided Docker launch respects explicit organization and remembered visible
         name: `host-${i}`,
         state: "online",
         lastSeenAt: null,
+        protocol: 1,
+        upgradeRequired: false,
         sandboxes: 0,
       })),
     },

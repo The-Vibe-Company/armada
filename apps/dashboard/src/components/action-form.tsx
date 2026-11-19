@@ -13,8 +13,7 @@ import { cn } from "@/lib/utils";
 
 type Props = {
   action: (previous: ActionResult | null, data: FormData) => Promise<ActionResult>;
-  children?: ReactNode;
-  renderContent?: (result: ReactNode) => ReactNode;
+  children: ReactNode;
   className?: string;
   /** Empty the fields once the action succeeded (a pasted key must not linger in the page). */
   resetOnSuccess?: boolean;
@@ -34,7 +33,6 @@ type Props = {
 export function ActionForm({
   action,
   children,
-  renderContent,
   className,
   resetOnSuccess = false,
   footer,
@@ -103,8 +101,8 @@ export function ActionForm({
   );
   return (
     <form ref={attach} action={formAction} className={className}>
-      {renderContent ? renderContent(result) : children}
-      {renderContent ? null : footer === undefined ? (
+      {children}
+      {footer === undefined ? (
         result
       ) : (
         <div className={footerClassName}>

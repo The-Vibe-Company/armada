@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { OPENCODE_ENDPOINT_ENV, parseOpenCodeEndpoint } from "@armada/core";
-import { createRedactor, OpenCodeDriver } from "../src/index.ts";
+import { createRedactor, Journal, OpenCodeDriver } from "../src/index.ts";
 import { configureOpenCodeEndpoint } from "../src/opencode-endpoint.ts";
 import { exportedToolProofs } from "../src/opencode-export-observations.ts";
 
@@ -316,6 +316,7 @@ test.each([
 // One real driver receipt owns save/restore baseline delivery and native event publication.
 test("OpenCode driver publishes only the new MCP receipt from a follow-up native export", async () => {
   const root = await mkdtemp(join(tmpdir(), "opencode-mcp-proof-"));
+  const journal = new Journal(":memory:", (text) => text);
   const env = { EXPORT_STAGE: "1", EXPORT_MCP: "success", PATH: process.env.PATH ?? "/usr/bin:/bin" };
   const driver = new OpenCodeDriver({
     createRetryObserver,
@@ -323,7 +324,7 @@ test("OpenCode driver publishes only the new MCP receipt from a follow-up native
     root,
     cwd: root,
     env,
-    redact: createRedactor(["native MCP result"]),
+    redact: journal.redact,
   });
   const proofs: unknown[] = [];
   const context = {
@@ -336,6 +337,7 @@ test("OpenCode driver publishes only the new MCP receipt from a follow-up native
     session: () => {},
   };
   try {
+    journal.registerSecrets(["native MCP result"]);
     expect(await driver.start(context).done).toBe("finished");
     expect(proofs).toEqual([mcpReceipt("old").data]);
     const history = await readFile(join(root, "sessions/session-1.json"), "utf8");
@@ -350,6 +352,7 @@ test("OpenCode driver publishes only the new MCP receipt from a follow-up native
     expect(proofs).toEqual([mcpReceipt("new-tool").data]);
   } finally {
     await driver.close();
+    journal.close();
     await rm(root, { recursive: true, force: true });
   }
 });

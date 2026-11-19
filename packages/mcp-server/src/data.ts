@@ -9,9 +9,11 @@ import {
   mapGoldenRow,
   mapSandboxRow,
   type OrgSummary,
+  type PlanLimit,
   recordLaunchStageSql,
   resolveOrg,
   type SandboxListMetadata,
+  type SandboxPatch,
   type SandboxRecord,
   type SandboxRow,
   type SandboxStatus,
@@ -32,11 +34,15 @@ import {
 import type { Provider } from "@armada/core/server";
 import { assertGoldenBackendBinding, assertSqlGoldenMutation } from "@armada/core/server";
 import { beginGoldenOperation, reconcileGoldenOperations } from "../../core/src/golden-store.ts";
+import { recordNativeAccountExhaustion } from "./account-exhaustion.ts";
+import { publishAccountSpend, unmeasuredUsage } from "./account-spend.ts";
 import type { Caller } from "./caller.ts";
 import { scopedOrg } from "./control-caller.ts";
 import { createResourceStore, type ResourceStore } from "./resource-store.ts";
+import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
+import { SANDBOX_MEMBER, SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 import { admittedTurnContexts, stampTurnPricing, withServerCost } from "./turn-pricing.ts";
-import { preserveBeforeStop, readWorkRecovery } from "./work-preservation.ts";
+import { preserveBeforeStop, readWorkRecovery, type StopAuthority } from "./work-preservation.ts";
 
 /** A sandbox with what the caller needs to know about its golden. */
 export interface SandboxView extends SandboxRecord {
@@ -48,7 +54,13 @@ export interface SandboxView extends SandboxRecord {
   modal: ModalBinding | null;
 }
 
+export interface ServerSandboxPatch extends SandboxPatch {
+  onlyIfIdle?: boolean;
+  modalRuntimeExtensionTarget?: string;
+}
+
 export interface ServerSandboxStore extends SandboxStore {
+  update(id: string, patch: ServerSandboxPatch): Promise<void>;
   /** Persist an accepted native receipt even if stop fences later task publication. */
   recordNativePrompt?(id: string, providerSandboxId: string, promptId: string, requestId?: string): Promise<void>;
   /** Persist an accepted native steer whose run is not yet provable, so native
@@ -66,8 +78,15 @@ export interface ServerSandboxStore extends SandboxStore {
     | "runtimeTransport"
     | "preservationNote"
     | "credentialId"
+    | "conversationIds"
   > | null>;
   recordAccountRateLimit?(id: string, promptId: string, retryAt: number | null): Promise<void>;
+  recordNativeExhaustion?(
+    id: string,
+    promptId: string,
+    limit: PlanLimit & { resetsAt: string },
+    at: number,
+  ): Promise<void>;
   /** #2560: latest activation's recorded launch stages, for a visible sandbox; null before any. */
   launchTiming?(id: string): Promise<LaunchTiming | null>;
   assertExtensionAllowed?(id: string): Promise<void>;
@@ -82,9 +101,15 @@ export interface ServerSandboxStore extends SandboxStore {
       observations: readonly TurnTokenUsage[];
       /** Trusted service admission contexts, never guest monetary output. */
       contexts?: readonly TurnPriceContext[];
+      completed?: ReadonlyMap<string, string>;
     },
   ): Promise<void>;
-  preserveWork?(id: string, provider: Provider, providerId: string): Promise<"pending" | void>;
+  preserveWork?(
+    id: string,
+    provider: Provider,
+    providerId: string,
+    authority: StopAuthority,
+  ): Promise<"pending" | void>;
   readWorkRecovery?(id: string, recoveryId?: string): Promise<string | null>;
   reportTaskOutcome?(id: string, promptId: string, outcome: TaskOutcome, expectedGeneration?: number): Promise<void>;
   /** Null when it does not exist or the caller may not see it: the two are not told apart. */
@@ -136,11 +161,6 @@ const SANDBOX_COLUMNS = `${SANDBOX_USAGE} as usage, s.runtime_transport,s.boat_r
 /** `$1` is the caller's orgs and `$2` the caller. */
 const GOLDEN_VISIBLE = `g.org_id = any($1::uuid[]) and (g.visibility = 'org' or g.owner_id = $2::uuid)
   and exists(select 1 from public.members m where m.org_id=g.org_id and m.user_id=$2::uuid)`;
-const SANDBOX_MEMBER = `not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)
-  and s.org_id=any($1::uuid[]) and exists(select 1 from public.members m
-  where m.org_id=s.org_id and m.user_id=$2::uuid)`;
-const SANDBOX_VISIBLE = `${SANDBOX_MEMBER} and exists(select 1 from public.members m
-  where m.org_id=s.org_id and m.user_id=$2::uuid and (s.owner_id=$2::uuid or m.role='admin'))`;
 // Ordinary delegated children retain their relation, but permanent parent deletion
 // fences their authority before owner/admin cleanup. Legacy orchestrators keep
 // their dedicated lifecycle. Share the policy between authorization and admission.
@@ -349,13 +369,26 @@ export function createSqlData(
         );
         // Usage may arrive before the accepted RPC receipt. Reconcile that already stored observation
         // after its authoritative pre-work context is captured, without changing any existing quote.
-        const rows = await sql.query<{ usage: Pick<SandboxUsage, "turnCount" | "turns"> | null }>(
-          `select s.usage_turns as usage from public.sandboxes s where ${SANDBOX_VISIBLE} and s.id=$3::uuid`,
-          [...scope, id],
+        const rows = await sql.query<{
+          usage: Pick<SandboxUsage, "turnCount" | "turns"> | null;
+          awaiting_spend: boolean;
+        }>(
+          `select s.usage_turns as usage, exists(
+            select 1 from public.account_spend_turns t
+            where t.sandbox_id=s.id and t.prompt_id=$4 and t.account_id is null
+          ) as awaiting_spend from public.sandboxes s where ${SANDBOX_VISIBLE} and s.id=$3::uuid`,
+          [...scope, id, promptId],
         );
-        const usage = rows.rows[0]?.usage;
-        const pending = usage?.turns.filter((turn) => turn.promptId === promptId && !turn.pricing) ?? [];
-        if (usage && pending.length) await sandboxes.recordUsage!(id, usage, { observations: pending });
+        const row = rows.rows[0];
+        if (!row?.usage) return;
+        const shares = row.usage.turns.filter((turn) => turn.promptId === promptId);
+        const pending = shares.filter((turn) => !turn.pricing);
+        if (row.awaiting_spend && !shares.length) {
+          const unmeasured = unmeasuredUsage(promptId);
+          await sandboxes.recordUsage!(id, { ...row.usage, turns: [unmeasured] }, { observations: [unmeasured] });
+        } else if (pending.length) {
+          await sandboxes.recordUsage!(id, row.usage, { observations: pending });
+        }
       },
       async recordAccountRateLimit(id, promptId, retryAt) {
         if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
@@ -363,6 +396,9 @@ export function createSqlData(
           `update public.sandbox_turn_models set rate_limit_retry_at=$3::timestamptz where sandbox_id=$1::uuid and prompt_id=$2`,
           [id, promptId, retryAt === null ? null : new Date(retryAt).toISOString()],
         );
+      },
+      async recordNativeExhaustion(id, promptId, limit, at) {
+        await recordNativeAccountExhaustion(sql, scope, id, promptId, limit, at);
       },
       async readTurnModel(id, promptId) {
         if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
@@ -580,15 +616,19 @@ export function createSqlData(
           const merged = (await mergeNative(tx, false)).rows[0]?.usage;
           if (!merged) return;
           const observations = options?.observations ?? [];
+          const completed = options?.completed ?? new Map<string, string>();
+          const unmeasured = [...completed.keys()].map(unmeasuredUsage);
+          const contextRows = [...observations, ...unmeasured];
           let contexts = options?.contexts;
-          if (contexts === undefined && observations.length) {
+          if (contexts === undefined && contextRows.length) {
             const admissions = await tx.query<{ prompt_id: string; context: unknown; captured: boolean }>(
               `select prompt_id,pricing_context as context,pricing_context is not null as captured
                from public.sandbox_turn_models where sandbox_id=$1 and prompt_id=any($2::text[])`,
-              [id, observations.map((row) => row.promptId)],
+              [id, [...new Set(contextRows.map((row) => row.promptId))]],
             );
             const byPrompt = new Map(admissions.rows.map((row) => [row.prompt_id, row]));
-            contexts = observations.flatMap((row) => {
+            const byShare = new Map(contextRows.map((row) => [JSON.stringify([row.promptId, row.model]), row]));
+            contexts = [...byShare.values()].flatMap((row) => {
               const captured = byPrompt.get(row.promptId);
               // Legacy turns retain the launch book. Missing provenance after a switch is unknown,
               // never an excuse to bill the old turn against the new account (or vice versa).
@@ -618,6 +658,14 @@ export function createSqlData(
             [...scope, id, JSON.stringify(priced)],
           );
           if (saved.rows.length !== 1) throw new DataError("Usage admission changed during recording.");
+          await publishAccountSpend(
+            tx,
+            id,
+            completed,
+            observations,
+            priced.turns,
+            stampTurnPricing(unmeasured, [], [], contexts ?? [], before.harness),
+          );
         });
       },
       async assertExecAllowed(id) {
@@ -641,10 +689,10 @@ export function createSqlData(
             "sandbox_not_ready",
           );
       },
-      async preserveWork(id, provider, providerId) {
+      async preserveWork(id, provider, providerId, authority) {
         const selected = await sandboxes.get(id);
         if (!selected) throw new DataError("No such sandbox.");
-        return preserveBeforeStop(sql, provider, id, providerId, "user_stop");
+        return preserveBeforeStop(sql, provider, id, providerId, "user_stop", authority);
       },
       async readWorkRecovery(id, recoveryId) {
         if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
@@ -743,12 +791,25 @@ export function createSqlData(
         if (patch.deletedAt !== undefined) set("deleted_at", patch.deletedAt, "::timestamptz");
         if (patch.status === "deleted") sets.push("preservation_note = null");
         if (patch.expiresAt !== undefined) set("expires_at", patch.expiresAt, "::timestamptz");
+        const extensionDeadlineParam = patch.expiresAt === undefined ? undefined : params.length;
         if (patch.effectiveTtlSeconds !== undefined)
           set("effective_ttl_seconds", patch.effectiveTtlSeconds, "::integer");
         const reason = statusReasonOf(patch);
         if (reason !== undefined) set("status_reason", reason, "::text");
         if (sets.length === 0) return;
         let fence = "";
+        if (patch.modalRuntimeExtensionTarget !== undefined) {
+          if (extensionDeadlineParam === undefined || patch.expectedGeneration === undefined)
+            throw new DataError("Modal runtime extension requires a verified deadline and lifecycle generation.");
+          params.push(patch.modalRuntimeExtensionTarget);
+          fence += ` and s.provider='modal' and s.runtime_transport='dialout'
+            and s.provider_sandbox_id=$${params.length}::text and s.status in ('ready','running')
+            and s.stop_requested_at is null and s.deleted_at is null
+            and s.expires_at>clock_timestamp() and s.expires_at<$${extensionDeadlineParam}::timestamptz
+            and exists(select 1 from public.runtime_enrolments r where r.sandbox_id=s.id
+              and r.lifecycle_generation=s.lifecycle_generation and r.runtime_hash is not null
+              and r.epoch=r.command_grant_epoch and r.command_grant_expires_at>=$${extensionDeadlineParam}::timestamptz)`;
+        }
         // Only an explicit send/resume may cancel an in-flight stop. Other
         // workspace operations must not mutate data covered by its receipt.
         if (
@@ -795,7 +856,13 @@ export function createSqlData(
           patch.taskPromptId !== undefined ||
           (patch.stoppedAt !== undefined && patch.stoppedAt !== null) ||
           patch.status === "deleted";
-        const cancelTurns = patch.stopRequested === true;
+        const idleAdmission = patch.onlyIfIdle === true && patch.stopRequested === true && patch.advanceGeneration;
+        if (idleAdmission)
+          fence += ` and s.status='ready' and s.stop_requested_at is null
+            and not exists(select 1 from public.account_turn_queue q
+              where q.sandbox_id=s.id and q.state in ('queued','dispatching'))
+            and not exists(${unsettledRuntimeCommands("s.id", "s.lifecycle_generation")})`;
+        const cancelTurns = patch.stopRequested === true && !idleAdmission;
         const wrapped = releaseReservation || cancelTurns;
         const admission = !!patch.advanceGeneration && !!patch.activityToken;
         // A refused delete admission names its predicates from the CAS statement's own snapshot,
@@ -806,9 +873,10 @@ export function createSqlData(
         const update = `update public.sandboxes s set ${sets.join(", ")} from public.goldens g
            where s.id = $3 and g.id = s.golden_id and ${SANDBOX_VISIBLE}
              and (${ownsActivity && patch.expectedGeneration !== undefined ? "true" : `${observationFence} and (s.activity_until is null or s.activity_until < now())`}) ${fence} returning s.id`;
-        const result = await sql.query<{ id: string | null; observed?: Record<string, unknown> | null }>(
-          observeRefusal
-            ? `with observed as (select s.status::text as status,
+        const applyUpdate = (connection: Sql) =>
+          connection.query<{ id: string | null; observed?: Record<string, unknown> | null }>(
+            observeRefusal
+              ? `with observed as (select s.status::text as status,
                   s.activity_lease_id as "activityLeaseId",
                   coalesce(s.activity_until>=now(),false) as "activityLeaseHeld",
                   coalesce(s.reconcile_lease_until>=now(),false) as "reconcileLeaseHeld",
@@ -818,9 +886,23 @@ export function createSqlData(
                 from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE}),
               updated as (${update})
               select (select id from updated) as id, (select row_to_json(o) from observed o) as observed`
-            : `${wrapped ? "with updated as (" : ""}${update}${wrapped ? `)${patch.status === "deleted" ? ", purged as (delete from public.sandbox_work_recovery r using updated u where r.sandbox_id=u.id)" : ""}${cancelTurns ? ", refused as (update public.account_turn_queue q set state='failed',failure_reason='Dispatch refused by owner stop.' from updated u where q.sandbox_id=u.id and q.state in ('queued','dispatching'))" : ""}${releaseReservation ? ", released as (delete from public.account_agent_reservations r using updated u where r.sandbox_id=u.id)" : ""} select id from updated` : ""}`,
-          params,
-        );
+              : `${wrapped ? "with updated as (" : ""}${update}${wrapped ? `)${patch.status === "deleted" ? ", purged as (delete from public.sandbox_work_recovery r using updated u where r.sandbox_id=u.id)" : ""}${cancelTurns ? ", refused as (update public.account_turn_queue q set state='failed',failure_reason='Dispatch refused by owner stop.' from updated u where q.sandbox_id=u.id and q.state in ('queued','dispatching'))" : ""}${releaseReservation ? ", released as (delete from public.account_agent_reservations r using updated u where r.sandbox_id=u.id)" : ""} select id from updated` : ""}`,
+            params,
+          );
+        let result: Awaited<ReturnType<typeof applyUpdate>>;
+        if (idleAdmission || patch.modalRuntimeExtensionTarget !== undefined) {
+          if (!sql.transaction) throw new Error("Fenced sandbox admission requires a transaction.");
+          result = await sql.transaction(async (tx) => {
+            // WARNING: The queue check needs a fresh statement snapshot after acquiring the sandbox lock.
+            const locked = await tx.query<{ id: string }>(
+              `select s.id from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE} for update`,
+              [...scope, id],
+            );
+            return locked.rows.length ? applyUpdate(tx) : { rows: [] };
+          });
+        } else {
+          result = await applyUpdate(sql);
+        }
         if (!result.rows[0]?.id) {
           // Record only admission predicates. The provider has not received this delete.
           if (observeRefusal)
@@ -886,9 +968,10 @@ export function createSqlData(
             | "runtimeTransport"
             | "preservationNote"
             | "credentialId"
+            | "conversationIds"
           >
         >(
-          `select s.credential_id as "credentialId",s.provider,s.status,s.preservation_note as "preservationNote",s.status_reason as "statusReason",s.expires_at as "expiresAt",s.boat_runtime as "boatRuntime",s.runtime_transport as "runtimeTransport"
+          `select s.credential_id as "credentialId",s.provider,s.status,s.preservation_note as "preservationNote",s.status_reason as "statusReason",s.expires_at as "expiresAt",s.boat_runtime as "boatRuntime",s.runtime_transport as "runtimeTransport",s.conversation_ids as "conversationIds"
            from public.sandboxes s where ${SANDBOX_VISIBLE} and s.id=$3`,
           [...scope, id],
         );

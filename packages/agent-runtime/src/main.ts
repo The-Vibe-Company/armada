@@ -254,7 +254,7 @@ async function main(dialout = false) {
       if (!committed) throw Error("native_auth_publication_conflict");
     }
   };
-  const state = new HarnessState(config.root, journal.redact);
+  const state = new HarnessState(config.root, journal.redact, (text) => journal.redact(text, "transcript"));
   const sourceIdentity = journal.assertRestoreSource(config.grant);
   const restore = config.restoreCheckpoint;
   if (restore) {
@@ -423,7 +423,7 @@ async function main(dialout = false) {
         root: `${config.root}/opencode`,
         cwd: config.cwd,
         env: opencodeEnv,
-        redact,
+        redact: (text) => journal.redact(text, "transcript"),
       }),
       claude: new ClaudeDriver({ cwd: config.cwd, executable: config.claudeExecutable, env: config.claudeEnv }),
       codex: new CodexDriver({
@@ -547,10 +547,7 @@ async function main(dialout = false) {
     )
       throw Error("runtime_native_restore_failed");
   }
-  const flush = setInterval(() => {
-    void runner.flushOutbox().catch(() => {});
-  }, 1000);
-  flush.unref();
+  runner.startOutboxDelivery();
   if (channel) {
     const stop = new AbortController();
     const shutdown = () => stop.abort();
@@ -593,7 +590,6 @@ async function main(dialout = false) {
         closeNative,
       );
     } finally {
-      clearInterval(flush);
       process.removeListener("SIGTERM", shutdown);
       process.removeListener("SIGINT", shutdown);
       await closeNative();

@@ -99,7 +99,7 @@ before these updated clients: older servers reject UUIDs on native sends.
 
 Docker uses the same global idle delay and archived-terminal-turn detector, not
 an independent host timer. Automatic pause requires placement/bootstrap to be
-configured and a registered host daemon supporting resume (2.28.0 or later).
+configured and a registered host daemon reporting a supported protocol.
 Older/unknown daemons are skipped before checkpoint, never silently stopped.
 Pending commands, unknown task identity, active turns, application-secret taint
 and the existing archive bound remain conservative exclusions.

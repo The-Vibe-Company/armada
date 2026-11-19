@@ -43,9 +43,9 @@ existing Codex subscription broker are reused; no provider credential is a model
 Defaults pending later owner decisions: host credential has no expiry and is
 revocable; default sandbox TTL is the existing four hours; no disk quota. Ordinary
 owner-trusted Docker only. The historical plain-image preview excludes snapshot
-builds, resume, gVisor and multi-tenancy. That preview admits **one native conversation per sandbox**, with explicit follow-up prompts
-using the returned conversationId. Retries reuse the same request UUID and input;
-a new request without that conversation or for another conversation is refused.
+builds, resume, gVisor and multi-tenancy. Each preview sandbox has one conversation.
+Send follow-up prompts through `sandbox/send` and reuse the same request UUID and
+input when reconciling uncertain delivery.
 Wait for the previous turn's acknowledged finished event before sending a follow-up.
 Unresolved RPC admission blocks new requests; the runtime owns busy-turn refusal.
 
@@ -117,10 +117,11 @@ snapshot with `--golden SNAPSHOT_UUID` (the retained flag spelling, not a cloud
 golden). Boat/Modal snapshots and machine-size policy do not apply.
 The server composes durable create, existing enrolment
 and artifact bootstrap, runtime health and first-prompt admission. It returns the
-existing `DockerLaunchResult`: `sandbox`, null `golden`/`helper`, unavailable
-`github`, `runtime:{kind:"armada",epoch}`, TTL/expiry and optional native
-`promptId`/`conversationId`. Admission is not completion: read the answer through
-normal `/api/v1/logs/read` and status through `/api/v1/sandbox/detail`.
+shared launch envelope with `sandbox`, null `golden` and `helper`, GitHub
+status, TTL and expiry. The `runtime` field contains `{kind:"armada",epoch}`
+when runtime information is available and is null otherwise. The `promptId` and
+`conversationId` fields are null when their IDs are unavailable. Read the prompt
+output through `/api/v1/logs/read` and status through `/api/v1/sandbox/status`.
 
 `requestId` is the logical sandbox ID and durable replay key. Identical retries
 resume the original phase IDs; changed input conflicts. Store this UUID before
@@ -147,9 +148,8 @@ bun run armada launch --provider docker --org "$ARMADA_ORG" \
   --agent codex --json 'Reply with exactly DOCKER_OK.'
 ```
 
-Normal follow-up and retained stop/resume are available; see
-[the current contract](#normal-follow-up-and-stopresume-1422). The private
-preview's explicit same-conversation follow-up is a separate historical path.
+Normal follow-up and retained stop/resume are described in
+[the current contract](#normal-follow-up-and-stopresume-1422).
 
 ### Repository history for direct launches
 
@@ -399,16 +399,15 @@ authority. Every body has `org`; all except launch have `sandboxId`.
 | `launch` | `requestId`, `hostId`, digest-pinned `image`, `credentialId`, `credentialVersion`; optional `ttlSeconds`, `model`, `reasoningEffort` | 201 private Docker record, initially starting; requestId is sandbox/create ID |
 | `bootstrap` | `requestId` | 202 original bound bootstrap phase; call only after create job completes |
 | `ready` | `requestId` | 202 pending, or 200 ready after real same-epoch health |
-| `prompt` | `requestId`, `text`, optional `conversationId` for a follow-up | 202 pending, or 200 admitted with native receipt; same UUID/text/conversation reconciles |
 | `journal` | optional numeric sequence `cursor`, `limit` 1..100 | 200 events with sequence, cursor, hasMore and saved usage |
 | `get` | none | 200 safe retained metadata/status |
 | `stop`, `delete` | `requestId` | 202 machine job; delete requires confirmed stopped/failed/deleted state |
 | `job` | `requestId` | pending/completed/failed state, or null if absent |
 
-Keep stable UUIDs for launch/bootstrap/health/prompt/cleanup retries. Never generate
+Keep stable UUIDs for launch/bootstrap/health/cleanup retries. Never generate
 replacement operations for an unknown result. Bootstrap retries cannot rotate a
 consumed/live ticket; deployment changes are not upgrades to an admitted operation.
-`ARMADA_DOCKER_PLACEMENT=0` disables new launch/bootstrap/readiness/prompt; keep
+`ARMADA_DOCKER_PLACEMENT=0` disables new launch/bootstrap/readiness; keep
 `ARMADA_DOCKER_HOSTS=1` for retained metadata/journal, cleanup and daemon polling.
 Removing the host flag unmounts both Docker API families; other providers are unaffected.
 
@@ -537,7 +536,7 @@ Expected: binary --help prints usage and exits zero, not a failure message.
 The helper **starts the stopped daemon**, reuses the registration, creates a fresh
 sandbox and sends two prompts in one returned conversation. Only the first prompt
 contains a random DOCKER_MEMORY marker; the second asks it to recall that marker
-without resending it. Require two distinct native prompt IDs, the same conversation
+without resending it. Require two distinct prompt IDs, the same conversation
 ID, both answers and reported tokens in the acknowledged journal. It then confirms
 stop/delete and prints `PASS: same-conversation follow-up recalled marker; both turns
 reported tokens; stop/delete ACKed.` The host/daemon remain for inspection and may
@@ -589,6 +588,17 @@ mounted read-only. A separate sweep retries transient reads and uploads after
 two minutes per workspace. The stop and configured retention cleanup proceed
 independently. Armada keeps the last successful capture until a complete
 replacement publishes. The server and host binary both need the new code.
+
+### Container inventory
+
+An authenticated `POST /api/docker-host/poll` advertises `containerInventory: 1`
+and supplies `containerInventoryDeploymentId`. The daemon uses that identity
+for entries sent to `POST /api/docker-host/container-inventory` and continues
+sending requests to its registered HTTPS address, which can be an alias.
+A daemon paired with the preceding server release derives the identity from
+its registered origin when the poll omits the new field. Alias reporting
+requires both the server and daemon updates. The receiver counts unknown
+containers in the authenticated host installation and performs no deletions.
 
 ### Fetching the image (#1507)
 
@@ -687,11 +697,11 @@ procedure for that evidence. Coordinator-only: workers must not run this procedu
 ### Normal follow-up and stop/resume (#1422)
 
 With Docker placement and the runtime manifest enabled, `sandbox/send` (MCP `send`)
-accepts `{id, request_id, prompt, conversation_id?}`. Reuse the UUID and identical
-input after uncertain delivery. Omitted conversation selects the retained conversation;
+accepts `{id, request_id, prompt}`. Reuse the UUID and identical input after
+uncertain delivery. The sandbox determines the conversation;
 model and effort stay pinned. Only the sandbox owner can send.
 
-`sandbox/resume` (MCP `resume`) accepts `{id, request_id}` after a confirmed stop.
+`POST /api/v1/sandbox/resume` accepts `{id, request_id}` after a confirmed stop.
 It starts the **same** labelled container on the original host, retains the workspace,
 native conversation and journal, and issues fresh enrolment/epoch before confirming
 runtime health. It does not extend the original TTL or replace an expired/missing
@@ -746,38 +756,28 @@ an exact manifest version and verify the artifact before execution.
 The updater can execute release code as the Docker service account.
 Detached signing and staged rollout are follow-ups.
 
-This change delivers version reporting and the snapshot compatibility
-check. Continue using the managed installer to update manually.
-Automatic updates, rollback, and per-host policy will ship separately.
+Daemon requests carry the integer `x-armada-docker-host-protocol` header.
+Protocol 1 is the first published protocol. The server accepts its current
+protocol and the preceding integer. Missing, older, or newer protocols receive
+HTTP 409 with `docker_host_upgrade_required`. The server does not claim work
+for a refused daemon, and existing sandbox records stay readable. A daemon
+reports its installed release for display. Bump the protocol when removing
+or renaming an operation or field, changing a field's type or meaning, making
+an optional field required, or changing authentication. Optional fields and
+operations an older daemon never receives leave the protocol unchanged. The host list exposes the protocol
+from its last accepted poll and whether an upgrade is required.
 
-On the owner's Linux host after a versioned release:
+Before deploying the first server release with this requirement, finish active
+host builds and install the daemon from that release candidate on each managed
+host using its existing registration. Check that the user service reconnects
+and that existing containers and workspaces are still intact. The installer
+served by a deployed server uses that server's artifact, so use the candidate
+binary for the pre-deploy upgrade. After the deploy, check `armada host list --json`
+for `protocol: 1` and `upgradeRequired: false`.
 
-1. Before upgrading the daemon, run `armada host list --json` against
-   that release. Check that the host's last reported `version` matches
-   its installed binary and that `targetVersion` matches the server
-   release. The host page should flag an installed version below
-   `minimumVersion`. With a daemon at 2.54.0 and authorized GitHub
-   access, try a new snapshot build and confirm HTTP 409
-   `host_update_required` with no build queued.
-2. Let any active build or launch finish. Follow the managed installer
-   instructions for that same server and account. Verify the systemd
-   user service reconnects, the same host ID reports the target version,
-   and the upgrade warning clears. Check that an existing sandbox
-   is still running with the same container and workspace.
-3. Build or rebuild a snapshot and confirm it reaches `ready`, with
-   `baselineVersion: 1` and `baselineOutdated: false` in snapshot get.
-   An existing snapshot created by an older daemon can still be used.
-
-Baseline verification first shipped in 2.55.0, the minimum version. So
-that a source build still stamped with an older version is judged by what
-it can do, the daemon's authenticated poll also advertises the baseline
-it can verify. The
-host list reports `snapshotBuildSupported`. Successful new snapshot
-builds must return a verification receipt matching the baseline
-required when the build was queued. If the daemon changes after
-admission and returns no receipt, the build fails with upgrade guidance.
-Already queued legacy builds can still finish and existing snapshots
-keep their launch behavior.
+Snapshot build results still include the verified image baseline in the receipt.
+Already queued builds retain the baseline recorded at admission, and existing
+snapshots retain their launch behavior.
 
 ## Managed owner installation (#1453)
 

@@ -15,14 +15,6 @@ export type ChatItem =
   | (Turn & { kind: "tool"; key: string; at: number; tool: ToolActivity })
   | (Turn & { kind: "outcome"; key: string; at: number; status: "failed" | "interrupted"; reason?: string });
 
-export type Chat = {
-  items: ChatItem[];
-  /** Events the conversation does not show (unknown kinds, status-only prompts), kept for the technical view. */
-  technical: ChatEvent[];
-  /** A turn of this view is queued or running. */
-  running: boolean;
-};
-
 /**
  * How a steer reaches the running turn, as both providers declare it (`HarnessCapabilities.steer`): Claude Code joins
  * the turn, Codex interrupts it and continues with the message. Only the label depends on it; the server decides.
@@ -40,22 +32,15 @@ const STOP_EVENTS = new Set(["usage_limit", "auth_expiry"]);
 /** Claude Code reports a tool's result under this name, with the id of the call it answers. */
 const RESULT_PLACEHOLDER = "tool_result";
 
-/**
- * The conversations a sandbox has, in the order they were opened: those Armada recorded, then any the events
- * name that the record does not know yet.
- */
-export function conversationsOf(events: readonly ChatEvent[], recorded: readonly string[]): string[] {
-  const ids = [...recorded];
-  for (const event of events) {
-    if (event.conversationId && !ids.includes(event.conversationId)) ids.push(event.conversationId);
-  }
-  return ids;
-}
-
-/** The events of one conversation. Events that name none belong to the sandbox and show in every view. */
-export function eventsOf(events: readonly ChatEvent[], conversationId: string | null): ChatEvent[] {
-  if (conversationId === null) return [...events];
-  return events.filter((event) => !event.conversationId || event.conversationId === conversationId);
+export function chatTurnRunning(
+  status: { state?: string; conversationId?: string | null } | null,
+  currentConversation: string | undefined,
+  transcriptRunning: boolean,
+) {
+  const currentStatus = currentConversation && status?.conversationId !== currentConversation ? null : status;
+  return currentStatus?.state
+    ? currentStatus.state === "queued" || currentStatus.state === "running"
+    : transcriptRunning;
 }
 
 /**
@@ -70,7 +55,7 @@ export function eventsOf(events: readonly ChatEvent[], conversationId: string | 
  *   event failed, with that event's type as the reason.
  * The journal id stays the replay identity: the same events always give the same items and keys.
  */
-export function projectChat(events: readonly ChatEvent[]): Chat {
+export function projectChat(events: readonly ChatEvent[], currentConversation?: string) {
   const items: ChatItem[] = [];
   const technical: ChatEvent[] = [];
   const prompts = new Map<string, Extract<ChatItem, { kind: "user" }>>();
@@ -232,7 +217,11 @@ export function projectChat(events: readonly ChatEvent[]): Chat {
     withOutcomes.push(...(outcomes.get(index) ?? []));
   });
 
-  const running = [...prompts.values()].some((prompt) => prompt.status === "queued" || prompt.status === "running");
+  const running = [...prompts.values()].some(
+    (prompt) =>
+      (!currentConversation || !prompt.conversationId || prompt.conversationId === currentConversation) &&
+      (prompt.status === "queued" || prompt.status === "running"),
+  );
   return { items: withOutcomes, technical, running };
 }
 

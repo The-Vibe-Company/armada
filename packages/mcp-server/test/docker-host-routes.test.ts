@@ -1,11 +1,18 @@
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { type DockerHostListResponse, dockerHostMeetsVersion, type Sql, VERSION } from "@armada/core";
+import {
+  DOCKER_HOST_PROTOCOL,
+  DOCKER_HOST_PROTOCOL_HEADER,
+  type DockerHostListResponse,
+  type Sql,
+  VERSION,
+} from "@armada/core";
 import { DockerHostDraining } from "../src/docker-capacity.ts";
 import { createDockerHostRoutes } from "../src/docker-host-routes.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
 import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
 import { observeRequest } from "../src/request-observability.ts";
+import { collectTransactionWakes } from "../src/wake-bus.ts";
 import { rowOnlyConnection } from "./row-only-database.ts";
 
 const connection = rowOnlyConnection();
@@ -26,7 +33,16 @@ async function fixture() {
   ]);
   const sql: Sql = {
     query: (q, p) => db.query(q, p),
-    transaction: (work) => db.transaction((tx) => work({ query: (q, p) => tx.query(q, p) })),
+    async transaction(work) {
+      let publish: (() => void) | undefined;
+      const result = await db.transaction((tx) => {
+        const scoped: Sql = { query: (q, p) => tx.query(q, p) };
+        publish = collectTransactionWakes(scoped);
+        return work(scoped);
+      });
+      publish?.();
+      return result;
+    },
   };
   const store = createDockerHostStore(sql, Buffer.alloc(32, 8).toString("base64"));
   const authenticate = async (request: Request) => {
@@ -48,7 +64,12 @@ async function fixture() {
     const response = await target(
       new Request(`https://staging.example${path}`, {
         method: "POST",
-        headers: { authorization: `Bearer ${token}`, "content-type": "application/json", ...extra },
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          [DOCKER_HOST_PROTOCOL_HEADER]: String(DOCKER_HOST_PROTOCOL),
+          ...extra,
+        },
         body: JSON.stringify(body),
       }),
     );
@@ -56,8 +77,224 @@ async function fixture() {
     expect(response.headers.get("cache-control")).toBe("no-store");
     return response;
   }
-  return { db, userId, memberId, orgId, store, authenticate, route, post };
+  return { db, sql, userId, memberId, orgId, store, authenticate, route, post };
 }
+
+function inventoryRouteFixture(requestOrigin?: string) {
+  const hostId = "10000000-0000-0000-0000-000000000001";
+  const installationId = "10000000-0000-0000-0000-000000000002";
+  const publicUrl = `https://${"a".repeat(63)}.${"b".repeat(63)}.${"c".repeat(63)}.example`;
+  const store = createDockerHostStore(
+    {
+      async query() {
+        throw new Error("Unexpected SQL");
+      },
+    },
+    Buffer.alloc(32, 8).toString("base64"),
+  );
+  const records: unknown[] = [];
+  const route = createDockerHostRoutes(
+    {
+      ...store,
+      inventoryOwnership: async () => ({ hostId, rows: [] }),
+      retentionForHost: async () => ({ hostId, retentionSeconds: undefined }),
+      poll: async () => null,
+      pendingStartsForHost: async () => [],
+    },
+    async () => ({ ok: false }),
+    { publicUrl, log: (line) => records.push(JSON.parse(line)) },
+  );
+  const send = (
+    body: string,
+    endpoint = "container-inventory",
+    headers: Record<string, string> = { [DOCKER_HOST_PROTOCOL_HEADER]: String(DOCKER_HOST_PROTOCOL) },
+  ) =>
+    route(
+      new Request(`${requestOrigin ?? publicUrl}/api/docker-host/${endpoint}`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${"f".repeat(64)}`, ...headers },
+        body,
+      }),
+    );
+  return { hostId, installationId, publicUrl, records, send };
+}
+
+test("poll accepts the previous daemon protocol and refuses unsupported or missing protocols", async () => {
+  const { installationId, send } = inventoryRouteFixture();
+  const body = JSON.stringify({ installationId, version: "0.0.0" });
+  for (const protocol of [DOCKER_HOST_PROTOCOL - 1, DOCKER_HOST_PROTOCOL]) {
+    const response = await send(body, "poll", { [DOCKER_HOST_PROTOCOL_HEADER]: String(protocol) });
+    expect(response?.status).toBe(200);
+    expect(await response?.json()).toMatchObject({ job: null });
+  }
+  for (const protocol of [DOCKER_HOST_PROTOCOL - 2, DOCKER_HOST_PROTOCOL + 1, "1.0", null]) {
+    const response = await send(
+      body,
+      "poll",
+      protocol === null ? {} : { [DOCKER_HOST_PROTOCOL_HEADER]: String(protocol) },
+    );
+    expect(response?.status).toBe(409);
+    expect(await response?.json()).toMatchObject({ error: { code: "docker_host_upgrade_required" } });
+  }
+});
+
+test("a full Docker inventory with long container names reaches the reaper", async () => {
+  const { hostId, installationId, publicUrl, records, send } = inventoryRouteFixture();
+  const containers = Array.from({ length: 4096 }, (_, i) => ({
+    machineId: i.toString(16).padStart(64, "0"),
+    sandboxId: hostId,
+    generation: installationId,
+    deploymentId: `${publicUrl}/${hostId}/${installationId}`,
+    createdAt: "2026-11-18T00:00:00.000Z",
+    containerName: "a".repeat(255),
+  }));
+  const body = JSON.stringify({ installationId, containers });
+  expect((await send(body))?.status).toBe(204);
+  expect(records).toContainEqual(
+    expect.objectContaining({ metric: "reaper_unknown_machines", count: 4096, complete: true }),
+  );
+});
+
+test("an HTTPS alias poll supplies the deployment identity accepted by the inventory receiver", async () => {
+  const alias = "https://alias.example";
+  const { hostId, installationId, publicUrl, records, send } = inventoryRouteFixture(alias);
+  const poll = await send(JSON.stringify({ installationId }), "poll");
+  expect(poll?.status).toBe(200);
+  const offer = (await poll?.json()) as { containerInventoryDeploymentId?: string };
+  const deploymentId = offer.containerInventoryDeploymentId ?? `${alias}/${hostId}/${installationId}`;
+  const response = await send(
+    JSON.stringify({
+      installationId,
+      containers: [
+        {
+          machineId: "a".repeat(64),
+          sandboxId: hostId,
+          generation: installationId,
+          deploymentId,
+          createdAt: "2026-11-18T00:00:00.000Z",
+          containerName: "observed-container",
+        },
+      ],
+    }),
+  );
+  expect(response?.status).toBe(204);
+  expect(records).toContainEqual(
+    expect.objectContaining({ metric: "reaper_unknown_machines", count: 1, complete: true }),
+  );
+  expect(deploymentId).toBe(`${publicUrl}/${hostId}/${installationId}`);
+});
+
+test("an oversized Docker inventory is refused before reaching the reaper", async () => {
+  const { installationId, records, send } = inventoryRouteFixture();
+  const body = JSON.stringify({ installationId, containers: [] }).padEnd(5 * 1024 * 1024 + 1);
+  const response = await send(body);
+  expect(response?.status).toBe(413);
+  expect(await response?.json()).toEqual({ error: { code: "invalid", message: "The request is too large." } });
+  expect(records).toHaveLength(0);
+});
+
+test("an authenticated Docker inventory report counts only unknown containers in its own binding", async () => {
+  const { db, sql, userId, orgId, store, authenticate, post } = await fixture();
+  const actor = { userId, orgId };
+  const installationId = randomUUID();
+  const ticket = await store.issueRegistration(actor);
+  const host = await store.exchangeRegistration(ticket.registrationToken, installationId);
+  const poll = await post("/api/docker-host/poll", host.hostToken, {
+    installationId,
+    version: "2.57.1",
+    resources: { cpus: 8, memoryBytes: 26 * 1024 ** 3 },
+    resourcePolicyVersion: 1,
+  });
+  expect(await poll.json()).toMatchObject({ containerInventory: 1 });
+  const credentialId = randomUUID();
+  await db.query("insert into credentials(id,scope,owner_id,kind,value_enc) values($1,'user',$2,'openai',$3)", [
+    credentialId,
+    userId,
+    new Uint8Array([1]),
+  ]);
+  const sandboxes = createDockerSandboxService(sql, Buffer.alloc(32, 8).toString("base64"), { enabled: true });
+  const sandbox = await sandboxes.reserve(actor, {
+    requestId: randomUUID(),
+    hostId: host.hostId,
+    image: `worker@sha256:${"a".repeat(64)}`,
+    credentialId,
+    credentialVersion: 1,
+  });
+  const deploymentId = `https://public.example/${host.hostId}/${installationId}`;
+  const owned = {
+    machineId: "a".repeat(64),
+    sandboxId: sandbox.id,
+    generation: sandbox.generation,
+    containerName: `armada-${installationId}-${host.hostId}-${sandbox.id}-${sandbox.generation}`,
+    deploymentId,
+    createdAt: "2026-11-18T00:00:00.000Z",
+  };
+  const unknown = { ...owned, machineId: "b".repeat(64), sandboxId: randomUUID() };
+  const records: unknown[] = [];
+  const route = createDockerHostRoutes(store, authenticate, {
+    publicUrl: "https://public.example",
+    clock: { now: () => Date.parse("2026-11-18T01:00:00.000Z"), wait: async () => {} },
+    log: (line) => records.push(JSON.parse(line)),
+  });
+  const report = {
+    installationId,
+    containers: [
+      owned,
+      unknown,
+      { ...owned, machineId: "e".repeat(64), containerName: "operator-renamed" },
+      { ...owned, machineId: "c".repeat(64), generation: randomUUID() },
+      {
+        ...unknown,
+        machineId: "d".repeat(64),
+        deploymentId: `https://foreign.example/${host.hostId}/${installationId}`,
+      },
+    ],
+  };
+  const send = (token: string, body: unknown) => post("/api/docker-host/container-inventory", token, body, {}, route);
+  expect((await send(ticket.registrationToken, report)).status).toBe(401);
+  expect((await send(host.hostToken, { ...report, installationId: randomUUID() })).status).toBe(401);
+  expect((await send(host.hostToken, { ...report, containers: [owned, unknown, unknown] })).status).toBe(400);
+  expect(records).toHaveLength(0);
+  expect((await send(host.hostToken, report)).status).toBe(204);
+  expect(records).toEqual([
+    {
+      event: "reaper_overdue_machines",
+      provider: "docker",
+      source: host.hostId,
+      deploymentId,
+      observedAt: Date.parse("2026-11-18T01:00:00.000Z"),
+      machineIds: [unknown.machineId, "e".repeat(64), "c".repeat(64)],
+    },
+    {
+      metric: "reaper_unknown_machines",
+      provider: "docker",
+      source: host.hostId,
+      count: 3,
+      overdue: 3,
+      complete: true,
+    },
+    {
+      metric: "reaper_deleted",
+      provider: "docker",
+      source: host.hostId,
+      reason: "unknown",
+      candidates: 3,
+      count: 0,
+      reportOnly: true,
+      complete: true,
+    },
+    {
+      metric: "reaper_deleted",
+      provider: "docker",
+      source: host.hostId,
+      reason: "terminal",
+      candidates: 0,
+      count: 0,
+      reportOnly: true,
+      complete: true,
+    },
+  ]);
+});
 
 test("a draining snapshot refusal is a typed conflict the dashboard can show, not a generic snapshot refusal", async () => {
   const f = await fixture();
@@ -275,7 +512,7 @@ test("host lists admit current members and expose only scoped safe heartbeat sum
   };
   const result = await list();
   expect(result.targetVersion).toBe(VERSION);
-  expect(dockerHostMeetsVersion(result.targetVersion, result.minimumVersion ?? "")).toBe(true);
+
   expect(result.placement).toBe(false);
   expect(result.hosts).toHaveLength(6);
   const byId = new Map(result.hosts.map((host) => [host.id, host]));
@@ -299,6 +536,8 @@ test("host lists admit current members and expose only scoped safe heartbeat sum
     running: 0,
     resources: null,
     version: null,
+    protocol: null,
+    upgradeRequired: true,
   });
   expect(byId.get(online.hostId)?.state).toBe("online");
   expect(byId.get(online.hostId)?.sandboxes).toBe(2);
@@ -318,6 +557,7 @@ test("host lists admit current members and expose only scoped safe heartbeat sum
       "limitsSupported",
       "name",
       "nextCleanupAt",
+      "protocol",
       "resources",
       "retentionOverrideSeconds",
       "retentionSeconds",
@@ -326,6 +566,7 @@ test("host lists admit current members and expose only scoped safe heartbeat sum
       "sandboxes",
       "state",
       "stoppedSandboxBytes",
+      "upgradeRequired",
       "version",
     ]);
     for (const value of [host.createdAt, host.lastSeenAt, host.revokedAt]) {
@@ -493,6 +734,115 @@ test("a host reporting many retained deadlines still fits the poll body limit", 
   expect(response.status).toBe(200);
 });
 
+test("physical-only mailbox delivery requires the capability on the current poll", async () => {
+  const { db, userId, orgId, store, post } = await fixture();
+  const actor = { userId, orgId };
+  const ticket = await store.issueRegistration(actor);
+  const installationId = randomUUID();
+  const host = await store.exchangeRegistration(ticket.registrationToken, installationId);
+  const sandboxId = randomUUID();
+  const generation = randomUUID();
+  const image = `example/worker@sha256:${"a".repeat(64)}`;
+  await db.query(
+    `insert into sandboxes(id,org_id,owner_id,provider,provider_sandbox_id,harness,status,
+      docker_host_id,docker_installation_id,docker_generation,docker_image,expires_at,effective_ttl_seconds)
+     values($1,$2,$3,'docker',$4,'codex','starting',$5,$6,$7,$8,now()+interval '1 hour',3600)`,
+    [
+      sandboxId,
+      orgId,
+      userId,
+      `armada-${installationId}-${host.hostId}-${sandboxId}-${generation}`,
+      host.hostId,
+      installationId,
+      generation,
+      image,
+    ],
+  );
+  const createId = randomUUID();
+  await store.enqueueSandbox(actor, sandboxId, { requestId: createId, operation: "create" });
+  const created = await store.poll(host.hostToken, installationId);
+  if (created?.operation !== "create") throw new Error("Expected bound create");
+  await store.complete(host.hostToken, installationId, { requestId: createId, outcome: "completed" });
+  await db.query("update sandboxes set status='failed' where id=$1", [sandboxId]);
+  const job = {
+    requestId: randomUUID(),
+    operation: "deletePhysical" as const,
+    machineId: "a".repeat(64),
+    request: created.request,
+  };
+  await expect(store.enqueue(actor, host.hostId, job)).rejects.toThrow("Docker host denied");
+  await store.enqueueSandbox(actor, sandboxId, {
+    requestId: job.requestId,
+    operation: job.operation,
+    machineId: job.machineId,
+    lifecycleGeneration: 1,
+  });
+  const poll = async (capability?: string) => {
+    const response = await post(
+      "/api/docker-host/poll",
+      host.hostToken,
+      { installationId, version: "2.51.0" },
+      capability === undefined ? {} : { "x-armada-docker-host-delete-physical": capability },
+    );
+    expect(response.status).toBe(200);
+    return response.json();
+  };
+  expect(await poll()).toMatchObject({ job: null });
+  expect(await poll("1")).toMatchObject({ job });
+  expect(await poll("1, 1")).toMatchObject({ job: null });
+});
+
+test("a held host poll returns a locally enqueued job with the clock frozen", async () => {
+  const { userId, orgId, store, authenticate, post } = await fixture();
+  const actor = { userId, orgId };
+  const ticket = await store.issueRegistration(actor);
+  const installationId = randomUUID();
+  const host = await store.exchangeRegistration(ticket.registrationToken, installationId);
+  const job = {
+    requestId: randomUUID(),
+    operation: "create" as const,
+    request: {
+      sandboxId: randomUUID(),
+      generation: randomUUID(),
+      image: `example/worker@sha256:${"a".repeat(64)}`,
+      ttlSeconds: 300,
+    },
+  };
+  const waiting = Promise.withResolvers<AbortSignal>();
+  const delay = Promise.withResolvers<void>();
+  const held = createDockerHostRoutes(store, authenticate, {
+    clock: {
+      now: () => 0,
+      wait(_ms, signal) {
+        signal.addEventListener("abort", () => delay.resolve(), { once: true });
+        waiting.resolve(signal);
+        return delay.promise;
+      },
+    },
+  });
+  const poll = post(
+    "/api/docker-host/poll",
+    host.hostToken,
+    { installationId, version: "2.51.0", waitSeconds: 20 },
+    {},
+    held,
+  );
+  const signal = await Promise.race([
+    waiting.promise,
+    poll.then(() => {
+      throw new Error("Host poll returned before waiting");
+    }),
+  ]);
+  try {
+    await store.enqueue(actor, host.hostId, job);
+    expect(signal.aborted).toBe(true);
+  } finally {
+    if (!signal.aborted) delay.reject(new Error("Host poll received no enqueue wake"));
+  }
+  const response = await poll;
+  expect(await response.json()).toMatchObject({ held: true, job });
+});
+
 test("a held host poll answers as soon as work appears and never beyond its hold", async () => {
   let time = 0;
   let polls = 0;
@@ -505,7 +855,7 @@ test("a held host poll answers as soon as work appears and never beyond its hold
   const store = {
     async retentionForHost() {
       retentionWrites++;
-      return undefined;
+      return { hostId: randomUUID(), retentionSeconds: undefined };
     },
     resumeClaimsForHost: async () => [],
     pendingStartsForHost: async () => [],
@@ -532,7 +882,11 @@ test("a held host poll answers as soon as work appears and never beyond its hold
     const response = await route(
       new Request("https://staging.example/api/docker-host/poll", {
         method: "POST",
-        headers: { authorization: `Bearer ${"a".repeat(64)}`, "content-type": "application/json" },
+        headers: {
+          authorization: `Bearer ${"a".repeat(64)}`,
+          "content-type": "application/json",
+          [DOCKER_HOST_PROTOCOL_HEADER]: String(DOCKER_HOST_PROTOCOL),
+        },
         body: JSON.stringify({ installationId: randomUUID(), version: "2.51.0", ...extra }),
       }),
     );
@@ -567,7 +921,6 @@ test("a held host poll answers as soon as work appears and never beyond its hold
       pendingStarts: [],
       resumeClaims: [],
       targetVersion: VERSION,
-      minimumVersion: expect.any(String),
     },
   });
   expect([polls, time]).toEqual([1, 0]);

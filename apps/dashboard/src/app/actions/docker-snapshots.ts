@@ -16,10 +16,10 @@ import { readDockerLaunchOption, readSelectedDockerHosts } from "@/lib/data/dock
 import { listSelectedAccounts } from "@/lib/data/model-accounts";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { requireViewer } from "@/lib/data/viewer";
-import { launchedDockerSandbox, UNKNOWN_DOCKER_LAUNCH } from "@/lib/docker-launch";
+import { UNKNOWN_DOCKER_LAUNCH } from "@/lib/docker-launch";
 import { snapshotBuildHostBlocker } from "@/lib/docker-snapshots";
 import { mcpUrl } from "@/lib/env";
-import { LAUNCH_PATH, LAUNCH_TIMEOUT_MS, launchFailureMessage } from "@/lib/launch";
+import { launchFailureMessage, postSandboxLaunch } from "@/lib/launch";
 import { LAUNCH_KEY_FIELD } from "@/lib/launch-key";
 import { checkAccountChoice } from "@/lib/model-accounts";
 import { chosenConnection, modelChoice } from "@/lib/model-choice";
@@ -133,29 +133,27 @@ export async function launchFromDockerSnapshot(_previous: ActionResult | null, d
   const viewer = await requireViewer(),
     serverUrl = mcpUrl();
   if (!viewer.token || !serverUrl) return fail("The Armada server is not configured.");
-  let id: string | null;
+  let id: string;
   try {
-    id = launchedDockerSandbox(
-      await controlPost(
-        { serverUrl, token: viewer.token, timeoutMs: LAUNCH_TIMEOUT_MS },
-        LAUNCH_PATH,
-        {
-          org,
-          provider: "docker",
-          snapshotId,
-          requestId,
-          harness,
-          credentialId: account.id,
-          model: choice.args.model,
-          reasoningEffort: choice.args.reasoningEffort,
-          ...(ttl.value === undefined ? {} : { ttlSeconds: ttl.value }),
-          ...(formString(data, "prompt").trim() ? { prompt: formString(data, "prompt").trim() } : {}),
-          ...(skills.length ? { skills } : {}),
-          ...(connections === undefined ? {} : { connections }),
-        },
-        "launching a host snapshot",
-      ),
+    const receipt = await postSandboxLaunch(
+      { serverUrl, token: viewer.token },
+      {
+        org,
+        provider: "docker",
+        snapshotId,
+        requestId,
+        harness,
+        credentialId: account.id,
+        model: choice.args.model,
+        reasoningEffort: choice.args.reasoningEffort,
+        ...(ttl.value === undefined ? {} : { ttlSeconds: ttl.value }),
+        ...(formString(data, "prompt").trim() ? { prompt: formString(data, "prompt").trim() } : {}),
+        ...(skills.length ? { skills } : {}),
+        ...(connections === undefined ? {} : { connections }),
+      },
+      "launching a host snapshot",
     );
+    id = receipt.sandbox.id;
   } catch (error) {
     return fail(
       error instanceof ControlError && (error.outcomeUnknown || error.code === "outcome_unknown")
@@ -166,8 +164,6 @@ export async function launchFromDockerSnapshot(_previous: ActionResult | null, d
       { href: "/sandboxes?owner=me&sort=newest", label: "See newest sandboxes" },
     );
   }
-  if (!id)
-    return fail(UNKNOWN_DOCKER_LAUNCH, { href: "/sandboxes?owner=me&sort=newest", label: "See newest sandboxes" });
   revalidatePath("/sandboxes");
   redirect(`/sandboxes/${id}`);
 }

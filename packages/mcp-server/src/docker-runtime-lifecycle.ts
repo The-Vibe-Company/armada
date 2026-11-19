@@ -67,6 +67,7 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
     ) => Promise<T>,
     allowPending = false,
     reserveTurn = false,
+    expectedLifecycleGeneration?: string,
   ) {
     return transaction(async (tx) => {
       if (options.enabled !== true) deny();
@@ -96,8 +97,9 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
         if (!host.rows.length) deny();
         const live = await tx.query(
           `select id from public.sandboxes where id=$1 and status in ('starting','ready','running')
-           and stop_requested_at is null and deleted_at is null and expires_at>now() for update`,
-          [sandboxId],
+           and stop_requested_at is null and deleted_at is null and expires_at>now()
+           and ($2::bigint is null or lifecycle_generation=$2) for update`,
+          [sandboxId, expectedLifecycleGeneration ?? null],
         );
         if (!live.rows.length) deny();
       }
@@ -130,7 +132,7 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
     });
   }
   return {
-    ready(actor: Actor, sandboxId: string, requestId: string, activate = true) {
+    ready(actor: Actor, sandboxId: string, requestId: string, activate = true, expectedLifecycleGeneration?: string) {
       if (!uuid.test(requestId)) return Promise.reject(new DockerRuntimeDenied());
       return admitted(
         actor,
@@ -181,6 +183,8 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
           });
         },
         true,
+        false,
+        expectedLifecycleGeneration,
       );
     },
     prompt(actor: Actor, sandboxId: string, input: { requestId: string; text: string; conversationId?: string }) {

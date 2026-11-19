@@ -1,19 +1,23 @@
-import { expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 import { createServiceToken, createSqlAuthStore, sha256Hex } from "@armada/auth";
 import { createSqlMcpLeasePort, createSqlSandboxStore } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
-import { sandbox as boatSandbox } from "../../provider-boat/test/support.ts";
+import { sandbox as boatSandbox, retainedSandbox } from "../../provider-boat/test/support.ts";
 import { createMcpHttpIntegration } from "../src/mcp-http-integration.ts";
 import { createMcpLifecycle } from "../src/mcp-lifecycle.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 
+let db: Awaited<ReturnType<typeof migratedDatabase>>;
+beforeAll(async () => {
+  db = await migratedDatabase();
+});
+
 // Boat actually preserves boot_id across archive/restore: authority must be fenced
 // before a possibly ambiguous resume, not inferred only from kernel identity.
 test("same-boot autoarchive fences SQL leases before Boat resume and reinstalls only after readiness", async () => {
-  const db = await migratedDatabase();
   const servers: McpServer[] = [];
   let service: ReturnType<typeof createMcpHttpIntegration> | undefined;
   try {
@@ -99,6 +103,7 @@ test("same-boot autoarchive fences SQL leases before Boat resume and reinstalls 
       turns = 0,
       resumes = 0,
       ambiguous = true;
+    let verifiedRetention = true;
     let previousHash = "";
     const generation = async () =>
       (
@@ -131,9 +136,10 @@ test("same-boot autoarchive fences SQL leases before Boat resume and reinstalls 
         const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
         if (init?.method === "GET")
           return Response.json({
-            sandbox: boatSandbox({
+            sandbox: (state === "archived" ? retainedSandbox : boatSandbox)({
               id: path.split("/").at(-1),
               state,
+              snapshotAvailable: verifiedRetention,
               archiveAfter: new Date(Date.now() + 3600000).toISOString(),
             }),
           });
@@ -226,6 +232,13 @@ test("same-boot autoarchive fences SQL leases before Boat resume and reinstalls 
     expect(writes).toBe(1);
     const prompt = () =>
       provider.prompt({ sandboxId: record.providerSandboxId, harness: "codex", text: "Use MCP", conversationId: "c" });
+    delayedHook = async () => {
+      verifiedRetention = false;
+    };
+    await expect(prompt()).rejects.toThrow("Boat retained data has not been verified.");
+    expect(resumes).toBe(0);
+    expect(await generation()).toBe(initial + 1);
+    verifiedRetention = true;
     await expect(prompt()).rejects.toThrow(); // Resume happened, response lost, fence stays committed.
     expect(turns).toBe(0);
     expect(writes).toBe(1);

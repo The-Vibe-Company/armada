@@ -35,7 +35,7 @@ credential wins over the org's, and a refused personal key never silently falls
 back to wider org authority. Storage uses the existing AES-GCM encrypted vault;
 a user JWT cannot read `value_enc`. The value is never an argument.
 
-Ordinary sandbox launch accepts `armada launch <golden> --agent codex --skill notes@1.0.0`
+Ordinary sandbox launch accepts `armada launch <golden> --provider boat --agent codex --skill notes@1.0.0`
 (and repeated `--skill` flags). The API `skills` array accepts both private
 `slug@exact-version` and public `org/slug@exact-version` pins, as do template and
 delegated child launches. Distinct pins must have distinct installed slugs.

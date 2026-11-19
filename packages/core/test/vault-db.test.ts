@@ -7,6 +7,7 @@ import { resolveGitHubAccess } from "../src/github.ts";
 import {
   addMember,
   createOrg,
+  listConnectionModels,
   listCredentials,
   listMembers,
   listOrgs,
@@ -385,58 +386,66 @@ describe("Skillpack registry credentials", () => {
 });
 
 describe("named model accounts", () => {
-  test("account creation defaults agree across legacy and named paths without resetting overrides", async () => {
+  test("legacy account creation applies defaults and replacement preserves overrides", async () => {
+    await withVault(async ({ db, store, people }) => {
+      const org = await createOrg(store, people.stan, "Defaults");
+      for (const { scope, kind, expected } of [
+        { scope: "user", kind: "openai", expected: null },
+        { scope: "org", kind: "morph", expected: 2 },
+      ] as const) {
+        const owner = scope === "user" ? people.stan : org.id;
+        const write = () =>
+          setCredential(store, KEY, people.stan, { scope, org: org.id, kind, value: "model_key_placeholder" });
+        const current = async () => {
+          const { rows: active } = await db.query<{ id: string; maxAgents: number | null }>(
+            `select id, max_agents as "maxAgents" from credentials
+             where scope=$1 and owner_id=$2 and kind=$3 and status <> 'deleted'`,
+            [scope, owner, kind],
+          );
+          expect(active).toHaveLength(1);
+          return active[0]!;
+        };
+        await write();
+        const initial = await current();
+        expect(initial.maxAgents).toBe(expected);
+        for (const maxAgents of [5, null]) {
+          await store.mutateAccount!(
+            people.stan,
+            {
+              action: "limits",
+              scope,
+              org: org.id,
+              id: initial.id,
+              maxAgents,
+            },
+            undefined,
+            KEY,
+          );
+          await write();
+          expect(await current()).toMatchObject({ id: initial.id, maxAgents });
+        }
+        await store.mutateAccount!(
+          people.stan,
+          {
+            action: "remove",
+            scope,
+            org: org.id,
+            id: initial.id,
+          },
+          undefined,
+          KEY,
+        );
+        await write();
+        expect((await current()).maxAgents).toBe(expected);
+      }
+    });
+  });
+
+  test("named account creation applies kind defaults and accepts explicit unlimited", async () => {
     await withVault(async ({ store, people }) => {
       const org = await createOrg(store, people.stan, "Defaults");
       for (const scope of ["user", "org"] as const) {
-        const owner = scope === "user" ? people.stan : org.id;
         for (const kind of ["morph", "openai"] as const) {
-          const expected = kind === "morph" ? 2 : null;
-          const write = () => store.upsertCredential(scope, owner, kind, new Uint8Array([1]), people.stan);
-          const current = async () =>
-            (await store.listCredentials(scope, owner)).find((row) => row.kind === kind && row.status !== "deleted")!;
-          await write();
-          expect((await current()).maxAgents).toBe(expected);
-          for (const maxAgents of [5, null]) {
-            await store.mutateAccount!(
-              people.stan,
-              {
-                action: "limits",
-                scope,
-                org: org.id,
-                id: (await current()).id!,
-                maxAgents,
-              },
-              undefined,
-              KEY,
-            );
-            await write();
-            expect((await current()).maxAgents).toBe(maxAgents);
-          }
-          await store.mutateAccount!(
-            people.stan,
-            {
-              action: "remove",
-              scope,
-              org: org.id,
-              id: (await current()).id!,
-            },
-            undefined,
-            KEY,
-          );
-          await write();
-          expect((await current()).maxAgents).toBe(expected);
-          await store.mutateAccount!(
-            people.stan,
-            {
-              action: "remove",
-              scope,
-              org: org.id,
-              id: (await current()).id!,
-            },
-            undefined,
-            KEY,
-          );
           const named = await store.mutateAccount!(
             people.stan,
             {
@@ -448,7 +457,7 @@ describe("named model accounts", () => {
             new Uint8Array([1]),
             KEY,
           );
-          expect(named.maxAgents).toBe(expected);
+          expect(named.maxAgents).toBe(kind === "morph" ? 2 : null);
           const unlimited = await store.mutateAccount!(
             people.stan,
             {
@@ -462,28 +471,60 @@ describe("named model accounts", () => {
             KEY,
           );
           expect(unlimited.maxAgents).toBeNull();
-          for (const id of [named.id!, unlimited.id!])
-            await store.mutateAccount!(people.stan, { action: "remove", scope, org: org.id, id }, undefined, KEY);
         }
       }
     });
   });
 
-  test("Morph model limits preserve exact native and OpenCode launch identities", async () => {
+  test("sealed Morph model lists survive key rotation and govern model limits", async () => {
     await withVault(async ({ store, people }) => {
+      const org = await createOrg(store, people.stan, "Morph account org");
       const account = await mutateCredentialAccount(store, KEY, people.stan, {
         action: "set",
         scope: "user",
         kind: "morph",
-        value: "morph_account_placeholder",
-        model: "morph-kimik31",
+        value: JSON.stringify({ apiKey: "morph_account_placeholder", models: ["morph-custom"] }),
+        model: "morph-custom",
         maxAgents: 1,
       });
+      const rotated = await mutateCredentialAccount(store, KEY, people.stan, {
+        action: "set",
+        scope: "user",
+        id: account.id!,
+        kind: "morph",
+        expectedVersion: account.version!,
+        value: "morph_rotated_placeholder",
+      });
+      const named = await resolveCredentials(store, KEY, {
+        userId: people.stan,
+        orgId: org.id,
+        harness: "codex",
+        credentialId: rotated.id!,
+      });
+      expect(named.env.OPENAI_API_KEY).toBe("morph_rotated_placeholder");
+      await setCredential(store, KEY, people.stan, {
+        scope: "user",
+        org: undefined,
+        kind: "morph",
+        value: "morph_updated_placeholder",
+      });
+      const models = await listConnectionModels(store, KEY, { userId: people.stan, orgId: org.id });
+      expect(models).toEqual([
+        { id: account.id!, scope: "user", models: [{ model: "morph-custom", input: null, output: null }] },
+      ]);
+      const resolved = await resolveCredentials(store, KEY, {
+        userId: people.stan,
+        orgId: org.id,
+        harness: "opencode",
+        credentialId: rotated.id!,
+      });
+      expect(resolved.env.OPENCODE_API_KEY).toBe("morph_updated_placeholder");
+      expect(JSON.parse(resolved.env.ARMADA_OPENCODE_ENDPOINT!)).toMatchObject({ models: ["morph-custom"] });
       expect(account.maxAgents).toBe(2);
-      expect(account.modelLimits).toEqual({ "morph-kimik31": 1 });
+      expect(account.modelLimits).toEqual({ "morph-custom": 1 });
       for (const [model, maxAgents] of [
-        ["morph-kimik31", 2],
-        ["armada/morph-kimik31", 1],
+        ["morph-custom", 2],
+        ["armada/morph-custom", 1],
       ] as const) {
         const saved = await mutateCredentialAccount(store, KEY, people.stan, {
           action: "limits",
@@ -495,7 +536,7 @@ describe("named model accounts", () => {
         expect(saved.modelLimits?.[model]).toBe(maxAgents);
       }
       const saved = (await store.listCredentials("user", people.stan)).find((row) => row.id === account.id)!;
-      expect(saved.modelLimits).toEqual({ "morph-kimik31": 2, "armada/morph-kimik31": 1 });
+      expect(saved.modelLimits).toEqual({ "morph-custom": 2, "armada/morph-custom": 1 });
       await expect(
         mutateCredentialAccount(store, KEY, people.stan, {
           action: "limits",
@@ -505,6 +546,22 @@ describe("named model accounts", () => {
           maxAgents: 1,
         }),
       ).rejects.toThrow("Account cannot serve model armada/opus");
+      await mutateCredentialAccount(store, KEY, people.stan, {
+        action: "set",
+        scope: "user",
+        kind: "morph",
+        id: account.id!,
+        expectedVersion: saved.version!,
+        value: JSON.stringify({ apiKey: "morph_updated_placeholder", models: ["morph-new"] }),
+      });
+      const cleared = await mutateCredentialAccount(store, KEY, people.stan, {
+        action: "limits",
+        scope: "user",
+        id: account.id!,
+        model: "armada/morph-custom",
+        maxAgents: null,
+      });
+      expect(cleared.modelLimits).toEqual({ "morph-custom": 2 });
     });
   });
 
@@ -831,26 +888,30 @@ describe("GitHub connections", () => {
         create trigger refuse_profile before update on github_connections
           for each row execute function refuse_profile();
       `);
-      const result = await resolveGitHubAccess(
-        {
-          store,
-          encryptionKey: KEY,
-          app: { clientId: "app", clientSecret: "secret" },
-          fetch: (async (url) =>
-            Response.json(
-              String(url).includes("access_token")
-                ? { access_token: "access-after", refresh_token: "refresh-after", expires_in: 28800 }
-                : { id: 1, login: "renamed", name: null },
-            )) as typeof fetch,
-        },
-        people.stan,
-      );
-      expect(result.status).toBe("connected");
-      const saved = await store.getGitHubConnection(people.stan);
-      expect(saved?.login).toBe("before");
-      expect(saved?.accessTokenEnc).not.toBeNull();
-      if (!saved) throw new Error("Connection disappeared");
-      expect(await decryptSecret(new Uint8Array(saved.refreshTokenEnc), KEY)).toBe("refresh-after");
+      try {
+        const result = await resolveGitHubAccess(
+          {
+            store,
+            encryptionKey: KEY,
+            app: { clientId: "app", clientSecret: "secret" },
+            fetch: (async (url) =>
+              Response.json(
+                String(url).includes("access_token")
+                  ? { access_token: "access-after", refresh_token: "refresh-after", expires_in: 28800 }
+                  : { id: 1, login: "renamed", name: null },
+              )) as typeof fetch,
+          },
+          people.stan,
+        );
+        expect(result.status).toBe("connected");
+        const saved = await store.getGitHubConnection(people.stan);
+        expect(saved?.login).toBe("before");
+        expect(saved?.accessTokenEnc).not.toBeNull();
+        if (!saved) throw new Error("Connection disappeared");
+        expect(await decryptSecret(new Uint8Array(saved.refreshTokenEnc), KEY)).toBe("refresh-after");
+      } finally {
+        await db.exec("drop trigger refuse_profile on github_connections; drop function refuse_profile()");
+      }
     });
   });
 
@@ -976,13 +1037,7 @@ async function withVault(run: VaultRun, db = database()): Promise<void> {
     "insert into auth.users (id, email) values ($1, 'stan@example.com'), ($2, 'ada@example.com'), ($3, 'bob@example.com')",
     [people.stan, people.ada, people.bob],
   );
-  try {
-    await run({ db, store: createSqlVaultStore(db), people });
-  } finally {
-    await db.exec(
-      "reset role; reset all; set search_path=public; drop trigger if exists refuse_profile on github_connections; drop function if exists refuse_profile()",
-    );
-  }
+  await run({ db, store: createSqlVaultStore(db), people });
 }
 
 // Token resolution in these fixtures must not leak audit records to stdout.

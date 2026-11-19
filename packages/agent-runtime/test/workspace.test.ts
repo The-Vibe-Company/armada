@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import { Journal, Runner, type RunnerRequest } from "../src/index.ts";
 import type { WorkspaceExecutionHost } from "../src/workspace-exec.ts";
 
@@ -7,8 +8,8 @@ function processHost() {
   const child = new EventEmitter() as EventEmitter & {
     pid: number;
     stdin: EventEmitter & { end: (value: string) => void; destroy: () => void };
-    stdout: EventEmitter;
-    stderr: EventEmitter;
+    stdout: PassThrough;
+    stderr: PassThrough;
     kill: () => void;
   };
   const started = Promise.withResolvers<void>();
@@ -17,8 +18,8 @@ function processHost() {
   let timer: (() => void) | undefined;
   const kills: [number, string | number | undefined][] = [];
   child.pid = 410;
-  child.stdout = new EventEmitter();
-  child.stderr = new EventEmitter();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
   child.stdin = Object.assign(new EventEmitter(), {
     end(_value: string) {
       started.resolve();
@@ -58,7 +59,12 @@ function processHost() {
       timer();
     },
     hasTimer: () => timer !== undefined,
+    write(stream: "stdout" | "stderr", bytes: Buffer) {
+      child[stream].write(bytes);
+    },
     close() {
+      child.stdout.end();
+      child.stderr.end();
       live = false;
       child.emit("close", 0);
     },
@@ -148,6 +154,46 @@ test("private workspace command replay runs once without starting inference", as
     await f.close();
   }
 });
+test("workspace output masks split characters and withholds clipped secret prefixes before replay", async () => {
+  const f = await fixture();
+  try {
+    const pending = f.step("init", "workspace command", f.home);
+    await f.processes.started;
+    const secret = "éxy";
+    const bytes = Buffer.from(`before${secret}after`);
+    f.processes.write("stdout", bytes.subarray(0, 7));
+    f.processes.write("stdout", bytes.subarray(7));
+    f.processes.write("stderr", Buffer.from(`${".".repeat(65535)}${secret}`));
+    f.journal.registerApplicationSecrets([secret]);
+    f.processes.close();
+    const first = await (await pending).json();
+    expect(first).toMatchObject({
+      result: { stdout: "before[REDACTED]after", stderr: "[REDACTED]", truncated: true },
+    });
+    expect(await (await f.step("init", "workspace command", f.home)).json()).toEqual(first);
+  } finally {
+    await f.close();
+  }
+});
+
+test("workspace JSON output masks a registered value used as an object key or number", async () => {
+  const f = await fixture();
+  try {
+    const pending = f.step("init", "workspace command", f.home);
+    await f.processes.started;
+    const secret = "123456789";
+    f.journal.registerApplicationSecrets([secret]);
+    f.processes.write("stdout", Buffer.from(secret));
+    f.processes.write("stderr", Buffer.from(JSON.stringify({ [secret]: "plain" })));
+    f.processes.close();
+    expect(await (await pending).json()).toMatchObject({
+      result: { stdout: "[REDACTED]", stderr: '{"[REDACTED]":"plain"}', truncated: false },
+    });
+  } finally {
+    await f.close();
+  }
+});
+
 test("workspace cancellation reaps its owned group and fences inference through cleanup and later turns", async () => {
   const f = await fixture(),
     abort = new AbortController();

@@ -1,9 +1,9 @@
 import {
+  API_FAILURE_HELP,
   DOCKER_HOST_DRAINING_MESSAGE,
   type DockerHostListResponse,
   type DockerHostRegistrationResponse,
   dockerHostResourceDisplay,
-  dockerHostUpgradeMessage,
   GoldenError,
   type OrgSummary,
   parseDockerMemory,
@@ -38,7 +38,8 @@ export async function listHosts(client: ArmadaCommandClient, org: string): Promi
         host.lastSeenAt === null ||
         (typeof host.lastSeenAt === "string" && Number.isFinite(Date.parse(host.lastSeenAt)))
       ) ||
-      (host.snapshotBuildSupported !== undefined && typeof host.snapshotBuildSupported !== "boolean") ||
+      (host.protocol !== null && (!Number.isSafeInteger(host.protocol) || Number(host.protocol) < 0)) ||
+      typeof host.upgradeRequired !== "boolean" ||
       !(host.version === undefined || host.version === null || typeof host.version === "string") ||
       (host.running !== undefined && (!Number.isSafeInteger(host.running) || Number(host.running) < 0)) ||
       (host.resources !== undefined && host.resources !== null && !validDockerHostResources(host.resources)) ||
@@ -125,8 +126,7 @@ export async function hostCommand(argv: readonly string[], auth: AuthIo): Promis
     }
     if (args.options.has("--json")) auth.out(`${JSON.stringify(result, null, 2)}\n`);
     else {
-      if (result.targetVersion && result.minimumVersion)
-        auth.out(`Target daemon version: ${result.targetVersion}; minimum supported: ${result.minimumVersion}\n`);
+      if (result.targetVersion) auth.out(`Target daemon version: ${result.targetVersion}\n`);
       auth.out("ID\tNAME\tSTATE\tLAST SEEN\tVERSION\tRETAINED\tMACHINE\tPER SANDBOX\tRUNNING/CAPACITY\n");
       for (const host of result.hosts) {
         const resources = dockerHostResourceDisplay(host);
@@ -138,13 +138,8 @@ export async function hostCommand(argv: readonly string[], auth: AuthIo): Promis
           auth.out(
             `Docker disk free: ${host.diskFreeBytes == null ? "unknown" : `${(host.diskFreeBytes / 1e9).toFixed(2)} GB`}; stopped sandbox space: ${host.stoppedSandboxBytes == null ? "unknown" : `${(host.stoppedSandboxBytes / 1e9).toFixed(2)} GB`}\n`,
           );
-        const upgrade = dockerHostUpgradeMessage(
-          host.version,
-          result.targetVersion ?? result.serverVersion,
-          result.minimumVersion,
-          host.snapshotBuildSupported,
-        );
-        if (upgrade && host.state !== "pending" && host.state !== "revoked") auth.out(`${upgrade}\n`);
+        if (host.state !== "pending" && host.state !== "revoked" && host.upgradeRequired)
+          auth.out(`${API_FAILURE_HELP.docker_host_upgrade_required}\n`);
         if (operation === "show")
           auth.out(`Retention: ${host.retentionSeconds == null ? "unknown (upgrade host)" : `${host.retentionSeconds}s`}
 Requested retention: ${host.retentionOverrideSeconds == null ? "host default" : `${host.retentionOverrideSeconds}s`}

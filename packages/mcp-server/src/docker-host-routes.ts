@@ -1,23 +1,33 @@
-import { readBoundedText } from "@armada/auth";
+import { BodyTooLargeError, readBoundedText } from "@armada/auth";
 import {
-  DOCKER_HOST_SNAPSHOT_BASELINE_HEADER,
+  API_FAILURE_STATUS,
+  DOCKER_HOST_PROTOCOL_HEADER,
   DOCKER_JOB_FAILURE_REASONS,
   type DockerJobFailureReason,
   OUTPUT_ARCHIVE_LIMIT,
 } from "@armada/core";
 import { isSnapshotBaselineTool } from "@armada/core/server";
+import type { DockerHostPollResponse } from "../../core/src/docker-host-wire.ts";
 import { type DockerHostResources, validDockerAvailability } from "../../core/src/docker-resource-policy.ts";
 import { dockerResourceLimits } from "../../core/src/docker-resources.ts";
 import { VERSION } from "../../core/src/version.ts";
 import type { CallerResult } from "./caller.ts";
+import { fail } from "./control-response.ts";
 import { DockerHostDraining, DockerLimitsRefused } from "./docker-capacity.ts";
 import { type createDockerHostStore, DockerHostDenied } from "./docker-host-store.ts";
-import { dockerHostVersions } from "./docker-host-version.ts";
-import { DockerSnapshotHostUpgradeRequired, type DockerSnapshots } from "./docker-snapshots.ts";
+import { DockerHostUpgradeRequired, supportsDockerHostProtocol } from "./docker-host-version.ts";
+import { dockerMachineInventory } from "./docker-machine-inventory.ts";
+import type { DockerSnapshots } from "./docker-snapshots.ts";
 import type { Route } from "./http.ts";
+import { createProviderReaper } from "./provider-reaper.ts";
 import { withRequestBodyCeiling } from "./request-body-ceiling.ts";
+import { runtimeWakes, waitForTimeout } from "./wake-bus.ts";
 
+const inventoryPath = "/api/docker-host/container-inventory";
+const inventoryMaxContainers = 4096;
+const inventoryMaxBytes = 5 * 1024 * 1024;
 const machinePaths = [
+  inventoryPath,
   "/api/docker-host/register",
   "/api/docker-host/poll",
   "/api/docker-host/results",
@@ -47,13 +57,6 @@ function string(value: unknown): string {
   if (typeof value !== "string") throw new InvalidInput();
   return value;
 }
-function snapshotBaselineHeader(request: Request): number | undefined {
-  const header = request.headers.get(DOCKER_HOST_SNAPSHOT_BASELINE_HEADER);
-  if (header === null) return undefined;
-  const version = Number(header);
-  if (!/^[1-9][0-9]{0,9}$/.test(header) || version > 2147483647) throw new InvalidInput();
-  return version;
-}
 function deadlinesOf(value: unknown): { sandboxId: string; generation: string; deadline: string }[] {
   if (!Array.isArray(value) || value.length > 4096) throw new InvalidInput();
   return value.map((entry) => {
@@ -68,6 +71,32 @@ function deadlinesOf(value: unknown): { sandboxId: string; generation: string; d
   });
 }
 
+function containersOf(value: unknown) {
+  if (!Array.isArray(value) || value.length > inventoryMaxContainers) throw new InvalidInput();
+  return value.map((entry) => {
+    if (!object(entry)) throw new InvalidInput();
+    fields(entry, ["machineId", "sandboxId", "generation", "deploymentId", "createdAt", "containerName"]);
+    const machineId = string(entry.machineId);
+    const sandboxId = string(entry.sandboxId);
+    const generation = string(entry.generation);
+    const deploymentId = string(entry.deploymentId);
+    const containerName = string(entry.containerName);
+    const timestamp = string(entry.createdAt);
+    const createdAt = new Date(timestamp);
+    if (
+      !/^[a-f0-9]{64}$/.test(machineId) ||
+      !uuid.test(sandboxId) ||
+      !uuid.test(generation) ||
+      deploymentId.length > 512 ||
+      !/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,254}$/.test(containerName) ||
+      !Number.isFinite(createdAt.getTime()) ||
+      createdAt.toISOString() !== timestamp
+    )
+      throw new InvalidInput();
+    return { machineId, sandboxId, generation, deploymentId, createdAt, containerName };
+  });
+}
+
 /** Longest a daemon poll is held open waiting for work (#2561). */
 export const DOCKER_HOST_POLL_HOLD_SECONDS = 20;
 /** Most machine operations a daemon may report as still executing. */
@@ -78,18 +107,7 @@ export interface DockerHostPollClock {
 }
 const pollClock: DockerHostPollClock = {
   now: () => Date.now(),
-  async wait(ms, signal) {
-    if (signal.aborted) return;
-    await new Promise<void>((resolve) => {
-      const finish = () => {
-        clearTimeout(timer);
-        signal.removeEventListener("abort", finish);
-        resolve();
-      };
-      const timer = setTimeout(finish, ms);
-      signal.addEventListener("abort", finish, { once: true });
-    });
-  },
+  wait: waitForTimeout,
 };
 
 /** Mounted only by ARMADA_DOCKER_HOSTS=1. Machine authority never authenticates a user API. */
@@ -101,12 +119,13 @@ export function createDockerHostRoutes(
     publicUrl?: string;
     snapshots?: DockerSnapshots;
     clock?: DockerHostPollClock;
+    log?: (line: string) => void;
     configureArchiveTimeout?: (request: Request) => void;
   } = {},
-): Route {
+) {
   const clock = options.clock ?? pollClock;
   let uploadingOutputs = false;
-  return async (request) => {
+  const route: Route = async (request) => {
     const path = new URL(request.url).pathname;
     const owner = ownerPaths.includes(path);
     if (!owner && path !== reusePath && !machinePaths.includes(path)) return null;
@@ -162,7 +181,7 @@ export function createDockerHostRoutes(
         if (listing)
           return Response.json(
             {
-              ...dockerHostVersions,
+              targetVersion: VERSION,
               serverVersion: VERSION,
               placement: options.placement === true,
               hosts: await store.list(actor),
@@ -182,6 +201,9 @@ export function createDockerHostRoutes(
       }
       const token = request.headers.get("authorization")?.match(/^Bearer ([a-f0-9]{64})$/)?.[1];
       if (!token) throw new DockerHostDenied();
+      const protocolHeader = request.headers.get(DOCKER_HOST_PROTOCOL_HEADER);
+      const protocol = protocolHeader && /^(?:0|[1-9][0-9]*)$/.test(protocolHeader) ? Number(protocolHeader) : null;
+      if (!supportsDockerHostProtocol(protocol)) throw new DockerHostUpgradeRequired();
       if (path === "/api/docker-host/retained-outputs") {
         const installationId = string(request.headers.get("x-armada-installation-id"));
         const requestId = string(request.headers.get("x-armada-request-id"));
@@ -201,6 +223,27 @@ export function createDockerHostRoutes(
         } finally {
           if (request.body) uploadingOutputs = false;
         }
+      }
+      const inventoryDeploymentId = (hostId: string, installationId: string) =>
+        `${new URL(options.publicUrl ?? request.url).origin}/${hostId}/${installationId}`;
+      if (path === inventoryPath) {
+        const body: unknown = JSON.parse(await readBoundedText(request, inventoryMaxBytes));
+        if (!object(body)) throw new InvalidInput();
+        fields(body, ["installationId", "containers"]);
+        const installationId = string(body.installationId);
+        if (!uuid.test(installationId)) throw new InvalidInput();
+        const machines = containersOf(body.containers);
+        if (new Set(machines.map(({ machineId }) => machineId)).size !== machines.length) throw new InvalidInput();
+        const { hostId, rows } = await store.inventoryOwnership(token, installationId, [
+          ...new Set(machines.map(({ sandboxId }) => sandboxId)),
+        ]);
+        const reaper = createProviderReaper(
+          dockerMachineInventory(hostId, inventoryDeploymentId(hostId, installationId), machines, rows),
+          options.log,
+          () => clock.now(),
+        );
+        await reaper.reconcileOne(request.signal);
+        return new Response(null, { status: 204, headers });
       }
       // The poll carries the host's per-generation retention deadlines, so its
       // body grows with the number of retained sandboxes; other machine calls
@@ -273,7 +316,6 @@ export function createDockerHostRoutes(
           }
         }
         if (body.resourcePolicyVersion !== undefined && body.resourcePolicyVersion !== 1) throw new InvalidInput();
-        const baseline = snapshotBaselineHeader(request);
         const version = body.version === undefined ? undefined : string(body.version);
         if (version !== undefined && !/^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/.test(version)) throw new InvalidInput();
         if (body.skipSnapshots !== undefined && body.skipSnapshots !== true) throw new InvalidInput();
@@ -307,7 +349,6 @@ export function createDockerHostRoutes(
         // A daemon may opt into a held poll: the response waits until a job or an
         // unacknowledged resume claim exists, so a launch never waits out the
         // daemon's idle period, and the host still needs no inbound port (#2561).
-        // Validated before any write, as a daemon retries a refused poll without them.
         const wait = body.waitSeconds;
         if (wait !== undefined && (!Number.isSafeInteger(wait) || Number(wait) < 1)) throw new InvalidInput();
         const holdUntil = clock.now() + Math.min(Number(wait ?? 0), DOCKER_HOST_POLL_HOLD_SECONDS) * 1000;
@@ -321,7 +362,7 @@ export function createDockerHostRoutes(
             running.some((item) => typeof item !== "string" || !uuid.test(item)))
         )
           throw new InvalidInput();
-        const retentionSeconds = await store.retentionForHost(
+        const { hostId, retentionSeconds } = await store.retentionForHost(
           token,
           installationId,
           "retentionSeconds" in body
@@ -335,63 +376,73 @@ export function createDockerHostRoutes(
         let resumeClaims: Awaited<ReturnType<typeof store.resumeClaimsForHost>>;
         let job: Awaited<ReturnType<typeof store.poll>>;
         const skipSnapshots = body.skipSnapshots === true;
+        const supportsPhysicalDelete = request.headers.get("x-armada-docker-host-delete-physical") === "1";
         const runningIds = (running as string[] | undefined) ?? [];
         let probed = false;
-        for (;;) {
-          resumeClaims = body.resumeClaimProtocol === 1 ? await store.resumeClaimsForHost(token, installationId) : [];
-          job = await store.poll(
-            token,
-            installationId,
-            version,
-            skipSnapshots,
-            body.resources as DockerHostResources | undefined,
-            body.resourcePolicyVersion as 1 | undefined,
-            body.diskFreeBytes as number | null | undefined,
-            body.stoppedSandboxBytes as number | null | undefined,
-            runningIds,
-            baseline,
-          );
-          if (job || resumeClaims.length) break;
-          // The probe is broader than the poll (admission refusals, job order). A
-          // probe the full poll could not serve is not retried within this hold,
-          // so such a job costs one more full poll per hold, not one per second.
-          if (probed) {
-            const remaining = holdUntil - clock.now();
-            if (remaining > 0) await clock.wait(remaining, request.signal);
-            break;
-          }
-          // Recheck every second with a read-only probe; the full poll above
-          // (host reconciliation, heartbeat and claim writes) runs again only
-          // when something may be ready, not once a second per idle host.
-          let ready = false;
-          while (!ready) {
-            const remaining = holdUntil - clock.now();
-            if (remaining <= 0 || request.signal.aborted) break;
-            await clock.wait(Math.min(1000, remaining), request.signal);
-            if (request.signal.aborted) break;
-            ready = await store.mayHaveWork(
+        const wake = runtimeWakes.watch(`host:${hostId}`);
+        try {
+          for (;;) {
+            resumeClaims = body.resumeClaimProtocol === 1 ? await store.resumeClaimsForHost(token, installationId) : [];
+            job = await store.poll(
               token,
               installationId,
+              version,
               skipSnapshots,
+              body.resources as DockerHostResources | undefined,
+              body.resourcePolicyVersion as 1 | undefined,
+              body.diskFreeBytes as number | null | undefined,
+              body.stoppedSandboxBytes as number | null | undefined,
               runningIds,
-              body.resumeClaimProtocol === 1,
+              protocol,
+              supportsPhysicalDelete,
             );
+            if (job || resumeClaims.length) break;
+            // Recheck every second with a read-only probe; the full poll above
+            // (host reconciliation, heartbeat and claim writes) runs again only
+            // when something may be ready, not once a second per idle host.
+            let ready = false;
+            while (!ready) {
+              const remaining = holdUntil - clock.now();
+              if (remaining <= 0 || request.signal.aborted) break;
+              // After a false positive, stop periodic reads for this hold. A
+              // fresh local enqueue can still trigger a probe.
+              const notified = await wake.wait(
+                request.signal,
+                probed ? remaining : Math.min(1000, remaining),
+                clock.wait.bind(clock),
+              );
+              if (request.signal.aborted || (probed && !notified)) break;
+              ready = await store.mayHaveWork(
+                token,
+                installationId,
+                skipSnapshots,
+                runningIds,
+                body.resumeClaimProtocol === 1,
+                supportsPhysicalDelete,
+              );
+            }
+            if (!ready) break;
+            probed = true;
           }
-          if (!ready) break;
-          probed = true;
+        } finally {
+          wake.close();
         }
+        const pendingStarts = await store.pendingStartsForHost(token, installationId);
+        const limits = body.resourcePolicyVersion === 1 ? await store.limitsForHost(token, installationId) : undefined;
         return Response.json(
           {
             ...(retentionSeconds === undefined ? {} : { retentionSeconds }),
             ...(wait === undefined ? {} : { held: true }),
-            ...dockerHostVersions,
+            targetVersion: VERSION,
+            containerInventory: 1,
+            containerInventoryDeploymentId: inventoryDeploymentId(hostId, installationId),
             resumeClaims,
             job,
             // Every generation with a queued resume/bootstrap, so the daemon
             // fences all of them, not only the single job it was handed.
-            pendingStarts: await store.pendingStartsForHost(token, installationId),
-            ...(body.resourcePolicyVersion === 1 ? { limits: await store.limitsForHost(token, installationId) } : {}),
-          },
+            pendingStarts,
+            ...(limits === undefined ? {} : { limits }),
+          } satisfies DockerHostPollResponse,
           { headers },
         );
       }
@@ -446,16 +497,14 @@ export function createDockerHostRoutes(
           missingRefIndex > 16)
       )
         throw new InvalidInput();
-      const baselineHeader = snapshotBaselineHeader(request);
-      const baselineVersion = "baselineVersion" in body ? body.baselineVersion : baselineHeader;
+      const baselineVersion = body.baselineVersion;
       if (
         baselineVersion !== undefined &&
         (outcome !== "completed" ||
           typeof baselineVersion !== "number" ||
           !Number.isSafeInteger(baselineVersion) ||
           baselineVersion < 1 ||
-          baselineVersion > 2147483647 ||
-          (baselineHeader !== undefined && baselineHeader !== baselineVersion))
+          baselineVersion > 2147483647)
       )
         throw new InvalidInput();
       await store.complete(token, installationId, {
@@ -469,13 +518,20 @@ export function createDockerHostRoutes(
       });
       return Response.json({ requestId }, { headers });
     } catch (error) {
+      if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
       if (error instanceof DockerLimitsRefused)
         return Response.json(
           { error: { code: error.code, message: error.message } },
           { status: error.code === "invalid_request" ? 400 : 409, headers },
         );
       // A drain is a typed state refusal so the dashboard can show the uninstall reason, not a generic conflict.
-      if (error instanceof DockerHostDraining || error instanceof DockerSnapshotHostUpgradeRequired)
+      if (error instanceof DockerHostUpgradeRequired) {
+        return Response.json(
+          { error: { code: error.code, message: error.message } },
+          { status: API_FAILURE_STATUS[error.code], headers },
+        );
+      }
+      if (error instanceof DockerHostDraining)
         return Response.json({ error: { code: error.code, message: error.message } }, { status: 409, headers });
       return Response.json(
         {
@@ -507,4 +563,5 @@ export function createDockerHostRoutes(
       );
     }
   };
+  return route;
 }

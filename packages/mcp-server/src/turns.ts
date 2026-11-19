@@ -20,6 +20,8 @@ import {
   turnModelEvidence,
   usageUnavailableReason,
 } from "@armada/core";
+import { nativeExhaustionEvidence } from "./account-exhaustion.ts";
+import { completedUsageTurns } from "./account-spend.ts";
 import { DataError, type SandboxView, type ServerSandboxStore } from "./data.ts";
 
 export const INTERRUPTED_LAUNCH_REASON =
@@ -118,6 +120,8 @@ export async function readStatus(
   }
 
   const info = await provider.get(sandbox.providerSandboxId);
+  if (provider.id === "boat" && info.state === "stopped" && info.retainedSnapshot !== "usable")
+    return report(sandbox, "stopping", info, null, info.expiresAt ?? null);
   const target = options.promptId
     ? { promptId: options.promptId, conversationId: null }
     : sandbox.taskPromptId
@@ -132,7 +136,11 @@ export async function readStatus(
       /* Telemetry unavailable: neutral unknown. */
     }
     const cached = recorded?.evidence as
-      | (TurnModelEvidence & { terminalOutcome?: PromptOutcome; rateLimit?: ModelRateLimit | null })
+      | (TurnModelEvidence & {
+          terminalOutcome?: PromptOutcome;
+          rateLimit?: ModelRateLimit | null;
+          nativeExhaustionRecorded?: true;
+        })
       | null;
     const retained =
       recorded?.requestedModel && cached && cached.modelSelectionReason !== "model_selection_unverified"
@@ -146,6 +154,8 @@ export async function readStatus(
     let rateLimit: ModelRateLimit | null = null;
     let outcome: PromptOutcome;
     let evidence: TurnModelEvidence;
+    let terminalEvents: readonly AgentEvent[] | undefined;
+    let cacheOutcome = false;
     // Terminal observations survive provider history retention. Never substitute the sandbox default.
     if (retained?.terminalOutcome) {
       outcome = retained.terminalOutcome;
@@ -196,19 +206,42 @@ export async function readStatus(
           requestedModel: recorded?.requestedModel ?? null,
           complete,
         });
-        // Unknown observations can be retried; telemetry persistence cannot change the outcome.
-        if (!options.stored && recorded && complete && evidence.modelSelectionReason !== "model_selection_unverified") {
-          try {
-            await store.recordTurnModelEvidence?.(sandbox.id, target.promptId, {
-              ...evidence,
-              terminalOutcome: outcome,
-              rateLimit,
-            });
-          } catch {
-            /* Next read can retry telemetry storage. */
-          }
+        terminalEvents = events;
+        cacheOutcome =
+          !options.stored && !!recorded && complete && evidence.modelSelectionReason !== "model_selection_unverified";
+      }
+    }
+    // Retained terminal reports can predate health recording. Keep their outcome and use the original source time.
+    try {
+      let nativeExhaustionRecorded = retained?.nativeExhaustionRecorded;
+      if (
+        !nativeExhaustionRecorded &&
+        (sandbox.provider === "boat" || sandbox.provider === "modal") &&
+        !sandbox.boatRuntime &&
+        !sandbox.runtimeTransport &&
+        outcome.state === "failed" &&
+        outcome.limit?.resetsAt &&
+        Date.parse(outcome.limit.resetsAt) > options.now.getTime() &&
+        store.recordNativeExhaustion
+      ) {
+        const events = terminalEvents ?? (await readPromptEvents(provider, request)).events;
+        const exhaustion = nativeExhaustionEvidence(events, target.promptId, outcome.limit, options.now.getTime());
+        if (exhaustion) {
+          await store.recordNativeExhaustion(sandbox.id, target.promptId, exhaustion.limit, exhaustion.at);
+          nativeExhaustionRecorded = true;
+          cacheOutcome ||= !!retained;
         }
       }
+      if (cacheOutcome) {
+        await store.recordTurnModelEvidence?.(sandbox.id, target.promptId, {
+          ...evidence,
+          terminalOutcome: outcome,
+          rateLimit,
+          ...(nativeExhaustionRecorded ? { nativeExhaustionRecorded } : {}),
+        });
+      }
+    } catch {
+      /* Status stays available. The next observation can retry telemetry storage. */
     }
     try {
       await store.recordAccountRateLimit?.(
@@ -372,8 +405,8 @@ function report(
     prompt,
     settled:
       !sandbox.stopRequestedAt &&
-      (machineDown ||
-        (prompt ? prompt.state !== "running" : status !== "running" && status !== "starting" && status !== "stopping")),
+      status !== "stopping" &&
+      (machineDown || (prompt ? prompt.state !== "running" : status !== "running" && status !== "starting")),
   };
 }
 
@@ -578,13 +611,17 @@ export async function collectSandboxUsage(
       targetPromptId ? 1 : 0,
       new Set([...rows.values()].map((r) => r.promptId)).size,
     );
+    const hasReliableCompletionTime = provider.id !== "boat" || sandbox.boatRuntime;
     await store.recordUsage(
       sandbox.id,
       {
         turnCount: history === null && knownTurns === 0 ? null : knownTurns,
         turns: [...rows.values()],
       },
-      { observations },
+      {
+        observations,
+        ...(hasReliableCompletionTime ? { completed: completedUsageTurns(events) } : {}),
+      },
     );
   } catch {
     /* Optional telemetry never changes lifecycle success. */

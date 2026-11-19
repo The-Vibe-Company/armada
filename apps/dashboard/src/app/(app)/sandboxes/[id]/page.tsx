@@ -234,6 +234,7 @@ export default async function SandboxPage({ params }: Props) {
         <div data-fit="column" className="min-w-0 space-y-2 md:space-y-6">
           <SandboxChat
             sandboxId={sandbox.id}
+            currentConversation={sandbox.conversation_ids.at(-1)}
             initialStatus={sandbox.status}
             provider={sandbox.provider}
             preservationNote={sandbox.preservation_note}
@@ -246,7 +247,6 @@ export default async function SandboxPage({ params }: Props) {
             harness={sandbox.harness}
             catalog={MODEL_CATALOG}
             launchedModel={sandbox.model}
-            conversations={sandbox.conversation_ids}
             configured={configured}
           />
           <footer className="flex flex-wrap gap-x-4 gap-y-1 px-4 font-mono text-[11px] text-muted-foreground">
@@ -524,6 +524,7 @@ function DockerSandbox({
           ) : (
             <SandboxChat
               sandboxId={sandbox.id}
+              currentConversation={sandbox.conversation_ids.at(-1)}
               initialStatus={sandbox.status}
               provider={sandbox.provider}
               preservationNote={sandbox.preservation_note}
@@ -535,7 +536,6 @@ function DockerSandbox({
               harness={sandbox.harness}
               catalog={MODEL_CATALOG}
               launchedModel={sandbox.model}
-              conversations={sandbox.conversation_ids}
               configured={configured}
               composerUnavailable={reasons.followupPrompts}
               pinnedModel

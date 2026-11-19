@@ -5,6 +5,8 @@ description: Use Armada from a terminal to sign in, select an organization, choo
 
 # Armada terminal guide
 
+The REST sandbox status route is `POST /api/v1/sandbox/status`.
+
 Armada launches agents; you decide task ownership, acceptance criteria and budget.
 Requires the Armada CLI and access to an Armada server. This skill ships with the
 CLI source; check `armada --version` and `armada --help` before using a differently
@@ -25,17 +27,48 @@ access needs an authorized admin, not a retry loop.
 
 Read [setup and configuration](references/setup.md) when connecting GitHub,
 selecting model accounts, creating goldens/templates, or configuring variables.
+Manage snapshots, templates, default skill pins, variables and application secrets through
+the dashboard or the authenticated REST API. Launch an existing template with
+`armada template launch` or `POST /api/v1/templates/launch` and reuse its request key on retry.
+
+For GitHub repair, run `armada github refresh <sandbox>`. Read broker status via
+`POST /api/v1/github/runtime-status`.
+
+For MCP coordinator launches, call `launch` with optional `size`, a stable
+`idempotencyKey` and an `externalRef`. After an uncertain response, repeat the
+same call with the same key, then use `list` with the reference to find any
+registered sandbox. Escalate unresolved allocations with the original key and
+any receipt UUID returned. On success, pass `sandbox.id` to subsequent tools.
 
 ## 2. Choose before launching
 
 - Inspect `armada snapshot list --json` and `armada template list --json`.
+  To refresh a shared snapshot, update its build configuration with the owner authorization.
   A golden is a provider-specific saved environment; a template is an immutable
   revision specifying a golden, harness and configuration. Use IDs if names clash.
-- Choose Boat or Modal explicitly when ambiguous. A golden built on one provider
+  Use `armada snapshot capabilities --json` for provider capacity and the
+  authenticated REST adoption endpoint for canonical Boat golden adoption.
+- For MCP `launch`, choose `provider: "boat"` or `provider: "modal"` from discovery,
+  specify `harness`, and use `ttlSeconds` and `reasoningEffort` for launch overrides.
+  For scoped tokens, omit `org` or use the scoped org UUID.
+- Choose the provider that owns the golden. A golden built on one provider
   is not automatically available on the other. Check
   `armada snapshot capabilities --provider boat --json` (or substitute modal).
+- All launches through `POST /api/v1/sandbox/launch` require an explicit provider
+  and harness. Personal sessions can select the organization by slug or UUID. For a scoped token, omit `org` or send its org UUID.
+  A malformed request returns HTTP 400 with error code `invalid`.
+  For REST golden and Docker launches, read the Armada ID from `sandbox.id`.
+  The TypeScript SDK uses the same `LaunchResult` envelope for ordinary launches.
+  Docker returns `golden: null`. Pinned template launches return a template receipt.
+- Ordinary Modal launches default to the enrolled runtime. To confirm the deployed
+  default, check `modalRuntime.defaultPath` in the authenticated response to
+  `POST /api/v1/launch/options`.
 - Choose the harness and a model/effort it supports. Launch selections persist
   for later turns. Do not assume provider sizes have equal price or performance.
+- If a runtime launch returns `credential_binding_required`, add the model account
+  in Models → Add account or run `armada creds set KIND --name NAME --file PATH`.
+  Use `armada creds list` to find the account ID, then retry the launch with
+  `--credential-id ACCOUNT`.
 - Bound TTL, size and concurrency to the task. Start small unless evidence calls
   for more. `armada advice SANDBOX --json` provides bounded historical resource
   evidence; unknown evidence is not a recommendation to upscale.
@@ -47,8 +80,8 @@ armada launch GOLDEN --agent codex "Implement the agreed change; push the branch
 ```
 
 Launch without a prompt creates an idle sandbox. Capture its returned sandbox
-ID immediately; a terminal disconnect is not proof that creation failed. Before
-launching again, inspect `armada list --owner me --json` and detail to avoid paid
+ID from `sandbox.id` in `armada launch --json` output immediately. If the
+terminal disconnects before you capture the ID, inspect `armada list --owner me --json` and detail to avoid paid
 duplicates. Skill pins are repeatable, exact launch-time references, not floating
 latest versions. Private pins use bare slug@exact-version in the credential’s workspace; qualified
 org/slug@exact-version pins always use the anonymous public catalog, even when
@@ -118,18 +151,28 @@ armada logs SANDBOX --tail 50 --json
 armada status SANDBOX --json
 ```
 
-Send starts a new turn; steer redirects an active turn:
+Send starts a new turn in the sandbox's conversation. Launch another sandbox
+for a separate conversation. The dashboard transcript shows sandbox history
+and its composer targets the sandbox automatically. Steer redirects an active turn:
 `armada steer SANDBOX "Keep the public API unchanged"`. Use
 `armada interrupt SANDBOX` to request interruption, then inspect status before
 sending replacement work. Do not treat steer as a guaranteed new turn or send
 as a safe interruption mechanism. Capture returned prompt/turn identifiers.
+
+On MCP, use `send` with `steer: true` and the instruction in `prompt`,
+`status` with `wait: true` and optional `timeout_seconds`, or `stop` with
+`turn: true` to interrupt while keeping compute up. Steer and interrupt
+target the sandbox by ID. To wait for settlement and stop only if still idle,
+use `stop` with `after: true` and optional `timeout_seconds`. A receipt with
+`timedOut: true` means this call did not request a stop.
 
 Use blocking wait instead of tight status loops. --timeout is in seconds,
 accepts 0–600 and defaults to 60; the example waits at most 120 seconds. A
 still-running result can be waited on again, not relaunched. A wait response is
 an observation, not proof tests passed or work was pushed; inspect outcome and
 logs. If a send times out ambiguously, inspect detail, status and logs before
-considering another send; do not replay a possibly accepted instruction. For longer event inspection use
+considering another send; do not replay a possibly accepted instruction. Logs
+read the history for the entire sandbox. For longer event inspection use
 `armada logs SANDBOX --follow --json`; `armada logs SANDBOX --all --json`
 drains available pages. Keep output bounded with tail for routine diagnostics.
 Preserve returned cursors/identifiers in reports; do not fabricate a cursor flag.
@@ -137,20 +180,34 @@ Preserve returned cursors/identifiers in reports; do not fabricate a cursor flag
 ## 4. Preserve work and manage lifetime
 
 Use `armada extend SANDBOX --ttl 1h --json` before expiry if more time is
-justified. Confirm the returned expiry; do not assume extension succeeded.
+justified. Direct API callers use `POST /api/v1/sandbox/extend` with `id` and
+`ttlSeconds`. Confirm the returned expiry.
 Ask the agent to commit and push, and verify branch/PR/head SHA independently
 before `armada stop SANDBOX`. Stop is not delete, but provider retention is not
 a substitute for a pushed branch. Modal retains disk only after a successful
 checkpoint; checkpoint_failed_disk_not_retained means it cannot resume. `armada rm SANDBOX --yes` permanently deletes
 a stopped sandbox and recovery archives: require explicit user authorization
-and confirmed recovery first.
+and confirmed recovery first. For direct API callers, use
+`DELETE /api/v1/sandboxes/:id` or `POST /api/v1/sandbox/delete`. The dashboard
+uses the REST operations for extension and stopped Docker sandbox deletion.
+
+For resource advice and preserved archives, use `armada advice SANDBOX --json`
+and `armada recovery SANDBOX`. Explicit runtime checkpoint and resume use the
+owner REST routes `sandbox/checkpoint-runtime-v1` and `sandbox/resume-runtime-v1`.
+Send and runtime resume select the conversation from the sandbox ID. Launch another
+sandbox for a separate conversation.
 
 Read [failure and recovery](references/recovery.md) before recovering stopped
 machines or unpushed work. One authorized armada send to a retained stopped
 sandbox resumes it and continues its conversation, subject to current credential
-and access gates. This is a new agent turn, not a read-only restart. There is no
-standalone sandbox resume/recover command; do not invent one or substitute
-undocumented endpoints.
+and access gates. This starts a new agent turn. For a standalone Docker restart,
+use the owner REST route `POST /api/v1/sandbox/resume` with `id` and a
+`request_id` UUID. Reuse that UUID after an uncertain outcome.
+
+A `docker_host_upgrade_required` refusal means the daemon must be upgraded.
+After the protocol-aware release ships, use `armada host add` and run its
+generated installer on the existing Docker host. Check `armada host list --json`
+for the reported protocol and `upgradeRequired: false`.
 
 ## 5. Several sandboxes, including a sandbox as caller
 

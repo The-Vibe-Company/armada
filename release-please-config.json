@@ -65,7 +65,7 @@
         },
         {
           "type": "json",
-          "path": "docs/openapi.json",
+          "path": "packages/mcp-server/openapi.json",
           "jsonpath": "$.info.version"
         }
       ]

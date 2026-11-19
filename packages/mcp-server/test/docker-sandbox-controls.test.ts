@@ -22,7 +22,7 @@ import { sandboxListText } from "../../cli/src/sandbox-list.ts";
 import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import { apiFailureCode } from "../src/api-failure.ts";
 import type { Caller } from "../src/caller.ts";
-import { type ControlOptions, handleControlRequest } from "../src/control.ts";
+import { type ControlOptions, dispatchControlCommand, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { createDockerBootstrapService } from "../src/docker-bootstrap-service.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
@@ -37,7 +37,8 @@ import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createSandboxBillingAccount } from "../src/sandbox-billing-account.ts";
 import { callSharedTool } from "../src/tool-api.ts";
-import { type ToolContext, ToolError } from "../src/tools.ts";
+import { ToolError } from "../src/tool-error.ts";
+import type { ToolContext } from "../src/tools.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 
 let connection: Awaited<ReturnType<typeof migratedDatabase>> | undefined;
@@ -379,19 +380,19 @@ test("logs remain available without reading the launch manifest", async () => {
   });
 });
 
-test("normal logs preserve raw cursors through private diagnostics and conversation filters, backward paging and all", async () => {
+test("normal logs preserve raw cursors through private diagnostics and historical events, backward paging and all", async () => {
   const f = await fixture(),
     session = await ready(f),
     who = caller(f.actor),
     conversationId = randomUUID();
   await publish(f, session, [
     { id: "private", at: 1, kind: "other", type: "account/updated", data: { secret: "not public" }, conversationId },
-    { id: "unrelated", at: 2, kind: "other", type: "notice", data: null, conversationId: randomUUID() },
+    { id: "historical", at: 2, kind: "other", type: "notice", data: null, conversationId: randomUUID() },
     { id: "visible", at: 3, kind: "message", text: "hello", partial: false, tools: [], conversationId },
     { id: "visible2", at: 4, kind: "message", text: "world", partial: false, tools: [], conversationId },
   ]);
   const prefix = `ar1_${f.sandbox.id}_`;
-  expect(await invoke(who, "logs", { id: f.sandbox.id, limit: 1, conversation_id: conversationId })).toMatchObject({
+  expect(await invoke(who, "logs", { id: f.sandbox.id, limit: 1 })).toMatchObject({
     events: [],
     cursor: `${prefix}1`,
     hasMore: true,
@@ -402,17 +403,14 @@ test("normal logs preserve raw cursors through private diagnostics and conversat
       id: f.sandbox.id,
       limit: 1,
       since_cursor: `${prefix}1`,
-      conversation_id: conversationId,
     }),
   ).toMatchObject({
-    events: [],
+    events: [{ id: "historical" }],
     cursor: `${prefix}2`,
     hasMore: true,
   });
-  expect(
-    await invoke(who, "logs", { id: f.sandbox.id, limit: 1, all: true, conversation_id: conversationId }),
-  ).toMatchObject({
-    events: [{ id: "visible" }, { id: "visible2" }],
+  expect(await invoke(who, "logs", { id: f.sandbox.id, limit: 1, all: true })).toMatchObject({
+    events: [{ id: "historical" }, { id: "visible" }, { id: "visible2" }],
     cursor: `${prefix}4`,
     hasMore: false,
   });
@@ -671,7 +669,7 @@ test("normal API and MCP accept Docker list/status/logs rows and acknowledge cle
   const apiList = (await post("sandbox/list", {})) as { sandboxes: SandboxListMetadata[] };
   expect(parseSandboxListMetadata(apiList.sandboxes).skipped).toEqual([]);
   expect(apiList.sandboxes[0]?.provider).toBe("docker");
-  const status = (await post("sandbox/detail", { id: f.sandbox.id })) as DockerSandboxStatus;
+  const status = (await post("sandbox/status", { id: f.sandbox.id })) as DockerSandboxStatus;
   expect(status).toMatchObject({
     provider: "docker",
     golden: null,
@@ -679,7 +677,7 @@ test("normal API and MCP accept Docker list/status/logs rows and acknowledge cle
     prompt: { promptId, state: "finished" },
   });
   expect(await callSharedTool(context, "status", { id: f.sandbox.id })).toEqual(status);
-  const logs = (await post("logs/read", { id: f.sandbox.id, follow: true })) as {
+  const logs = (await post("logs/read", { id: f.sandbox.id, follow: true, conversationId: randomUUID() })) as {
     events: AgentEvent[];
     cursor: string;
   };
@@ -700,7 +698,7 @@ test("normal API and MCP accept Docker list/status/logs rows and acknowledge cle
     resume: false,
   });
   expect(await post("sandbox/stop", { id: f.sandbox.id })).toEqual({ id: f.sandbox.id, status: "stopped" });
-  expect(await callSharedTool(context, "delete", { id: f.sandbox.id })).toEqual({
+  expect(await post("sandbox/delete", { id: f.sandbox.id })).toEqual({
     id: f.sandbox.id,
     status: "deleted",
   });
@@ -826,7 +824,7 @@ test("ordinary Docker send resumes once and never wakes a stopped sandbox for a 
   await service.prompt(f.actor, f.sandbox.id, first);
   await complete(session, { promptId: randomUUID(), conversationId, status: "finished" });
   await service.prompt(f.actor, f.sandbox.id, first);
-  await db.query("update public.docker_hosts set daemon_version='2.28.0' where id=$1", [f.hostId]);
+  await db.query("update public.docker_hosts set daemon_protocol=1 where id=$1", [f.hostId]);
   const stop = async () => {
     const requestId = randomUUID();
     await reservations.stop(f.actor, f.sandbox.id, requestId);
@@ -902,16 +900,32 @@ test("resuming on a draining host names the uninstall, not a generic unavailable
   const db = database();
   const f = await fixture();
   await ready(f);
-  await db.query("update public.docker_hosts set daemon_version='2.28.0' where id=$1", [f.hostId]);
+  await db.query("update public.docker_hosts set daemon_protocol=1 where id=$1", [f.hostId]);
   const stopId = randomUUID();
   await reservations.stop(f.actor, f.sandbox.id, stopId);
   await hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });
   await db.query(`update public.docker_hosts set draining_at=now() where id=$1`, [f.hostId]);
   const controller = createDockerSandboxControls(sql, key, { resume: bootstrap });
-  await rejected(
-    invoke(caller(f.actor), "resume", { id: f.sandbox.id, request_id: randomUUID() }, controller),
-    "host_draining",
-  );
+  await expect(
+    dispatchControlCommand(
+      "sandbox/resume",
+      caller(f.actor),
+      { id: f.sandbox.id, request_id: randomUUID() },
+      {
+        store: createSqlVaultStore(sql),
+        authStore: createSqlAuthStore(sql),
+        supabase: { supabaseUrl: "https://project.supabase.co", anonKey: "fixture-anon" },
+        encryptionKey: key,
+        data: createSqlData(sql),
+        providers: {
+          resolve: async () => {
+            throw Error("Docker resume must not resolve legacy provider credentials");
+          },
+        },
+        dockerControls: controller,
+      },
+    ),
+  ).rejects.toMatchObject({ code: "host_draining", status: 409 });
 });
 
 test("Docker mutations reuse the fenced runtime mailbox and reconcile identical request IDs", async () => {
@@ -1088,7 +1102,7 @@ test("a resume refused by host cleanup is a non-retryable conflict, not a provid
   const db = database();
   const f = await fixture();
   await ready(f);
-  await db.query("update public.docker_hosts set daemon_version='2.28.0' where id=$1", [f.hostId]);
+  await db.query("update public.docker_hosts set daemon_protocol=1 where id=$1", [f.hostId]);
   const requestId = randomUUID();
   await reservations.stop(f.actor, f.sandbox.id, requestId);
   await hosts.complete(f.hostToken, f.installationId, { requestId, outcome: "completed" });
@@ -1148,7 +1162,7 @@ test("reclaimed workspace status and resume report the durable disk cause", asyn
 test("a resume refused by the host disk floor returns the actionable disk cause", async () => {
   const f = await fixture();
   await ready(f);
-  await database().query("update public.docker_hosts set daemon_version='2.28.0' where id=$1", [f.hostId]);
+  await database().query("update public.docker_hosts set daemon_protocol=1 where id=$1", [f.hostId]);
   const stopId = randomUUID();
   await reservations.stop(f.actor, f.sandbox.id, stopId);
   await hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });

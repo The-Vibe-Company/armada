@@ -36,6 +36,86 @@ export type Database = {
           },
         ];
       };
+      account_exhaustion: {
+        Row: {
+          account_id: string;
+          account_version: number;
+          code: string;
+          resets_at: string | null;
+          event_at: number;
+        };
+        Insert: {
+          account_id: string;
+          account_version: number;
+          code: string;
+          resets_at?: string | null;
+          event_at: number;
+        };
+        Update: {
+          account_id?: string;
+          account_version?: number;
+          code?: string;
+          resets_at?: string | null;
+          event_at?: number;
+        };
+        Relationships: [];
+      };
+      account_spend: {
+        Row: {
+          account_id: string;
+          period_start: string;
+          usd: number;
+          unpriced_turns: number;
+        };
+        Insert: {
+          account_id: string;
+          period_start: string;
+          usd: number;
+          unpriced_turns: number;
+        };
+        Update: {
+          account_id?: string;
+          period_start?: string;
+          usd?: number;
+          unpriced_turns?: number;
+        };
+        Relationships: [];
+      };
+      account_spend_turns: {
+        Row: {
+          sandbox_id: string;
+          prompt_id: string;
+          period_start: string;
+          account_id: string | null;
+          usd: number;
+          unpriced: boolean;
+        };
+        Insert: {
+          sandbox_id: string;
+          prompt_id: string;
+          period_start: string;
+          account_id?: string | null;
+          usd: number;
+          unpriced: boolean;
+        };
+        Update: {
+          sandbox_id?: string;
+          prompt_id?: string;
+          period_start?: string;
+          account_id?: string | null;
+          usd?: number;
+          unpriced?: boolean;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "account_spend_turns_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: false;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       account_turn_queue: {
         Row: {
           sandbox_id: string;
@@ -130,18 +210,21 @@ export type Database = {
           harness: string;
           credential_id: string | null;
           model: string | null;
+          credential_ids: string[];
         };
         Insert: {
           user_id: string;
           harness: string;
           credential_id?: string | null;
           model?: string | null;
+          credential_ids: string[];
         };
         Update: {
           user_id?: string;
           harness?: string;
           credential_id?: string | null;
           model?: string | null;
+          credential_ids?: string[];
         };
         Relationships: [
           {
@@ -472,6 +555,7 @@ export type Database = {
           snapshot_id: string | null;
           result_image_id: string | null;
           cancelled_at: string | null;
+          refused_resume_generation: number | null;
         };
         Insert: {
           request_id: string;
@@ -488,6 +572,7 @@ export type Database = {
           snapshot_id?: string | null;
           result_image_id?: string | null;
           cancelled_at?: string | null;
+          refused_resume_generation?: number | null;
         };
         Update: {
           request_id?: string;
@@ -504,6 +589,7 @@ export type Database = {
           snapshot_id?: string | null;
           result_image_id?: string | null;
           cancelled_at?: string | null;
+          refused_resume_generation?: number | null;
         };
         Relationships: [
           {
@@ -565,6 +651,7 @@ export type Database = {
           disk_free_bytes: number | null;
           stopped_sandbox_bytes: number | null;
           snapshot_baseline_version: number | null;
+          daemon_protocol: number | null;
         };
         Insert: {
           id: string;
@@ -594,6 +681,7 @@ export type Database = {
           disk_free_bytes?: number | null;
           stopped_sandbox_bytes?: number | null;
           snapshot_baseline_version?: number | null;
+          daemon_protocol?: number | null;
         };
         Update: {
           id?: string;
@@ -623,6 +711,7 @@ export type Database = {
           disk_free_bytes?: number | null;
           stopped_sandbox_bytes?: number | null;
           snapshot_baseline_version?: number | null;
+          daemon_protocol?: number | null;
         };
         Relationships: [
           {
@@ -1649,6 +1738,72 @@ export type Database = {
             referencedColumns: ["id"];
           },
         ];
+      };
+      jobs: {
+        Row: {
+          id: string;
+          kind: string;
+          sandbox_id: string | null;
+          org_id: string;
+          generation: number | null;
+          idem_key: string;
+          request_owner_id: string | null;
+          request_digest: string | null;
+          state: string;
+          run_after: string;
+          deadline_at: string | null;
+          attempts: number;
+          max_attempts: number;
+          lease_owner: string | null;
+          lease_epoch: number;
+          lease_until: string | null;
+          payload_enc: string | null;
+          outcome: Json | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          kind: string;
+          sandbox_id?: string | null;
+          org_id: string;
+          generation?: number | null;
+          idem_key: string;
+          request_owner_id?: string | null;
+          request_digest?: string | null;
+          state?: string;
+          run_after?: string;
+          deadline_at?: string | null;
+          attempts?: number;
+          max_attempts: number;
+          lease_owner?: string | null;
+          lease_epoch?: number;
+          lease_until?: string | null;
+          payload_enc?: string | null;
+          outcome?: Json | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          kind?: string;
+          sandbox_id?: string | null;
+          org_id?: string;
+          generation?: number | null;
+          idem_key?: string;
+          request_owner_id?: string | null;
+          request_digest?: string | null;
+          state?: string;
+          run_after?: string;
+          deadline_at?: string | null;
+          attempts?: number;
+          max_attempts?: number;
+          lease_owner?: string | null;
+          lease_epoch?: number;
+          lease_until?: string | null;
+          payload_enc?: string | null;
+          outcome?: Json | null;
+          created_at?: string;
+        };
+        Relationships: [];
       };
       langfuse_turn_exports: {
         Row: {
@@ -4175,6 +4330,8 @@ export type Database = {
           request_enc: string;
           result_enc: string | null;
           correlation_id: string | null;
+          created_at: string | null;
+          accepted_prompt_id: string | null;
         };
         Insert: {
           sandbox_id: string;
@@ -4184,6 +4341,8 @@ export type Database = {
           request_enc: string;
           result_enc?: string | null;
           correlation_id?: string | null;
+          created_at?: string | null;
+          accepted_prompt_id?: string | null;
         };
         Update: {
           sandbox_id?: string;
@@ -4193,6 +4352,8 @@ export type Database = {
           request_enc?: string;
           result_enc?: string | null;
           correlation_id?: string | null;
+          created_at?: string | null;
+          accepted_prompt_id?: string | null;
         };
         Relationships: [
           {
@@ -4216,6 +4377,9 @@ export type Database = {
           docker_issuer_fence: string | null;
           pricing_context: Json | null;
           correlation_id: string | null;
+          runtime_protocol_version: number;
+          command_grant_epoch: number | null;
+          command_grant_expires_at: string | null;
         };
         Insert: {
           sandbox_id: string;
@@ -4228,6 +4392,9 @@ export type Database = {
           docker_issuer_fence?: string | null;
           pricing_context?: Json | null;
           correlation_id?: string | null;
+          runtime_protocol_version?: number;
+          command_grant_epoch?: number | null;
+          command_grant_expires_at?: string | null;
         };
         Update: {
           sandbox_id?: string;
@@ -4240,6 +4407,9 @@ export type Database = {
           docker_issuer_fence?: string | null;
           pricing_context?: Json | null;
           correlation_id?: string | null;
+          runtime_protocol_version?: number;
+          command_grant_epoch?: number | null;
+          command_grant_expires_at?: string | null;
         };
         Relationships: [
           {
@@ -4258,6 +4428,8 @@ export type Database = {
           epoch: number;
           counted_prompt_id: string | null;
           event_enc: string;
+          created_at: string | null;
+          visible_text_prompt_id: string | null;
         };
         Insert: {
           sandbox_id: string;
@@ -4265,6 +4437,8 @@ export type Database = {
           epoch: number;
           counted_prompt_id?: string | null;
           event_enc: string;
+          created_at?: string | null;
+          visible_text_prompt_id?: string | null;
         };
         Update: {
           sandbox_id?: string;
@@ -4272,6 +4446,8 @@ export type Database = {
           epoch?: number;
           counted_prompt_id?: string | null;
           event_enc?: string;
+          created_at?: string | null;
+          visible_text_prompt_id?: string | null;
         };
         Relationships: [
           {
@@ -4404,6 +4580,7 @@ export type Database = {
           receipt: Json | null;
           created_at: string;
           empty_checkpoint: boolean;
+          activated_at: string | null;
         };
         Insert: {
           sandbox_id: string;
@@ -4420,6 +4597,7 @@ export type Database = {
           receipt?: Json | null;
           created_at?: string;
           empty_checkpoint?: boolean;
+          activated_at?: string | null;
         };
         Update: {
           sandbox_id?: string;
@@ -4436,6 +4614,7 @@ export type Database = {
           receipt?: Json | null;
           created_at?: string;
           empty_checkpoint?: boolean;
+          activated_at?: string | null;
         };
         Relationships: [
           {
@@ -4833,6 +5012,7 @@ export type Database = {
           stop_when_work_merged: boolean;
           transition_context: Json | null;
           outputs_retained_generation: number | null;
+          outputs_attempt_count: number;
         };
         Insert: {
           id?: string;
@@ -4909,6 +5089,7 @@ export type Database = {
           stop_when_work_merged?: boolean;
           transition_context?: Json | null;
           outputs_retained_generation?: number | null;
+          outputs_attempt_count?: number;
         };
         Update: {
           id?: string;
@@ -4985,6 +5166,7 @@ export type Database = {
           stop_when_work_merged?: boolean;
           transition_context?: Json | null;
           outputs_retained_generation?: number | null;
+          outputs_attempt_count?: number;
         };
         Relationships: [
           {
@@ -5159,6 +5341,133 @@ export type Database = {
           },
         ];
       };
+      trigger_admin_audit: {
+        Row: {
+          id: string;
+          org_id: string;
+          trigger_id: string;
+          actor_id: string;
+          action: string;
+          occurred_at: string;
+        };
+        Insert: {
+          id?: string;
+          org_id: string;
+          trigger_id: string;
+          actor_id: string;
+          action: string;
+          occurred_at?: string;
+        };
+        Update: {
+          id?: string;
+          org_id?: string;
+          trigger_id?: string;
+          actor_id?: string;
+          action?: string;
+          occurred_at?: string;
+        };
+        Relationships: [];
+      };
+      trigger_deliveries: {
+        Row: {
+          trigger_id: string;
+          delivery_id: string;
+          job_id: string;
+          received_at: string;
+        };
+        Insert: {
+          trigger_id: string;
+          delivery_id: string;
+          job_id: string;
+          received_at: string;
+        };
+        Update: {
+          trigger_id?: string;
+          delivery_id?: string;
+          job_id?: string;
+          received_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "trigger_deliveries_job_id_fkey";
+            columns: ["job_id"];
+            isOneToOne: true;
+            referencedRelation: "jobs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "trigger_deliveries_trigger_id_fkey";
+            columns: ["trigger_id"];
+            isOneToOne: false;
+            referencedRelation: "triggers";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      triggers: {
+        Row: {
+          id: string;
+          org_id: string;
+          template_id: string;
+          launch_owner_id: string;
+          pool_harness: string;
+          secret_enc: string;
+          key_revision: number;
+          rate_per_minute: number;
+          concurrency: number;
+          enabled: boolean;
+          rate_refusals: number;
+        };
+        Insert: {
+          id?: string;
+          org_id: string;
+          template_id: string;
+          launch_owner_id: string;
+          pool_harness: string;
+          secret_enc: string;
+          key_revision?: number;
+          rate_per_minute: number;
+          concurrency: number;
+          enabled?: boolean;
+          rate_refusals?: number;
+        };
+        Update: {
+          id?: string;
+          org_id?: string;
+          template_id?: string;
+          launch_owner_id?: string;
+          pool_harness?: string;
+          secret_enc?: string;
+          key_revision?: number;
+          rate_per_minute?: number;
+          concurrency?: number;
+          enabled?: boolean;
+          rate_refusals?: number;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "triggers_launch_owner_id_fkey";
+            columns: ["launch_owner_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "triggers_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "triggers_template_id_fkey";
+            columns: ["template_id"];
+            isOneToOne: false;
+            referencedRelation: "launch_templates";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
     };
     Views: {
       [_ in never]: never;
@@ -5194,6 +5503,9 @@ export type Database = {
 };
 
 export type AccountAgentReservationRow = Database["public"]["Tables"]["account_agent_reservations"]["Row"];
+export type AccountExhaustionRow = Database["public"]["Tables"]["account_exhaustion"]["Row"];
+export type AccountSpendRow = Database["public"]["Tables"]["account_spend"]["Row"];
+export type AccountSpendTurnRow = Database["public"]["Tables"]["account_spend_turns"]["Row"];
 export type AccountTurnQueueRow = Database["public"]["Tables"]["account_turn_queue"]["Row"];
 export type AgentDefaultsRow = Database["public"]["Tables"]["agent_defaults"]["Row"];
 export type ApplicationSecretUploadRow = Database["public"]["Tables"]["application_secret_uploads"]["Row"];
@@ -5220,6 +5532,7 @@ export type GoldenSkillDefaultsRow = Database["public"]["Tables"]["golden_skill_
 export type GoldenSnapshotPublication = Database["public"]["Tables"]["golden_snapshot_publications"]["Row"];
 export type GoldenSnapshotRetirement = Database["public"]["Tables"]["golden_snapshot_retirements"]["Row"];
 export type Golden = Database["public"]["Tables"]["goldens"]["Row"];
+export type JobRow = Database["public"]["Tables"]["jobs"]["Row"];
 export type LangfuseTurnExportRow = Database["public"]["Tables"]["langfuse_turn_exports"]["Row"];
 export type LaunchTemplateRevisionRow = Database["public"]["Tables"]["launch_template_revisions"]["Row"];
 export type LaunchTemplateRow = Database["public"]["Tables"]["launch_templates"]["Row"];
@@ -5240,7 +5553,6 @@ export type ModalMachineRow = Database["public"]["Tables"]["modal_machines"]["Ro
 export type ModalServerAppRow = Database["public"]["Tables"]["modal_server_apps"]["Row"];
 export type ModalServerHarnessRow = Database["public"]["Tables"]["modal_server_harnesses"]["Row"];
 export type ModalServerScopeRow = Database["public"]["Tables"]["modal_server_scopes"]["Row"];
-export type ModelAuthOwnershipRow = Database["public"]["Tables"]["model_auth_ownership"]["Row"];
 export type ModelAuthStateRow = Database["public"]["Tables"]["model_auth_state"]["Row"];
 export type NativeSteerCursorRow = Database["public"]["Tables"]["native_steer_cursors"]["Row"];
 export type NativeWebhookPromptRow = Database["public"]["Tables"]["native_webhook_prompts"]["Row"];
@@ -5294,6 +5606,9 @@ export type SandboxWorkRecovery = Database["public"]["Tables"]["sandbox_work_rec
 export type Sandbox = Database["public"]["Tables"]["sandboxes"]["Row"];
 export type ServiceToken = Database["public"]["Tables"]["service_tokens"]["Row"];
 export type TemplateLaunchRequestRow = Database["public"]["Tables"]["template_launch_requests"]["Row"];
+export type TriggerAdminAuditRow = Database["public"]["Tables"]["trigger_admin_audit"]["Row"];
+export type TriggerDeliveryRow = Database["public"]["Tables"]["trigger_deliveries"]["Row"];
+export type TriggerRow = Database["public"]["Tables"]["triggers"]["Row"];
 export type CredentialKind = Database["public"]["Enums"]["credential_kind"];
 export type CredentialScope = Database["public"]["Enums"]["credential_scope"];
 export type MemberRole = Database["public"]["Enums"]["member_role"];

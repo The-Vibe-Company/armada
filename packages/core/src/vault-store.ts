@@ -1,17 +1,28 @@
 import { createHash } from "node:crypto";
 import { accountModelCountsSql, accountWaitingCountSql, accountWorkingCountSql } from "./account-work-sql.ts";
-import { COMPATIBLE_MODEL_PROVIDERS } from "./compatible-providers.ts";
-import { type AgentDefault, HARNESS_KINDS } from "./credentials.ts";
-import { decryptSecret } from "./crypto.ts";
+import { type AgentDefault, connectionModels, HARNESS_KINDS, parseCredentialValue } from "./credentials.ts";
+import { decryptSecret, encryptSecret } from "./crypto.ts";
 import type { CredentialKind, CredentialScope, MemberRole } from "./database.types.ts";
 import type { GitHubConnectionStore, GitHubUser, StoredGitHubConnection } from "./github.ts";
 import type { Sql } from "./golden-store.ts";
-import { HARNESS_CATALOG, harnessForCredential, MODEL_CREDENTIAL_KINDS } from "./harnesses.ts";
+import { harnessesForCredential, harnessForCredential, MODEL_CREDENTIAL_KINDS } from "./harnesses.ts";
+import { MODEL_CATALOG } from "./models.ts";
 import type { CredentialInfo, MemberInfo, OrgSummary, VaultStore } from "./vault.ts";
 import { VaultError } from "./vault-error.ts";
 
 // These SQL fragments contain only catalog-owned enum labels, never caller input.
 const MODEL_KIND_SQL = MODEL_CREDENTIAL_KINDS.map((kind) => `'${kind}'`).join(",");
+async function preserveMorphModels(previous: Uint8Array, replacement: Uint8Array, encryptionKey: string | undefined) {
+  const apiKey = await decryptSecret(new Uint8Array(replacement), encryptionKey);
+  if (apiKey.trimStart().startsWith("{")) return replacement;
+  const raw = await decryptSecret(new Uint8Array(previous), encryptionKey);
+  if (!raw.trimStart().startsWith("{")) return replacement;
+  const models = connectionModels("morph", raw).map(({ model }) => model);
+  if (!models.length) return replacement;
+  const value = parseCredentialValue("morph", JSON.stringify({ apiKey, models }));
+  return encryptSecret(value, encryptionKey);
+}
+
 function accountKinds(kind: CredentialKind): readonly CredentialKind[] {
   const harness = harnessForCredential(kind);
   if (!harness) throw new VaultError("invalid", "Not a model account.");
@@ -89,11 +100,16 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
         let id = input.id;
         if (input.action === "set" && input.id && existing.rows[0]?.version !== input.expectedVersion)
           throw new VaultError("conflict", "The account revision changed. Restart login; no secret was overwritten.");
+        const previous = existing.rows[0]?.value_enc;
+        const sealed =
+          kind === "morph" && previous && valueEnc
+            ? await preserveMorphModels(previous, valueEnc, encryptionKey)
+            : valueEnc;
         if (input.action === "set") {
           if (id)
             await tx.query(
               "update public.credentials set value_enc=$2::bytea, status='active', expires_at=$3::timestamptz where id=$1",
-              [id, valueEnc, input.expiresAt ?? null],
+              [id, sealed, input.expiresAt ?? null],
             );
           else {
             const created = await tx.query<{ id: string }>(
@@ -102,7 +118,7 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
                 input.scope,
                 owner,
                 kind,
-                valueEnc,
+                sealed,
                 input.name?.trim() ?? "Default",
                 input.expiresAt ?? null,
                 input.model === undefined && input.maxAgents !== undefined
@@ -114,13 +130,15 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
           }
         }
         if (input.model !== undefined) {
-          let models: readonly string[] =
-            kind === "morph"
-              ? COMPATIBLE_MODEL_PROVIDERS.morph.models.flatMap((model) => [model, `armada/${model}`])
-              : Object.values(HARNESS_CATALOG)
-                  .filter((h) => (h.credentialKinds as readonly string[]).includes(kind))
-                  .flatMap((h) => h.models.map((m) => m.id));
+          let models: readonly string[] = harnessesForCredential(kind).flatMap((harness) =>
+            MODEL_CATALOG[harness].models.map((model) => model.id),
+          );
           const encrypted = existing.rows[0]?.value_enc;
+          const morphValue = kind === "morph" ? (input.action === "set" ? sealed : encrypted) : undefined;
+          if (morphValue) {
+            const raw = await decryptSecret(new Uint8Array(morphValue), encryptionKey);
+            models = connectionModels(kind, raw).flatMap(({ model }) => [model, `armada/${model}`]);
+          }
           if (encrypted && (kind === "openai" || kind === "anthropic" || kind === "opencode")) {
             const raw = await decryptSecret(new Uint8Array(encrypted), encryptionKey);
             if (raw.startsWith("{")) {
@@ -136,7 +154,7 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
                 : [];
             }
           }
-          if (!models.includes(input.model))
+          if (!models.includes(input.model) && !(kind === "morph" && input.maxAgents === null))
             throw new VaultError("invalid", `Account cannot serve model ${input.model}.`);
           await tx.query(
             "update public.credentials set model_limits=case when $3::integer is null then model_limits-$2::text else jsonb_set(model_limits,array[$2::text],to_jsonb($3::integer)) end where id=$1",
@@ -267,7 +285,7 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
       }
     },
 
-    async upsertCredential(scope, ownerId, kind, valueEnc, actorId) {
+    async upsertCredential(scope, ownerId, kind, valueEnc, actorId, encryptionKey) {
       if (kind !== "boat" && kind !== "modal" && kind !== "skillpack") {
         if (!sql.transaction) throw new VaultError("unavailable", "Credential writes require a transaction.");
         await sql.transaction(async (tx) => {
@@ -285,8 +303,8 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
               if (!admin.rows.length) throw new VaultError("forbidden", "Only an org admin can do that.");
             }
           }
-          const found = await tx.query<{ id: string }>(
-            "select id from public.credentials where scope=$1::public.credential_scope and owner_id=$2 and kind=$3::public.credential_kind and status <> 'deleted' for update",
+          const found = await tx.query<{ id: string; value_enc: Uint8Array }>(
+            "select id, value_enc from public.credentials where scope=$1::public.credential_scope and owner_id=$2 and kind=$3::public.credential_kind and status <> 'deleted' for update",
             [scope, ownerId, kind],
           );
           if (found.rows.length > 1) throw new VaultError("conflict", "Multiple accounts: specify an account id.");
@@ -295,12 +313,17 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
             [scope, ownerId, JSON.stringify(accountKinds(kind))],
           );
           if (ambiguous.rows.length) throw new VaultError("conflict", "Multiple accounts: specify an account id.");
-          if (found.rows[0])
+          const existing = found.rows[0];
+          if (existing) {
+            const sealed =
+              kind === "morph" && actorId !== undefined
+                ? await preserveMorphModels(existing.value_enc, valueEnc, encryptionKey)
+                : valueEnc;
             await tx.query("update public.credentials set value_enc=$2::bytea,status='active' where id=$1", [
-              found.rows[0].id,
-              valueEnc,
+              existing.id,
+              sealed,
             ]);
-          else
+          } else
             await tx.query(
               "insert into public.credentials(scope,owner_id,kind,value_enc,max_agents) values($1::public.credential_scope,$2,$3::public.credential_kind,$4::bytea,$5)",
               [scope, ownerId, kind, valueEnc, defaultAccountMaxAgents(kind)],

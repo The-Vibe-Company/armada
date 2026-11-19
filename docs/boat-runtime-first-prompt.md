@@ -25,8 +25,7 @@ Launch through `POST /api/v1/sandbox/launch` with
 `runtimeVersion:1`, `boatRuntime:true`, `provider:"boat"`, `harness:"codex"`,
 authorized org/golden/account; the initial prompt is optional. Skip skill defaults; remote
 HTTP/SSE MCP uses the standard `connections` selection or registry
-`defaultForLaunch` defaults as described below. There is no CLI launch flag. On older servers, use
-`sandbox/launch-runtime-v1`. See the [launch route compatibility window](launch-idempotency.md#launch-route-compatibility).
+`defaultForLaunch` defaults as described below. See [explicit runtime launch](launch-idempotency.md#explicit-runtime-launch).
 
 The immutable `sandboxes.boat_runtime` decision is recorded at insert. Persisted
 owner, model/account version, cwd and provider identity govern later routing;
@@ -56,7 +55,7 @@ by the model-only milestone.
 
 `POST /api/v1/sandbox/send` (MCP `send`) wakes a checkpointed stopped runtime
 through the existing resume path and preserves its absolute expiry. It requires a stable
-`request_id` UUID and the existing `conversation_id`. Only the owner can send;
+`request_id` UUID. Only the owner can send;
 current membership, active pinned account/version, logical expiry and runtime
 epoch are revalidated. Wait for the previous prompt's finished event before
 another send; the runtime performs the final busy check.
@@ -70,7 +69,7 @@ command receipt means admission, not a completed assistant answer.
 
 ## Checkpoint, stop and explicit resume
 
-Owner API `POST /api/v1/sandbox/checkpoint-runtime-v1` / MCP `runtime_checkpoint`:
+Owner API `POST /api/v1/sandbox/checkpoint-runtime-v1`:
 
 ```json
 {"id":"SANDBOX_UUID","request_id":"OPERATION_UUID","runtimeVersion":1}
@@ -93,10 +92,10 @@ disk. Follow with ordinary `sandbox/stop` and confirm physical stop separately.
 Raw stop still cleans compute but does not claim a checkpoint. Reuse requires a
 same-current-epoch receipt whose final prefix still matches after stop fencing.
 
-Owner API `POST /api/v1/sandbox/resume-runtime-v1` / MCP `runtime_resume`:
+Owner API `POST /api/v1/sandbox/resume-runtime-v1`:
 
 ```json
-{"id":"SANDBOX_UUID","request_id":"OPERATION_UUID","runtimeVersion":1,"conversation_id":"EXISTING_UUID","prompt":"Continue the previous conversation."}
+{"id":"SANDBOX_UUID","request_id":"OPERATION_UUID","runtimeVersion":1,"prompt":"Continue the previous conversation."}
 ```
 
 This is **one explicit same-VM activation**, never a fork, new sandbox or implicit
@@ -119,14 +118,13 @@ No general repair/rebind service or native fallback is implied.
 
 ## GitHub refresh and automatic remote MCP
 
-After runtime readiness, the owner calls `github_refresh` /
-`POST /api/v1/github/refresh` with `{"id":"SANDBOX_UUID"}`. The private
+After runtime readiness, the owner calls `POST /api/v1/github/refresh` with `{"id":"SANDBOX_UUID"}`. The private
 `configureGitHub` command installs runtime-owned Git/gh identity and just-in-time
 helpers, scoped only to golden repositories and the connected owner's GitHub App
 access. No Boat prompt/exec/SSH credential setup is used. Private credential
 delivery rechecks current membership, connection and runtime epochs.
 
-`runtime_github_status` / `POST /api/v1/github/runtime-status` returns safe
+`POST /api/v1/github/runtime-status` returns safe
 epoch/revision/configured state and acquisition count, not GitHub connectivity.
 Checkpoint, stop, disconnect and new enrolment invalidate authority. **Refresh
 again after resume**; old wrappers are redaction-only before restore. A positive
@@ -165,8 +163,9 @@ Older check/server combinations fail before allocation, not a compatibility mode
 
 ## Diagnostics and recovery
 
-Server `event:"armada.runtime.stage"` logs contain only authenticated sandbox ID,
-epoch and fixed stages: `bootstrap_started`, `artifact_verified`, `enrolled`,
+Server `event:"armada.runtime.stage"` logs record the sandbox ID, epoch, server
+observation time (`observedAtMs`), and a fixed reason when present. Fixed stages
+include `bootstrap_started`, `artifact_verified`, `enrolled`,
 `harness_started`, `first_event`, `bootstrap_failed`, `runtime_failed`, or startup
 failure by bootstrap/enrolment/readiness phase. Stage reports are best effort,
 not inference proof. `first_event` means archive commit, possibly only queued state.
@@ -493,7 +492,7 @@ slice changes resumed-turn preparation, not launch.
 Ordinary Boat launches honor the server default selection with or without a
 prompt. An idle runtime launch completes workspace/GitHub, skills, MCP and final
 admission before publishing `ready`, with no conversation or inference. Its first
-normal `send` (omit `conversation_id`) opens one conversation, then follows the
+normal `send` opens one conversation, then follows the
 same account, epoch, activity-lease and durable-command rules as later sends.
 A competing first send cannot create another conversation. Reuse the original
 request ID and identical payload after uncertainty; an accepted replay neither
@@ -597,10 +596,13 @@ installation, new public flag or mutable-source lookup is used. Resume uses the
 same manifest projection before the retained machine activates; source edits do
 not change the admitted values. Native launches remain unchanged.
 
-Application-secret bindings still refuse before allocation. This slice does not
-enable raw secret delivery, scoped child/helper launches or a
-runtime default switch. Reserved keys, mismatched account/provider/actor metadata
-and corrupted frozen manifests refuse rather than becoming an empty environment.
+Authorized application-secret bindings use the shared encrypted runtime
+configuration command after enrolment and before the first prompt. The runtime
+receives the secret key names for redaction and delivers the values to the
+selected harness. Manifests and bootstrap carry no application-secret values.
+Invalid pins use the same vault conflict as Modal and Docker. Reserved keys,
+mismatched account/provider/actor metadata and corrupted frozen manifests
+also refuse.
 
 Coordinator-only production acceptance after normal release: use the existing
 Boat runtime-default server deployment and an existing Boat Codex or Claude
@@ -609,9 +611,13 @@ template with a non-secret readable binding (no secret bindings). Launch through
 and confirm the exact admitted value. Change the source variable, stop the
 sandbox, and wake it through ordinary send: the admitted value must be preserved.
 Repeat for an existing routine referencing that template. Confirm launch logs
-are `source:armada-runtime`. A secret-bound template must still refuse without
-allocating. Use only existing authorized resources; no worker production access
-or provider call was performed, and Boat is never a staging/release-gate probe.
+are `source:armada-runtime`. For a separate template with an authorized
+disposable secret binding, verify the value in the selected harness by
+comparison without printing it. Check that the raw value is absent from launch
+receipts, logs and events. Revoke the disposable vault secret, then launch the
+same pinned template revision with a new request key and confirm the vault
+conflict before allocation. Use only existing authorized resources.
+Boat stays outside staging and release acceptance.
 
 ### Repeating launch settings on Boat follow-up
 
@@ -707,7 +713,8 @@ configuration. Boat now uses that same runtime machinery: empty fork environment
 encrypted enrolment carrying the key and endpoint descriptor, persisted model and
 immutable runtime selection for subsequent turns. Keys are not put in Boat account
 environment, public arguments or the golden. OpenCode support is described separately
-above; custom endpoint routing does not broaden template application-secret delivery.
+above. Template application-secret delivery follows the same enrolled admission
+and redaction rules described above.
 
 Coordinator-only production acceptance after a normal release: with existing Boat
 golden and Morph accounts, launch Claude and Codex through ordinary launch, verify

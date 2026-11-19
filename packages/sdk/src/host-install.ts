@@ -1,3 +1,5 @@
+import { DOCKER_HOST_PROTOCOL, DOCKER_HOST_PROTOCOL_HEADER } from "@armada/core";
+
 /** Internal installer API. Keep artifact inspection and machine changes with the caller. */
 export function hostInstallClient(server: string, fetch: (input: string, init?: RequestInit) => Promise<Response>) {
   async function request(path: string, init?: RequestInit) {
@@ -12,7 +14,11 @@ export function hostInstallClient(server: string, fetch: (input: string, init?: 
     reuseRegistration: (token: string, hostId: string) =>
       request("/api/docker-host/reuse-registration", {
         method: "POST",
-        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          [DOCKER_HOST_PROTOCOL_HEADER]: String(DOCKER_HOST_PROTOCOL),
+        },
         body: JSON.stringify({ hostId }),
       }),
   };

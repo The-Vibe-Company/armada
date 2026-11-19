@@ -1,9 +1,8 @@
 import { expect, test } from "bun:test";
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { useLaunchAccess } from "../src/components/launch-tools";
+import { mcpFact, useLaunchAccess } from "../src/components/launch-dialog";
 import { CONNECTION_CHOICE_FIELD, launchSelection, type McpConnection } from "../src/lib/connections";
-import { launchToolsSummary } from "../src/lib/launch-composer";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const connection: McpConnection = {
@@ -21,8 +20,7 @@ function Form() {
   return (
     <form>
       <input name={CONNECTION_CHOICE_FIELD} value={access.explicit ? "explicit" : "defaults"} readOnly />
-      <span>{launchToolsSummary(access)}</span>
-      {access.inputs}
+      <span>{mcpFact(access)}</span>
       {access.fields("launch")}
     </form>
   );
@@ -32,22 +30,21 @@ test("Docker launch tools show the default and removing it produces an explicit 
   await act(async () => {
     renderer = create(createElement(Form));
   });
-  const toolSwitch = () => renderer.root.findAll((node) => node.type === "button" && node.props.role === "switch")[0]!;
-  expect(toolSwitch().props["aria-checked"]).toBe(true);
-  expect(renderer.root.findByProps({ name: "connections" }).props.value).toBe(connection.id);
+  const checkbox = () =>
+    renderer.root.findAll(
+      (node) => node.props.name === "connections" && typeof node.props.onCheckedChange === "function",
+    )[0]!;
+  expect(checkbox().props.checked).toBe(true);
   expect(JSON.stringify(renderer.toJSON())).toContain("Example tool connected");
   await act(async () => {
-    toolSwitch().props.onClick();
+    checkbox().props.onCheckedChange(false);
   });
-  expect(toolSwitch().props["aria-checked"]).toBe(false);
-  expect(renderer.root.findByProps({ "aria-label": "On for this launch" }).findByType("button").props.id).toBe(
-    "launch-connection-tool_one",
-  );
+  expect(checkbox().props.checked).toBe(false);
   expect(renderer.root.findByProps({ name: CONNECTION_CHOICE_FIELD }).props.value).toBe("explicit");
   expect(
     launchSelection({
       connections: renderer.root
-        .findAll((node) => node.type === "input" && node.props.name === "connections")
+        .findAll((node) => node.type === "input" && node.props.name === "connections" && node.props.checked)
         .map((node) => node.props.value),
       available: [connection],
     }),
@@ -90,27 +87,22 @@ test("empty Docker machine launch exposes the same authorized tools", async () =
   const { renderToStaticMarkup } = await import("react-dom/server");
   const { AppRouterContext } = await import("next/dist/shared/lib/app-router-context.shared-runtime");
   const { DockerLaunchForm } = await import("../src/components/docker-launch");
-  const { Dialog } = await import("../src/components/ui/dialog");
   const markup = renderToStaticMarkup(
     createElement(
       AppRouterContext.Provider,
       {
         value: {} as NonNullable<React.ContextType<typeof AppRouterContext>>,
       },
-      createElement(
-        Dialog,
-        {},
-        createElement(DockerLaunchForm, {
-          orgId: "org_one",
-          hostId: "host_one",
-          hostName: "Host",
-          accounts: { state: "unavailable", reason: "unavailable" },
-          connections: { connections: [connection] },
-          unavailable: [],
-          harnesses: ["codex"],
-          initialHarness: "codex",
-        }),
-      ),
+      createElement(DockerLaunchForm, {
+        orgId: "org_one",
+        hostId: "host_one",
+        hostName: "Host",
+        accounts: { state: "unavailable", reason: "unavailable" },
+        connections: { connections: [connection] },
+        unavailable: [],
+        harnesses: ["codex"],
+        initialHarness: "codex",
+      }),
     ),
   );
   expect(markup).toContain("Example tool connected");

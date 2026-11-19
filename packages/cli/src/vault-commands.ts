@@ -27,12 +27,39 @@ import { control } from "./control.ts";
 import { invitationCommand } from "./invitation-commands.ts";
 import { validateNativeCodexAuth } from "./native-login-protocol.ts";
 import { nativeCodexLogin } from "./native-model-login.ts";
+import type { Deps } from "./run.ts";
+import { promptSecret } from "./secret-input.ts";
 
 export interface VaultIo {
   auth: AuthIo;
   readFile: (path: string) => Promise<string>;
   /** The secret from piped stdin or a hidden terminal prompt. */
   readStdin: () => Promise<string>;
+}
+
+type ListedCredential = CredentialInfo & {
+  exhaustedUntil?: string;
+  monthlySpend?: { periodStart: string; usd: string; unpricedTurns: number };
+};
+
+export function vaultIo(auth: AuthIo, deps: Pick<Deps, "readFile" | "readStdin">, strictUtf8 = false) {
+  return {
+    auth,
+    readFile:
+      deps.readFile ??
+      (async (path) =>
+        strictUtf8
+          ? new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(await Bun.file(path).arrayBuffer())
+          : Bun.file(path).text()),
+    readStdin:
+      deps.readStdin ??
+      (async () => {
+        if (process.stdin.isTTY) return promptSecret();
+        return strictUtf8
+          ? new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(await Bun.stdin.arrayBuffer())
+          : Bun.stdin.text();
+      }),
+  } satisfies VaultIo;
 }
 
 export async function orgCommand(argv: readonly string[], io: VaultIo): Promise<number> {
@@ -494,7 +521,10 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
     }
     case "list": {
       expect(args.positionals, 0, "armada creds list [--org <name>]");
-      const listed = await control<{ user: CredentialInfo[]; orgs: OrgCredentials[] }>(io.auth, "creds/list", { org });
+      const listed = await control<{
+        user: ListedCredential[];
+        orgs: (Omit<OrgCredentials, "credentials"> & { credentials: ListedCredential[] })[];
+      }>(io.auth, "creds/list", { org });
       if (flag(args, "--json")) {
         io.auth.out(`${JSON.stringify(listed)}\n`);
         return 0;
@@ -565,19 +595,30 @@ async function readValue(args: ReturnType<typeof parseArgs>, io: VaultIo): Promi
   }
 }
 
-function section(title: string, rows: CredentialInfo[]): string {
+function monthlyApiSpend(row: ListedCredential) {
+  if (!row.id || (row.kind !== "openai" && row.kind !== "anthropic" && row.kind !== "opencode")) return "";
+  const spend = row.monthlySpend;
+  const unpriced = spend?.unpricedTurns ?? 0;
+  const usd = spend && (spend.usd !== "0" || unpriced === 0) ? spend.usd : "—";
+  const note = unpriced > 0 ? ` (${unpriced} unpriced ${unpriced === 1 ? "turn" : "turns"})` : "";
+  return `  API: ${usd} USD this month${note}`;
+}
+
+function section(title: string, rows: ListedCredential[]): string {
   if (rows.length === 0) return `${title}: none`;
-  const lines = rows.map(
-    (row) =>
-      `  ${credentialName(row.kind)}${row.id ? `  ${row.id}  ${row.name}  ${row.status}${row.isDefault ? " (default)" : ""}` : ""}${row.id ? `  ${row.runningAgents ?? 0} working / ${row.waitingAgents ?? 0} waiting-for-slot / ${row.maxAgents ?? "unlimited"} max` : ""}${Object.entries(
-        row.modelCounts ?? {},
+  const lines = rows.map((row) => {
+    const exhaustion = row.exhaustedUntil
+      ? `  exhausted until ${row.exhaustedUntil.slice(0, 16).replace("T", " ")} UTC`
+      : "";
+    return `  ${credentialName(row.kind)}${row.id ? `  ${row.id}  ${row.name}  ${row.status}${row.isDefault ? " (default)" : ""}` : ""}${row.id ? `  ${row.runningAgents ?? 0} working / ${row.waitingAgents ?? 0} waiting-for-slot / ${row.maxAgents ?? "unlimited"} max` : ""}${exhaustion}${monthlyApiSpend(row)}${Object.entries(
+      row.modelCounts ?? {},
+    )
+      .map(
+        ([model, counts]) =>
+          `\n    ${model}: ${counts.runningAgents} working / ${counts.waitingAgents} waiting / ${row.modelLimits?.[model] ?? "unlimited"} max`,
       )
-        .map(
-          ([model, counts]) =>
-            `\n    ${model}: ${counts.runningAgents} working / ${counts.waitingAgents} waiting / ${row.modelLimits?.[model] ?? "unlimited"} max`,
-        )
-        .join("")}${row.createdAt ? `  ${row.createdAt.slice(0, 10)}` : ""}`,
-  );
+      .join("")}${row.createdAt ? `  ${row.createdAt.slice(0, 10)}` : ""}`;
+  });
   return `${title}:\n${lines.join("\n")}`;
 }
 

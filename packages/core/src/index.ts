@@ -1,5 +1,14 @@
 export { accountBindingAvailability, NATIVE_ACCOUNT_CHANGE_UNSUPPORTED } from "./account-binding-policy.ts";
 export {
+  type AccountCandidate,
+  type AccountChoice,
+  type AccountPool,
+  type AccountPoolFacts,
+  type AccountRefusal,
+  type AccountSkip,
+  choose,
+} from "./account-pool.ts";
+export {
   API_FAILURE_HELP,
   API_FAILURE_STATUS,
   type ApiFailureCode,
@@ -18,7 +27,6 @@ export {
 export { CLAUDE_ENDPOINT_ENV, type ClaudeEndpoint, parseClaudeEndpoint } from "./claude-endpoint.ts";
 export { CLIENT_CONFIG_PATH, type ClientConfig } from "./client-config.ts";
 export { CODEX_ENDPOINT_ENV, type CodexEndpoint, parseCodexEndpoint } from "./codex-endpoint.ts";
-export { COMPATIBLE_MODEL_PROVIDERS } from "./compatible-providers.ts";
 export {
   type CatalogModel,
   CONNECTION_PRESETS,
@@ -118,12 +126,11 @@ export {
   type DockerSnapshotRecord,
 } from "./docker-api.ts";
 export { DOCKER_HOST_DRAINING_MESSAGE } from "./docker-host-drain.ts";
-export { dockerHostResourceDisplay, validDockerHostResources } from "./docker-host-resources-view.ts";
 export {
-  DOCKER_HOST_SNAPSHOT_BASELINE_HEADER,
-  dockerHostMeetsVersion,
-  dockerHostUpgradeMessage,
-} from "./docker-host-upgrade.ts";
+  DOCKER_HOST_PROTOCOL,
+  DOCKER_HOST_PROTOCOL_HEADER,
+} from "./docker-host-protocol.ts";
+export { dockerHostResourceDisplay, validDockerHostResources } from "./docker-host-resources-view.ts";
 export {
   DOCKER_LOCAL_IMAGE_LABELS,
   type DockerSnapshotBinding,
@@ -271,12 +278,7 @@ export {
   recordLaunchStageSql,
   summarizeLaunch,
 } from "./launch-stages.ts";
-export {
-  type LaunchWorkdir,
-  repositoryIdentity,
-  resolveLaunchWorkdir,
-  resolveLaunchWorkdirAt,
-} from "./launch-workdir.ts";
+export { type LaunchWorkdir, resolveLaunchWorkdir, resolveLaunchWorkdirAt } from "./launch-workdir.ts";
 export * from "./machine-size.ts";
 export { MCP_CATALOG, type McpCatalogId } from "./mcp-catalog.ts";
 export * from "./mcp-launch-selection.ts";
@@ -336,6 +338,7 @@ export {
   turnInterruptionReason,
 } from "./outcome.ts";
 export { codexPlanLimit, type PlanLimit, planLimitData, planLimitFromMessage, planLimitMessage } from "./plan-limit.ts";
+export { MORPH_MODEL_IDS } from "./pricing/model-options.generated.ts";
 export {
   type AgentEvent,
   type CreateGoldenRequest,
@@ -361,6 +364,7 @@ export {
   ProviderError,
   type ProviderErrorCode,
   type ProviderErrorInit,
+  type ProviderInventoryMachine,
   type ResumeStageObserver,
   SANDBOX_STATES,
   type SandboxInfo,
@@ -378,7 +382,6 @@ export {
   goldenCompatibilityIds,
   goldenResponse,
   launchGitHubResponse,
-  launchResponse,
   sandboxIdentity,
 } from "./provider-response.ts";
 export {

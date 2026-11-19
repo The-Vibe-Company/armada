@@ -55,8 +55,8 @@ async function fixture() {
   const ops: string[] = [];
   // When set, the runtime holds its queue until the gate opens (a slow in-flight read).
   const hold: { gate: Promise<void> | null; onWait?: () => void } = { gate: null };
-  // When set, the runtime answers HTTP 200 with this result instead of its directory read.
-  const forced: { result?: unknown } = {};
+  // Override the runtime response for cases that exercise the wire contract.
+  const forced: { result?: unknown; error?: string } = {};
   let loop = Promise.resolve();
   // The reader's poll wait stands in for the runtime's command loop: it takes the head command
   // over the real session fence and answers it with the runtime's own directory read.
@@ -78,7 +78,7 @@ async function fixture() {
     if (!command) return;
     ops.push(command.op);
     let result = forced.result;
-    if (!("result" in forced)) {
+    if (!("result" in forced) && !forced.error) {
       if (command.op !== "readOutputs" || command.part === undefined) {
         result = { files: await readOutputDirectory(outputs) };
       } else {
@@ -91,8 +91,8 @@ async function fixture() {
     await runtime.complete(session.runtimeToken, session.epoch, {
       epoch: session.epoch,
       requestId: command.requestId,
-      status: 200,
-      body: { version: 1, requestId: command.requestId, result },
+      status: forced.error ? 409 : 200,
+      body: forced.error ? { error: forced.error } : { version: 1, requestId: command.requestId, result },
     });
   }
   const reader = createDockerOutputReader(sql, ENCRYPTION_KEY, clock);
@@ -242,6 +242,22 @@ test("a well-formed Docker read reply that Armada rejects keeps the snapshot and
         outcome: "error",
       }),
     ]);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("a Docker runtime directory limit is recorded as output_limit", async () => {
+  const f = await fixture();
+  try {
+    f.forced.error = "output_limit";
+    expect(await f.service.reconcileOne(new AbortController().signal)).toBe(true);
+    await f.service.drain();
+    const { rows } = await f.db.query<{ outputs_failure_reasons: string[] }>(
+      "select outputs_failure_reasons from sandboxes where id=$1",
+      [f.id],
+    );
+    expect(rows[0]?.outputs_failure_reasons).toEqual(["output_limit"]);
   } finally {
     f.cleanup();
   }

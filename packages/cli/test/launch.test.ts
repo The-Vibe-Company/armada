@@ -15,20 +15,25 @@ describe("launch command", () => {
   test("bad flags and a missing credential fail before anything starts", async () => {
     const calls: string[] = [];
     const base = { auth: offlineAuth(calls) };
-    expect((await capture(["launch", "web"], base)).err).toContain("Pass --agent claude or codex");
-    expect((await capture(["launch", "web", "--agent", "not-a-harness"], base)).code).toBe(2);
-    expect((await capture(["launch", "web", "--agent", "claude", "--ttl", "soon"], base)).err).toContain(
-      "is not a duration",
+    expect((await capture(["launch", "web", "--provider", "boat"], base)).err).toContain(
+      "Pass --agent claude or codex",
     );
-    expect((await capture(["launch", "--agent", "claude"], base)).code).toBe(2);
-    expect((await capture(["launch", "web", "--agent", "claude", "a", "b"], base)).code).toBe(2);
+    expect((await capture(["launch", "web", "--provider", "boat", "--agent", "not-a-harness"], base)).code).toBe(2);
+    expect(
+      (await capture(["launch", "web", "--provider", "boat", "--agent", "claude", "--ttl", "soon"], base)).err,
+    ).toContain("is not a duration");
+    expect((await capture(["launch", "--provider", "boat", "--agent", "claude"], base)).code).toBe(2);
+    expect((await capture(["launch", "web", "--provider", "boat", "--agent", "claude", "a", "b"], base)).code).toBe(2);
     const repeatedRepo = await capture(
-      ["launch", "web", "--agent", "claude", "--repo", "acme/web", "--repo", "acme/api"],
+      ["launch", "web", "--provider", "boat", "--agent", "claude", "--repo", "acme/web", "--repo", "acme/api"],
       base,
     );
     expect(repeatedRepo.code).toBe(2);
     expect(repeatedRepo.err).toContain("--repo can only be set once.");
-    const effort = await capture(["launch", "web", "--agent", "claude", "--reasoning-effort", "ultra"], base);
+    const effort = await capture(
+      ["launch", "web", "--provider", "boat", "--agent", "claude", "--reasoning-effort", "ultra"],
+      base,
+    );
     expect(effort.err).toContain("Use one of: low, medium, high, xhigh, max");
     expect(calls).toEqual([]);
   });

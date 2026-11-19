@@ -1,6 +1,6 @@
+import { accountIneligibility } from "./account-pool.ts";
 import { CLAUDE_ENDPOINT_ENV, parseClaudeEndpoint } from "./claude-endpoint.ts";
 import { CODEX_ENDPOINT_ENV, parseCodexEndpoint } from "./codex-endpoint.ts";
-import { COMPATIBLE_MODEL_PROVIDERS } from "./compatible-providers.ts";
 import type { Harness, Visibility } from "./contract.ts";
 import { decryptSecret, EncryptionKeyError } from "./crypto.ts";
 import type { CredentialKind, CredentialScope } from "./database.types.ts";
@@ -14,6 +14,7 @@ import {
   parseConnectionModels,
   parseOpenCodeEndpoint,
 } from "./opencode-endpoint.ts";
+import { MORPH_ENDPOINTS, MORPH_MODEL_IDS } from "./pricing/model-options.generated.ts";
 import { SKILLPACK_TOKEN_PATTERN } from "./skillpack-token.ts";
 import { redactKnownTokens } from "./token-redaction.ts";
 import type { UsagePricingContext } from "./usage-pricing.ts";
@@ -31,6 +32,7 @@ export interface CredentialBinding {
 export interface HarnessCredentials {
   /** Server-only pricing metadata from the same sealed/bound account; never harness configuration. */
   modelPrices?: ModelPriceOverrides;
+  morphModels?: readonly string[];
   /** Server-generated, secret-free price catalog pinned for a new session, not sandbox environment. */
   usagePricing?: UsagePricingContext;
   binding?: CredentialBinding;
@@ -60,6 +62,7 @@ export function toHarnessCredentials(resolved: ResolvedCredentials, github?: Git
   return {
     ...(resolved.binding ? { binding: resolved.binding } : {}),
     ...(resolved.modelPrices ? { modelPrices: resolved.modelPrices } : {}),
+    ...(resolved.morphModels ? { morphModels: resolved.morphModels } : {}),
     env,
     secrets,
     codexAuthJson: auth !== undefined,
@@ -160,6 +163,7 @@ export function parseCredentialValue(kind: CredentialKind, raw: string): string 
       "A Skillpack token starts with cmp_pat_ followed by 48 lowercase hexadecimal characters.",
     );
   }
+  if (kind === "morph" && value.startsWith("{")) return JSON.stringify(parseMorphAccount(value));
   if (kind === "opencode" && value.startsWith("{")) {
     try {
       const { endpoint, apiKey, prices, ...extra } = JSON.parse(value);
@@ -248,6 +252,19 @@ export function parseCredentialValue(kind: CredentialKind, raw: string): string 
     throw new VaultError("invalid", "A key has no spaces or line breaks. Check what you pasted.");
   }
   return value;
+}
+
+function parseMorphAccount(value: string) {
+  if (!value.trimStart().startsWith("{")) {
+    return { apiKey: parseCredentialValue("morph", value), models: [...MORPH_MODEL_IDS] };
+  }
+  try {
+    const { apiKey, models, ...extra } = JSON.parse(value);
+    if (Object.keys(extra).length || typeof apiKey !== "string" || apiKey.trimStart().startsWith("{")) throw Error();
+    return { apiKey: parseCredentialValue("morph", apiKey), models: parseConnectionModels(models) };
+  } catch {
+    throw new VaultError("invalid", "A Morph connection requires an API key and 1–32 exact model IDs.");
+  }
 }
 
 /** A Modal token: its id and its secret, which only work together. Stored as one row, so never mixed. */
@@ -396,6 +413,7 @@ export interface CredentialReader {
 
 export interface ResolvedCredentials {
   modelPrices?: ModelPriceOverrides;
+  morphModels?: readonly string[];
   binding?: CredentialBinding;
   /** Variables to put in the sandbox environment at launch. Never in the golden. */
   env: Record<string, string>;
@@ -439,18 +457,21 @@ export async function resolveCredentials(
             ? candidates[0]
             : undefined;
     if (!row) throw new VaultError("conflict", "Multiple compatible accounts: choose credentialId or set a default.");
-    if (!kinds.includes(row.kind)) {
-      const supported = harnessesForCredential(row.kind).map((id) => HARNESS_CATALOG[id].label);
+    const harnesses = harnessesForCredential(row.kind);
+    const reason = accountIneligibility(
+      { scope, version: row.version ?? 1, status: row.status ?? "active", expiresAt: row.expiresAt, harnesses },
+      input.harness,
+      Date.now(),
+      input.credentialVersion,
+    );
+    if (reason?.code === "incompatible_harness") {
+      const supported = harnesses.map((id) => HARNESS_CATALOG[id].label);
       throw new VaultError(
         "invalid",
         `This account cannot drive ${HARNESS_CATALOG[input.harness].label}. This account works with ${supported.join(" and ") || "no coding harness"}; for ${HARNESS_CATALOG[input.harness].label} use ${kinds.map(credentialName).join(" or ")}.`,
       );
     }
-    if (
-      (row.status !== undefined && row.status !== "active") ||
-      (row.expiresAt && new Date(row.expiresAt).getTime() <= Date.now()) ||
-      (input.credentialVersion !== undefined && row.version !== input.credentialVersion)
-    ) {
+    if (reason || (input.credentialVersion !== undefined && row.version === undefined)) {
       throw new VaultError(
         "credential_refused",
         "The selected credential is expired, revoked or changed. No fallback was used.",
@@ -505,8 +526,11 @@ export interface ConnectionModelInfo {
  */
 export function connectionModels(kind: CredentialKind, plaintext: string): ConnectionModelInfo[] {
   if (kind === "morph") {
-    parseCredentialValue(kind, plaintext);
-    return COMPATIBLE_MODEL_PROVIDERS.morph.models.map((model) => ({ model, input: null, output: null }));
+    try {
+      return parseMorphAccount(plaintext).models.map((model) => ({ model, input: null, output: null }));
+    } catch {
+      return [];
+    }
   }
   if ((kind !== "opencode" && kind !== "openai") || !plaintext.trimStart().startsWith("{")) return [];
   let parsed: { endpoint?: { models?: string[] }; models?: string[]; prices?: ModelPriceOverrides };
@@ -574,29 +598,36 @@ function open(sealed: Uint8Array, encryptionKey: string | undefined): Promise<st
 function deliver(kind: CredentialKind, scope: CredentialScope, value: string, harness: Harness): ResolvedCredentials {
   const source = { kind, scope };
   if (kind === "morph") {
-    const provider = COMPATIBLE_MODEL_PROVIDERS[kind];
+    const { apiKey, models } = parseMorphAccount(value);
     if (harness === "opencode") {
       return {
         env: {
-          OPENCODE_API_KEY: parseCredentialValue(kind, value),
+          OPENCODE_API_KEY: apiKey,
           [OPENCODE_ENDPOINT_ENV]: JSON.stringify({
             version: 1,
-            baseUrl: provider.codex.baseUrl,
-            models: provider.models,
+            baseUrl: MORPH_ENDPOINTS.codex.baseUrl,
+            models,
           }),
         },
         files: [],
         sources: [source],
+        morphModels: models,
       };
     }
     const claude = harness === "claude";
+    const aliases = Object.fromEntries(
+      Object.entries(MORPH_ENDPOINTS.claude.aliases).filter(([, model]) => models.includes(model)),
+    );
     return {
       env: {
-        [claude ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY"]: parseCredentialValue(kind, value),
-        [claude ? CLAUDE_ENDPOINT_ENV : CODEX_ENDPOINT_ENV]: JSON.stringify(claude ? provider.claude : provider.codex),
+        [claude ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY"]: apiKey,
+        [claude ? CLAUDE_ENDPOINT_ENV : CODEX_ENDPOINT_ENV]: JSON.stringify(
+          claude ? { ...MORPH_ENDPOINTS.claude, aliases } : MORPH_ENDPOINTS.codex,
+        ),
       },
       files: [],
       sources: [source],
+      morphModels: models,
     };
   }
   if (kind === "opencode" && value.startsWith("{")) {

@@ -1,6 +1,6 @@
 import { type AgentEvent, isFinalPromptStatus, type Sql } from "@armada/core/server";
 import { hostDrainingSql } from "./docker-host-drain.ts";
-import { dockerHostSupportsResume } from "./docker-host-version.ts";
+import { supportsDockerHostProtocol } from "./docker-host-version.ts";
 import { mergedWorkProof } from "./merged-work.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import { expiredOutputRead } from "./runtime-commands.ts";
@@ -86,11 +86,11 @@ export function createRuntimeIdle(
             owner_id: string;
             org_id: string;
             provider: string;
-            daemon_version: string | null;
+            daemon_protocol: number | null;
             request_id: string | null;
             merge_stop: boolean | null;
           }>(
-            `select s.id,s.owner_id,s.org_id,s.provider::text,h.daemon_version,p.request_id::text,p.merge_stop from public.sandboxes s
+            `select s.id,s.owner_id,s.org_id,s.provider::text,h.daemon_protocol,p.request_id::text,p.merge_stop from public.sandboxes s
            join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
            join public.runtime_enrolments r on r.sandbox_id=s.id
            left join public.runtime_checkpoints p on p.sandbox_id=s.id and p.epoch=r.epoch
@@ -108,7 +108,7 @@ export function createRuntimeIdle(
         for (const row of rows) {
           signal.throwIfAborted();
           cursor = row.id;
-          if (row.provider === "docker" && !dockerHostSupportsResume(row.daemon_version)) continue;
+          if (row.provider === "docker" && !supportsDockerHostProtocol(row.daemon_protocol)) continue;
           try {
             // Avoid creating an intent unless idle; the authoritative check repeats
             // under checkpoint's admission lock, closing the send/exec race.

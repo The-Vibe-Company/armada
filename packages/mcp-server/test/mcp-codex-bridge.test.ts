@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type McpBootstrap, nativeMcpInstallScript } from "../src/mcp-native.ts";
 
-import { installEnvironment, installProtocolWrapper } from "./mcp-codex-bridge-fixture.ts";
+import { installEnvironment, installProtocolWrapper } from "./mcp-codex-bridge.fixture.ts";
 
 // Distinct bridge ownership: consume ONLY its own reload acknowledgement, preserve
 // unrelated responses/notifications and fail one request closed without killing peers.

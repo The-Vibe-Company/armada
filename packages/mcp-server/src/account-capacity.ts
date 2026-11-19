@@ -1,19 +1,57 @@
-import { ACCOUNT_WORKING_PREDICATE, accountWorkingCountSql, type Sql, VaultError } from "@armada/core/server";
+import {
+  ACCOUNT_WORKING_PREDICATE,
+  accountWorkingCountSql,
+  type CredentialBinding,
+  type Sql,
+  VaultError,
+} from "@armada/core/server";
 
-/** Caller holds the account row lock. Pending allocations count until their outcome is known. */
-export async function admitAccountCapacity(
+interface CapacityAccount {
+  name: string;
+  max_agents: number | null;
+  model_limits: Record<string, number>;
+}
+
+/** New allocations check quota health before reserving capacity for the resolved binding. */
+export async function admitLaunchAccount(
   tx: Sql,
-  accountId: string,
+  binding: CredentialBinding,
   sandboxId: string,
   model?: string,
-): Promise<void> {
+  now: () => number = Date.now,
+) {
   const account = (
-    await tx.query<{ name: string; max_agents: number | null; model_limits: Record<string, number> }>(
+    await tx.query<CapacityAccount & { resets_at: Date | string | null }>(
+      `select c.name,c.max_agents,c.model_limits,e.resets_at from public.credentials c
+       left join public.account_exhaustion e on e.account_id=c.id and e.account_version=c.version
+       where c.id=$1 and c.version=$2 for update of c`,
+      [binding.credentialId, binding.credentialVersion],
+    )
+  ).rows[0];
+  if (!account) throw new VaultError("credential_refused", "The selected credential changed before launch.");
+  const reset = account.resets_at == null ? undefined : new Date(account.resets_at);
+  if (reset && reset.getTime() > now())
+    throw new VaultError("conflict", `Account ${account.name} is exhausted until ${reset.toISOString()}.`);
+  await reserveAccountCapacity(tx, account, binding.credentialId, sandboxId, model);
+}
+
+export async function admitAccountCapacity(tx: Sql, accountId: string, sandboxId: string, model?: string) {
+  const account = (
+    await tx.query<CapacityAccount>(
       "select name,max_agents,model_limits from public.credentials where id=$1 for update",
       [accountId],
     )
   ).rows[0];
-  if (!account) return;
+  if (account) await reserveAccountCapacity(tx, account, accountId, sandboxId, model);
+}
+
+async function reserveAccountCapacity(
+  tx: Sql,
+  account: CapacityAccount,
+  accountId: string,
+  sandboxId: string,
+  model?: string,
+) {
   if (!Object.keys(account.model_limits ?? {}).length && account.max_agents == null) return;
   if (Object.keys(account.model_limits ?? {}).length)
     model ??= (await tx.query<{ model: string }>("select model from public.sandboxes where id=$1", [sandboxId])).rows[0]
@@ -28,7 +66,7 @@ export async function admitAccountCapacity(
             and q.state='dispatching' and q.dispatch_generation=ended.lifecycle_generation))`,
     [sandboxId, accountId],
   );
-  if (current.rows.length) return; // Replays of accepted work keep their slot after a limit is lowered.
+  if (current.rows.length) return;
   const result = await tx.query<{ running: string | number }>(
     `select ${accountWorkingCountSql("$1", "$2")} as running`,
     [accountId, sandboxId],

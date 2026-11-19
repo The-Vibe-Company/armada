@@ -1,9 +1,10 @@
+import { developmentFixture, e2eFixture, fixtureOrigin } from "./fixture-ports.ts";
 import { assertLocalPortsAvailable } from "./local-ports.ts";
 
 /** Local fixture-only dashboard. Never point this command at a real Armada deployment. */
-const dashboardPort = 3100;
-const mockPort = 54399;
-const mockUrl = `http://127.0.0.1:${mockPort}`;
+const e2e = process.argv[2] === "--e2e";
+const { dashboardPort, mockPort } = e2e ? e2eFixture : developmentFixture;
+const mockUrl = fixtureOrigin(mockPort);
 const env = {
   ...process.env,
   NEXT_PUBLIC_SUPABASE_URL: mockUrl,
@@ -18,7 +19,8 @@ const env = {
   GITHUB_APP_SLUG: "armada-tvc",
   GITHUB_APP_ID: "8675309",
   MOCK_PORT: String(mockPort),
-  DASHBOARD_ORIGIN: `http://127.0.0.1:${dashboardPort}`,
+  DASHBOARD_ORIGIN: fixtureOrigin(dashboardPort),
+  ARMADA_FIXTURE_E2E: e2e ? "1" : "",
   NODE_OPTIONS: "--require=./e2e/github-fetch.cjs",
 };
 
@@ -38,7 +40,7 @@ const stop = () => {
 process.on("SIGINT", stop);
 process.on("SIGTERM", stop);
 console.log(
-  "Fixture-only dashboard on port 3100. Sign in as alice@example.com with code 123456. No real sandboxes are launched.",
+  `Fixture-only dashboard on port ${dashboardPort}. Sign in as alice@example.com with code 123456. No real sandboxes are launched.`,
 );
 try {
   const first = await Promise.race(children.map((child) => child.exited));

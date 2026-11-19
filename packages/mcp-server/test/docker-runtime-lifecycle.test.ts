@@ -116,6 +116,19 @@ async function ready(f: Fixture) {
 
 // These integration tests own the Docker lifecycle composition: concrete host ACK,
 // credential admission, enrolment, encrypted command replay and archive authorization.
+test("Docker readiness rejects an ACK read against an older lifecycle generation", async () => {
+  const f = await fixture();
+  const session = await f.enrol();
+  const row = (
+    await database().query<{ older_generation: string }>(
+      "select (lifecycle_generation-1)::text as older_generation from public.sandboxes where id=$1",
+      [f.sandbox.id],
+    )
+  ).rows[0]!;
+  await denied(service.ready(f.actor, f.sandbox.id, randomUUID(), true, row.older_generation));
+  expect((await commands.next(session.runtimeToken, session.epoch)).command).toBeNull();
+});
+
 test("ACK is not readiness: current epoch health proof alone publishes ready without revoking itself", async () => {
   const f = await fixture(),
     id = randomUUID();

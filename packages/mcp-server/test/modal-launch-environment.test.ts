@@ -8,6 +8,7 @@ import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY, SECRETS } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
+const githubAudit = captureGitHubAuditLogs();
 
 test.each(["claude", "codex"] as const)(
   "GitHub access for %s is immutable launch opt-in, refreshed privately on restore, and never resolved for a golden",
@@ -127,6 +128,26 @@ test.each(["claude", "codex"] as const)(
     expect(restored.execEnv.GH_TOKEN).toBe("ghu-fresh-2");
     expect((harness === "claude" ? restored.claudeEnv : restored.codexEnv).GH_TOKEN).toBe("ghu-fresh-2");
     expect(refreshes).toBe(2);
+    expect(githubAudit.filter((event) => event.event === "github_token_modal_native_bootstrap")).toEqual([
+      {
+        event: "github_token_modal_native_bootstrap",
+        sandboxId: enabled.info.labels.sandbox,
+        generation: 1,
+        ownerId: people.owner,
+        harness,
+        status: "connected",
+        accessExpiresAt: new Date(clock - (7 * 60 + 54) * 60_000 + 28_800_000).toISOString(),
+      },
+      {
+        event: "github_token_modal_native_bootstrap",
+        sandboxId: enabled.info.labels.sandbox,
+        generation: 2,
+        ownerId: people.owner,
+        harness,
+        status: "connected",
+        accessExpiresAt: new Date(clock + 28_800_000).toISOString(),
+      },
+    ]);
     const metadata = (await db.query("select harness,github_enabled from modal_server_harnesses order by machine_id"))
       .rows;
     expect(metadata).toEqual([
@@ -283,7 +304,6 @@ test("legacy Modal native bootstrap refuses an unregistered sandbox pin", async 
 });
 
 // Token resolution in these fixtures must not leak audit records to stdout.
-captureGitHubAuditLogs();
 
 test("shared Codex Modal bootstrap contains only the private access grant, never refresh-bearing auth", async () => {
   const { db, people } = await sharedDatabase();

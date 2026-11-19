@@ -1,0 +1,112 @@
+name: Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      to_version:
+        description: "Previous stable release tag (vMAJOR.MINOR.PATCH)"
+        type: string
+        required: true
+      restore:
+        description: "Restore both hosts after eligibility and approval checks"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Serialize eligibility and restoration with Release.
+concurrency:
+  group: release-production
+  queue: max
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment:
+      name: production
+      deployment: false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - name: Check rollback eligibility
+        env:
+          ARMADA_SERVER_URL: ${{ secrets.ARMADA_SERVER_URL }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ROLLBACK_TO_VERSION: ${{ inputs.to_version }}
+        run: bun scripts/release/rollback.ts
+
+  approval:
+    needs: preflight
+    if: inputs.restore
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    environment:
+      name: production-deploy
+      deployment: false
+    permissions: {}
+    steps:
+      - run: echo "Approved host rollback"
+
+  restore:
+    needs: approval
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: production
+    concurrency:
+      group: production-supabase-migrations
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - name: Install pinned deployment clients
+        run: npm install --global @railway/cli@5.71.0 vercel@65.14.0
+      - name: Recheck eligibility and restore hosts
+        id: hosts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ROLLBACK_TO_VERSION: ${{ inputs.to_version }}
+          ARMADA_SERVER_URL: ${{ secrets.ARMADA_SERVER_URL }}
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_PROJECT_ID: ${{ secrets.RAILWAY_PROJECT_ID }}
+          RAILWAY_ENVIRONMENT_ID: ${{ secrets.RAILWAY_ENVIRONMENT_ID }}
+          RAILWAY_SERVICE_ID: ${{ secrets.RAILWAY_SERVICE_ID }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: bash scripts/release/restore-hosts.sh
+      - name: Record result on the target release
+        if: ${{ always() && steps.hosts.outputs.tag != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TARGET_TAG: ${{ steps.hosts.outputs.tag }}
+          OUTCOME: ${{ steps.hosts.outcome }}
+          PHASE: ${{ steps.hosts.outputs.phase }}
+          RAILWAY_ID: ${{ steps.hosts.outputs.railway_id }}
+        run: |
+          set -euo pipefail
+          notes=$(mktemp)
+          gh release view "$TARGET_TAG" --json body --jq '.body // ""' > "$notes"
+          printf '\nHost rollback: %s, %s (Railway deployment: %s, [run %s](%s/%s/actions/runs/%s), attempt %s).\n' \
+            "$OUTCOME" "$PHASE" "${RAILWAY_ID:-unreported}" "$GITHUB_RUN_ID" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" \
+            | tee -a "$notes" >> "$GITHUB_STEP_SUMMARY"
+          gh release edit "$TARGET_TAG" --notes-file "$notes"

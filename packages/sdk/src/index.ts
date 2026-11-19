@@ -6,6 +6,7 @@ import {
   type ProviderErrorCode,
   type VaultErrorCode,
 } from "@armada/core";
+import type { LaunchEnvelope } from "@armada/core/contract";
 import { apiUrl, jsonPost, requestApi, TEMPLATE_LAUNCH_ROUTE } from "./request.ts";
 import { sandboxClient } from "./sandboxes.ts";
 
@@ -69,7 +70,7 @@ export interface GoldenLaunchInput {
   golden: string;
   harness: "claude" | "codex" | "opencode";
   org?: string;
-  provider?: "boat" | "modal";
+  provider: "boat" | "modal";
   prompt?: string;
   model?: string;
   reasoningEffort?: string;
@@ -125,33 +126,8 @@ export type DockerSnapshotLaunchInput = DockerLaunchFields & {
 };
 export type DockerLaunchInput = DockerHostLaunchInput | DockerSnapshotLaunchInput;
 export type LaunchInput = GoldenLaunchInput | DockerLaunchInput;
-export interface GoldenLaunchResult {
-  sandbox: { id: string; provider: string; status: string; [key: string]: unknown };
-  golden: { id: string; [key: string]: unknown };
-  promptId: string | null;
-  conversationId: string | null;
-  ttlSeconds: number;
-  expiresAt: string | null;
-  [key: string]: unknown;
-}
-/** A Docker launch has no golden; the prompt and conversation IDs are null until a first prompt is recorded. */
-export interface DockerLaunchResult {
-  sandbox: {
-    id: string;
-    provider: "docker";
-    status: string;
-    hostId: string;
-    externalRef?: string;
-    [key: string]: unknown;
-  };
-  golden: null;
-  promptId?: string | null;
-  conversationId?: string | null;
-  ttlSeconds: number;
-  expiresAt: string;
-  [key: string]: unknown;
-}
-export type LaunchResult = GoldenLaunchResult | DockerLaunchResult;
+/** The ordinary launch envelope for Boat, Modal and Docker. */
+export type LaunchResult = LaunchEnvelope;
 export interface TemplateLaunchInput {
   org: string;
   id: string;
@@ -222,7 +198,6 @@ export interface SendInput extends SandboxRef {
   /** The whole serialized request body is limited to 128 KiB; a larger one fails with HTTP 413 before dispatch. */
   prompt: string;
   request_id?: string;
-  conversation_id?: string;
   /** Per-turn override; a Docker sandbox refuses it. */
   model?: string;
   /** Per-turn override; a Docker sandbox refuses it. */
@@ -239,8 +214,6 @@ export interface DockerSendInput extends SandboxRef {
   prompt: string;
   /** Supply it to make a retry replay instead of queuing the prompt again. */
   request_id?: string;
-  /** A lowercase conversation UUID of the sandbox. Default: the latest. */
-  conversation_id?: string;
   model?: never;
   reasoning_effort?: never;
 }
@@ -253,7 +226,6 @@ export interface SendResult {
 }
 export interface LogsInput extends SandboxRef {
   cursor?: string;
-  conversationId?: string;
   limit?: number;
   all?: boolean;
   follow?: boolean;
@@ -318,9 +290,6 @@ export class Armada {
   }
   readonly #sandboxes = sandboxClient(this.request.bind(this));
 
-  launch(input: DockerLaunchInput, options?: RequestOptions): Promise<DockerLaunchResult>;
-  launch(input: GoldenLaunchInput, options?: RequestOptions): Promise<GoldenLaunchResult>;
-  launch(input: LaunchInput, options?: RequestOptions): Promise<LaunchResult>;
   launch(input: LaunchInput, options?: RequestOptions): Promise<LaunchResult> {
     return this.#sandboxes.launch(input, options);
   }

@@ -60,6 +60,10 @@ test.each(["codex", "claude", "opencode"] as const)(
       sandbox: { id: requestId, provider: "docker", providerSandboxId: "docker-logical", status: "running" },
       golden: null,
       runtime: { kind: "armada", epoch: "1" },
+      helper: null,
+      ttlSeconds: 1800,
+      expiresAt: null,
+      github: { status: "not_connected" },
       promptId: "prompt",
       conversationId: "conversation",
     };
@@ -71,7 +75,7 @@ test.each(["codex", "claude", "opencode"] as const)(
       },
     );
     expect(result.code).toBe(0);
-    expect(JSON.parse(result.out)).toMatchObject({ ...receipt, id: requestId, provider: "docker", status: "running" });
+    expect(JSON.parse(result.out)).toEqual(receipt);
     expect(calls).toHaveLength(1);
     expect(calls[0]?.url).toBe("https://armada.thevibecompany.co/api/v1/sandbox/launch");
     expect(calls[0]?.headers.get("authorization")).toStartWith("Bearer armada_sk_");
@@ -145,6 +149,21 @@ test.each([
   expect(result.err).not.toContain("outcome is unknown");
 });
 
+test("Docker routing refusals retain the server diagnosis in JSON", async () => {
+  const result = await capture([...args, "--json"], async () =>
+    Response.json(
+      { error: { code: "provider_routing_unavailable", message: "Private image diagnostics" } },
+      { status: 503 },
+    ),
+  );
+  expect(result.code).toBe(1);
+  expect(result.out).toBe("");
+  expect(JSON.parse(result.err)).toMatchObject({
+    error: { code: "provider_routing_unavailable", message: expect.stringContaining("Ask the Armada administrator") },
+  });
+  expect(result.err).not.toContain("Private image diagnostics");
+});
+
 test("unknown Docker launch outcome retains a stable request UUID for exact retry", async () => {
   for (const mode of ["lost", "wrong-sandbox", "server-failure", "explicit-unknown"]) {
     const result = await capture(args, async () => {
@@ -192,6 +211,8 @@ test("Docker launch resolves an exact unique non-revoked host name and refuses m
     lastSeenAt: null,
     revokedAt: null,
     version: "2.27.0",
+    protocol: 1,
+    upgradeRequired: false,
     sandboxes: 0,
   };
   for (const mode of ["unique", "missing", "ambiguous"]) {

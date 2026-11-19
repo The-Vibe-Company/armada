@@ -125,6 +125,7 @@ for (const mode of [
             case "docker/hosts/list":
               return Response.json({ hosts: [{ id: "30000000-0000-4000-8000-000000000001", state: "online" }] });
             case "sandbox/launch":
+              if (provider === "docker") id.docker = body.requestId;
               active = provider;
               states.set(provider, "ready");
               return Response.json({ sandbox: { id: id[provider], provider } });

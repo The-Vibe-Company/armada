@@ -1,16 +1,19 @@
-# Conversation history paging
+# Sandbox event history paging
 
-`POST /api/v1/logs/read` accepts `id`, optional `conversationId`, `cursor`,
+`POST /api/v1/logs/read` accepts `id`, optional `cursor`,
 `direction` (`forward`, default, or `backward`), `limit` (default 100, 1–1000),
 `maxBytes` (default 262144, 256–1048576), and `coalesce` (default false).
 Existing `all` and `follow` remain; `all` cannot combine with backward reads.
-MCP `logs` calls the cursor `since_cursor` and conversation `conversation_id`,
-with count limit 500. Core exports `EventsRequest` and `EventPage`.
+MCP `logs` calls the cursor `since_cursor` and has a count limit of 500. Both
+operations page the sandbox history, including events from historical conversations.
+Core exports `EventsRequest` and `EventPage`.
 
 Responses contain chronological `events`, `cursor` (forward continuation after
 newest included raw event), `olderCursor` (backward continuation before oldest
 included raw event, absent on empty pages), and direction-relative `hasMore`.
-Logs retains `settled`.
+HTTP logs returns `settled` for follow handling. The MCP `logs` tool includes
+`settled` for Docker sandboxes only. Use `status` or `wait` to check whether
+a turn has settled on any provider.
 Cursors are opaque and exclusive; never decode or mix sources.
 
 Start with `direction: backward` without a cursor. Save its `cursor` as the

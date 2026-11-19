@@ -2,10 +2,8 @@ import { createHash } from "node:crypto";
 import {
   DOCKER_SNAPSHOT_FAILURE_MESSAGES,
   type DockerSnapshotRecord,
-  dockerHostUpgradeMessage,
   normalizeGitHubGoldenConfig,
   parseGoldenConfig,
-  VERSION,
 } from "@armada/core";
 import {
   isSnapshotBaselineTool,
@@ -18,7 +16,8 @@ import {
 import type { DockerHostJob } from "../../core/src/docker-host-job.ts";
 import { DockerHostDraining } from "./docker-capacity.ts";
 import { hostDrainingSql } from "./docker-host-drain.ts";
-export const SNAPSHOT_COLUMNS = `s.*,h.name as host_name,h.daemon_version as host_daemon_version,${hostDrainingSql("h")} as host_draining,(h.revoked_at is null and h.installation_id=s.installation_id and h.hash is not null and (h.last_seen_at>now()-interval '90 seconds') is true) as host_online,(h.revoked_at is null and h.installation_id=s.installation_id and h.hash is not null and not ${hostDrainingSql("h")} and (h.last_seen_at>now()-interval '90 seconds') is true) as host_available`;
+import { DockerHostUpgradeRequired, supportsDockerHostProtocol } from "./docker-host-version.ts";
+export const SNAPSHOT_COLUMNS = `s.*,h.name as host_name,h.daemon_protocol as host_daemon_protocol,${hostDrainingSql("h")} as host_draining,(h.revoked_at is null and h.installation_id=s.installation_id and h.hash is not null and (h.last_seen_at>now()-interval '90 seconds') is true) as host_online,(h.revoked_at is null and h.installation_id=s.installation_id and h.hash is not null and not ${hostDrainingSql("h")} and (h.last_seen_at>now()-interval '90 seconds') is true) as host_available`;
 export type SnapshotRow = {
   id: string;
   org_id: string;
@@ -44,15 +43,17 @@ export type SnapshotRow = {
   failure_reason?: string | null;
   created_at: Date | string;
   host_name: string | null;
-  host_daemon_version: string | null;
+  host_daemon_protocol: number | null;
   host_draining: boolean;
   host_online: boolean;
   host_available: boolean;
 };
 export function snapshotRecord(row: SnapshotRow): DockerSnapshotRecord {
   const baselineOutdated = row.status === "ready" && (row.baseline_version ?? 0) < SNAPSHOT_BASELINE_VERSION;
-  const hostVersion = row.host_daemon_version?.match(/^\d{1,9}\.\d{1,9}\.\d{1,9}/)?.[0];
-  const upgrade = baselineOutdated ? dockerHostUpgradeMessage(hostVersion, VERSION) : null;
+  const upgrade =
+    baselineOutdated && !supportsDockerHostProtocol(row.host_daemon_protocol)
+      ? new DockerHostUpgradeRequired().message
+      : null;
   const config = parseGoldenConfig(row.config);
   const missing = row.missing_ref_index
     ? normalizeGitHubGoldenConfig(config).repos[row.missing_ref_index - 1]

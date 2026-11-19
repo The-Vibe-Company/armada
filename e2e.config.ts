@@ -1,19 +1,20 @@
 import { web } from "@e2e-dev/web";
 import type { E2EConfig } from "e2e";
+import { e2eFixture, fixtureOrigin } from "./scripts/fixture-ports.ts";
 
 const app = {
-  url: "http://127.0.0.1:3100",
+  url: fixtureOrigin(e2eFixture.dashboardPort),
   command: {
     executable: "bun",
     reuseExisting: false,
-    args: ["scripts/dev.ts"],
+    args: ["scripts/dev.ts", "--e2e"],
     startupTimeout: 120_000,
     log: ".e2e/logs/dashboard.log",
   },
 };
 
 export default {
-  tests: "tests/dashboard/**/*.e2e.ts",
+  tests: "test/dashboard/**/*.e2e.ts",
   workers: 1,
   retries: 0,
   trace: "on",

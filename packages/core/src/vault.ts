@@ -83,6 +83,7 @@ export interface VaultStore extends CredentialReader, GitHubConnectionStore {
     kind: CredentialKind,
     valueEnc: Uint8Array,
     actorId?: string,
+    encryptionKey?: string,
   ): Promise<void>;
   deleteCredential(scope: CredentialScope, ownerId: string, kind: CredentialKind): Promise<boolean>;
   listCredentials(scope: CredentialScope, ownerId: string): Promise<CredentialInfo[]>;
@@ -216,7 +217,14 @@ export async function setCredential(
   const value = credentialWriteValue(input.kind, input.value);
   if (input.scope === "user") {
     await validate?.(input.kind, value);
-    await store.upsertCredential("user", userId, input.kind, await encryptSecret(value, encryptionKey), userId);
+    await store.upsertCredential(
+      "user",
+      userId,
+      input.kind,
+      await encryptSecret(value, encryptionKey),
+      userId,
+      encryptionKey,
+    );
     return;
   }
   const org = await resolveAdminOrg(store, userId, input.org);
@@ -224,7 +232,7 @@ export async function setCredential(
   const sealed = await encryptSecret(value, encryptionKey);
   await resolveAdminOrg(store, userId, org.id);
   if (input.kind === "boat") await store.setOrgBoatKey(org.id, sealed);
-  else await store.upsertCredential("org", org.id, input.kind, sealed, userId);
+  else await store.upsertCredential("org", org.id, input.kind, sealed, userId, encryptionKey);
 }
 
 export async function removeCredential(

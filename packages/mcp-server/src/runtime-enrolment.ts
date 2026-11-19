@@ -1,20 +1,35 @@
 import { randomBytes } from "node:crypto";
+import { PROTOCOL_VERSION } from "@armada/agent-runtime";
 import { sha256Hex } from "@armada/auth";
 import { createSqlSandboxStore, decryptSecret, encryptSecret, type Sql } from "@armada/core/server";
+import { createDockerHostStore } from "./docker-host-store.ts";
 import type { Route } from "./http.ts";
 import { runtimeHttpFailure } from "./runtime-http-failure.ts";
 
 const ENROL_PATH = "/api/runtime/enrol";
 const SESSION_PATH = "/api/runtime/session";
+const UNSUPPORTED_PROTOCOL = "runtime_protocol_unsupported";
 const SOURCE_TRANSACTION = Symbol("runtime_source_transaction");
 
-import { currentRequestId } from "./request-observability.ts";
+import { currentRequestId, recordOperatorDiagnostic } from "./request-observability.ts";
+
+function supportsProtocol(version: number) {
+  return version > 0 && (version === PROTOCOL_VERSION || version === PROTOCOL_VERSION - 1);
+}
+
+type LiveRuntime = { epoch: string; runtime_protocol_version: number };
 
 export class RuntimeEnrolmentDenied extends Error {
   constructor() {
     super("runtime_enrolment_denied");
   }
 }
+class RuntimeProtocolUnsupported extends Error {
+  constructor(readonly sandboxId: string) {
+    super(UNSUPPORTED_PROTOCOL);
+  }
+}
+
 export interface RuntimeSessionScope {
   sandboxId: string;
   epoch: string;
@@ -22,6 +37,7 @@ export interface RuntimeSessionScope {
 /** Owner scopes also name the locked sandbox's provider for request-correlated command records. */
 export interface RuntimeOwnerScope extends RuntimeSessionScope {
   provider?: "boat" | "modal" | "docker";
+  commandGrantExpiresAt?: Date;
 }
 
 /** Reenter an owner-held transaction without opening another connection or changing the callback's SQL object. */
@@ -99,8 +115,8 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
       if (!host.rows.length) throw new RuntimeEnrolmentDenied();
     }
     const row = (
-      await tx.query<{ id: string; lifecycle_generation: string }>(
-        `select s.id,s.lifecycle_generation::text from public.sandboxes s
+      await tx.query<{ id: string; lifecycle_generation: string; runtime_transport: string | null }>(
+        `select s.id,s.lifecycle_generation::text,s.runtime_transport from public.sandboxes s
        where s.id=$1 and (s.provider in ('boat','docker') or (s.provider='modal' and s.runtime_transport='dialout')) and s.status in ('starting','ready','running')
        and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>now()
        and s.org_id=$2 and s.owner_id=$3 and s.provider=$4
@@ -119,7 +135,12 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
     if (!row) throw new RuntimeEnrolmentDenied();
     return { ...row, provider: candidate.provider, docker_issuer_fence: candidate.docker_issuer_fence };
   }
-  async function issue(input: { sandboxId: string; ownerId: string; configuration: Record<string, unknown> }) {
+  async function issue(input: {
+    sandboxId: string;
+    ownerId: string;
+    configuration: Record<string, unknown>;
+    commandGrantExpiresAt?: number;
+  }) {
     const serialized = JSON.stringify(input.configuration);
     if (Buffer.byteLength(serialized) > 1048576) throw new RuntimeEnrolmentDenied();
     const sealed = await encryptSecret(serialized, encryptionKey);
@@ -128,17 +149,23 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
     const receipt = await transaction(async (tx) => {
       const sandbox = await lockSandbox(tx, input.sandboxId, input.ownerId);
       if (sandbox.provider === "docker" && options.allowDockerIssue !== true) throw new RuntimeEnrolmentDenied();
+      const commandDeadline =
+        sandbox.runtime_transport === "dialout" && input.commandGrantExpiresAt !== undefined
+          ? new Date(input.commandGrantExpiresAt)
+          : null;
       const pricing = await createSqlSandboxStore(tx, { turnModels: true }).captureUsagePricingContext!(
         input.sandboxId,
       );
       const row = (
         await tx.query<{ epoch: string }>(
-          `insert into public.runtime_enrolments(sandbox_id,lifecycle_generation,enrolment_hash,enrolment_expires_at,configuration_enc,docker_issuer_fence,pricing_context,correlation_id)
-         values($1,$2,$3,now()+interval '5 minutes',$4,$5,$6::jsonb,$7)
+          `insert into public.runtime_enrolments as r(sandbox_id,lifecycle_generation,enrolment_hash,enrolment_expires_at,configuration_enc,docker_issuer_fence,pricing_context,correlation_id,command_grant_epoch,command_grant_expires_at)
+         values($1,$2,$3,now()+interval '5 minutes',$4,$5,$6::jsonb,$7,case when $8::timestamptz is not null then 1 end,$8)
          on conflict(sandbox_id) do update set lifecycle_generation=excluded.lifecycle_generation,
          enrolment_hash=excluded.enrolment_hash,enrolment_expires_at=excluded.enrolment_expires_at,
          configuration_enc=excluded.configuration_enc,docker_issuer_fence=excluded.docker_issuer_fence,
-         pricing_context=excluded.pricing_context,correlation_id=excluded.correlation_id,runtime_hash=null returning epoch::text`,
+         pricing_context=excluded.pricing_context,correlation_id=excluded.correlation_id,runtime_hash=null,
+         command_grant_epoch=case when excluded.command_grant_expires_at is not null then r.epoch+1 end,
+         command_grant_expires_at=excluded.command_grant_expires_at returning epoch::text`,
           [
             sandbox.id,
             sandbox.lifecycle_generation,
@@ -147,6 +174,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
             sandbox.docker_issuer_fence,
             JSON.stringify(pricing),
             currentRequestId() ?? null,
+            commandDeadline,
           ],
         )
       ).rows[0];
@@ -155,12 +183,16 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
     });
     return { enrolmentToken, ...receipt };
   }
-  async function enrol(enrolmentToken: string) {
+  async function enrol(enrolmentToken: string, wireProtocol: string | null = String(PROTOCOL_VERSION)) {
+    // The original v1 wire request had no protocol header. This encoding ages out with v1.
+    const encodedVersion = wireProtocol ?? "1";
+    const version = Number(encodedVersion);
+    const supported = String(version) === encodedVersion && supportsProtocol(version);
     if (!valid(enrolmentToken, "enrol")) throw new RuntimeEnrolmentDenied();
     const hash = await sha256Hex(enrolmentToken);
     const runtimeToken = token("runtime");
     const runtimeHash = await sha256Hex(runtimeToken);
-    return transaction(async (tx) => {
+    const result = await transaction(async (tx) => {
       const candidate = (
         await tx.query<{ sandbox_id: string }>(
           "select sandbox_id from public.runtime_enrolments where enrolment_hash=$1",
@@ -170,25 +202,43 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
       if (!candidate) throw new RuntimeEnrolmentDenied();
       const sandbox = await lockSandbox(tx, candidate.sandbox_id);
       const row = (
-        await tx.query<{ configuration_enc: Uint8Array<ArrayBuffer> }>(
-          `select configuration_enc from public.runtime_enrolments where sandbox_id=$1 and enrolment_hash=$2
+        await tx.query<{ configuration_enc: Uint8Array<ArrayBuffer> | null }>(
+          `select case when $5::boolean then configuration_enc end as configuration_enc
+         from public.runtime_enrolments where sandbox_id=$1 and enrolment_hash=$2
          and lifecycle_generation=$3 and enrolment_expires_at>now()
          and docker_issuer_fence is not distinct from $4::text for update`,
-          [sandbox.id, hash, sandbox.lifecycle_generation, sandbox.docker_issuer_fence],
+          [sandbox.id, hash, sandbox.lifecycle_generation, sandbox.docker_issuer_fence, supported],
         )
       ).rows[0];
       if (!row) throw new RuntimeEnrolmentDenied();
+      if (!supported) {
+        if (
+          sandbox.provider === "docker" &&
+          (await createDockerHostStore(tx, encryptionKey).refuseResume(tx, sandbox.id, sandbox.lifecycle_generation))
+        ) {
+          await tx.query(
+            `update public.runtime_enrolments set enrolment_hash=null,enrolment_expires_at=null,configuration_enc=null
+             where sandbox_id=$1`,
+            [sandbox.id],
+          );
+        }
+        return new RuntimeProtocolUnsupported(sandbox.id);
+      }
+      if (!row.configuration_enc) throw new RuntimeEnrolmentDenied();
       const configuration: unknown = JSON.parse(await decryptSecret(row.configuration_enc, encryptionKey));
       const updated = (
         await tx.query<{ epoch: string }>(
           `update public.runtime_enrolments set epoch=epoch+1,runtime_hash=$2,enrolment_hash=null,
-         enrolment_expires_at=null,configuration_enc=null where sandbox_id=$1 returning epoch::text`,
-          [sandbox.id, runtimeHash],
+         enrolment_expires_at=null,configuration_enc=null,runtime_protocol_version=$3
+         where sandbox_id=$1 returning epoch::text`,
+          [sandbox.id, runtimeHash, version],
         )
       ).rows[0];
       if (!updated) throw new RuntimeEnrolmentDenied();
       return { sandboxId: sandbox.id, epoch: updated.epoch, runtimeToken, configuration };
     });
+    if (result instanceof RuntimeProtocolUnsupported) throw result;
+    return result;
   }
   /** Read-only bootstrap reporting does not consume or extend the one-use ticket. */
   async function withBootstrap<T>(enrolmentToken: string, work: (tx: Sql, scope: RuntimeSessionScope) => Promise<T>) {
@@ -234,14 +284,14 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
       if (!candidate) throw new RuntimeEnrolmentDenied();
       const sandbox = await lockSandbox(tx, candidate.sandbox_id, undefined, source);
       const row = (
-        await tx.query<{ epoch: string }>(
-          `select epoch::text from public.runtime_enrolments where sandbox_id=$1 and runtime_hash=$2
+        await tx.query<LiveRuntime>(
+          `select epoch::text,runtime_protocol_version from public.runtime_enrolments where sandbox_id=$1 and runtime_hash=$2
          and epoch::text=$3 and lifecycle_generation=$4
          and docker_issuer_fence is not distinct from $5::text for update`,
           [sandbox.id, hash, epoch, sandbox.lifecycle_generation, sandbox.docker_issuer_fence],
         )
       ).rows[0];
-      if (!row) throw new RuntimeEnrolmentDenied();
+      if (!row || !supportsProtocol(row.runtime_protocol_version)) throw new RuntimeEnrolmentDenied();
       return work(tx, { sandboxId: sandbox.id, epoch: row.epoch });
     });
   }
@@ -257,18 +307,21 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
       if (expectedLifecycleGeneration !== undefined && sandbox.lifecycle_generation !== expectedLifecycleGeneration)
         throw new RuntimeEnrolmentDenied();
       const row = (
-        await tx.query<{ epoch: string }>(
-          `select epoch::text from public.runtime_enrolments where sandbox_id=$1
+        await tx.query<LiveRuntime & { command_grant_expires_at: Date | null }>(
+          `select epoch::text,runtime_protocol_version,
+         case when command_grant_epoch=epoch then command_grant_expires_at end as command_grant_expires_at
+         from public.runtime_enrolments where sandbox_id=$1
          and lifecycle_generation=$2 and runtime_hash is not null
          and docker_issuer_fence is not distinct from $3::text for update`,
           [sandbox.id, sandbox.lifecycle_generation, sandbox.docker_issuer_fence],
         )
       ).rows[0];
-      if (!row) throw new RuntimeEnrolmentDenied();
+      if (!row || !supportsProtocol(row.runtime_protocol_version)) throw new RuntimeEnrolmentDenied();
       return work(tx, {
         sandboxId: sandbox.id,
         epoch: row.epoch,
         provider: sandbox.provider as NonNullable<RuntimeOwnerScope["provider"]>,
+        ...(row.command_grant_expires_at ? { commandGrantExpiresAt: row.command_grant_expires_at } : {}),
       });
     });
   }
@@ -281,10 +334,18 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
     try {
       const result =
         path === ENROL_PATH
-          ? await enrol(bearer)
+          ? await enrol(bearer, request.headers.get("x-armada-runtime-protocol"))
           : await withSession(bearer, request.headers.get("x-armada-runtime-epoch") ?? "", async (_tx, scope) => scope);
       return Response.json(result, { headers });
     } catch (error) {
+      if (error instanceof RuntimeProtocolUnsupported) {
+        recordOperatorDiagnostic(
+          "runtime.enrol.protocol",
+          { errorClass: "RuntimeProtocolUnsupported", message: UNSUPPORTED_PROTOCOL, stack: [] },
+          { sandboxId: error.sandboxId },
+        );
+        return runtimeHttpFailure(409, UNSUPPORTED_PROTOCOL);
+      }
       return runtimeHttpFailure(error instanceof RuntimeEnrolmentDenied ? 401 : 503);
     }
   };

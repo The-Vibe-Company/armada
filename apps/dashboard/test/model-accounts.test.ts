@@ -14,6 +14,7 @@ import {
   launchDefault,
   type ModelAccount,
   modelAccountFailure,
+  monthlyApiSpendLabel,
   orderAccounts,
   PASTE_SIGN_IN,
   parseAuthCapabilities,
@@ -108,6 +109,13 @@ describe("the account a launch request bills, as the server action checks it", (
       { ok: false, error: "Old is expired. Replace its token or choose another." },
     ],
     ["a revoked account", ready(account(4, { status: "revoked" })), "claude", uuid(4), { ok: false }],
+    [
+      "a Morph account whose models could not be loaded",
+      ready(account(5, { kind: "morph" })),
+      "codex",
+      uuid(5),
+      { ok: false, error: "Morph models could not be loaded. Reload and try again." },
+    ],
     ["a malformed id", ready(work), "claude", "not-a-uuid", { ok: false, error: "That request is not valid." }],
     [
       "an unreadable list",
@@ -187,6 +195,36 @@ describe("creds/list as accounts", () => {
     expect(accounts[0]?.modelCounts).toEqual({ "morph-kimik3": { runningAgents: 1, waitingAgents: 3 } });
     expect(Object.keys(accounts[0] ?? {})).not.toContain("value_enc");
     expect(legacy).toBe(false);
+  });
+
+  test("preserves the exact monthly API subtotal on personal and organization accounts", () => {
+    const monthlySpend = { periodStart: "2026-11-01", usd: "312.00000000000000001", unpricedTurns: 2 };
+    const { accounts } = accountsFromList(
+      {
+        user: [row(1, { kind: "openai", monthlySpend })],
+        orgs: [{ id: uuid(10), credentials: [row(2, { kind: "anthropic", monthlySpend })] }],
+      },
+      uuid(10),
+    );
+    expect(accounts.map((account) => account.monthlySpend)).toEqual([monthlySpend, monthlySpend]);
+  });
+
+  test.each([
+    ["openai", undefined, "API: — USD this month"],
+    ["anthropic", { usd: "0", unpricedTurns: 0 }, "API: 0 USD this month"],
+    ["opencode", { usd: "0", unpricedTurns: 1 }, "API: — USD this month (1 unpriced turn)"],
+    [
+      "openai",
+      { usd: "312.00000000000000001", unpricedTurns: 2 },
+      "API: 312.00000000000000001 USD this month (2 unpriced turns)",
+    ],
+    ["openai", { usd: 312, unpricedTurns: 0 }, "API: — USD this month"],
+    ["codex_auth", undefined, null],
+    ["morph", undefined, null],
+  ] as const)("renders monthly ledger data for %s with %j", (kind, spend, label) => {
+    const monthlySpend = spend && { periodStart: "2026-11-01", ...spend };
+    const { accounts } = accountsFromList({ user: [row(1, { kind, monthlySpend })] }, uuid(10));
+    expect(accounts.map(monthlyApiSpendLabel)).toEqual([label]);
   });
 
   test("model rows without ids are a server older than named accounts, not an empty list", () => {

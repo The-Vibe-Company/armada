@@ -18,8 +18,7 @@ Private jobs are owner-only, including against admins. Jobs targeting a now-priv
 snapshot are not exposed to other members. Status includes only jobId, state, safe
 phase/errorCode and terminal public result, never payload or provider errors.
 
-MCP golden_create/golden_update require idempotencyKey and return the same receipt;
-poll golden_build_status. The dashboard uses short admission/status actions,
+The dashboard uses short admission/status actions,
 records the job ID in its URL, and polls sequentially for a bounded local window,
 then offers manual refresh.
 

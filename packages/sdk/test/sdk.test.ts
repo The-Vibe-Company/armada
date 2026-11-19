@@ -1,10 +1,9 @@
 import { expect, test } from "bun:test";
 import { inspect } from "node:util";
 import type { DockerLaunchRequest, DockerSandboxStatus } from "@armada/core";
+import { launch, launchEnvelope } from "@armada/core/contract";
 import { ProviderError } from "@armada/core/server";
 import { controlFailureResponse } from "../../mcp-server/src/control-errors.ts";
-import { DOCKER_LAUNCH_REQUEST } from "../../mcp-server/src/docker-launch-request-schema.ts";
-import { REST_LAUNCH_RESPONSE } from "../../mcp-server/src/launch-response-schemas.ts";
 import { webhookSignature } from "../../mcp-server/src/outbound-webhooks.ts";
 import { createRuntimeAgent } from "../../mcp-server/src/runtime-agent.ts";
 import { RuntimeCommandPending, RuntimeCommandRefused } from "../../mcp-server/src/runtime-commands.ts";
@@ -40,7 +39,7 @@ test("service-token methods use the REST routes and preserve wire field names", 
       return Response.json({ id: "sandbox_placeholder" });
     }) as import("../src/index.ts").Fetch,
   });
-  await client.launch({ golden: "worker", harness: "codex", ttlSeconds: 60 });
+  await client.launch({ provider: "boat", golden: "worker", harness: "codex", ttlSeconds: 60 });
   await client.launchFromTemplate({
     org: "org_placeholder",
     id: "template_placeholder",
@@ -62,7 +61,7 @@ test("service-token methods use the REST routes and preserve wire field names", 
       "sandbox/stop",
     ].map((path) => `/api/v1/${path}`),
   );
-  expect(requests[0]?.body).toEqual({ golden: "worker", harness: "codex", ttlSeconds: 60 });
+  expect(requests[0]?.body).toEqual({ provider: "boat", golden: "worker", harness: "codex", ttlSeconds: 60 });
   expect(requests[2]?.body).toEqual({ id: "sandbox_placeholder", prompt: "Work", request_id: "request_placeholder" });
   expect(requests[5]?.body).toEqual({ id: "sandbox_placeholder", cursor: "cursor_placeholder" });
 });
@@ -97,10 +96,10 @@ test("launch sends a Docker request and returns the Docker receipt without a gol
     prompt: "Work",
     repos: [{ url: "https://github.com/acme/app", branch: "main" }],
   } satisfies DockerLaunchInput;
-  expect(DOCKER_LAUNCH_REQUEST.safeParse(input).success).toBe(true);
+  expect(launch.input.body.safeParse(input).success).toBe(true);
   // Docker checkouts are always shallow, so the published contract does not offer golden-config history.
   const history = { ...input, repos: [{ url: "https://github.com/acme/app", history: "full" }] };
-  expect(DOCKER_LAUNCH_REQUEST.safeParse(history).success).toBe(false);
+  expect(launch.input.body.safeParse(history).success).toBe(false);
   const receipt = {
     sandbox: {
       id: "sandbox_placeholder",
@@ -118,7 +117,7 @@ test("launch sends a Docker request and returns the Docker receipt without a gol
     ttlSeconds: 3600,
     expiresAt: "2026-11-18T00:00:00.000Z",
   };
-  expect(REST_LAUNCH_RESPONSE.safeParse(receipt).success).toBe(true);
+  expect(launchEnvelope.safeParse(receipt).success).toBe(true);
   let sent: unknown;
   const client = new Armada({
     token: "service_placeholder",
@@ -128,10 +127,7 @@ test("launch sends a Docker request and returns the Docker receipt without a gol
     }) as import("../src/index.ts").Fetch,
   });
   const launched = await client.launch(input);
-  const golden: null = launched.golden;
-  expect(golden).toBeNull();
-  expect(launched.sandbox.hostId).toBe(input.hostId);
-  expect(launched.promptId).toBeNull();
+  expect(launched).toEqual(receipt);
   expect(sent).toEqual(input);
 });
 
@@ -155,12 +151,12 @@ test("the SDK Docker launch type admits exactly the host and snapshot sources th
     { ...common, snapshotId },
     { ...common, snapshotId, hostId },
   ];
-  for (const body of accepted) expect(DOCKER_LAUNCH_REQUEST.safeParse(body).success).toBe(true);
+  for (const body of accepted) expect(launch.input.body.safeParse(body).success).toBe(true);
   // @ts-expect-error A Docker launch needs a host or a snapshot.
   const noSource: DockerLaunchInput = { ...common };
   // @ts-expect-error A snapshot carries its own workspace, so repos are refused.
   const snapshotRepos: DockerLaunchInput = { ...common, snapshotId, repos: [{ url: "https://github.com/acme/app" }] };
-  for (const body of [noSource, snapshotRepos]) expect(DOCKER_LAUNCH_REQUEST.safeParse(body).success).toBe(false);
+  for (const body of [noSource, snapshotRepos]) expect(launch.input.body.safeParse(body).success).toBe(false);
 });
 
 test("status exposes the selected prompt by its promptId", async () => {
@@ -217,7 +213,7 @@ test("retry policy replays only eligible reads and retains typed safe failures",
       token: "service_placeholder",
       fetch: async () => Response.json({ error: { code } }, { status: 400 }),
     });
-    await expect(typed.launch({ golden: "worker", harness: "codex" })).rejects.toMatchObject({
+    await expect(typed.launch({ provider: "boat", golden: "worker", harness: "codex" })).rejects.toMatchObject({
       code,
       serverCode: code,
     });
@@ -310,7 +306,9 @@ test("server retry delays longer than one day reach the caller unchanged", async
   ];
   for (const respond of responses) {
     const client = new Armada({ token: "service_placeholder", fetch: async () => respond() });
-    const error = await client.launch({ golden: "worker", harness: "codex" }).catch((error: unknown) => error);
+    const error = await client
+      .launch({ provider: "boat", golden: "worker", harness: "codex" })
+      .catch((error: unknown) => error);
     expect(error).toBeInstanceOf(ArmadaError);
     // HTTP dates round to whole seconds.
     expect((error as ArmadaError).retryAfterSeconds).toBeWithin(delay - 1, delay + 1);

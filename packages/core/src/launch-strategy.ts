@@ -13,6 +13,7 @@ interface LaunchStartContext {
   providerSandboxId: string;
   signal: AbortSignal;
   progress(stage: LaunchInitializationStage): void;
+  runtimeStarted(): void;
   mark(stage: LaunchStage): Promise<void>;
   reportGitHub(github: GitHubLaunchInfo): void;
 }

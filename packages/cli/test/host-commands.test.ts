@@ -15,6 +15,8 @@ const summary = {
   lastSeenAt: new Date(start).toISOString(),
   revokedAt: null,
   version: "2.27.0",
+  protocol: null,
+  upgradeRequired: true,
   sandboxes: 3,
 };
 async function capture(args: string[], fetcher: (request: Request) => Promise<Response>) {
@@ -123,7 +125,6 @@ test("host list accepts a draining host and prints the shared uninstall reason",
   expect(result.out).toContain("draining");
   expect(result.out).toContain("draining for uninstall");
   expect(result.out).toContain("stopped sandbox space: 4.00 GB");
-  expect(result.out).toContain("is outdated");
 });
 
 test("host list exposes safe metadata as text or JSON and revoke uses host UUID", async () => {
@@ -142,8 +143,7 @@ test("host list exposes safe metadata as text or JSON and revoke uses host UUID"
         "2.27.0",
         "3",
         summary.lastSeenAt,
-        "is outdated",
-        "server 2.49.6",
+        "Upgrade the Docker host daemon",
         "armada host add",
       ])
         expect(result.out).toContain(value);

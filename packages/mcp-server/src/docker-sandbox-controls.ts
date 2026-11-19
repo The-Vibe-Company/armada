@@ -22,12 +22,14 @@ import {
   type TaskOutcome,
   withUsageTotals,
 } from "@armada/core";
+import { readLogsOperation } from "@armada/core/contract";
 import { decryptSecret, type Sql } from "@armada/core/server";
+import { z } from "zod";
 import type { Caller } from "./caller.ts";
 import { createSqlData } from "./data.ts";
 import type { createDockerBootstrapService } from "./docker-bootstrap-service.ts";
-import { createDockerHostStore, DockerHostDenied } from "./docker-host-store.ts";
-import { dockerHostSupportsResume } from "./docker-host-version.ts";
+import { createDockerHostStore, DOCKER_JOB_REQUEST_OUTCOME_SQL, DockerHostDenied } from "./docker-host-store.ts";
+import { DockerHostUpgradeRequired, supportsDockerHostProtocol } from "./docker-host-version.ts";
 import { createDockerLaunchEnvironment } from "./docker-launch-environment.ts";
 import type { createDockerNormalSend } from "./docker-normal-send.ts";
 import { captureDockerStopOutputs, createDockerOutputReader } from "./docker-outputs.ts";
@@ -41,7 +43,7 @@ import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.t
 import type { RuntimeGitHub } from "./runtime-github.ts";
 import { createRuntimeHistory } from "./runtime-history.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
-import { ToolError } from "./tools.ts";
+import { ToolError } from "./tool-error.ts";
 import { withServerCost } from "./turn-pricing.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -81,6 +83,11 @@ function failure(code: "not_found" | "invalid_request" | "conflict" | "unavailab
   return new ProviderError({ provider: "docker", code, message, retryable: code === "unavailable" });
 }
 const denied = () => failure("not_found", "Sandbox not found.");
+const dockerLogsInput = readLogsOperation.input.body.pick({ direction: true, all: true, coalesce: true }).extend({
+  limit: z.number().int().min(1).max(500).optional(),
+  since_cursor: z.string().optional(),
+});
+
 const invalid = () => failure("invalid_request", "Invalid Docker sandbox request.");
 const terminal = (row: Row) => ["stopped", "deleted", "failed"].includes(row.status);
 /** Controls that reach the Docker host (jobs, launch-time runtime admission) beyond the runtime command boundary. */
@@ -501,17 +508,9 @@ export function createDockerSandboxControls(
     };
   }
   async function logs(caller: Caller, row: Row, args: Record<string, unknown>) {
-    if (
-      (args.direction !== undefined && !["forward", "backward"].includes(args.direction as string)) ||
-      (args.all !== undefined && typeof args.all !== "boolean") ||
-      (args.limit !== undefined &&
-        (typeof args.limit !== "number" || !Number.isInteger(args.limit) || args.limit < 1 || args.limit > 500)) ||
-      (args.coalesce !== undefined && typeof args.coalesce !== "boolean") ||
-      (args.direction === "backward" && args.all) ||
-      (args.since_cursor !== undefined && typeof args.since_cursor !== "string") ||
-      (args.conversation_id !== undefined && (typeof args.conversation_id !== "string" || !args.conversation_id))
-    )
-      throw invalid();
+    const parsed = dockerLogsInput.safeParse(args);
+    if (!parsed.success || (parsed.data.direction === "backward" && parsed.data.all)) throw invalid();
+    const { direction, all, coalesce, limit, since_cursor } = parsed.data;
     const snapshot: { row: Row; queued?: QueuedPrompt[]; final?: QueuedPrompt[] } = { row };
     const {
       events: rawEvents,
@@ -525,16 +524,15 @@ export function createDockerSandboxControls(
           row.id,
           {
             ...(cursor !== undefined ? { cursor } : {}),
-            ...(args.conversation_id !== undefined ? { conversationId: args.conversation_id as string } : {}),
-            ...(args.limit !== undefined ? { limit: args.limit as number } : {}),
-            ...(args.direction !== undefined ? { direction: args.direction as "forward" | "backward" } : {}),
+            ...(limit !== undefined ? { limit } : {}),
+            ...(direction !== undefined ? { direction } : {}),
             ...(args.maxBytes !== undefined ? { maxBytes: args.maxBytes as number } : {}),
-            ...(args.coalesce !== undefined ? { coalesce: args.coalesce as boolean } : {}),
+            ...(coalesce !== undefined ? { coalesce } : {}),
           },
           snapshot,
         ),
-      args.since_cursor as string | undefined,
-      args.all === true,
+      since_cursor,
+      all === true,
     );
     const events = new Map<string, AgentEvent>();
     for (const event of rawEvents) if (!isPrivateModelEvent(event)) events.set(event.id, event);
@@ -658,16 +656,14 @@ export function createDockerSandboxControls(
     if (row.status === "deleted" && reclaimed) throw new DockerRetentionEnded(row.status_reason);
     if (!requestId) throw invalid();
     const host = (
-      await sql.query<{ daemon_version: string | null }>(
-        "select daemon_version from public.docker_hosts where id=$1 and org_id=$2",
+      await sql.query<{ daemon_protocol: number | null }>(
+        "select daemon_protocol from public.docker_hosts where id=$1 and org_id=$2",
         [row.docker_host_id, row.org_id],
       )
     ).rows[0];
-    if (!dockerHostSupportsResume(host?.daemon_version))
-      throw failure(
-        "conflict",
-        "Update this Docker host daemon to Armada 2.28.0 or later before resuming. Keep its existing registration, then retry. No resume job was sent.",
-      );
+    if (!supportsDockerHostProtocol(host?.daemon_protocol)) {
+      throw new DockerHostUpgradeRequired();
+    }
     const actor = { userId: caller.userId, orgId: row.org_id };
     let requested = await options.resume.resume(actor, row.id, requestId);
     const deadline = clock.now() + (options.timeoutMs ?? 45_000);
@@ -676,8 +672,10 @@ export function createDockerSandboxControls(
       if (requested.state === "claiming") requested = await options.resume.resume(actor, row.id, requestId);
       // Host ACK is not runtime readiness.
       const state = (
-        await sql.query<{ outcome: string | null; status_reason: string | null }>(
-          `select j.outcome,s.status_reason from public.docker_host_jobs j join public.sandboxes s on s.id=j.bound_sandbox_id where j.request_id=$1 and j.bound_sandbox_id=$2 and j.bound_operation='resume'`,
+        await sql.query<{ outcome: string | null; status_reason: string | null; lifecycle_generation: string }>(
+          `select ${DOCKER_JOB_REQUEST_OUTCOME_SQL} as outcome,s.status_reason,s.lifecycle_generation::text
+           from public.docker_host_jobs j join public.sandboxes s on s.id=j.bound_sandbox_id
+           where j.request_id=$1 and j.bound_sandbox_id=$2 and j.bound_operation='resume'`,
           [requestId, row.id],
         )
       ).rows[0];
@@ -689,7 +687,7 @@ export function createDockerSandboxControls(
             : "Docker resume failed.",
         );
       if (state?.outcome === "completed") {
-        const ready = await runtime.ready(actor, row.id, requestId);
+        const ready = await runtime.ready(actor, row.id, requestId, true, state.lifecycle_generation);
         if (ready.state === "ready") {
           await createDockerLaunchEnvironment(sql, key, clock)(caller, row.id);
           await options.github?.prepareTurn(caller, row.id);
@@ -706,13 +704,8 @@ export function createDockerSandboxControls(
     if (row.owner_id !== caller.userId) throw denied();
     if (!["ready", "running"].includes(row.status)) throw failure("conflict", "Docker sandbox must be running.");
     const requestId = (args.request_id as string | undefined) ?? randomUUID();
-    if (
-      args.conversation_id !== undefined &&
-      (typeof args.conversation_id !== "string" || !UUID.test(args.conversation_id))
-    )
-      throw invalid();
-    let conversationId = (args.conversation_id as string | undefined) ?? row.conversation_ids.at(-1);
-    if (name === "steer" && args.conversation_id === undefined) {
+    let conversationId = row.conversation_ids.at(-1);
+    if (name === "steer") {
       const previous = (
         await sql.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
           "select request_enc from public.runtime_commands where sandbox_id=$1 and request_id=$2",
@@ -778,10 +771,7 @@ export function createDockerSandboxControls(
       },
     );
     if (name === "interrupt") {
-      await agent.interrupt(
-        { sandboxId: row.id, ...(args.conversation_id ? { conversationId: args.conversation_id as string } : {}) },
-        requestId,
-      );
+      await agent.interrupt({ sandboxId: row.id }, requestId);
       return { id: row.id, interrupted: true };
     }
     if (name === "steer") {
@@ -914,7 +904,8 @@ export function createDockerSandboxControls(
           : await dispatch();
       } catch (error) {
         // ToolError is Armada request validation (Docker send admission) with public guidance.
-        if (error instanceof ProviderError || error instanceof ToolError) throw error;
+        if (error instanceof ProviderError || error instanceof ToolError || error instanceof DockerHostUpgradeRequired)
+          throw error;
         if (error instanceof DockerRetentionEnded)
           throw new ProviderError({
             provider: "docker",

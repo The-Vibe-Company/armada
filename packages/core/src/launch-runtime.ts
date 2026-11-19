@@ -10,7 +10,7 @@ export function runtimeLaunch(runtime: NonNullable<LaunchOptions["runtime"]>): L
     forkEnv: () => ({}),
     recordFields: ({ provider }) =>
       launchInfrastructure(provider.id).nativeCli ? { boatRuntime: true } : { runtimeTransport: "dialout" },
-    async initialize(plan, { actor, record, signal, progress, mark, reportGitHub }) {
+    async initialize(plan, { actor, record, signal, progress, mark, runtimeStarted, reportGitHub }) {
       const { provider, stores, request, options, golden, credentials } = plan;
       progress("initialization_hydrate");
       progress("initialization_github");
@@ -20,6 +20,7 @@ export function runtimeLaunch(runtime: NonNullable<LaunchOptions["runtime"]>): L
       const agent = await Promise.resolve().then(() =>
         runtime.start({ host: provider, actor, sandbox: record, credentials, signal }),
       );
+      runtimeStarted();
       if (!agent || typeof agent.prompt !== "function" || !/^[1-9][0-9]{0,18}$/.test(agent.epoch))
         throw new LaunchError("start_failed", "The runtime did not acknowledge a valid epoch.");
       if (!agent.prepareWorkspace)

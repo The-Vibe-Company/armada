@@ -9,6 +9,7 @@ import {
   ROUTINE_REASON_HELP,
   resolveMachineSize,
 } from "@armada/core";
+import { createInboundTrigger } from "@armada/core/contract";
 import { largeSandboxExpiry } from "./fixture-expiry";
 
 /**
@@ -21,6 +22,16 @@ import { largeSandboxExpiry } from "./fixture-expiry";
  */
 
 type Row = Record<string, unknown>;
+type TriggerSummary = {
+  id: string;
+  templateId: string;
+  poolHarness: Harness;
+  enabled: boolean;
+  ratePerMinute: number;
+  concurrency: number;
+  rateRefusals: number;
+};
+
 type Fail = { status: number; code: string; message: string };
 
 const PORT = Number(process.env.MOCK_PORT ?? 54399);
@@ -80,6 +91,7 @@ type State = {
   templateRequests: Map<string, Row>;
   routines: Row[];
   routineHistory: Row[];
+  inboundTriggers: Map<string, { org: string; summary: TriggerSummary }>;
 };
 
 function seed(): State {
@@ -215,6 +227,23 @@ function seed(): State {
       routineRow(id(2201), "personal", ALICE, "Release notes", "paused", id(91), 1),
       routineRow(id(2202), "personal", BOB, "Bob private check", "paused", id(90), 2),
     ],
+    inboundTriggers: new Map([
+      [
+        id(2220),
+        {
+          org: ACME,
+          summary: {
+            id: id(2220),
+            templateId: id(90),
+            poolHarness: "claude",
+            enabled: true,
+            ratePerMinute: 25,
+            concurrency: 2,
+            rateRefusals: 1,
+          },
+        },
+      ],
+    ]),
     routineHistory: [
       {
         id: id(2210),
@@ -1196,11 +1225,7 @@ function mcp(message: RpcMessage, userId: string | null): Response {
       return text({ events: events.slice(since), cursor: String(events.length), hasMore: false });
     }
     case "send": {
-      // As the server does: the named conversation, else the latest, else a new one; the sandbox is running after.
-      const conversationId =
-        typeof args.conversation_id === "string"
-          ? args.conversation_id
-          : (conversations.at(-1) ?? `conv-${events.length}`);
+      const conversationId = conversations.at(-1) ?? `conv-${events.length}`;
       if (!conversations.includes(conversationId)) target.conversation_ids = [...conversations, conversationId];
       target.status = "running";
       // A send to a stopped sandbox restores it: the server clears its stop time.
@@ -1218,7 +1243,7 @@ function mcp(message: RpcMessage, userId: string | null): Response {
       return text({ id: target.id, promptId, conversationId, status: "running" });
     }
     case "steer": {
-      const conversationId = typeof args.conversation_id === "string" ? args.conversation_id : conversations.at(-1);
+      const conversationId = conversations.at(-1);
       events.push({
         id: `steer-${events.length}`,
         at: Date.now(),
@@ -1230,15 +1255,15 @@ function mcp(message: RpcMessage, userId: string | null): Response {
       return text({ id: target.id, promptId: "steered", conversationId, delivery, mode: null });
     }
     case "interrupt": {
+      const conversationId = conversations.at(-1);
       const running = [...events]
         .reverse()
         .find(
-          (event) =>
-            event.kind === "prompt" && event.status === "running" && event.conversationId === args.conversation_id,
+          (event) => event.kind === "prompt" && event.status === "running" && event.conversationId === conversationId,
         );
       if (running)
         events.push({ ...running, id: `interrupted-${events.length}`, at: Date.now(), status: "interrupted" });
-      return text({ id: target.id, interrupted: true });
+      return text({ id: target.id, interrupted: !!running });
     }
     case "stop":
       target.status = "stopped";
@@ -2925,6 +2950,81 @@ function langfuseControl(request: Request, match: RegExpMatchArray, body: Row): 
   return json({ enabled: candidate.enabled, contentMode: candidate.contentMode });
 }
 
+function inboundTriggers(request: Request, url: URL, path: RegExpMatchArray, body: Row) {
+  const caller = viewer(request);
+  const org = url.searchParams.get("org");
+  if (!caller) return controlFail(401, "unauthorized", "Sign in again.");
+  if (!isAdmin(org, caller)) return controlFail(403, "forbidden", "Only organization admins can manage triggers.");
+
+  const [, triggerId, operation] = path;
+  const headers = { "cache-control": "no-store" };
+  const visibleTemplate = (row: Row) => row.orgId === org && (row.scope === "org" || row.ownerId === caller);
+  if (request.method === "GET" && !triggerId) {
+    const triggers = Array.from(state.inboundTriggers.values())
+      .filter((entry) => entry.org === org)
+      .map(({ summary }) => ({
+        ...summary,
+        templateId: state.templates.some((row) => row.id === summary.templateId && visibleTemplate(row))
+          ? summary.templateId
+          : null,
+      }));
+    return json({ triggers }, 200, headers);
+  }
+  if (request.method === "POST" && !triggerId) {
+    const scope = createInboundTrigger.input.query.safeParse({ org });
+    const input = createInboundTrigger.input.body.safeParse(body);
+    if (!scope.success || !input.success) return controlFail(400, "invalid_request", "Invalid trigger configuration.");
+    const { templateId, poolHarness } = input.data;
+    const template = state.templates.find(
+      (row) => row.id === templateId && row.status === "active" && visibleTemplate(row),
+    );
+    const revision = state.templateRevisions.find(
+      (row) => row.templateId === template?.id && row.revision === template?.currentRevision,
+    );
+    const definition = revision?.definition as Row | undefined;
+    const accountId = state.agentDefaults[caller]?.find((row) => row.harness === poolHarness)?.credentialId;
+    const account = state.credentials.find(
+      (row) =>
+        row.id === accountId &&
+        row.status === "active" &&
+        (!row.expires_at || Date.parse(String(row.expires_at)) > Date.now()) &&
+        ((row.scope === "user" && row.owner_id === caller) || (row.scope === "org" && row.owner_id === org)) &&
+        harnessesForCredential(row.kind as Parameters<typeof harnessesForCredential>[0]).includes(poolHarness),
+    );
+    const pinned = definition?.modelAccount as Row | undefined;
+    if (
+      !account ||
+      definition?.harness !== poolHarness ||
+      (pinned && (pinned.id !== account.id || pinned.version !== account.version))
+    )
+      return controlFail(409, "conflict", "The template or account pool is unavailable.");
+
+    const newId = id(++sequence);
+    state.inboundTriggers.set(newId, {
+      org: scope.data.org,
+      summary: { id: newId, ...input.data, enabled: true, rateRefusals: 0 },
+    });
+    const signingSecret = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64");
+    return json({ triggerId: newId, signingSecret }, createInboundTrigger.successStatus, headers);
+  }
+  const entry = triggerId ? state.inboundTriggers.get(triggerId) : undefined;
+  if (!entry || entry.org !== org) return controlFail(404, "not_found", "Trigger not found.");
+  if (request.method === "GET" && operation === "deliveries") {
+    const delivery = { deliveryId: "fixture_delivery", receivedAt: "2026-11-19T10:00:00Z", jobState: "done" };
+    return json({ deliveries: triggerId === id(2220) ? [delivery] : [] }, 200, headers);
+  }
+  if (request.method === "POST" && operation === "disable") {
+    entry.summary.enabled = false;
+    return new Response(null, { status: 204, headers });
+  }
+  if (request.method === "POST" && operation === "rotate") {
+    if (!entry.summary.enabled) return controlFail(404, "not_found", "Active trigger not found.");
+    const signingSecret = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64");
+    return json({ signingSecret }, 200, headers);
+  }
+  return controlFail(405, "method_not_allowed", "Method not allowed.");
+}
+
 const server = Bun.serve({
   port: PORT,
   hostname: "127.0.0.1",
@@ -2940,10 +3040,7 @@ const server = Bun.serve({
     if (url.pathname.startsWith("/__test/")) return control(url, body);
     if (url.pathname === "/mcp") return mcp(body as unknown as RpcMessage, viewer(request));
     const canonicalLaunch = url.pathname === "/api/v1/sandbox/launch";
-    if (
-      request.method === "POST" &&
-      (url.pathname === "/api/v1/sandbox/launch-access-v1" || (canonicalLaunch && body.armadaAccess))
-    ) {
+    if (canonicalLaunch && request.method === "POST" && body.armadaAccess) {
       if (
         body.armadaAccessVersion !== 1 ||
         body.harness !== "codex" ||
@@ -2957,13 +3054,6 @@ const server = Bun.serve({
         );
       return launchRoute(body, viewer(request));
     }
-    if (url.pathname === "/api/v1/sandbox/launch-sized-v1" && request.method === "POST") {
-      // #653's fail-closed route (ea501bd): an older replica does not know it, a newer one checks the version first.
-      // Either refusal comes before anything is allocated.
-      if (body.sizePolicyVersion !== 1)
-        return controlFail(400, "invalid", "The sized launch route requires sizePolicyVersion 1.");
-      return launchRoute(body, viewer(request));
-    }
     if (canonicalLaunch && request.method === "POST") return launchRoute(body, viewer(request));
     if (url.pathname.startsWith("/api/v1/mcp/") && request.method === "POST") {
       return mcpControl(url.pathname.slice("/api/v1/mcp/".length), body, viewer(request));
@@ -2971,6 +3061,8 @@ const server = Bun.serve({
     if (url.pathname.startsWith("/oauth/")) return oauth(url);
     const langfuse = url.pathname.match(/^\/api\/v1\/orgs\/([0-9a-f-]{36})\/langfuse(\/test)?$/i);
     if (langfuse) return langfuseControl(request, langfuse, body);
+    const triggerPath = url.pathname.match(/^\/api\/v1\/triggers(?:\/([^/]+)\/(deliveries|rotate|disable))?$/);
+    if (triggerPath) return inboundTriggers(request, url, triggerPath, body);
     if (url.pathname.startsWith("/api/v1/")) {
       const route = url.pathname.slice("/api/v1/".length);
       if (route === "docker/hosts/list" && body.org === LARGE) {

@@ -9,7 +9,6 @@ const VALUE = new Set([
   "--idempotency-key",
   "--connections",
   "--visibility",
-  "--conversation",
   "--cwd",
   "--prompt-id",
   "--timeout",
@@ -107,4 +106,12 @@ export function acceptedOptions(args: Args, command: string, allowed: readonly s
   for (const key of args.options.keys()) {
     if (!allowed.includes(key)) throw new GoldenError("invalid_config", `Unsupported ${command} option '${key}'.`);
   }
+}
+
+export function oneName(positionals: string[]) {
+  const name = positionals[0];
+  if (name === undefined || positionals.length !== 1) {
+    throw new GoldenError("invalid_config", "Give exactly one snapshot name.");
+  }
+  return name;
 }

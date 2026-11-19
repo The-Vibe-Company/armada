@@ -13,6 +13,124 @@ import { nativeIdleDue, nativeQuiescent } from "./native-idle.ts";
 import { INTERRUPTED_LAUNCH_REASON } from "./turns.ts";
 import { preserveBeforeStop, recordStopDispatch } from "./work-preservation.ts";
 
+export const UNENROLLED_RESUME_STOP = "runtime_resume_unenrolled";
+const OPERATOR_CLEANUP_PREFIX = "Operator cleanup required:";
+
+export async function deferAmbiguousBoatResume(
+  tx: Sql,
+  sandboxId: string,
+  requestId: string,
+  generation: number | undefined,
+) {
+  await tx.query(
+    `update public.sandboxes set activity_until=clock_timestamp(),reconcile_after=clock_timestamp()
+     where id=$1 and provider='boat' and boat_runtime and status='starting'
+       and activity_lease_id=$2 and lifecycle_generation=$3 and activity_until>clock_timestamp()
+       and stop_requested_at is null and deleted_at is null and expires_at>clock_timestamp()
+       and (reconcile_lease_until is null or reconcile_lease_until<=clock_timestamp())`,
+    [sandboxId, requestId, generation],
+  );
+}
+
+export async function requestFailedRuntimeResumeStop(
+  tx: Sql,
+  sandboxId: string,
+  requestId: string,
+  generation: number | undefined,
+  retained: boolean,
+) {
+  const changed = await tx.query<{ status: "stopping" | "failed" }>(
+    `update public.sandboxes set
+    status=case when $4 and not application_secret_tainted then 'stopping'::public.sandbox_status else 'failed'::public.sandbox_status end,
+    transition_context=jsonb_build_object('actor','runtime_resume','code',
+      case when $4 and not application_secret_tainted then $5::text else 'restore_unconfirmed' end),
+    status_reason=case when $4 and not application_secret_tainted then null
+      else 'Runtime resume failed before a restored worker was confirmed; cleanup requested.' end,
+    stop_requested_at=now(),stop_generation=stop_generation+1,
+    activity_lease_id=null,activity_until=null,lifecycle_generation=lifecycle_generation+1,
+    reconcile_after=case when $4 and not application_secret_tainted then 'infinity'::timestamptz else now() end
+    where id=$1 and status='starting' and activity_lease_id=$2 and lifecycle_generation=$3
+      and activity_until>clock_timestamp() and stop_requested_at is null and deleted_at is null
+      and (reconcile_lease_until is null or reconcile_lease_until<=clock_timestamp()) returning status`,
+    [sandboxId, requestId, generation, retained, UNENROLLED_RESUME_STOP],
+  );
+  return changed.rows[0]?.status;
+}
+
+export async function failDockerResumeActivation(
+  tx: Sql,
+  sandboxId: string,
+  generation: number | string,
+  requestId: string,
+  reason: string,
+) {
+  await tx.query(
+    `update public.sandboxes s set status='failed',status_reason=$4,
+       lifecycle_generation=s.lifecycle_generation+1
+     from public.docker_host_jobs resumed
+     where s.id=$1 and s.lifecycle_generation=$2 and s.provider='docker'
+       and s.status in ('starting','ready','running') and s.stop_requested_at is null and s.deleted_at is null
+       and resumed.request_id=$3 and resumed.bound_sandbox_id=s.id and resumed.host_id=s.docker_host_id
+       and resumed.bound_operation='resume'
+       and not exists (
+         select 1 from public.docker_host_jobs later where later.bound_sandbox_id=s.id
+           and later.host_id=resumed.host_id and later.bound_operation='resume' and later.position>resumed.position
+       )`,
+    [sandboxId, generation, requestId, reason],
+  );
+}
+
+export async function requestRefusedDockerResumeStop(tx: Sql, sandboxId: string, generation: string) {
+  const stopped = await tx.query(
+    `update public.sandboxes set status='stopping',status_reason=null,
+       stop_requested_at=now(),lifecycle_generation=lifecycle_generation+1
+     where id=$1 and provider='docker' and stop_requested_at is null and deleted_at is null
+       and expires_at>now()
+       and status='starting' and lifecycle_generation=$2
+     returning id`,
+    [sandboxId, generation],
+  );
+  return stopped.rows.length > 0;
+}
+
+async function recoverInterruptedBoatResume(
+  tx: Sql,
+  sandboxId: string,
+  lease: string,
+  generation: number,
+  observedProviderId: string | null,
+) {
+  const result = await tx.query(
+    `with handoff as (
+      update public.sandboxes s set status='stopping',
+        transition_context=jsonb_build_object('actor','runtime_resume','code',$4::text),
+        stop_requested_at=clock_timestamp(),stop_generation=s.stop_generation+1,status_reason=null,
+        activity_lease_id=null,activity_until=null,lifecycle_generation=s.lifecycle_generation+1,
+        reconcile_after='infinity'::timestamptz,reconcile_lease=null,reconcile_lease_until=null
+      from public.runtime_resumes r
+      join public.runtime_enrolments e on e.sandbox_id=r.sandbox_id and e.epoch=r.source_epoch
+      join public.runtime_checkpoints c on c.sandbox_id=r.sandbox_id and c.epoch=r.source_epoch
+      where s.id=$1 and s.reconcile_lease=$2 and s.lifecycle_generation=$3
+        and s.reconcile_lease_until>clock_timestamp() and s.activity_until<=clock_timestamp()
+        and s.provider='boat' and s.boat_runtime and s.status='starting'
+        and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>clock_timestamp()
+        and not s.application_secret_tainted
+        and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id)
+        and r.sandbox_id=s.id and r.request_id=s.activity_lease_id and r.phase='dispatched' and r.receipt is null
+        and e.runtime_hash is null
+        and (s.provider_sandbox_id=$5::text or r.activated_at is not null
+          or (e.enrolment_hash is not null and e.lifecycle_generation=$3))
+        and c.watermark=r.watermark
+        and c.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=s.id)
+      returning s.id,r.request_id
+    )
+    update public.runtime_resumes r set phase='abandoned' from handoff
+    where r.sandbox_id=handoff.id and r.request_id=handoff.request_id returning r.request_id`,
+    [sandboxId, lease, generation, UNENROLLED_RESUME_STOP, observedProviderId],
+  );
+  return result.rows.length > 0;
+}
+
 /** One bounded batch in the existing server loop. SQL leases serialize replicas; generation
  * fencing prevents an old observation from publishing over a newly admitted resume. */
 export function createSandboxLifecycle(
@@ -66,27 +184,62 @@ export function createSandboxLifecycle(
           credential_id: string | null;
           credential_version: number | null;
           owner_is_member: boolean;
+          retained_resume: boolean;
+          interrupted_resume: boolean;
           work_merged: boolean | null;
           preservation_note: string | null;
           stop_requested_at: Date | string | null;
         }>(
           `update public.sandboxes s set reconcile_lease=$1::uuid,
           reconcile_lease_until=now()+interval '2 minutes'
-        where s.id=(select candidate.id from public.sandboxes candidate
+        from (
+          select candidate.id,recovery.retained_resume from public.sandboxes candidate
+          cross join lateral (select candidate.provider='boat' and candidate.status='stopping' and exists(
+            select 1 from public.sandbox_transitions t where t.sandbox_id=candidate.id and t.generation=candidate.lifecycle_generation
+            and t.actor='runtime_resume' and t.code=$3 and t.to_status='stopping'
+          ) as retained_resume) recovery
           where candidate.provider = $2 and candidate.status not in ('stopped','deleted')
           and not exists(select 1 from public.orchestrators parent where parent.sandbox_id=candidate.id)
           and not (candidate.status='failed' and candidate.stopped_at is not null)
-          and candidate.reconcile_after<=now()
+          -- Only this worker understands the retained-resume handoff. Old
+          -- replicas see an infinite schedule and cannot claim it.
+          and (candidate.reconcile_after<=now()
+            or (recovery.retained_resume and coalesce(candidate.lifecycle_error,'') not like $4))
           and (candidate.activity_until is null or candidate.activity_until<now())
           and (candidate.reconcile_lease_until is null or candidate.reconcile_lease_until<now())
-          order by candidate.reconcile_after limit 1 for update of candidate skip locked)
+          order by case when recovery.retained_resume
+            then coalesce(candidate.reconcile_lease_until,candidate.stop_requested_at)
+            else candidate.reconcile_after end
+          limit 1 for update of candidate skip locked
+        ) due
+        where s.id=due.id
         returning s.id,s.provider_sandbox_id,s.runtime_transport,s.boat_runtime,s.lifecycle_generation,s.expires_at,s.status::text as status,s.status_reason,s.task_prompt_id,s.activity_lease_id,s.application_secret_tainted,s.credential_id,s.credential_version,s.stop_requested_at,s.preservation_note,
-          ${mergedWorkProof("s")} as work_merged,
+          ${mergedWorkProof("s")} as work_merged,due.retained_resume,
+          (s.provider='boat' and s.boat_runtime and s.status='starting' and exists(
+            select 1 from public.runtime_resumes r where r.sandbox_id=s.id and r.request_id=s.activity_lease_id
+              and r.phase='dispatched' and r.receipt is null
+          )) as interrupted_resume,
           exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id) as owner_is_member`,
-          [token, providerId],
+          [token, providerId, UNENROLLED_RESUME_STOP, `${OPERATOR_CLEANUP_PREFIX}%`],
         )
       ).rows[0];
       if (!row) return false;
+      const recoverInterruptedResume = async (observedProviderId: string | null) => {
+        if (!row.interrupted_resume) return false;
+        if (!sql.transaction) throw Error("Boat resume recovery requires a SQL transaction.");
+        return sql.transaction(async (tx) => {
+          const owned = await tx.query(
+            `select id from public.sandboxes where id=$1 and reconcile_lease=$2 and lifecycle_generation=$3
+               and reconcile_lease_until>clock_timestamp() for update`,
+            [row.id, token, row.lifecycle_generation],
+          );
+          return (
+            owned.rows.length > 0 &&
+            (await recoverInterruptedBoatResume(tx, row.id, token, row.lifecycle_generation, observedProviderId))
+          );
+        });
+      };
+      if (await recoverInterruptedResume(null)) return true;
       // Only an already-requested stop may enter operator custody. This is not
       // provider authority: the worker never substitutes credentials or allocates.
       const operatorStop = row.status === "stopping" && row.stop_requested_at !== null;
@@ -102,7 +255,7 @@ export function createSandboxLifecycle(
             row.id,
             token,
             row.lifecycle_generation,
-            `Operator cleanup required: ${reason} Physical outcome unknown; retained identity unchanged. Follow docs/stopping-authority-loss.md.`,
+            `${OPERATOR_CLEANUP_PREFIX} ${reason} Physical outcome unknown; retained identity unchanged. Follow docs/stopping-authority-loss.md.`,
           ],
         );
       };
@@ -127,8 +280,13 @@ export function createSandboxLifecycle(
       let physicalExit = false;
       let error: string | null = null;
       let resolved = false;
+      let observing = false;
+      let initialObservation = true;
+      let handingOffObservedResume = false;
+      let waitingForRetention = false;
       let stoppedAt: Date | undefined;
       const expired = new Date(row.expires_at).getTime() <= now();
+      const retainedResume = row.retained_resume;
       const native = !row.boat_runtime && row.runtime_transport !== "dialout";
       // Lease expiry is not evidence a native exec completed. Retain its identity
       // until an owner outcome or explicit/TTL cleanup, rather than inventing idle.
@@ -138,11 +296,49 @@ export function createSandboxLifecycle(
         !expired &&
         !row.stop_requested_at &&
         ["ready", "running"].includes(row.status);
+      const canDeferInterruptedResume =
+        row.interrupted_resume && !expired && !row.stop_requested_at && !row.application_secret_tainted;
+      const deferInterruptedResume = () =>
+        sql.query(
+          `update public.sandboxes set reconcile_after=now()+interval '1 minute',
+             reconcile_lease=null,reconcile_lease_until=null
+           where id=$1 and reconcile_lease=$2 and lifecycle_generation=$3 and status='starting'
+             and reconcile_lease_until>clock_timestamp() and activity_lease_id=$4
+             and activity_until<=clock_timestamp() and expires_at>clock_timestamp()
+             and stop_requested_at is null and deleted_at is null and not application_secret_tainted`,
+          [row.id, token, row.lifecycle_generation, row.activity_lease_id],
+        );
       try {
         // Uses persisted owner membership, source credential visibility and pinned Modal App.
         const provider = await operation(signal, () => providerFor(row.id));
         resolved = true;
-        let info = await operation(signal, () => provider.get(row.provider_sandbox_id));
+        const observe = async () => {
+          observing = true;
+          const info = await operation(signal, () => provider.get(row.provider_sandbox_id));
+          observing = false;
+          return info;
+        };
+        let info = await observe();
+        initialObservation = false;
+        if (
+          canDeferInterruptedResume &&
+          info.id === row.provider_sandbox_id &&
+          ["starting", "stopping", "failed"].includes(info.state) &&
+          !info.physicalExitConfirmed
+        ) {
+          handingOffObservedResume = true;
+          await deferInterruptedResume();
+          return true;
+        }
+        if (
+          row.interrupted_resume &&
+          (info.state === "stopped" ||
+            ((info.state === "ready" || info.state === "running") && !info.physicalExitConfirmed))
+        ) {
+          handingOffObservedResume = true;
+          if (await recoverInterruptedResume(info.id)) return true;
+          handingOffObservedResume = false;
+        }
         // Name the persisted selection and provider observation before any capture.
         // No secret values or provider error bodies enter this diagnostic.
         try {
@@ -162,6 +358,7 @@ export function createSandboxLifecycle(
               expired,
               stopRequested: row.stop_requested_at !== null,
               normalizedState: info.state,
+              retainedSnapshot: info.retainedSnapshot,
               terminal: info.physicalExitConfirmed === true || ["stopped", "deleted"].includes(info.state),
             }),
           );
@@ -290,13 +487,12 @@ export function createSandboxLifecycle(
           signal?.throwIfAborted();
           if (
             !reconcilingStop &&
-            (await preserveBeforeStop(
-              sql,
-              preservationProvider,
-              row.id,
-              row.provider_sandbox_id,
-              "lifecycle_stop",
-            ).catch(() => {})) === "pending"
+            (await preserveBeforeStop(sql, preservationProvider, row.id, row.provider_sandbox_id, "lifecycle_stop", {
+              kind: "reconcile",
+              token,
+              generation: row.lifecycle_generation,
+              signal,
+            }).catch(() => "pending" as const)) === "pending"
           )
             throw new ProviderError({
               provider: provider.id,
@@ -307,7 +503,8 @@ export function createSandboxLifecycle(
           signal?.throwIfAborted();
           if (idleStop && !reconcilingStop) await operation(signal, requireIdle);
           const requireRetention =
-            !expired && (idleStop || ["idle_paused", "work_merged"].includes(row.status_reason ?? ""));
+            !expired &&
+            (retainedResume || idleStop || ["idle_paused", "work_merged"].includes(row.status_reason ?? ""));
           recordStopDispatch(row.id, row.provider_sandbox_id, "lifecycle_stop");
           await operation(signal, () =>
             provider.stop({
@@ -315,15 +512,28 @@ export function createSandboxLifecycle(
               ...(requireRetention ? { requireRetention: true } : {}),
             }),
           );
-          info = await operation(signal, () => provider.get(row.provider_sandbox_id));
+          info = await observe();
         }
         signal?.throwIfAborted();
         physicalExit = info.physicalExitConfirmed === true || info.stopNote === "checkpoint_failed_disk_not_retained";
         stoppedAt = info.stoppedAt;
-        terminal = physicalExit || ["stopped", "deleted"].includes(info.state);
-        if (!terminal && (expired || row.status === "stopping" || row.stop_requested_at !== null))
+        waitingForRetention =
+          providerId === "boat" &&
+          info.state === "stopped" &&
+          info.retainedSnapshot !== "usable" &&
+          !physicalExit &&
+          row.status !== "failed" &&
+          row.status !== "starting";
+        terminal = !waitingForRetention && (physicalExit || ["stopped", "deleted"].includes(info.state));
+        if (waitingForRetention)
+          error =
+            info.retainedSnapshot === "pending"
+              ? "Boat snapshot is pending. Retrying without deleting retained data."
+              : "Boat archive has no verified retained snapshot. Retrying without deleting retained data.";
+        else if (!terminal && (expired || row.status === "stopping" || row.stop_requested_at !== null))
           error = "Provider stop is not yet confirmed. Retrying without deleting retained data.";
       } catch (caught) {
+        if (handingOffObservedResume) throw caught;
         const authorityLost =
           (caught instanceof VaultError &&
             ["missing_credential", "forbidden", "not_found", "credential_refused"].includes(caught.code)) ||
@@ -332,30 +542,49 @@ export function createSandboxLifecycle(
           await deferToOperator("original provider authority unavailable.");
           return true;
         }
+        if (canDeferInterruptedResume && initialObservation && observing) {
+          signal?.throwIfAborted();
+          if (caught instanceof ProviderError && caught.code !== "not_found" && !authorityLost) {
+            await deferInterruptedResume();
+            return true;
+          }
+        }
         // A definitive absence for the exact registered identity is terminal.
         // Never infer absence from transport errors or discover resources by name.
-        if (resolved && caught instanceof ProviderError && caught.code === "not_found") terminal = true;
+        if (
+          resolved &&
+          (providerId !== "boat" || observing) &&
+          caught instanceof ProviderError &&
+          caught.code === "not_found"
+        ) {
+          terminal = true;
+          if (providerId === "boat") physicalExit = true;
+        }
         // No provider exception text: SDK errors may contain credential-bearing requests.
         else error = "Provider lifecycle observation unavailable. Retrying without deleting retained data.";
       }
       await sql.query(
         `update public.sandboxes set
         -- A failed launch keeps its diagnostic even after its machine is confirmed stopped.
-        status=case when $7 or status='starting' then 'failed'::public.sandbox_status when $4 and status <> 'failed' then 'stopped'::public.sandbox_status else status end,
+        status=case when $7 or status='starting' then 'failed'::public.sandbox_status when $4 and status <> 'failed' then 'stopped'::public.sandbox_status when $13 then 'stopping'::public.sandbox_status else status end,
         transition_context=jsonb_build_object('actor','reconciler','code',
           case when status='starting' then 'launch_interrupted'
             when $7 then 'provider_exit_without_checkpoint'
+            when $13 then 'stop_requested'
             when $10 and status_reason is distinct from 'work_merged' then 'expired'
             else 'provider_stopped' end),
         status_reason=case when status='starting' then coalesce(status_reason,$8::text) when $7 then coalesce(case when status_reason not in ('idle_paused','work_merged') then status_reason end,'Provider confirmed physical exit without a new verified recovery checkpoint.') when $4 and $10 and status<>'failed' and status_reason is distinct from 'work_merged' then 'expired' else status_reason end,
-        stop_requested_at=case when $4 then null when status='starting' then coalesce(stop_requested_at,now()) else stop_requested_at end,
+        stop_requested_at=case when $4 then null when $13 or status='starting' then coalesce(stop_requested_at,now()) else stop_requested_at end,
+        stop_generation=case when $13 and stop_requested_at is null then stop_generation+1 else stop_generation end,
         stopped_at=case when $4 then coalesce(stopped_at,$9::timestamptz,now()) else stopped_at end,
         last_observed_at=case when $5::text is null then now() else last_observed_at end,
         activity_lease_id=case when $11 and not $4 then activity_lease_id else null end,
         activity_until=case when $11 and not $4 then activity_until else null end,
-        lifecycle_error=$5::text,reconcile_after=now()+interval '1 minute',
+        lifecycle_error=$5::text,
+        reconcile_after=case when $12 and not $4 then 'infinity'::timestamptz else now()+interval '1 minute' end,
         reconcile_lease=case when $6 then reconcile_lease else null end,
-        reconcile_lease_until=case when $6 then reconcile_lease_until else null end
+        reconcile_lease_until=case when $6 then reconcile_lease_until
+          when $12 and not $4 then now()+interval '1 minute' else null end
         where id=$1::uuid and reconcile_lease=$2::uuid and lifecycle_generation=$3
           and reconcile_lease_until>clock_timestamp()
           and (activity_until is null or activity_until<now())`,
@@ -371,6 +600,8 @@ export function createSandboxLifecycle(
           stoppedAt?.toISOString() ?? null,
           expired,
           retainUnknownActivity,
+          retainedResume,
+          waitingForRetention,
         ],
       );
       return true;

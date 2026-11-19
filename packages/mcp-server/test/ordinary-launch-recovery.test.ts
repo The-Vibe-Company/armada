@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
+import { launchEnvelope } from "@armada/core/contract";
 import { createSqlData } from "../src/data.ts";
 import { createOrdinaryLaunchReceipts } from "../src/ordinary-launch-receipts.ts";
 import { callSharedTool } from "../src/tool-api.ts";
@@ -13,7 +14,7 @@ afterAll(async () => {
   await fixture.db.close();
 });
 
-test("MCP allocation before failed registration returns a recoverable handle and fences replay", async () => {
+test("MCP allocation before failed registration returns a receipt ID and fences replay", async () => {
   const { db, people } = fixture;
   const sql = bunLikeSql(db);
   const caller = {
@@ -27,7 +28,6 @@ test("MCP allocation before failed registration returns a recoverable handle and
   boat.provider.managementIdentity = async () => ({ scope: "org", ownerId: people.org });
   let allocations = 0;
   let logical = "";
-  boat.provider.list = async () => ({ items: [boat.sandbox("bx_1").info], cursor: null });
   const fork = boat.provider.fork.bind(boat.provider);
   boat.provider.fork = async (request) => {
     allocations++;
@@ -43,7 +43,7 @@ test("MCP allocation before failed registration returns a recoverable handle and
     ordinaryLaunchReceipts: createOrdinaryLaunchReceipts(sql),
     logError: () => {},
   } as unknown as ToolContext;
-  const input = { golden: "shared", harness: "claude", idempotencyKey: "mcp-uncertainty-key" };
+  const input = { provider: "boat", golden: "shared", harness: "claude", idempotencyKey: "mcp-uncertainty-key" };
   await expect(callSharedTool(context, "launch", input)).rejects.toMatchObject({ code: "outcome_unknown" });
   expect(logical).not.toBe("");
   await expect(callSharedTool(context, "launch", input)).rejects.toMatchObject({
@@ -54,18 +54,20 @@ test("MCP allocation before failed registration returns a recoverable handle and
   await expect(callSharedTool(context, "launch", { ...input, prompt: "conflict" })).rejects.toMatchObject({
     code: "conflict",
   });
-  const receipt = await callSharedTool(context, "launch_receipt", { id: logical });
-  expect(receipt).toMatchObject({
-    id: logical,
-    outcome: "unknown",
-    allocations: [{ id: expect.any(String), state: expect.any(String) }],
-  });
   boat.provider.fork = async (request) => {
     allocations++;
     return fork(request);
   };
   const successInput = { ...input, idempotencyKey: "mcp-lost-success-key" };
-  const first = await callSharedTool(context, "launch", successInput);
+  const first = launchEnvelope.parse(await callSharedTool(context, "launch", successInput));
   expect(await callSharedTool(context, "launch", successInput)).toEqual(first);
+
+  await db.query("update ordinary_launch_receipts set response=$1::jsonb where request_key=$2", [
+    JSON.stringify({ id: first.sandbox.id, provider: "boat", golden: "shared" }),
+    successInput.idempotencyKey,
+  ]);
+  await expect(callSharedTool(context, "launch", successInput)).rejects.toMatchObject({
+    code: "outcome_unknown",
+  });
   expect(allocations).toBe(2);
 });

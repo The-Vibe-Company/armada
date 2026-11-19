@@ -42,7 +42,12 @@ export function authenticStagingEvidence(
   };
   const deploymentName = "Migrate then deploy pinned server and dashboard";
   const deployment = successfulStep(run.event === "workflow_run" ? `${deploymentName} (${sha})` : deploymentName);
-  if (!deployment || !successfulStep("Smoke pinned staging")) return false;
+  if (
+    !deployment ||
+    !successfulStep("Smoke pinned staging") ||
+    !successfulStep("Record ordinary main staging smoke result")
+  )
+    return false;
   if (deployedAfter === undefined) return true;
   return Date.parse(String(deployment.started_at ?? "")) >= Date.parse(deployedAfter);
 }

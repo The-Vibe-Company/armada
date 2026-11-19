@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import {
-  chosenConversation,
   composerAdmission,
   drivingFailureMessage,
   messageKeyFor,
@@ -13,12 +12,6 @@ import {
 const fields = (model = "", otherModel = "", reasoningEffort = "") => ({ model, otherModel, reasoningEffort });
 
 describe("composer guards", () => {
-  test("only a conversation recorded for the sandbox can be targeted; none lets the server choose", () => {
-    expect(chosenConversation("conv-b", ["conv-a", "conv-b"])).toEqual({ ok: true, id: "conv-b" });
-    expect(chosenConversation(" ", ["conv-a"])).toEqual({ ok: true, id: undefined });
-    expect(chosenConversation("conv-x", ["conv-a"])).toMatchObject({ ok: false });
-  });
-
   test("a model or effort choice is a change a steer refuses; an empty other model id is never the launch model", () => {
     expect(modelChange(fields())).toBe("none");
     expect(modelChange(fields("", "", "high"))).toBe("changed");
@@ -64,7 +57,7 @@ test("composer failures preserve curated recovery steps and never echo API detai
 });
 
 test("ordinary message keys survive unchanged retries and rotate for any submitted choice", () => {
-  const fields = ["sandbox", "prompt", "conversation", "model", "other_model", "reasoning_effort"];
+  const fields = ["sandbox", "prompt", "model", "other_model", "reasoning_effort"];
   const data = new FormData();
   for (const name of fields) data.set(name, `${name}-original`);
   let serial = 0;

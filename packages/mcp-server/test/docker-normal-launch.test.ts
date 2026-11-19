@@ -3,7 +3,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { createSqlAuthStore } from "@armada/auth";
 import {
   type AgentEvent,
-  DOCKER_HOST_SNAPSHOT_BASELINE_HEADER,
+  DOCKER_HOST_PROTOCOL,
+  DOCKER_HOST_PROTOCOL_HEADER,
   DOCKER_IMAGE_UNAVAILABLE_MESSAGE,
   DOCKER_LAUNCH_FAILURE_MESSAGES,
   type DockerLaunchResult,
@@ -18,6 +19,7 @@ import {
   VaultError,
   VERSION,
 } from "@armada/core";
+import { LOGS_OUTPUT, launchEnvelope } from "@armada/core/contract";
 import {
   createApplicationVault,
   createSqlMcpLeasePort,
@@ -57,7 +59,7 @@ import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeGitHub } from "../src/runtime-github.ts";
 import { createRuntimeMcp } from "../src/runtime-mcp.ts";
-import { createArmadaServer, LOGS_OUTPUT } from "../src/tools.ts";
+import { createArmadaServer } from "../src/tools.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 import { publishedRequest, publishedResponse } from "./published-response.ts";
 
@@ -74,7 +76,6 @@ const officialImage = `ghcr.io/the-vibe-company/armada-sandbox@sha256:${"a".repe
 const key = Buffer.alloc(32, 19).toString("base64");
 const hosts = createDockerHostStore(sql, key);
 const authority = createRuntimeEnrolments(sql, key);
-const commands = createRuntimeCommands(authority, key);
 const credentials = launchCredentials(createSqlVaultStore(sql), key);
 const bootstrap = createDockerBootstrapService(sql, key, {
   enabled: true,
@@ -135,6 +136,7 @@ async function fixture(
     installationId = randomUUID();
   const host = await hosts.exchangeRegistration(registration.registrationToken, installationId);
   await hosts.poll(host.hostToken, installationId, options.daemonVersion ?? "2.28.0");
+  await db.query("update docker_hosts set daemon_protocol=$2 where id=$1", [host.hostId, DOCKER_HOST_PROTOCOL - 1]);
   const secret = `offline-normal-launch-${randomUUID()}`;
   // Omitted version must select the current pin, not fabricate version one.
   await db.query(
@@ -174,10 +176,21 @@ async function fixture(
   const jobs: unknown[] = [],
     native: unknown[] = [],
     checkoutStatuses: string[] = [];
+  const clock = {
+    now: () => now,
+    async wait(ms: number) {
+      now += ms;
+      if (drive) await step();
+    },
+  };
+  const commands = createRuntimeCommands(authority, key, clock);
   async function step() {
-    for (const claim of await hosts.resumeClaimsForHost(host.hostToken, installationId))
-      await hosts.claimResume(host.hostToken, installationId, claim.requestId, true);
-    const job = await hosts.poll(host.hostToken, installationId, options.daemonVersion ?? "2.28.0");
+    let job: Awaited<ReturnType<typeof hosts.poll>> = null;
+    if (await hosts.mayHaveWork(host.hostToken, installationId, false, [], true)) {
+      for (const claim of await hosts.resumeClaimsForHost(host.hostToken, installationId))
+        await hosts.claimResume(host.hostToken, installationId, claim.requestId, true);
+      job = await hosts.poll(host.hostToken, installationId, options.daemonVersion ?? "2.28.0");
+    }
     if (job) {
       jobs.push(job);
       if (job.operation === "stop" || job.operation === "delete") session = undefined;
@@ -229,6 +242,19 @@ async function fixture(
             (await db.query<{ status: string }>("select status from public.sandboxes where id=$1", [body.requestId]))
               .rows[0]!.status,
           );
+        if (command.op === "readOutputs") {
+          await commands.complete(session.runtimeToken, session.epoch, {
+            epoch: session.epoch,
+            requestId: command.requestId,
+            status: 200,
+            body: {
+              version: 1,
+              requestId: command.requestId,
+              result: command.part === undefined ? { files: [] } : { values: [] },
+            },
+          });
+          return;
+        }
         await commands.complete(session.runtimeToken, session.epoch, {
           epoch: session.epoch,
           requestId: command.requestId,
@@ -283,13 +309,6 @@ async function fixture(
       }
     }
   }
-  const clock = {
-    now: () => now,
-    async wait(ms: number) {
-      now += ms;
-      if (drive) await step();
-    },
-  };
   let resolutions = 0;
   const publicRepositoryAccess = options.publicRepositoryAccess
     ? launchCredentials(createSqlVaultStore(sql), key, undefined, undefined, {
@@ -352,13 +371,15 @@ async function fixture(
     target = sql,
     enabled = true,
     timeoutMs = 10_000,
-    releaseImage: string | null = officialImage,
+    releaseImage: string | (() => never) | null = officialImage,
     deferLaunch = false,
   ) {
     return createDockerNormalLaunch(target, key, {
       enabled,
       deferLaunch,
-      ...(releaseImage === null ? {} : { officialImage: releaseImage }),
+      get officialImage() {
+        return typeof releaseImage === "function" ? releaseImage() : (releaseImage ?? officialSandboxImage());
+      },
       credentials: resolver,
       bootstrap,
       clock,
@@ -522,6 +543,7 @@ test("normal launch drives create, bootstrap, health and one first prompt, seals
   expect(f.resolutions()).toBe(1);
   const cleanup = createDockerSandboxControls(sql, key, { clock: f.clock });
   await cleanup.invoke(f.caller, "stop", { id: f.body.requestId });
+  expect(f.native.at(-1)).toMatchObject({ op: "readOutputs", part: null });
   await cleanup.invoke(f.caller, "delete", { id: f.body.requestId });
   // The user stop adds exactly one bounded final output read (#2570) after the four launch commands.
   const commands = async () =>
@@ -534,7 +556,11 @@ test("normal launch drives create, bootstrap, health and one first prompt, seals
   const afterStop = await commands();
   expect(afterStop.map((id) => id.startsWith("outputs_"))).toEqual([false, false, false, false, true]);
   await db.query(`update public.credentials set status='revoked' where id=$1`, [f.body.credentialId]);
-  const replay = await f.service(sql, false).launch(f.caller, f.body);
+  const replay = await f
+    .service(sql, false, 10_000, () => {
+      throw new Error("The new release image pin is unavailable");
+    })
+    .launch(f.caller, f.body);
   expect(replay.sandbox.status).toBe("deleted");
   expect(replay.promptId).toBe(f.receipt.promptId);
   expect(replay.runtime).toEqual(result.runtime);
@@ -1000,7 +1026,7 @@ test("canonical Docker admission replays a scoped key and makes the external ref
   const body = { ...fields, idempotencyKey: "customer_launch_1", externalRef: "customer:42" };
   const { options, post } = restControl(f, { dockerLaunch: f.service(sql, true, 10000, officialImage, true) });
 
-  const admitted = (await post("sandbox/launch", body)) as DockerLaunchResult;
+  const admitted = launchEnvelope.parse(await post("sandbox/launch", body));
   try {
     expect(admitted.sandbox).toMatchObject({ status: "starting", externalRef: body.externalRef });
     expect(await post("sandbox/launch", { ...body, org: `normal-launch-${org}` })).toEqual(admitted);
@@ -1010,7 +1036,7 @@ test("canonical Docker admission replays a scoped key and makes the external ref
     expect(await post("sandbox/list", { org, externalRef: body.externalRef })).toMatchObject({
       sandboxes: [{ id: admitted.sandbox.id, externalRef: body.externalRef }],
     });
-    expect(await post("sandbox/detail", { org, id: admitted.sandbox.id })).toMatchObject({
+    expect(await post("sandbox/status", { org, id: admitted.sandbox.id })).toMatchObject({
       externalRef: body.externalRef,
     });
     expect(await post("sandbox/list", { org, externalRef: "customer:43" })).toMatchObject({ sandboxes: [] });
@@ -1033,6 +1059,16 @@ test("the normal HTTP route accepts the dashboard body and returns a launched sa
     prompt: f.body.prompt,
   });
   const { options, bearer, post } = restControl(f);
+  const malformed = await handleControlRequest(
+    new Request("https://armada.test/api/v1/sandbox/launch", {
+      method: "POST",
+      headers: { authorization: `Bearer ${bearer}` },
+      body: JSON.stringify({ ...body, harness: undefined }),
+    }),
+    options,
+  );
+  expect(malformed?.status).toBe(400);
+  expect(await malformed?.json()).toMatchObject({ error: { code: "invalid" } });
   // An acknowledged timeout must preserve the dashboard's stable request key.
   f.setDrive(false);
   options.dockerLaunch = f.service(sql, true, 250);
@@ -1125,7 +1161,7 @@ test("the normal HTTP route accepts the dashboard body and returns a launched sa
   const listed = (await post("sandbox/list", scope)) as { sandboxes: SandboxListMetadata[] };
   expect(listed.sandboxes).toHaveLength(1);
   expect(listed.sandboxes[0]).toMatchObject({ id: f.body.requestId, provider: "docker", boatId: null });
-  const status = (await post("sandbox/detail", { ...scope, id: f.body.requestId })) as DockerSandboxStatus;
+  const status = (await post("sandbox/status", { ...scope, id: f.body.requestId })) as DockerSandboxStatus;
   expect(status).toMatchObject({
     id: f.body.requestId,
     provider: "docker",
@@ -1407,7 +1443,6 @@ test.each([false, true])(
     const ref = { org: f.actor.orgId, id: f.body.requestId, prompt_id: queued.promptId };
     for (const [route, input] of [
       ["sandbox/status", ref],
-      ["sandbox/detail", ref],
       ["sandbox/wait", { ...ref, timeout_seconds: 0 }],
     ] as const) {
       const report = await rest.post(route, input);
@@ -1884,21 +1919,43 @@ async function launchStages(id: string) {
   return rows.map((row) => row.stage);
 }
 
+async function repositoryFixture(checkoutExitCode = 0) {
+  const f = await fixture({ checkoutExitCode });
+  await database().query(
+    `insert into public.github_connections(user_id,github_id,login,name,refresh_token_enc,access_token_enc,access_expires_at)
+     values($1,123,'owner','Owner',$2,$3,now()+interval '1 hour')`,
+    [f.actor.userId, await encryptSecret("offline-refresh", key), await encryptSecret("offline-github-token", key)],
+  );
+  const repos = [{ url: "https://github.com/example/project.git", branch: "feature/work", dir: "project" }];
+  return { f, body: { ...f.body, repos } };
+}
+
+function configuredGitHubCapability(f: Fixture) {
+  const configured = (f.native as { op: string; configuration: { capability: string } }[]).findLast(
+    (command) => command.op === "configureGitHub",
+  );
+  if (!configured) throw Error("missing GitHub configuration");
+  return configured.configuration.capability;
+}
+
+function acquireGitHub(f: Fixture, capability: string, repository: string, operation: "git" | "gh" = "git") {
+  return f.github.route(
+    new Request("https://armada.example/api/runtime/github/credentials", {
+      method: "POST",
+      headers: { authorization: `Bearer ${capability}` },
+      body: JSON.stringify({ version: 1, repository, operation }),
+    }),
+  );
+}
+
 for (const checkoutExitCode of [0, 1])
-  test(`Docker checkout exit ${checkoutExitCode} gates its first prompt and scopes GitHub access`, async () => {
-    const db = database();
-    const f = await fixture({ checkoutExitCode });
-    await db.query(
-      `insert into public.github_connections(user_id,github_id,login,name,refresh_token_enc,access_token_enc,access_expires_at)
-    values($1,123,'owner','Owner',$2,$3,now()+interval '1 hour')`,
-      [f.actor.userId, await encryptSecret("offline-refresh", key), await encryptSecret("offline-github-token", key)],
-    );
+  test(`Docker checkout exit ${checkoutExitCode} gates its first prompt`, async () => {
+    const { f, body: repository } = await repositoryFixture(checkoutExitCode);
     const remote = await defaultRemote(f);
     const body = {
-      ...f.body,
+      ...repository,
       skills: ["catalog/repository@1.0.0"],
       connections: [remote.id],
-      repos: [{ url: "https://github.com/example/project.git", branch: "feature/work", dir: "project" }],
     };
     if (checkoutExitCode !== 0) {
       await rejected(f.service().launch(f.caller, body), "sandbox_not_ready");
@@ -1972,82 +2029,78 @@ for (const checkoutExitCode of [0, 1])
       await rejected(f.service().launch(f.caller, { ...fresh, repos }), "invalid_request");
     }
     expect(f.native).toHaveLength(before);
-    const controls = createDockerSandboxControls(sql, key, { clock: f.clock, resume: bootstrap, github: f.github });
-    const oldCapability = (f.native[1] as { configuration: { capability: string } }).configuration.capability;
-    const refreshed = await controls.invoke(f.caller, "github_refresh", { id: f.body.requestId });
-    expect(refreshed).toMatchObject({
-      handled: true,
-      result: { status: "connected", login: "owner", runtime: { epoch: f.session()?.epoch } },
-    });
-    await expect(f.github.status({ ...f.caller, orgs: [] }, f.body.requestId)).rejects.toThrow();
-    const row = (
-      await db.query<{ id: string; org_id: string; owner_id: string; status: string; conversation_ids: string[] }>(
-        "select id,org_id,owner_id,status,conversation_ids from public.sandboxes where id=$1",
-        [f.body.requestId],
-      )
-    ).rows[0];
-    if (!row) throw Error("missing sandbox");
-    const beforeSend = f.native.length;
-    const sendArgs = { request_id: randomUUID(), prompt: "Continue" };
-    const sent = await createDockerNormalSend(sql, key, { enabled: true, clock: f.clock, github: f.github }).send(
-      f.caller,
-      sendArgs,
-      row,
-    );
-    const noGitHub = createDockerNormalSend(sql, key, {
-      enabled: true,
-      clock: f.clock,
-      github: {
-        prepareTurn: async () => {
-          throw Error("GitHub unavailable");
-        },
-      },
-    });
-    expect(await noGitHub.send(f.caller, sendArgs, row)).toEqual(sent);
-    await expect(noGitHub.send(f.caller, { ...sendArgs, prompt: "Changed" }, row)).rejects.toThrow();
-    expect((f.native.slice(beforeSend) as { op: string }[]).map((command) => command.op)).toEqual([
-      "configureGitHub",
-      "prompt",
-    ]);
-    const configured = (f.native as { op: string; configuration: { capability: string } }[]).findLast(
-      (command) => command.op === "configureGitHub",
-    );
-    if (!configured) throw Error("missing GitHub configuration");
-    let capability = configured.configuration.capability;
-    const acquire = async (repository: string) =>
-      f.github.route(
-        new Request("https://armada.example/api/runtime/github/credentials", {
-          method: "POST",
-          headers: { authorization: `Bearer ${capability}` },
-          body: JSON.stringify({ version: 1, repository, operation: "git" }),
-        }),
-      );
-    expect((await acquire("example/project"))?.status).toBe(200);
-    expect(
-      (
-        await f.github.route(
-          new Request("https://armada.example/api/runtime/github/credentials", {
-            method: "POST",
-            headers: { authorization: `Bearer ${oldCapability}` },
-            body: JSON.stringify({ version: 1, repository: "example/project", operation: "gh" }),
-          }),
-        )
-      )?.status,
-    ).toBe(403);
-    expect((await acquire("example/other"))?.status).toBe(403);
-    await controls.invoke(f.caller, "stop", { id: f.body.requestId });
-    await controls.invoke(f.caller, "resume", { id: f.body.requestId, request_id: randomUUID() });
-    expect((await f.github.status(f.caller, f.body.requestId)).configured).toBe(true);
-    expect((await acquire("example/project"))?.status).toBe(403);
-    const resumed = (f.native as { op: string; configuration: { capability: string } }[]).findLast(
-      (command) => command.op === "configureGitHub",
-    );
-    if (!resumed) throw Error("missing resumed GitHub configuration");
-    capability = resumed.configuration.capability;
-    expect((await acquire("example/project"))?.status).toBe(200);
-    await hosts.revoke(f.admin, f.hostId);
-    expect((await acquire("example/project"))?.status).toBe(403);
   });
+
+test("Docker GitHub refresh and follow-up send configure the runtime and replay an admitted send", async () => {
+  const { f, body } = await repositoryFixture();
+  const db = database();
+  await f.service().launch(f.caller, body);
+  const controls = createDockerSandboxControls(sql, key, { clock: f.clock, github: f.github });
+  const initialCapability = configuredGitHubCapability(f);
+  const rest = restControl(f, { dockerControls: controls, runtimeGitHub: f.github });
+  const gitHubRef = { id: f.body.requestId, org: f.actor.orgId };
+  const refreshed = await rest.post("github/refresh", gitHubRef);
+  expect(publishedResponse("github/refresh").parse(refreshed)).toMatchObject({
+    status: "connected",
+    login: "owner",
+    runtime: { epoch: f.session()?.epoch },
+  });
+  const runtimeStatus = await rest.post("github/runtime-status", gitHubRef);
+  expect(publishedResponse("github/runtime-status").parse(runtimeStatus)).toMatchObject({
+    configured: true,
+    runtime: { epoch: f.session()?.epoch },
+  });
+  await expect(f.github.status({ ...f.caller, orgs: [] }, f.body.requestId)).rejects.toThrow();
+  const row = (
+    await db.query<{ id: string; org_id: string; owner_id: string; status: string; conversation_ids: string[] }>(
+      "select id,org_id,owner_id,status,conversation_ids from public.sandboxes where id=$1",
+      [f.body.requestId],
+    )
+  ).rows[0];
+  if (!row) throw Error("missing sandbox");
+  const beforeSend = f.native.length;
+  const sendArgs = { request_id: randomUUID(), prompt: "Continue" };
+  const sent = await createDockerNormalSend(sql, key, { enabled: true, clock: f.clock, github: f.github }).send(
+    f.caller,
+    sendArgs,
+    row,
+  );
+  const noGitHub = createDockerNormalSend(sql, key, {
+    enabled: true,
+    clock: f.clock,
+    github: {
+      prepareTurn: async () => {
+        throw Error("GitHub unavailable");
+      },
+    },
+  });
+  expect(await noGitHub.send(f.caller, sendArgs, row)).toEqual(sent);
+  await expect(noGitHub.send(f.caller, { ...sendArgs, prompt: "Changed" }, row)).rejects.toThrow();
+  expect((f.native.slice(beforeSend) as { op: string }[]).map((command) => command.op)).toEqual([
+    "configureGitHub",
+    "prompt",
+  ]);
+  const followUpCapability = configuredGitHubCapability(f);
+  expect((await acquireGitHub(f, followUpCapability, "example/project"))?.status).toBe(200);
+  expect((await acquireGitHub(f, followUpCapability, "example/other"))?.status).toBe(403);
+  expect((await acquireGitHub(f, initialCapability, "example/project", "gh"))?.status).toBe(403);
+});
+
+test("Docker GitHub capabilities rotate on resume and expire on host revocation", async () => {
+  const { f, body } = await repositoryFixture();
+  await f.service().launch(f.caller, { ...body, prompt: undefined });
+  const controls = createDockerSandboxControls(sql, key, { clock: f.clock, resume: bootstrap, github: f.github });
+  const initialCapability = configuredGitHubCapability(f);
+  expect((await acquireGitHub(f, initialCapability, "example/project"))?.status).toBe(200);
+  await controls.invoke(f.caller, "stop", { id: f.body.requestId });
+  await controls.invoke(f.caller, "resume", { id: f.body.requestId, request_id: randomUUID() });
+  expect((await f.github.status(f.caller, f.body.requestId)).configured).toBe(true);
+  expect((await acquireGitHub(f, initialCapability, "example/project"))?.status).toBe(403);
+  const resumedCapability = configuredGitHubCapability(f);
+  expect((await acquireGitHub(f, resumedCapability, "example/project"))?.status).toBe(200);
+  await hosts.revoke(f.admin, f.hostId);
+  expect((await acquireGitHub(f, resumedCapability, "example/project"))?.status).toBe(403);
+});
 
 test("Docker freezes versioned readable bindings and re-delivers them before the first resumed prompt", async () => {
   const db = database();
@@ -2778,13 +2831,6 @@ test.each(["private", "org"] as const)(
       visibility,
       config: { ...f.config, repos: [{ url: f.config.repos[0]!.url }] },
     };
-    if (visibility === "private") {
-      expect(await hosts.poll(f.hostToken, f.installationId, "2.51.0")).toBeNull();
-      await expect(f.snapshots.command(creator, "create", input)).rejects.toThrow(
-        "This snapshot uses a ref that requires a newer Docker host daemon.",
-      );
-      expect(await hosts.poll(f.hostToken, f.installationId, daemonVersion)).toBeNull();
-    }
     const created = await f.snapshots.command(creator, "create", input);
     expect(created).toMatchObject({ snapshot: { id, status: "building", visibility, builtOnVersion: VERSION } });
     expect(
@@ -2835,7 +2881,9 @@ test.each(["private", "org"] as const)(
         baselineVersion: visibility === "private" ? 1 : null,
         baselineOutdated: visibility === "org",
         ...(visibility === "org"
-          ? { baselineWarning: expect.stringContaining("Docker host daemon 2.51.0 is outdated") }
+          ? {
+              baselineWarning: expect.stringContaining("This snapshot was built without a reported developer baseline"),
+            }
           : {}),
       },
     });
@@ -3350,32 +3398,32 @@ test("old or unreported Docker daemons get an actionable resume refusal before a
   const controls = createDockerSandboxControls(sql, key, { clock: f.clock, resume: bootstrap });
   await controls.invoke(f.caller, "stop", { id: f.body.requestId, request_id: randomUUID() });
   const before = await counts(f);
-  for (const version of [null, "2.27.0"]) {
-    await db.query("update docker_hosts set daemon_version=$2 where id=$1", [f.hostId, version]);
+  for (const protocol of [null, DOCKER_HOST_PROTOCOL + 1]) {
+    await db.query("update docker_hosts set daemon_protocol=$2 where id=$1", [f.hostId, protocol]);
     await expect(
       controls.invoke(f.caller, "resume", { id: f.body.requestId, request_id: randomUUID() }),
     ).rejects.toMatchObject({
-      code: "conflict",
-      retryable: false,
-      message: expect.stringContaining("Update this Docker host daemon"),
+      code: "docker_host_upgrade_required",
+      message: expect.stringContaining("Upgrade the Docker host daemon"),
     });
     expect(await counts(f)).toEqual(before);
     expect((await createDockerSandboxService(sql, key).get(f.actor, f.body.requestId)).status).toBe("stopped");
   }
 });
 
-test("snapshot admission distinguishes daemon builds that report the same release", async () => {
+test("snapshot admission requires a protocol-aware host poll", async () => {
   const f = await snapshotFixture();
   const route = createDockerHostRoutes(hosts, async () => ({ ok: true, caller: f.caller }), {
     snapshots: f.snapshots,
   });
-  const poll = (capable: boolean) =>
+  await database().query("update docker_hosts set daemon_protocol=null where id=$1", [f.hostId]);
+  const poll = () =>
     route(
       new Request("https://fixture.example/api/docker-host/poll", {
         method: "POST",
         headers: {
           authorization: `Bearer ${f.hostToken}`,
-          ...(capable ? { [DOCKER_HOST_SNAPSHOT_BASELINE_HEADER]: "1" } : {}),
+          [DOCKER_HOST_PROTOCOL_HEADER]: String(DOCKER_HOST_PROTOCOL - 1),
         },
         body: JSON.stringify({ installationId: f.installationId, version: "2.54.0" }),
       }),
@@ -3394,20 +3442,19 @@ test("snapshot admission distinguishes daemon builds that report the same releas
         }),
       }),
     );
-  expect(await (await poll(false))?.json()).toMatchObject({ job: null });
   const response = await create();
   expect(response?.status).toBe(409);
   expect(await response?.json()).toMatchObject({
     error: {
-      code: "host_update_required",
-      message: expect.stringContaining("verify the developer baseline"),
+      code: "docker_host_upgrade_required",
+      message: expect.stringContaining("Upgrade the Docker host daemon"),
     },
   });
-  expect(await (await poll(true))?.json()).toMatchObject({ job: null });
+  expect(await (await poll())?.json()).toMatchObject({ job: null });
   expect((await create())?.status).toBe(200);
 });
 
-test("a verified receipt survives retry from an older replica to the current route", async () => {
+test("a verified receipt reaches the snapshot through the daemon result route", async () => {
   const f = await snapshotFixture();
   const requestId = randomUUID();
   await f.snapshots.command(f.caller, "create", {
@@ -3420,13 +3467,7 @@ test("a verified receipt survives retry from an older replica to the current rou
   const job = await hosts.poll(f.hostToken, f.installationId);
   if (job?.operation !== "buildSnapshot") throw Error("Missing build job");
   const route = createDockerHostRoutes(hosts, async () => ({ ok: false }));
-  let firstRequest = true;
   const request = (async (url, init) => {
-    if (firstRequest) {
-      firstRequest = false;
-      expect(JSON.parse(String(init?.body)).baselineVersion).toBe(1);
-      return new Response(null, { status: 400 });
-    }
     return (await route(new Request(String(url), init))) ?? new Response(null, { status: 404 });
   }) as typeof fetch;
   await httpApi(request).result(
@@ -3632,6 +3673,41 @@ test("a snapshot build that fails on the disk floor persists the disk reason the
       )
     ).rows[0],
   ).toEqual({ status: "failed", failure_reason: DOCKER_LAUNCH_FAILURE_MESSAGES.disk });
+});
+
+test("Docker refuses models outside the Morph account and freezes its OpenCode default for replay", async () => {
+  const f = await fixture({ harness: "opencode" });
+  const body = { ...f.body, credentialId: randomUUID() };
+  await sql.query(
+    "insert into public.credentials(id,version,scope,owner_id,kind,value_enc) values($1,1,'user',$2,'morph',$3)",
+    [
+      body.credentialId,
+      f.actor.userId,
+      await encryptSecret(
+        JSON.stringify({ apiKey: f.secret, models: ["vendor/saved-model", "vendor/alternate"] }),
+        key,
+      ),
+    ],
+  );
+  const launcher = f.service(sql, true, 10000, officialImage, true);
+  await expect(launcher.launch(f.caller, { ...body, model: "vendor/unlisted" })).rejects.toMatchObject({
+    code: "invalid_request",
+    message: "Choose a Morph plan model configured on this account.",
+  });
+
+  const admitted = await launcher.launch(f.caller, body);
+  try {
+    expect(admitted.sandbox).toMatchObject({ status: "starting", model: "armada/vendor/saved-model" });
+    const resolutions = f.resolutions();
+    expect((await launcher.launch(f.caller, body)).sandbox.model).toBe(admitted.sandbox.model);
+    expect(f.resolutions()).toBe(resolutions);
+    await expect(launcher.launch(f.caller, { ...body, model: "armada/deepseek-flash" })).rejects.toMatchObject({
+      code: "conflict",
+    });
+  } finally {
+    const controls = createDockerSandboxControls(sql, key, { clock: f.clock });
+    await controls.invoke(f.caller, "stop", { id: admitted.sandbox.id });
+  }
 });
 
 test("Docker normal launch uses the saved model unless explicitly overridden", async () => {

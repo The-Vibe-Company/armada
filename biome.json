@@ -17,7 +17,7 @@
       "!.agents",
       "!.claude",
       "!docs/design/refonte-2026-11-16",
-      "!docs/openapi.json"
+      "!packages/mcp-server/openapi.json"
     ]
   },
   "formatter": {

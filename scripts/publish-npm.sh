@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run from the repository root after staging dist/npm and dist/tarballs.
+# Run from the verified tarball directory with the CLI, SDK, then platform tarball filenames.
 set -euo pipefail
 : "${VERSION:?VERSION is required}" "${DIST_TAG:?DIST_TAG is required}" "${PUBLISH:?PUBLISH is required}"
 
@@ -13,12 +13,17 @@ publish_package() {
     echo "$name@$VERSION is already published."
     return
   fi
-  npm publish "$tarball" --access public --tag "$DIST_TAG" --provenance ${dry[@]+"${dry[@]}"}
+  npm publish "./$tarball" --access public --tag "$DIST_TAG" --provenance ${dry[@]+"${dry[@]}"}
   newly_published+="$name "
 }
 
-tarball_for() {
-  echo "dist/tarballs/$(echo "${1#@}" | tr / -)-$VERSION.tgz"
+main=$1
+sdk=$2
+shift 2
+
+package_for() {
+  local file=${1#the-vibe-company-}
+  echo "@the-vibe-company/${file%"-$VERSION.tgz"}"
 }
 
 if [ "$PUBLISH" = true ]; then
@@ -78,9 +83,8 @@ if [ "$PUBLISH" = true ]; then
     wait_for_package "$name" "$tarball" "$destination"
   }
   pids=()
-  for dir in dist/npm/armada-*/; do
-    name=$(jq -r .name "$dir/package.json")
-    publish_platform "$name" "$(tarball_for "$name")" "$registry_dir/$(basename "$dir")" &
+  for tarball in "$@"; do
+    publish_platform "$(package_for "$tarball")" "$tarball" "$registry_dir/$tarball" &
     pids+=("$!")
   done
   failed=false
@@ -89,18 +93,10 @@ if [ "$PUBLISH" = true ]; then
   done
   if [ "$failed" = true ]; then exit 1; fi
 else
-  for dir in dist/npm/armada-*/; do
-    name=$(jq -r .name "$dir/package.json")
-    publish_package "$name" "$(tarball_for "$name")"
+  for tarball in "$@"; do
+    publish_package "$(package_for "$tarball")" "$tarball"
   done
 fi
 
-name=$(jq -r .name dist/npm/armada/package.json)
-publish_package "$name" "$(tarball_for "$name")"
-
-# The SDK has no binary dependency; it follows the CLI so a first-publication failure leaves the CLI
-# released. Recovery of a release staged before the SDK existed has no SDK directory to publish.
-if [ -f dist/npm/sdk/package.json ]; then
-  name=$(jq -r .name dist/npm/sdk/package.json)
-  publish_package "$name" "$(tarball_for "$name")"
-fi
+publish_package "$(package_for "$main")" "$main"
+publish_package "$(package_for "$sdk")" "$sdk"

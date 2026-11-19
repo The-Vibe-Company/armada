@@ -14,6 +14,7 @@ import {
   type Sql,
   type TemplateService,
 } from "@armada/core/server";
+import { BoatRetentionUnconfirmed } from "@armada/provider-boat";
 import { configureNativeMcp, type McpBootstrap, normalizeNativeMcpBootstrap } from "./mcp-native.ts";
 import { resolveMcpStdioExecutable } from "./mcp-stdio-bootstrap.ts";
 import { providerPhysicalGeneration } from "./provider-physical-generation.ts";
@@ -302,6 +303,7 @@ export function createMcpLifecycle(options: {
         if (["ready", "running", "starting"].includes(physical.state))
           return { sandboxId: sandbox.id, shouldResume: false };
         if (physical.state !== "stopped") throw Error("Sandbox cannot be resumed from its current physical state.");
+        if (provider.id === "boat" && physical.retainedSnapshot !== "usable") throw new BoatRetentionUnconfirmed();
         await tx.query(
           `with fenced as (delete from public.github_runtime_capabilities where sandbox_id=$1::uuid returning sandbox_id)
           update public.sandboxes s set mcp_generation=mcp_generation+1 from fenced f where s.id=f.sandbox_id`,
@@ -349,6 +351,7 @@ export function createMcpLifecycle(options: {
         await sql.query<{ provider_sandbox_id: string; physical_generation: string; mcp_generation: number }>(
           `select s.provider_sandbox_id,b.physical_generation,s.mcp_generation from public.sandboxes s join public.mcp_bootstraps b on b.sandbox_id=s.id
         where s.id=$1::uuid and s.provider=$2 and b.configured and s.status not in ('stopped','deleted','failed')
+        and b.physical_generation not like 'runtime:%'
         and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id)`,
           [sandboxId, provider.id],
         )

@@ -400,21 +400,31 @@ test("CLI retires launch visibility without changing source golden authority", a
       me,
       await encryptSecret("fixture-model-key", key),
     ]);
-    const launched = await f.cli(["launch", "first", "--agent", "codex", "--visibility", "private", "--json"]);
+    const launched = await f.cli([
+      "launch",
+      "first",
+      "--provider",
+      "boat",
+      "--agent",
+      "codex",
+      "--visibility",
+      "private",
+      "--json",
+    ]);
     expect(launched.code).toBe(0);
     const dto = JSON.parse(launched.out);
-    expect(dto).toMatchObject({ golden: "first", provider: "boat" });
+    expect(dto).toMatchObject({ golden: { name: "first" }, sandbox: { provider: "boat" } });
     expect(dto).not.toHaveProperty("visibility");
     expect(launched.err).toContain("deprecated and ignored");
     expect(
       (
         await f.db.query<{ visibility: string; source_golden_visibility: string }>(
           "select visibility,source_golden_visibility from sandboxes where id=$1",
-          [dto.id],
+          [dto.sandbox.id],
         )
       ).rows[0],
     ).toEqual({ visibility: "org", source_golden_visibility: "org" });
-    const text = await f.cli(["launch", "first", "--agent", "codex", "--visibility", "private"]);
+    const text = await f.cli(["launch", "first", "--provider", "boat", "--agent", "codex", "--visibility", "private"]);
     expect(text.code).toBe(0);
     expect(text.out).toContain("enforced by the server");
     expect(text.out).not.toContain("(private)");

@@ -1,29 +1,46 @@
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { createSqlAuthStore } from "@armada/auth";
-import { createSqlVaultStore, mutateCredentialAccount, ProviderError, VaultError } from "@armada/core/server";
+import {
+  createSqlSandboxStore,
+  createSqlVaultStore,
+  mutateCredentialAccount,
+  ProviderError,
+  VaultError,
+} from "@armada/core/server";
+import { BoatRetentionUnconfirmed } from "@armada/provider-boat";
 import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
 import helperManifest from "../../core/helper/manifest.json";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
-import { createHandler } from "../src/http.ts";
-import { createProviderMetadata } from "../src/provider-metadata.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { readStatus } from "../src/turns.ts";
 import { encryptedRecoveryExec } from "./fixtures/recovery-exec.ts";
-import { rowOnlyDatabase } from "./row-only-database.ts";
+import { migratedDatabase } from "./migrated-database.ts";
 import {
   bunLikeSql,
   call,
   ENCRYPTION_KEY,
   GITHUB_APP,
   harness,
+  launchSandboxId,
   PUBLIC_URL,
   SECRETS,
+  seedDatabase,
   type TestServer,
 } from "./support.ts";
 
-const sharedDatabase = rowOnlyDatabase();
+let sharedDatabase: Awaited<ReturnType<typeof migratedDatabase>> | undefined;
 let server: TestServer | undefined;
+
+beforeAll(async () => {
+  sharedDatabase = await migratedDatabase();
+});
+
+afterAll(async () => {
+  const db = sharedDatabase;
+  sharedDatabase = undefined;
+  await db?.close();
+});
 
 afterEach(async () => {
   await server?.close();
@@ -31,7 +48,23 @@ afterEach(async () => {
 });
 
 async function start(options: Parameters<typeof harness>[0] = {}) {
-  server = await harness(options, await sharedDatabase());
+  if (!sharedDatabase) throw new Error("Server database is not open");
+  await sharedDatabase.exec(`
+    reset role;
+    reset all;
+    set search_path=public;
+    truncate members cascade;
+    delete from provider_launch_requests;
+    delete from ordinary_launch_receipts;
+    delete from sandboxes;
+    delete from account_exhaustion;
+    delete from account_spend;
+    delete from credentials;
+    delete from orgs;
+    delete from auth.users;
+    delete from mcp_invalidations;
+  `);
+  server = await harness(options, await seedDatabase(sharedDatabase));
   return server;
 }
 
@@ -97,14 +130,14 @@ describe("http", () => {
     const { token, client, auth, people } = await start();
     const secret = await token(people.member);
     const mcp = await client(secret);
-    expect((await call(mcp, "golden_list")).isError).toBe(false);
+    expect((await call(mcp, "list")).isError).toBe(false);
     const [row] = (await auth.listServiceTokens(people.member)) as { id: string }[];
     await auth.revokeToken("service", {
       id: row?.id ?? "",
       userId: people.member,
       revokedAt: new Date().toISOString(),
     });
-    await expect(mcp.callTool({ name: "golden_list", arguments: {} })).rejects.toThrow();
+    await expect(mcp.callTool({ name: "list", arguments: {} })).rejects.toThrow();
   });
 
   test("the dashboard's plain JSON-RPC calls work: initialize, then tools/call", async () => {
@@ -125,6 +158,7 @@ describe("http", () => {
   test("a Supabase session drives the dashboard's tools, checked by Supabase on every request", async () => {
     const { handler, session, signOut, supabaseCalls, people, boat, client, token } = await start();
     const launched = await call(await client(await token(people.member)), "launch", {
+      provider: "boat",
       golden: "shared",
       harness: "claude",
       prompt: "go",
@@ -132,17 +166,17 @@ describe("http", () => {
     const jwt = session(people.member);
     const dashboard = rpc(handler, jwt);
 
-    const logs = await dashboard.tool("logs", { id: launched.data.id });
+    const logs = await dashboard.tool("logs", { id: launchSandboxId(launched.data) });
     expect(logs.result?.isError).toBeUndefined();
     expect(logs.result?.structuredContent).toMatchObject({ events: [expect.objectContaining({ kind: "prompt" })] });
     boat.finish("bx_1", "prompt_1", "finished");
     const sent = await dashboard.tool("send", {
-      id: launched.data.id,
+      id: launchSandboxId(launched.data),
       prompt: "and the tests",
       request_id: crypto.randomUUID(),
     });
     expect(sent.result?.structuredContent).toMatchObject({ promptId: "prompt_2", conversationId: "conv_1" });
-    const stopped = await dashboard.tool("stop", { id: launched.data.id });
+    const stopped = await dashboard.tool("stop", { id: launchSandboxId(launched.data) });
     expect(stopped.result?.structuredContent).toMatchObject({ status: "stopped" });
     expect(supabaseCalls).toHaveLength(3);
 
@@ -209,11 +243,9 @@ describe("when the auth lookup fails", () => {
   test("the memberships of a Supabase session come from the server's own database connection", async () => {
     const { handler, session, people } = await start({ authStore: (db) => createSqlAuthStore(db) });
     const jwt = session(people.member, []);
-    const listed = await rpc(handler, jwt).tool("golden_list", {});
-    expect(listed.result?.isError).toBeUndefined();
-    const content = listed.result?.structuredContent as { goldens: { name: string }[] };
-    const names = content.goldens.map((g) => g.name);
-    expect(names.sort()).toEqual(["elsewhere", "shared"]);
+    const started = await rpc(handler, jwt).tool("launch", { provider: "boat", golden: "shared", harness: "claude" });
+    expect(started.result?.isError).toBeUndefined();
+    expect(started.result?.structuredContent).toMatchObject({ sandbox: { id: expect.any(String) } });
   });
 });
 
@@ -225,22 +257,26 @@ describe("on the database client production uses", () => {
     });
     const mcp = await client(session(people.member, []));
 
-    const goldens = await call(mcp, "golden_list");
-    expect(goldens.isError).toBe(false);
-    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude", prompt: "go" });
+    const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude", prompt: "go" });
     expect(launched.isError).toBe(false);
 
     const listed = await call(mcp, "list");
     expect(listed.isError).toBe(false);
     expect(listed.data.sandboxes).toHaveLength(1);
     expect((await call(mcp, "list", { status: ["ready", "running"] })).isError).toBe(false);
-    expect((await call(mcp, "status", { id: launched.data.id })).isError).toBe(false);
-    expect((await call(mcp, "logs", { id: launched.data.id })).isError).toBe(false);
+    expect((await call(mcp, "status", { id: launchSandboxId(launched.data) })).isError).toBe(false);
+    expect((await call(mcp, "logs", { id: launchSandboxId(launched.data) })).isError).toBe(false);
     boat.finish("bx_1", "prompt_1", "finished");
-    const waited = await call(mcp, "wait", { id: launched.data.id, timeoutSeconds: 5 });
+    const waited = await call(mcp, "status", {
+      wait: true,
+      id: launchSandboxId(launched.data),
+      timeout_seconds: 5,
+    });
     expect(waited.isError).toBe(false);
-    expect((await call(mcp, "send", { id: launched.data.id, prompt: "and the tests" })).isError).toBe(false);
-    const stopped = await call(mcp, "stop", { id: launched.data.id });
+    expect((await call(mcp, "send", { id: launchSandboxId(launched.data), prompt: "and the tests" })).isError).toBe(
+      false,
+    );
+    const stopped = await call(mcp, "stop", { id: launchSandboxId(launched.data) });
     expect(stopped.isError).toBe(false);
     expect(stopped.data).toMatchObject({ status: "stopped" });
   });
@@ -273,7 +309,7 @@ describe("on the database client production uses", () => {
     expect(result.isError).toBe(true);
     expect(result._meta.requestId).toBe(requestId);
     const failure = JSON.stringify(result);
-    expect(failure).toContain("Armada could not complete the call.");
+    expect(failure).toContain("Check the current state before retrying.");
     expect(failure).toContain("error code: internal");
     expect(failure).not.toContain("hunter2");
     expect(lines).toHaveLength(2);
@@ -295,8 +331,8 @@ describe("tools", () => {
     const mcp = await client(await token(people.member));
     // The SDK validates callTool receipts against the schemas cached by listTools.
     await mcp.listTools();
-    const launched = await call(mcp, "launch", { golden: "shared", harness: "codex", prompt: "go" });
-    const status = await call(mcp, "status", { id: launched.data.id });
+    const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "codex", prompt: "go" });
+    const status = await call(mcp, "status", { id: launchSandboxId(launched.data) });
     expect(status.isError).not.toBe(true);
     expect(status.data).toMatchObject({ usage: { tokenTotals: { incomplete: true } } });
     const listed = await call(mcp, "list");
@@ -304,85 +340,10 @@ describe("tools", () => {
     expect(listed.data).toMatchObject({
       sandboxes: expect.arrayContaining([
         expect.objectContaining({
-          id: launched.data.id,
+          id: launchSandboxId(launched.data),
           usage: expect.objectContaining({ tokenTotals: expect.objectContaining({ incomplete: true }) }),
         }),
       ]),
-    });
-  });
-
-  test("golden_capabilities is read-only, scoped before resolution, and reports provider metadata only", async () => {
-    const { token, client, people, boat, db, auth, clock } = await start();
-    const bearer = await token(people.member);
-    const vault = createSqlVaultStore(db);
-    const supabase = { supabaseUrl: "https://unused.test", anonKey: "test" };
-    let secretReads = 0;
-    const metadata = createProviderMetadata({
-      sql: db,
-      vault: {
-        credentials: async (...args) => {
-          secretReads++;
-          return vault.credentials(...args);
-        },
-        orgBoatKey: async (...args) => {
-          secretReads++;
-          return vault.orgBoatKey(...args);
-        },
-      },
-      encryptionKey: ENCRYPTION_KEY,
-      providerFor: boat.providerFor,
-    });
-    const handler = createHandler({
-      publicUrl: PUBLIC_URL,
-      authStore: auth,
-      supabase,
-      oauth: {
-        ...supabase,
-        publicUrl: PUBLIC_URL,
-        store: auth,
-        authSecret: "metadata-fixture-auth-secret",
-        fetch: async () => {
-          throw new Error("Capability reads must not invoke OAuth.");
-        },
-        now: () => clock.now,
-      },
-      data: createSqlData(db),
-      vault,
-      encryptionKey: ENCRYPTION_KEY,
-      providerMetadata: metadata,
-      providerFor: () => {
-        throw new Error("Metadata must not resolve a resource provider.");
-      },
-      log: () => {},
-    });
-    const request = rpc(handler, bearer);
-    // This user also belongs to otherOrg, but this token must never widen to it.
-    const denied = await request.tool("golden_capabilities", { org: people.otherOrg, provider: "boat" });
-    expect(denied.result?.isError).toBe(true);
-    expect(secretReads).toBe(0);
-    expect(boat.keys).toEqual([]);
-    Object.assign(boat.provider, { maxGoldens: 7 });
-    const result = await request.tool("golden_capabilities", { org: people.org, provider: "boat" });
-    expect(result.result?.isError).not.toBe(true);
-    expect(result.result?.structuredContent).toEqual({
-      provider: "boat",
-      maxGoldens: 7,
-      bindings: [{ goldenId: expect.any(String), relation: "unbound" }],
-    });
-    Object.assign(boat.provider, { maxGoldens: undefined });
-    expect((await request.tool("golden_capabilities", {})).result?.structuredContent).toEqual({
-      provider: "boat",
-      maxGoldens: null,
-    });
-    expect(secretReads).toBeGreaterThan(0);
-    expect(boat.keys).toHaveLength(2);
-    expect(boat.forks).toEqual([]);
-    expect(boat.execs).toEqual([]);
-    expect(boat.stops).toEqual([]);
-    const listed = await (await client(bearer)).listTools();
-    expect(listed.tools.find((tool) => tool.name === "golden_capabilities")?.annotations).toMatchObject({
-      readOnlyHint: true,
-      destructiveHint: false,
     });
   });
 
@@ -395,6 +356,7 @@ describe("tools", () => {
           `update goldens set helper_receipt='{"version":"old","digest":"old","protocol":0,"platform":"x86_64","capabilities":[],"snapshotId":"old"}' where name='shared'`,
         );
       const refused = await call(helperClient, "launch", {
+        provider: "boat",
         golden: "shared",
         harness: "claude",
         helperCapabilities: ["diagnose"],
@@ -413,6 +375,7 @@ describe("tools", () => {
     );
     const mcp = await client(await token(people.member));
     const launched = await call(mcp, "launch", {
+      provider: "boat",
       golden: "shared",
       harness: "claude",
       prompt: "Fix the build",
@@ -420,9 +383,8 @@ describe("tools", () => {
     });
     expect(launched.isError).toBe(false);
     expect(launched.data).toMatchObject({
-      golden: "shared",
-      harness: "claude",
-      status: "running",
+      golden: { name: "shared" },
+      sandbox: { harness: "claude", status: "running" },
       promptId: "prompt_1",
       helper: { status: "supported", protocol: 1, capabilities: ["diagnose"] },
     });
@@ -435,6 +397,7 @@ describe("tools", () => {
   test("launch reports GitHub as not connected, without failing, when the caller never connected it", async () => {
     const { token, client, people, boat } = await start();
     const launched = await call(await client(await token(people.member)), "launch", {
+      provider: "boat",
       golden: "shared",
       harness: "claude",
     });
@@ -479,7 +442,7 @@ describe("tools", () => {
         message: expect.stringContaining("Repository private needs a GitHub connection"),
       },
     });
-    const mcp = await call(await s.client(bearer), "launch", { golden: "shared", harness: "claude" });
+    const mcp = await call(await s.client(bearer), "launch", { provider: "boat", golden: "shared", harness: "claude" });
     expect(mcp.isError).toBe(true);
     expect(mcp.text).toContain("armada github connect");
     expect(s.boat.forks).toHaveLength(0);
@@ -491,7 +454,7 @@ describe("tools", () => {
     await github.connect(people.member, "octocat", 583231);
     const mcp = await client(await token(people.member));
 
-    const first = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    const first = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
     expect(first.data.github).toEqual({
       status: "connected",
       login: "octocat",
@@ -506,7 +469,7 @@ describe("tools", () => {
     expect(boat.execs[0]?.command).toContain("user.email '583231+octocat@users.noreply.github.com'");
     expect(first.text).not.toContain("ghu_access_octocat");
 
-    const second = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    const second = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
     expect(second.data.github).toMatchObject({ status: "connected" });
     expect(github.refreshed).toEqual(["ghr_refresh_octocat_0"]);
     const stored = await db.query<{ refresh_token_enc: Uint8Array }>(
@@ -521,23 +484,23 @@ describe("tools", () => {
     github.revokeEverything();
     const mcp = await client(await token(people.member));
 
-    const first = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    const first = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
     expect(first.isError).toBe(false);
     expect(first.data.github).toMatchObject({ status: "revoked", login: null });
     expect((first.data.github as { message: string }).message).toContain("Reconnect GitHub");
     expect(boat.forks[0]?.env).toEqual({ CLAUDE_CODE_OAUTH_TOKEN: SECRETS.orgClaude });
 
-    await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
     expect(github.refreshed).toHaveLength(1);
   });
 
   test("exec output masks GitHub and narrow MCP gateway credentials", async () => {
     const { token, client, people, boat } = await start();
     const mcp = await client(await token(people.member));
-    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
     const narrow = `armada_gw_${Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64url")}`;
     boat.setExecOutput({ stdout: `GH_TOKEN=ghu_${"0123456789abcdefghijABCDEFGHIJ0123"} MCP=${narrow}` });
-    const ran = await call(mcp, "exec", { id: launched.data.id, command: "env" });
+    const ran = await call(mcp, "exec", { id: launchSandboxId(launched.data), command: "env" });
     expect(String(ran.data.stdout).includes(narrow)).toBe(false);
     expect(ran.data.stdout).toBe("GH_TOKEN=*** MCP=***");
   });
@@ -545,10 +508,11 @@ describe("tools", () => {
   test("launch of a private golden uses its owner's own credential and personal boat key", async () => {
     const { token, client, people, boat } = await start();
     const launched = await call(await client(await token(people.owner)), "launch", {
+      provider: "boat",
       golden: "mine",
       harness: "claude",
     });
-    expect(launched.data).toMatchObject({ status: "ready", conversationIds: [], promptId: null });
+    expect(launched.data).toMatchObject({ sandbox: { status: "ready", conversationIds: [] }, promptId: null });
     expect(boat.forks[0]?.env).toEqual({ CLAUDE_CODE_OAUTH_TOKEN: SECRETS.ownerClaude });
     expect(boat.keys).toEqual([SECRETS.personalBoat]);
   });
@@ -556,39 +520,45 @@ describe("tools", () => {
   test("launch of someone else's private golden is refused like a missing one, before any fork", async () => {
     const { token, client, people, boat } = await start();
     const refused = await call(await client(await token(people.admin)), "launch", {
+      provider: "boat",
       golden: "mine",
       harness: "claude",
     });
     expect(refused.isError).toBe(true);
-    expect(refused.text).toContain("No golden named 'mine'");
+    expect(refused.text).toContain("No boat golden named 'mine'");
     expect(boat.forks).toHaveLength(0);
   });
 
   test("launch refuses a harness Armada does not run", async () => {
     const { token, client, people } = await start();
-    const refused = await call(await client(await token(people.member)), "launch", { golden: "shared", harness: "pi" });
+    const refused = await call(await client(await token(people.member)), "launch", {
+      provider: "boat",
+      golden: "shared",
+      harness: "pi",
+    });
     expect(refused.isError).toBe(true);
   });
 
   test("list exposes safe org metadata while member interior operations make no provider calls", async () => {
     const { token, client, people, boat } = await start();
     const owner = await client(await token(people.owner));
-    const mine = await call(owner, "launch", { golden: "mine", harness: "claude" });
+    const mine = await call(owner, "launch", { provider: "boat", golden: "mine", harness: "claude" });
     const member = await client(await token(people.member));
     const listed = await call(member, "list");
-    expect(listed.data.sandboxes).toMatchObject([{ id: mine.data.id, canOpen: false, canManage: false }]);
+    expect(listed.data.sandboxes).toMatchObject([{ id: launchSandboxId(mine.data), canOpen: false, canManage: false }]);
     const before = { keys: boat.keys.length, execs: boat.execs.length, stops: boat.stops.length };
-    for (const [name, args] of Object.entries({
-      status: {},
-      logs: {},
-      wait: { timeout_seconds: 0 },
-      exec: { command: "pwd" },
-      send: { prompt: "hello" },
-      steer: { text: "hello" },
-      interrupt: {},
-      stop: {},
-    })) {
-      const denied = await call(member, name, { id: mine.data.id, ...args });
+    const controls = [
+      ["status", {}],
+      ["logs", {}],
+      ["status", { wait: true, timeout_seconds: 0 }],
+      ["exec", { command: "pwd" }],
+      ["send", { prompt: "hello" }],
+      ["send", { steer: true, prompt: "hello" }],
+      ["stop", { turn: true }],
+      ["stop", {}],
+    ] as const;
+    for (const [name, args] of controls) {
+      const denied = await call(member, name, { id: launchSandboxId(mine.data), ...args });
       expect(denied.isError).toBe(true);
       expect(denied.text).toContain("No sandbox");
     }
@@ -613,32 +583,45 @@ describe("tools", () => {
     test(`turn error does not fail the machine: ${reason}`, async () => {
       const { token, client, people, boat, db } = await start();
       const mcp = await client(await token(people.member));
-      const launched = await call(mcp, "launch", { golden: "shared", harness: "codex", prompt: "go" });
+      const launched = await call(mcp, "launch", {
+        provider: "boat",
+        golden: "shared",
+        harness: "codex",
+        prompt: "go",
+      });
       boat.finish("bx_1", "prompt_1", "failed");
       const event = boat.sandbox("bx_1").events.find((event) => event.kind === "prompt");
       if (event?.kind !== "prompt") throw Error("Missing prompt fixture");
       event.reason = message;
       // Also repair historical misclassification when provider health can be checked.
-      await db.query("update sandboxes set status='failed',status_reason=$2 where id=$1", [launched.data.id, message]);
-      const status = await call(mcp, "status", { id: launched.data.id });
+      await db.query("update sandboxes set status='failed',status_reason=$2 where id=$1", [
+        launchSandboxId(launched.data),
+        message,
+      ]);
+      const status = await call(mcp, "status", { id: launchSandboxId(launched.data) });
       expect(status.data).toMatchObject({
         status: "ready",
         statusReason: null,
         settled: true,
         prompt: { state, reason },
       });
-      const row = await db.query("select status::text,status_reason from sandboxes where id=$1", [launched.data.id]);
+      const row = await db.query("select status::text,status_reason from sandboxes where id=$1", [
+        launchSandboxId(launched.data),
+      ]);
       expect(row.rows[0]).toEqual({ status: "ready", status_reason: null });
-      const resent = await call(mcp, "send", { id: launched.data.id, prompt: "try again" });
+      const resent = await call(mcp, "send", { id: launchSandboxId(launched.data), prompt: "try again" });
       expect(resent.isError).not.toBe(true);
       boat.finish("bx_1", "prompt_2", "failed");
-      await db.query("update sandboxes set status='failed',status_reason=$2 where id=$1", [launched.data.id, message]);
-      boat.sandbox("bx_1").info.state = "stopped";
-      const stopped = await call(mcp, "status", { id: launched.data.id });
+      await db.query("update sandboxes set status='failed',status_reason=$2 where id=$1", [
+        launchSandboxId(launched.data),
+        message,
+      ]);
+      await boat.provider.stop({ sandboxId: "bx_1" });
+      const stopped = await call(mcp, "status", { id: launchSandboxId(launched.data) });
       expect(stopped.data.status).toBe("stopped");
       boat.sandbox("bx_1").info.state = "failed";
       boat.sandbox("bx_1").info.error = "Machine irrecoverable";
-      const failed = await call(mcp, "status", { id: launched.data.id });
+      const failed = await call(mcp, "status", { id: launchSandboxId(launched.data) });
       expect(failed.data).toMatchObject({ status: "failed", statusReason: "Machine irrecoverable" });
     });
   }
@@ -646,7 +629,7 @@ describe("tools", () => {
   test("status reads getPrompt: a usage limit fails the turn, not the machine", async () => {
     const { token, client, people, boat, db } = await start();
     const mcp = await client(await token(people.member));
-    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude", prompt: "go" });
+    const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude", prompt: "go" });
     boat.sandbox("bx_1").events.push({
       id: "ev_limit",
       at: 5,
@@ -675,11 +658,11 @@ describe("tools", () => {
       }
       return originalEvents(request);
     };
-    expect((await call(mcp, "status", { id: launched.data.id })).data.prompt).toMatchObject({
+    expect((await call(mcp, "status", { id: launchSandboxId(launched.data) })).data.prompt).toMatchObject({
       state: "finished",
       modelSelectionReason: "model_selection_unverified",
     });
-    const status = await call(mcp, "status", { id: launched.data.id });
+    const status = await call(mcp, "status", { id: launchSandboxId(launched.data) });
     expect(status.data).toMatchObject({
       status: "ready",
       settled: true,
@@ -688,7 +671,7 @@ describe("tools", () => {
     expect(status.data.statusReason).toBeNull();
     const row = await db.query<{ status: string; status_reason: string | null }>(
       "select status::text as status, status_reason from sandboxes where id = $1",
-      [launched.data.id],
+      [launchSandboxId(launched.data)],
     );
     expect(row.rows[0]).toEqual({ status: "ready", status_reason: null });
     const listed = await call(mcp, "list");
@@ -698,19 +681,19 @@ describe("tools", () => {
     // its persisted state instead of publishing stale readiness or returning409.
     await db.query(
       "update sandboxes set status='running',reconcile_lease_until=now()+interval '2 minutes' where id=$1",
-      [launched.data.id],
+      [launchSandboxId(launched.data)],
     );
-    expect((await call(mcp, "status", { id: launched.data.id })).data).toMatchObject({
+    expect((await call(mcp, "status", { id: launchSandboxId(launched.data) })).data).toMatchObject({
       status: "running",
       settled: false,
     });
-    await db.query("update sandboxes set reconcile_lease_until=null where id=$1", [launched.data.id]);
-    expect((await call(mcp, "status", { id: launched.data.id })).data.status).toBe("ready");
+    await db.query("update sandboxes set reconcile_lease_until=null where id=$1", [launchSandboxId(launched.data)]);
+    expect((await call(mcp, "status", { id: launchSandboxId(launched.data) })).data.status).toBe("ready");
 
-    await call(mcp, "send", { id: launched.data.id, prompt: "try again" });
+    await call(mcp, "send", { id: launchSandboxId(launched.data), prompt: "try again" });
     const cleared = await db.query<{ status_reason: string | null }>(
       "select status_reason from sandboxes where id = $1",
-      [launched.data.id],
+      [launchSandboxId(launched.data)],
     );
     expect(cleared.rows[0]?.status_reason).toBeNull();
     // A failed native subscription turn preserves safe reset evidence in the public report.
@@ -724,35 +707,133 @@ describe("tools", () => {
       data: { code: "usage_limit_exceeded", resetsAt, message: "private-vendor-body" },
     });
     boat.finish("bx_1", "prompt_2", "failed");
-    const exhausted = await call(mcp, "status", { id: launched.data.id });
+    const exhausted = await call(mcp, "status", { id: launchSandboxId(launched.data) });
     expect(exhausted.data).toMatchObject({
       status: "ready",
       prompt: {
         state: "failed",
-        reason: `Plan limit reached. Resets at ${resetsAt}. Wait for the limit to reset, or switch to another account before sending the prompt again.`,
+        reason: `Plan limit reached. Resets at ${resetsAt}.`,
         limit: { code: "usage_limit_exceeded", resetsAt },
       },
     });
     expect(JSON.stringify(exhausted.data)).not.toContain("private-vendor-body");
+    const health = await db.query(
+      `select e.account_id, e.account_version, e.code, e.resets_at, e.event_at::text
+       from account_exhaustion e join sandboxes s on s.credential_id=e.account_id and s.credential_version=e.account_version
+       where s.id=$1`,
+      [launchSandboxId(launched.data)],
+    );
+    expect(health.rows).toMatchObject([
+      { code: "usage_limit_exceeded", resets_at: new Date(resetsAt), event_at: "10" },
+    ]);
   });
 
-  test("a session in several orgs sees each org's goldens, and launch takes the org that has the golden", async () => {
+  test("status records a reset from retained provider evidence for an already cached native outcome", async () => {
+    const { token, client, people, boat, db } = await start();
+    const mcp = await client(await token(people.member));
+    const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude", prompt: "go" });
+    const id = launchSandboxId(launched.data);
+    const promptId = "prompt_1";
+    const resetsAt = "2026-11-10T00:00:00.000Z";
+    const limit = { code: "usage_limit_exceeded", resetsAt };
+    const { model } = boat.prompts[0]!;
+    await db.query("update sandbox_turn_models set evidence=$3::jsonb where sandbox_id=$1 and prompt_id=$2", [
+      id,
+      promptId,
+      JSON.stringify({
+        requestedModel: model,
+        observedModel: model,
+        modelSelectionReason: null,
+        modelSelectionMessage: null,
+        terminalOutcome: { state: "failed", reason: "Plan limit reached.", limit },
+      }),
+    ]);
+    boat.sandbox("bx_1").events.push({
+      id: "limit",
+      promptId,
+      at: 10,
+      kind: "other",
+      type: "usage_limit",
+      data: limit,
+    });
+    boat.finish("bx_1", promptId, "failed");
+
+    const status = await call(mcp, "status", { id, prompt_id: promptId });
+    expect(status.data.prompt).toMatchObject({ state: "failed", limit });
+    const health = await db.query("select resets_at,event_at::text from account_exhaustion");
+    expect(health.rows).toEqual([{ resets_at: new Date(resetsAt), event_at: "10" }]);
+  });
+
+  test("retained native Modal exhaustion is attributed to the turn's account after a rebind", async () => {
+    const { db, people, boat, clock } = await start();
+    const golden = (
+      await db.query<{ id: string }>(
+        `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,
+          modal_workspace,modal_environment,modal_app_id,config)
+       values($1,$2,'modal','org','modal','master','image','workspace','main','app','{"repos":[],"init":[]}')
+       returning id`,
+        [people.org, people.owner],
+      )
+    ).rows[0]!;
+    const accounts = (
+      await db.query<{ id: string; version: number }>(
+        "select id,version from credentials where kind='claude_oauth' and owner_id in ($1,$2) order by scope",
+        [people.org, people.owner],
+      )
+    ).rows;
+    const [original, replacement] = [accounts[0]!, accounts[1]!];
+    const provider = { ...boat.provider, id: "modal" as const };
+    const native = await provider.fork({ from: "image" });
+    const { promptId } = await provider.prompt({ sandboxId: native.id, harness: "claude", text: "work" });
+    const row = await createSqlSandboxStore(db).insert({
+      id: crypto.randomUUID(),
+      provider: "modal",
+      providerSandboxId: native.id,
+      goldenId: golden.id,
+      orgId: people.org,
+      ownerId: people.owner,
+      harness: "claude",
+      status: "ready",
+      model: "claude-sonnet-4-6",
+      reasoningEffort: "default",
+      credentialId: replacement.id,
+      credentialVersion: replacement.version,
+    });
+    const { sandboxes } = createSqlData(db)({
+      userId: people.owner,
+      via: "service",
+      orgs: [{ orgId: people.org, role: "member" }],
+    });
+    await sandboxes.recordTurnModel!(row.id, promptId, null, {
+      credentialId: original.id,
+      credentialVersion: original.version,
+    });
+    const resetsAt = "2026-11-10T00:00:00.000Z";
+    boat.sandbox(native.id).events.push({
+      id: "limit",
+      kind: "other",
+      type: "usage_limit",
+      data: { code: "rate_limited", resetsAt },
+      promptId,
+      at: clock.now.getTime(),
+    });
+    boat.finish(native.id, promptId, "finished");
+    await readStatus(provider, sandboxes, (await sandboxes.get(row.id))!, { promptId, now: clock.now, stored: true });
+    const health = await db.query("select account_id,account_version,resets_at from account_exhaustion");
+    expect(health.rows).toEqual([
+      { account_id: original.id, account_version: original.version, resets_at: new Date(resetsAt) },
+    ]);
+  });
+
+  test("launch takes the org that has the golden for a session in several orgs", async () => {
     const { session, client, people, boat, db } = await start();
     const mcp = await client(session(people.member, [people.org, people.otherOrg]));
-    const goldens = await call(mcp, "golden_list");
-    expect(goldens.data.goldens).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ name: "shared", orgId: people.org }),
-        expect.objectContaining({ name: "elsewhere", orgId: people.otherOrg }),
-      ]),
-    );
-
-    const elsewhere = await call(mcp, "launch", { golden: "elsewhere", harness: "claude" });
+    const elsewhere = await call(mcp, "launch", { provider: "boat", golden: "elsewhere", harness: "claude" });
     expect(elsewhere.isError).toBe(true);
     expect(elsewhere.text).toContain("error code: missing_credential");
     expect(boat.forks).toHaveLength(0);
 
-    const shared = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    const shared = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
     expect(shared.isError).toBe(false);
     expect(boat.keys.at(-1)).toBe(SECRETS.orgBoat);
 
@@ -761,25 +842,35 @@ describe("tools", () => {
        select $1, 'shared', 'org', $2, $3, config from goldens where name = 'shared'`,
       [people.otherOrg, people.member, `a${"4".repeat(62)}`],
     );
-    const ambiguous = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    const ambiguous = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
     expect(ambiguous.text).toContain("several of your orgs");
-    const chosen = await call(mcp, "launch", { golden: "shared", harness: "claude", org: people.org });
+    const chosen = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude", org: "example" });
     expect(chosen.isError).toBe(false);
-    const outsider = await call(mcp, "launch", { golden: "shared", harness: "claude", org: crypto.randomUUID() });
+    const outsider = await call(mcp, "launch", {
+      provider: "boat",
+      golden: "shared",
+      harness: "claude",
+      org: crypto.randomUUID(),
+    });
     expect(outsider.text).toContain("not a member");
   });
 
   test("Codex without response models and legacy turns stay finished with neutral evidence", async () => {
     const { token, client, people, boat, db } = await start();
     const mcp = await client(await token(people.member));
-    const launched = await call(mcp, "launch", { golden: "shared", harness: "codex", prompt: "work" });
+    const launched = await call(mcp, "launch", {
+      provider: "boat",
+      golden: "shared",
+      harness: "codex",
+      prompt: "work",
+    });
     boat.finish("bx_1", "prompt_1", "finished");
     const store = createSqlData(db)({
       userId: people.member,
       orgs: [{ orgId: people.org, role: "member" }],
       via: "service",
     }).sandboxes;
-    const saved = await store.get(String(launched.data.id));
+    const saved = await store.get(String(launchSandboxId(launched.data)));
     if (!saved) throw new Error("Missing launched sandbox");
     for (const provider of ["boat", "modal"] as const) {
       const read = await readStatus(
@@ -875,7 +966,7 @@ describe("tools", () => {
       modelSelectionReason: "model_selection_unverified",
     });
     modalEvents.splice(1);
-    await db.query("delete from sandbox_turn_models where sandbox_id=$1", [launched.data.id]);
+    await db.query("delete from sandbox_turn_models where sandbox_id=$1", [launchSandboxId(launched.data)]);
     boat.sandbox("bx_1").events.push({
       id: "legacy-response",
       at: 2,
@@ -886,7 +977,7 @@ describe("tools", () => {
       partial: false,
       tools: [],
     });
-    const legacy = await call(mcp, "status", { id: launched.data.id });
+    const legacy = await call(mcp, "status", { id: launchSandboxId(launched.data) });
     expect(legacy.data.prompt).toMatchObject({
       state: "finished",
       reason: null,
@@ -900,13 +991,14 @@ describe("tools", () => {
     const { token, client, people, boat } = await start();
     const mcp = await client(await token(people.member));
     const launched = await call(mcp, "launch", {
+      provider: "boat",
       golden: "shared",
       harness: "claude",
       model: "chosen",
       prompt: "work",
     });
     const original = boat.provider.events;
-    const running = await call(mcp, "status", { id: launched.data.id });
+    const running = await call(mcp, "status", { id: launchSandboxId(launched.data) });
     expect(running.data).toMatchObject({
       status: "running",
       settled: false,
@@ -939,13 +1031,13 @@ describe("tools", () => {
       if (failures-- > 0) throw new Error("temporary");
       return original(request);
     };
-    const missing = await call(mcp, "status", { id: launched.data.id });
+    const missing = await call(mcp, "status", { id: launchSandboxId(launched.data) });
     expect(missing.data.prompt).toMatchObject({
       state: "finished",
       reason: null,
       modelSelectionReason: "model_selection_unverified",
     });
-    const recovered = await call(mcp, "status", { id: launched.data.id });
+    const recovered = await call(mcp, "status", { id: launchSandboxId(launched.data) });
     expect(recovered.data.prompt).toMatchObject({
       state: "finished",
       observedModel: "chosen",
@@ -961,13 +1053,18 @@ describe("tools", () => {
     await db.exec(
       `create function reject_model_record() returns trigger language plpgsql as $$ begin raise exception 'record unavailable'; end $$; create trigger reject_model_record before insert on sandbox_turn_models for each row execute function reject_model_record();`,
     );
-    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude", prompt: "work" });
+    const launched = await call(mcp, "launch", {
+      provider: "boat",
+      golden: "shared",
+      harness: "claude",
+      prompt: "work",
+    });
     expect(launched.isError).toBe(false);
     expect(boat.stops).toHaveLength(0);
-    const sent = await call(mcp, "send", { id: launched.data.id, prompt: "next" });
+    const sent = await call(mcp, "send", { id: launchSandboxId(launched.data), prompt: "next" });
     expect(sent.isError).toBe(false);
     expect(boat.prompts).toHaveLength(2);
-    const status = await call(mcp, "status", { id: launched.data.id });
+    const status = await call(mcp, "status", { id: launchSandboxId(launched.data) });
     expect(status.data).toMatchObject({ status: "running", prompt: { state: "running" } });
   });
 
@@ -975,13 +1072,14 @@ describe("tools", () => {
     const { token, client, people, boat, db } = await start();
     const mcp = await client(await token(people.member));
     const launched = await call(mcp, "launch", {
+      provider: "boat",
       golden: "shared",
       harness: "claude",
       model: "claude-fable-5-2",
       prompt: "probe",
     });
     expect(launched.isError).toBe(false);
-    const id = launched.data.id;
+    const id = launchSandboxId(launched.data);
     // Coordinator's 12:35Z capture: first main response was Sonnet, no fallback notice.
     boat.sandbox("bx_1").events.push({
       id: "observed",
@@ -1017,7 +1115,7 @@ describe("tools", () => {
       tools: [],
     });
     boat.finish("bx_1", "prompt_2", "finished");
-    const waited = await call(mcp, "wait", { id, timeout_seconds: 1 });
+    const waited = await call(mcp, "status", { wait: true, id, timeout_seconds: 1 });
     expect(waited.data).toMatchObject({
       model: "claude-fable-5-2",
       prompt: {
@@ -1042,17 +1140,25 @@ describe("tools", () => {
     expect(persisted.rows).toHaveLength(2);
   });
 
-  test("wait returns once the turn ends, and timedOut when it does not", async () => {
+  test("status with wait returns once the turn ends, and timedOut when it does not", async () => {
     const { token, client, people, boat, clock } = await start();
     const mcp = await client(await token(people.member));
-    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude", prompt: "go" });
+    const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude", prompt: "go" });
     const before = clock.now.getTime();
-    const waiting = await call(mcp, "wait", { id: launched.data.id, timeout_seconds: 3 });
+    const waiting = await call(mcp, "status", {
+      wait: true,
+      id: launchSandboxId(launched.data),
+      timeout_seconds: 3,
+    });
     expect(waiting.data).toMatchObject({ timedOut: true, settled: false, status: "running" });
     expect(clock.now.getTime() - before).toBe(3000);
 
     boat.finish("bx_1", "prompt_1", "finished");
-    const done = await call(mcp, "wait", { id: launched.data.id, timeout_seconds: 3 });
+    const done = await call(mcp, "status", {
+      wait: true,
+      id: launchSandboxId(launched.data),
+      timeout_seconds: 3,
+    });
     expect(done.data).toMatchObject({
       timedOut: false,
       settled: true,
@@ -1064,11 +1170,11 @@ describe("tools", () => {
   test("logs pass the cursor through and keep one body per event id, the newest", async () => {
     const { token, client, people, boat } = await start();
     const mcp = await client(await token(people.member));
-    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude", prompt: "go" });
+    const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude", prompt: "go" });
     const events = boat.sandbox("bx_1").events;
     events.push({ id: "ev_msg", at: 2, kind: "message", text: "Wor", partial: true, tools: [] });
     events.push({ id: "ev_msg", at: 2, kind: "message", text: "Working", partial: false, tools: [] });
-    const first = await call(mcp, "logs", { id: launched.data.id });
+    const first = await call(mcp, "logs", { id: launchSandboxId(launched.data) });
     expect((first.data.events as { id: string; text: string }[]).map((event) => [event.id, event.text])).toEqual([
       [
         "ev_prompt_1",
@@ -1077,14 +1183,17 @@ describe("tools", () => {
       ["ev_msg", "Working"],
     ]);
     expect(first.data).toMatchObject({ cursor: "3", hasMore: false });
-    const next = await call(mcp, "logs", { id: launched.data.id, since_cursor: first.data.cursor });
+    const next = await call(mcp, "logs", {
+      id: launchSandboxId(launched.data),
+      since_cursor: first.data.cursor,
+    });
     expect(next.data).toMatchObject({ events: [], cursor: "3" });
   });
 
   test("logs reads every page only when all is requested and advances the cursor", async () => {
     const { token, client, people, boat } = await start();
     const mcp = await client(await token(people.member));
-    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude", prompt: "go" });
+    const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude", prompt: "go" });
     const events = boat.sandbox("bx_1").events;
     for (let index = 0; index < 205; index += 1) {
       events.push({
@@ -1096,10 +1205,10 @@ describe("tools", () => {
         tools: [],
       });
     }
-    const first = await call(mcp, "logs", { id: launched.data.id });
+    const first = await call(mcp, "logs", { id: launchSandboxId(launched.data) });
     expect(first.data.events).toHaveLength(100);
     expect(first.data).toMatchObject({ cursor: "100", hasMore: true });
-    const all = await call(mcp, "logs", { id: launched.data.id, all: true });
+    const all = await call(mcp, "logs", { id: launchSandboxId(launched.data), all: true });
     expect(all.data.events).toHaveLength(206);
     expect(all.data).toMatchObject({ cursor: "206", hasMore: false });
   });
@@ -1122,19 +1231,38 @@ describe("tools", () => {
       value: "other-subscription",
     });
     const mcp = await client(await token(people.member));
-    const launched = await call(mcp, "launch", { golden: "shared", harness: "codex", credentialId: first.id });
+    const launched = await call(mcp, "launch", {
+      provider: "boat",
+      golden: "shared",
+      harness: "codex",
+      credentialId: first.id,
+    });
     expect(launched.isError).not.toBe(true);
     expect(
-      (await db.query("select credential_id,credential_version from sandboxes where id=$1", [launched.data.id]))
-        .rows[0],
+      (
+        await db.query("select credential_id,credential_version from sandboxes where id=$1", [
+          launchSandboxId(launched.data),
+        ])
+      ).rows[0],
     ).toEqual({ credential_id: first.id, credential_version: 1 });
     const admin = await client(await token(people.admin));
     const beforeAdmin = { prompts: boat.prompts.length, steers: boat.steers.length };
     expect(
-      (await call(admin, "send", { id: launched.data.id, prompt: "Cannot use owner's personal account" })).isError,
+      (
+        await call(admin, "send", {
+          id: launchSandboxId(launched.data),
+          prompt: "Cannot use owner's personal account",
+        })
+      ).isError,
     ).toBe(true);
     expect(
-      (await call(admin, "steer", { id: launched.data.id, text: "Cannot restart with owner's account" })).isError,
+      (
+        await call(admin, "send", {
+          id: launchSandboxId(launched.data),
+          steer: true,
+          prompt: "Cannot restart with owner's account",
+        })
+      ).isError,
     ).toBe(true);
     expect({ prompts: boat.prompts.length, steers: boat.steers.length }).toEqual(beforeAdmin);
     const listed = await call(admin, "list");
@@ -1148,7 +1276,7 @@ describe("tools", () => {
       scope: "user",
       id: second.id!,
     });
-    const sent = await call(mcp, "send", { id: launched.data.id, prompt: "Continue" });
+    const sent = await call(mcp, "send", { id: launchSandboxId(launched.data), prompt: "Continue" });
     expect(sent.isError).not.toBe(true);
     const count = boat.prompts.length;
     await mutateCredentialAccount(store, ENCRYPTION_KEY, people.member, {
@@ -1156,12 +1284,19 @@ describe("tools", () => {
       scope: "user",
       id: first.id!,
     });
-    const refused = await call(mcp, "send", { id: launched.data.id, prompt: "Must not use another account" });
+    const refused = await call(mcp, "send", {
+      id: launchSandboxId(launched.data),
+      prompt: "Must not use another account",
+    });
     expect(refused.isError).toBe(true);
     expect(refused.text).toContain("No fallback was used");
     expect(boat.prompts).toHaveLength(count);
     const steerCount = boat.steers.length;
-    const steerRefused = await call(mcp, "steer", { id: launched.data.id, text: "Must not restart" });
+    const steerRefused = await call(mcp, "send", {
+      id: launchSandboxId(launched.data),
+      steer: true,
+      prompt: "Must not restart",
+    });
     expect(steerRefused.isError).toBe(true);
     expect(steerRefused.text).toContain("No fallback was used");
     expect(boat.steers).toHaveLength(steerCount);
@@ -1170,15 +1305,18 @@ describe("tools", () => {
   test("a stop without a retained recovery disk remains terminal on later sends", async () => {
     const { token, client, people, boat } = await start();
     const mcp = await client(await token(people.member));
-    const launched = await call(mcp, "launch", { golden: "shared", harness: "codex" });
+    const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "codex" });
     const get = boat.provider.get.bind(boat.provider);
     boat.provider.get = async (id) => {
       const info = await get(id);
       return info.state === "stopped" ? { ...info, stopNote: "checkpoint_failed_disk_not_retained" } : info;
     };
-    const stopped = await call(mcp, "stop", { id: launched.data.id });
+    const stopped = await call(mcp, "stop", { id: launchSandboxId(launched.data) });
     expect(stopped.data).toMatchObject({ status: "failed" });
-    const sent = await call(mcp, "send", { id: launched.data.id, prompt: "must not resume" });
+    const sent = await call(mcp, "send", {
+      id: launchSandboxId(launched.data),
+      prompt: "must not resume",
+    });
     expect(sent.text).toContain("sandbox_terminal");
     expect(boat.prompts).toHaveLength(0);
   });
@@ -1186,68 +1324,103 @@ describe("tools", () => {
   test("an idle launch keeps its model and effort for every send, across stop, and an override lasts one turn", async () => {
     const { token, client, people, boat, db } = await start();
     const mcp = await client(await token(people.member));
-    const refused = await call(mcp, "launch", { golden: "shared", harness: "codex", reasoning_effort: "extreme" });
+    const refused = await call(mcp, "launch", {
+      provider: "boat",
+      golden: "shared",
+      harness: "codex",
+      reasoningEffort: "extreme",
+    });
     expect(refused.isError).toBe(true);
     expect(refused.text).toContain("Use one of: low, medium, high, xhigh, max, ultra");
     expect(boat.forks).toHaveLength(0);
 
     const launched = await call(mcp, "launch", {
+      provider: "boat",
       golden: "shared",
       harness: "codex",
       model: "gpt-6.1-terra",
-      reasoning_effort: "high",
+      reasoningEffort: "high",
     });
-    expect(launched.data).toMatchObject({ model: "gpt-6.1-terra", reasoningEffort: "high", status: "ready" });
+    expect(launched.data.sandbox).toMatchObject({ model: "gpt-6.1-terra", reasoningEffort: "high", status: "ready" });
     expect(boat.prompts).toHaveLength(0);
 
-    await call(mcp, "send", { id: launched.data.id, prompt: "first" });
-    await call(mcp, "stop", { id: launched.data.id });
-    await call(mcp, "send", { id: launched.data.id, prompt: "after stop" });
-    await call(mcp, "send", { id: launched.data.id, prompt: "once", model: "gpt-6-luna", reasoning_effort: "low" });
-    await call(mcp, "send", { id: launched.data.id, prompt: "back" });
+    await call(mcp, "send", { id: launchSandboxId(launched.data), prompt: "first" });
+    await call(mcp, "stop", { id: launchSandboxId(launched.data) });
+    await call(mcp, "send", { id: launchSandboxId(launched.data), prompt: "after stop" });
+    await call(mcp, "send", {
+      id: launchSandboxId(launched.data),
+      prompt: "once",
+      model: "gpt-6-luna",
+      reasoning_effort: "low",
+    });
+    await call(mcp, "send", { id: launchSandboxId(launched.data), prompt: "back" });
     expect(boat.prompts.map(({ text, model, reasoningEffort }) => ({ text, model, reasoningEffort }))).toEqual([
       { text: "first", model: "gpt-6.1-terra", reasoningEffort: "high" },
       { text: "after stop", model: "gpt-6.1-terra", reasoningEffort: "high" },
       { text: "once", model: "gpt-6-luna", reasoningEffort: "low" },
       { text: "back", model: "gpt-6.1-terra", reasoningEffort: "high" },
     ]);
-    const status = await call(mcp, "status", { id: launched.data.id });
+    const status = await call(mcp, "status", { id: launchSandboxId(launched.data) });
     expect(status.data).toMatchObject({ model: "gpt-6.1-terra", reasoningEffort: "high" });
 
     // A sandbox recorded before the choice existed keeps the provider's default.
-    await db.query("update sandboxes set model = null, reasoning_effort = null where id = $1", [launched.data.id]);
-    await call(mcp, "send", { id: launched.data.id, prompt: "legacy" });
+    await db.query("update sandboxes set model = null, reasoning_effort = null where id = $1", [
+      launchSandboxId(launched.data),
+    ]);
+    await call(mcp, "send", { id: launchSandboxId(launched.data), prompt: "legacy" });
     expect(boat.prompts.at(-1)).not.toHaveProperty("model");
   });
 
   test("steer reports restart for Codex and native for Claude, and asks for send when nothing runs", async () => {
     const { token, client, people, boat, db } = await start();
     const mcp = await client(await token(people.member));
-    const codex = await call(mcp, "launch", { golden: "shared", harness: "codex", prompt: "go" });
-    expect((await call(mcp, "steer", { id: codex.data.id, text: "Use bun" })).data).toMatchObject({
+    const codex = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "codex", prompt: "go" });
+    const selected = await call(mcp, "send", {
+      id: launchSandboxId(codex.data),
+      steer: true,
+      prompt: "Use bun",
+      conversation_id: "selected-conversation",
+      model: "gpt-5.4",
+    });
+    expect(selected.isError).toBe(true);
+    expect(selected.text).toContain("Launch another sandbox");
+    expect(selected.text).toContain("error code: conflict");
+    await db.query("update sandboxes set conversation_ids=array['older','conv_1'] where id=$1", [
+      launchSandboxId(codex.data),
+    ]);
+    expect(
+      (await call(mcp, "send", { id: launchSandboxId(codex.data), steer: true, prompt: "Use bun" })).data,
+    ).toMatchObject({
       delivery: "restart",
     });
-    const claude = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    expect(boat.steers.at(-1)?.conversationId).toBe("conv_1");
+    const claude = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
     // The list can see ready while a background observation owns the SQL lease.
     expect((await call(mcp, "list")).data.sandboxes).toContainEqual(
-      expect.objectContaining({ id: claude.data.id, status: "ready" }),
+      expect.objectContaining({ id: launchSandboxId(claude.data), status: "ready" }),
     );
     const observing = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
-    await db.query("update sandboxes set reconcile_after=now()+interval '1 hour' where id<>$1", [claude.data.id]);
+    await db.query("update sandboxes set reconcile_after=now()+interval '1 hour' where id<>$1", [
+      launchSandboxId(claude.data),
+    ]);
     const lifecycle = createSandboxLifecycle(bunLikeSql(db), async () => ({
       ...boat.provider,
       get: async (id) => {
         const info = await boat.provider.get(id);
         observing.resolve();
         await release.promise;
-        return { ...info, state: "stopped" as const };
+        return { ...info, state: "stopped" as const, retainedSnapshot: "usable" as const };
       },
     }));
     const tick = lifecycle.reconcileOne();
     try {
       await observing.promise;
-      const refused = await call(mcp, "steer", { id: claude.data.id, text: "Use bun" });
+      const refused = await call(mcp, "send", {
+        id: launchSandboxId(claude.data),
+        steer: true,
+        prompt: "Use bun",
+      });
       expect(refused.isError).toBe(true);
       expect(refused.text).toContain("Use send");
     } finally {
@@ -1256,11 +1429,15 @@ describe("tools", () => {
       await lifecycle.drain();
     }
     // The superseded observation cannot publish its stale terminal result.
-    expect((await db.query("select status from sandboxes where id=$1", [claude.data.id])).rows[0]).toEqual({
+    expect(
+      (await db.query("select status from sandboxes where id=$1", [launchSandboxId(claude.data)])).rows[0],
+    ).toEqual({
       status: "ready",
     });
-    await call(mcp, "send", { id: claude.data.id, prompt: "go" });
-    expect((await call(mcp, "steer", { id: claude.data.id, text: "Use bun" })).data).toMatchObject({
+    await call(mcp, "send", { id: launchSandboxId(claude.data), prompt: "go" });
+    expect(
+      (await call(mcp, "send", { id: launchSandboxId(claude.data), steer: true, prompt: "Use bun" })).data,
+    ).toMatchObject({
       delivery: "native",
     });
     expect(boat.steers).toHaveLength(3);
@@ -1269,11 +1446,63 @@ describe("tools", () => {
   test("exec redacts the agent's credentials from the output", async () => {
     const { token, client, people, boat } = await start();
     const mcp = await client(await token(people.member));
-    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
     boat.setExecOutput({ stdout: `CLAUDE_CODE_OAUTH_TOKEN=${SECRETS.orgClaude}\nok\n` });
-    const ran = await call(mcp, "exec", { id: launched.data.id, command: "env" });
+    const ran = await call(mcp, "exec", { id: launchSandboxId(launched.data), command: "env" });
     expect(ran.data).toMatchObject({ exitCode: 0, stdout: "CLAUDE_CODE_OAUTH_TOKEN=***\nok\n" });
     expectNoSecret(ran.text);
+  });
+
+  test("stop with turn interrupts the current conversation and leaves compute up", async () => {
+    const { token, client, people, boat, db } = await start();
+    const mcp = await client(await token(people.member));
+    const launched = await call(mcp, "launch", {
+      provider: "boat",
+      golden: "shared",
+      harness: "claude",
+      prompt: "work",
+    });
+    const interrupt = spyOn(boat.provider, "interrupt");
+    const id = launchSandboxId(launched.data);
+    await db.query("update sandboxes set conversation_ids=array['older','conv_1'] where id=$1", [id]);
+    const selected = await call(mcp, "stop", { id, turn: true, conversation_id: "selected-conversation" });
+    expect(selected.isError).toBe(true);
+    expect(interrupt).not.toHaveBeenCalled();
+    const stopped = await call(mcp, "stop", { id, turn: true });
+    expect(stopped.data).toEqual({ id, interrupted: true });
+    expect(interrupt).toHaveBeenCalledWith({ sandboxId: "bx_1", conversationId: "conv_1" });
+    expect(boat.stops).toEqual([]);
+  });
+
+  test("stop after settlement admits an idle stop", async () => {
+    const { token, client, people, boat } = await start();
+    const mcp = await client(await token(people.member));
+    const { data } = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude", prompt: "go" });
+    const id = launchSandboxId(data);
+    boat.finish("bx_1", "prompt_1", "finished");
+
+    const stopped = await call(mcp, "stop", { id, after: true, timeout_seconds: 3 });
+    expect(stopped.isError).toBe(false);
+    expect(stopped.data).toMatchObject({ id, status: "stopped" });
+    expect(boat.stops).toEqual(["bx_1"]);
+  });
+
+  test("stop after settlement leaves compute up when a settled read returns at the deadline", async () => {
+    const { token, client, people, boat, clock } = await start();
+    const mcp = await client(await token(people.member));
+    const { data } = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude", prompt: "go" });
+    const id = launchSandboxId(data);
+    boat.finish("bx_1", "prompt_1", "finished");
+    const getPrompt = boat.provider.getPrompt;
+    boat.provider.getPrompt = async (args) => {
+      clock.now = new Date(clock.now.getTime() + 3000);
+      return getPrompt(args);
+    };
+
+    const stopped = await call(mcp, "stop", { id, after: true, timeout_seconds: 3 });
+    expect(stopped.isError).toBe(false);
+    expect(stopped.data).toMatchObject({ id, status: "ready", timedOut: true });
+    expect(boat.stops).toEqual([]);
   });
 
   test.each(["running", "failed"])(
@@ -1281,10 +1510,15 @@ describe("tools", () => {
     async (state) => {
       const { token, client, people, boat, db } = await start();
       const mcp = await client(await token(people.member));
-      const launched = await call(mcp, "launch", { golden: "shared", harness: "claude", prompt: "work" });
+      const launched = await call(mcp, "launch", {
+        provider: "boat",
+        golden: "shared",
+        harness: "claude",
+        prompt: "work",
+      });
       if (state === "failed")
         await db.query("update sandboxes set status='failed', status_reason='original failure' where id=$1", [
-          launched.data.id,
+          launchSandboxId(launched.data),
         ]);
       let pending = true;
       boat.provider.quiesce = async () => {
@@ -1298,7 +1532,7 @@ describe("tools", () => {
       };
       boat.setExecOutput({ stdout: '{"status":"clean"}' });
       const commands = boat.execs.length;
-      const stop = await call(mcp, "stop", { id: launched.data.id });
+      const stop = await call(mcp, "stop", { id: launchSandboxId(launched.data) });
       expect(stop.isError).not.toBe(true);
       expect(stop.data.status).toBe(state === "failed" ? "failed" : "stopping");
       expect(boat.stops).toHaveLength(0);
@@ -1306,24 +1540,26 @@ describe("tools", () => {
       // A stale receipt must never let a repeated user stop bypass settlement.
       await db.query(
         "update sandboxes set preservation_note='unpushed work could not be preserved (timeout)' where id=$1",
-        [launched.data.id],
+        [launchSandboxId(launched.data)],
       );
-      expect((await call(mcp, "stop", { id: launched.data.id })).data.status).toBe(
+      expect((await call(mcp, "stop", { id: launchSandboxId(launched.data) })).data.status).toBe(
         state === "failed" ? "failed" : "stopping",
       );
       expect(boat.stops).toHaveLength(0);
       expect(boat.execs).toHaveLength(commands);
       await db.query("update sandboxes set reconcile_lease_until=now()+interval '2 minutes' where id=$1", [
-        launched.data.id,
+        launchSandboxId(launched.data),
       ]);
-      expect((await call(mcp, "status", { id: launched.data.id })).data).toMatchObject({
+      expect((await call(mcp, "status", { id: launchSandboxId(launched.data) })).data).toMatchObject({
         status: state === "failed" ? "failed" : "stopping",
         settled: false,
       });
-      expect((await call(mcp, "stop", { id: launched.data.id })).isError).not.toBe(true);
-      await db.query("update sandboxes set reconcile_lease_until=null where id=$1", [launched.data.id]);
+      expect((await call(mcp, "stop", { id: launchSandboxId(launched.data) })).isError).not.toBe(true);
+      await db.query("update sandboxes set reconcile_lease_until=null where id=$1", [launchSandboxId(launched.data)]);
       pending = false;
-      await db.query("update sandboxes set reconcile_after=now()-interval '1 second' where id=$1", [launched.data.id]);
+      await db.query("update sandboxes set reconcile_after=now()-interval '1 second' where id=$1", [
+        launchSandboxId(launched.data),
+      ]);
       const lifecycle = createSandboxLifecycle(bunLikeSql(db), async () => boat.provider);
       expect(await lifecycle.reconcileOne()).toBe(true);
       expect(boat.stops).toEqual(["bx_1"]);
@@ -1331,7 +1567,7 @@ describe("tools", () => {
       const row = (
         await db.query<{ status: string; preservation_note: string | null; stop_requested_at: Date | null }>(
           "select status::text, preservation_note, stop_requested_at from sandboxes where id=$1",
-          [launched.data.id],
+          [launchSandboxId(launched.data)],
         )
       ).rows[0];
       expect(row).toMatchObject({
@@ -1345,8 +1581,8 @@ describe("tools", () => {
   test("ordinary exec commands stay concurrent without changing lifecycle generation", async () => {
     const { token, client, people, boat, db } = await start();
     const mcp = await client(await token(people.member));
-    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude" });
-    const id = launched.data.id;
+    const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
+    const id = launchSandboxId(launched.data);
     const before = (
       await db.query<{ lifecycle_generation: string | number | bigint }>(
         "select lifecycle_generation from sandboxes where id=$1",
@@ -1402,8 +1638,13 @@ describe("tools", () => {
       },
     });
     const mcp = await client(await token(people.member));
-    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude", prompt: "work" });
-    const id = launched.data.id;
+    const launched = await call(mcp, "launch", {
+      provider: "boat",
+      golden: "shared",
+      harness: "claude",
+      prompt: "work",
+    });
+    const id = launchSandboxId(launched.data);
     boat.setExecOutput({ stdout: '{"status":"clean"}' });
     boat.provider.stop = async () => {
       throw new ProviderError({
@@ -1423,8 +1664,10 @@ describe("tools", () => {
       (
         await call(
           mcp,
-          tool,
-          tool === "exec" ? { id, command: "touch after-capture" } : { id, text: "change after capture" },
+          tool === "exec" ? "exec" : "send",
+          tool === "exec"
+            ? { id, command: "touch after-capture" }
+            : { id, steer: true, prompt: "change after capture" },
         )
       ).isError,
     ).toBe(true);
@@ -1436,8 +1679,8 @@ describe("tools", () => {
   test("explicit new work cancels a pending stop receipt before the next stop", async () => {
     const { token, client, people, boat, db } = await start();
     const mcp = await client(await token(people.member));
-    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude" });
-    const id = launched.data.id;
+    const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
+    const id = launchSandboxId(launched.data);
     boat.setExecOutput({ stdout: '{"status":"clean"}' });
     const stop = boat.provider.stop;
     boat.provider.stop = async () => {
@@ -1461,14 +1704,50 @@ describe("tools", () => {
     expect(boat.execs.filter((r) => r.preservationStage === "collect_exec")).toHaveLength(count + 1);
   });
 
+  test("native send hands a fresh pre-dispatch retention refusal to the stop reconciler", async () => {
+    const { token, client, people, boat, db } = await start();
+    const mcp = await client(await token(people.member));
+    const { data } = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
+    expect((await call(mcp, "stop", { id: launchSandboxId(data) })).data.status).toBe("stopped");
+    boat.provider.prompt = async () => {
+      boat.sandbox("bx_1").info.retainedSnapshot = "unconfirmed";
+      throw new BoatRetentionUnconfirmed();
+    };
+    const refused = await call(mcp, "send", { id: launchSandboxId(data), prompt: "continue" });
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain("Boat retained data has not been verified");
+    const row = (
+      await db.query("select status, activity_lease_id, stop_requested_at from sandboxes where id=$1", [
+        launchSandboxId(data),
+      ])
+    ).rows[0];
+    expect(row).toMatchObject({ status: "stopping", activity_lease_id: null, stop_requested_at: expect.any(Date) });
+    boat.sandbox("bx_1").info.retainedSnapshot = "usable";
+    const lifecycle = createSandboxLifecycle(bunLikeSql(db), async () => boat.provider);
+    expect(await lifecycle.reconcileOne()).toBe(true);
+    expect((await call(mcp, "status", { id: launchSandboxId(data) })).data.status).toBe("stopped");
+    expect(boat.stops).toHaveLength(1);
+  });
+
+  test("user stop leaves an unverified archive in worker custody without dispatching another stop", async () => {
+    const { token, client, people, boat } = await start();
+    const mcp = await client(await token(people.member));
+    const { data } = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
+    const machine = boat.sandbox("bx_1");
+    machine.info = { ...machine.info, state: "stopped", providerState: "archived", retainedSnapshot: "unconfirmed" };
+    expect((await call(mcp, "stop", { id: launchSandboxId(data) })).data.status).toBe("stopping");
+    expect(boat.stops).toHaveLength(0);
+  });
+
   test.each(["preserved", "clean"] as const)("user stop then lifecycle stop reuses its %s capture", async (result) => {
     const oldKey = process.env.ARMADA_ENCRYPTION_KEY;
     process.env.ARMADA_ENCRYPTION_KEY = ENCRYPTION_KEY;
     try {
-      const { token, client, people, boat, db } = await start();
-      const mcp = await client(await token(people.member));
-      const launched = await call(mcp, "launch", { golden: "shared", harness: "claude" });
-      const id = launched.data.id;
+      const { token, client, people, boat, db, auth, clock } = await start();
+      const bearer = await token(people.member);
+      const mcp = await client(bearer);
+      const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
+      const id = launchSandboxId(launched.data);
       const archive = Buffer.from("private local-only commit recovery fixture").toString("base64");
       boat.setExecOutput({ stdout: JSON.stringify({ status: result }) });
       const capture = encryptedRecoveryExec(() => archive, boat.provider.exec);
@@ -1490,8 +1769,9 @@ describe("tools", () => {
         if (boat.stops.length === 1)
           boat.sandbox(request.sandboxId).info = {
             ...boat.sandbox(request.sandboxId).info,
-            state: "stopping",
-            providerState: "archiving",
+            state: result === "preserved" ? "stopping" : "stopped",
+            providerState: result === "preserved" ? "archiving" : "archived",
+            retainedSnapshot: "pending",
           };
       };
       expect((await call(mcp, "stop", { id })).data.status).toBe("stopping");
@@ -1505,13 +1785,18 @@ describe("tools", () => {
       // remain available without replaying capture or stop on archiving compute.
       await db.query("update sandboxes set reconcile_lease_until=now()+interval '2 minutes' where id=$1", [id]);
       expect((await call(mcp, "status", { id })).data).toMatchObject({ status: "stopping", settled: false });
-      expect((await call(mcp, "wait", { id, timeout_seconds: 0 })).data.timedOut).toBe(true);
+      expect((await call(mcp, "status", { wait: true, id, timeout_seconds: 0 })).data.timedOut).toBe(true);
       expect((await call(mcp, "stop", { id })).data.status).toBe("stopping");
       await db.query("update sandboxes set reconcile_lease_until=null where id=$1", [id]);
       const lifecycle = createSandboxLifecycle(bunLikeSql(db), async () => boat.provider);
       expect(await lifecycle.reconcileOne()).toBe(true);
       expect(boat.stops).toHaveLength(1);
-      boat.sandbox("bx_1").info = { ...boat.sandbox("bx_1").info, state: "stopped", providerState: "archived" };
+      boat.sandbox("bx_1").info = {
+        ...boat.sandbox("bx_1").info,
+        state: "stopped",
+        providerState: "archived",
+        retainedSnapshot: "usable",
+      };
       await db.query("update sandboxes set reconcile_after=now() where id=$1", [id]);
       expect(await lifecycle.reconcileOne()).toBe(true);
       expect((await call(mcp, "stop", { id })).data.status).toBe("stopped");
@@ -1527,7 +1812,24 @@ describe("tools", () => {
       expect((await db.query("select id from sandbox_work_recovery where sandbox_id=$1", [id])).rows).toHaveLength(
         result === "preserved" ? 1 : 0,
       );
-      expect((await call(mcp, "work_recovery", { id })).data.archive).toBe(result === "preserved" ? archive : null);
+      const recovery = await handleControlRequest(
+        new Request(`${PUBLIC_URL}/api/v1/sandbox/recovery`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${bearer}` },
+          body: JSON.stringify({ id }),
+        }),
+        {
+          authStore: auth,
+          supabase: { supabaseUrl: "https://unused.test", anonKey: "fixture" },
+          store: createSqlVaultStore(db),
+          encryptionKey: ENCRYPTION_KEY,
+          data: createSqlData(db),
+          providers: { resolve: async () => boat.provider },
+          now: () => clock.now,
+        },
+      );
+      expect(recovery?.status).toBe(200);
+      expect(await recovery?.json()).toEqual({ archive: result === "preserved" ? archive : null });
     } finally {
       if (oldKey === undefined) delete process.env.ARMADA_ENCRYPTION_KEY;
       else process.env.ARMADA_ENCRYPTION_KEY = oldKey;
@@ -1537,11 +1839,11 @@ describe("tools", () => {
   test("user-stop trace places capture before physical dispatch", async () => {
     const { token, client, people, boat } = await start();
     const mcp = await client(await token(people.member));
-    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
     boat.setExecOutput({ stdout: '{"status":"clean"}' });
     const log = spyOn(console, "info").mockImplementation(() => {});
     try {
-      await call(mcp, "stop", { id: launched.data.id });
+      await call(mcp, "stop", { id: launchSandboxId(launched.data) });
       const events = log.mock.calls.map(([line]) => JSON.parse(String(line)));
       expect(events.filter((e) => e.event === "work_preservation_stage").map((e) => e.phase)).toEqual([
         "observed",
@@ -1554,7 +1856,7 @@ describe("tools", () => {
       expect(events.at(-1)).toMatchObject({
         event: "sandbox_stop_dispatch",
         source: "user_stop",
-        sandboxId: launched.data.id,
+        sandboxId: launchSandboxId(launched.data),
       });
     } finally {
       log.mockRestore();
@@ -1564,32 +1866,34 @@ describe("tools", () => {
   test("stop without a provider timestamp retains observed compute time", async () => {
     const { token, client, people, boat, db, clock } = await start();
     const mcp = await client(await token(people.member));
-    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
     await db.query("update sandboxes set usage_running_since=$2::timestamptz - interval '12 seconds' where id=$1", [
-      launched.data.id,
+      launchSandboxId(launched.data),
       clock.now.toISOString(),
     ]);
-    expect((await call(mcp, "stop", { id: launched.data.id })).data).toMatchObject({ status: "stopped" });
+    expect((await call(mcp, "stop", { id: launchSandboxId(launched.data) })).data).toMatchObject({
+      status: "stopped",
+    });
     expect(boat.stops).toEqual(["bx_1"]);
     const row = await db.query<{ status: string; stopped_at: Date | null; seconds: number | null }>(
       "select status::text as status, stopped_at, usage_runtime_seconds as seconds from sandboxes where id = $1",
-      [launched.data.id],
+      [launchSandboxId(launched.data)],
     );
     expect(row.rows[0]?.status).toBe("stopped");
     expect(row.rows[0]?.stopped_at?.toISOString()).toBe(clock.now.toISOString());
     expect(row.rows[0]?.seconds).toBe(12);
   });
 
-  test("a member of another org sees none of this org's goldens or sandboxes", async () => {
+  test("a member of another org sees none of this org's sandboxes", async () => {
     const { token, client, people } = await start();
     const launched = await call(await client(await token(people.member)), "launch", {
+      provider: "boat",
       golden: "shared",
       harness: "claude",
     });
     const other = await client(await token(people.member, people.otherOrg));
-    expect((await call(other, "golden_list")).data.goldens).toMatchObject([{ name: "elsewhere" }]);
     expect((await call(other, "list")).data.sandboxes).toEqual([]);
-    expect((await call(other, "stop", { id: launched.data.id })).isError).toBe(true);
+    expect((await call(other, "stop", { id: launchSandboxId(launched.data) })).isError).toBe(true);
   });
 });
 
@@ -1603,107 +1907,35 @@ test("MCP launch preserves the closed busy account code and safe action", async 
     },
   });
   const mcp = await client(await token(people.owner));
-  const result = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+  const result = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
   expect(result.isError).toBe(true);
   expect(result.text).toContain("error code: credential_busy");
   expect(result.text).toContain("The model account is unavailable. Check its current credentials.");
   expect(boat.forks).toHaveLength(0);
 });
 
-test("public MCP schemas protect secret boundaries and mutation contracts", async () => {
+test("public MCP inventory and schemas expose operation contracts", async () => {
   const { token, client, people } = await start();
   const mcp = await client(await token(people.member));
   const { tools } = await mcp.listTools();
-  expect(tools.map((tool) => tool.name).sort()).toEqual(
-    [
-      "delete",
-      "extend",
-      "exec",
-      "work_recovery",
-      "github_refresh",
-      "golden_build_status",
-      "golden_capabilities",
-      "golden_create",
-      "golden_adopt",
-      "golden_list",
-      "golden_snapshot",
-      "golden_size_policy",
-      "golden_update",
-      "interrupt",
-      "launch",
-      "launch_sized_v1",
-      "launch_receipt",
-      "list",
-      "logs",
-      "skill_defaults_get",
-      "skill_defaults_set",
-      "template_create",
-      "template_list",
-      "template_get",
-      "template_publish",
-      "template_delete",
-      "template_launch",
-      "variable_list",
-      "variable_read",
-      "variable_set",
-      "variable_update",
-      "variable_delete",
-      "secret_list",
-      "secret_commit",
-      "secret_revoke",
-      "secret_delete",
-      "report",
-      "resource_advice",
-      "resume",
-      "send",
-      "runtime_checkpoint",
-      "runtime_resume",
-      "runtime_github_status",
-      "status",
-      "steer",
-      "stop",
-      "wait",
-    ].sort(),
-  );
+  expect(tools.map((tool) => tool.name).sort()).toEqual([
+    "exec",
+    "launch",
+    "list",
+    "logs",
+    "report",
+    "send",
+    "status",
+    "stop",
+  ]);
   for (const tool of tools) expect(tool.outputSchema).toBeDefined();
-  const resume = tools.find((tool) => tool.name === "resume");
-  expect(resume?.inputSchema.required).toEqual(["id", "request_id"]);
-  const secretCommit = tools.find((tool) => tool.name === "secret_commit");
-  expect(secretCommit?.inputSchema.required).toEqual(["org", "uploadReference"]);
-  expect(secretCommit?.inputSchema.properties?.uploadReference).toMatchObject({ type: "string" });
-  const variableSet = tools.find((tool) => tool.name === "variable_set");
-  expect(variableSet?.inputSchema.required).toEqual(["org", "scope", "name", "value"]);
-  expect(variableSet?.inputSchema.properties?.scope).toMatchObject({ enum: ["personal", "org"] });
-  expect(variableSet?.inputSchema.properties?.value).toMatchObject({ type: "string" });
-  for (const name of ["variable_update", "variable_delete", "secret_revoke", "secret_delete"]) {
-    const schema = tools.find((tool) => tool.name === name)?.inputSchema;
-    expect(schema?.required).toEqual(["org", "id", "expectedVersion"]);
-    expect(schema?.properties?.expectedVersion).toMatchObject({ type: "integer", minimum: 1 });
-  }
-  for (const tool of tools.filter((tool) => /^(secret|variable)_/.test(tool.name))) {
-    expect(tool.inputSchema.additionalProperties).toBe(false);
-    if (tool.name.startsWith("secret_")) {
-      expect(Object.keys(tool.inputSchema.properties ?? {})).not.toContain("value");
-      expect(Object.keys(tool.inputSchema.properties ?? {})).not.toContain("value_enc");
-    }
-  }
   const launch = tools.find((tool) => tool.name === "launch");
-  expect(launch?.inputSchema.properties?.repo).toMatchObject({ type: "string" });
-  expect(launch?.inputSchema.required ?? []).not.toContain("repo");
-  const goldenUpdate = tools.find((tool) => tool.name === "golden_update");
-  const goldenSnapshot = tools.find((tool) => tool.name === "golden_snapshot");
-  expect(goldenUpdate?.annotations).toMatchObject({
-    readOnlyHint: false,
-    destructiveHint: false,
-    openWorldHint: true,
-  });
-  expect(goldenSnapshot?.annotations).toMatchObject({
-    readOnlyHint: false,
-    destructiveHint: false,
-    openWorldHint: true,
-  });
-  expect(goldenUpdate?.inputSchema).toBeDefined();
-  expect(goldenUpdate?.outputSchema).toBeDefined();
-  expect(goldenSnapshot?.inputSchema).toBeDefined();
-  expect(goldenSnapshot?.outputSchema).toBeDefined();
+  expect(launch?.inputSchema.anyOf).toEqual(
+    ["boat", "modal"].map((provider) =>
+      expect.objectContaining({
+        properties: expect.objectContaining({ provider: expect.objectContaining({ const: provider }) }),
+        required: expect.arrayContaining(["provider", "harness", "golden"]),
+      }),
+    ),
+  );
 });

@@ -27,7 +27,7 @@ gate. Screenshot evidence workflows and their one-off capture scripts are remove
 | `apple-quality.yml` | No | Optional PR/main workflow filtered to iOS and its generated harness contract inputs. GitHub merge-group events do not support workflow-level path filters. |
 | `migration-preview.yml` | No | Optional PR dry-run, filtered to `supabase/migrations/**`, with no production credentials. |
 | `migrations.yml` | No | Manual main-only previews/history/owner repair. Production SQL applies only through a validated publishing release, never this standalone workflow or PRs. |
-| `release.yml` | No | Publishes releases from main/tags or manual dispatch. |
+| `release.yml` | No | Publishes releases from main or by version and SHA from a main workflow dispatch. |
 | `staging-gated-production.yml` | No | Deployment/smoke on main, dispatch or explicit reusable call. |
 | `post-deploy-smoke.yml` | No | Main-only manual pinned smoke, not merge validation. |
 | `production-health.yml` | No | Scheduled/deployment/manual monitoring. |

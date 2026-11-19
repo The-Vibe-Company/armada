@@ -21,23 +21,6 @@ through extra catalog requests. Private metadata-only viewers do not receive
 receipt contents. Missing or malformed historical receipts are ignored; no
 internal skill/workspace IDs are displayed.
 
-## Screenshots
-
-Captured from the real production dashboard against synthetic local fixtures,
-after passing browser assertions. Images are cropped only for readability.
-
-### Search the connected workspace
-
-![Launch dialog with a searchable private Skillpack skill](images/skills/launch-desktop.png)
-
-### Public catalog on a phone, with an exact workspace pin selected
-
-![Mobile skill picker](images/skills/launch-mobile.png)
-
-### Recorded installed pins and verification details
-
-![Installed skill receipts](images/skills/receipts.png)
-
 ## Checks and rollout
 
 No migrations. Requires the catalog API slice (PR #1043); public browsing still
