@@ -80,7 +80,7 @@ export async function getSandbox(supabase: Supabase, id: string): Promise<Sandbo
  * The kind of each readable account among `ids`, by id. Row level security returns an org account to its members and a
  * personal one to its owner: an account the viewer cannot read is absent, and its sandbox's cost is "API-equivalent".
  */
-export async function credentialKinds(supabase: Supabase, ids: readonly (string | null)[]) {
+async function credentialKinds(supabase: Supabase, ids: readonly (string | null)[]) {
   const wanted = [...new Set(ids.filter((id): id is string => typeof id === "string"))];
   const kinds = new Map<string, CredentialKind>();
   if (wanted.length === 0) return kinds;
