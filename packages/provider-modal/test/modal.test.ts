@@ -34,6 +34,7 @@ import {
 } from "../src/index.ts";
 
 let db: Awaited<ReturnType<typeof openMigratedDatabase>>;
+let workerSnapshot: string;
 const scope: Scope = {
   orgId: "00000000-0000-0000-0000-000000000001",
   userId: "00000000-0000-0000-0000-000000000002",
@@ -50,6 +51,11 @@ beforeAll(async () => {
       ('${scope.orgId}','${scope.userId}','admin'),
       ('${scope.orgId}','00000000-0000-0000-0000-000000000004','member');
   `);
+  // Worker lifecycle cases need a saved image. Golden lifecycle cases create their own.
+  const { provider } = fixture();
+  const builder = await provider.createGolden({});
+  workerSnapshot = crypto.randomUUID();
+  await provider.snapshot({ sandboxId: builder.id, name: workerSnapshot });
 });
 afterAll(async () => {
   await db.close();
@@ -891,11 +897,8 @@ test("invalid Modal size is refused without a physical create", async () => {
   expect(f.creates).toBe(0);
 });
 
-async function runningFork(f: ReturnType<typeof fixture>) {
-  const builder = await f.provider.createGolden({});
-  const name = crypto.randomUUID();
-  await f.provider.snapshot({ sandboxId: builder.id, name });
-  return f.provider.fork({ from: name });
+function runningFork(f: ReturnType<typeof fixture>) {
+  return f.provider.fork({ from: workerSnapshot });
 }
 test("overlapping forks refuse source contention definitively before allocating", async () => {
   const f = fixture();
@@ -926,7 +929,8 @@ test("enrolled Modal host forks never start or call the tunnel and stop without 
   const row = await runningFork(f);
   expect(await f.store.get(row.id)).toMatchObject({ commonRuntime: true, phase: "active" });
   const afterFork = f.log.length;
-  expect(f.log.filter((op) => op === "start-1")).toHaveLength(1); // Builder only.
+  expect(f.log).not.toContain("start-1");
+  expect(f.log).not.toContain("health");
   await expect(f.provider.prompt({ sandboxId: row.id, harness: "codex", text: "no fallback" })).rejects.toMatchObject({
     code: "invalid_request",
   });
@@ -960,7 +964,7 @@ test("enrolled Modal host forks never start or call the tunnel and stop without 
   await expect(
     f.provider.prompt({ sandboxId: row.id, harness: "codex", text: "no implicit resume" }),
   ).rejects.toMatchObject({ code: "invalid_request" });
-  expect(f.creates).toBe(2);
+  expect(f.creates).toBe(1);
 });
 
 test("retained enrolled Modal stop snapshots only after quiescence and resumes its exact checkpoint without tunnel or history purge", async () => {
@@ -998,11 +1002,11 @@ test("retained enrolled Modal stop snapshots only after quiescence and resumes i
   await expect(
     f.provider.resumeRuntime({ sandboxId: worker.id, ttlSeconds: 900, checkpoint: { epoch: "7", watermark: 3 } }),
   ).rejects.toMatchObject({ code: "conflict" });
-  expect(f.creates).toBe(2);
+  expect(f.creates).toBe(1);
   const request = { sandboxId: worker.id, ttlSeconds: 900, checkpoint: { epoch: "7", watermark: 2 } };
   f.failCreate(true);
   await expect(f.provider.resumeRuntime(request)).rejects.toThrow();
-  expect(f.creates).toBe(3);
+  expect(f.creates).toBe(2);
   f.failCreate(false);
   const resumed = await f.provider.resumeRuntime(request);
   expect(resumed).toMatchObject({ id: worker.id, state: "ready", physicalGeneration: "2" });
@@ -1011,7 +1015,7 @@ test("retained enrolled Modal stop snapshots only after quiescence and resumes i
   expect(restored.imageId).toBe(`im_${original.physicalId}`);
   expect(restored.runtimeStartAttempted).toBeUndefined();
   expect((await f.provider.resumeRuntime(request)).physicalGeneration).toBe("2");
-  expect(f.creates).toBe(3);
+  expect(f.creates).toBe(2);
   expect(f.log.slice(afterLaunch)).toEqual(["scrub", "snapshot", "terminate"]);
   await f.provider.startRuntime(bootstrap);
   f.onTerminate(async () => {
@@ -1033,12 +1037,12 @@ test("cleanup reconciles an unknown enrolled Modal resume create without activat
   ).rejects.toThrow();
   expect(await f.store.get(worker.id)).toMatchObject({ phase: "creating", generation: 2 });
   expect((await f.store.get(worker.id)).physicalId).toBeUndefined();
-  expect(f.creates).toBe(3);
+  expect(f.creates).toBe(2);
   const beforeCleanup = f.log.length;
   // Production failure cleanup calls stop, not another resume/admission attempt.
   await f.provider.stop({ sandboxId: worker.id });
   expect(f.log.slice(beforeCleanup)).toEqual(["terminate"]);
-  expect(f.creates).toBe(3);
+  expect(f.creates).toBe(2);
   const stopped = await f.store.get(worker.id);
   expect(stopped.phase).toBe("stopped");
   expect(stopped.physicalId).toBeDefined();
@@ -2430,9 +2434,6 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("actual bootstrap separates GitHub exec credentials from model env, disables them explicitly, and re-resolves on restore without persisting values", async () => {
     const f = fixture();
-    const builder = await f.provider.createGolden({});
-    const name = crypto.randomUUID();
-    await f.provider.snapshot({ sandboxId: builder.id, name });
     let enabled = true,
       calls = 0;
     const options: ComposedModalOptions = {
@@ -2452,7 +2453,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     };
     const { provider } = await createComposedModalProvider(options);
     const fork = await provider.fork({
-      from: name,
+      from: workerSnapshot,
       env: {
         GH_TOKEN: "synthetic-initial-github",
         GITHUB_TOKEN: "synthetic-initial-github",
@@ -2488,7 +2489,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     );
     expect(JSON.stringify(row)).not.toContain("synthetic-refreshed-github");
     enabled = false;
-    const disabled = await provider.fork({ from: name, env: { GH_TOKEN: "must-stay-disabled" } });
+    const disabled = await provider.fork({ from: workerSnapshot, env: { GH_TOKEN: "must-stay-disabled" } });
     const disabledRow = await f.store.get(disabled.id);
     expect(
       (f.bootstraps.get(disabledRow.physicalId ?? "") as unknown as { execEnv: object }).execEnv,
@@ -2553,21 +2554,20 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("fresh history purge is committed before bootstrap, not repeated on unknown boot retry, and skipped for working recovery", async () => {
     const f = fixture();
-    const builder = await f.provider.createGolden({});
-    const name = crypto.randomUUID();
-    await f.provider.snapshot({ sandboxId: builder.id, name });
     const key = crypto.randomUUID();
     f.failBoot(true);
-    await expect(f.provider.fork({ from: name, idempotencyKey: key })).rejects.toMatchObject({ code: "unknown" });
-    const before = f.log.filter((x) => x.startsWith("fresh-")).length;
+    await expect(f.provider.fork({ from: workerSnapshot, idempotencyKey: key })).rejects.toMatchObject({
+      code: "unknown",
+    });
+    expect(f.log.filter((x) => x.startsWith("fresh-"))).toEqual(["fresh-1"]);
     f.failBoot(false);
-    const fork = await f.provider.fork({ from: name, idempotencyKey: key });
-    expect(f.log.filter((x) => x.startsWith("fresh-"))).toHaveLength(before);
+    const fork = await f.provider.fork({ from: workerSnapshot, idempotencyKey: key });
+    expect(f.log.filter((x) => x.startsWith("fresh-"))).toEqual(["fresh-1"]);
     expect((await f.store.get(fork.id)).freshStatePreparedGeneration).toBe(1);
     await f.provider.stop({ sandboxId: fork.id });
     await f.provider.exec({ sandboxId: fork.id, command: "resume session" });
     expect((await f.store.get(fork.id)).generation).toBe(2);
-    expect(f.log.filter((x) => x.startsWith("fresh-"))).toHaveLength(before);
+    expect(f.log.filter((x) => x.startsWith("fresh-"))).toEqual(["fresh-1"]);
   });
   test("golden restore recovers a lost final active commit without replacing its runner or losing edits", async () => {
     let fail = false;
@@ -3358,9 +3358,7 @@ for (const mode of ["checkpoint", "hard_exit", "legacy_scrub_failure"])
 
 test("private scoped transport requires exact active incarnation and ACK, never restores stopped compute", async () => {
   const f = fixture();
-  const golden = await f.provider.createGolden({});
-  const image = await f.provider.snapshot({ sandboxId: golden.id, name: `authority-${crypto.randomUUID()}` });
-  const parent = await f.provider.fork({ from: image.name });
+  const parent = await runningFork(f);
   const binding = { epoch: "1", physicalGeneration: (await f.provider.get(parent.id)).physicalGeneration ?? "missing" };
   const request = {
     sandboxId: parent.id,
@@ -3494,10 +3492,7 @@ test("only newly managed VM incarnations expose resource observations", async ()
 
 test("declared outputs are read on live compute only, never by resuming a stopped recovery image", async () => {
   const f = fixture();
-  const builder = await f.provider.createGolden({});
-  const name = crypto.randomUUID();
-  await f.provider.snapshot({ sandboxId: builder.id, name });
-  const fork = await f.provider.fork({ from: name });
+  const fork = await runningFork(f);
   // Observation never takes the lifecycle lease: a sample overlapping a stop or prompt does not refuse it.
   const read = await f.store.lease(fork.id, async () => f.provider.readOutputs?.({ sandboxId: fork.id }));
   expect(read?.map((file) => [file.name, Buffer.from(file.bytes).toString()])).toEqual([["final.pdf", "final"]]);
