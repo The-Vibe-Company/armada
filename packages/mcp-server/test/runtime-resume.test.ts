@@ -361,6 +361,59 @@ test.each(["activation receipt", "pending ticket", "observed archive"])(
   },
 );
 
+test("rollback of an observed Boat archive handoff remains recoverable", async () => {
+  const f = await stopped();
+  try {
+    const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => ({
+      async start() {
+        await f.db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [f.row.id]);
+        throw Error("Request owner exited before activation");
+      },
+      async stop() {
+        throw Error("Request owner has no cleanup authority");
+      },
+    }));
+    await expect(resume(f.caller, input(f.row.id))).rejects.toMatchObject({ code: "conflict" });
+    const store = createSqlData(f.sql)(f.caller).sandboxes;
+    expect((await store.get(f.row.id))?.status).toBe("starting");
+
+    const archive = { id: f.row.providerSandboxId, snapshotAvailable: false };
+    const { provider, requests } = fakeBoat(
+      { body: { sandbox: retainedSandbox(archive) } },
+      { body: { sandbox: retainedSandbox(archive) } },
+      { body: { sandbox: retainedSandbox({ ...archive, snapshotAvailable: true }) } },
+    );
+    let archiveHandoffs = 0;
+    const rollback = Error("Injected handoff rollback");
+    const workerSql: typeof f.sql = {
+      ...f.sql,
+      transaction: (work) =>
+        f.sql.transaction!(async (tx) => {
+          const result = await work(tx);
+          if (result === true && ++archiveHandoffs === 1) throw rollback;
+          return result;
+        }),
+    };
+    const worker = createSandboxLifecycle(workerSql, async () => provider);
+
+    await worker.reconcileOne().catch((error: unknown) => {
+      if (error !== rollback) throw error;
+    });
+    expect(archiveHandoffs).toBe(1);
+    expect((await store.get(f.row.id))?.status).toBe("starting");
+
+    await f.db.query("update sandboxes set reconcile_lease_until=now()-interval '1 second' where id=$1", [f.row.id]);
+    expect(await worker.reconcileOne()).toBe(true);
+    expect((await store.get(f.row.id))?.status).toBe("stopping");
+
+    expect(await worker.reconcileOne()).toBe(true);
+    expect((await store.get(f.row.id))?.status).toBe("stopped");
+    expect(requests.map(({ method }) => method)).toEqual(["GET", "GET", "GET"]);
+  } finally {
+    await f.close();
+  }
+});
+
 test("retained Modal resume enrols through bootstrap using the current deployment artifact", async () => {
   const f = await stopped("codex", "modal");
   try {
