@@ -412,14 +412,31 @@ breaks. Migration evidence combines production history with the prior receipt an
 records SQL applied during an earlier attempt. Missing prior production history,
 protocol or API evidence prevents a reliable rollback comparison. Host rollback
 requires schema-compatible known-good deployments and recorded approval.
-On main, run **Rollback preflight → Run workflow** with `to_version` set to
-the previous stable tag (including the `v` prefix). The dispatch uses the
-production environment for the server URL and shares the release lock. It checks
-the current server's exact SHA and validates both receipts against their tags.
-It fails with a reason if it cannot establish eligibility. A recorded migration
-reports `rollback: refused (migrations)`. A successful preflight is a read-only
-result for that run. Host restoration still requires the provider procedure to
-be validated. npm `latest` stays under owner control.
+On main, run **Rollback → Run workflow** with `to_version` set to the
+previous stable tag (including the `v` prefix). Leave `restore` unchecked for
+an eligibility-only run. The workflow shares the production release lock and
+checks the current server's exact SHA and both receipts. A recorded migration
+reports `rollback: refused (migrations)`.
+
+To restore both hosts, check `restore` and approve the `production-deploy`
+job. Under the production migration lock, restoration rechecks eligibility,
+compares live migration history with the receipt, and verifies the active host
+deployments. Railway rebuilds the previous tag's source with its recorded
+sandbox image pin because the pinned CLI cannot redeploy an older deployment
+by ID. After Railway reports success and `/healthz` shows the previous version
+and SHA, Vercel restores the recorded production dashboard by deployment ID.
+The workflow then verifies both hosts and records the result on the target
+release. npm `latest` stays under owner control.
+
+If the restore fails after a provider accepts a change, inspect both hosts
+and wait for accepted provider operations to settle before rolling forward
+with a reviewed release. Vercel Instant Rollback disables automatic
+production domain assignment. On the next approved forward release, verify
+the production aliases and explicitly promote the approved dashboard
+deployment if Vercel still serves the rollback target. The Railway rebuild
+can exceed the 10-minute goal. Before relying on host restoration, exercise a reversible
+pair on isolated staging-equivalent targets and record the elapsed time from
+dispatch to both hosts being verified.
 
 Production history/confirmed repair and dry-run remain explicit manual operator
 tools, not a release authorization or application SQL apply path.
