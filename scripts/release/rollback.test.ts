@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { rollbackRefusal } from "./rollback";
+import { planRollback } from "./rollback";
 
 const current = { tag: "v3.1.0", sha: "a".repeat(40) };
 const previous = { tag: "v3.0.0", sha: "b".repeat(40) };
@@ -11,7 +11,7 @@ function receipt(release: typeof current) {
     sha: release.sha,
     previousVersion: "3.0.0",
     serverDeployment: "server",
-    dashboardDeployment: "dashboard",
+    dashboardDeployment: release === current ? "dpl_current" : "dpl_previous",
     imageDigest: null,
     migrations: [],
     productionMigrationHistory: [],
@@ -25,7 +25,6 @@ const previousAsset = receipt(previous);
 const health = { ok: true, version: "3.1.0", commit: current.sha };
 
 test.each([
-  ["a reversible release", {}, null],
   ["a request for another release", { requested: "v2.0.0" }, "target is not the previous stable release"],
   ["a different deployed SHA", { health: { ...health, commit: previous.sha } }, "current deployment unverified"],
   ["a missing current receipt", { currentAsset: null }, "current receipt unavailable or invalid"],
@@ -65,6 +64,11 @@ test.each([
     "protocol bump or missing protocol evidence",
   ],
   [
+    "an invalid dashboard ID",
+    { previousAsset: { ...previousAsset, dashboardDeployment: "--help" } },
+    "target dashboard deployment ID invalid",
+  ],
+  [
     "a surface break",
     { currentAsset: { ...currentAsset, surfaceBreak: ["GET /removed"] } },
     "surface break or missing surface evidence",
@@ -72,10 +76,31 @@ test.each([
 ] as [
   string,
   Partial<{ requested: string; health: unknown; currentAsset: unknown; previousAsset: unknown }>,
-  string | null,
+  NonNullable<ReturnType<typeof planRollback>["refusal"]>,
 ][])("classifies %s", (_name, overrides, expected) => {
   const inputs = { requested: previous.tag, health, currentAsset, previousAsset, ...overrides };
+  const plan = planRollback(
+    inputs.requested,
+    current,
+    previous,
+    inputs.health,
+    inputs.currentAsset,
+    inputs.previousAsset,
+  );
+  expect(plan.refusal).toBe(expected);
+});
+
+test("plans restoration with the previous release pins", () => {
+  const imageDigest = `sha256:${"c".repeat(64)}`;
   expect(
-    rollbackRefusal(inputs.requested, current, previous, inputs.health, inputs.currentAsset, inputs.previousAsset),
-  ).toBe(expected);
+    planRollback(previous.tag, current, previous, health, currentAsset, { ...previousAsset, imageDigest }),
+  ).toEqual({
+    current,
+    previous,
+    currentDashboard: "dpl_current",
+    currentServer: "server",
+    targetDashboard: "dpl_previous",
+    targetImage: imageDigest,
+    migrations: [],
+  });
 });
