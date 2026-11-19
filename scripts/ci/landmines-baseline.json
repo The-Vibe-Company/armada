@@ -13,6 +13,7 @@
     "apps/dashboard/test/docker-snapshots.test.ts": 1,
     "apps/dashboard/test/failure.test.ts": 1,
     "apps/dashboard/test/gateway.test.ts": 1,
+    "apps/dashboard/test/github-refresh-proxy.test.ts": 1,
     "apps/dashboard/test/golden-form.test.ts": 1,
     "apps/dashboard/test/landing.test.ts": 1,
     "apps/dashboard/test/launch.test.ts": 1,

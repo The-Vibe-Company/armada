@@ -2,7 +2,6 @@
   "static": { "1": 37, "2": 1 },
   "files": {
     "apps/dashboard/src/app/.well-known/armada.json/route.test.ts": 0.007,
-    "apps/dashboard/src/app/api/v1/[...path]/github-refresh-proxy.test.ts": 0.065,
     "apps/dashboard/src/lib/action.test.ts": 0.007,
     "apps/dashboard/src/lib/auth-config.test.ts": 0.007,
     "apps/dashboard/src/lib/composer.test.ts": 0.017,
@@ -34,6 +33,7 @@
     "apps/dashboard/test/docker-snapshots.test.ts": 0.017,
     "apps/dashboard/test/failure.test.ts": 0.006,
     "apps/dashboard/test/gateway.test.ts": 0.019,
+    "apps/dashboard/test/github-refresh-proxy.test.ts": 0.065,
     "apps/dashboard/test/golden-form.test.ts": 0.014,
     "apps/dashboard/test/invitations.test.ts": 0.062,
     "apps/dashboard/test/landing.test.ts": 0.087,
