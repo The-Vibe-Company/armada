@@ -7,6 +7,7 @@ on:
       - 'scripts/db/supabase-prereq.sql'
       - 'supabase/config.toml'
       - 'supabase/migrations/**'
+      - 'supabase/templates/**'
 
 permissions:
   contents: read
@@ -42,4 +43,6 @@ jobs:
           POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
         run: docker exec -i "$POSTGRES_CONTAINER" psql -X -U postgres -v ON_ERROR_STOP=1 < scripts/db/supabase-prereq.sql
       - name: Apply migrations to the disposable database
-        run: supabase db push --db-url 'postgresql://postgres@127.0.0.1:5432/postgres?sslmode=disable' --yes
+        env:
+          PGSSLMODE: disable # The CLI rebuilds the connection URL for this port.
+        run: supabase db push --db-url postgresql://postgres@127.0.0.1:5432/postgres --yes
