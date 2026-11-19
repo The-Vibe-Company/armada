@@ -11,9 +11,6 @@ type Image = {
   Config?: { Labels?: Record<string, string> };
 };
 
-/** Registry provenance, not dangling status, identifies official images. Keep two generations.
- * All containers (including foreign/stopped ones) and descendants protect their ancestors.
- */
 export function supersededOfficialImages(images: Image[], containerImages: string[]): string[] {
   const official = images
     .filter(
@@ -34,7 +31,6 @@ export function supersededOfficialImages(images: Image[], containerImages: strin
     .map((image) => image.Id);
 }
 
-/** No force and no prune: Docker remains the final reference/descendant race guard. */
 export async function cleanupOfficialImages(cli: DockerMachineCli): Promise<void> {
   const run = async (args: string[]) => {
     const result = await cli.run(args);
@@ -50,7 +46,6 @@ export async function cleanupOfficialImages(cli: DockerMachineCli): Promise<void
   const used = containers.length
     ? (JSON.parse(await run(["container", "inspect", ...containers])) as { Image: string }[]).map((c) => c.Image)
     : [];
-  // One deletion per sweep bounds work; subsequent sweeps retry conflicts safely.
   const candidate = supersededOfficialImages(images, used)[0];
   if (candidate) await run(["image", "rm", candidate]);
 }

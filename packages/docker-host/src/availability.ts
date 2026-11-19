@@ -6,9 +6,6 @@ import type { State } from "./daemon.ts";
 
 export type Headroom = { availableCpus: number; availableMemoryBytes: number };
 
-/** Own working set is credited back so Armada does not count its workload twice.
- * Linux docker stats excludes inactive file cache; MemAvailable includes reclaimable memory.
- */
 export function availableForArmada(
   machine: DockerHostResources,
   memAvailable: number,
@@ -22,9 +19,6 @@ export function availableForArmada(
     availableMemoryBytes: Math.floor(Math.min(machine.memoryBytes, memAvailable + own.memoryBytes)),
   };
 }
-/** Drop headroom immediately; recover only through a 1/4-weight EWMA.
- * Keeping the raw low-water mark below the EWMA avoids optimistic over-admission.
- */
 export function smoothHeadroom(previous: Headroom | undefined, current: Headroom): Headroom {
   if (!previous) return current;
   return {
@@ -60,9 +54,6 @@ export function parseArmadaUsage(output: string) {
   return { cpus, memoryBytes };
 }
 
-/** Production sampler: explicit owned container IDs only, no unrelated workload details or logging.
- * Errors report no new capacity, not invented free hardware. TTL cleanup still proceeds.
- */
 export function createAvailabilitySampler(cli: DockerMachineCli) {
   let previous: Headroom | undefined;
   return async (state: State): Promise<DockerHostResources> => {
