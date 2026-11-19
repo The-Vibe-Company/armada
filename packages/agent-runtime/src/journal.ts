@@ -12,21 +12,40 @@ function boundedPreview(text: string, limit: number): string {
   const end = limit > 0 && /[\uD800-\uDBFF]/.test(text[limit - 1] ?? "") ? limit - 1 : limit;
   return text.slice(0, end);
 }
+function maskText(original: string, scrubbed: string, mask: (text: string) => string): string {
+  const short = mask(original);
+  if (short === original || short === scrubbed) return scrubbed;
+  return original === scrubbed ? short : "[REDACTED]";
+}
+
+function maskPayload(value: unknown, mask: (text: string) => string): unknown {
+  if (typeof value === "string") return mask(value);
+  if (Array.isArray(value)) return value.map((item) => maskPayload(item, mask));
+  if (value && typeof value === "object")
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [mask(key), maskPayload(item, mask)]));
+  return value;
+}
+
 export class Journal {
   readonly db: Database;
   readonly redact: (text: string) => string;
   private dynamicRedactor = createRedactor([]);
+  private messageRedactor = createRedactor([]);
+  private readonly startupRedactor: (text: string) => string;
   private applicationSecrets = new Set<string>();
   private redactShortApplicationText: ((text: string) => string) | undefined;
   registerSecrets(values: readonly string[]) {
     this.dynamicRedactor.register(values);
+    this.messageRedactor.register(values);
   }
   registerApplicationSecrets(values: readonly string[]) {
-    this.registerSecrets(values);
+    this.dynamicRedactor.register(values);
+    this.messageRedactor.register(values.filter((value) => value.length >= 8));
     for (const value of values) if (value.length > 0 && value.length < 8) this.applicationSecrets.add(value);
     this.redactShortApplicationText = createShortSecretTextRedactor([...this.applicationSecrets]);
   }
   constructor(path: string, redact: (text: string) => string) {
+    this.startupRedactor = redact;
     this.redact = (text) => this.dynamicRedactor(redact(text));
     this.db = new Database(path, { create: true });
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA secure_delete=ON;
@@ -49,24 +68,7 @@ export class Journal {
       Buffer.byteLength(this.redact(JSON.stringify(event))) > 262144
     )
       control = { ...event, text: `${boundedPreview(this.redact(event.text), 16000)}… [truncated]` };
-    let body = this.redact(JSON.stringify(control));
-    const redactShort = this.redactShortApplicationText;
-    if (redactShort && (event.kind === "message" || (event.kind === "other" && event.type === "harness_stderr"))) {
-      const masked = JSON.parse(body) as { text?: unknown; data?: { text?: unknown } | null };
-      const redactText = (original: string, scrubbed: string) => {
-        const short = redactShort(original);
-        if (short === original || short === scrubbed) return scrubbed;
-        return original === scrubbed ? short : "[REDACTED]";
-      };
-      if (event.kind === "message" && typeof masked.text === "string")
-        masked.text = redactText(event.text, masked.text);
-      if (event.kind === "other") {
-        const data = masked.data;
-        const original = (event.data as { text?: unknown } | null)?.text;
-        if (typeof original === "string" && typeof data?.text === "string") data.text = redactText(original, data.text);
-      }
-      body = JSON.stringify(masked);
-    }
+    let body = this.eventBody(control);
     const oversized = Buffer.byteLength(body) > 262144;
     if (oversized)
       body = JSON.stringify({
@@ -84,6 +86,41 @@ export class Journal {
     // was replaced by a truncation marker (including size growth caused by secret redaction).
     if (oversized && terminalSnapshot) throw new HarnessError("invalid_harness_protocol");
     return sequence;
+  }
+  private eventBody(event: AgentEvent): string {
+    const mask = this.redactShortApplicationText;
+    const serialized = JSON.stringify(event);
+    if (!mask) return this.redact(serialized);
+    if (event.kind === "message") {
+      const scrubbed = JSON.parse(this.messageRedactor(this.startupRedactor(serialized))) as typeof event;
+      // Codex emits a whole replacement snapshot. Delta fragments can contain
+      // arbitrary portions of a short secret, even when no fragment matches it.
+      return JSON.stringify({
+        ...scrubbed,
+        text: event.textMode === "delta" ? "" : maskText(event.text, scrubbed.text, mask),
+        tools: scrubbed.tools.map((tool) => ({
+          ...tool,
+          ...(tool.input !== undefined ? { input: maskPayload(tool.input, mask) } : {}),
+          ...(tool.result ? { result: { ...tool.result, output: maskPayload(tool.result.output, mask) } } : {}),
+        })),
+      });
+    }
+    const body = this.redact(serialized);
+    if (event.kind !== "other" || event.type !== "harness_stderr") return body;
+    const masked = JSON.parse(body) as { data?: { text?: unknown } | null };
+    const original = (event.data as { text?: unknown } | null)?.text;
+    if (typeof original === "string" && typeof masked.data?.text === "string")
+      masked.data.text = maskText(original, masked.data.text, mask);
+    return JSON.stringify(masked);
+  }
+  private sanitizeEvent(body: string): string {
+    let event: AgentEvent;
+    try {
+      event = JSON.parse(body);
+    } catch {
+      return this.redact(body);
+    }
+    return event?.kind === "message" && this.redactShortApplicationText ? this.eventBody(event) : this.redact(body);
   }
   transition(prompt: StoredPrompt, status: PromptStatus, reason?: string) {
     this.db.transaction(() => {
@@ -254,7 +291,7 @@ export class Journal {
             body: string;
           } | null;
           if (!row) break;
-          update.run(this.redact(row.body), row.recordId);
+          update.run(table === "events" ? this.sanitizeEvent(row.body) : this.redact(row.body), row.recordId);
           cursor = row.recordId;
         }
       }

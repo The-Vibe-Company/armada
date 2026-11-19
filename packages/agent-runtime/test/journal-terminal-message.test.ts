@@ -65,3 +65,55 @@ test("large prompt and steer previews preserve control metadata after escaping a
     journal.close();
   }
 });
+
+test("short application values stay out of streamed message text while snapshots keep their type", () => {
+  const journal = new Journal(":memory:", createRedactor([]));
+  try {
+    const message = {
+      id: "event",
+      at: 1,
+      kind: "message" as const,
+      messageId: "answer",
+      tools: [],
+    };
+    journal.append({ ...message, textMode: "delta", partial: true, text: "before registration" });
+    journal.registerApplicationSecrets(["delta", "message"]);
+    for (const text of ["prefix-de", "lta-suffix"])
+      journal.append({ ...message, textMode: "delta", partial: true, text });
+    journal.append({
+      ...message,
+      textMode: "snapshot",
+      partial: false,
+      text: "prefix-delta-suffix",
+      tools: [
+        {
+          id: "tool",
+          name: "read",
+          input: { "message-key": "prefix-delta" },
+          result: { output: ["prefix-message"], isError: false },
+        },
+      ],
+    });
+    journal.sanitize();
+    const events = journal.events().map(({ event }) => event);
+    expect(events.slice(1, 3)).toEqual(
+      Array.from({ length: 2 }, () => ({ ...message, textMode: "delta", partial: true, text: "" })),
+    );
+    expect(events[3]).toMatchObject({
+      kind: "message",
+      textMode: "snapshot",
+      messageId: "answer",
+      text: "prefix-[REDACTED]-suffix",
+      tools: [
+        {
+          id: "tool",
+          name: "read",
+          input: { "[REDACTED]-key": "prefix-[REDACTED]" },
+          result: { output: ["prefix-[REDACTED]"], isError: false },
+        },
+      ],
+    });
+  } finally {
+    journal.close();
+  }
+});
