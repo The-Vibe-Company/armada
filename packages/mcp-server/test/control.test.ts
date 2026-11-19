@@ -3604,7 +3604,7 @@ test("pinned Modal launch resolves personal org references and respects scoped t
           body: JSON.stringify({
             id: crypto.randomUUID(),
             revision: 1,
-            requestKey: "launch-probe",
+            idempotencyKey: "pinned-launch-probe",
             provider: "modal",
             harness: "codex",
             runtimeVersion: 1,
@@ -3623,7 +3623,11 @@ test("pinned Modal launch resolves personal org references and respects scoped t
     expect(await byName?.json()).toEqual(await byId?.json());
     expect((await launch(service, {}))?.status).toBe(404);
     expect((await launch(service, { org: other.id }))?.status).toBe(403);
-    for (const malformed of [{ golden: "mixed-source" }, { ttlSeconds: PROVIDER_LIMITS.modal.maxTtlSeconds + 1 }]) {
+    for (const malformed of [
+      { golden: "mixed-source" },
+      { ttlSeconds: PROVIDER_LIMITS.modal.maxTtlSeconds + 1 },
+      { idempotencyKey: undefined, requestKey: "pinned-launch-probe" },
+    ]) {
       const refused = await launch(personal, { org: org.name, ...malformed });
       expect(refused?.status).toBe(400);
       expect(publishedFailure().parse(await refused?.json())).toMatchObject({ error: { code: "invalid" } });

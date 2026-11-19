@@ -64,7 +64,6 @@ test("server assembly preserves worker lane order and isolation", () => {
         "pull-requests",
         "jobs",
         "outputs",
-        "webhooks",
         "native-prompts",
         "delegated-access",
         "docker-cleanup",
