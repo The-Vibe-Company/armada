@@ -1,8 +1,8 @@
 import { goldenCompatibilityIds, launchGitHubResponse, SANDBOX_PROVIDERS, sandboxIdentity } from "@armada/core";
 import type { LaunchEnvelope } from "@armada/core/contract";
+import { LOGS_OUTPUT } from "@armada/core/contract";
 import type { LaunchResult } from "@armada/core/server";
 import { z } from "zod";
-import { LOGS_OUTPUT } from "./sandbox-tool-schemas.ts";
 
 /** Fill missing fields from asynchronous Docker launches and pre-existing golden receipts. */
 export function canonicalLaunchResponse<

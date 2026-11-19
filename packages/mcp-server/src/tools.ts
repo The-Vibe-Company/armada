@@ -1,9 +1,9 @@
+import { sandboxOperations } from "@armada/core/contract";
 import {
   LaunchError,
   type LaunchOptions,
   type LaunchStores,
   type MemberRole,
-  MODEL_CATALOG,
   type Provider,
   ProviderError,
   type ProviderTarget,
@@ -28,10 +28,10 @@ import { recordOperatorFailure } from "./request-observability.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
 import { appendConversation, sandboxActivity } from "./sandbox-activity.ts";
 import { refuseConversationSelector } from "./sandbox-conversation.ts";
-import { sandboxIdInput as id, SANDBOX_STATUSES, statusOutput, taskOutcome } from "./sandbox-tool-schemas.ts";
+
 import { ToolError } from "./tool-error.ts";
 import { errorResult, publicationFailure, unknownMutationOutcome } from "./tool-failure.ts";
-import { createToolRegistration } from "./tool-registration.ts";
+import { createToolRegistration, type ToolBinding } from "./tool-registration.ts";
 import { collectSandboxUsage, latestPrompt, readStatus } from "./turns.ts";
 import { stopAndObserve } from "./work-preservation.ts";
 
@@ -66,15 +66,6 @@ const OUTPUT_LIMIT = 20_000;
 
 export const serverInfo = { name: "armada" } as const;
 
-const modelCatalogText = Object.entries(MODEL_CATALOG)
-  .map(
-    ([harness, entry]) =>
-      `${harness}: ${entry.models.map((option) => `${option.id} (${option.reasoningEfforts.join("|")})`).join(", ")}; ` +
-      `default ${entry.defaultModel} ${entry.defaultReasoningEffort}`,
-  )
-  .join(". ");
-const modelInput = z.string().min(1).optional().describe(`The model, by id. ${modelCatalogText}.`);
-const effortInput = z.string().min(1).optional().describe("The reasoning effort; one the model accepts (see model).");
 /** One MCP server per request: the principal is fixed for its whole life, and nothing outlives the request. */
 export function createArmadaServer(context: ToolContext, version: string) {
   return createToolServer(context, version, "mcp");
@@ -101,6 +92,23 @@ function createToolServer(
         "what the agent did, send for the next instruction, and stop when done. Ids are Armada sandbox ids.",
     },
   );
+  configureTools(context, surface, server, onlyTool);
+  return server;
+}
+
+export function bindRestTool(context: ToolContext, name: string, bind: ToolBinding) {
+  configureTools(context, "rest", undefined, name === "list" ? "list" : undefined, (candidate, config, invoke) => {
+    if (candidate === name) bind(candidate, config, invoke);
+  });
+}
+
+function configureTools(
+  context: ToolContext,
+  surface: "mcp" | "rest",
+  server?: McpServer,
+  onlyTool?: "list",
+  bind?: ToolBinding,
+) {
   const { caller, data } = context;
 
   const visible = async (sandboxId: string): Promise<SandboxView> => {
@@ -108,12 +116,12 @@ function createToolServer(
     if (!found) throw new ToolError("not_found", `No sandbox with id '${sandboxId}' that you can see.`);
     return found;
   };
-  const { register, tool } = createToolRegistration(server, context, surface, visible);
+  const { register, tool } = createToolRegistration(server, context, surface, visible, bind);
 
   // HTTP list calls keep the same handler and SDK validation without building unrelated tools.
   if (onlyTool === "list") {
     registerListTool(context, tool);
-    return server;
+    return;
   }
 
   const live = async (sandboxId: string, allowUnbound = false, known?: SandboxView, runtimeControl = false) => {
@@ -158,40 +166,31 @@ function createToolServer(
 
   registerLogsTool(context, tool, visible, surface);
 
-  tool(
-    "report",
-    {
-      title: "Report a task outcome",
-      description: `Explicit result for the latest finished turn. Call after ${surface === "rest" ? "wait" : "status confirms settlement"}; never inferred from message text. A new send clears it. Only the sandbox owner or current org admin may report or read it.`,
-      input: { id, prompt_id: z.string().min(1), outcome: taskOutcome },
-      output: { id: z.string(), taskOutcome },
-    },
-    async (args) => {
-      const found = await visible(args.id);
-      const provider =
-        found.status === "deleted" ||
-        found.status === "starting" ||
-        (found.status === "failed" && found.stoppedAt !== null)
-          ? null
-          : await context.provider(found);
-      // Empty is a successful-steer marker, not a provider run ID. Null remains
-      // unreportable after an ambiguous admission or for legacy rows.
-      const target =
-        found.taskPromptId === ""
-          ? provider
-            ? (await latestPrompt(provider, found.providerSandboxId, true))?.promptId
-            : null
-          : found.taskPromptId;
-      if (!target || target !== args.prompt_id)
-        throw new ToolError("conflict", "Report only the latest finished turn, using its prompt id.");
-      const report = await readStatus(provider, data.sandboxes, found, { promptId: target, now: context.now() });
-      if (report.prompt?.state !== "finished")
-        throw new ToolError("conflict", "Report only the latest finished turn, using its prompt id.");
-      if (!data.sandboxes.reportTaskOutcome) throw new ToolError("conflict", "Task reporting is unavailable.");
-      await data.sandboxes.reportTaskOutcome(args.id, found.taskPromptId!, args.outcome, found.lifecycleGeneration);
-      return { id: args.id, taskOutcome: args.outcome };
-    },
-  );
+  tool("report", sandboxOperations.reportSandbox.tool, async (args) => {
+    const found = await visible(args.id);
+    const provider =
+      found.status === "deleted" ||
+      found.status === "starting" ||
+      (found.status === "failed" && found.stoppedAt !== null)
+        ? null
+        : await context.provider(found);
+    // Empty is a successful-steer marker, not a provider run ID. Null remains
+    // unreportable after an ambiguous admission or for legacy rows.
+    const target =
+      found.taskPromptId === ""
+        ? provider
+          ? (await latestPrompt(provider, found.providerSandboxId, true))?.promptId
+          : null
+        : found.taskPromptId;
+    if (!target || target !== args.prompt_id)
+      throw new ToolError("conflict", "Report only the latest finished turn, using its prompt id.");
+    const report = await readStatus(provider, data.sandboxes, found, { promptId: target, now: context.now() });
+    if (report.prompt?.state !== "finished")
+      throw new ToolError("conflict", "Report only the latest finished turn, using its prompt id.");
+    if (!data.sandboxes.reportTaskOutcome) throw new ToolError("conflict", "Task reporting is unavailable.");
+    await data.sandboxes.reportTaskOutcome(args.id, found.taskPromptId!, args.outcome, found.lifecycleGeneration);
+    return { id: args.id, taskOutcome: args.outcome };
+  });
 
   async function sendSandbox(args: import("./runtime-followup.ts").RuntimeFollowupInput) {
     if (context.accountTurns) {
@@ -354,70 +353,11 @@ function createToolServer(
       .finally(() => context.launchCredentials.releaseAdmission?.(found.id));
   }
 
-  const sendTool = tool(
-    "send",
-    {
-      title: "Send a prompt",
-      description:
-        "Gives the agent its next instruction as a new turn. The first send of an idle sandbox opens its " +
-        "conversation and later sends continue it. Launch another sandbox for a separate conversation. To redirect a turn that is " +
-        "still running, use steer. The turn runs with the model and effort chosen at launch; model and " +
-        "reasoning_effort override them for this turn only. Experimental runtime follow-up requires request_id, " +
-        "an empty ready sandbox, existing conversation, or verified empty checkpoint; retained idle pauses wake automatically before expiry. Preserved stopped Boat/Modal sandboxes resume on send; terminal sandboxes refuse controls with recovery guidance. Model/effort remain pinned to launch.",
-      input: {
-        id,
-        request_id: z
-          .string()
-          .uuid()
-          .optional()
-          .describe(
-            "Required for runtime follow-up; reuse with identical input after uncertain delivery. Native providers accept the field for compatibility only; they do not deduplicate.",
-          ),
-        prompt: z.string().min(1).describe("The instruction."),
-        model: modelInput,
-        reasoning_effort: effortInput,
-      },
-      output: {
-        id: z.string(),
-        requestId: z.string().optional(),
-        runtime: z.object({ kind: z.literal("armada"), epoch: z.string() }).optional(),
-        promptId: z.string(),
-        conversationId: z.string(),
-        status: z.enum(["queued", "running", "finished", "failed", "interrupted"]),
-        statusMessage: z.string().optional(),
-      },
-    },
-    sendSandbox,
-    true,
-  );
+  const sendTool = tool("send", sandboxOperations.sendPrompt.tool, sendSandbox, true);
 
   const steerTool = tool(
     "steer",
-    {
-      title: "Steer the running turn",
-      description:
-        "Redirects the turn that is running now. delivery says how: native joins the turn (Claude Code); " +
-        "restart interrupts it and continues the same conversation with this text (Codex). Refused when no " +
-        "turn runs: use send then.",
-      input: {
-        id,
-        text: z.string().min(1),
-        request_id: z
-          .string()
-          .uuid()
-          .optional()
-          .describe(
-            "Optional durable runtime request ID (runtime sandboxes only); reuse identical input after uncertain delivery.",
-          ),
-      },
-      output: {
-        id: z.string(),
-        promptId: z.string(),
-        conversationId: z.string(),
-        delivery: z.enum(["native", "restart"]),
-        mode: z.string().nullable(),
-      },
-    },
+    sandboxOperations.steerSandbox.tool,
     async (args) => {
       const { sandbox: found, provider, enrolled } = await liveControl(args);
       const delivery = provider.capabilities[found.harness]?.steer ?? "none";
@@ -498,21 +438,7 @@ function createToolServer(
 
   const interruptTool = tool(
     "interrupt",
-    {
-      title: "Interrupt the running turn",
-      description: "Interrupts the sandbox's running turn. The sandbox stays up for the next send.",
-      input: {
-        id,
-        request_id: z
-          .string()
-          .uuid()
-          .optional()
-          .describe(
-            "Optional durable runtime request ID (runtime sandboxes only); reuse identical input after uncertain delivery.",
-          ),
-      },
-      output: { id: z.string(), interrupted: z.boolean() },
-    },
+    sandboxOperations.interruptSandbox.tool,
     async (args) => {
       const { sandbox: found, provider, enrolled } = await liveControl(args);
       if (!provider.capabilities[found.harness]?.interrupt) {
@@ -531,127 +457,88 @@ function createToolServer(
     true,
   );
 
-  tool(
-    "exec",
-    {
-      title: "Run a command",
-      description:
-        "Runs a shell command in the sandbox (cwd /home/user by default) and returns its output. Output that " +
-        "contains the agent's credentials is redacted. Use it to inspect the repos, not to drive the agent.",
-      input: {
-        id,
-        request_id: z
-          .string()
-          .uuid()
-          .optional()
-          .describe(
-            "Optional durable runtime request ID (runtime sandboxes only); reuse identical input after uncertain delivery.",
-          ),
-        command: z.string().min(1),
-        cwd: z.string().min(1).optional(),
-        timeout_seconds: z.number().int().min(1).max(600).optional().describe("Default 120."),
-      },
-      output: {
-        id: z.string(),
-        exitCode: z.number().int().nullable(),
-        stdout: z.string(),
-        stderr: z.string(),
-        timedOut: z.boolean(),
-        truncated: z.boolean(),
-      },
-    },
-    async (args) => {
-      const { sandbox: found, provider, enrolled } = await liveControl(args);
-      // Applies to managed and ordinary exec before any native preparation or
-      // provider command can implicitly resume a retained disk.
-      await data.sandboxes.assertExecAllowed?.(found.id);
-      const managedNative =
-        !enrolled &&
-        (await context.launchCredentials.assertExec?.(
-          { userId: found.ownerId, orgId: found.orgId, role: "member" },
-          found.id,
-        ));
-      let acknowledged = false;
-      const execute = async () => {
-        const membership = caller.orgs.find((member) => member.orgId === found.orgId);
-        if (!membership) throw new ToolError("forbidden", "No current organization membership.");
-        if (!enrolled) await prepareConnections(provider, found, membership.role);
-        const nativeActor = { userId: found.ownerId, orgId: found.orgId, role: "member" as const };
-        const readNativeSecrets = (phase: "before" | "after") =>
-          context.launchCredentials.nativeSecrets?.(nativeActor, found.id, provider, found.providerSandboxId, phase);
-        const nativeBefore = (!enrolled && (await readNativeSecrets("before"))) || [];
-        const result = await provider
-          .exec({
-            sandboxId: found.providerSandboxId,
-            ...(args.request_id ? { requestId: args.request_id } : {}),
-            command: args.command,
-            cwd: args.cwd ?? "/home/user",
-            timeoutSeconds: args.timeout_seconds ?? 120,
-          })
-          .catch(unknownMutationOutcome);
-        acknowledged = true;
-        if (result.detached)
-          throw new ToolError(
-            "outcome_unknown",
-            "The command started in the background. Check sandbox status before retrying.",
-          );
-        try {
-          const nativeAfter = (!enrolled && (await readNativeSecrets("after"))) || [];
-          const secrets = [...(await context.exposedSecrets(found.orgId)), ...nativeBefore, ...nativeAfter];
-          const clip = (text: string) => {
-            const safe = redact(text, secrets);
-            return safe.length <= OUTPUT_LIMIT ? safe : `...${safe.slice(-OUTPUT_LIMIT)}`;
-          };
-          return {
-            id: found.id,
-            exitCode: result.exitCode,
-            stdout: clip(result.stdout),
-            stderr: clip(result.stderr),
-            timedOut: result.timedOut,
-            truncated: result.truncated || result.stdout.length > OUTPUT_LIMIT || result.stderr.length > OUTPUT_LIMIT,
-          };
-        } catch (error) {
-          throw new LaunchError(
-            "outcome_unknown",
-            "The command ran but its result could not be safely published. Check sandbox status before retrying.",
-            { cause: error },
-          );
-        }
-      };
-      if (!managedNative) {
-        // Admission-only check: already-running ordinary commands remain concurrent
-        // and do not hold a lifecycle lease or delay stop/TTL reconciliation.
-        return execute();
+  tool("exec", sandboxOperations.execSandbox.tool, async (args) => {
+    const { sandbox: found, provider, enrolled } = await liveControl(args);
+    // Applies to managed and ordinary exec before any native preparation or
+    // provider command can implicitly resume a retained disk.
+    await data.sandboxes.assertExecAllowed?.(found.id);
+    const managedNative =
+      !enrolled &&
+      (await context.launchCredentials.assertExec?.(
+        { userId: found.ownerId, orgId: found.orgId, role: "member" },
+        found.id,
+      ));
+    let acknowledged = false;
+    const execute = async () => {
+      const membership = caller.orgs.find((member) => member.orgId === found.orgId);
+      if (!membership) throw new ToolError("forbidden", "No current organization membership.");
+      if (!enrolled) await prepareConnections(provider, found, membership.role);
+      const nativeActor = { userId: found.ownerId, orgId: found.orgId, role: "member" as const };
+      const readNativeSecrets = (phase: "before" | "after") =>
+        context.launchCredentials.nativeSecrets?.(nativeActor, found.id, provider, found.providerSandboxId, phase);
+      const nativeBefore = (!enrolled && (await readNativeSecrets("before"))) || [];
+      const result = await provider
+        .exec({
+          sandboxId: found.providerSandboxId,
+          ...(args.request_id ? { requestId: args.request_id } : {}),
+          command: args.command,
+          cwd: args.cwd ?? "/home/user",
+          timeoutSeconds: args.timeout_seconds ?? 120,
+        })
+        .catch(unknownMutationOutcome);
+      acknowledged = true;
+      if (result.detached)
+        throw new ToolError(
+          "outcome_unknown",
+          "The command started in the background. Check sandbox status before retrying.",
+        );
+      try {
+        const nativeAfter = (!enrolled && (await readNativeSecrets("after"))) || [];
+        const secrets = [...(await context.exposedSecrets(found.orgId)), ...nativeBefore, ...nativeAfter];
+        const clip = (text: string) => {
+          const safe = redact(text, secrets);
+          return safe.length <= OUTPUT_LIMIT ? safe : `...${safe.slice(-OUTPUT_LIMIT)}`;
+        };
+        return {
+          id: found.id,
+          exitCode: result.exitCode,
+          stdout: clip(result.stdout),
+          stderr: clip(result.stderr),
+          timedOut: result.timedOut,
+          truncated: result.truncated || result.stdout.length > OUTPUT_LIMIT || result.stderr.length > OUTPUT_LIMIT,
+        };
+      } catch (error) {
+        throw new LaunchError(
+          "outcome_unknown",
+          "The command ran but its result could not be safely published. Check sandbox status before retrying.",
+          { cause: error },
+        );
       }
-      // Stop and native-file mutation must not interleave: a stop receipt sampled
-      // before this command cannot authenticate output produced after auto-resume.
-      return sandboxActivity(
-        data.sandboxes,
-        found,
-        {},
-        async (signal) => {
-          signal.throwIfAborted();
-          const result = await execute();
-          signal.throwIfAborted();
-          return { result, patch: {} };
-        },
-        { deadlineMs: ((args.timeout_seconds ?? 120) + 60) * 1000 },
-      ).catch((error) => publicationFailure(error, acknowledged));
-    },
-  );
+    };
+    if (!managedNative) {
+      // Admission-only check: already-running ordinary commands remain concurrent
+      // and do not hold a lifecycle lease or delay stop/TTL reconciliation.
+      return execute();
+    }
+    // Stop and native-file mutation must not interleave: a stop receipt sampled
+    // before this command cannot authenticate output produced after auto-resume.
+    return sandboxActivity(
+      data.sandboxes,
+      found,
+      {},
+      async (signal) => {
+        signal.throwIfAborted();
+        const result = await execute();
+        signal.throwIfAborted();
+        return { result, patch: {} };
+      },
+      { deadlineMs: ((args.timeout_seconds ?? 120) + 60) * 1000 },
+    ).catch((error) => publicationFailure(error, acknowledged));
+  });
 
   const stopTool = tool(
     "stop",
-    {
-      title: "Stop a sandbox",
-      description:
-        "Stops the machine. Modal keeps its disk only if checkpoint succeeds; fallback termination returns " +
-        "checkpoint_failed_disk_not_retained and cannot resume. Other retained stops can resume on send. Use it when the " +
-        "agent is done, so the sandbox stops costing.",
-      input: { id, request_id: z.string().uuid().optional(), only_if_idle: z.boolean().optional() },
-      output: { id: z.string(), status: z.enum(SANDBOX_STATUSES), preservationNote: z.string().optional() },
-      destructive: true,
-    },
+    sandboxOperations.stopSandbox.tool,
     async (args) => {
       const found = await visible(args.id);
       if (args.only_if_idle && !["ready", "stopped"].includes(found.status))
@@ -789,7 +676,7 @@ function createToolServer(
           timeout_seconds: waitTool.input.timeout_seconds,
           wait: z.boolean().optional().describe("Wait for settlement. Default timeout: 60 seconds."),
         },
-        output: { ...statusOutput, timedOut: waitTool.output.timedOut.optional() },
+        output: { ...readStatusTool.output, timedOut: waitTool.output.timedOut.optional() },
       },
       async ({ wait, timeout_seconds, ...args }) => {
         if (!wait && timeout_seconds !== undefined) return invalidToolInput("status", "timeout_seconds requires wait.");
@@ -843,8 +730,6 @@ function createToolServer(
   function invalidToolInput(name: string, message: string) {
     return errorResult(new ToolError("invalid_request", message), name, context.logError ?? console.error);
   }
-
-  return server;
 }
 
 /** The run a successful steer left in progress, or "" when it cannot be proven.

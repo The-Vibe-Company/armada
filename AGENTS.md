@@ -1,14 +1,14 @@
 # Armada: rules for coding agents
 
-Rules only. Procedures live in the documents listed under "Where truth lives".
+Procedures are listed under "Where truth lives".
 
 ## Product
-- Armada launches coding agents (Claude Code, Codex, OpenCode) in sandboxes on Boat, Modal or a user's Docker host, and exposes them through the API, SDK, CLI, MCP and dashboard.
-- It is a launcher, not a workflow engine. Waits, captains and orchestration live in API clients, not in Armada.
+- Armada launches Claude Code, Codex and OpenCode sandboxes on Boat, Modal or a user Docker host through the API, SDK, CLI, MCP and dashboard.
+- Waits, captains and orchestration belong in API clients.
 - `armada-server` is one TypeScript/Bun server on PostgreSQL (Supabase). The `armada` CLI and the SDK are API-only clients.
-- Two agent paths exist until the native retirement finishes: the provider-run path (Boat agent API, Modal runner) and the Armada runtime (`packages/agent-runtime`). New Modal launches default to the runtime. Boat still defaults to native. The target is the runtime only.
+- Modal defaults to the Armada runtime (`packages/agent-runtime`). Boat defaults to its native agent API. Keep both provider-run paths (Boat agent API, Modal runner) until native retirement.
 - New machine lifecycle adapters implement the server-only `Machine` contract and expose capabilities through the core registry. Integration and cutover follow `docs/machine-contract.md`.
-- `docs/architecture.md` is the target for new code. Do not migrate existing code toward it outside a program ticket.
+- `docs/architecture.md` guides new code. Migrate existing code only in program tickets.
 
 ## Layout
 | Path | Holds |
@@ -36,6 +36,7 @@ Rules only. Procedures live in the documents listed under "Where truth lives".
 9. **Boat is never part of CI or staging acceptance.** Boat checks are on demand, by the coordinator only.
 10. **One version** across package manifests under `packages`. **English** in code, output, docs and comments.
 11. **Landmines rules are mandatory.** Give the reason for any inline disable in the PR and only shrink baselines.
+12. **Self-register.** Define routes, MCP tools, workers, mounts and CLI commands in their owning modules. Wire server routes, workers and mounts through `packages/mcp-server/src/modules.ts` and commands through `packages/cli/src/commands/index.ts`. Use `@armada/core/<area>` subpaths.
 
 ## Pull requests
 - **One module, at most 600 changed lines.** Generated files, pure deletions and `git mv` do not count. If the work is bigger, stop and tell the coordinator so the ticket is split.

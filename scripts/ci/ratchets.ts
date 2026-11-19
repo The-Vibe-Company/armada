@@ -1,4 +1,5 @@
 import { lstatSync, readFileSync } from "node:fs";
+import ts from "typescript";
 import { providerAdapterExclusions, providerBranchPattern, testPaths } from "../metrics/architecture-rules";
 
 const serverAdapters = new Set(
@@ -19,11 +20,93 @@ const serverAdapters = new Set(
 const serverSource = /^packages\/mcp-server\/src\//;
 const routeTables = /^packages\/mcp-server\/src\/(?:public-rest-routes|control[^/]*)\.ts$/;
 
+const controlPath = "packages/mcp-server/src/control.ts";
+const servePath = "packages/mcp-server/src/serve.ts";
+const barrelPath = "packages/core/src/index.ts";
+const commandsPath = "packages/cli/src/commands/index.ts";
+const appendPoints = new Set([controlPath, servePath, barrelPath, commandsPath]);
+
+type Occurrence = { index: number; text: string };
+
+function registrations(path: string, content: string) {
+  const source = ts.createSourceFile(path, content, ts.ScriptTarget.Latest);
+  const entries: ts.Node[] = [];
+  function addMounts(expression: ts.Expression) {
+    if (ts.isArrayLiteralExpression(expression)) {
+      for (const element of expression.elements) addMounts(element);
+    } else if (ts.isSpreadElement(expression) || ts.isParenthesizedExpression(expression)) {
+      addMounts(expression.expression);
+    } else if (ts.isCallExpression(expression) && ts.isPropertyAccessExpression(expression.expression)) {
+      const callee = expression.expression;
+      if (callee.getText(source) === "assembly.mounts") return;
+      if (callee.name.text === "concat") {
+        addMounts(callee.expression);
+        for (const argument of expression.arguments) addMounts(argument);
+      } else {
+        entries.push(expression);
+      }
+    } else {
+      entries.push(expression);
+    }
+  }
+
+  function visit(node: ts.Node) {
+    if (path === controlPath) {
+      if (ts.isCaseClause(node) && ts.isStringLiteralLike(node.expression)) entries.push(node.expression);
+      if (ts.isCallExpression(node)) {
+        const callee = node.expression.getText(source);
+        const routeMap = callee === "defineRoutes" ? node.arguments[1] : node.arguments[0];
+        if (
+          (callee === "defineRoutes" || callee === "registerRoutes") &&
+          routeMap &&
+          ts.isObjectLiteralExpression(routeMap)
+        ) {
+          entries.push(...routeMap.properties.map((property) => property.name ?? property));
+        }
+        if (/^(?:controlRoutes|routes)\.set$/.test(callee) && node.arguments[0]) entries.push(node.arguments[0]);
+      }
+      if (ts.isVariableDeclaration(node) && /^(?:controlRoutes|routes|routeMap)$/.test(node.name.getText(source))) {
+        if (node.initializer && ts.isObjectLiteralExpression(node.initializer)) {
+          entries.push(...node.initializer.properties.map((property) => property.name ?? property));
+        }
+      }
+    }
+    if (path === servePath) {
+      if (ts.isPropertyAssignment(node) && node.name.getText(source).replace(/["']/g, "") === "routes") {
+        addMounts(node.initializer);
+      }
+      if (ts.isCallExpression(node)) {
+        const callee = node.expression.getText(source);
+        if (/^(?:[\w$.]+\.)?(?:mounts|workers\.beforeListen)\.push$/.test(callee)) entries.push(...node.arguments);
+        if (/^(?:[\w$.]+\.)?workers\.(?:managed|isolated|background)\.set$/.test(callee) && node.arguments[0]) {
+          entries.push(node.arguments[0]);
+        }
+        if (/^start\w*Workers?$|\.startBackground$/.test(callee)) entries.push(node.expression);
+      }
+    }
+    if (path === barrelPath && ts.isExportDeclaration(node)) {
+      if (node.exportClause && ts.isNamedExports(node.exportClause)) entries.push(...node.exportClause.elements);
+      else entries.push(node);
+    }
+    if (
+      path === commandsPath &&
+      ts.isVariableDeclaration(node) &&
+      node.name.getText(source) === "commands" &&
+      node.initializer &&
+      ts.isArrayLiteralExpression(node.initializer)
+    ) {
+      entries.push(...node.initializer.elements);
+    }
+    node.forEachChild(visit);
+  }
+  visit(source);
+  return entries.map((node) => ({ index: node.getStart(source), text: node.getText(source) }));
+}
+
 type Counter = {
   name: string;
   includes: (path: string) => boolean;
-  pattern: RegExp;
-};
+} & ({ pattern: RegExp } | { scan: (path: string, content: string) => Iterable<Occurrence> });
 
 const counters: Record<string, Counter | null> = {
   "provider-branch": {
@@ -42,7 +125,11 @@ const counters: Record<string, Counter | null> = {
     pattern: /(["'`])(?:deprecation|sunset)\1|\b(?:deprecation|sunset)\b(?=\s*:)/gi,
   },
   "native-path": null,
-  "append-point": null,
+  "append-point": {
+    name: "append-point",
+    includes: (path) => appendPoints.has(path),
+    scan: registrations,
+  },
 };
 
 const activeCounters = Object.values(counters).filter((counter) => counter !== null);
@@ -55,8 +142,11 @@ function inScope(path: string) {
 function* matches(counter: Counter, files: Files) {
   for (const [path, content] of files) {
     if (!inScope(path) || !counter.includes(path)) continue;
-    for (const match of content.matchAll(counter.pattern)) {
-      yield { path, content, index: match.index, text: match[0] };
+    if ("scan" in counter) {
+      for (const occurrence of counter.scan(path, content)) yield { path, content, ...occurrence };
+    } else {
+      for (const match of content.matchAll(counter.pattern))
+        yield { path, content, index: match.index, text: match[0] };
     }
   }
 }
@@ -144,13 +234,18 @@ function readHead() {
 }
 
 function readBase(base: string) {
-  const objects = git(
+  const candidates = git(
     ["grep", "--text", "-ilz", "-E", "-e", "boat|modal|docker|switch|-v[0-9]|deprecation|sunset", base, "--", "*.ts"],
     { exitOne: true },
   )
     .toString()
     .split("\0")
     .filter((object) => object && inScope(object.slice(base.length + 1)));
+  const fixedPaths = git(["ls-tree", "--name-only", "-z", base, "--", ...appendPoints])
+    .toString()
+    .split("\0")
+    .filter(Boolean);
+  const objects = [...new Set([...candidates, ...fixedPaths.map((path) => `${base}:${path}`)])];
   const files = new Map<string, string>();
   if (objects.length === 0) return files;
 

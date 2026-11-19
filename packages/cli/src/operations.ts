@@ -10,7 +10,7 @@ import { sandboxListText } from "./sandbox-list.ts";
 
 /** API-only command boundary: server-side schemas and policy remain authoritative. */
 export async function operation(
-  command: Exclude<keyof ArmadaCommandClient["sandboxes"], "launch" | "logs"> | "rm" | "mcp",
+  command: Exclude<keyof ArmadaCommandClient["sandboxes"], "launch" | "logs"> | "detail" | "rm" | "mcp",
   argv: readonly string[],
   auth: AuthIo,
   read: (path?: string) => Promise<string>,
@@ -152,7 +152,7 @@ export async function operation(
         ? undefined
         : AbortSignal.timeout((seconds + 15) * 1_000);
   const request = createArmadaApiClient(auth).then((client) =>
-    client.sandboxes[command](body, signal ? { signal } : undefined),
+    client.sandboxes[command === "detail" ? "status" : command](body, signal ? { signal } : undefined),
   );
   const result = await request.catch((error: unknown) => {
     // Stop previously collapsed these versioned reasons into an AuthError.

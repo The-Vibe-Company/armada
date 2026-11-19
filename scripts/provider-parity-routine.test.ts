@@ -140,7 +140,7 @@ function fixture(mode: string, provider: "modal" | "docker" | "boat" = "modal") 
           }
           break;
         }
-        case "sandbox/detail":
+        case "sandbox/status":
           expect(body.id).toBe(sandboxId);
           result = {
             id: sandboxId,

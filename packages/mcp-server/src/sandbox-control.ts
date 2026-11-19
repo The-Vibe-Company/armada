@@ -90,7 +90,7 @@ export const sandboxRoutes = defineRoutes("sandbox", {
         ...(org ? { org: (await resolveOrg(store, userId, org)).id } : {}),
       },
       async (id, sandboxOrg) => {
-        const stopped = await sandboxToolRoutes.handlers["sandbox/stop"]!({
+        const stopped = await sandboxToolRoutes.handlers["sandbox/stop"]!.handler({
           route: "sandbox/stop",
           caller,
           options,

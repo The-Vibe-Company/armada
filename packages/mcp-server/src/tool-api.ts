@@ -6,7 +6,6 @@ import {
   type LaunchError,
   type ProviderRateLimitDetails,
   providerRateLimitDetails,
-  VERSION,
 } from "@armada/core";
 import { PRIVATE_SKILL_FAILURES } from "../../core/src/private-skill-error.ts";
 
@@ -79,14 +78,23 @@ export class ToolApiError extends Error {
   }
 }
 
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { sandboxOperations } from "@armada/core/contract";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { INTERNAL_FAILURE_MESSAGE } from "./control-response.ts";
 import { refuseConversationSelector, SINGLE_CONVERSATION_GUIDANCE } from "./sandbox-conversation.ts";
-import { createRestToolServer, type ToolContext } from "./tools.ts";
+import { bindRestTool, type ToolContext } from "./tools.ts";
 
-/** HTTP and MCP run precisely the same validated operations and authorization context. */
-export async function callSharedTool(context: ToolContext, name: string, args: Record<string, unknown>) {
+function parseSandboxToolInput(name: string, body: Record<string, unknown>) {
+  const operation = Object.values(sandboxOperations).find((entry) => entry.toolName === name);
+  return operation?.input.body.safeParse(body);
+}
+
+export async function callSharedTool(
+  context: ToolContext,
+  name: string,
+  args: Record<string, unknown>,
+  parsed = parseSandboxToolInput(name, args),
+) {
   if (name === "send") {
     try {
       refuseConversationSelector(args);
@@ -97,54 +105,67 @@ export async function callSharedTool(context: ToolContext, name: string, args: R
   if ((name === "steer" || name === "interrupt") && Object.hasOwn(args, "conversation_id"))
     throw new ToolApiError("invalid_request", "Turn controls target the sandbox by ID. Omit conversation_id.");
   const measure: NonNullable<ToolContext["measure"]> = context.measure ?? ((_phase, work) => work());
-  const server = await measure("tool_register", async () =>
-    createRestToolServer(context, VERSION, name === "list" ? "list" : undefined),
-  );
-  const { client, a, b } = await measure("tool_connect", async () => {
-    const client = new Client({ name: "armada-http", version: "1" });
-    const [a, b] = InMemoryTransport.createLinkedPair();
-    return { client, a, b };
+  let invoke: (() => Promise<CallToolResult>) | undefined;
+  bindRestTool(context, name, (_name, config, run) => {
+    invoke = async () => {
+      const input =
+        parsed ?? (config.input instanceof z.ZodObject ? config.input : z.object(config.input)).safeParse(args);
+      if (!input.success) {
+        const details = input.error.issues.map((issue) => `${issue.message} at ${issue.path.join(".")}`).join("\n");
+        throw new ToolApiError("internal", `Input validation error: Invalid arguments for tool ${name}: ${details}`);
+      }
+      // Organization scope was selected from the original body. Tool handlers never receive it.
+      const { org: _org, ...toolInput } = input.data;
+      const result = await run(toolInput as Parameters<typeof run>[0]);
+      if (!result.isError && !z.object(config.output).safeParse(result.structuredContent).success)
+        throw new ToolApiError("internal", `Output validation error for tool ${name}.`);
+      return result;
+    };
   });
-  try {
-    await measure("tool_connect", async () => {
-      await server.connect(a);
-      await client.connect(b);
-    });
-    const result = await measure("tool_call", () =>
-      client.callTool({ name, arguments: args }, undefined, { timeout: 660_000 }),
+  const run = invoke;
+  if (!run) throw new ToolApiError("internal", `Unknown sandbox tool ${name}.`);
+  const result = await measure("tool_call", () => boundedToolCall(run));
+  if (result.isError) {
+    const block = (result.content as { type: string; text?: string }[]).find((item) => item.type === "text");
+    const marker = (result.content as { type: string; text?: string }[]).find(
+      (item) => item.type === "text" && item.text?.startsWith("error code: "),
     );
-    if (result.isError) {
-      const block = (result.content as { type: string; text?: string }[]).find((item) => item.type === "text");
-      const marker = (result.content as { type: string; text?: string }[]).find(
-        (item) => item.type === "text" && item.text?.startsWith("error code: "),
-      );
-      const parsed = z.object({ error: structuredError }).safeParse(result.structuredContent);
-      const structured = parsed.success ? parsed.data.error : undefined;
-      const code = structured?.code ?? marker?.text?.slice("error code: ".length) ?? "internal";
-      // Copy only closed diagnostic values, never arbitrary transport fields.
-      const metadata = result._meta as { error?: { details?: { phase?: unknown } } } | undefined;
-      const phase =
-        code === "github_hydration_failed" ? githubHydrationPhase(metadata?.error?.details?.phase) : undefined;
-      const decoded = launchDetails.safeParse(structured?.details);
-      const details =
-        code === "rate_limited"
-          ? providerRateLimitDetails(structured?.details)
-          : phase
-            ? { phase }
-            : decoded.success && Object.keys(decoded.data).length
-              ? decoded.data
-              : undefined;
-      throw new ToolApiError(
-        code,
-        structured?.message ?? (block !== marker ? block?.text : undefined) ?? INTERNAL_FAILURE_MESSAGE,
-        details,
-      );
-    }
-    return result.structuredContent;
+    const parsed = z.object({ error: structuredError }).safeParse(result.structuredContent);
+    const structured = parsed.success ? parsed.data.error : undefined;
+    const code = structured?.code ?? marker?.text?.slice("error code: ".length) ?? "internal";
+    // Copy only closed diagnostic values, never arbitrary transport fields.
+    const metadata = result._meta as { error?: { details?: { phase?: unknown } } } | undefined;
+    const phase =
+      code === "github_hydration_failed" ? githubHydrationPhase(metadata?.error?.details?.phase) : undefined;
+    const decoded = launchDetails.safeParse(structured?.details);
+    const details =
+      code === "rate_limited"
+        ? providerRateLimitDetails(structured?.details)
+        : phase
+          ? { phase }
+          : decoded.success && Object.keys(decoded.data).length
+            ? decoded.data
+            : undefined;
+    throw new ToolApiError(
+      code,
+      structured?.message ?? (block !== marker ? block?.text : undefined) ?? INTERNAL_FAILURE_MESSAGE,
+      details,
+    );
+  }
+  const response: unknown = result.structuredContent;
+  return response;
+}
+
+async function boundedToolCall(invoke: () => Promise<CallToolResult>) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      invoke(),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("Sandbox tool request timed out.")), 660_000);
+      }),
+    ]);
   } finally {
-    await measure("tool_close", async () => {
-      await client.close();
-      await server.close();
-    });
+    clearTimeout(timer);
   }
 }
