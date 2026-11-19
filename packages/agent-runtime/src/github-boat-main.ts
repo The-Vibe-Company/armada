@@ -1,7 +1,7 @@
 import { stat } from "node:fs/promises";
 import { GitHubBroker, type GitHubBrokerConfiguration } from "./github-broker.ts";
 import { prepareGitHubTools, runGitHubInstallMode } from "./github-tools.ts";
-import { Journal } from "./journal.ts";
+import { createRedactor } from "./state.ts";
 
 // Same private stdin bootstrap as the runtime. Capability/access bytes remain in memory only.
 async function main() {
@@ -11,8 +11,7 @@ async function main() {
     homes: string[];
     tools: { gh: string; git: string; ghWrapper: string; gitWrapper: string };
   };
-  const journal = new Journal(":memory:", (value) => value);
-  const broker = new GitHubBroker((values) => journal.registerSecrets(values));
+  const broker = new GitHubBroker(createRedactor([]).register);
   broker.configure(input.configuration);
   const listener = await broker.listen(input.root, (await stat(input.homes[0] ?? input.root)).uid);
   try {
