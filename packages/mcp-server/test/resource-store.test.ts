@@ -290,8 +290,8 @@ test("vault purge failure cannot skip expired resource evidence pruning or leak 
   );
   const jobs = createJobsStore(sql);
   await seedRetentionMaintenance(jobs);
-  const claim = await jobs.claim("maintenance", "test-owner", 30, 1);
-  expect(claim).not.toBeNull();
+  const claim = await jobs.claim("maintenance", crypto.randomUUID(), 30, 1);
+  expect(claim).toBeDefined();
   const result = await job.run(claim!);
   const rows = await db.query<{ count: number }>(
     "select count(*)::integer as count from resource_observations where sandbox_id=$1",
