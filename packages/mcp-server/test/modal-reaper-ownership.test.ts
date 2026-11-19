@@ -120,6 +120,9 @@ test("the live Modal reaper excludes conflicting logical ownership from the over
     { log: (line) => logs.push(JSON.parse(line)), now: () => 16 * 60_000 },
   );
   await lane.reconcileOne(signal);
+  expect(logs).toContainEqual(
+    expect.objectContaining({ event: "reaper_overdue_machines", source: binding.appId, machineIds: ["sb-orphan"] }),
+  );
   expect(logs).toContainEqual({
     metric: "reaper_unknown_machines",
     provider: "modal",

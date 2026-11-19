@@ -26,6 +26,7 @@ export function dockerMachineInventory(
 
   return {
     provider: "docker",
+    emitOverdueMachineIds: true,
     sourceId: hostId,
     deploymentId,
     inventory: {
