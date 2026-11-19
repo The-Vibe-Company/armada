@@ -44,3 +44,11 @@ Insert the opaque body into the initial prompt as a clearly labeled, untrusted e
 Org admins create, rotate and disable triggers through the dashboard and API. Record configuration changes with actor, trigger, timestamp and action. Record delivery receipts, refusal or launch outcome, and sandbox reference when available. Keep payloads out of audit records and admin delivery lists. Use the jobs store's encrypted payload and server-only access. Clear the queued payload once it is no longer needed to dispatch or reconcile. Bound audit and dedupe retention separately.
 
 This ticket delivers the design only. Endpoint, schema, worker and UI implementation are tracked separately. Sending to existing sandboxes, captain wait rows, provider-run launches, and provider-specific webhook adapters are out of scope.
+
+## HTTP delivery contract
+
+Use the lowercase UUID from the trigger URL and sign the canonical path with the raw 32-byte key. The server stores the key's base64 representation inside the encrypted envelope. Submit a new delivery ID for every event. Retry a delivery using the same ID, signing again with a fresh timestamp if needed. Accepted deliveries are deduplicated for at least 11 minutes and for as long as their jobs or launches can reconcile.
+
+A new delivery returns HTTP 202 with `{triggerId, deliveryId, jobId}`. A repeat of an accepted delivery returns the same receipt with HTTP 200. HTTP 429 supplies the number of seconds to wait in the `Retry-After` header and the `retryAfter` response field. A non-identity content encoding returns HTTP 415. An authenticated body with invalid UTF-8 returns HTTP 400.
+
+The rate budget counts committed deliveries in the preceding minute. The trigger's pool is the launch owner's pool for the bound harness. A newly queued job has a five-minute dispatch budget. Trigger setup and rotation must update the encrypted key and increment the key revision together.
