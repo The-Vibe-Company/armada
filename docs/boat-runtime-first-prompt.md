@@ -1,9 +1,8 @@
 # Boat runtime
 
-Experimental, **default off**, ordinary Boat Codex/Claude/OpenCode workers only. Selected launches
-use Armada's compiled runtime for prompts, journal/history and private model
-configuration. Native Boat sessions remain native; Modal retains its existing
-tunnel. There is no native-agent fallback after runtime failure and no migration
+Ordinary Boat Codex, Claude Code and OpenCode launches default to Armada's
+compiled runtime for prompts, journal/history and private model configuration.
+Existing native Boat sessions keep their launch path. There is no native-agent fallback after runtime failure and no migration
 of existing native conversations. See [runtime operations](runtime-startup.md)
 for artifacts, enrolment, transport, secrets and diagnostic checks.
 
@@ -11,10 +10,9 @@ for artifacts, enrolment, transport, secrets and diagnostic checks.
 
 An authorized operator deploys the merged schema and matching artifact-bearing
 server/runtime image through the normal process. Do not deploy or apply migrations
-from a worker. Set trusted server `ARMADA_BOAT_RUNTIME_MANIFEST` to the matching
-`/opt/armada/runtime-manifests/x64.json` (or arm64 on that architecture).
-The normal image publishes runtime/harness bytes automatically; no manual copy.
-Missing configuration means unavailable, not native fallback.
+from a worker. The normal image installs the architecture-specific manifest and serves the
+published runtime and harness files from `ARMADA_RUNTIME_ARTIFACT_DIR`. Use
+`ARMADA_BOAT_RUNTIME_MANIFEST` only to override the image manifest location.
 
 `POST /api/v1/launch/options` advertises `boatRuntime.enabled:true` when enabled,
 plus capability versions for diagnostics/follow-up/checkpoint/resume/GitHub/MCP.
@@ -292,17 +290,22 @@ assistant assertion is a tool-call pass. Local pinned stdio remains unsupported;
 its production use needs owner inventory, not speculative porting or deletion.
 This procedure is not evidence of a staging pass or permission to flip defaults.
 
-## Environment-wide Boat default switch (prepared, not flipped)
+## Environment-wide Boat runtime default
 
 Trusted **server** setting `ARMADA_BOAT_AGENT_PATH=native|runtime` chooses the
-ordinary Boat launch path. Unset means `native`; any other value fails startup.
-Set `runtime` on **staging first**, through the normal operator deployment
-process, not in the smoke client's shell. Ordinary API, CLI, dashboard, MCP
-`sandbox_launch`, template and routine launches share the same Core launch
-selection: no client flag/endpoint change. Modal/Docker selection is unchanged.
+ordinary Boat launch path. Unset means `runtime`. Values outside `native` and
+`runtime` fail startup. Ordinary API, CLI, dashboard, MCP `sandbox_launch`,
+template and routine launches share the same Core launch selection.
+
+After the Modal production checklist passes, release through the normal operator
+deployment process with the Boat selector unset or set to `runtime`. After
+release, the coordinator checks Boat on their own sandbox using
+`bun scripts/post-deploy-smoke.ts --parity --only boat --production-boat` and
+records the release and checklist in the [coordinator ledger](native-agent-path-retirement.md#coordinator-ledger).
+Boat stays outside CI, staging acceptance and the release gate.
 Runtime mode uses the image's matching `/opt/armada/runtime-manifests/<arch>.json`
 (or the existing trusted manifest override); in runtime-default mode,
-missing/invalid manifest metadata fails startup rather than selecting native. Valid
+startup requires valid manifest metadata and the referenced artifact files. Valid
 image-installed artifacts keep the explicit runtime route/retained sessions
 available during rollback. Missing/corrupt runtime-only metadata does not prevent
 native rollback from booting; explicit runtime bootstrap remains unavailable

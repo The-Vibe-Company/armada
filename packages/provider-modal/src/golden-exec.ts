@@ -17,7 +17,16 @@ child.once('error',()=>{process.stderr.write('golden_exec_start_failed\n');proce
 const timer=setTimeout(()=>{timedOut=true;try{process.kill(-child.pid,'SIGKILL');}catch{}},r.timeoutMs);
 child.once('close',exitCode=>{clearTimeout(timer);process.stdout.write(JSON.stringify({detached:false,exitCode,stdout,stderr,timedOut,truncated}));});
 `;
-export async function executeGoldenCommand(sandbox: Sandbox, request: ExecRequest): Promise<ExecResult> {
+export function executeGoldenCommand(sandbox: Sandbox, request: ExecRequest): Promise<ExecResult> {
+  return executeCommand(sandbox, request, []);
+}
+
+export function executeWorkspaceCommand(sandbox: Sandbox, request: ExecRequest) {
+  return executeCommand(sandbox, request, ["/usr/sbin/runuser", "-u", "user", "--"]);
+}
+
+async function executeCommand(sandbox: Sandbox, request: ExecRequest, userPrefix: string[]) {
+  request.signal?.throwIfAborted();
   const timeout = request.timeoutSeconds ?? 60,
     cwd = request.cwd ?? "/home/user";
   if (request.detached) throw refusal("invalid_request", "Detached golden root commands are not supported.");
@@ -39,6 +48,7 @@ export async function executeGoldenCommand(sandbox: Sandbox, request: ExecReques
       "-i",
       "HOME=/home/user",
       "PATH=/usr/local/bin:/usr/bin:/bin",
+      ...userPrefix,
       "/opt/armada/runtime-bun/bun",
       "-e",
       supervisor,
@@ -47,8 +57,13 @@ export async function executeGoldenCommand(sandbox: Sandbox, request: ExecReques
   );
   // Drain while writing/waiting so neither child stream can backpressure a long scanner/build.
   const output = process.stdout.readText();
-  await process.stdin.writeText(JSON.stringify({ command: request.command, cwd, timeoutMs: timeout * 1000 }));
-  await process.stdin.close();
+  output.catch(() => {});
+  try {
+    request.signal?.throwIfAborted();
+    await process.stdin.writeText(JSON.stringify({ command: request.command, cwd, timeoutMs: timeout * 1000 }));
+  } finally {
+    await process.stdin.close();
+  }
   const [status, body] = await Promise.all([process.wait(), output]);
   if (status !== 0 || Buffer.byteLength(body) > 1024 * 1024)
     throw refusal("unavailable", "Golden root command supervision failed; command outcome is not reported as success.");

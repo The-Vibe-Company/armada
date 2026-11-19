@@ -33,6 +33,8 @@ import {
   settleDetachedModalCollections,
 } from "../src/index.ts";
 
+import { captureProcessBaseline } from "../src/process-scope.ts";
+
 let db: Awaited<ReturnType<typeof openMigratedDatabase>>;
 let workerSnapshot: string;
 const scope: Scope = {
@@ -134,7 +136,9 @@ function fixture(
                 writeText: async (text: string) => {
                   command.stdin.push(text);
                   input = JSON.parse(text);
-                  if (input && "command" in input) log.push("root-exec");
+                  if (input?.op === "quiesce") log.push("quiesce-processes");
+                  if (input && "command" in input)
+                    log.push(argv.includes("/usr/sbin/runuser") ? "workspace-exec" : "root-exec");
                   if (input && "grant" in input)
                     bootstraps.set(id, input as unknown as { grant: { token: string; generation: string } });
                 },
@@ -163,7 +167,7 @@ function fixture(
                         ? JSON.stringify({
                             detached: false,
                             exitCode: 0,
-                            stdout: "",
+                            stdout: argv.includes("/usr/sbin/runuser") ? '{"status":"clean"}' : "",
                             stderr: "",
                             timedOut: false,
                             truncated: false,
@@ -965,6 +969,40 @@ test("enrolled Modal host forks never start or call the tunnel and stop without 
     f.provider.prompt({ sandboxId: row.id, harness: "codex", text: "no implicit resume" }),
   ).rejects.toMatchObject({ code: "invalid_request" });
   expect(f.creates).toBe(1);
+});
+
+test("common-runtime Modal capture quiesces the active incarnation and runs the Git policy as the workspace user", async () => {
+  const f = fixture(scope, db, undefined, undefined, true);
+  f.distribution.captureProcessBaseline = captureProcessBaseline;
+  const worker = await runningFork(f);
+  const afterFork = f.log.length;
+
+  await expect(
+    f.provider.captureRuntimeWork({
+      sandboxId: worker.id,
+      physicalGeneration: worker.physicalGeneration!,
+      signal: new AbortController().signal,
+      context: { source: "user_stop", captureId: crypto.randomUUID() },
+    }),
+  ).resolves.toEqual({ status: "clean" });
+  expect(f.log.slice(afterFork)).toEqual(["quiesce-processes", "workspace-exec"]);
+  expect(await f.store.get(worker.id)).toMatchObject({ phase: "active" });
+});
+
+test("common-runtime Modal capture refuses a stale incarnation before touching physical compute", async () => {
+  const f = fixture(scope, db, undefined, undefined, true);
+  const worker = await runningFork(f);
+  const afterFork = f.sdkCommands.length;
+
+  await expect(
+    f.provider.captureRuntimeWork({
+      sandboxId: worker.id,
+      physicalGeneration: "2",
+      signal: new AbortController().signal,
+      context: { source: "lifecycle_stop", captureId: crypto.randomUUID() },
+    }),
+  ).rejects.toMatchObject({ code: "sandbox_not_ready" });
+  expect(f.sdkCommands).toHaveLength(afterFork);
 });
 
 test("retained enrolled Modal stop snapshots only after quiescence and resumes its exact checkpoint without tunnel or history purge", async () => {
