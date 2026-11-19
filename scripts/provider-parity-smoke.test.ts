@@ -147,6 +147,7 @@ for (const mode of [
   "modal_launch_unresolved",
   "modal_launch_malformed",
   "modal_launch_missing_provider",
+  "modal_launch_top_level_id",
   "delete_retry",
   "journal_failure",
   "stop_response_lost",
@@ -263,7 +264,9 @@ for (const mode of [
     const snapshotOwner = "10000000-0000-4000-8000-000000000008";
     const snapshotImage = `sha256:${"a".repeat(64)}`;
     const journalDir =
-      mode === "modal_launch_missing_provider" ? await mkdtemp(join(tmpdir(), "parity-journal-")) : undefined;
+      mode === "modal_launch_missing_provider" || mode === "modal_launch_top_level_id"
+        ? await mkdtemp(join(tmpdir(), "parity-journal-"))
+        : undefined;
     const journalPath = journalDir ? join(journalDir, "sandboxes.json") : undefined;
     const passed = await postDeploySmoke(
       {
@@ -711,6 +714,10 @@ for (const mode of [
                 if (mode === "modal_launch_missing_provider") {
                   states.set(p, "ready");
                   return Response.json({ sandbox: { id: recoveredSandbox } });
+                }
+                if (mode === "modal_launch_top_level_id") {
+                  states.set(p, "ready");
+                  return Response.json({ id: ordinaryModalId, sandbox: { provider: "modal" } });
                 }
                 if (mode === "modal_launch_recovers") {
                   states.set(p, "ready");
@@ -1221,8 +1228,11 @@ for (const mode of [
               };
               break;
             case "sandbox/stop":
-              if (journalPath && states.get(p) === "deleted")
-                return Response.json({ error: { code: "not_found" } }, { status: 404 });
+              if (journalPath) {
+                expect(body.id).toBe(recoveredSandbox);
+                if (states.get(p) === "deleted")
+                  return Response.json({ error: { code: "not_found" } }, { status: 404 });
+              }
               if (clientStopFull && !body.request_id) {
                 expect(body).toEqual({ org: p, id: sandboxId(p) });
                 result = acceptStop(p, body);
@@ -1375,6 +1385,7 @@ for (const mode of [
         expect(report.features.cleanup.modal.status).toBe("pass");
         if (journalPath) {
           const receipts = lines.filter((line) => line.startsWith("{")).map((line) => JSON.parse(line));
+          expect(receipts.some((receipt) => receipt.step === "smoke_sandbox_receipt")).toBe(false);
           expect(receipts.find((receipt) => receipt.step === "smoke_cleanup_summary")).toMatchObject({
             pass: true,
             deferredRows: 0,

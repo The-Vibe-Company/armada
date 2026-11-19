@@ -1558,15 +1558,13 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         state?: unknown;
         id?: unknown;
       } | null;
-      const id = result?.sandbox?.id ?? result?.id;
+      const keyedModalParity = args[0] === "--parity" && requestKey === key && body.provider === "modal";
+      const id = keyedModalParity ? result?.sandbox?.id : (result?.sandbox?.id ?? result?.id);
       const provider = smokeReceiptProvider(result);
       // A keyed Modal caller can recover the receipt from owner inventory.
       // Until then, missing or contradictory provider evidence is unacknowledged.
       const unverifiedParityLaunch =
-        args[0] === "--parity" &&
-        requestKey === key &&
-        body.provider === "modal" &&
-        (!response.ok || provider !== "modal" || result?.sandbox?.provider !== "modal");
+        keyedModalParity && (!response.ok || provider !== "modal" || result?.sandbox?.provider !== "modal");
       if (!unverifiedParityLaunch && typeof id === "string" && SANDBOX_ID.test(id) && typeof org === "string") {
         const row: SmokeSandboxReceipt = {
           requestKey,
