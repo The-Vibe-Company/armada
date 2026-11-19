@@ -94,7 +94,7 @@ export async function callSharedTool(
   name: string,
   args: Record<string, unknown>,
   parsed = parseSandboxToolInput(name, args),
-): Promise<unknown> {
+) {
   if (name === "send") {
     try {
       refuseConversationSelector(args);
@@ -151,5 +151,6 @@ export async function callSharedTool(
       details,
     );
   }
-  return result.structuredContent;
+  const response: unknown = result.structuredContent;
+  return response;
 }

@@ -15,14 +15,17 @@ export const sandboxToolRoutes = defineRoutes(
       const route = operation.route.path.slice("/api/v1/".length);
       return [
         route,
-        async (context: ControlRouteContext) => {
-          const parsed = operation.input.body.safeParse(context.body);
-          return callSharedTool(
-            await sandboxToolContext(context, parsed.success),
-            operation.toolName,
-            context.body,
-            parsed,
-          );
+        {
+          methods: [operation.route.method],
+          handler: async (context: ControlRouteContext) => {
+            const parsed = operation.input.body.safeParse(context.body);
+            return callSharedTool(
+              await sandboxToolContext(context, parsed.success),
+              operation.toolName,
+              context.body,
+              parsed,
+            );
+          },
         },
       ];
     }),

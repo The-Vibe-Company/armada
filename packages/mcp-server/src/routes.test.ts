@@ -172,7 +172,7 @@ test.each([
   ["sandbox/interrupt", { id: "sandbox", request_id: "invalid" }],
   ["sandbox/exec", { id: "sandbox", command: "", timeout_seconds: 0 }],
 ] as const)("%s keeps its REST validation code and refuses before touching sandbox data", async (route, body) => {
-  const caller = { via: "supabase", userId: "owner", orgs: [] } as const;
+  const caller = { via: "supabase" as const, userId: "owner", orgs: [] };
   const options = {
     data: () => ({
       sandboxes: {
@@ -186,8 +186,8 @@ test.each([
     }),
     providers: {},
   } as unknown as ControlOptions;
-  const error = await dispatchControlCommand(route, { ...caller, orgs: [] }, body, options).catch((reason) => reason);
-  expect(error).toBeInstanceOf(ToolApiError);
+  const error = await dispatchControlCommand(route, caller, body, options).catch((reason) => reason);
+  if (!(error instanceof ToolApiError)) throw new Error("Expected a REST validation refusal.", { cause: error });
   expect(error.message).toContain("Input validation error");
   const response = controlFailureResponse(error);
   expect(response.status).toBe(503);

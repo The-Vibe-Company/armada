@@ -862,7 +862,6 @@
     "packages/mcp-server/src/control-caller.ts": 2,
     "packages/mcp-server/src/control-config.ts": 2,
     "packages/mcp-server/src/control-logs.ts": 3,
-    "packages/mcp-server/src/control-tool-routes.ts": 1,
     "packages/mcp-server/src/control.ts": 1,
     "packages/mcp-server/src/credential-binding-recovery.ts": 2,
     "packages/mcp-server/src/credential-binding.ts": 1,
