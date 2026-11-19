@@ -595,10 +595,14 @@ guard. After publication, keep the latest-stable-tag and exact-SHA guards
 for production and recovery.
 
 Dispatch the **Release** workflow from main with `version` and a full commit
-`sha` to retry a release with fixed workflow tooling. Validate the SHA belongs
-to main, contains the matching version PR merge, and has that version in
-source. Take source and build inputs from the selected SHA and recovery
-workflow tooling from the dispatch's workflow revision. Before publication,
+`sha` to retry a release with fixed workflow tooling:
+`gh workflow run release.yml --ref main -f version=<version> -f sha=<full-sha>`.
+[Actions dispatch](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow#running-a-workflow)
+selects the workflow ref independently of its input values. Validate the SHA
+belongs to main, contains the matching version PR merge and has that version
+in source. Use the selected SHA for source and builds. Continue the existing
+[workflow-revision checkout for recovery tooling](../.github/workflows/release.yml#L465)
+so a tooling fix on main can recover an older source SHA. Before publication,
 repeat validation and exact-source smoke for the selected SHA. If a tag
 exists without a release, require that exact SHA and smoke it again before
 creating the release. If the release already exists, both inputs must match
