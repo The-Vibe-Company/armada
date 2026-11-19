@@ -22,7 +22,7 @@ export class ChildLaunchNotAllocated extends Error {
 
 /** Exact #612 af8a9c2 resolver projection. The binding MUST be returned and match;
  * a legacy resolver or incomplete #604 private-state pipeline is not support. */
-export interface PinnedModelAccountResolver {
+interface PinnedModelAccountResolver {
   resolve(
     actor: GoldenActor,
     harness: Harness,
