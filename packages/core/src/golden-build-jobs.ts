@@ -603,25 +603,27 @@ export class GoldenBuildJobs {
       /* Unknown outcomes retain capacity, source and proof. No exception/payload/SDK logging. */
     }
   }
-  /** One bounded worker tick. Queued admissions expire after one hour; running work stays fenced for recovery. */
-  async runOne(): Promise<boolean> {
-    const job = await this.claimOne();
-    if (!job) return false;
-    if (job.state === "running") await this.executeReceipt(job);
-    return true;
-  }
-
-  private async claimOne() {
-    await this.options.sql.query(
+  /** Expire the receipt leases still used by running builds during the dispatch cutover. */
+  async expireRunningReceipts(sql = this.options.sql) {
+    await sql.query(
       "update public.golden_build_jobs set state='recovery_required',error_code='build_failed',updated_at=now() where state='running' and (lease_until<=clock_timestamp() or deadline<=clock_timestamp())",
     );
-    return this.transaction(async (sql) => {
+  }
+
+  async dispatchReceipt(id: string, leaseEpoch: string) {
+    const job = await this.transaction(async (sql) => {
       const row = (
         await sql.query<Job & { expired: boolean }>(
-          "select *, created_at <= clock_timestamp()-interval '60 minutes' as expired from public.golden_build_jobs where state='queued' order by created_at for update skip locked limit 1",
+          "select *, created_at <= clock_timestamp()-interval '60 minutes' as expired from public.golden_build_jobs where id=$1 for update",
+          [id],
         )
       ).rows[0];
-      if (!row) return undefined;
+      if (!row || row.state !== "queued") return row;
+      const lease = await sql.query(
+        "select id from public.jobs where id=$1 and kind='golden_build' and state='leased' and lease_epoch=$2 and lease_until>clock_timestamp() for update",
+        [id, leaseEpoch],
+      );
+      if (!lease.rows.length) return row;
       if (row.expired) {
         // The same row lock fences other workers' claims. Only a never-started
         // admission can release capacity without reconciling provider resources.
@@ -639,15 +641,34 @@ export class GoldenBuildJobs {
               : "detail:Expired queued build has execution evidence. Ask an administrator to reconcile it before retrying.",
           ],
         );
-        return { ...row, state };
+        return { ...row, state, processed: true };
       }
-      return (
-        await sql.query<Job>(
-          "update public.golden_build_jobs set state='running',phase='authorization',fence=$2,lease_until=clock_timestamp()+interval '60 seconds',deadline=clock_timestamp()+interval '60 minutes',updated_at=now() where id=$1 returning *",
-          [row.id, randomUUID()],
-        )
-      ).rows[0]!;
+      await sql.query("select pg_advisory_xact_lock(hashtextextended('armada.jobs:golden_build',0))");
+      await this.expireRunningReceipts(sql);
+      const available = await sql.query(
+        `select id from public.jobs where id=$1 and lease_until>clock_timestamp()
+           and not exists (select 1 from public.golden_build_jobs where state='running')`,
+        [id],
+      );
+      if (!available.rows.length) return row;
+      const { rows } = await sql.query<Job>(
+        "update public.golden_build_jobs set state='running',phase='authorization',fence=$2,lease_until=clock_timestamp()+interval '60 seconds',deadline=clock_timestamp()+interval '60 minutes',updated_at=now() where id=$1 returning *",
+        [row.id, randomUUID()],
+      );
+      return { ...rows[0]!, processed: true };
     });
+    if (!job) return { processed: false, pending: false };
+    const processed = "processed" in job;
+    let state = job.state;
+    if (processed && state === "running") {
+      await this.executeReceipt(job);
+      const { rows } = await this.options.sql.query<Pick<Job, "state">>(
+        "select state from public.golden_build_jobs where id=$1",
+        [id],
+      );
+      state = rows[0]?.state ?? "failed";
+    }
+    return { processed, pending: state === "queued" || state === "running" || state === "recovery_required" };
   }
 
   private async executeReceipt(job: Job) {
