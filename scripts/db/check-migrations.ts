@@ -7,7 +7,7 @@ type DestructiveStatement =
 
 const RELEASE_VERSION = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
-function compareVersions(left: string, right: string): number {
+function compareVersions(left: string, right: string) {
   const rightParts = right.slice(1).split(".").map(BigInt);
   for (const [index, part] of left.slice(1).split(".").map(BigInt).entries()) {
     if (part !== rightParts[index]) return part > rightParts[index]! ? 1 : -1;
@@ -15,7 +15,7 @@ function compareVersions(left: string, right: string): number {
   return 0;
 }
 
-function latestRelease(tags: string): string | undefined {
+function latestRelease(tags: string) {
   return tags
     .split("\n")
     .map((line) => line.split("\t")[1]?.replace(/^refs\/tags\//, "") ?? "")
@@ -26,7 +26,7 @@ function latestRelease(tags: string): string | undefined {
 
 // Tokenize top-level SQL so comments, strings and function bodies cannot supply
 // keywords or statement separators. Preserve spelling for quoted identifiers.
-function* sqlStatements(sql: string): Generator<{ tokens: string[]; startsAt: number }> {
+function* sqlStatements(sql: string) {
   const lexer =
     /--[^\r\n]*|\/\*|((?:[uU]&)?"(?:[^"]|"")*")|([eE]'(?:[^'\\]|\\[\s\S]|'')*'|(?:[uU]&)?'(?:[^']|'')*')|(\$(?:[a-zA-Z_\u0080-\uffff][\w\u0080-\uffff]*)?\$)|[a-zA-Z_\u0080-\uffff][\w$\u0080-\uffff]*|[^\s]/g;
   let tokens: string[] = [];
@@ -93,7 +93,7 @@ function qualifiedName(tokens: readonly (string | undefined)[], start: number) {
 
 // Split lists of DROP targets and ALTER TABLE actions, while retaining commas
 // inside function signatures, type modifiers and expressions.
-function* commaSeparated(tokens: string[]): Generator<string[]> {
+function* commaSeparated(tokens: string[]) {
   let depth = 0;
   let start = 0;
   for (const [index, token] of tokens.entries()) {
@@ -107,7 +107,7 @@ function* commaSeparated(tokens: string[]): Generator<string[]> {
   yield tokens.slice(start);
 }
 
-export function destructiveStatements(sql: string): DestructiveStatement[] {
+export function destructiveStatements(sql: string) {
   const statements: DestructiveStatement[] = [];
   for (const { tokens, startsAt } of sqlStatements(sql)) {
     const [verb, kind] = tokens;
@@ -162,7 +162,7 @@ type DropSources = {
   references: (name: string, ref: string) => readonly string[];
 };
 
-export function dropSafety(statements: readonly DestructiveStatement[], sources: DropSources): string[] {
+export function dropSafety(statements: readonly DestructiveStatement[], sources: DropSources) {
   const errors: string[] = [];
   for (const statement of statements) {
     if (statement.kind === "object") {
@@ -199,7 +199,7 @@ const SOURCE_PATHS = [
   ...["test", "spec", "probe", "fixture", "fixtures"].map((suffix) => `:(exclude,glob)**/*.${suffix}.*`),
 ];
 
-function gitReferences(name: string, ref: string): string[] {
+function gitReferences(name: string, ref: string) {
   const result = spawnSync("git", ["grep", "-l", "-z", "-I", "-F", "-w", "-e", name, ref, "--", ...SOURCE_PATHS], {
     encoding: "utf8",
   });
@@ -212,7 +212,7 @@ function gitReferences(name: string, ref: string): string[] {
     .map((entry) => entry.slice(ref.length + 1));
 }
 
-function checkDrops(paths: string[], base: string, head: string): void {
+function checkDrops(paths: string[], base: string, head: string) {
   const changes = paths.flatMap((path) => {
     const statements = destructiveStatements(execFileSync("git", ["show", `${head}:${path}`], { encoding: "utf8" }));
     return statements.length ? [{ path, statements }] : [];
@@ -237,7 +237,7 @@ function checkDrops(paths: string[], base: string, head: string): void {
   if (errors.length) throw new Error(errors.join("\n"));
 }
 
-function main(): void {
+function main() {
   const base = process.argv[2];
   if (!base) throw new Error("Usage: bun scripts/db/check-migrations.ts <base-ref> [head-ref]");
   const headRef = process.argv[3] ?? "HEAD";

@@ -9,7 +9,7 @@ export const migrationsDir = join(root, "supabase", "migrations");
 const prereqPath = fileURLToPath(new URL("./supabase-prereq.sql", import.meta.url));
 
 /** A fresh in-memory Postgres with the Supabase prerequisites, and no Armada tables yet. */
-export async function openDatabase(): Promise<PGlite> {
+export async function openDatabase() {
   const db = new PGlite();
   await db.waitReady;
   return db;
@@ -32,7 +32,7 @@ export async function applyMigrations(db: PGlite, directory = migrationsDir) {
   return files;
 }
 
-async function execFile(db: PGlite, path: string, name: string): Promise<void> {
+async function execFile(db: PGlite, path: string, name: string) {
   const sql = await Bun.file(path).text();
   try {
     await db.exec(sql);
