@@ -3,7 +3,11 @@ import { constants } from "node:fs";
 import { lstat, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { DOCKER_HOST_PROTOCOL, DOCKER_HOST_PROTOCOL_HEADER } from "../../core/src/docker-host-protocol.ts";
-import type { DockerHostPollRequest, DockerHostPollResponse } from "../../core/src/docker-host-wire.ts";
+import type {
+  DockerHostPollRequest,
+  DockerHostPollResponse,
+  DockerHostResultRequest,
+} from "../../core/src/docker-host-wire.ts";
 import type { DockerMachineCli } from "../../core/src/docker-machine.ts";
 import { DOCKER_OUTPUT_DIRECTORY_MISSING } from "../../core/src/docker-output-archive.ts";
 import { type DockerHostResources, dockerHostResources } from "../../core/src/docker-resources.ts";
@@ -213,6 +217,10 @@ export function httpApi(
     }
     return JSON.parse(Buffer.concat(parts).toString("utf8"));
   }
+  function postResult(state: State, body: DockerHostResultRequest) {
+    return post(state.server, "results", state.hostToken, body);
+  }
+
   const inventoryStop = new AbortController();
   let inventoryReport: Promise<void> | undefined;
   let nextInventoryAt = 0;
@@ -341,14 +349,14 @@ export function httpApi(
       );
     },
     async claim(state, requestId, accepted) {
-      await post(state.server, "results", state.hostToken, {
+      await postResult(state, {
         installationId: state.installationId,
         requestId,
         claimed: accepted,
       });
     },
     async cleaned(state, requestId, reason) {
-      await post(state.server, "results", state.hostToken, {
+      await postResult(state, {
         installationId: state.installationId,
         requestId,
         cleaned: true,
@@ -380,18 +388,18 @@ export function httpApi(
       if (archive && (await send(archive)) !== 204) throw new Error("Retained output upload not acknowledged");
     },
     async result(state, receipt, expired) {
-      const body = {
+      if (!expired && !receipt.outcome) throw new Error("Missing host receipt outcome");
+      const body: DockerHostResultRequest = {
         installationId: state.installationId,
         requestId: receipt.requestId,
-        ...(expired ? { expired: true } : { outcome: receipt.outcome }),
+        ...(expired ? { expired: true } : { outcome: receipt.outcome! }),
         ...(receipt.operation === "buildSnapshot" && receipt.imageId ? { imageId: receipt.imageId } : {}),
       };
       const baselineVersion = receipt.operation === "buildSnapshot" ? receipt.baselineVersion : undefined;
       const baselineTool = receipt.operation === "buildSnapshot" ? receipt.baselineTool : undefined;
       const missingRefIndex = receipt.operation === "buildSnapshot" ? receipt.missingRefIndex : undefined;
-      if (expired || (!receipt.reason && baselineVersion === undefined))
-        return void (await post(state.server, "results", state.hostToken, body));
-      await post(state.server, "results", state.hostToken, {
+      if (expired || (!receipt.reason && baselineVersion === undefined)) return void (await postResult(state, body));
+      await postResult(state, {
         ...body,
         ...(receipt.reason ? { reason: receipt.reason } : {}),
         ...(baselineVersion === undefined ? {} : { baselineVersion }),

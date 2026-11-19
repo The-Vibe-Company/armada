@@ -1,6 +1,8 @@
-import type { DockerHostVersionOffer } from "./docker-api.ts";
+import type { DockerHostVersionOffer, DockerJobFailureReason } from "./docker-api.ts";
 import type { DockerHostJob } from "./docker-host-job.ts";
 import type { DockerHostResources, DockerSandboxLimits } from "./docker-resource-policy.ts";
+
+import type { SnapshotBaselineTool } from "./snapshot-baseline.ts";
 
 export interface DockerHostPollRequest {
   installationId: string;
@@ -28,3 +30,16 @@ export interface DockerHostPollResponse extends DockerHostVersionOffer {
   pendingStarts?: { sandboxId: string; generation: string }[];
   resumeClaims?: { requestId: string; sandboxId: string; generation: string }[];
 }
+
+export type DockerHostResultRequest = { installationId: string; requestId: string; imageId?: string } & (
+  | { claimed: boolean }
+  | { cleaned: true; cleanupReason?: "retention_elapsed" | "disk_pressure" }
+  | { expired: true }
+  | {
+      outcome: "completed" | "failed";
+      reason?: DockerJobFailureReason;
+      baselineVersion?: number;
+      baselineTool?: SnapshotBaselineTool;
+      missingRefIndex?: number;
+    }
+);
