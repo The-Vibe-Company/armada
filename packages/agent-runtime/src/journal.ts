@@ -95,9 +95,13 @@ export class Journal {
       const scrubbed = JSON.parse(this.messageRedactor(this.startupRedactor(serialized))) as typeof event;
       // Codex emits a whole replacement snapshot. Delta fragments can contain
       // arbitrary portions of a short secret, even when no fragment matches it.
+      const text =
+        event.textMode === "delta"
+          ? ""
+          : maskText(event.text, JSON.parse(this.redact(JSON.stringify({ text: event.text }))).text, mask);
       return JSON.stringify({
         ...scrubbed,
-        text: event.textMode === "delta" ? "" : maskText(event.text, scrubbed.text, mask),
+        text,
         tools: scrubbed.tools.map((tool) => ({
           ...tool,
           ...(tool.input !== undefined ? { input: maskPayload(tool.input, mask) } : {}),
