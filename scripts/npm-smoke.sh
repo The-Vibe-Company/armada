@@ -32,9 +32,10 @@ check() {
 
 check_files() {
   local archive=$1 kind=$2
-  diff -u \
-    <(jq -r --arg kind "$kind" '.[$kind][] | "package/" + .' "$root/scripts/release/npm-pack-files.json" | LC_ALL=C sort) \
-    <(tar -tzf "$archive" | LC_ALL=C sort)
+  local expected_files actual_files
+  expected_files=$(jq -r --arg kind "$kind" '.[$kind][] | "package/" + .' "$root/scripts/release/npm-pack-files.json" | LC_ALL=C sort)
+  actual_files=$(tar -tzf "$archive" | LC_ALL=C sort)
+  diff -u <(printf '%s\n' "$expected_files") <(printf '%s\n' "$actual_files")
 }
 
 check_files "$main" cli

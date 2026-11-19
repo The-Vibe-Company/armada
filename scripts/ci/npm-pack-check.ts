@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import packlist from "npm-packlist";
@@ -19,7 +19,7 @@ type Manifest = Parameters<typeof packlist>[0]["package"] & {
   bundledDependencies?: string[] | boolean;
 };
 
-export function checkPackFiles(name: string, actual: readonly string[], expected: readonly string[]): void {
+export function checkPackFiles(name: string, actual: readonly string[], expected: readonly string[]) {
   const missing = expected.filter((file) => !actual.includes(file)).sort();
   const extra = actual.filter((file) => !expected.includes(file)).sort();
   if (missing.length || extra.length) {
@@ -29,10 +29,7 @@ export function checkPackFiles(name: string, actual: readonly string[], expected
   }
 }
 
-export function checkBootstrappedPackages(
-  manifests: readonly Pick<Manifest, "name">[],
-  approved: readonly string[],
-): void {
+export function checkBootstrappedPackages(manifests: readonly Pick<Manifest, "name">[], approved: readonly string[]) {
   const names = new Set(manifests.map(({ name }) => name));
   const errors = [...names]
     .filter((name) => !approved.includes(name))
@@ -43,7 +40,7 @@ export function checkBootstrappedPackages(
   if (errors.length) throw new Error(errors.join("\n"));
 }
 
-async function checkNpmPack(): Promise<void> {
+async function checkNpmPack() {
   const work = mkdtempSync(join(tmpdir(), "armada-npm-pack-"));
   try {
     const binaries = join(work, "binaries");
@@ -51,8 +48,8 @@ async function checkNpmPack(): Promise<void> {
     for (const target of TARGETS) writeFileSync(join(binaries, `armada-${target}`), "placeholder\n");
     const out = join(work, "npm");
     const staged = stageNpm({ binaries, out });
-    // The declaration check in shard 1 owns type validation against emitted declarations.
-    const sdk = await stageSdk({ out, declarations: "export {};\n" });
+    const placeholderDeclarations = "export {};\n";
+    const sdk = await stageSdk({ out, declarations: placeholderDeclarations });
     staged.push(sdk);
 
     const packages = await Promise.all(
@@ -67,26 +64,30 @@ async function checkNpmPack(): Promise<void> {
       bootstrappedPackages,
     );
 
+    const installedSdk = join(work, "node_modules", SDK_PACKAGE);
     for (const { name, dir, manifest } of packages) {
       const bundled = manifest.bundleDependencies ?? manifest.bundledDependencies;
       if (bundled === true || (Array.isArray(bundled) && bundled.length)) {
         throw new Error(`${name}: unexpected bundled dependencies: ${JSON.stringify(bundled)}`);
       }
       const kind = name === SDK_PACKAGE ? "sdk" : name === NPM_PACKAGE ? "cli" : "platform";
-      checkPackFiles(name, await packlist({ path: dir, package: manifest, isProjectRoot: true }), NPM_PACK_FILES[kind]);
-      if (name === SDK_PACKAGE) {
+      const files = await packlist({ path: dir, package: manifest, isProjectRoot: true });
+      checkPackFiles(name, files, NPM_PACK_FILES[kind]);
+      if (kind === "sdk") {
         const dependencies = [manifest.dependencies, manifest.optionalDependencies, manifest.peerDependencies].flatMap(
           (field) => Object.keys(field ?? {}),
         );
-        if (dependencies.length)
+        if (dependencies.length) {
           throw new Error(`${name}: unexpected runtime dependencies: ${dependencies.sort().join(", ")}`);
+        }
+        for (const file of files) {
+          const destination = join(installedSdk, file);
+          mkdirSync(dirname(destination), { recursive: true });
+          copyFileSync(join(dir, file), destination);
+        }
       }
     }
 
-    // Resolve the staged public entry as a consumer outside the monorepo.
-    const installed = join(work, "node_modules", SDK_PACKAGE);
-    mkdirSync(dirname(installed), { recursive: true });
-    symlinkSync(sdk.dir, installed, "dir");
     const entry = Bun.resolveSync(SDK_PACKAGE, work);
     await smokeSdk(await import(entry));
   } finally {
