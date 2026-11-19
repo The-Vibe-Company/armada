@@ -54,6 +54,7 @@ export class DockerMachineError extends Error {
 }
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const dockerContainerId = /^[a-f0-9]{64}$/;
 const prefix = "dev.armada.machine.";
 type Row = Record<string, unknown>;
 
@@ -433,12 +434,28 @@ export function createDockerMachineExecutor(options: {
     if (state.container) await checked(["container", "stop", "--time", "10", state.containerName]);
   }
 
-  async function remove(request: DockerMachineRequest): Promise<void> {
+  async function remove(
+    request: DockerMachineRequest,
+    target: { scope: "physical-only"; machineId: string } | { scope: "physical-and-retained" } = {
+      scope: "physical-and-retained",
+    },
+  ): Promise<void> {
+    const physicalOnly = target.scope === "physical-only";
+    if (physicalOnly && !dockerContainerId.test(target.machineId)) fail("invalid_request");
     let state = await owned(request);
     if (state.container) {
-      await checked(["container", "rm", "--force", state.containerName]);
+      if (physicalOnly && state.container.Id !== target.machineId) fail("ownership_mismatch");
+      await checked(["container", "rm", "--force", physicalOnly ? target.machineId : state.containerName]);
       state = await owned(request);
       if (state.container) fail("docker_failed");
+    }
+    if (physicalOnly) {
+      const ids = (await checked(["container", "ls", "--all", "--no-trunc", "--format", "{{.ID}}"]))
+        .trim()
+        .split("\n")
+        .filter(Boolean);
+      if (ids.some((id) => !dockerContainerId.test(id)) || ids.includes(target.machineId)) fail("ownership_mismatch");
+      return;
     }
     // Successful exact absence observation is required before deleting the exact owned volume.
     if (state.volume) await checked(["volume", "rm", state.volumeName]);
