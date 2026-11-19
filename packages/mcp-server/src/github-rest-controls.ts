@@ -4,7 +4,8 @@ import { z } from "zod";
 import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
 import { ToolApiError } from "./tool-api.ts";
-import { describeToolFailure, logToolFailure, type ToolContext, ToolError } from "./tools.ts";
+import { ToolError } from "./tool-error.ts";
+import { describeToolFailure, logToolFailure, type ToolContext } from "./tools.ts";
 
 const id = z.string().describe("Armada's sandbox id (a uuid, as returned by launch and list).");
 

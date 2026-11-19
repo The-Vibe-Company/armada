@@ -1034,7 +1034,7 @@
     "packages/mcp-server/src/subscription-migration.ts": 13,
     "packages/mcp-server/src/token-control.ts": 1,
     "packages/mcp-server/src/tool-api.ts": 2,
-    "packages/mcp-server/src/tools.ts": 49,
+    "packages/mcp-server/src/tools.ts": 47,
     "packages/mcp-server/src/tracked-operations.ts": 1,
     "packages/mcp-server/src/turn-pricing.ts": 6,
     "packages/mcp-server/src/turns.ts": 42,

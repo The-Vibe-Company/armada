@@ -37,7 +37,8 @@ import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createSandboxBillingAccount } from "../src/sandbox-billing-account.ts";
 import { callSharedTool } from "../src/tool-api.ts";
-import { type ToolContext, ToolError } from "../src/tools.ts";
+import { ToolError } from "../src/tool-error.ts";
+import type { ToolContext } from "../src/tools.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 
 let connection: Awaited<ReturnType<typeof migratedDatabase>> | undefined;

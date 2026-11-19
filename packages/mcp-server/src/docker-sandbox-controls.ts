@@ -41,7 +41,7 @@ import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.t
 import type { RuntimeGitHub } from "./runtime-github.ts";
 import { createRuntimeHistory } from "./runtime-history.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
-import { ToolError } from "./tools.ts";
+import { ToolError } from "./tool-error.ts";
 import { withServerCost } from "./turn-pricing.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
