@@ -9,7 +9,7 @@ import type { Blocker, ResourceState } from "./resource-list.ts";
  * from the row. `launch` opens the launch form, `snapshot` opens the row's panel on its build form, `connect` goes
  * to the provider settings. Null: nothing the viewer can do from here (someone else builds it, the server is down).
  */
-export type EnvironmentAction = "launch" | "snapshot" | "connect" | null;
+type EnvironmentAction = "launch" | "snapshot" | "connect" | null;
 
 export type EnvironmentState = ResourceState & { action: EnvironmentAction; detail: string };
 
@@ -97,7 +97,7 @@ export function environmentBlockers({
 }
 
 /** One provider's part of the capacity line under the list. */
-export type CapacityPart = { provider: SandboxProviderId; kind: CapacityState["kind"]; text: string; reason?: string };
+type CapacityPart = { provider: SandboxProviderId; kind: CapacityState["kind"]; text: string; reason?: string };
 
 /**
  * The golden capacity of each connected provider, in one line ("Boat: 1 of 1 slot used · Modal: no limit"). The

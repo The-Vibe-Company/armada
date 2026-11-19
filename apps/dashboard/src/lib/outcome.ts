@@ -128,7 +128,7 @@ export function settledOutcome(
 }
 
 /** The command that retrieves the latest recovery archive; its output is sensitive, so it goes to a private file. */
-export function recoveryCommand(sandboxId: string): string {
+function recoveryCommand(sandboxId: string): string {
   return `armada recovery ${sandboxId} > armada-recovery.json`;
 }
 

@@ -35,7 +35,7 @@ export type TemplateHeader = {
   updatedAt: string;
 };
 
-export type TemplateVariableBinding = { key: string; variableId: string; version: number };
+type TemplateVariableBinding = { key: string; variableId: string; version: number };
 
 /** The display parser omits the server-only golden binding, retaining the shared placement union. */
 type DisplayDefinition<T> = T extends CoreTemplateDefinition ? Omit<T, "goldenBinding"> : never;
@@ -163,7 +163,7 @@ export type TemplateLookups = {
   variables: readonly { id: string; name: string; scope: TemplateScope; version: number; status: string }[] | null;
 };
 
-export type TemplateProblem = { kind: "environment" | "tool" | "variable" | "secret"; text: string };
+type TemplateProblem = { kind: "environment" | "tool" | "variable" | "secret"; text: string };
 
 /**
  * Why a launch from this revision would be refused, as far as the viewer can tell from what is listed. Only a fact

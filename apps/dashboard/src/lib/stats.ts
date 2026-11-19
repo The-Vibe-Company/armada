@@ -24,7 +24,7 @@ const UNKNOWN: Stats = {
 const DAY = 24 * 3600 * 1000;
 
 /** The numbers at `now`, in one read-only statement. */
-export async function readStats(db: Queryable, now: Date): Promise<Stats> {
+async function readStats(db: Queryable, now: Date): Promise<Stats> {
   const day = new Date(now.getTime() - DAY);
   const week = new Date(now.getTime() - 7 * DAY);
   const rs = await db.query(
