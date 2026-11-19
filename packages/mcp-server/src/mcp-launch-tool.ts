@@ -1,27 +1,21 @@
-import { launchResponse } from "@armada/core";
-import { launch } from "@armada/core/contract";
+import { launch, launchEnvelope } from "@armada/core/contract";
 import {
   type GoldenRecord,
   goldenForLaunch,
-  HARNESSES,
+  LaunchError,
   launchSandbox,
   resolveModelChoice,
   resolveRepositoryDir,
-  SANDBOX_PROVIDERS,
   VaultError,
 } from "@armada/core/server";
 import * as z from "zod";
 import { UUID } from "./control-input.ts";
 import { INTERNAL_FAILURE_MESSAGE } from "./control-response.ts";
 import { prepareGoldenLaunchAccount } from "./launch-account-admission.ts";
+import { goldenLaunchResponse } from "./launch-response-schemas.ts";
 import { observeGoldenLaunch } from "./request-timing.ts";
-import { externalRefOutput, modelOutput, SANDBOX_STATUSES, skillReceipts } from "./sandbox-tool-schemas.ts";
 import { ToolError } from "./tool-error.ts";
 import type { ToolContext } from "./tools.ts";
-
-const providerOutput = z.enum(SANDBOX_PROVIDERS).describe("The sandbox provider it runs on, fixed for its life.");
-const compat = (name: string) =>
-  z.string().nullable().describe(`The same as ${name} on a Boat golden or sandbox; null on any other provider.`);
 
 const [ordinaryBoatLaunch, , ordinaryModalLaunch] = launch.input.body.options;
 const mcpLaunchOmissions = { armadaAccess: true, armadaAccessVersion: true } as const;
@@ -46,41 +40,7 @@ export const mcpLaunchContract = {
     "the sandbox act as that person (8 hour token): see `github` in the answer. Setup can take a few minutes. " +
     "Personal sessions may use an org slug or UUID. For scoped tokens, omit `org` or use the scoped org UUID.",
   input: mcpLaunchArguments,
-  output: {
-    id: z.string(),
-    provider: providerOutput,
-    runtime: z.object({ kind: z.literal("armada"), epoch: z.string() }).optional(),
-    runtimeTransport: z.literal("dialout").optional(),
-    providerSandboxId: z.string(),
-    boatId: compat("providerSandboxId"),
-    golden: z.string(),
-    externalRef: externalRefOutput,
-    visibility: z.enum(["org", "private"]),
-    harness: z.enum(HARNESSES),
-    helper: z.unknown(),
-    skills: skillReceipts,
-    repositoryDir: z
-      .string()
-      .nullable()
-      .describe("Configured directory used to prepare native agent cwd; not confinement."),
-    ...modelOutput,
-    machineSize: z.unknown().nullable(),
-    status: z.enum(SANDBOX_STATUSES),
-    conversationIds: z.array(z.string()),
-    promptId: z.string().nullable(),
-    ttlSeconds: z.number().int(),
-    expiresAt: z.string().nullable(),
-    github: z
-      .object({
-        status: z.enum(["connected", "not_connected", "revoked", "unavailable"]),
-        login: z.string().nullable(),
-        tokenExpiresAt: z.string().nullable(),
-        message: z.string().nullable(),
-      })
-      .describe(
-        "Whether git and gh in the sandbox act as the caller. Anything but connected means they are not signed in; message says how to fix it.",
-      ),
-  },
+  output: launchEnvelope.shape,
 };
 
 export function runMcpLaunch(context: ToolContext, input: unknown) {
@@ -145,11 +105,7 @@ export function runMcpLaunch(context: ToolContext, input: unknown) {
       );
       timing.checkpoint("shared_launcher");
       timing.launched(result.sandbox);
-      return {
-        ...launchResponse(result),
-        helper: result.helper,
-        visibility: result.sandbox.visibility ?? result.golden.visibility,
-      };
+      return goldenLaunchResponse(result);
     };
     if (!context.ordinaryLaunchReceipts) {
       if (args.idempotencyKey) throw new ToolError("invalid", "Durable launch receipts are not configured.");
@@ -174,13 +130,20 @@ export function runMcpLaunch(context: ToolContext, input: unknown) {
           throw new ToolError("invalid", "Provider cannot pin allocation authority.");
         })(),
     };
-    return context.ordinaryLaunchReceipts.run(
+    const receipt = await context.ordinaryLaunchReceipts.run(
       actor,
       args.idempotencyKey ?? crypto.randomUUID(),
       { ...args, goldenId: chosen.id },
       dispatch,
       authority,
     );
+    const envelope = launchEnvelope.safeParse(receipt);
+    if (!envelope.success)
+      throw new LaunchError(
+        "outcome_unknown",
+        "The saved launch receipt cannot be returned. Inspect the original sandbox through list. Do not use a new key.",
+      );
+    return envelope.data;
   });
 }
 

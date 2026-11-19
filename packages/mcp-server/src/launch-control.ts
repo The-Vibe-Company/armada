@@ -1,5 +1,4 @@
 import type { Harness, VaultStore } from "@armada/core";
-import { goldenCompatibilityIds, launchGitHubResponse, sandboxIdentity } from "@armada/core";
 import type { LaunchInput } from "@armada/core/contract";
 import { launch as launchOperation } from "@armada/core/contract";
 import {
@@ -7,7 +6,6 @@ import {
   type GoldenRecord,
   goldenForLaunch,
   LaunchError,
-  type LaunchResult,
   launchSandbox,
   type ModelChoice,
   type Provider,
@@ -29,7 +27,7 @@ import { providerForGolden } from "./golden-control.ts";
 import { prepareGoldenLaunchAccount } from "./launch-account-admission.ts";
 import { launchCredentials } from "./launch-credentials.ts";
 import { launchOptions, launchProviderOptions } from "./launch-options.ts";
-import { canonicalLaunchResponse } from "./launch-response-schemas.ts";
+import { canonicalLaunchResponse, goldenLaunchResponse } from "./launch-response-schemas.ts";
 import { type GoldenLaunchTiming, observeGoldenLaunch } from "./request-timing.ts";
 import { defineRoutes } from "./routes.ts";
 
@@ -199,7 +197,7 @@ async function launchGolden(
     timing.checkpoint("shared_launcher");
     timing.launched(result.sandbox);
     return {
-      ...launchJson(result),
+      ...goldenLaunchResponse(result),
       ...(armadaAccess
         ? { armadaAccess: { enabled: true, maxActiveChildren: armadaAccess.maxActiveChildren ?? 3 } }
         : {}),
@@ -321,26 +319,6 @@ export function templateRuntime(options: LaunchControlOptions, caller: Caller) {
       : {}),
     provider: (golden: GoldenRecord) => providerForGolden(options, caller, golden),
     ...(options.launch ? { options: options.launch } : {}),
-  };
-}
-
-function launchJson(result: LaunchResult) {
-  return {
-    ...(result.runtime ? { runtime: result.runtime } : {}),
-    helper: result.helper,
-    sandbox: {
-      ...result.sandbox,
-      ...sandboxIdentity(result.sandbox),
-    },
-    golden: {
-      ...result.golden,
-      ...goldenCompatibilityIds(result.golden),
-    },
-    promptId: result.promptId ?? null,
-    conversationId: result.conversationId ?? null,
-    ttlSeconds: result.ttlSeconds,
-    expiresAt: result.expiresAt?.toISOString() ?? null,
-    github: launchGitHubResponse(result.github),
   };
 }
 
