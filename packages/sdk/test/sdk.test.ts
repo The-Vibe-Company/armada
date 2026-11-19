@@ -1,10 +1,9 @@
 import { expect, test } from "bun:test";
 import { inspect } from "node:util";
 import type { DockerLaunchRequest, DockerSandboxStatus } from "@armada/core";
-import { launch } from "@armada/core/contract";
+import { launch, launchEnvelope } from "@armada/core/contract";
 import { ProviderError } from "@armada/core/server";
 import { controlFailureResponse } from "../../mcp-server/src/control-errors.ts";
-import { REST_LAUNCH_RESPONSE } from "../../mcp-server/src/launch-response-schemas.ts";
 import { webhookSignature } from "../../mcp-server/src/outbound-webhooks.ts";
 import { createRuntimeAgent } from "../../mcp-server/src/runtime-agent.ts";
 import { RuntimeCommandPending, RuntimeCommandRefused } from "../../mcp-server/src/runtime-commands.ts";
@@ -118,7 +117,7 @@ test("launch sends a Docker request and returns the Docker receipt without a gol
     ttlSeconds: 3600,
     expiresAt: "2026-11-18T00:00:00.000Z",
   };
-  expect(REST_LAUNCH_RESPONSE.safeParse(receipt).success).toBe(true);
+  expect(launchEnvelope.safeParse(receipt).success).toBe(true);
   let sent: unknown;
   const client = new Armada({
     token: "service_placeholder",

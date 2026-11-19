@@ -7684,7 +7684,7 @@
                         "helper",
                         "runtime"
                       ],
-                      "additionalProperties": {}
+                      "additionalProperties": false
                     },
                     {
                       "anyOf": [

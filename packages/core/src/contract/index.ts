@@ -1,7 +1,9 @@
 import type { z } from "zod";
 import { launchInput } from "./launch.ts";
+import { launchOutput } from "./launch-response.ts";
 
 export type { LaunchInput } from "./launch.ts";
+export { type LaunchEnvelope, launchEnvelope, templateLaunchResponse } from "./launch-response.ts";
 
 export interface Operation<Input extends z.ZodType, Output extends z.ZodType | undefined = undefined> {
   readonly name: string;
@@ -19,13 +21,12 @@ export const launch = {
   name: "launch",
   route: { method: "POST", path: "/api/v1/sandbox/launch" },
   input: { body: launchInput },
-  // The success envelope belongs to #2773.
-  output: undefined,
+  output: launchOutput,
   readOnly: false,
   destructive: false,
   audience: "agent",
   description: "Launch a sandbox and optionally start its first turn.",
   errors: ["invalid"],
-} as const satisfies Operation<typeof launchInput>;
+} as const satisfies Operation<typeof launchInput, typeof launchOutput>;
 
 export const operations = { launch } as const;

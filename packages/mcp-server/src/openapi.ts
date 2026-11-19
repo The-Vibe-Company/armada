@@ -11,7 +11,7 @@ import {
   VERSION,
   vaultControlRoute,
 } from "@armada/core";
-import { launch } from "@armada/core/contract";
+import { launch, templateLaunchResponse } from "@armada/core/contract";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { z } from "zod";
@@ -27,11 +27,9 @@ import {
 import {
   GOLDEN_LIST_RESPONSE,
   LAUNCH_OPTIONS_RESPONSE,
-  REST_LAUNCH_RESPONSE,
   REST_LOGS_RESPONSE,
   requestJsonSchema,
   responseJsonSchema,
-  TEMPLATE_LAUNCH_RESPONSE,
 } from "./launch-response-schemas.ts";
 import { PUBLISHED_REST_GET_ROUTES, PUBLISHED_REST_ROUTES } from "./public-rest-routes.ts";
 import { SANDBOX_REST_CONTRACTS } from "./sandbox-rest-controls.ts";
@@ -59,8 +57,8 @@ const REST_RESPONSES: Readonly<Record<string, z.ZodType>> = {
   "sandbox/recovery": SANDBOX_REST_CONTRACTS["sandbox/recovery"].output,
   "golden/adopt": GOLDEN_ADOPTION_RESPONSE,
   "golden/capabilities": GOLDEN_CAPABILITIES_RESPONSE,
-  "sandbox/launch": z.union([REST_LAUNCH_RESPONSE, TEMPLATE_LAUNCH_RESPONSE]),
-  "templates/launch": TEMPLATE_LAUNCH_RESPONSE,
+  "sandbox/launch": launch.output,
+  "templates/launch": templateLaunchResponse,
   "logs/read": REST_LOGS_RESPONSE,
 };
 /** Handled directly by the REST dispatcher, not through an MCP tool. */

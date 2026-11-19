@@ -20,6 +20,7 @@ import {
   VaultError,
   type VaultStore,
 } from "@armada/core";
+import { launchEnvelope } from "@armada/core/contract";
 import { createSkillDefaultsService, createSqlVaultStore, createTemplateService } from "@armada/core/server";
 import { appendModalEvents, createSqlModalStore, type Machine, type Scope, scopeKey } from "@armada/provider-modal";
 import type { PGlite } from "@electric-sql/pglite";
@@ -1280,7 +1281,7 @@ describe("control API", () => {
       expect(first?.status).toBe(200);
       const receipt = await first!.json();
       publishedResponse("sandbox/launch").parse(receipt);
-      const launched = (receipt as { sandbox: { id: string; externalRef?: string } }).sandbox;
+      const { sandbox: launched } = launchEnvelope.parse(receipt);
       expect(launched.externalRef).toBe("tender:1");
       const replay = await call("sandbox/launch", request);
       expect(replay?.status).toBe(200);
