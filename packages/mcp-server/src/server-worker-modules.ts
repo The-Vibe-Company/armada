@@ -11,6 +11,7 @@ import { createRuntimeAgent } from "./runtime-agent.ts";
 import { createRuntimeIdle } from "./runtime-idle.ts";
 import { createFinishedDockerCleanup } from "./sandbox-finish.ts";
 import { createSandboxLifecycle } from "./sandbox-lifecycle.ts";
+import { OUTPUTS_CAPTURE } from "./sandbox-outputs.ts";
 import { createSandboxPullRequests } from "./sandbox-pull-requests.ts";
 import { dockerMounts, outputMounts, runtimeMounts } from "./server-mounts.ts";
 import type { ServerModule } from "./server-registration.ts";
@@ -71,7 +72,20 @@ const idleLane: LaneFactory = ({ sql, config, runtimeCheckpoint, idleDelayMs, do
       : {}),
   });
 
-const jobsLane: LaneFactory = ({ jobs, options }) => createJobsRunner(jobs, {}, options.logError);
+const jobsLane: LaneFactory = ({ jobs, options, outputs }) => {
+  const runner = createJobsRunner(jobs, { [OUTPUTS_CAPTURE]: outputs.captureJob }, options.logError);
+  return {
+    ...runner,
+    async reconcileOne(signal) {
+      await outputs.enqueueCaptures(jobs, signal);
+      return runner.reconcileOne(signal);
+    },
+    async drain() {
+      await runner.drain();
+      await outputs.drain();
+    },
+  };
+};
 const dockerCleanupLane: LaneFactory = ({ sql, config }) => createFinishedDockerCleanup(sql, config.encryptionKey);
 export const retentionWorker =
   ({ sql, control }: ServerServices) =>
@@ -103,7 +117,6 @@ export const jobsModule: ServerModule = ({ workers }) => {
 };
 export const outputModule: ServerModule = ({ mounts, workers }) => {
   mounts.push(outputMounts);
-  workers.managed.set("outputs", ({ outputs }) => outputs);
   workers.managed.set("webhooks", ({ webhooks }) => webhooks);
 };
 export const nativeModule: ServerModule = ({ workers }) => {

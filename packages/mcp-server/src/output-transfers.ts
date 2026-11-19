@@ -8,6 +8,8 @@ import {
 } from "@armada/core";
 import { decryptSecret, encryptSecret, OutputCollectionError, type Provider, type Sql } from "@armada/core/server";
 
+import type { Job } from "./jobs/runner.ts";
+
 type ChunkedOutputReader = Required<Pick<Provider, "listOutputEntries" | "readOutputChunk">> &
   Pick<Provider, "outputReadBytes" | "outputReadConcurrency">;
 
@@ -37,14 +39,16 @@ export async function collectOutputTransfers(
   key: string,
   writes?: Set<Promise<unknown>>,
   retainedGeneration?: string,
+  job?: Job,
 ): Promise<void> {
   const { signal } = request;
+  const generation = retainedGeneration ?? job?.generation ?? null;
   const canWrite = `not application_secret_tainted and (${
     retainedGeneration === undefined
       ? CAN_WRITE_LIVE
-      : `${RETAINED_OUTPUT_STOP} and lifecycle_generation=$3::bigint and outputs_checked_at=$2::timestamptz and provider_sandbox_id=$4`
-  }) and (outputs_published_scan is null or outputs_published_scan<$2::timestamptz)`;
-  const authority = retainedGeneration === undefined ? [id, scan] : [id, scan, retainedGeneration, request.sandboxId];
+      : `${RETAINED_OUTPUT_STOP}${job ? "" : " and outputs_checked_at=$2::timestamptz"}`
+  }) and ($3::bigint is null or (lifecycle_generation=$3::bigint and provider_sandbox_id=$4)) and (outputs_published_scan is null or outputs_published_scan<$2::timestamptz)`;
+  const authority = [id, scan, generation, request.sandboxId];
   if (!sql.transaction) throw Error("output_transaction_unavailable");
   const transaction = sql.transaction.bind(sql);
   // All stage/publish writes share the existing sandbox taint and publication fence.
