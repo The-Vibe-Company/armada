@@ -364,7 +364,6 @@ test("REST admission and rebuild failure retain last-good config/pointer and rel
   } finally {
     logs.mockRestore();
     try {
-      // Row resets do not restore schema changes if any assertion above fails.
       await s.db.exec(`
         drop trigger if exists fail_snapshot_pointer on goldens;
         drop trigger if exists fail_job_success on golden_build_jobs;
