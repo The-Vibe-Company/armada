@@ -2,7 +2,7 @@ import type { z } from "zod";
 import { createdInboundTrigger, createInboundTriggerBody, createInboundTriggerQuery } from "./inbound-trigger.ts";
 import { launchInput } from "./launch.ts";
 import { launchEnvelope } from "./launch-response.ts";
-import { publicAuthOperations } from "./public-auth.ts";
+import { githubCallbackOperations, publicAuthOperations } from "./public-auth.ts";
 import { githubOperations, goldenOperations, launchTemplateOperation } from "./resources.ts";
 import { sandboxOperations } from "./sandbox.ts";
 import { sandboxCheckOperations } from "./sandbox-checks.ts";
@@ -19,7 +19,7 @@ export {
   type PinnedModalLaunchInput,
 } from "./launch.ts";
 export { type LaunchEnvelope, launchEnvelope, templateLaunchResponse } from "./launch-response.ts";
-export { PUBLIC_CONTROL_ROUTES, publicAuthOperations, signInMethod } from "./public-auth.ts";
+export { githubCallbackOperations, PUBLIC_CONTROL_ROUTES, publicAuthOperations, signInMethod } from "./public-auth.ts";
 export { githubOperations, goldenOperations, launchTemplateOperation } from "./resources.ts";
 export {
   DEFAULT_WAIT_SECONDS,
@@ -50,6 +50,7 @@ export interface Operation<Input extends z.ZodType, Output extends z.ZodType | u
   readonly input: {
     readonly body: Input;
     readonly maxBodyBytes?: number;
+    readonly oversizedBodyStatus?: 400;
     readonly query?: z.ZodType;
     readonly path?: Readonly<Record<string, z.ZodType>>;
     readonly headers?: Readonly<Record<string, z.ZodType>>;
@@ -104,6 +105,7 @@ export const createInboundTrigger = {
 export const operations = {
   launch,
   ...publicAuthOperations,
+  ...githubCallbackOperations,
   ...goldenOperations,
   ...githubOperations,
   launchTemplate: launchTemplateOperation,
