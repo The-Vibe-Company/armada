@@ -15,6 +15,7 @@ export { executeGoldenCommand } from "./golden-exec.ts";
 export { createGenerationGrants } from "./grants.ts";
 export { MODAL_CONFORMANCE_APP, MODAL_IMAGE_LOCK } from "./image-lock.ts";
 export { createModalIngestHandler } from "./ingest.ts";
+export { createModalMachine, type ModalMachineJournal, type ModalMachineOptions } from "./machine.ts";
 export type * from "./ports.ts";
 export { captureProcessBaseline, quiesceSandboxProcesses } from "./process-scope.ts";
 export {
