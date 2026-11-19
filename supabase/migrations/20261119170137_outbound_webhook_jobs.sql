@@ -1,6 +1,7 @@
 -- Preserve the transactional producers. One committed delivery creates one job,
 -- regardless of which producer wrote it. A conflicting insert fires no trigger.
 -- Fence legacy consumers before taking the backfill snapshot.
+begin;
 lock table public.outbound_webhook_deliveries in share row exclusive mode;
 
 create function public.fence_outbound_webhook_legacy_claim() returns trigger
@@ -43,3 +44,5 @@ select d.id, 'webhook', 'webhook:' || d.id, e.org_id,
 from public.outbound_webhook_deliveries d
 join public.outbound_webhook_endpoints e on e.id = d.endpoint_id
 where e.enabled and d.delivered_at is null and d.attempts < 5;
+
+commit;
