@@ -111,7 +111,7 @@ async function fixture(
     refreshFailure?: "auth" | "network";
     repositoryAccessDenied?: boolean;
     publicRepositoryAccess?: boolean;
-    withholdWorkspace?: "timeout" | "stop";
+    withholdWorkspace?: { timeoutMs: number } | "stop";
     distinctPromptIds?: boolean;
     githubConfigurationAcknowledged?: boolean;
     refuseSkillInstall?: boolean;
@@ -257,6 +257,7 @@ async function fixture(
         if (command.op === "workspaceExec" && options.withholdWorkspace) {
           if (options.withholdWorkspace === "stop")
             await db.query("update sandboxes set stop_requested_at=now() where id=$1", [body.requestId]);
+          else now = Math.max(now, options.withholdWorkspace.timeoutMs - 1);
           return;
         }
         if (command.op === "prompt" && command.input.conversationId)
@@ -3099,7 +3100,8 @@ test.each([false, true])(
 test.each(["timeout", "stop"] as const)(
   "snapshot refresh wait honors launch admission while its runtime reply is withheld (%s)",
   async (mode) => {
-    const f = await snapshotFixture(true, { withholdWorkspace: mode });
+    const timeoutMs = 5000;
+    const f = await snapshotFixture(true, { withholdWorkspace: mode === "timeout" ? { timeoutMs } : "stop" });
     const id = randomUUID();
     await f.snapshots.command(f.caller, "create", {
       org: f.actor.orgId,
@@ -3119,12 +3121,12 @@ test.each(["timeout", "stop"] as const)(
     });
     const { hostId: _, ...body } = f.body;
     const startedAt = f.clock.now();
-    await expect(f.service(sql, true, 5000).launch(f.caller, { ...body, snapshotId: id })).rejects.toBeInstanceOf(
-      ProviderError,
-    );
+    await expect(f.service(sql, true, timeoutMs).launch(f.caller, { ...body, snapshotId: id })).rejects.toMatchObject({
+      code: mode === "timeout" ? "unavailable" : "conflict",
+    });
     const elapsed = f.clock.now() - startedAt;
-    expect(elapsed).toBeLessThanOrEqual(5250);
-    if (mode === "timeout") expect(elapsed).toBeGreaterThanOrEqual(5000);
+    if (mode === "timeout") expect(elapsed).toBe(timeoutMs);
+    else expect(elapsed).toBeLessThan(timeoutMs);
     expect((f.native as { op: string }[]).some((command) => command.op === "workspaceExec")).toBe(true);
     expect((f.native as { op: string }[]).some((command) => command.op === "prompt")).toBe(false);
   },
