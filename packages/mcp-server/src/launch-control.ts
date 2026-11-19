@@ -1,6 +1,11 @@
 import type { Harness, VaultStore } from "@armada/core";
 import type { LaunchInput } from "@armada/core/contract";
-import { launch as launchOperation, launchOptionsOperation } from "@armada/core/contract";
+import {
+  controlRouteKey,
+  launch as launchOperation,
+  launchOptionsOperation,
+  launchTemplateOperation,
+} from "@armada/core/contract";
 import {
   type GoldenActor,
   type GoldenRecord,
@@ -443,7 +448,7 @@ export const launchRoutes = defineRoutes("launch", {
     }
     return canonicalLaunchResponse(await launchRoute(options, caller, launch));
   },
-  "templates/launch": ({ caller, body, options, request }) => {
+  [controlRouteKey(launchTemplateOperation.route)]: ({ caller, body, options, request }) => {
     configureDockerLaunch(options, request);
     if (!options.templates) throw new VaultError("unavailable", "Templates unavailable.");
     return launchTemplate(options.templates, caller, body, templateRuntime(options, caller), "template_rest");
