@@ -13,6 +13,7 @@ test.each([
   { secret: 'opaque_fixture_\n"value', prefix: "", suffix: "" },
   { secret: "ess", prefix: "prefix", suffix: "suffix" },
   { secret: "stderr", prefix: "prefix", suffix: "suffix" },
+  { secret: "snapshot", prefix: "prefix", suffix: "suffix" },
   { secret: "abc", prefix: "prefix", suffix: "suffix", overlap: "bc12345", extension: "12345" },
   { secret: "abc", prefix: "", suffix: "suffix", overlap: "bc!xyz", extension: "!xyz", wholeField: true },
 ])("masks marked values in event text ($secret)", async (fixture) => {
@@ -28,7 +29,7 @@ test.each([
       const text = `${prefix}${environment.APP_TOKEN}${extension}${suffix} ${environment.APP_REGION}`;
       emit({ kind: "other", type: "harness_stderr", data: { text } });
       emit({ kind: "other", type: "raw_diagnostic_fixture", data: { text }, rawDiagnostic: true });
-      emit({ kind: "message", text, partial: false, tools: [], messageId: "message_fixture" });
+      emit({ kind: "message", text, textMode: "snapshot", partial: false, tools: [], messageId: "message_fixture" });
       return { done: Promise.resolve("finished"), async interrupt() {}, async steer() {} };
     },
     async close() {},
@@ -59,7 +60,7 @@ test.each([
       result: {
         events: expect.arrayContaining([
           expect.objectContaining({ kind: "other", data: { text } }),
-          expect.objectContaining({ kind: "message", text, messageId: "message_fixture" }),
+          expect.objectContaining({ kind: "message", text, textMode: "snapshot", messageId: "message_fixture" }),
         ]),
       },
     });
