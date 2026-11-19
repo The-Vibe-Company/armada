@@ -207,11 +207,12 @@ printf '%65535s%s' '' 'tπz' >&2`,
       const response = await call(runner, "exec", command);
       expect(response.status).toBe(200);
       const body = await response.json();
+      expect(journal.redact("synthetic-new-refresh")).toBe("[REDACTED]");
       const output = { stdout: "[REDACTED]", stderr: "[REDACTED]", truncated: true };
-      expect(body.result).toMatchObject(output);
+      expect(body).toMatchObject({ result: output });
       const process = journal.db.query<{ pid: number }, []>("select pid from processes").get()!;
       const recorded = await call(runner, "getExec", { processId: process.pid });
-      expect((await recorded.json()).result).toMatchObject(output);
+      expect(await recorded.json()).toMatchObject({ result: output });
       expect(await (await call(runner, "exec", command)).json()).toEqual(body);
     } finally {
       await runner.close();
