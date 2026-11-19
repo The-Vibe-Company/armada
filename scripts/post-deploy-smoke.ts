@@ -1423,7 +1423,10 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
                 typeof row.outputTokens === "number" &&
                 typeof result.usage?.tokenTotals?.inputTokens === "number" &&
                 typeof result.usage?.tokenTotals?.outputTokens === "number"
-              .catch((error: unknown) => {
+              );
+            },
+            { step: usageStep },
+          ).catch((error: unknown) => {
             if (
               error instanceof SmokeFailure &&
               (error.code === "request_failed" || error.transportTimeoutMs !== undefined)
