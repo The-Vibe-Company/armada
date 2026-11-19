@@ -838,7 +838,7 @@ test("a failed Docker resume ACK only fails the activation admitted for that req
   ).toEqual({ stopped_at: null });
 });
 
-test.each(["refusal first", "ACK first", "previous server ACK", "ACK transaction rollback"] as const)(
+test.each(["refusal first", "failed ACK", "ACK first", "previous server ACK", "ACK transaction rollback"] as const)(
   "a refused Docker resume returns to a retained stop after claim settlement (%s)",
   async (order) => {
     const f = await fixture();
@@ -911,7 +911,7 @@ test.each(["refusal first", "ACK first", "previous server ACK", "ACK transaction
           expect((await reservations.get(f.actor, id)).status).toBe("starting");
           expect((await hosts.poll(f.hostToken, f.installationId))?.requestId).toBe(job.requestId);
         }
-        await ack(job.requestId);
+        await ack(job.requestId, order === "failed ACK" ? "failed" : "completed");
       }
     }
     expect((await reservations.get(f.actor, id)).status).toBe("stopping");
