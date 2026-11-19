@@ -36,11 +36,25 @@ def seed(volume, directory, pins):
                 iter(lambda: source.read(1024 * 1024), b""), pin
             ):
                 raise ValueError("Invalid local public runtime artifact")
-            source.seek(0)
             with volume.batch_upload(force=True) as batch:
-                batch.put_file(source, "/" + pin["sha256"], mode=0o444)
+                batch.put_file(Path(f"/proc/self/fd/{source.fileno()}"), "/" + pin["sha256"], mode=0o444)
         if not volume_matches(volume, pin):
             raise ValueError("Volume runtime artifact verification failed")
+
+
+def seed_bound_app(modal, request):
+    environment = request["environment"]
+    client = modal.Client.from_credentials(request["tokenId"], request["tokenSecret"])
+    app = modal.App.lookup(request["appName"], environment_name=environment, client=client)
+    if app.app_id != request["appId"]:
+        raise ValueError("Modal app binding mismatch")
+    volume = modal.Volume.from_name(
+        "armada-runtime-artifacts",
+        environment_name=environment,
+        create_if_missing=True,
+        client=client,
+    )
+    seed(volume, request["directory"], request["pins"])
 
 
 if __name__ == "__main__":
@@ -48,19 +62,4 @@ if __name__ == "__main__":
 
     import modal
 
-    request = json.load(sys.stdin)
-    environment = request["environment"]
-    client = modal.Client.from_credentials(request["tokenId"], request["tokenSecret"])
-    try:
-        app = modal.App.lookup(request["appName"], environment_name=environment, client=client)
-        if app.app_id != request["appId"]:
-            raise ValueError("Modal app binding mismatch")
-        volume = modal.Volume.from_name(
-            "armada-runtime-artifacts",
-            environment_name=environment,
-            create_if_missing=True,
-            client=client,
-        )
-        seed(volume, request["directory"], request["pins"])
-    finally:
-        client.close()
+    seed_bound_app(modal, json.load(sys.stdin))

@@ -35,18 +35,38 @@ export function createModalArtifactCache(
   const set = runtimeArtifactSet(manifest);
   if (!set) throw Error("Invalid Modal runtime artifact set.");
   const pins = [set.runtime, ...set.artifacts];
-  const warmed = new Map<string, Promise<void>>();
-  return (binding: ModalArtifactBinding, signal?: AbortSignal) => {
+  const warmed = new Set<string>();
+  const inFlight = new Map<string, Promise<void>>();
+  const shutdown = new AbortController();
+  function warm(binding: ModalArtifactBinding, startupBudget?: AbortSignal) {
     const key = createHash("sha256")
       .update(JSON.stringify([binding.appId, binding.environment, binding.tokenId, binding.tokenSecret]))
       .digest("hex");
-    const current = warmed.get(key);
+    if (warmed.has(key) || shutdown.signal.aborted) return Promise.resolve();
+    const current = inFlight.get(key);
     if (current) return current;
-    const pending = seed({ ...binding, directory, pins }, signal).catch((error: unknown) => {
-      warmed.delete(key);
-      throw error;
-    });
-    warmed.set(key, pending);
+    const signal = startupBudget ? AbortSignal.any([startupBudget, shutdown.signal]) : shutdown.signal;
+    const pending = seed({ ...binding, directory, pins }, signal)
+      .then(() => {
+        warmed.add(key);
+      })
+      .finally(() => {
+        inFlight.delete(key);
+      });
+    inFlight.set(key, pending);
     return pending;
+  }
+  return {
+    warm,
+    beginWarming(binding: ModalArtifactBinding, logError: (line: string) => void) {
+      if (inFlight.size >= 4) return;
+      void warm(binding).catch(() => {
+        logError("Modal artifact warming failed for an enrolled App.");
+      });
+    },
+    async drain() {
+      shutdown.abort();
+      await Promise.allSettled(inFlight.values());
+    },
   };
 }

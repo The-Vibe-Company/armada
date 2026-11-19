@@ -364,7 +364,7 @@ export async function createServerServices(env: Record<string, string | undefine
       target.modal,
       { target, caller, credentialScope: tokens.scope },
       false,
-      warmModalArtifacts,
+      (binding) => warmModalArtifacts?.beginWarming(binding, options.logError ?? console.error),
     )) as import("@armada/provider-modal").ModalProvider;
   };
   if (config.modalAgentPath === "runtime") {
@@ -628,6 +628,7 @@ export async function createServerServices(env: Record<string, string | undefine
     delegatedAccess,
     modelAuth,
     modal,
+    modalArtifactCache: warmModalArtifacts,
     mcp,
     goldenBuilds,
     goldenRetirements,

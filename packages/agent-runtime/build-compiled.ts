@@ -40,6 +40,7 @@ async function packHarness(source: string, archive: string) {
       "--format=gnu",
       "--sort=name",
       "--mtime=@0",
+      "--mode=a=rX,u+w",
       "--owner=0",
       "--group=0",
       "--numeric-owner",

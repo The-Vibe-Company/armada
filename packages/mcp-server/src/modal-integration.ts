@@ -30,7 +30,7 @@ import { ModalClient } from "modal";
 import type { HandlerOptions } from "./http.ts";
 import type { GitHubLaunchOptions } from "./launch-credentials.ts";
 import { observeNativeFirstToken } from "./launch-stage-record.ts";
-import type { createModalArtifactCache } from "./modal-artifact-cache.ts";
+import type { createModalArtifactCache, ModalArtifactBinding } from "./modal-artifact-cache.ts";
 import { projectModalEventUsage } from "./modal-event-usage.ts";
 import { modalLaunchEnvironment } from "./modal-launch-environment.ts";
 import { createModalReaper, modalReaperSql } from "./modal-reaper.ts";
@@ -165,7 +165,7 @@ export async function createModalIntegration(options: {
     }
   }
   async function warmRegisteredArtifactCaches(
-    warm: ReturnType<typeof createModalArtifactCache>,
+    cache: ReturnType<typeof createModalArtifactCache>,
     logError: (line: string) => void,
   ) {
     const { rows } = await options.sql.query<{
@@ -187,7 +187,7 @@ export async function createModalIntegration(options: {
               credentialOwnerId: row.authority_owner_id,
             });
             startupBudget.throwIfAborted();
-            await warm(
+            await cache.warm(
               { appId: row.app_id, appName: row.app_name, environment: row.environment, tokenId, tokenSecret },
               startupBudget,
             );
@@ -208,7 +208,7 @@ export async function createModalIntegration(options: {
     binding: Parameters<NonNullable<HandlerOptions["modalProviderFor"]>>[1],
     context: Parameters<NonNullable<HandlerOptions["modalProviderFor"]>>[2],
     storedReads = false,
-    warmArtifacts?: ReturnType<typeof createModalArtifactCache>,
+    onRuntimeBinding?: (binding: ModalArtifactBinding) => void,
   ): Promise<Provider> => {
     const authority = await options.sql.query<{ app_name: string }>(
       "select app_name from public.modal_server_apps where org_id=$1 and app_id=$2 and environment=$3",
@@ -286,15 +286,7 @@ export async function createModalIntegration(options: {
       undefined,
       sandbox,
     );
-    if (warmArtifacts) {
-      await observeProviderCall(
-        "modal",
-        "warmArtifactCache",
-        () => warmArtifacts({ appId: binding.appId, appName, environment: binding.environment, ...tokens }),
-        undefined,
-        sandbox,
-      );
-    }
+    onRuntimeBinding?.({ appId: binding.appId, appName, environment: binding.environment, ...tokens });
     return observeProvider("modal", provider, sandbox);
   };
   async function goldenTarget(
@@ -372,7 +364,7 @@ export async function createModalIntegration(options: {
                     (signal): signal is AbortSignal => signal !== undefined,
                   ),
                 ]);
-                startupBudget.throwIfAborted();
+                signal.throwIfAborted();
                 return yield* call.next(call.request, { ...options, signal });
               },
             ],

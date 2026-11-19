@@ -78,10 +78,10 @@ and SHA256 before publishing it to the private cache. Provider-run Modal and
 Boat do not mount the Volume.
 
 On startup the server uses the registered Modal App credentials to create
-or warm the Volume in each bound environment. Before an enrolled launch or
-resume uses an App, the server also ensures warming succeeded. This covers
-new bindings and retries a failed startup warm. The seeder verifies existing
-entries and writes only missing or invalid manifest digests, verifies uploaded
+or warm the Volume in each bound environment. Enrolled launches and resumes
+also request warming for new bindings and failed startup seeds. A launch
+that races warming can use the existing verified HTTP installer. The seeder
+verifies existing entries and writes only missing or invalid manifest digests, verifies uploaded
 bytes by SHA-256 and size, and preserves digests from other deployments. The
 server image includes the Modal Python SDK used for Volume uploads. The Modal
 credentials need permission to create and write the Volume. The first seed
