@@ -65,7 +65,7 @@ import {
   type StatusReport,
   waitSettled,
 } from "./turns.ts";
-import { recordStopDispatch } from "./work-preservation.ts";
+import { stopAndObserve } from "./work-preservation.ts";
 
 /** Everything a tool call may use, for one authenticated request. */
 export interface ToolContext {
@@ -1550,10 +1550,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
           try {
             if (provider.collectTurnUsage) await collectSandboxUsage(provider, data.sandboxes, found);
             signal.throwIfAborted();
-            recordStopDispatch(found.id, found.providerSandboxId, "user_stop");
-            await provider.stop({ sandboxId: found.providerSandboxId });
-            signal.throwIfAborted();
-            const observed = await provider.get(found.providerSandboxId);
+            const observed = await stopAndObserve(provider, found.id, found.providerSandboxId, "user_stop", signal);
             terminal =
               observed.state === "stopped" &&
               (provider.id !== "boat" || observed.retainedSnapshot === "usable" || found.status === "failed");

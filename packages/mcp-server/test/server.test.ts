@@ -1372,6 +1372,16 @@ describe("tools", () => {
     expect(boat.execs.filter((r) => r.preservationStage === "collect_exec")).toHaveLength(count + 1);
   });
 
+  test("user stop leaves an unverified archive in worker custody without dispatching another stop", async () => {
+    const { token, client, people, boat } = await start();
+    const mcp = await client(await token(people.member));
+    const { data } = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    const machine = boat.sandbox("bx_1");
+    machine.info = { ...machine.info, state: "stopped", providerState: "archived", retainedSnapshot: "unconfirmed" };
+    expect((await call(mcp, "stop", { id: data.id })).data.status).toBe("stopping");
+    expect(boat.stops).toHaveLength(0);
+  });
+
   test.each(["preserved", "clean"] as const)("user stop then lifecycle stop reuses its %s capture", async (result) => {
     const oldKey = process.env.ARMADA_ENCRYPTION_KEY;
     process.env.ARMADA_ENCRYPTION_KEY = ENCRYPTION_KEY;

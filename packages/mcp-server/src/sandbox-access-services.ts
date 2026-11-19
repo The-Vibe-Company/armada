@@ -22,7 +22,7 @@ import { createSandboxChildren } from "./sandbox-access-children.ts";
 import { createSandboxScopedGateway } from "./sandbox-access-scoped-gateway.ts";
 import { extendSandbox } from "./sandbox-extend.ts";
 import { createRuntimeSelfFinish, requestSandboxFinish } from "./sandbox-finish.ts";
-import { preserveBeforeStop, recordStopDispatch } from "./work-preservation.ts";
+import { preserveBeforeStop, stopAndObserve } from "./work-preservation.ts";
 
 class DelegatedAccessError extends Error {
   constructor(readonly code: string) {
@@ -199,7 +199,7 @@ export function createSandboxAccessServices(input: {
         scoped,
         saved,
         { status: "stopping", stopRequested: true, statusReason: null },
-        async () => {
+        async (signal) => {
           if (
             (await preserveBeforeStop(
               input.sql,
@@ -210,11 +210,14 @@ export function createSandboxAccessServices(input: {
             ).catch(() => {})) === "pending"
           )
             return { result: undefined, patch: { status: "stopping", stopRequested: true } };
-          recordStopDispatch(saved.id, saved.providerSandboxId, "managed_child_stop");
-          await provider.stop({ sandboxId: saved.providerSandboxId });
-          // Stop dispatch is not physical closure. Keep pending stops observable by
-          // lifecycle recovery, and release the status-read fence only on confirmation.
-          const observed = await provider.get(saved.providerSandboxId);
+          signal.throwIfAborted();
+          const observed = await stopAndObserve(
+            provider,
+            saved.id,
+            saved.providerSandboxId,
+            "managed_child_stop",
+            signal,
+          );
           const terminal =
             observed.state === "stopped" && (provider.id !== "boat" || observed.retainedSnapshot === "usable");
           return {

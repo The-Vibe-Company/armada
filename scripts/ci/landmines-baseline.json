@@ -1009,7 +1009,7 @@
     "packages/mcp-server/src/sandbox-access-children.ts": 12,
     "packages/mcp-server/src/sandbox-access-http-body.ts": 1,
     "packages/mcp-server/src/sandbox-access-scoped-gateway.ts": 4,
-    "packages/mcp-server/src/sandbox-access-services.ts": 20,
+    "packages/mcp-server/src/sandbox-access-services.ts": 18,
     "packages/mcp-server/src/sandbox-access-transport.ts": 1,
     "packages/mcp-server/src/sandbox-account-change.ts": 5,
     "packages/mcp-server/src/sandbox-activity.ts": 1,
