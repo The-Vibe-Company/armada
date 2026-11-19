@@ -14,13 +14,12 @@ interface DockerInventoryOwner {
   status: SandboxStatus;
 }
 
-/** A report describes one authenticated installation at the time of its scan. */
 export function dockerMachineInventory(
   hostId: string,
   deploymentId: string,
   containers: readonly DockerInventoryContainer[],
   owners: readonly DockerInventoryOwner[],
-): ProviderReaperSource {
+) {
   const scoped = containers.filter((container) => container.deploymentId === deploymentId);
   const byMachine = new Map(scoped.map((container) => [container.machineId, container]));
   const bySandbox = new Map(owners.map((row) => [row.id, row]));
@@ -47,5 +46,5 @@ export function dockerMachineInventory(
         ? { kind: "owned", status: owner.status, generation: owner.generation }
         : { kind: "absent" };
     },
-  };
+  } satisfies ProviderReaperSource;
 }
