@@ -41,17 +41,18 @@ export async function requestFailedRuntimeResumeStop(
   return changed.rows[0]?.status;
 }
 
-export async function requestRefusedDockerResumeStop(tx: Sql, sandboxId: string, generation: string) {
-  const changed = await tx.query(
-    `update public.sandboxes set status='stopping',status_reason=null,
-      stop_requested_at=clock_timestamp(),stop_generation=stop_generation+1,
-      lifecycle_generation=lifecycle_generation+1
-     where id=$1 and provider='docker' and lifecycle_generation=$2 and status='starting'
-       and stop_requested_at is null and deleted_at is null and expires_at>clock_timestamp()
-       and not application_secret_tainted returning id`,
-    [sandboxId, generation],
+export async function failDockerResumeActivation(tx: Sql, sandboxId: string, requestId: string, reason: string) {
+  await tx.query(
+    `update public.sandboxes s set status='failed',status_reason=$3,
+       lifecycle_generation=s.lifecycle_generation+1
+     from public.docker_resume_claims c
+     where s.id=$1 and s.provider='docker' and s.status in ('starting','ready','running')
+       and s.stop_requested_at is null and s.deleted_at is null
+       and c.request_id=$2 and c.sandbox_id=s.id and c.host_id=s.docker_host_id
+       and c.installation_id=s.docker_installation_id and c.generation=s.docker_generation
+       and c.actor_id=s.owner_id and c.accepted and s.lifecycle_generation=c.lifecycle_generation+1`,
+    [sandboxId, requestId, reason],
   );
-  return changed.rows.length > 0;
 }
 
 async function recoverInterruptedBoatResume(tx: Sql, sandboxId: string, lease: string, generation: number) {

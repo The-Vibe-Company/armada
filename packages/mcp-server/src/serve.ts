@@ -134,9 +134,7 @@ export async function startServer(
   await catalogAuthentication("slack"); // Reject invalid deployment ciphertext before serving.
   const sql = bunSql(config.databaseUrl, config.databasePoolMax);
   const webhooks = createOutboundWebhooks(sql, config.encryptionKey, config.dashboardUrl);
-  const runtimeEnrolments = createRuntimeEnrolments(sql, config.encryptionKey, {
-    stopRefusedDockerResume: createDockerHostStore(sql, config.encryptionKey).stopRefusedResume,
-  });
+  const runtimeEnrolments = createRuntimeEnrolments(sql, config.encryptionKey);
   const runtimeCommands = createRuntimeCommands(runtimeEnrolments, config.encryptionKey);
   const runtimeCheckpoint = createRuntimeCheckpoint(sql, config.encryptionKey, runtimeCommands, {
     docker: env.ARMADA_DOCKER_HOSTS === "1" && env.ARMADA_DOCKER_PLACEMENT === "1",

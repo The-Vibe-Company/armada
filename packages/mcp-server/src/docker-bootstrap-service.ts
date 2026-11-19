@@ -15,7 +15,6 @@ type Stored = {
   request_id: string;
   input_enc: Uint8Array<ArrayBuffer>;
   outcome: "completed" | "failed" | null;
-  protocol_refused: boolean | null;
 };
 type Options = {
   enabled?: boolean;
@@ -46,9 +45,8 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
   async function phase(tx: Sql, sandboxId: string, requestId?: string) {
     return (
       await tx.query<Stored>(
-        `select j.request_id,j.input_enc,j.outcome,c.protocol_refused from public.docker_host_jobs j
-         left join public.docker_resume_claims c on c.request_id=j.request_id
-         where j.bound_sandbox_id=$1 and (j.bound_operation='bootstrap' and $2::uuid is null or j.bound_operation='resume' and j.request_id=$2)`,
+        `select request_id,input_enc,outcome from public.docker_host_jobs
+         where bound_sandbox_id=$1 and (bound_operation='bootstrap' and $2::uuid is null or bound_operation='resume' and request_id=$2)`,
         [sandboxId, requestId ?? null],
       )
     ).rows[0];
@@ -238,7 +236,6 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
         if (refused.rows.length) deny();
         const existing = await phase(tx, sandboxId, resume ? requestId : undefined);
         let descriptor: BootstrapDescriptor;
-        if (existing?.protocol_refused) return { requestId, operation: "resume" as const, state: "failed" as const };
         if (existing) {
           if (existing.request_id !== requestId) deny();
           // Only decrypt after current owner/member/host admission; the bound store then

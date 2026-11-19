@@ -49,14 +49,7 @@ export const runtimeTransaction = (tx: Sql): Sql => ({
 export const scopedRuntimeSql = (tx: Sql): Sql => ({ query: tx.query.bind(tx), transaction: (work) => work(tx) });
 
 /** Internal launcher authority, never a user-facing configuration/credential API. */
-export function createRuntimeEnrolments(
-  sql: Sql,
-  encryptionKey: string,
-  options: {
-    allowDockerIssue?: boolean;
-    stopRefusedDockerResume?(tx: Sql, sandboxId: string, generation: string): Promise<void>;
-  } = {},
-) {
+export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options: { allowDockerIssue?: boolean } = {}) {
   const token = (kind: "enrol" | "runtime") => `armada_${kind}_${randomBytes(32).toString("hex")}`;
   const valid = (value: string, kind: "enrol" | "runtime") => new RegExp(`^armada_${kind}_[a-f0-9]{64}$`).test(value);
   async function transaction<T>(work: (tx: Sql) => Promise<T>): Promise<T> {
@@ -103,7 +96,7 @@ export function createRuntimeEnrolments(
     return Object.freeze({ ...candidate, docker_issuer_fence, [SOURCE_TRANSACTION]: tx });
   }
   type Source = Awaited<ReturnType<typeof lockSourceMembers>>;
-  async function lockSandbox(tx: Sql, id: string, ownerId?: string, source?: Source, writeHost = false) {
+  async function lockSandbox(tx: Sql, id: string, ownerId?: string, source?: Source) {
     const candidate = source ?? (await lockSourceMembers(tx, id, ownerId));
     if (
       candidate[SOURCE_TRANSACTION] !== tx ||
@@ -114,7 +107,7 @@ export function createRuntimeEnrolments(
     if (candidate.provider === "docker") {
       const host = await tx.query(
         `select id from public.docker_hosts where id=$1 and org_id=$2 and owner_id=$3
-         and installation_id=$4 and hash is not null and registration_hash is null and revoked_at is null ${writeHost ? "for update" : "for share"}`,
+         and installation_id=$4 and hash is not null and registration_hash is null and revoked_at is null for share`,
         [candidate.docker_host_id, candidate.org_id, candidate.issuer_id, candidate.docker_installation_id],
       );
       if (!host.rows.length) throw new RuntimeEnrolmentDenied();
@@ -185,7 +178,7 @@ export function createRuntimeEnrolments(
     const hash = await sha256Hex(enrolmentToken);
     const runtimeToken = token("runtime");
     const runtimeHash = await sha256Hex(runtimeToken);
-    const result = await transaction(async (tx) => {
+    return transaction(async (tx) => {
       const candidate = (
         await tx.query<{ sandbox_id: string }>(
           "select sandbox_id from public.runtime_enrolments where enrolment_hash=$1",
@@ -193,7 +186,7 @@ export function createRuntimeEnrolments(
         )
       ).rows[0];
       if (!candidate) throw new RuntimeEnrolmentDenied();
-      const sandbox = await lockSandbox(tx, candidate.sandbox_id, undefined, undefined, !supported);
+      const sandbox = await lockSandbox(tx, candidate.sandbox_id);
       const row = (
         await tx.query<{ configuration_enc: Uint8Array<ArrayBuffer> | null }>(
           `select case when $5::boolean then configuration_enc end as configuration_enc
@@ -204,11 +197,7 @@ export function createRuntimeEnrolments(
         )
       ).rows[0];
       if (!row) throw new RuntimeEnrolmentDenied();
-      if (!supported) {
-        if (sandbox.provider === "docker")
-          await options.stopRefusedDockerResume?.(tx, sandbox.id, sandbox.lifecycle_generation);
-        return new RuntimeProtocolUnsupported(sandbox.id);
-      }
+      if (!supported) throw new RuntimeProtocolUnsupported(sandbox.id);
       if (!row.configuration_enc) throw new RuntimeEnrolmentDenied();
       const configuration: unknown = JSON.parse(await decryptSecret(row.configuration_enc, encryptionKey));
       const updated = (
@@ -222,8 +211,6 @@ export function createRuntimeEnrolments(
       if (!updated) throw new RuntimeEnrolmentDenied();
       return { sandboxId: sandbox.id, epoch: updated.epoch, runtimeToken, configuration };
     });
-    if (result instanceof RuntimeProtocolUnsupported) throw result;
-    return result;
   }
   /** Read-only bootstrap reporting does not consume or extend the one-use ticket. */
   async function withBootstrap<T>(enrolmentToken: string, work: (tx: Sql, scope: RuntimeSessionScope) => Promise<T>) {
