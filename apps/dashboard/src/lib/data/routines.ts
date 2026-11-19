@@ -9,7 +9,7 @@ export async function viewerRoutines() {
     url = mcpUrl();
   return url && viewer.token ? createRoutineControl({ serverUrl: url, token: viewer.token }) : null;
 }
-export type RoutineList =
+type RoutineList =
   | { state: "ready"; userId: string; items: RoutineItem[] }
   | { state: "no-org" | "not-configured" }
   | { state: "error" | "unsupported"; message: string };

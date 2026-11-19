@@ -45,6 +45,9 @@ before admitting the turn. A transport timeout does not trigger a write retry.
 
 ## Organization resource commands
 
+The CLI saves non-secret preferences, including the selected organization,
+by Armada server origin in files separate from the saved session.
+
 Invitation management resolves organization names through the authenticated
 organization list. Pass acceptance tokens through stdin or `--file`. The CLI
 omits rejected arguments from diagnostics and prints only approved invitation
@@ -123,6 +126,9 @@ Native model login obtains consent locally before import. The CLI sends the
 credential to the Armada API and prints a fixed confirmation after the write.
 
 ## Sandbox command output
+
+CLI diagnostics use “snapshot” terminology. API identifiers and JSON error
+codes keep their original spelling.
 
 For sandbox failures, HTTP 401 goes through shared login recovery. Other
 failures use recognised codes or complete, fixed binding and policy messages.
