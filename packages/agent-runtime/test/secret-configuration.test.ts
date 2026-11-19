@@ -423,6 +423,27 @@ test.each([
   }
 });
 
+test("terminal diagnostic keys retain stable redaction across checkpoint sanitation", () => {
+  const journal = new Journal(":memory:", (text) => text);
+  try {
+    journal.registerApplicationSecrets(["REDACTED"]);
+    journal.append({
+      id: "terminal",
+      at: 1,
+      kind: "other",
+      type: "turn/completed",
+      data: { turn: { error: { additionalDetails: { "fixture-REDACTED": true } } } },
+    });
+    const expected = { turn: { error: { additionalDetails: { "fixture-[REDACTED]": true } } } };
+    expect(journal.events()[0]?.event).toMatchObject({ data: expected });
+    journal.sanitize();
+    journal.sanitize();
+    expect(journal.events()[0]?.event).toMatchObject({ data: expected });
+  } finally {
+    journal.close();
+  }
+});
+
 test.each([{ result: "x".repeat(30_000) }, { usage: { inference_geo: "x".repeat(30_000) } }])(
   "expanding Claude result details are dropped while per-model counters survive",
   (details) => {

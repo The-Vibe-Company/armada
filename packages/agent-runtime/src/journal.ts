@@ -255,14 +255,12 @@ const maskShapedPayload: (
     const fields = shape?.fields;
     const values = scrubbed as Record<string, unknown>;
     const collapseMarkers = (text: string) => text.replace(/\[+REDACTED\]+/g, "[REDACTED]");
-    const maskKey = shape?.entries
-      ? (key: string) => {
-          const masked = mask(key);
-          if (masked === key) return key;
-          const collapsed = collapseMarkers(masked);
-          return collapseMarkers(mask(collapsed)) === collapsed ? collapsed : "[REDACTED]";
-        }
-      : mask;
+    const maskKey = (key: string) => {
+      const masked = mask(key);
+      if (masked === key) return key;
+      const collapsed = collapseMarkers(masked);
+      return collapseMarkers(mask(collapsed)) === collapsed ? collapsed : "[REDACTED]";
+    };
     const entries = Object.entries(original).map(([key, value]) => {
       const fixed = fields && Object.hasOwn(fields, key);
       return {
