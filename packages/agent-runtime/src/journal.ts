@@ -6,6 +6,8 @@ import { checkpointIdentity, checkpointIdentityKey } from "./identity.ts";
 import type { CheckpointIdentity, StoredPrompt } from "./protocol.ts";
 import { createRedactor, createShortSecretTextRedactor } from "./state.ts";
 
+const MAX_EVENT_BYTES = 262144;
+
 /** Cut a preview without splitting a surrogate pair into a lone UTF-16 code unit. */
 function boundedPreview(text: string, limit: number): string {
   if (text.length <= limit) return text;
@@ -82,11 +84,11 @@ export class Journal {
     let control = event;
     if (
       (event.kind === "prompt" || event.kind === "steer") &&
-      Buffer.byteLength(this.redact(JSON.stringify(event))) > 262144
+      Buffer.byteLength(this.redact(JSON.stringify(event))) > MAX_EVENT_BYTES
     )
       control = { ...event, text: `${boundedPreview(this.redact(event.text), 16000)}… [truncated]` };
     let body = this.eventBody(control, true);
-    const oversized = Buffer.byteLength(body) > 262144;
+    const oversized = Buffer.byteLength(body) > MAX_EVENT_BYTES;
     if (oversized)
       body = JSON.stringify({
         id: event.id,
@@ -129,6 +131,17 @@ export class Journal {
     }
     if (event.kind !== "other") return body;
     const scrubbed = { ...JSON.parse(body), kind: event.kind };
+    if (event.type === "harness_stderr") {
+      const diagnostic = scrubbed as typeof event & { data?: { text?: unknown } | null };
+      diagnostic.type = event.type;
+      const original = (event.data as { text?: unknown } | null)?.text;
+      if (mask && typeof original === "string" && typeof diagnostic.data?.text === "string")
+        diagnostic.data.text = maskText(original, diagnostic.data.text, mask);
+      const redacted = JSON.stringify(diagnostic);
+      return Buffer.byteLength(redacted) <= MAX_EVENT_BYTES
+        ? redacted
+        : JSON.stringify({ ...diagnostic, data: { truncated: true } });
+    }
     if (!mask) return JSON.stringify(scrubbed);
     if (event.type === "armada/opencodeMcp") {
       const proof = scrubbed as typeof event & {
@@ -138,12 +151,7 @@ export class Journal {
       if (proof.data?.result) proof.data.result.output = maskPayload(proof.data.result.output, mask);
       return JSON.stringify(proof);
     }
-    if (event.type !== "harness_stderr") return JSON.stringify(scrubbed);
-    const masked = scrubbed as { data?: { text?: unknown } | null };
-    const original = (event.data as { text?: unknown } | null)?.text;
-    if (typeof original === "string" && typeof masked.data?.text === "string")
-      masked.data.text = maskText(original, masked.data.text, mask);
-    return JSON.stringify(masked);
+    return JSON.stringify(scrubbed);
   }
   private sanitizeEvent(body: string) {
     let event: AgentEvent;
@@ -152,7 +160,8 @@ export class Journal {
     } catch {
       return this.redact(body);
     }
-    return event?.kind === "message" || (event?.kind === "other" && event.type === "armada/opencodeMcp")
+    return event?.kind === "message" ||
+      (event?.kind === "other" && (event.type === "armada/opencodeMcp" || event.type === "harness_stderr"))
       ? this.eventBody(event, false)
       : this.redact(body);
   }
