@@ -9,8 +9,8 @@ test("creds list shows monthly API spend and flags unknown pricing for personal 
     expect(new URL(String(url)).pathname).toBe("/api/v1/creds/list");
     return Response.json({
       user: [
-        { id: "user-api", name: "Personal API", kind: "openai" },
-        { id: "user-sub", name: "Subscription", kind: "codex_auth" },
+        { id: "user-api", name: "Personal API", kind: "openai", status: "active" },
+        { id: "user-sub", name: "Subscription", kind: "codex_auth", status: "active" },
       ],
       orgs: [
         {
@@ -21,6 +21,7 @@ test("creds list shows monthly API spend and flags unknown pricing for personal 
               id: "org-api",
               name: "Team API",
               kind: "anthropic",
+              status: "active",
               monthlySpend: { periodStart: "2026-11-01", usd: "312.00000000000000001", unpricedTurns: 2 },
             },
           ],

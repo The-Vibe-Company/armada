@@ -594,7 +594,7 @@ async function readValue(args: ReturnType<typeof parseArgs>, io: VaultIo): Promi
   }
 }
 
-function monthlyApiSpend(row: ListedCredential): string {
+function monthlyApiSpend(row: ListedCredential) {
   if (!row.id || (row.kind !== "openai" && row.kind !== "anthropic" && row.kind !== "opencode")) return "";
   const spend = row.monthlySpend;
   const unpriced = spend?.unpricedTurns ?? 0;
