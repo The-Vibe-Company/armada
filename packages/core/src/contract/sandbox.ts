@@ -293,7 +293,11 @@ const id = sandboxIdInput;
 export const DEFAULT_WAIT_SECONDS = 60;
 export const MAX_WAIT_SECONDS = 600;
 
-function sandboxOperation<Input extends z.ZodRawShape, Output extends z.ZodRawShape>(
+function sandboxOperation<
+  Input extends z.ZodRawShape,
+  Output extends z.ZodRawShape,
+  const Branch extends { flag: string; operation: string } | undefined = undefined,
+>(
   name: string,
   path: `/api/v1/sandbox/${string}`,
   toolName: string,
@@ -302,6 +306,7 @@ function sandboxOperation<Input extends z.ZodRawShape, Output extends z.ZodRawSh
     title: string;
     description: string;
     mcpDescription?: string;
+    mcpBranch?: Branch;
     input: Input;
     output: Output;
     readOnly?: boolean;
@@ -316,6 +321,7 @@ function sandboxOperation<Input extends z.ZodRawShape, Output extends z.ZodRawSh
     output: z.object(tool.output),
     toolName,
     tool,
+    mcpBranch: tool.mcpBranch,
     readOnly: tool.readOnly ?? false,
     destructive: tool.destructive ?? false,
     audience,
@@ -364,6 +370,7 @@ export const sandboxOperations = {
   }),
   sendPrompt: sandboxOperation("sendPrompt", "/api/v1/sandbox/send", "send", "agent", {
     title: "Send a prompt",
+    mcpBranch: { flag: "steer", operation: "steerSandbox" },
     mcpDescription:
       "Start a new turn, or set steer to redirect a running turn. Model and effort overrides apply only to new turns. " +
       "Runtime follow-up requires a request ID. Reuse that ID with identical input after uncertain delivery.",
@@ -471,6 +478,7 @@ export const sandboxOperations = {
   }),
   stopSandbox: sandboxOperation("stopSandbox", "/api/v1/sandbox/stop", "stop", "agent", {
     title: "Stop a sandbox",
+    mcpBranch: { flag: "turn", operation: "interruptSandbox" },
     errors: ["conflict", "credential_binding_unsafe", "rate_limited", "outcome_unknown"],
     description: stopDescription,
     mcpDescription:
@@ -498,6 +506,7 @@ export const sandboxOperations = {
   }),
   sandboxStatus: sandboxOperation("sandboxStatus", "/api/v1/sandbox/status", "status", "agent", {
     title: "Sandbox status",
+    mcpBranch: { flag: "wait", operation: "waitSandbox" },
     errors: ["conflict", "rate_limited"],
     description: statusDescription,
     mcpDescription: `${statusDescription} Set wait to block until settled or timed out.`,
