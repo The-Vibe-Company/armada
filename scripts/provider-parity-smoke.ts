@@ -413,14 +413,19 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         message: "Launch response could not be read.",
         ...correlation,
       });
-    })) as { sandbox?: { id?: unknown; provider?: unknown } } | null;
+    })) as { provider?: unknown; sandbox?: { id?: unknown; provider?: unknown } } | null;
     if (path === "sandbox/launch") {
       const expected = (body as { provider?: unknown }).provider;
-      if (modalLaunch && (typeof result?.sandbox?.id !== "string" || !UUID.test(result.sandbox.id)))
+      if (
+        modalLaunch &&
+        (typeof result?.sandbox?.id !== "string" ||
+          !UUID.test(result.sandbox.id) ||
+          (result.sandbox.provider === undefined && (result.provider === undefined || result.provider === "modal")))
+      )
         throw new ParityError({
           code: "launch_response_unreadable",
           httpStatus: response.status,
-          message: "Launch response had no valid sandbox ID.",
+          message: "Launch response had no usable sandbox receipt.",
           ...correlation,
         });
       if (smokeReceiptProvider(result) !== expected || (modalLaunch && result?.sandbox?.provider !== "modal"))

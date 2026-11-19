@@ -143,6 +143,7 @@ for (const mode of [
   "modal_launch_recovers",
   "modal_launch_unresolved",
   "modal_launch_malformed",
+  "modal_launch_missing_provider",
   "delete_retry",
   "journal_failure",
   "stop_response_lost",
@@ -699,6 +700,10 @@ for (const mode of [
                 if (mode === "modal_launch_malformed") {
                   states.set(p, "ready");
                   return Response.json({ sandbox: { id: "malformed", provider: "modal" } });
+                }
+                if (mode === "modal_launch_missing_provider") {
+                  states.set(p, "ready");
+                  return Response.json({ sandbox: { id: recoveredSandbox } });
                 }
                 if (mode === "modal_launch_recovers") {
                   states.set(p, "ready");
