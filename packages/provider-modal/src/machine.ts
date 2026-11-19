@@ -172,7 +172,7 @@ export function createModalMachine(options: ModalMachineOptions) {
   async function terminate(sandbox: Sandbox, signal?: AbortSignal) {
     if ((await sandbox.poll()) === null) {
       signal?.throwIfAborted();
-      await sandbox.terminate({ wait: false });
+      await sandbox.terminate();
       signal?.throwIfAborted();
       if ((await sandbox.poll()) === null) throw refusal("unavailable", "Modal termination has not completed.");
     }
