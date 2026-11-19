@@ -1,5 +1,5 @@
 /**
- * The integration REST POST inventory. The published sandbox output GET operations come from
+ * The integration REST POST inventory. The published sandbox output GET and delete operations come from
  * the shared operation table. Every other route that the dashboard forwards must have a reason
  * in `UNPUBLISHED_REST_ROUTES`. The dashboard proxy test checks both directions.
  */
@@ -20,7 +20,6 @@ export const PUBLISHED_REST_ROUTES = [
   "sandbox/report",
   "sandbox/stop",
   "sandbox/extend",
-  "sandbox/delete",
   "sandbox/wait",
   "sandbox/exec",
   "sandbox/steer",
@@ -75,7 +74,6 @@ export const UNPUBLISHED_REST_ROUTES: Readonly<Record<string, string>> = {
   "golden/retirement/reconcile": "Golden snapshot retirement administration.",
   "sandbox/bind-credential": "Dashboard credential repair.",
   "sandbox/test-model-connection": "Dashboard credential check.",
-  "sandboxes/{id}": "Dashboard sandbox deletion (DELETE).",
 };
 
 /** Why a forwarded route is outside the description, or undefined when it has no reason. */

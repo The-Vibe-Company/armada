@@ -116,7 +116,7 @@ class PlacementCleanupTest(unittest.TestCase):
         args = SimpleNamespace(timeout=1, image="worker@sha256:" + "a" * 64, credential="account",
                                credential_version=2, model=None, mcp=None, skills=[], routine=False)
         calls = []
-        def api(path, body, normal=False):
+        def api(path, body, normal=False, method="POST"):
             self.assertTrue(normal)
             calls.append((path, body))
             if path == "templates/create":
@@ -127,9 +127,13 @@ class PlacementCleanupTest(unittest.TestCase):
                 return {"provider": "docker", "hostId": "host", "prompt": {"promptId": "initial"}}
             if path == "logs/read":
                 return {"events": [{"kind": "prompt", "promptId": "initial", "status": "failed"}]}
-            if path in ("sandbox/stop", "sandbox/delete"):
+            if path == "sandbox/stop":
                 self.assertEqual(body["id"], "actual-child")
-                return {"status": "stopped" if path.endswith("stop") else "deleted"}
+                return {"status": "stopped"}
+            if path == "sandboxes/actual-child":
+                self.assertEqual(method, "DELETE")
+                self.assertIn("requestId", body)
+                return {"status": "deleted"}
             if path == "templates/delete":
                 self.assertEqual(body, {"id": "template", "expectedRevision": 1})
                 return {}
@@ -137,7 +141,7 @@ class PlacementCleanupTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "Placement native prompt failed"):
             module.placement_smoke(api, args, "host", "codex")
         self.assertEqual([path for path, _ in calls][-3:],
-                         ["sandbox/stop", "sandbox/delete", "templates/delete"])
+                         ["sandbox/stop", "sandboxes/actual-child", "templates/delete"])
         self.assertEqual(sum(path == "templates/launch" for path, _ in calls), 1)
 
 

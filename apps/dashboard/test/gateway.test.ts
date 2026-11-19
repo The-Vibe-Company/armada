@@ -23,6 +23,9 @@ function server(reply: (call: Call) => Response, sessionId?: string) {
 }
 
 const unexpectedControl = {
+  deleteSandbox: async () => {
+    throw new Error("Unexpected REST request");
+  },
   post: async () => {
     throw new Error("Unexpected REST request");
   },
@@ -57,10 +60,13 @@ describe("gateway", () => {
       else await sandbox.extend(id, ttlSeconds);
       expect(calls).toHaveLength(0);
       expect(seen).toHaveLength(1);
-      expect(seen[0]?.method).toBe("POST");
-      expect(seen[0]?.url).toBe(`https://mcp.example/api/v1/sandbox/${operation}`);
+      expect(seen[0]?.method).toBe(operation === "delete" ? "DELETE" : "POST");
+      expect(seen[0]?.url).toBe(
+        `https://mcp.example/api/v1/${operation === "delete" ? `sandboxes/${id}` : "sandbox/extend"}`,
+      );
       expect(seen[0]?.headers.get("authorization")).toBe("Bearer user-jwt");
-      expect(await seen[0]?.json()).toEqual(operation === "delete" ? { id } : { id, ttlSeconds });
+      if (operation === "delete") expect(seen[0]?.body).toBeNull();
+      else expect(await seen[0]?.json()).toEqual({ id, ttlSeconds });
     });
   }
 

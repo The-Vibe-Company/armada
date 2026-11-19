@@ -363,12 +363,12 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
   }
 
   let requestDeadline: number | undefined;
-  async function request<T>(path: string, body: object, timeoutMs = 600_000): Promise<T> {
+  async function request<T>(path: string, body?: object, timeoutMs = 600_000): Promise<T> {
     // Never serialize the response envelope, details, or arbitrary caught errors.
     const remaining = (requestDeadline ?? Number.POSITIVE_INFINITY) - io.now();
     if (remaining <= 0) throw new Error("poll_limit_exceeded");
     const response = await io.fetch(`${origin}/api/v1/${path}`, {
-      method: "POST",
+      method: body === undefined ? "DELETE" : "POST",
       redirect: "error",
       signal: AbortSignal.timeout(Math.max(1, Math.min(timeoutMs, remaining))),
       headers: { authorization: `Bearer ${env.ARMADA_TOKEN}`, "content-type": "application/json" },
@@ -1473,7 +1473,10 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         stopped = true;
       }
       const requestId = crypto.randomUUID();
-      const invoke = () => api<{ id?: string; status: string }>("sandbox/delete", { id, request_id: requestId });
+      const invoke = () =>
+        request<{ id?: string; status: string }>(
+          `sandboxes/${encodeURIComponent(id)}?${new URLSearchParams({ org: c.org, requestId })}`,
+        );
       let receipt: { id?: string; status: string };
       // Modal termination/recovery-image cleanup can be pending, and a
       // failed attempt holds an activity lease. Reconcile the same delete;

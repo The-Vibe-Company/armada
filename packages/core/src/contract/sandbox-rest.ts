@@ -24,6 +24,22 @@ const runtimeRequest = z.object({ id, request_id: z.string().uuid(), runtimeVers
 const runtime = z.object({ kind: z.literal("armada"), epoch: z.string() });
 
 export const sandboxRestOperations = {
+  deleteSandbox: {
+    name: "deleteSandbox",
+    route: { method: "DELETE", path: "/api/v1/sandboxes/{id}" },
+    readOnly: false,
+    destructive: true,
+    audience: "public",
+    errors: [...controlErrors, "conflict", "sandbox_busy", "sandbox_not_ready", "rate_limited"],
+    description:
+      "Owner/admin only. Permanently removes provider resources and recovery archives. Stop first. Legacy orchestrator parents and children are refused; ordinary delegated children require a deleted parent. Reuse requestId to replay an uncertain Docker deletion.",
+    input: {
+      body: z.undefined(),
+      path: { id: id.regex(/^[0-9a-f-]+$/i) },
+      query: z.object({ org: z.string().optional(), requestId: z.uuid().optional() }),
+    },
+    output: z.object({ id: z.string(), status: z.literal("deleted") }),
+  },
   resumeSandbox: {
     name: "resumeSandbox",
     route: { method: "POST", path: "/api/v1/sandbox/resume" },

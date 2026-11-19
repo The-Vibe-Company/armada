@@ -40,6 +40,7 @@ import { callSharedTool } from "../src/tool-api.ts";
 import { ToolError } from "../src/tool-error.ts";
 import type { ToolContext } from "../src/tools.ts";
 import { migratedDatabase } from "./migrated-database.ts";
+import { publishedResponse } from "./published-response.ts";
 
 let connection: Awaited<ReturnType<typeof migratedDatabase>> | undefined;
 function database() {
@@ -698,19 +699,34 @@ test("normal API and MCP accept Docker list/status/logs rows and acknowledge cle
     resume: false,
   });
   expect(await post("sandbox/stop", { id: f.sandbox.id })).toEqual({ id: f.sandbox.id, status: "stopped" });
-  expect(await post("sandbox/delete", { id: f.sandbox.id })).toEqual({
-    id: f.sandbox.id,
-    status: "deleted",
-  });
-  const repeated = await handleControlRequest(
-    new Request(`https://armada.example/api/v1/sandboxes/${f.sandbox.id}?org=${f.actor.orgId}`, {
-      method: "DELETE",
-      headers: { authorization: `Bearer ${bearer}` },
-    }),
-    options,
-  );
-  expect(repeated?.status).toBe(200);
-  expect(await repeated?.json()).toEqual({ id: f.sandbox.id, status: "deleted" });
+  const requestId = randomUUID();
+  const remove = () =>
+    handleControlRequest(
+      new Request(
+        `https://armada.example/api/v1/sandboxes/${f.sandbox.id}?org=${f.actor.orgId}&requestId=${requestId}`,
+        {
+          method: "DELETE",
+          headers: { authorization: `Bearer ${bearer}` },
+        },
+      ),
+      options,
+    );
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const response = await remove();
+    expect(response?.status).toBe(200);
+    expect(publishedResponse("sandboxes/{id}", "delete").parse(await response?.json())).toEqual({
+      id: f.sandbox.id,
+      status: "deleted",
+    });
+  }
+  expect(
+    (
+      await sql.query(
+        "select request_id from docker_host_jobs where bound_sandbox_id=$1 and bound_operation='delete'",
+        [f.sandbox.id],
+      )
+    ).rows,
+  ).toEqual([{ request_id: requestId }]);
   expect(((await callSharedTool(context, "logs", { id: f.sandbox.id })) as { events: unknown[] }).events).toHaveLength(
     3,
   );

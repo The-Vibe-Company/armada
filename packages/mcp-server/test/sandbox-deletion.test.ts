@@ -93,10 +93,9 @@ test("sandbox deletion authorizes live owners/admins, fences activity, and prese
     ]);
     await db.query("update sandboxes set preservation_note='preserved' where id=$1", [id]);
     const malformed = await handleControlRequest(
-      new Request(`${PUBLIC_URL}/api/v1/sandbox/delete`, {
-        method: "POST",
-        headers: { authorization: `Bearer ${ownerToken}`, "content-type": "application/json" },
-        body: JSON.stringify({ id, request_id: "invalid" }),
+      new Request(`${PUBLIC_URL}/api/v1/sandboxes/${id}?requestId=invalid`, {
+        method: "DELETE",
+        headers: { authorization: `Bearer ${ownerToken}` },
       }),
       options,
     );
@@ -105,7 +104,7 @@ test("sandbox deletion authorizes live owners/admins, fences activity, and prese
       error: {
         code: "internal",
         message:
-          "MCP error -32602: Input validation error: Invalid arguments for tool delete: Invalid UUID at request_id",
+          "MCP error -32602: Input validation error: Invalid arguments for tool delete: Invalid UUID at requestId",
       },
     });
     expect((await request(id, memberToken)).status).toBe(404);
@@ -345,63 +344,47 @@ test("admin extension and deletion resolve private-source resources through thei
       data: createSqlData(db),
       providers: providerRegistry({ vault, encryptionKey: ENCRYPTION_KEY, providerFor }),
     };
-    for (const transport of ["delete", "post"]) {
-      const id = crypto.randomUUID();
-      const providerId = `bx_private_${transport}`;
-      await db.query(
-        `insert into sandboxes(id,boat_id,golden_id,org_id,owner_id,harness,status,stopped_at)
-        values($1,$2,$3,$4,$5,'claude','stopped',now())`,
-        [id, providerId, golden.id, p.org, p.owner],
+    const id = crypto.randomUUID();
+    const providerId = "bx_private_delete";
+    await db.query(
+      `insert into sandboxes(id,boat_id,golden_id,org_id,owner_id,harness,status,stopped_at)
+      values($1,$2,$3,$4,$5,'claude','stopped',now())`,
+      [id, providerId, golden.id, p.org, p.owner],
+    );
+    await db.query(
+      "update sandboxes set status='ready',stopped_at=null,expires_at=now()+interval '1 minute' where id=$1",
+      [id],
+    );
+    for (const ttl of [{ ttl_seconds: 600 }, { ttlSeconds: 900 }]) {
+      const result = await handleControlRequest(
+        new Request(`${PUBLIC_URL}/api/v1/sandbox/extend`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          body: JSON.stringify({ id, ...ttl }),
+        }),
+        options,
       );
-      await db.query(
-        "update sandboxes set status='ready',stopped_at=null,expires_at=now()+interval '1 minute' where id=$1",
-        [id],
-      );
-      if (transport === "delete") {
-        for (const ttl of [{ ttl_seconds: 600 }, { ttlSeconds: 900 }]) {
-          const result = await handleControlRequest(
-            new Request(`${PUBLIC_URL}/api/v1/sandbox/extend`, {
-              method: "POST",
-              headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-              body: JSON.stringify({ id, ...ttl }),
-            }),
-            options,
-          );
-          expect(result?.status).toBe(200);
-        }
-      }
-      await db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [id]);
-      await db.query("insert into sandbox_work_recovery(sandbox_id,archive_enc) values($1,$2)", [
-        id,
-        new Uint8Array([1]),
-      ]);
-      if (transport === "delete") {
-        const result = await handleControlRequest(
-          new Request(`${PUBLIC_URL}/api/v1/sandboxes/${id}`, {
-            method: "DELETE",
-            headers: { authorization: `Bearer ${token}` },
-          }),
-          options,
-        );
-        expect(result?.status).toBe(200);
-      } else {
-        const result = await handleControlRequest(
-          new Request(`${PUBLIC_URL}/api/v1/sandbox/delete`, {
-            method: "POST",
-            headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-            body: JSON.stringify({ id }),
-          }),
-          options,
-        );
-        expect(result?.status).toBe(200);
-      }
-      expect(retained.has(providerId)).toBe(false);
-      expect((await db.query("select status::text from sandboxes where id=$1", [id])).rows).toEqual([
-        { status: "deleted" },
-      ]);
-      expect((await db.query("select id from sandbox_work_recovery where sandbox_id=$1", [id])).rows).toEqual([]);
+      expect(result?.status).toBe(200);
     }
-    expect(accounts).toEqual(["owner", "owner", "owner", "owner"]);
+    await db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [id]);
+    await db.query("insert into sandbox_work_recovery(sandbox_id,archive_enc) values($1,$2)", [
+      id,
+      new Uint8Array([1]),
+    ]);
+    const result = await handleControlRequest(
+      new Request(`${PUBLIC_URL}/api/v1/sandboxes/${id}`, {
+        method: "DELETE",
+        headers: { authorization: `Bearer ${token}` },
+      }),
+      options,
+    );
+    expect(result?.status).toBe(200);
+    expect(retained.has(providerId)).toBe(false);
+    expect((await db.query("select status::text from sandboxes where id=$1", [id])).rows).toEqual([
+      { status: "deleted" },
+    ]);
+    expect((await db.query("select id from sandbox_work_recovery where sandbox_id=$1", [id])).rows).toEqual([]);
+    expect(accounts).toEqual(["owner", "owner", "owner"]);
   } finally {
     await server.close();
   }

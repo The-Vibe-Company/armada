@@ -94,25 +94,26 @@ export type ControlClient = {
   post<T>(route: string, body: Record<string, unknown>): Promise<T>;
 };
 
-export function createControlClient(options: Options): ControlClient {
+export function createControlClient(options: Options) {
+  async function request<T>(route: string, method: "POST" | "DELETE", body?: Record<string, unknown>): Promise<T> {
+    const { response, parsed } = await transport(options, `/api/v1/${route}`, body, method);
+    if (response.status === 401) throw new ControlError("The Armada server refused this session. Sign in again.", 401);
+    if (!response.ok) {
+      const failure = isRecord(parsed) ? parsed.error : undefined;
+      if (isRecord(failure) && typeof failure.message === "string")
+        throw new ControlError(
+          failure.message,
+          response.status,
+          typeof failure.code === "string" ? failure.code : undefined,
+        );
+      if (typeof failure === "string") throw new ControlError(failure, response.status);
+      throw new ControlError(controlFallback(response.status), response.status);
+    }
+    return parsed as T;
+  }
   return {
-    async post<T>(route: string, body: Record<string, unknown>): Promise<T> {
-      const { response, parsed } = await transport(options, `/api/v1/${route}`, body);
-      if (response.status === 401)
-        throw new ControlError("The Armada server refused this session. Sign in again.", 401);
-      if (!response.ok) {
-        const failure = isRecord(parsed) ? parsed.error : undefined;
-        if (isRecord(failure) && typeof failure.message === "string")
-          throw new ControlError(
-            failure.message,
-            response.status,
-            typeof failure.code === "string" ? failure.code : undefined,
-          );
-        if (typeof failure === "string") throw new ControlError(failure, response.status);
-        throw new ControlError(controlFallback(response.status), response.status);
-      }
-      return parsed as T;
-    },
+    post: <T>(route: string, body: Record<string, unknown>) => request<T>(route, "POST", body),
+    deleteSandbox: (id: string) => request<unknown>(`sandboxes/${encodeURIComponent(id)}`, "DELETE"),
   };
 }
 
