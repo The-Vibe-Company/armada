@@ -32,6 +32,7 @@ function isStructuredDiagnostic(type: string) {
   return (
     type === "armada/opencodeShell" ||
     type === "armada/opencodeMcp" ||
+    type === "armada/turnUsage" ||
     type === "result" ||
     type === "model/rerouted" ||
     isCodexQuotaDiagnostic(type)
@@ -159,6 +160,16 @@ const quotaPayload = {
     rateLimits: quotaSnapshot,
     rateLimitsByLimitId: { entries: quotaSnapshot },
     ordinaryUsageAllowed: null,
+  },
+};
+const turnUsagePayload = {
+  fields: {
+    model: null,
+    inputTokens: null,
+    outputTokens: null,
+    cachedTokens: null,
+    cacheWriteTokens: null,
+    reasoningTokens: null,
   },
 };
 
@@ -398,6 +409,8 @@ export class Journal {
         }
       } else if (isCodexQuotaDiagnostic(event.type)) {
         scrubbed.data = maskShapedPayload(event.data, scrubbed.data, maskField, quotaPayload);
+      } else if (event.type === "armada/turnUsage") {
+        scrubbed.data = maskShapedPayload(event.data, scrubbed.data, maskField, turnUsagePayload);
       } else if (event.type === "model/rerouted") {
         maskPayloadField({ data: event.data }, scrubbed, "data", maskField);
       } else {
