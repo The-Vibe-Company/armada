@@ -26,7 +26,7 @@ import { decryptSecret, type Sql } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import { createSqlData } from "./data.ts";
 import type { createDockerBootstrapService } from "./docker-bootstrap-service.ts";
-import { createDockerHostStore, DockerHostDenied } from "./docker-host-store.ts";
+import { createDockerHostStore, DOCKER_JOB_REQUEST_OUTCOME_SQL, DockerHostDenied } from "./docker-host-store.ts";
 import { dockerHostSupportsResume } from "./docker-host-version.ts";
 import { createDockerLaunchEnvironment } from "./docker-launch-environment.ts";
 import type { createDockerNormalSend } from "./docker-normal-send.ts";
@@ -675,7 +675,9 @@ export function createDockerSandboxControls(
       // Host ACK is not runtime readiness.
       const state = (
         await sql.query<{ outcome: string | null; status_reason: string | null }>(
-          `select j.outcome,s.status_reason from public.docker_host_jobs j join public.sandboxes s on s.id=j.bound_sandbox_id where j.request_id=$1 and j.bound_sandbox_id=$2 and j.bound_operation='resume'`,
+          `select ${DOCKER_JOB_REQUEST_OUTCOME_SQL} as outcome,s.status_reason
+           from public.docker_host_jobs j join public.sandboxes s on s.id=j.bound_sandbox_id
+           where j.request_id=$1 and j.bound_sandbox_id=$2 and j.bound_operation='resume'`,
           [requestId, row.id],
         )
       ).rows[0];

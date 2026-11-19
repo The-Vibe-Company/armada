@@ -4,7 +4,7 @@ import { decryptSecret } from "@armada/core/server";
 import { requirePublishedRuntimeArchitecture } from "../../agent-runtime/src/publication.ts";
 import { type BootstrapDescriptor, parseDockerHostJob } from "../../core/src/docker-host-job.ts";
 import { admitDockerCapacity, DockerHostDraining, DockerHostFull, DockerLimitsRefused } from "./docker-capacity.ts";
-import { createDockerHostStore } from "./docker-host-store.ts";
+import { createDockerHostStore, DOCKER_JOB_REQUEST_OUTCOME_SQL } from "./docker-host-store.ts";
 import { dockerRuntimeConfiguration } from "./docker-runtime-configuration.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import type { RuntimeConfigurationInput } from "./runtime-configuration.ts";
@@ -45,8 +45,8 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
   async function phase(tx: Sql, sandboxId: string, requestId?: string) {
     return (
       await tx.query<Stored>(
-        `select request_id,input_enc,case when refused_resume_generation is not null then 'failed' else outcome end as outcome
-         from public.docker_host_jobs
+        `select request_id,input_enc,${DOCKER_JOB_REQUEST_OUTCOME_SQL} as outcome
+         from public.docker_host_jobs j
          where bound_sandbox_id=$1 and (bound_operation='bootstrap' and $2::uuid is null or bound_operation='resume' and request_id=$2)`,
         [sandboxId, requestId ?? null],
       )

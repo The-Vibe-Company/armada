@@ -64,21 +64,15 @@ export async function failDockerResumeActivation(
   );
 }
 
-export async function requestRefusedDockerResumeStop(
-  tx: Sql,
-  sandboxId: string,
-  generation: string,
-  legacyFailure: boolean,
-) {
+export async function requestRefusedDockerResumeStop(tx: Sql, sandboxId: string, generation: string) {
   const stopped = await tx.query(
     `update public.sandboxes set status='stopping',status_reason=null,
        stop_requested_at=now(),lifecycle_generation=lifecycle_generation+1
      where id=$1 and provider='docker' and stop_requested_at is null and deleted_at is null
        and expires_at>now()
-       and (status='starting' and lifecycle_generation=$2::bigint
-         or $3::boolean and status='failed' and lifecycle_generation=$2::bigint+1)
+       and status='starting' and lifecycle_generation=$2
      returning id`,
-    [sandboxId, generation, legacyFailure],
+    [sandboxId, generation],
   );
   return stopped.rows.length > 0;
 }
