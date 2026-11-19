@@ -111,7 +111,6 @@ describe("launch", () => {
           owner,
           { golden: "web", harness: "codex", ...(prompted ? { prompt: "ordinary request" } : {}) },
           {
-            templateHasSecretBindings: provider === "modal",
             beforeStart: async () => {
               order.push("admit");
             },
