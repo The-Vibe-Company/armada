@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { PROTOCOL_VERSION } from "@armada/agent-runtime";
 import { sha256Hex } from "@armada/auth";
-import { createSqlSandboxStore, decryptSecret, encryptSecret, type Sql } from "@armada/core/server";
+import { createSqlSandboxStore, DelegatedAuthority, decryptSecret, encryptSecret, type Sql } from "@armada/core/server";
 import { createDockerHostStore } from "./docker-host-store.ts";
 import type { Route } from "./http.ts";
 import { runtimeHttpFailure } from "./runtime-http-failure.ts";
@@ -149,6 +149,21 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
     const receipt = await transaction(async (tx) => {
       const sandbox = await lockSandbox(tx, input.sandboxId, input.ownerId);
       if (sandbox.provider === "docker" && options.allowDockerIssue !== true) throw new RuntimeEnrolmentDenied();
+      const parent = (
+        await tx.query<{ id: string }>(
+          "select id from public.armada_access_parents where sandbox_id=$1 and kind='sandbox'",
+          [sandbox.id],
+        )
+      ).rows[0];
+      if (parent) {
+        // Scoped admission may already hold the parent lock while waiting on the sandbox.
+        const locked = await tx.query(
+          "select id from public.armada_access_parents where id=$1 for update skip locked",
+          [parent.id],
+        );
+        if (!locked.rows.length) throw new RuntimeEnrolmentDenied();
+        await new DelegatedAuthority(tx, async () => {}).revoke(parent.id);
+      }
       const commandDeadline =
         sandbox.runtime_transport === "dialout" && input.commandGrantExpiresAt !== undefined
           ? new Date(input.commandGrantExpiresAt)

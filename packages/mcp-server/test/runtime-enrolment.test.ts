@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { PROTOCOL_VERSION } from "@armada/agent-runtime";
-import type { Sql } from "@armada/core/server";
+import { DelegatedAuthority, type Sql } from "@armada/core/server";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { rowOnlyConnection } from "./row-only-database.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
@@ -50,6 +50,7 @@ async function fixture() {
   };
   return {
     db,
+    sql,
     people,
     id,
     service,
@@ -99,6 +100,63 @@ test("enrolment is single-use across replicas and replacement epochs fence every
   await expect(f.service().issue({ sandboxId: f.id, ownerId: f.people.member, configuration: {} })).rejects.toThrow(
     "runtime_enrolment_denied",
   );
+});
+
+test("replacement ticket issue atomically fences a scoped parent's old bearer", async () => {
+  const f = await fixture();
+  const authority = new DelegatedAuthority(f.sql, async () => {});
+  const initial = await f.service().enrol((await f.issue()).enrolmentToken);
+  await f.db.query("update sandboxes set visibility='private',access_owner_id=owner_id where id=$1", [f.id]);
+  await f.db.query(
+    `insert into armada_access_parents(id,kind,org_id,owner_id,sandbox_id,state)
+     values($1,'sandbox',$2,$3,$1,'ready')`,
+    [f.id, f.people.org, f.people.owner],
+  );
+  let bearer = "";
+  await authority.installEpoch(
+    f.id,
+    {
+      lifecycleGeneration: "1",
+      physicalGeneration: initial.epoch,
+      async deliver(token) {
+        bearer = token;
+        return { acknowledged: true };
+      },
+      async scrub() {
+        throw Error("Unexpected delivery failure");
+      },
+    },
+    { scopes: ["worker:stop"], goldenIds: [], credentialIds: [] },
+  );
+  const admit = () => authority.admit(bearer, { method: "finish" }, async () => true);
+  const oldSession = () => f.request("session", initial.runtimeToken, initial.epoch);
+  const interrupted = createRuntimeEnrolments(
+    {
+      ...f.sql,
+      transaction: (work) =>
+        f.sql.transaction!((tx) =>
+          work({
+            async query(statement, values) {
+              if (statement.startsWith("insert into public.runtime_enrolments")) throw Error("ticket write failed");
+              return tx.query(statement, values);
+            },
+          }),
+        ),
+    },
+    ENCRYPTION_KEY,
+  );
+  await expect(interrupted.issue({ sandboxId: f.id, ownerId: f.people.owner, configuration: {} })).rejects.toThrow(
+    "ticket write failed",
+  );
+  await expect(admit()).resolves.toBe(true);
+  expect((await oldSession()).status).toBe(200);
+
+  const ticket = await f.issue();
+  expect((await oldSession()).status).toBe(401);
+  await expect(admit()).rejects.toThrow("denied");
+  const replacement = await f.service().enrol(ticket.enrolmentToken);
+  expect(replacement.epoch).toBe("2");
+  await expect(admit()).rejects.toThrow("denied");
 });
 
 test("enrolment refuses unsupported wire versions without spending the ticket", async () => {
