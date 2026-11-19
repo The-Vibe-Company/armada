@@ -1,7 +1,8 @@
 import type { Sql } from "@armada/core/server";
-import type { CallerResult } from "./caller.ts";
+import { AuthUnavailable, type CallerResult } from "./caller.ts";
 import { UUID } from "./control-input.ts";
 import { fail } from "./control-response.ts";
+import { recordOperatorFailure } from "./request-observability.ts";
 
 interface TriggerSummary {
   id: string;
@@ -24,12 +25,19 @@ const deliveriesPath = /^\/api\/v1\/triggers\/([^/]+)\/deliveries$/;
 const noStore = { "cache-control": "no-store" };
 
 export function inboundTriggerAdminRoute(sql: Sql, authenticate: (request: Request) => Promise<CallerResult>) {
-  return async (request) => {
+  return async (request: Request) => {
     const url = new URL(request.url);
     const deliveryMatch = deliveriesPath.exec(url.pathname);
     if (url.pathname !== basePath && !deliveryMatch) return null;
 
-    const auth = await authenticate(request);
+    let auth: CallerResult;
+    try {
+      auth = await authenticate(request);
+    } catch (error) {
+      if (!(error instanceof AuthUnavailable)) throw error;
+      recordOperatorFailure("inbound_trigger.authentication", error);
+      return fail(503, "dependency_unavailable", "Authentication is temporarily unavailable.");
+    }
     if (!auth.ok) return fail(401, "unauthorized", "Sign in to inspect inbound triggers.");
     const org = url.searchParams.get("org")?.toLowerCase();
     if (!org || !UUID.test(org)) return fail(400, "invalid_request", "Supply the organization UUID.");
