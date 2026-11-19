@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import {
   OutputCollectionError,
   type OutputFile,
@@ -289,7 +289,7 @@ test("a stop settling during a capture job preserves the retained archive read",
     ...sql,
     async query<T>(query: string, params?: unknown[]) {
       const result = await sql.query<T>(query, params);
-      if (query.includes("set outputs_attempt_count=outputs_attempt_count+1") && result.rows.length === 0) {
+      if (query.includes("as retained") && result.rows.length === 0) {
         await sql.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [id]);
         stopSettled = true;
       }
@@ -411,7 +411,6 @@ test("an unsupported collector is reported once and skipped by both sampling and
       reason: "collector_unsupported",
       provider: "boat",
       status: "ready",
-      attemptCount: 2,
     },
   ]);
   const route = routeFor(service, people.owner, people.org);
@@ -534,7 +533,7 @@ test("application-secret taint forbids output sampling, final capture, late pers
   // A snapshot captured before exposure is purged when taint commits.
   expect(await sample(service)).toBe(true);
   expect((await db.query(`select 1 from sandbox_outputs where sandbox_id=$1`, [id])).rows).toHaveLength(1);
-  await db.query(`update sandboxes set application_secret_tainted=true,outputs_checked_at=null where id=$1`, [id]);
+  await db.query(`update sandboxes set application_secret_tainted=true where id=$1`, [id]);
   expect((await db.query(`select 1 from sandbox_outputs where sandbox_id=$1`, [id])).rows).toHaveLength(0);
   // Neither periodic sampling nor the stop-path final capture reads tainted disks.
   expect(await sample(service)).toBe(false);
@@ -808,11 +807,11 @@ test("concurrent stops within their deadline all take their final capture", asyn
   ]);
 });
 
-test("a final capture whose deadline passes while its scan claim waits never holds stop or reads", async () => {
+test("a final capture whose deadline passes while its target query waits never holds stop or reads", async () => {
   const { id, sql } = await fixture({ boatId: "claim_fixture" });
   const { state, provider } = disks();
   state.live = [file("memo.txt", "late")];
-  // The first query (the scan claim) is held, like a contended row lock or a stalled pool connection.
+  // Hold the first query as if the pool connection stalled.
   let release = () => {};
   let claiming = () => {};
   const held = new Promise<void>((resolve) => {
@@ -824,20 +823,34 @@ test("a final capture whose deadline passes while its scan claim waits never hol
   const gated: Sql = {
     ...sql,
     query: async (q, p) => {
-      if (q.includes("outputs_checked_at=clock_timestamp()")) {
+      if (q.includes("as generation,clock_timestamp()::text as scan")) {
         claiming();
         await held;
       }
       return sql.query(q, p);
     },
   };
+  const diagnostics = spyOn(console, "warn");
   const stop = new AbortController();
   const capture = captureFinalOutputs(gated, provider, id, { key: KEY, signal: stop.signal });
-  await waiting;
-  stop.abort();
-  await expect(capture).rejects.toBeDefined();
-  release();
-  await drainFinalOutputs();
+  try {
+    await waiting;
+    stop.abort();
+    await expect(capture).rejects.toBeDefined();
+    expect(diagnostics.mock.calls.map(([line]) => JSON.parse(line))).toEqual([
+      {
+        event: "sandbox_output_collector_diagnostic",
+        sandboxId: id,
+        path: "final",
+        phase: "select_capture_target",
+        errorKind: "aborted",
+      },
+    ]);
+  } finally {
+    diagnostics.mockRestore();
+    release();
+    await drainFinalOutputs();
+  }
   expect(state.reads).toBe(0);
   expect((await sql.query(`select 1 from sandbox_outputs where sandbox_id=$1`, [id])).rows).toHaveLength(0);
 });
@@ -895,6 +908,19 @@ test("an in-flight sample publishes unless a newer final capture commits first",
   await service.drain();
   expect(periodic.state.reads).toBe(1);
   expect(await read(service)).toBe("final");
+});
+
+test("a final read cannot publish after its sandbox generation changes", async () => {
+  const { id, sql } = await fixture();
+  const provider = {
+    async readOutputs() {
+      await sql.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [id]);
+      return [file("memo.txt", "prior generation")];
+    },
+  };
+
+  await captureFinalOutputs(sql, provider, id, { key: KEY });
+  expect((await sql.query("select name from sandbox_outputs where sandbox_id=$1", [id])).rows).toEqual([]);
 });
 
 test("an in-flight sample still publishes when the newer final capture fails", async () => {
@@ -1101,7 +1127,7 @@ test.each([
       query: async <T>(query: string, params?: readonly unknown[]) => {
         // Simulate a previously claimed reason by recording the attempt and returning no row.
         if (query.includes("set outputs_failure_reasons=array_append")) reasons.push(params?.[1]);
-        const rows = query.includes("outputs_attempt_count=outputs_attempt_count+1")
+        const rows = query.includes("as retained")
           ? [{ id: claimedId, provider: "modal", provider_sandbox_id: "modal_fixture", retained_generation: null }]
           : query.startsWith("select outputs_collector_supported")
             ? [{ outputs_collector_supported: true }]

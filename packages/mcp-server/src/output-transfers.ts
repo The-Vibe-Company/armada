@@ -8,8 +8,6 @@ import {
 } from "@armada/core";
 import { decryptSecret, encryptSecret, OutputCollectionError, type Provider, type Sql } from "@armada/core/server";
 
-import type { Job } from "./jobs/runner.ts";
-
 type ChunkedOutputReader = Required<Pick<Provider, "listOutputEntries" | "readOutputChunk">> &
   Pick<Provider, "outputReadBytes" | "outputReadConcurrency">;
 
@@ -24,7 +22,11 @@ export const DOCKER_RETAINED_OUTPUT_STOP = `provider='docker' and status in ('st
           and exists(select 1 from public.docker_hosts h join public.members m on m.org_id=h.org_id and m.user_id=h.owner_id
             where h.id=sandboxes.docker_host_id and h.revoked_at is null)`;
 
-const RETAINED_OUTPUT_STOP = `((${BOAT_RETAINED_OUTPUT_STOP}) or (${DOCKER_RETAINED_OUTPUT_STOP}))`;
+const WRITE_ELIGIBILITY = {
+  live: CAN_WRITE_LIVE,
+  "boat-retained": BOAT_RETAINED_OUTPUT_STOP,
+  "docker-retained": `${DOCKER_RETAINED_OUTPUT_STOP} and outputs_checked_at=$2::timestamptz`,
+};
 
 type Transfer = { id: string; received: number; digest: string | null };
 type Skipped = "too_large" | "sandbox_limit" | "org_limit";
@@ -37,17 +39,13 @@ export async function collectOutputTransfers(
   request: { sandboxId: string; signal?: AbortSignal },
   scan: string,
   key: string,
-  writes?: Set<Promise<unknown>>,
-  retainedGeneration?: string,
-  job?: Job,
+  options: { generation: string; mode: keyof typeof WRITE_ELIGIBILITY; writes?: Set<Promise<unknown>> | undefined },
 ): Promise<void> {
   const { signal } = request;
-  const generation = retainedGeneration ?? job?.generation ?? null;
-  const canWrite = `not application_secret_tainted and (${
-    retainedGeneration === undefined
-      ? CAN_WRITE_LIVE
-      : `${RETAINED_OUTPUT_STOP}${job ? "" : " and outputs_checked_at=$2::timestamptz"}`
-  }) and ($3::bigint is null or (lifecycle_generation=$3::bigint and provider_sandbox_id=$4)) and (outputs_published_scan is null or outputs_published_scan<$2::timestamptz)`;
+  const { generation, mode, writes } = options;
+  const canWrite = `not application_secret_tainted and (${WRITE_ELIGIBILITY[mode]})
+    and lifecycle_generation=$3::bigint and provider_sandbox_id=$4
+    and (outputs_published_scan is null or outputs_published_scan<$2::timestamptz)`;
   const authority = [id, scan, generation, request.sandboxId];
   if (!sql.transaction) throw Error("output_transaction_unavailable");
   const transaction = sql.transaction.bind(sql);
@@ -255,8 +253,8 @@ export async function collectOutputTransfers(
       [id, scan],
     );
     await tx.query(
-      `update public.sandboxes set outputs_published_scan=$2::timestamptz${retainedGeneration === undefined ? "" : ", outputs_retained_generation=$3::bigint"} where id=$1`,
-      retainedGeneration === undefined ? [id, scan] : [id, scan, retainedGeneration],
+      `update public.sandboxes set outputs_published_scan=$2::timestamptz${mode === "live" ? "" : ", outputs_retained_generation=$3::bigint"} where id=$1`,
+      mode === "live" ? [id, scan] : [id, scan, generation],
     );
   });
 }
