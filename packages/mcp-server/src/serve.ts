@@ -46,6 +46,7 @@ import { configureBoatGitHub } from "./github-boat.ts";
 import { createSqlGoldenList } from "./golden-list.ts";
 import { createHandler, providerRegistry, type Route } from "./http.ts";
 import { idlePauseDelayMs } from "./idle-pause-policy.ts";
+import { inboundTriggerAdminRoute } from "./inbound-trigger-admin.ts";
 import { inboundTriggerRoute } from "./inbound-trigger-route.ts";
 import { createInboundTriggerStore } from "./inbound-trigger-store.ts";
 import { invitationsFromEnv, startInvitationWorker } from "./invitations.ts";
@@ -628,6 +629,13 @@ export async function startServer(
     modalTokensFor: modal.modalTokensFor,
     routes: [
       inboundTriggerRoute(createInboundTriggerStore(sql, jobs, config.encryptionKey)),
+      inboundTriggerAdminRoute(sql, (request) =>
+        authenticateCaller(request.headers.get("authorization"), {
+          store: authStore,
+          supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
+          now: new Date(),
+        }),
+      ),
       outputs.route((request) =>
         authenticateCaller(request.headers.get("authorization"), {
           store: authStore,

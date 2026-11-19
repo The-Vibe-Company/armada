@@ -52,3 +52,17 @@ Use the lowercase UUID from the trigger URL and sign the canonical path with the
 A new delivery returns HTTP 202 with `{triggerId, deliveryId, jobId}`. A repeat of an accepted delivery returns the same receipt with HTTP 200. HTTP 429 supplies the number of seconds to wait in the `Retry-After` header and the `retryAfter` response field. A non-identity content encoding returns HTTP 415. An authenticated body with invalid UTF-8 returns HTTP 400.
 
 The rate budget counts committed deliveries in the preceding minute. The trigger's pool is the launch owner's pool for the bound harness. A newly queued job has a five-minute dispatch budget. Trigger setup and rotation must update the encrypted key and increment the key revision together.
+
+## Inspection API
+
+Organization admins can use their Armada API bearer to inspect inbound triggers.
+Pass `org` as the organization UUID on both requests.
+
+- `GET /api/v1/triggers?org=<org UUID>` returns `triggers` with each trigger's
+  `id`, `templateId`, `poolHarness`, `enabled`, `ratePerMinute`, `concurrency`,
+  and cumulative `rateRefusals`. A private template identifier is visible only to
+  the template owner.
+- `GET /api/v1/triggers/<trigger UUID>/deliveries?org=<org UUID>` returns the
+  latest 100 admitted `deliveries`, newest first, with `deliveryId`,
+  `receivedAt` and `jobState` (`queued`, `leased`, `done` or `failed`).
+  This is the shared runner's processing state. Launch outcomes are tracked in #2823.
