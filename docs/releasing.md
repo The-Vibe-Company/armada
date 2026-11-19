@@ -18,8 +18,10 @@ so the package has no dependencies.
 3. Review the version PR and merge it after all checks pass. Release Please creates `v<version>` and
    the GitHub release, then the **same workflow** validates, builds and publishes it. It does not
    rely on a tag-push event from the bot token.
-4. The release `check` job runs lint, typecheck, release-only contracts and the named
-   sentinel files. The merge queue runs the ordinary unit suite for the same source tree.
+4. After release metadata validates the tag, version and source SHA, `check` runs lint, typecheck,
+   release-only contracts and the named sentinel files in parallel with sandbox image preparation.
+   Once the image pin is ready, the binary jobs and exact-SHA staging smoke run in parallel while
+   `check` can continue. The merge queue runs the ordinary unit suite for the same source tree.
 5. Four native runners compile and smoke-test the binaries. The publisher stages and packs the
    six npm packages, saves their tarballs and SHA-256 checksums as an Actions artifact, runs the
    installation smoke test (including an isolated install, Node import and TypeScript check of the SDK),
@@ -144,9 +146,10 @@ using its selected main SHA; it is not a deployment-status subscriber.
 
 Production deploys **only through a publishing Release**. Release Please creates
 the tag when the owner merges its version PR; that same workflow validates the
-exact tag/SHA, builds binaries, calls staging with that SHA, and requires a
-successful (not skipped) smoke before production migrations → server → prebuilt
-dashboard → npm. Tag push and reviewed existing-tag recovery keep this same path.
+exact tag/SHA. Production requires successful `check`, binaries and staging smoke before
+production migrations → server → prebuilt dashboard → npm. A failed `check` blocks
+production and npm even if staging has already deployed and smoked that SHA.
+Tag push and reviewed existing-tag recovery keep this same path.
 A dry-run release never enters staging/production deployment or publishes npm.
 There is no variable to bypass the gate: RELEASE_SYNCED_DEPLOYS and
 STAGING_GATED_DEPLOYS are obsolete and ignored. Missing configuration fails,
