@@ -145,14 +145,17 @@ describe("database", () => {
       expect(secretSelects).toEqual([]);
 
       // A table or function created by a later migration starts with nothing for anon or a user JWT.
-      await db.exec("create table public.later (id int primary key, value_enc bytea)");
-      await db.exec("create function public.later_fn() returns int language sql as 'select 1'");
-      const later = await db.query<{ any: boolean }>(
-        `select has_table_privilege('authenticated', 'public.later', 'select, insert, update, delete, truncate')
-            or has_table_privilege('anon', 'public.later', 'select, insert, update, delete, truncate')
-            or has_function_privilege('anon', 'public.later_fn()', 'execute') as any`,
-      );
-      expect(later.rows[0]?.any).toBe(false);
+      await db.transaction(async (tx) => {
+        await tx.exec("create table public.later (id int primary key, value_enc bytea)");
+        await tx.exec("create function public.later_fn() returns int language sql as 'select 1'");
+        const later = await tx.query<{ any: boolean }>(
+          `select has_table_privilege('authenticated', 'public.later', 'select, insert, update, delete, truncate')
+              or has_table_privilege('anon', 'public.later', 'select, insert, update, delete, truncate')
+              or has_function_privilege('anon', 'public.later_fn()', 'execute') as any`,
+        );
+        expect(later.rows[0]?.any).toBe(false);
+        await tx.exec("drop table public.later; drop function public.later_fn()");
+      });
     });
   });
 
@@ -949,14 +952,7 @@ describe("database", () => {
 });
 
 async function withDb(run: (db: PGlite) => Promise<void>): Promise<void> {
-  const db = database();
-  try {
-    await run(db);
-  } finally {
-    await db.exec(
-      "reset role; reset all; set search_path=public; drop table if exists public.later; drop function if exists public.later_fn()",
-    );
-  }
+  await run(database());
 }
 
 async function fixture(db: PGlite): Promise<Fixture> {
@@ -967,9 +963,12 @@ async function fixture(db: PGlite): Promise<Fixture> {
     admin: crypto.randomUUID(),
     outsider: crypto.randomUUID(),
   };
-  for (const user of [row.owner, row.member, row.admin, row.outsider]) {
-    await db.query("insert into auth.users (id) values ($1)", [user]);
-  }
+  await db.query("insert into auth.users (id) values ($1), ($2), ($3), ($4)", [
+    row.owner,
+    row.member,
+    row.admin,
+    row.outsider,
+  ]);
   await db.query("insert into orgs (id, name) values ($1, 'Example Org')", [row.org]);
   await db.query(
     `insert into members (org_id, user_id, role) values
