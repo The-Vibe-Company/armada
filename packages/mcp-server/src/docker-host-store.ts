@@ -46,6 +46,7 @@ import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
 import {
   confirmRefusedDockerResumeRetention,
   failDockerResumeActivation,
+  recordDockerCleanupReceipt,
   requestRefusedDockerResumeStop,
 } from "./sandbox-lifecycle.ts";
 import { deferTransactionWake } from "./wake-bus.ts";
@@ -1826,12 +1827,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
           // (see runtime-progress).
           if (job.bound_operation === "create")
             await recordLaunchStageForActivation(tx, job.bound_sandbox_id, 1, "machine_started");
-          if (job.bound_operation === "stop")
-            await tx.query(
-              `update public.sandboxes set status=case when status='failed' then status else 'stopped' end,
-               stopped_at=coalesce(stopped_at,now()) where id=$1 and status in ('stopping','failed','stopped')`,
-              [job.bound_sandbox_id],
-            );
+          if (logical && (job.bound_operation === "stop" || job.bound_operation === "delete"))
+            await recordDockerCleanupReceipt(tx, logical.id, Number(logical.lifecycle_generation), job.bound_operation);
           // A self-finish stop is a durable cleanup intent, not retained idle compute.
           // Enqueue removal in this same ACK transaction; a lost ACK can safely repair it.
           if (job.bound_operation === "stop" && logical?.status_reason === "agent_finished") {
@@ -1869,12 +1866,6 @@ export function createDockerHostStore(sql: Sql, key: string) {
               );
             }
           }
-          if (job.bound_operation === "delete")
-            await tx.query(
-              `update public.sandboxes set status='deleted',status_reason=null,deleted_at=coalesce(deleted_at,now())
-               where id=$1 and status in ('stopped','failed','deleted')`,
-              [job.bound_sandbox_id],
-            );
         }
         if (job.outcome === null || job.cancelled_at !== null) {
           await tx.query(

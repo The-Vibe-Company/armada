@@ -86,6 +86,40 @@ export async function transitionSandbox(tx: Sql, input: SandboxTransition) {
   return { kind: "applied", generation: Number(result.generation) } satisfies SandboxTransitionResult;
 }
 
+export async function recordDockerCleanupReceipt(
+  tx: Sql,
+  sandboxId: string,
+  expectedGeneration: number,
+  operation: "stop" | "delete",
+) {
+  await tx.query(
+    `update public.sandboxes set stopped_at=now()
+     where id=$1 and lifecycle_generation=$2 and stopped_at is null
+       and (status='failed' or ($3::boolean and status='stopped'))`,
+    [sandboxId, expectedGeneration, operation === "stop"],
+  );
+  if (operation === "stop") {
+    return transitionSandbox(tx, {
+      sandboxId,
+      expectedGeneration,
+      fromStates: ["stopping"],
+      toState: "stopped",
+      actor: "lifecycle_runner",
+      code: "docker_stop_completed",
+      effects: [],
+    });
+  }
+  return transitionSandbox(tx, {
+    sandboxId,
+    expectedGeneration,
+    fromStates: ["stopped", "failed"],
+    toState: "deleted",
+    actor: "delete_job",
+    code: "docker_delete_completed",
+    effects: [],
+  });
+}
+
 export async function recordRuntimeStartupFailure(
   tx: Sql,
   sandboxId: string,
