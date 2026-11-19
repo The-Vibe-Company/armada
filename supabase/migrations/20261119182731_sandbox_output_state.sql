@@ -1,3 +1,7 @@
+-- Drain row-locking transactions before the FK backfill. Otherwise an older
+-- collector can hold a row lock while waiting for its UPDATE's table lock.
+lock table public.sandboxes in exclusive mode;
+
 create table public.sandbox_output_state (
   sandbox_id uuid primary key references public.sandboxes(id) on delete cascade,
   upload_scan timestamptz,
