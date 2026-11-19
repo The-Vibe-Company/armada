@@ -35,9 +35,10 @@ function decoded(value: unknown) {
 }
 
 function toolResult(value: unknown) {
-  const output = decoded(value);
-  const denied = rows(output).some((part) => part.type === "input_text" && part.text === "scoped_authority_denied");
-  return { result: row(row(output).result), denied };
+  const receipt =
+    typeof value === "string" ? /^Wall time: \d+(?:\.\d+)? seconds\nOutput:\n([\s\S]+)$/.exec(value)?.[1] : undefined;
+  const denied = rows(value).some((part) => part.type === "input_text" && part.text === "scoped_authority_denied");
+  return { result: row(row(decoded(receipt)).result), denied };
 }
 
 function hasAnswer(events: unknown, answer: string) {
