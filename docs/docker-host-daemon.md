@@ -1473,6 +1473,17 @@ about a second of its enqueue, so the merge would save little.
 The per-stage launch timings of #2560 measure the real effect on staging once
 that ticket lands; this change does not add its own timing.
 
+## Runtime installation and bootstrap
+
+The host installs the runtime on a trusted fresh machine after durably fencing
+its bootstrap job. The installer verifies the pinned public artifact's origin,
+size and digest before copying the binary from the private cache. Installation
+and bootstrap errors exposed by the host omit transport and Docker diagnostics.
+
+The non-interactive launcher takes the enrolment payload on private stdin.
+The background process disconnects its output before the Docker exec shell
+exits. The runtime owns dial-out enrolment and harness setup.
+
 ## Shared verified artifact cache (#2562)
 
 Without a shared cache every sandbox downloaded, verified and extracted its
@@ -1484,7 +1495,8 @@ so a sandbox keeps today's guarantees without trusting the host or image.
 - After each successful bootstrap the daemon, in the background, fetches
   `GET /api/runtime/artifact-sets/<runtime sha256>`: the public digests and
   sizes of the harness archives and OpenCode binary deployed with that runtime.
-  Unknown digests and older servers return 404 and nothing happens.
+  Unknown digests and older servers return 404 and nothing happens. The mailbox
+  can complete bootstrap while the background warm-up runs.
 - Each artifact is verified through the shared installer (fixed HTTPS origin,
   no credentials or redirects, exact size and SHA256) into
   `<state>/artifact-cache-private`, then published atomically as a mode 0444
@@ -1494,8 +1506,9 @@ so a sandbox keeps today's guarantees without trusting the host or image.
   neither it nor the previous set.
 - New containers bind-mount that directory read-only at
   `/opt/armada/artifact-cache`. The daemon recreates the directory before
-  every create/start; an engine that refuses the bind (confinement, remote
-  engine) gets the container without it. Ownership always accepts that exact
+  every create/start. The mount uses the canonical state path. If the path
+  contains Docker mount-field separators or the engine refuses the bind (for
+  example, with confinement or a remote engine), the container runs without it. Ownership always accepts that exact
   read-only bind as the only extra mount, even when preparation fails;
   containers created before the upgrade keep their single home volume and
   download as before.
