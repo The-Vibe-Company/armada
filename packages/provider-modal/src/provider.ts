@@ -13,7 +13,6 @@ import type {
 import {
   HARNESSES,
   isModelConnectionTestResult,
-  machineCapacity,
   mapHarnesses,
   OUTPUT_MAX_READ_BYTES,
   ProviderError,
@@ -28,16 +27,14 @@ import {
   readCollectorEntries,
   readCollectorProbeResult,
   readCollectorResult,
-  SHARED_ARTIFACT_CACHE_PATH,
   type WorkPreservation,
 } from "@armada/core/server";
-import { NotFoundError, type Sandbox } from "modal";
 import { chooseManagementAuthority, matchesManagementAuthority } from "./authority.ts";
 import { abortable, boundModalApp, type ModalConnection, modalConnection } from "./client.ts";
-import { lifecycleStep, ModalOperationError, modalBuilderImageError, modalError, refusal } from "./errors.ts";
+import { lifecycleStep, ModalOperationError, modalError, refusal } from "./errors.ts";
 import { executeGoldenCommand } from "./golden-exec.ts";
 import { createImageCollection, trackDetachedCollection } from "./image-collection.ts";
-import { DEPLOYMENT_TAG } from "./inventory.ts";
+import { createPhysicalLifecycle } from "./physical-lifecycle.ts";
 import type {
   Machine,
   McpConfiguration,
@@ -51,7 +48,7 @@ import type {
 } from "./ports.ts";
 import { createRuntimeLifecycle } from "./runtime-lifecycle.ts";
 import { createSnapshotTombstones } from "./snapshot-tombstones.ts";
-import { createSshPreparation, SSH_PORT } from "./ssh.ts";
+import { createSshPreparation } from "./ssh.ts";
 import { scopeKey } from "./store.ts";
 
 /** In-request retry delays after the first attempt for deletion's image cleanup. */
@@ -249,242 +246,18 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       appName: options.appName,
     };
   }
-  async function physical(row: Machine, signal?: AbortSignal): Promise<Sandbox> {
-    assertMachineSource(row);
-    await bound();
-    signal?.throwIfAborted();
-    if (!row.physicalId) throw refusal("sandbox_not_ready", "No current physical machine.");
-    return client.sandboxes.fromId(row.physicalId);
-  }
-  function ownershipTags(row: Machine) {
-    return {
-      armada_sandbox: row.info.id,
-      armada_scope: scopeKey(options.scope),
-      armada_generation: String(row.generation),
-    };
-  }
-  async function namedOwned(row: Machine): Promise<Sandbox> {
-    assertMachineSource(row);
-    // Name reconciliation exists because the create outcome is unknown: a missing App must
-    // preserve the reservation, never read as the machine's absence.
-    await boundNotAbsence();
-    let sb: Sandbox;
-    try {
-      sb = await client.sandboxes.fromName(options.appName, row.physicalName, {
-        environment: options.scope.binding.environment,
-        includeTerminated: true,
-      });
-    } catch (error) {
-      if (modalError(error).code === "not_found")
-        throw refusal(
-          "unavailable",
-          "Named create outcome is still unknown; reservation preserved. Retry reconciliation, never create a replacement.",
-        );
-      throw refusal(
-        "unavailable",
-        "Named create reconciliation unavailable; reservation preserved. Retry delete after Modal recovers.",
-      );
-    }
-    let tags: Record<string, string>;
-    try {
-      tags = await sb.getTags();
-    } catch {
-      throw refusal(
-        "unavailable",
-        "Named machine ownership verification is unavailable; reservation preserved. Retry reconciliation.",
-      );
-    }
-    if (!Object.entries(ownershipTags(row)).every(([key, value]) => tags[key] === value))
-      throw refusal("conflict", "Named machine ownership does not match the reservation; resource not modified.");
-    return sb;
-  }
-  async function bootStage<T>(
-    stage: "binding" | "runtime" | "baseline" | "fresh" | "start" | "health" | "active_publication",
-    work: () => Promise<T>,
-  ): Promise<T> {
-    try {
-      return await measure(`modal_boot_${stage}`, work);
-    } catch (error) {
-      const safe = modalError(error);
-      throw new ProviderError({
-        provider: "modal",
-        code: safe.code,
-        retryable: safe.retryable,
-        ...(safe.status === undefined ? {} : { status: safe.status }),
-        providerCode: `modal_boot_${stage}`,
-        ...(safe.details ? { details: safe.details } : {}),
-        message: "Modal bootstrap failed; inspect the durable lifecycle receipt.",
-      });
-    }
-  }
-  async function sealBaselineBeforeAdmission(
-    sb: Sandbox,
-    row: Machine,
-    save: (row: Machine) => Promise<void>,
-    runnerPid: unknown,
-  ): Promise<void> {
-    // Only newly captured, never-admitted incarnations may gain trusted controls.
-    // Old active parents and legacy runtimes never recapture exclusions.
-    const baseline = row.processBaseline;
-    if (baseline?.admissionState !== "pending") return;
-    await bootStage("baseline", async () => {
-      if (
-        distribution.sealProcessBaseline &&
-        typeof runnerPid === "number" &&
-        Number.isSafeInteger(runnerPid) &&
-        runnerPid >= 1
-      )
-        row.processBaseline = await distribution.sealProcessBaseline(sb, row, runnerPid);
-      else row.processBaseline = { ...baseline, admissionState: "legacy" };
-      await save(row);
-    });
-  }
-  async function create(
-    row: Machine,
-    save: (row: Machine) => Promise<void>,
-    env: Readonly<Record<string, string>>,
-    onResumeStage?: ResumeStageObserver,
-  ): Promise<SandboxInfo> {
-    const app = await bound();
-    let sb: Sandbox;
-    if (row.phase === "creating") {
-      // Unknown create outcome: lookup only. A not-found does NOT prove a delayed create cannot land.
-      sb = await namedOwned(row);
-      if ((await sb.poll()) !== null)
-        throw refusal("conflict", "Reconciled creation already terminated; manual recovery required.");
-    } else if (row.phase === "reserved") {
-      const image = await measure("modal_image", () =>
-        row.imageId ? client.images.fromId(row.imageId) : distribution.image(client),
-      );
-      if (row.golden && !image.imageId) {
-        try {
-          // The SDK otherwise builds inside sandboxes.create, hiding whether allocation started.
-          await measure("modal_image", () => image.build(app));
-        } catch (error) {
-          // Close the reservation under its lease before reporting a non-allocating failure.
-          row.phase = "deleted";
-          await save(row);
-          throw modalBuilderImageError(error);
-        }
-      }
-      const artifactVolume = row.commonRuntime
-        ? await client.volumes
-            .fromName("armada-runtime-artifacts", {
-              environment: options.scope.binding.environment,
-              createIfMissing: false,
-            })
-            .catch((error: unknown) => {
-              if (!(error instanceof NotFoundError)) throw error;
-              return undefined;
-            })
-        : undefined;
-      row.phase = "creating";
-      row.grantExpiresAt = Date.now() + row.ttlSeconds * 1000;
-      await save(row);
-      const capacity = row.size === undefined ? null : machineCapacity("modal", row.size);
-      sb = await measure("modal_sandbox_create", () =>
-        client.sandboxes.create(app, image, {
-          ...(row.runtimePolicy === "explicit-vm-v1" ? { runtime: "vm" as const } : {}),
-          ...(capacity
-            ? {
-                cpu: capacity.vcpus / 2,
-                cpuLimit: capacity.vcpus / 2,
-                memoryMiB: capacity.memoryMiB,
-                memoryLimitMiB: capacity.memoryMiB,
-              }
-            : {}),
-          name: row.physicalName,
-          tags: {
-            ...ownershipTags(row),
-            // Golden builders are managed by the golden lifecycle, outside the inventory sweep.
-            ...(!row.golden && deploymentId ? { [DEPLOYMENT_TAG]: deploymentId } : {}),
-          },
-          timeoutMs: row.ttlSeconds * 1000,
-          workdir: "/home/user",
-          ...(artifactVolume
-            ? { volumes: { [SHARED_ARTIFACT_CACHE_PATH]: artifactVolume.withMountOptions({ readOnly: true }) } }
-            : {}),
-          unencryptedPorts: [SSH_PORT],
-          secrets: [],
-          env: {},
-          includeOidcIdentityToken: false,
-        }),
-      );
-    } else {
-      sb = await physical(row);
-    }
-    if (row.phase === "creating") await onResumeStage?.("provider_claimed");
-    row.physicalId = sb.sandboxId;
-    if (row.runtimePolicy === "explicit-vm-v1")
-      row.runtimeEvidence = { version: 1, runtime: "vm", physicalId: sb.sandboxId, generation: row.generation };
-    row.phase = "booting";
-    await bootStage("binding", () => save(row));
-    if (!row.commonRuntime && distribution.prepareRuntime)
-      await bootStage("runtime", () => distribution.prepareRuntime!(sb, row));
-    await bootStage("baseline", async () => {
-      if (distribution.captureProcessBaseline && !row.processBaseline) {
-        if (row.freshStatePreparedGeneration === row.generation)
-          throw refusal(
-            "conflict",
-            "Cannot trust a control baseline captured after bootstrap; physical source retained.",
-          );
-        row.processBaseline = await distribution.captureProcessBaseline(sb, row);
-        await save(row);
-      }
-      if (
-        row.processBaseline &&
-        (row.processBaseline.physicalId !== row.physicalId || row.processBaseline.generation !== row.generation)
-      )
-        throw refusal("conflict", "Physical process baseline does not match this incarnation.");
-    });
-    // Only a never-bootstrapped fresh master/new logical fork may discard inherited managed
-    // state. Persist the marker BEFORE boot so retries cannot erase a same-id/generation fence.
-    if (
-      distribution.prepareFreshMachine &&
-      (row.golden || row.generation === 1) &&
-      row.freshStatePreparedGeneration !== row.generation
-    ) {
-      await bootStage("fresh", async () => {
-        await distribution.prepareFreshMachine!(sb, row);
-        row.freshStatePreparedGeneration = row.generation;
-        await save(row);
-      });
-    }
-    if (!row.commonRuntime) {
-      // The in-guest baseline is available, before starting or probing the native runner.
-      await onResumeStage?.("machine_started");
-      await bootStage("start", () => distribution.start(sb, row, env));
-      let managedRunnerPid: unknown;
-      await bootStage("health", async () => {
-        let healthy = false;
-        for (let attempt = 0; attempt < 120; attempt++) {
-          try {
-            const health = await runner.call<{ generation?: string; ready?: boolean; pid?: unknown }>(
-              row,
-              "health",
-              {},
-            );
-            if (health.generation !== String(row.generation) || health.ready !== true)
-              throw refusal("conflict", "Runner health belongs to another or closed generation.");
-            managedRunnerPid = health.pid;
-            healthy = true;
-            break;
-          } catch (error) {
-            if (attempt === 119) throw error;
-            await Bun.sleep(250);
-          }
-        }
-        if (!healthy) throw refusal("unavailable", "Runner did not become ready.");
-      });
-      await sealBaselineBeforeAdmission(sb, row, save, managedRunnerPid);
-    }
-    row.phase = "active";
-    row.info.state = "ready";
-    row.info.providerState = "active";
-    row.info.expiresAt = new Date(row.grantExpiresAt ?? Date.now());
-    await bootStage("active_publication", () => save(row));
-    return sandboxInfo(row);
-  }
+  const { physical, namedOwned, boundNotAbsence, create, sealBaselineBeforeAdmission } = createPhysicalLifecycle({
+    client,
+    bound,
+    appName: options.appName,
+    scope: options.scope,
+    ...(deploymentId ? { deploymentId } : {}),
+    distribution,
+    runner,
+    measure,
+    assertMachineSource,
+    sandboxInfo,
+  });
   async function launch(request: CreateGoldenRequest | ForkRequest, golden: boolean): Promise<SandboxInfo> {
     let size: Machine["size"];
     if ("size" in request && request.size !== undefined) {
@@ -802,14 +575,6 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         await (options.cleanupSleep ?? Bun.sleep)(delay);
       }
     }
-  }
-  /** App lookup for paths whose not_found would read as a machine's absence. A missing App says
-   * nothing about this sandbox, so it must never publish a deletion that never ran. */
-  async function boundNotAbsence() {
-    await bound().catch((error) => {
-      if (modalError(error).code !== "not_found") throw error;
-      throw refusal("unavailable", "Modal App lookup failed; the sandbox was not deleted.");
-    });
   }
   function assertRecoveryTarget({ ownerId, target }: Parameters<NonNullable<Provider["findGoldenBuilder"]>>[0]) {
     if (
