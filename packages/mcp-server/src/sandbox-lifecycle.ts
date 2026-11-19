@@ -46,6 +46,7 @@ interface SandboxTransition {
   code: string;
   effects: readonly SandboxTransitionEffect[];
   settlement?: {
+    lease: string;
     statusReason: string | null;
     stopRequestedAt: string | null;
     stoppedAt: string | null;
@@ -62,7 +63,7 @@ export async function transitionSandbox(tx: Sql, input: SandboxTransition) {
     `select applied, generation::text from public.sandbox_transition(
       $1::uuid, $2::bigint, array(select jsonb_array_elements_text($3::jsonb)::public.sandbox_status),
       $4::public.sandbox_status, $5::text, $6::text, $7::jsonb
-      ${settlement ? ", $8::text, $9::timestamptz, $10::timestamptz" : ""}
+      ${settlement ? ", $8::text, $9::timestamptz, $10::timestamptz, $11::uuid" : ""}
     )`,
     [
       input.sandboxId,
@@ -72,7 +73,9 @@ export async function transitionSandbox(tx: Sql, input: SandboxTransition) {
       input.actor,
       input.code,
       JSON.stringify(input.effects),
-      ...(settlement ? [settlement.statusReason, settlement.stopRequestedAt, settlement.stoppedAt] : []),
+      ...(settlement
+        ? [settlement.statusReason, settlement.stopRequestedAt, settlement.stoppedAt, settlement.lease]
+        : []),
     ],
   );
   if (!result) throw new Error("Sandbox transition did not return a result.");
@@ -529,83 +532,82 @@ export function createSandboxLifecycle(
         );
       const settle = async () => {
         if (!sql.transaction) throw new Error("Lifecycle settlement requires a transaction.");
-        return sql.transaction(async (tx) => {
-          const current = (
-            await tx.query<{
-              status: SandboxStatus;
-              status_reason: string | null;
-              stop_requested_at: string | null;
-              stopped_at: string | null;
-              settled_at: string;
-            }>(
-              `select status,status_reason,stop_requested_at::text,stopped_at::text,now()::text as settled_at
+        const lostLease = new Error("Lifecycle lease expired during settlement.");
+        return sql
+          .transaction(async (tx) => {
+            const current = (
+              await tx.query<{
+                status: SandboxStatus;
+                status_reason: string | null;
+                stop_requested_at: string | null;
+                stopped_at: string | null;
+                settled_at: string;
+              }>(
+                `select status,status_reason,stop_requested_at::text,stopped_at::text,now()::text as settled_at
                from public.sandboxes where id=$1::uuid and reconcile_lease=$2::uuid and lifecycle_generation=$3
                  and reconcile_lease_until>clock_timestamp()
                  and (activity_until is null or activity_until<now()) for update`,
-              [row.id, token, row.lifecycle_generation],
-            )
-          ).rows[0];
-          if (!current) return true;
+                [row.id, token, row.lifecycle_generation],
+              )
+            ).rows[0];
+            if (!current) return true;
 
-          const { status } = current;
-          const interrupted = status === "starting";
-          const failed = interrupted || physicalExit;
-          const toState = failed ? "failed" : terminal && status !== "failed" ? "stopped" : status;
-          const expiredStop = terminal && expired && status !== "failed" && current.status_reason !== "work_merged";
-          const statusReason = interrupted
-            ? (current.status_reason ?? INTERRUPTED_LAUNCH_REASON)
-            : physicalExit
-              ? ((["idle_paused", "work_merged"].includes(current.status_reason ?? "")
-                  ? null
-                  : current.status_reason) ??
-                "Provider confirmed physical exit without a new verified recovery checkpoint.")
-              : expiredStop
-                ? "expired"
-                : current.status_reason;
-          const exitTime = terminal
-            ? (current.stopped_at ?? stoppedAt?.toISOString() ?? current.settled_at)
-            : current.stopped_at;
-          const stopRequestedAt = terminal
-            ? null
-            : interrupted || waitingForRetention
-              ? (current.stop_requested_at ?? current.settled_at)
-              : current.stop_requested_at;
-          if (toState !== status) {
-            const result = await transitionSandbox(tx, {
-              sandboxId: row.id,
-              expectedGeneration: row.lifecycle_generation,
-              fromStates: [status],
-              toState,
-              actor: "reconciler",
-              code: interrupted
-                ? "launch_interrupted"
-                : physicalExit
-                  ? "provider_exit_without_checkpoint"
-                  : expiredStop
-                    ? "expired"
-                    : "provider_stopped",
-              effects: [],
-              settlement: { statusReason, stopRequestedAt, stoppedAt: exitTime },
-            });
-            if (result.kind === "conflict") throw new Error("Locked lifecycle settlement lost its transition.");
-          }
-          // Pending retention still uses the existing admission lane. Terminal
-          // evidence and diagnostics accompany the canonical status write so
-          // metering and outbound webhook triggers see a single coherent row.
-          if (toState === status) {
-            const pendingRetention = waitingForRetention && !failed;
-            await tx.query(
-              `update public.sandboxes set
+            const { status } = current;
+            const interrupted = status === "starting";
+            const failed = interrupted || physicalExit;
+            const toState = failed ? "failed" : terminal && status !== "failed" ? "stopped" : status;
+            const expiredStop = terminal && expired && status !== "failed" && current.status_reason !== "work_merged";
+            const statusReason = interrupted
+              ? (current.status_reason ?? INTERRUPTED_LAUNCH_REASON)
+              : physicalExit
+                ? ((["idle_paused", "work_merged"].includes(current.status_reason ?? "")
+                    ? null
+                    : current.status_reason) ??
+                  "Provider confirmed physical exit without a new verified recovery checkpoint.")
+                : expiredStop
+                  ? "expired"
+                  : current.status_reason;
+            const exitTime = terminal
+              ? (current.stopped_at ?? stoppedAt?.toISOString() ?? current.settled_at)
+              : current.stopped_at;
+            const stopRequestedAt = terminal
+              ? null
+              : interrupted || waitingForRetention
+                ? (current.stop_requested_at ?? current.settled_at)
+                : current.stop_requested_at;
+            if (toState !== status) {
+              const result = await transitionSandbox(tx, {
+                sandboxId: row.id,
+                expectedGeneration: row.lifecycle_generation,
+                fromStates: [status],
+                toState,
+                actor: "reconciler",
+                code: interrupted
+                  ? "launch_interrupted"
+                  : physicalExit
+                    ? "provider_exit_without_checkpoint"
+                    : expiredStop
+                      ? "expired"
+                      : "provider_stopped",
+                effects: [],
+                settlement: { lease: token, statusReason, stopRequestedAt, stoppedAt: exitTime },
+              });
+              if (result.kind === "conflict") return true;
+            }
+            if (toState === status) {
+              const pendingRetention = waitingForRetention && !failed;
+              await tx.query(
+                `update public.sandboxes set
                  status=case when $2 then 'stopping'::public.sandbox_status else status end,
                  transition_context=case when $2 then jsonb_build_object('actor','reconciler','code','stop_requested') end,
                  status_reason=$3,stop_requested_at=$4,stopped_at=$5,
                  stop_generation=case when $2 and stop_requested_at is null then stop_generation+1 else stop_generation end
                where id=$1`,
-              [row.id, pendingRetention, statusReason, stopRequestedAt, exitTime],
-            );
-          }
-          await tx.query(
-            `update public.sandboxes set
+                [row.id, pendingRetention, statusReason, stopRequestedAt, exitTime],
+              );
+            }
+            const saved = await tx.query(
+              `update public.sandboxes set
                last_observed_at=case when $3::text is null then now() else last_observed_at end,
                activity_lease_id=case when $5 and not $2 then activity_lease_id else null end,
                activity_until=case when $5 and not $2 then activity_until else null end,
@@ -614,11 +616,27 @@ export function createSandboxLifecycle(
                reconcile_lease=case when $4 then reconcile_lease else null end,
                reconcile_lease_until=case when $4 then reconcile_lease_until
                  when $6 and not $2 then now()+interval '1 minute' else null end
-             where id=$1`,
-            [row.id, terminal, error, signal?.aborted ?? false, retainUnknownActivity, retainedResume],
-          );
-          return true;
-        });
+             where id=$1 and reconcile_lease=$7::uuid and lifecycle_generation=$8
+               and reconcile_lease_until>clock_timestamp()
+             returning id`,
+              [
+                row.id,
+                terminal,
+                error,
+                signal?.aborted ?? false,
+                retainUnknownActivity,
+                retainedResume,
+                token,
+                row.lifecycle_generation,
+              ],
+            );
+            if (!saved.rows.length) throw lostLease;
+            return true;
+          })
+          .catch((failure: unknown) => {
+            if (failure === lostLease) return true;
+            throw failure;
+          });
       };
       try {
         // Uses persisted owner membership, source credential visibility and pinned Modal App.

@@ -202,8 +202,8 @@ test("an expired observation lease cannot publish a delayed terminal result", as
   }
 });
 
-for (const step of ["transition", "metadata"] as const) {
-  test(`terminal settlement rolls back if its ${step} write fails`, async () => {
+for (const step of ["transition", "metadata", "lease expiry"] as const) {
+  test(`terminal settlement rolls back on ${step}`, async () => {
     const { db, people } = await sharedDatabase();
     const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0]!;
     const id = crypto.randomUUID();
@@ -212,10 +212,27 @@ for (const step of ["transition", "metadata"] as const) {
        values($1,'boat','bx_23456789',$2,$3,$4,'claude','running')`,
       [id, golden.id, people.org, people.owner],
     );
-    const failingWrite = step === "transition" ? "from public.sandbox_transition(" : "last_observed_at=case";
-    const sql = bunLikeSql(db, (query) => {
-      if (query.includes(failingWrite)) throw new Error(`injected ${step} failure`);
-    });
+    const base = bunLikeSql(db);
+    const sql: Sql = {
+      ...base,
+      transaction: (work) =>
+        base.transaction!((tx) =>
+          work({
+            async query<T>(query: string, params?: unknown[]) {
+              if (step === "transition" && query.includes("from public.sandbox_transition(")) {
+                throw new Error("injected transition failure");
+              }
+              if (query.includes("last_observed_at=case")) {
+                if (step === "metadata") throw new Error("injected metadata failure");
+                if (step === "lease expiry") {
+                  await tx.query("update public.sandboxes set reconcile_lease_until='-infinity' where id=$1", [id]);
+                }
+              }
+              return tx.query<T>(query, params);
+            },
+          }),
+        ),
+    };
     const provider = createBoatProvider({
       apiKey: "test-key",
       fetch: (async (_input: Request | string | URL) =>
@@ -223,7 +240,8 @@ for (const step of ["transition", "metadata"] as const) {
     });
     const lifecycle = createSandboxLifecycle(sql, async () => provider);
 
-    await expect(lifecycle.reconcileOne()).rejects.toThrow(`injected ${step} failure`);
+    if (step === "lease expiry") expect(await lifecycle.reconcileOne()).toBe(true);
+    else await expect(lifecycle.reconcileOne()).rejects.toThrow(`injected ${step} failure`);
     expect(
       (
         await db.query(

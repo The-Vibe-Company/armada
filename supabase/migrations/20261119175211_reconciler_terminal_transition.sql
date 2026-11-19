@@ -11,7 +11,8 @@ create or replace function public.sandbox_transition(
   p_effects jsonb,
   p_status_reason text,
   p_stop_requested_at timestamptz,
-  p_stopped_at timestamptz
+  p_stopped_at timestamptz,
+  p_reconcile_lease uuid
 )
 returns table (applied boolean, generation bigint)
 language plpgsql
@@ -52,8 +53,17 @@ begin
   where edge.source = sandbox.status::text and edge.target = p_to_state::text;
 
   if (p_actor = any(allowed_actors)) is not true or (p_code ~ '^[a-z][a-z0-9_]{0,63}$') is not true
+    or (p_actor = 'reconciler') is distinct from (p_reconcile_lease is not null)
     or jsonb_typeof(p_effects) is distinct from 'array' then
     raise exception 'invalid sandbox transition' using errcode = '22023';
+  end if;
+
+  if p_actor = 'reconciler' and (
+    sandbox.reconcile_lease is distinct from p_reconcile_lease
+    or (sandbox.reconcile_lease_until > clock_timestamp()) is not true
+  ) then
+    return query select false, null::bigint;
+    return;
   end if;
 
   if p_to_state in ('starting', 'stopping') and jsonb_array_length(p_effects) <> 1 then
@@ -122,10 +132,9 @@ begin
 end
 $$;
 
-
-revoke all on function public.sandbox_transition(uuid, bigint, public.sandbox_status[], public.sandbox_status, text, text, jsonb, text, timestamptz, timestamptz)
+revoke all on function public.sandbox_transition(uuid, bigint, public.sandbox_status[], public.sandbox_status, text, text, jsonb, text, timestamptz, timestamptz, uuid)
   from public, anon, authenticated;
-grant execute on function public.sandbox_transition(uuid, bigint, public.sandbox_status[], public.sandbox_status, text, text, jsonb, text, timestamptz, timestamptz)
+grant execute on function public.sandbox_transition(uuid, bigint, public.sandbox_status[], public.sandbox_status, text, text, jsonb, text, timestamptz, timestamptz, uuid)
   to service_role;
 
 create or replace function public.sandbox_transition(
@@ -142,5 +151,5 @@ language sql
 set search_path = ''
 as $$
   select * from public.sandbox_transition(p_id, p_expected_generation, p_from_states, p_to_state,
-    p_actor, p_code, p_effects, null::text, null::timestamptz, null::timestamptz)
+    p_actor, p_code, p_effects, null::text, null::timestamptz, null::timestamptz, null::uuid)
 $$;
