@@ -36,6 +36,7 @@ interface SandboxTransition {
   actor:
     | "resume_admission"
     | "runtime_enrolment"
+    | "runtime_observation"
     | "owner"
     | "finish"
     | "expiry"
@@ -48,7 +49,7 @@ interface SandboxTransition {
   code: string;
   effects: readonly SandboxTransitionEffect[];
   settlement?: {
-    lease: string;
+    lease: string | null;
     statusReason: string | null;
     stopRequestedAt: string | null;
     stoppedAt: string | null;
@@ -146,19 +147,20 @@ export async function recordRuntimeStartupFailure(
   return result;
 }
 
-export async function recordObservedRuntimeFailure(
+export async function recordObservedRuntimeState(
   sql: Sql,
   scope: [string[], string],
   observation: {
     sandboxId: string;
     generation: number;
     fromState: "ready" | "running";
+    toState: "failed" | "stopped";
     reason: string | null;
     stoppedAt: string | null;
   },
 ) {
-  if (!sql.transaction) throw new Error("Runtime failure publication requires a transaction.");
-  const { sandboxId, generation, fromState, reason, stoppedAt } = observation;
+  if (!sql.transaction) throw new Error("Runtime observation publication requires a transaction.");
+  const { sandboxId, generation, fromState, toState, reason, stoppedAt } = observation;
   return sql.transaction(async (tx) => {
     const eligible = await tx.query(
       `select s.id from public.sandboxes s
@@ -175,16 +177,20 @@ export async function recordObservedRuntimeFailure(
       sandboxId,
       expectedGeneration: generation,
       fromStates: [fromState],
-      toState: "failed",
-      actor: "lifecycle_runner",
-      code: "runtime_provider_failure",
+      toState,
+      actor: toState === "stopped" ? "runtime_observation" : "lifecycle_runner",
+      code: toState === "stopped" ? "runtime_provider_stopped" : "runtime_provider_failure",
       effects: [],
+      ...(toState === "stopped"
+        ? { settlement: { lease: null, statusReason: reason, stopRequestedAt: null, stoppedAt } }
+        : {}),
     });
     if (result.kind === "applied") {
-      await tx.query(
-        "update public.sandboxes set status_reason=$2,stopped_at=coalesce($3::timestamptz,stopped_at) where id=$1",
-        [sandboxId, reason, stoppedAt],
-      );
+      if (toState === "failed")
+        await tx.query(
+          "update public.sandboxes set status_reason=$2,stopped_at=coalesce($3::timestamptz,stopped_at) where id=$1",
+          [sandboxId, reason, stoppedAt],
+        );
       if (stoppedAt !== null) await releaseAccountCapacity(tx, sandboxId);
     }
     return result;
@@ -260,6 +266,39 @@ export async function requestFailedRuntimeResumeStop(
     [sandboxId, requestId, generation, retained, UNENROLLED_RESUME_STOP],
   );
   return changed.rows[0]?.status;
+}
+
+const dockerStartupStates = ["starting", "ready", "running"] as const;
+
+export async function failDockerStartup(
+  tx: Sql,
+  sandboxId: string,
+  expectedGeneration: string | number,
+  code: "docker_startup_failed" | "docker_host_retired",
+  message: string,
+) {
+  const fenced = await tx.query<{ generation: string }>(
+    `update public.sandboxes set lifecycle_generation=lifecycle_generation+1
+     where id=$1 and lifecycle_generation=$2 and provider='docker'
+       and status=any($3::public.sandbox_status[]) and stop_requested_at is null
+     returning lifecycle_generation::text as generation`,
+    [sandboxId, expectedGeneration, [...dockerStartupStates]],
+  );
+  const activation = fenced.rows[0];
+  if (!activation) return false;
+
+  const result = await transitionSandbox(tx, {
+    sandboxId,
+    expectedGeneration: activation.generation,
+    fromStates: dockerStartupStates,
+    toState: "failed",
+    actor: "docker_host",
+    code,
+    effects: [],
+  });
+  if (result.kind === "conflict") throw new Error("Docker startup changed while settling its failure.");
+  await tx.query("update public.sandboxes set status_reason=$2 where id=$1", [sandboxId, message]);
+  return true;
 }
 
 export async function failDockerResumeActivation(

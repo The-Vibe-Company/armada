@@ -310,11 +310,11 @@ export async function readStatus(
       patch.stoppedAt = (info.stoppedAt ?? options.now).toISOString();
     } else if (sandbox.stoppedAt !== null && next !== "failed") patch.stoppedAt = null;
     if (
-      next === "failed" &&
+      (next === "failed" || next === "stopped") &&
       (sandbox.status === "ready" || sandbox.status === "running") &&
       runtimeBridgeTarget(sandbox)
     )
-      patch.runtimeFailureFrom = sandbox.status;
+      patch.runtimeObservationFrom = sandbox.status;
     try {
       await store.update(sandbox.id, patch);
     } catch (error) {
