@@ -139,3 +139,16 @@ test("short application redaction keeps expanded command output within its captu
     journal.close();
   }
 });
+
+test("command capture withholds a clipped stream with only longer marked application values", () => {
+  const journal = new Journal(":memory:", (text) => text);
+  try {
+    journal.registerApplicationSecrets(["opaque-fixture"]);
+    expect(journal.redactCommandOutput({ text: "prefix opaque-", truncated: true }, 16)).toEqual({
+      text: "[REDACTED]",
+      truncated: true,
+    });
+  } finally {
+    journal.close();
+  }
+});

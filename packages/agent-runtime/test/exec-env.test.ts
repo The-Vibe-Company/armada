@@ -210,7 +210,8 @@ printf '%65535s%s' '' 'tπz' >&2`,
       expect(journal.redact("synthetic-new-refresh")).toBe("[REDACTED]");
       const output = { stdout: "[REDACTED]", stderr: "[REDACTED]", truncated: true };
       expect(body).toMatchObject({ result: output });
-      const process = journal.db.query<{ pid: number }, []>("select pid from processes").get()!;
+      const process = journal.db.query<{ pid: number; body: string }, []>("select pid, body from processes").get()!;
+      expect(JSON.parse(process.body)).toMatchObject(output);
       const recorded = await call(runner, "getExec", { processId: process.pid });
       expect(await recorded.json()).toMatchObject({ result: output });
       expect(await (await call(runner, "exec", command)).json()).toEqual(body);
