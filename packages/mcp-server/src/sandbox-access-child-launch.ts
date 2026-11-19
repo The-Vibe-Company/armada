@@ -1,5 +1,6 @@
 import {
   createSqlSandboxStore,
+  DelegatedAuthorityDenied,
   failureDiagnostic,
   type GoldenActor,
   GoldenError,
@@ -29,7 +30,7 @@ export class ChildLaunchNotAllocated extends Error {
     super("Child launch was not allocated.", { cause });
   }
 
-  record(operation: ChildOperation) {
+  record(operation: Pick<ChildOperation, "id" | "sandboxId">) {
     const error = this.cause;
     const code =
       error instanceof VaultError ||
@@ -39,10 +40,20 @@ export class ChildLaunchNotAllocated extends Error {
         ? error.code
         : this.reason;
     const diagnostic = failureDiagnostic(error ?? this);
+    const errorClass =
+      error instanceof GoldenError
+        ? "GoldenError"
+        : error instanceof DelegatedAuthorityDenied
+          ? "DelegatedAuthorityDenied"
+          : diagnostic.errorClass;
     recordOperatorDiagnostic(
       `scoped.child_launch.${this.guard}`,
-      error instanceof GoldenError ? { ...diagnostic, errorClass: "GoldenError" } : diagnostic,
-      { sandboxId: operation.sandboxId, operationId: operation.id, code },
+      { ...diagnostic, errorClass },
+      {
+        sandboxId: operation.sandboxId,
+        operationId: operation.id,
+        code,
+      },
     );
   }
 }

@@ -12,7 +12,8 @@ import { createAccountTurnQueue } from "./account-turn-queue.ts";
 import type { Caller } from "./caller.ts";
 import { currentRequestId, observeRequest } from "./request-observability.ts";
 
-import { ToolApiError } from "./tool-api.ts";
+import { callSharedTool } from "./tool-api.ts";
+import type { ToolContext } from "./tools.ts";
 
 let connection: PGlite | undefined;
 
@@ -217,9 +218,30 @@ test("a rejected first Modal turn logs bounded evidence and releases its reserva
     },
     () => {},
   );
-  queue.setDispatch(async () => {
-    throw new ToolApiError("invalid_request", "private upstream detail");
-  });
+  queue.setDispatch((actor, request) =>
+    callSharedTool(
+      {
+        caller: actor,
+        now: () => new Date(0),
+        data: {
+          sandboxes: {
+            get: async () => ({
+              id: input.id,
+              provider: "modal",
+              status: "ready",
+              credentialId: account,
+              runtimeTransport: "dialout",
+            }),
+          },
+        },
+        async runtimeSend() {
+          throw new VaultError("invalid", "private upstream detail");
+        },
+      } as unknown as ToolContext,
+      "send",
+      { ...request },
+    ),
+  );
   const log = spyOn(console, "error");
   try {
     expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
@@ -231,8 +253,8 @@ test("a rejected first Modal turn logs bounded evidence and releases its reserva
       expect.objectContaining({
         event: "operator_failure",
         phase: "account_turn.dispatch.send",
-        code: "invalid_request",
-        errorClass: "ToolApiError",
+        code: "invalid",
+        errorClass: "VaultError",
         sandboxId: input.id,
         operationSequence: expect.any(String),
         requestId: expect.any(String),

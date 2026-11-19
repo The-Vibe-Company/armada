@@ -365,9 +365,27 @@ test("revocation between reservation and dispatch cancels queued allocation", as
         },
       },
     );
-    const receipt = await children.launch(token, "queued-revoke", selection);
+    const lines: string[] = [];
+    let receipt: Awaited<ReturnType<typeof children.launch>> | undefined;
+    const response = await observeRequest(
+      async () => {
+        receipt = await children.launch(token, "queued-revoke", selection);
+        return new Response();
+      },
+      (line) => lines.push(line),
+    );
     expect(allocations).toBe(0);
-    expect(receipt.state).toBe("failed");
+    expect(receipt?.state).toBe("failed");
+    expect(lines.map((line) => JSON.parse(line))).toContainEqual(
+      expect.objectContaining({
+        event: "operator_failure",
+        phase: "scoped.child_launch.dispatch_admission",
+        errorClass: "DelegatedAuthorityDenied",
+        sandboxId: receipt?.sandboxId,
+        operationId: receipt?.id,
+        requestId: response?.headers.get("x-request-id"),
+      }),
+    );
   } finally {
     await close();
   }

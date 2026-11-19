@@ -237,7 +237,9 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
               )
             ).rows[0],
         );
-      } catch {
+      } catch (error) {
+        if (input.action === "launch")
+          new ChildLaunchNotAllocated("preallocation_rejected", "dispatch_admission", error).record(receipt);
         // No executor was invoked. Failed fresh admission is confirmed non-allocation,
         // distinct from an unknown provider outcome after dispatch.
         await sql.query(

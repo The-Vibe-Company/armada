@@ -123,11 +123,12 @@ export async function dispatchAccountTurn(
       return false;
     });
     if (rejected) {
-      const diagnostic = failureDiagnostic(error);
+      const origin = error instanceof ToolApiError ? (error.cause ?? error) : error;
+      const diagnostic = failureDiagnostic(origin);
       const errorClass =
-        error instanceof ToolApiError
+        origin instanceof ToolApiError
           ? "ToolApiError"
-          : error instanceof ToolError
+          : origin instanceof ToolError
             ? "ToolError"
             : diagnostic.errorClass;
       recordOperatorDiagnostic(
