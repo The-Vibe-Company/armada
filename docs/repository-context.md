@@ -7,7 +7,7 @@
 - HTTP: optional `repo` on authenticated `POST /api/v1/sandbox/launch`.
 - MCP: optional `repo` on `launch`.
 - Selectors: an exact configured `config.repos[].dir` (for the UI), or the existing `owner/repo` manifest identity (case-insensitive, through `resolveLaunchWorkdir`). Unknown, invalid and ambiguous selectors fail before allocation. Arbitrary paths are not accepted.
-- Canonical response: `repositoryDir: string | null`, always the configured directory, never the raw owner/repo selector. HTTP launch places it on `sandbox`; MCP/CLI launch and list/status/detail DTOs expose the same field. Omitted selection and legacy records return `null`.
+- Canonical response: `repositoryDir: string | null`, always the configured directory, never the raw owner/repo selector. HTTP, MCP and CLI launch place it on `sandbox`. List, status and detail responses also expose the field. Omitted selection and legacy records return `null`.
 - Frontend label: **Repository context**. The hint can say “The agent starts in this repository.” Choices come from the visible selected golden's configured dirs. Omit `repo` for the default; do not send an empty string.
 
 The selection is stored before any prompt in immutable `sandboxes.repository_dir`. Existing metadata validation remains in `20261110020000_sandbox_repository_context.sql`; `20261110030000_repository_native_cwd_comment.sql` corrects its column description without editing the prior migration. Later edits to the golden cannot change an existing sandbox's selected repository.

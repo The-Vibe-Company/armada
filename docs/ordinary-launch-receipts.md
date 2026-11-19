@@ -18,6 +18,11 @@ of the request fingerprint, so a golden recreated under the same name returns
 returns `outcome_unknown` and the stable UUID.
 It does not claim that the machine is stopped or safe to recreate.
 
+Successful launches return the shared envelope. Use `sandbox.id` in subsequent
+MCP calls. A retry of a completed launch whose receipt predates the envelope
+returns `outcome_unknown`. Use `list` with the original `externalRef` to
+recover the sandbox and keep the original key.
+
 If replay returns an unknown outcome, look for registered sandboxes by
 `externalRef`. Escalate unregistered allocations to an authorized operator
 with the organization, original key, external reference and receipt UUID

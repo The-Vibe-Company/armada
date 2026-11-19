@@ -228,6 +228,29 @@ test.each([
       "prefix[REDACTED]": 3,
     },
   },
+  ...["account/rateLimits/read", "account/rateLimits/updated"].map((type) => ({
+    type,
+    data: {
+      rateLimits: {
+        limitId: "codex",
+        limitName: "quota-prefixvalue",
+        primary: { usedPercent: 17, resetsAt: 17944288 },
+        credits: { hasCredits: true, unlimited: false, balance: "42" },
+      },
+      ...(type.endsWith("/read") ? { rateLimitsByLimitId: { prefixvalue: { limitId: "prefixvalue" } } } : {}),
+    },
+    masked: {
+      rateLimits: {
+        limitId: "codex",
+        limitName: "quota-prefix[REDACTED]",
+        primary: { usedPercent: 17, resetsAt: "[REDACTED]" },
+        credits: { hasCredits: true, unlimited: false, balance: "[REDACTED]" },
+      },
+      ...(type.endsWith("/read")
+        ? { rateLimitsByLimitId: { "prefix[REDACTED]": { limitId: "prefix[REDACTED]" } } }
+        : {}),
+    },
+  })),
   {
     type: "result",
     data: {
@@ -271,7 +294,13 @@ test.each([
   try {
     const event = { id: "proof", at: 1, kind: "other", type, data } satisfies AgentEvent;
     journal.append(event);
-    journal.registerApplicationSecrets(["value", type, "bash", "longfixture"]);
+    journal.registerApplicationSecrets([
+      "value",
+      type,
+      "bash",
+      "longfixture",
+      ...(type.startsWith("account/") ? ["rateLimits", "42"] : []),
+    ]);
     journal.append({ ...event, id: "new-proof" });
     const expected = { ...event, data: masked };
     const newer = { ...expected, id: "new-proof" };

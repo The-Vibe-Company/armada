@@ -23,9 +23,17 @@ const CLAUDE_RESULT_PAYLOAD_FIELDS = [
   "stop_reason",
 ] as const;
 
+function isCodexQuotaDiagnostic(type: string) {
+  return type === "account/rateLimits/read" || type === "account/rateLimits/updated";
+}
+
 function isStructuredDiagnostic(type: string) {
   return (
-    type === "armada/opencodeShell" || type === "armada/opencodeMcp" || type === "result" || type === "model/rerouted"
+    type === "armada/opencodeShell" ||
+    type === "armada/opencodeMcp" ||
+    type === "result" ||
+    type === "model/rerouted" ||
+    isCodexQuotaDiagnostic(type)
   );
 }
 
@@ -83,6 +91,67 @@ function maskPayloadField(
   const masked = JSON.stringify(replacement);
   if (masked !== before && masked !== after) data[key] = before === after ? replacement : "[REDACTED]";
 }
+
+type PayloadShape = {
+  fields?: Readonly<Record<string, PayloadShape | null>>;
+  entries?: PayloadShape;
+};
+
+const quotaWindow = { fields: { usedPercent: null, windowDurationMins: null, resetsAt: null } };
+const quotaSnapshot = {
+  fields: {
+    limitId: null,
+    limitName: null,
+    primary: quotaWindow,
+    secondary: quotaWindow,
+    credits: { fields: { hasCredits: null, unlimited: null, balance: null } },
+    planType: null,
+    rateLimitReachedType: null,
+  },
+};
+const quotaPayload = {
+  fields: {
+    rateLimits: quotaSnapshot,
+    rateLimitsByLimitId: { entries: quotaSnapshot },
+    ordinaryUsageAllowed: null,
+  },
+};
+
+const maskQuotaFields: (
+  original: unknown,
+  scrubbed: unknown,
+  mask: (text: string) => string,
+  shape?: PayloadShape | null,
+) => unknown = (original, scrubbed, mask, shape) => {
+  if (Array.isArray(original) && Array.isArray(scrubbed)) {
+    return original.map((item, index) => maskQuotaFields(item, scrubbed[index], mask));
+  }
+  if (
+    original &&
+    typeof original === "object" &&
+    !Array.isArray(original) &&
+    scrubbed &&
+    typeof scrubbed === "object" &&
+    !Array.isArray(scrubbed)
+  ) {
+    const fields = shape?.fields;
+    const values = scrubbed as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.entries(original).map(([key, value]) => {
+        const fixed = fields && Object.hasOwn(fields, key);
+        return [
+          fixed ? key : mask(key),
+          maskQuotaFields(value, values[key], mask, fixed ? fields[key] : shape?.entries),
+        ];
+      }),
+    );
+  }
+  if (original !== scrubbed) {
+    if (typeof original !== "string" || typeof scrubbed !== "string") return scrubbed;
+    return maskText(original, scrubbed, mask);
+  }
+  return maskPayload(original, mask);
+};
 
 function maskProofData(
   original: unknown,
@@ -228,6 +297,8 @@ export class Journal {
           for (const key of CLAUDE_RESULT_PAYLOAD_FIELDS) delete scrubbed.data[key];
           scrubbed.data.outputTruncated = true;
         }
+      } else if (isCodexQuotaDiagnostic(event.type)) {
+        scrubbed.data = maskQuotaFields(event.data, scrubbed.data, maskField, quotaPayload);
       } else if (event.type === "model/rerouted") {
         maskPayloadField({ data: event.data }, scrubbed, "data", maskField);
       } else {
