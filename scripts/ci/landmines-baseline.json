@@ -1,6 +1,5 @@
 {
   "landmines-structure/colocated-tests": {
-    "apps/dashboard/test/control-proxy.test.ts": 1,
     "apps/dashboard/test/routine-staging-transport.test.ts": 1,
     "apps/dashboard/test/staging-check-route-parity.test.ts": 1,
     "apps/dashboard/test/stats-db.test.ts": 1
@@ -241,7 +240,6 @@
     "apps/dashboard/src/lib/usage-revision.ts": 1,
     "apps/dashboard/src/lib/variables.ts": 15,
     "apps/dashboard/src/proxy.ts": 7,
-    "apps/dashboard/test/control-proxy.test.ts": 10,
     "apps/dashboard/test/fixtures/rsc.ts": 3,
     "apps/dashboard/test/invitations.test.ts": 2,
     "apps/dashboard/test/proxy.test.ts": 2,
@@ -1338,7 +1336,6 @@
     "apps/dashboard/src/lib/variables.ts": 8,
     "apps/dashboard/src/proxy.ts": 2,
     "apps/dashboard/test/client-bundle.test.ts": 1,
-    "apps/dashboard/test/control-proxy.test.ts": 1,
     "apps/dashboard/test/fixtures/rsc.ts": 1,
     "apps/dashboard/test/proxy.test.ts": 1,
     "packages/agent-runtime/scripts/claude-smoke.ts": 1,

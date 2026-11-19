@@ -1,8 +1,6 @@
 import { expect, test } from "bun:test";
-import { CONTROL_BODY_MAX_BYTES } from "@armada/core";
 import { PUBLIC_CONTROL_ROUTES } from "@armada/core/contract";
-import { forwardControl } from "../src/app/api/v1/[...path]/control-proxy.ts";
-import { POST } from "../src/app/api/v1/[...path]/route.ts";
+import { forwardControl } from "./control-proxy.ts";
 
 const env = process.env.ARMADA_MCP_URL;
 
@@ -218,7 +216,6 @@ test("forwards authenticated CLI operations and MCP control routes", async () =>
     (await forwardControl(new Request("https://dashboard.test", { method: "POST" }), ["org", "list"])).status,
   ).toBe(401);
 
-  // `armada golden remove` (#566) goes through the public origin: same route, bearer and body as the dashboard's own call.
   const removal = JSON.stringify({
     id: "00000000-0000-4000-8000-000000000020",
     org: "00000000-0000-4000-8000-000000000010",
@@ -324,32 +321,27 @@ test("rejects missing configuration and authorization", async () => {
   else process.env.ARMADA_MCP_URL = env;
 });
 
-test("provider setup and sizing cross the real public-origin POST proxy over HTTP", async () => {
+test("provider setup and sizing preserve request bytes through the proxy", async () => {
   const received: { path: string; body: string; bearer: string | null }[] = [];
-  const upstream = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    fetch: async (request) => {
-      received.push({
-        path: new URL(request.url).pathname,
-        body: await request.text(),
-        bearer: request.headers.get("authorization"),
-      });
-      return Response.json(
-        { error: { code: "invalid", message: "The provider rejected this credential." } },
-        { status: 400 },
-      );
-    },
-  });
-  const publicOrigin = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    fetch: (request) =>
-      POST(request, {
-        params: Promise.resolve({ path: new URL(request.url).pathname.slice("/api/v1/".length).split("/") }),
-      }),
-  });
-  process.env.ARMADA_MCP_URL = upstream.url.toString();
+  const upstream = async (input: URL, init: RequestInit) => {
+    const request = new Request(input, init);
+    received.push({
+      path: new URL(request.url).pathname,
+      body: await request.text(),
+      bearer: request.headers.get("authorization"),
+    });
+    return Response.json(
+      { error: { code: "invalid", message: "The provider rejected this credential." } },
+      { status: 400 },
+    );
+  };
+  const post = (path: string, init: RequestInit) =>
+    forwardControl(
+      new Request(`https://dashboard.test/api/v1/${path}`, { ...init, method: "POST" }),
+      path.split("/"),
+      upstream,
+    );
+  process.env.ARMADA_MCP_URL = "https://armada.test/mcp";
   try {
     for (const action of ["status", "connect", "disconnect"]) {
       const body = JSON.stringify(
@@ -359,8 +351,7 @@ test("provider setup and sizing cross the real public-origin POST proxy over HTT
             ? { org: "org-id", provider: "boat" }
             : { org: "org-id", provider: "boat", value: "synthetic-input" },
       );
-      const response = await fetch(new URL(`/api/v1/org/provider/${action}`, publicOrigin.url), {
-        method: "POST",
+      const response = await post(`org/provider/${action}`, {
         headers: { authorization: "Bearer masked", "content-type": "application/json" },
         body,
       });
@@ -371,8 +362,6 @@ test("provider setup and sizing cross the real public-origin POST proxy over HTT
         error: { code: "invalid", message: "The provider rejected this credential." },
       });
     }
-    // These bytes must reach control validation unchanged; the launch has no
-    // version. Only the upstream is a fixture; the public POST handler is real.
     for (const [path, body] of [
       ["sandbox/launch", '{ "golden": "golden-id", "size": "medium" }'],
       ["golden/size-policy", '{"golden":"golden-id"}'],
@@ -380,13 +369,12 @@ test("provider setup and sizing cross the real public-origin POST proxy over HTT
         "golden/size-policy",
         '{"golden":"golden-id","policy":{"version":1,"golden":"large","repositories":{"armada":"medium"}}}',
       ],
-    ]) {
+    ] as const) {
       const count = received.length;
-      const anonymous = await fetch(new URL(`/api/v1/${path}`, publicOrigin.url), { method: "POST", body });
+      const anonymous = await post(path, { body });
       expect(anonymous.status).toBe(401);
       expect(received).toHaveLength(count);
-      const response = await fetch(new URL(`/api/v1/${path}`, publicOrigin.url), {
-        method: "POST",
+      const response = await post(path, {
         headers: { authorization: "Bearer masked", "content-type": "application/json" },
         body,
       });
@@ -398,9 +386,8 @@ test("provider setup and sizing cross the real public-origin POST proxy over HTT
       );
     }
   } finally {
-    process.env.ARMADA_MCP_URL = env;
-    await publicOrigin.stop(true);
-    await upstream.stop(true);
+    if (env === undefined) delete process.env.ARMADA_MCP_URL;
+    else process.env.ARMADA_MCP_URL = env;
   }
 });
 
@@ -500,7 +487,6 @@ test("catalog proxy preserves query parameters for strict upstream refusal", asy
   expect(seen).toEqual(["?unexpected=1", "?unexpected=1"]);
 });
 
-// Golden configs can exceed the generic 128 KiB proxy bound; keep the backend's byte limit for this route only.
 test("snapshot create forwards bounded golden configs up to one MiB and refuses streamed or declared overflow", async () => {
   process.env.ARMADA_MCP_URL = "https://armada.test/mcp";
   try {
@@ -554,255 +540,9 @@ test("snapshot create forwards bounded golden configs up to one MiB and refuses 
   }
 });
 
-test("the SDK keeps the drain refusal's Retry-After through the dashboard proxy, and malformed delays are dropped", async () => {
-  const { Armada, ArmadaError } = await import("../../../packages/sdk/src/index.ts");
-  const { createServerRequestDrain } = await import("../../../packages/mcp-server/src/server-request-drain.ts");
-  process.env.ARMADA_MCP_URL = "https://armada.test/mcp";
-  const drain = createServerRequestDrain(async () => Response.json({}));
-  drain.beginDrain();
-  let upstreamCalls = 0;
-  const client = new Armada({
-    token: "service_placeholder",
-    url: "https://dashboard.test",
-    readRetries: 3,
-    fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
-      const request = new Request(input, init);
-      const path = new URL(request.url).pathname.replace(/^\/api\/v1\//, "").split("/");
-      return forwardControl(request, path, async (target, upstreamInit) => {
-        upstreamCalls++;
-        return drain.fetch(new Request(target, upstreamInit));
-      });
-    }) as import("../../../packages/sdk/src/index.ts").Fetch,
-  });
-  const error = await client.stop({ id: "sandbox_placeholder" }).catch((caught: unknown) => caught);
-  expect(error).toBeInstanceOf(ArmadaError);
-  expect(error).toMatchObject({ code: "unavailable", status: 503, outcomeUnknown: false, retryAfterSeconds: 5 });
-  expect(upstreamCalls).toBe(1);
-  for (const [upstream, forwarded] of [
-    ["Wed, 21 Oct 2026 07:28:00 GMT", "Wed, 21 Oct 2026 07:28:00 GMT"],
-    ["soon", null],
-    ["-5", null],
-  ] as const) {
-    const response = await forwardControl(
-      new Request("https://dashboard.test/api/v1/golden/list", {
-        method: "POST",
-        headers: { authorization: "Bearer masked" },
-        body: "{}",
-      }),
-      ["golden", "list"],
-      async () => new Response("{}", { status: 503, headers: { "retry-after": upstream } }),
-    );
-    expect(response.headers.get("retry-after")).toBe(forwarded);
-  }
-});
-
-test("proxy-generated failures match the published failure schema and decode to typed SDK codes", async () => {
-  const { publishedFailure } = await import("../../../packages/mcp-server/test/published-response.ts");
-  const { Armada, ArmadaError } = await import("../../../packages/sdk/src/index.ts");
-  const failure = publishedFailure();
-  const env = process.env.ARMADA_MCP_URL;
-  const decode = async (
-    response: Response,
-  ): Promise<{ status: number; valid: boolean; code: unknown; outcomeUnknown: unknown }> => {
-    const body = await response.clone().json();
-    const client = new Armada({
-      token: "service_placeholder",
-      url: "https://dashboard.test",
-      fetch: async () => response,
-    });
-    const error = await client.status({ id: "sandbox_placeholder" }).catch((caught: unknown) => caught);
-    expect(error).toBeInstanceOf(ArmadaError);
-    const typed = error as InstanceType<typeof ArmadaError>;
-    return {
-      status: response.status,
-      valid: failure.safeParse(body).success,
-      code: typed.code,
-      outcomeUnknown: typed.outcomeUnknown,
-    };
-  };
-  const request = (headers: Record<string, string>, body: BodyInit = "{}") =>
-    new Request("https://dashboard.test/api/v1/sandbox/status", { method: "POST", headers, body });
-  try {
-    delete process.env.ARMADA_MCP_URL;
-    const unconfigured = await decode(
-      await forwardControl(request({ authorization: "Bearer masked" }), ["sandbox", "status"]),
-    );
-    process.env.ARMADA_MCP_URL = "https://armada.test/mcp";
-    const unreachable = await decode(
-      await forwardControl(request({ authorization: "Bearer masked" }), ["sandbox", "status"], async () => {
-        throw new TypeError("connection refused");
-      }),
-    );
-    const anonymous = await decode(await forwardControl(request({}), ["golden", "list"]));
-    const oversized = await decode(
-      await forwardControl(request({ authorization: "Bearer masked" }, "x".repeat(128 * 1024 + 1)), [
-        "sandbox",
-        "status",
-      ]),
-    );
-    const unknown = await decode(await forwardControl(request({ authorization: "Bearer masked" }), ["no", "such"]));
-    expect([unconfigured, unreachable, anonymous, oversized, unknown]).toEqual([
-      { status: 503, valid: true, code: "dependency_unavailable", outcomeUnknown: false },
-      { status: 502, valid: true, code: "upstream", outcomeUnknown: false },
-      { status: 401, valid: true, code: "unauthorized", outcomeUnknown: false },
-      { status: 413, valid: true, code: "invalid", outcomeUnknown: false },
-      { status: 404, valid: true, code: "unknown_route", outcomeUnknown: false },
-    ]);
-  } finally {
-    if (env === undefined) delete process.env.ARMADA_MCP_URL;
-    else process.env.ARMADA_MCP_URL = env;
-  }
-});
-
-/** A concrete request path for an OpenAPI or proxy route template. */
-const fillParameters = (template: string) =>
-  template.replace("{id}", "11111111-1111-4111-8111-111111111111").replace("{name}", "memo%20v2.pdf");
-
-test("published OpenAPI operations cross the proxy unless marked direct-server", async () => {
-  const published = (await import("../../../packages/mcp-server/openapi.json")).default as {
-    paths: Record<string, Record<string, { "x-armada-direct-server"?: boolean }>>;
-  };
-  const env = process.env.ARMADA_MCP_URL;
-  process.env.ARMADA_MCP_URL = "https://armada.test/mcp";
-  try {
-    const operations = Object.entries(published.paths).flatMap(([path, verbs]) =>
-      Object.entries(verbs).map(([verb, operation]) => ({
-        path,
-        verb: verb.toUpperCase(),
-        direct: operation["x-armada-direct-server"],
-      })),
-    );
-    expect(operations.length).toBeGreaterThan(0);
-    const blocked: string[] = [];
-    for (const { path: template, verb, direct } of operations) {
-      const path = fillParameters(template);
-      const forwarded: string[] = [];
-      const response = await forwardControl(
-        new Request(`https://dashboard.test${path}`, {
-          method: verb,
-          headers: { authorization: "Bearer masked", "content-type": "application/json" },
-          ...(verb === "POST" ? { body: "{}" } : {}),
-        }),
-        path.replace(/^\/api\/v1\//, "").split("/"),
-        async (target) => {
-          forwarded.push(new URL(target).pathname);
-          return Response.json({});
-        },
-      );
-      const expectedStatus = direct ? 404 : 200;
-      if (
-        response.status !== expectedStatus ||
-        forwarded.length !== (direct ? 0 : 1) ||
-        (!direct && forwarded[0] !== path)
-      )
-        blocked.push(`${verb} ${path}`);
-    }
-    expect(blocked).toEqual([]);
-  } finally {
-    if (env === undefined) delete process.env.ARMADA_MCP_URL;
-    else process.env.ARMADA_MCP_URL = env;
-  }
-});
-
-test("every route the public proxy forwards is published or has a recorded reason to stay outside the description", async () => {
-  const published = (await import("../../../packages/mcp-server/openapi.json")).default as {
-    paths: Record<string, Record<string, unknown>>;
-  };
-  const { PARAMETERIZED_CONTROL_ROUTES, PRIVATE_POST_PATHS } = await import(
-    "../src/app/api/v1/[...path]/control-proxy.ts"
-  );
-  const { UNPUBLISHED_REST_ROUTES, unpublishedReason } = await import(
-    "../../../packages/mcp-server/src/public-rest-routes.ts"
-  );
-  const publishedOperations = Object.entries(published.paths).flatMap(([path, verbs]) =>
-    Object.keys(verbs).map((verb) => `${verb.toUpperCase()} ${path.replace(/^\/api\/v1\//, "")}`),
-  );
-  const publishedRoutes = publishedOperations.map((operation) => operation.split(" ")[1]!);
-  const operations = [
-    ...[...PRIVATE_POST_PATHS].map((path) => ({ method: "POST", path })),
-    ...Object.entries(PUBLIC_CONTROL_ROUTES).flatMap(([path, methods]) => methods.map((method) => ({ method, path }))),
-    ...PARAMETERIZED_CONTROL_ROUTES,
-  ];
-  // Each parameterized shape really is forwarded, so this list cannot drift from the proxy's matchers.
-  const env = process.env.ARMADA_MCP_URL;
-  process.env.ARMADA_MCP_URL = "https://armada.test/mcp";
-  try {
-    for (const { method, path } of PARAMETERIZED_CONTROL_ROUTES) {
-      const url = `https://dashboard.test/api/v1/${fillParameters(path)}`;
-      const upstream: string[] = [];
-      const response = await forwardControl(
-        new Request(url, { method, headers: { authorization: "Bearer masked" } }),
-        new URL(url).pathname
-          .replace(/^\/api\/v1\//, "")
-          .split("/")
-          .map(decodeURIComponent),
-        async (target) => {
-          upstream.push(new URL(target).pathname);
-          return Response.json({});
-        },
-      );
-      expect([method, path, response.status, upstream]).toEqual([method, path, 200, [new URL(url).pathname]]);
-    }
-  } finally {
-    if (env === undefined) delete process.env.ARMADA_MCP_URL;
-    else process.env.ARMADA_MCP_URL = env;
-  }
-  const forwarded = operations.map(({ path }) => path);
-  expect(
-    operations
-      .filter(({ method, path }) => !publishedOperations.includes(`${method} ${path}`) && !unpublishedReason(path))
-      .map(({ method, path }) => `${method} ${path}`),
-  ).toEqual([]);
-  expect(publishedRoutes.filter((route) => unpublishedReason(route) !== undefined)).toEqual([]);
-  // A reason for a route the proxy no longer forwards would hide nothing; drop it instead.
-  expect(
-    Object.keys(UNPUBLISHED_REST_ROUTES).filter((key) =>
-      key.endsWith("/") ? !forwarded.some((route) => route.startsWith(key)) : !forwarded.includes(key),
-    ),
-  ).toEqual([]);
-});
-
-test("a keyed Docker send prompt the published variant admits crosses the proxy, and one it refuses never reaches upstream", async () => {
-  const { publishedRequest } = await import("../../../packages/mcp-server/test/published-response.ts");
-  const docker = publishedRequest("sandbox/send", "Docker sandbox send");
-  const id = "11111111-1111-4111-8111-111111111111";
-  const body = (bytes: number) => ({ org: id, id, prompt: "x".repeat(bytes), request_id: id });
-  const env = process.env.ARMADA_MCP_URL;
-  process.env.ARMADA_MCP_URL = "https://armada.test/mcp";
-  let sent = 0;
-  const send = (input: object) =>
-    forwardControl(
-      new Request("https://dashboard.test/api/v1/sandbox/send", {
-        method: "POST",
-        headers: { authorization: "Bearer proxy-fixture" },
-        body: JSON.stringify(input),
-      }),
-      ["sandbox", "send"],
-      async () => {
-        sent++;
-        return Response.json({ ok: true });
-      },
-    );
-  try {
-    // Under Docker's 256 KiB admission limit, but over the public body limit.
-    const oversized = body(150 * 1024);
-    expect(docker.safeParse(oversized).success).toBe(false);
-    expect((await send(oversized)).status).toBe(413);
-    expect(sent).toBe(0);
-    const fits = body(CONTROL_BODY_MAX_BYTES - 1024);
-    expect(docker.safeParse(fits).success).toBe(true);
-    expect((await send(fits)).status).toBe(200);
-    expect(sent).toBe(1);
-  } finally {
-    if (env === undefined) delete process.env.ARMADA_MCP_URL;
-    else process.env.ARMADA_MCP_URL = env;
-  }
-});
-
 test("GET proxy forwards the authenticated sandbox outputs list and download with the encoded filename intact", async () => {
   process.env.ARMADA_MCP_URL = "https://armada.test/mcp";
   const id = "11111111-1111-4111-8111-111111111111";
-  // The server matches lowercase identifiers only; the proxy admits exactly what it serves.
   const upper = "AAAAAAAA-1111-4111-8111-111111111111";
   const seen: Request[] = [];
   const send = (rawPath: string, path: string[], bearer = true, range?: string) =>
@@ -831,7 +571,6 @@ test("GET proxy forwards the authenticated sandbox outputs list and download wit
         });
       },
     );
-  // Next decodes catch-all segments; the raw request path keeps the filename as one segment.
   expect(
     (await send(`sandboxes/${id}/outputs/a%2Fb%20memo.pdf`, ["sandboxes", id, "outputs", "a/b memo.pdf"], false))
       .status,

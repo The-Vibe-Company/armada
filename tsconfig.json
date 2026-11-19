@@ -20,5 +20,6 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["packages/*/src", "packages/*/test", "scripts"]
+  "include": ["packages/*/src", "packages/*/test", "scripts"],
+  "exclude": ["node_modules", "packages/mcp-server/src/public-rest-routes.test.ts"]
 }

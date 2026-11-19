@@ -201,7 +201,7 @@ async function boundedBody(request: Request, maxBytes: number): Promise<ArrayBuf
 export async function forwardControl(
   request: Request,
   path: readonly string[],
-  fetchImpl: typeof fetch = fetch,
+  fetchImpl: (input: URL, init: RequestInit) => Promise<Response> = fetch,
 ): Promise<Response> {
   const upstream = controlOrigin(process.env.ARMADA_MCP_URL);
   if (!upstream) return fail(503, "Armada API is not configured.");
