@@ -450,6 +450,16 @@ async function fixture(
   };
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
+
+async function seedPersonalVariable(orgId: string, ownerId: string, name: string, value: string) {
+  const id = randomUUID();
+  await database().query(
+    "insert into public.readable_variables(id,org_id,owner_id,scope,name,value) values($1,$2,$3,'personal',$4,$5)",
+    [id, orgId, ownerId, name, value],
+  );
+  return id;
+}
+
 async function rejected(work: Promise<unknown>, code: string) {
   let error: unknown;
   try {
@@ -2008,7 +2018,7 @@ for (const scenario of ["success", "checkout-failed", "missing-github", "github-
       expect(completed.sandbox.credentialId).toBe(f.body.credentialId);
       expect(f.session()?.configuration).toMatchObject({ codexEnv: { OPENAI_API_KEY: f.secret } });
       expect(f.resolutions()).toBe(1);
-      expect(f.checkoutStatuses).toEqual(["starting"]);
+      expect(f.checkoutStatuses).toEqual(["ready"]);
       expect(completed.promptId).toBe(f.receipt.promptId);
       expect(completed.runtime?.epoch).toBe(f.session()?.epoch);
       const before = f.native.length;
@@ -2232,13 +2242,7 @@ test("Docker freezes versioned readable bindings and re-delivers them before the
   const f = await fixture();
   const vault = createApplicationVault(sql, undefined);
   const value = "europe\n$(not-a-command)";
-  const variable = await vault.command(f.caller, "variable", "set", {
-    org: f.actor.orgId,
-    scope: "personal",
-    name: "APP_REGION",
-    value,
-  });
-  const variableId = (variable.item as { id: string }).id;
+  const variableId = await seedPersonalVariable(f.actor.orgId, f.actor.userId, "APP_REGION", value);
   const body = { ...f.body, variables: [{ key: "APP_REGION", variableId, version: 1 }] };
   const launched = await f.service().launch(f.caller, body);
   expect((f.native as { op: string }[]).map((command) => command.op)).toEqual([
@@ -2286,14 +2290,7 @@ test("Docker freezes versioned readable bindings and re-delivers them before the
 
 test("Docker variable admission rejects unsafe names and inaccessible personal references without allocating", async () => {
   const f = await fixture();
-  const vault = createApplicationVault(sql, undefined);
-  const other = await vault.command({ ...f.caller, userId: f.otherId }, "variable", "set", {
-    org: f.actor.orgId,
-    scope: "personal",
-    name: "PRIVATE_REGION",
-    value: "private",
-  });
-  const variableId = (other.item as { id: string }).id;
+  const variableId = await seedPersonalVariable(f.actor.orgId, f.otherId, "PRIVATE_REGION", "private");
   await rejected(
     f.service().launch(f.caller, { ...f.body, variables: [{ key: "APP_REGION", variableId, version: 1 }] }),
     "unavailable",
@@ -2600,13 +2597,12 @@ test.each([false, true])(
     const f = fromSnapshot ? await snapshotFixture() : await fixture();
     const snapshotId = fromSnapshot ? await seedReadySnapshot(f) : undefined;
     const templates = createTemplateService(sql, key);
-    const variable = await createApplicationVault(sql, undefined).command(f.caller, "variable", "set", {
-      org: f.actor.orgId,
-      scope: "personal",
-      name: "APP_REGION",
-      value: "offline-template-region",
-    });
-    const variableId = (variable.item as { id: string }).id;
+    const variableId = await seedPersonalVariable(
+      f.actor.orgId,
+      f.actor.userId,
+      "APP_REGION",
+      "offline-template-region",
+    );
     const secretId = randomUUID(),
       canary = "offline-template-secret";
     await db.query(

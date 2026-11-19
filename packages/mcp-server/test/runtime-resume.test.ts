@@ -17,7 +17,7 @@ import { createRuntimeServing } from "../src/runtime-serving.ts";
 import { createSandboxArmadaAccess } from "../src/sandbox-armada-access.ts";
 import { createSandboxLifecycle, transitionSandbox } from "../src/sandbox-lifecycle.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { runtimeFixture, scopedRuntimeFixture } from "./runtime.fixture.ts";
+import { configureRuntimeFixture, runtimeFixture, scopedRuntimeFixture } from "./runtime.fixture.ts";
 import { bunLikeSql, ENCRYPTION_KEY, PUBLIC_URL } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
@@ -28,16 +28,18 @@ async function stopped(
   idle = false,
 ) {
   const f = await runtimeFixture(await sharedDatabase(), provider, harness, idle);
-  const cp = await createRuntimeCheckpoint(
-    f.sql,
-    ENCRYPTION_KEY,
-    f.bridge,
-  )(f.caller, { id: f.row.id, request_id: crypto.randomUUID(), runtimeVersion: 1 });
-  await f.db.query("update sandboxes set stop_requested_at=now(),status='stopping' where id=$1", [f.row.id]);
-  await f.db.query("update sandboxes set stop_requested_at=null,status='stopped',stopped_at=now() where id=$1", [
-    f.row.id,
-  ]);
-  return Object.assign(f, { cp });
+  return configureRuntimeFixture(f, async () => {
+    const cp = await createRuntimeCheckpoint(
+      f.sql,
+      ENCRYPTION_KEY,
+      f.bridge,
+    )(f.caller, { id: f.row.id, request_id: crypto.randomUUID(), runtimeVersion: 1 });
+    await f.db.query("update sandboxes set stop_requested_at=now(),status='stopping' where id=$1", [f.row.id]);
+    await f.db.query("update sandboxes set stop_requested_at=null,status='stopped',stopped_at=now() where id=$1", [
+      f.row.id,
+    ]);
+    return Object.assign(f, { cp });
+  });
 }
 const input = (id: string) => ({
   id,

@@ -36,6 +36,22 @@ export function scopedRuntimeFixture<T extends { close(): Promise<void> }>(
   };
 }
 
+export async function configureRuntimeFixture<T>(
+  fixture: Awaited<ReturnType<typeof runtimeFixture>>,
+  configure: () => Promise<T>,
+) {
+  try {
+    return await configure();
+  } catch (error) {
+    try {
+      await fixture.close();
+    } catch (closeError) {
+      throw new AggregateError([error, closeError], "Runtime fixture configuration and cleanup failed");
+    }
+    throw error;
+  }
+}
+
 export async function runtimeFixtureGolden(
   db: Awaited<ReturnType<typeof database>>["db"],
   people: People,

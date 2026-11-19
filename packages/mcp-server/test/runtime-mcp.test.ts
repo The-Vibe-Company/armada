@@ -20,89 +20,91 @@ import { createRuntimeMcp } from "../src/runtime-mcp.ts";
 import { createRuntimeResume } from "../src/runtime-resume.ts";
 import { createRuntimeSelfFinish } from "../src/sandbox-finish.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { runtimeFixture } from "./runtime.fixture.ts";
+import { configureRuntimeFixture, runtimeFixture } from "./runtime.fixture.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
 
 async function fixture(provider: "boat" | "modal" = "boat", commandGrantExpiresAt?: number) {
-  const f = await runtimeFixture(await sharedDatabase(), provider, "codex", false, commandGrantExpiresAt),
-    registry = createSqlMcpRegistry(f.sql, ENCRYPTION_KEY);
-  const secret = `upstream-private-${crypto.randomUUID()}`;
-  const c = await registry.save(f.people.owner, f.people.org, {
-    name: "Runtime remote",
-    scope: "personal",
-    transport: "http",
-    url: "https://upstream.example/mcp",
-    authType: "bearer",
-    authentication: secret,
-  });
-  // Seed an already-connected remote definition; the SDK gateway call below verifies actual delivery.
-  await f.db.query("update mcp_grants set status='connected' where connection_id=$1", [c.id]);
-  const service = createRuntimeMcp({
-    sql: f.sql,
-    key: ENCRYPTION_KEY,
-    origin: "https://armada.test",
-    commands: f.bridge,
-    probe: async () => ({ status: "connected", toolNames: ["read_counter"] }),
-  });
-  const input = { id: f.row.id, connections: [c.id] };
-  await service.connections.validate({ userId: f.people.owner, orgId: f.people.org }, [c.id], "org");
-  await service.connections.bind(f.row.id, [c.id]);
-  const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, service.prepare);
-  const authStore = createMemoryAuthStore();
-  authStore.addMembership(f.people.owner, { orgId: f.people.org, name: "Fixture", role: "member" });
-  const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: f.people.owner })).replace(/=+$/, "")}.sig`;
-  return {
-    f,
-    c,
-    secret,
-    service,
-    input,
-    registry,
-    send,
-    authStore,
-    async api(path: string, body: object) {
-      const response = await handleControlRequest(
-        new Request(`https://armada.test/api/v1/${path}`, {
-          method: "POST",
-          headers: { authorization: `Bearer ${bearer}` },
-          body: JSON.stringify(body),
-        }),
-        {
-          authStore,
-          store: createSqlVaultStore(f.sql),
-          encryptionKey: ENCRYPTION_KEY,
-          supabase: {
-            supabaseUrl: "https://supabase.test",
-            anonKey: "fixture",
-            fetch: async () => Response.json({ id: f.people.owner }),
-          },
-          data: createSqlData(f.sql),
-          runtimeMcp: service,
-          runtimeSend: send,
-          providers: {
-            async resolve() {
-              throw Error("MCP must not resolve native/provider tools");
+  const f = await runtimeFixture(await sharedDatabase(), provider, "codex", false, commandGrantExpiresAt);
+  return configureRuntimeFixture(f, async () => {
+    const registry = createSqlMcpRegistry(f.sql, ENCRYPTION_KEY);
+    const secret = `upstream-private-${crypto.randomUUID()}`;
+    const c = await registry.save(f.people.owner, f.people.org, {
+      name: "Runtime remote",
+      scope: "personal",
+      transport: "http",
+      url: "https://upstream.example/mcp",
+      authType: "bearer",
+      authentication: secret,
+    });
+    // Seed an already-connected remote definition; the SDK gateway call below verifies actual delivery.
+    await f.db.query("update mcp_grants set status='connected' where connection_id=$1", [c.id]);
+    const service = createRuntimeMcp({
+      sql: f.sql,
+      key: ENCRYPTION_KEY,
+      origin: "https://armada.test",
+      commands: f.bridge,
+      probe: async () => ({ status: "connected", toolNames: ["read_counter"] }),
+    });
+    const input = { id: f.row.id, connections: [c.id] };
+    await service.connections.validate({ userId: f.people.owner, orgId: f.people.org }, [c.id], "org");
+    await service.connections.bind(f.row.id, [c.id]);
+    const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, service.prepare);
+    const authStore = createMemoryAuthStore();
+    authStore.addMembership(f.people.owner, { orgId: f.people.org, name: "Fixture", role: "member" });
+    const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: f.people.owner })).replace(/=+$/, "")}.sig`;
+    return {
+      f,
+      c,
+      secret,
+      service,
+      input,
+      registry,
+      send,
+      authStore,
+      async api(path: string, body: object) {
+        const response = await handleControlRequest(
+          new Request(`https://armada.test/api/v1/${path}`, {
+            method: "POST",
+            headers: { authorization: `Bearer ${bearer}` },
+            body: JSON.stringify(body),
+          }),
+          {
+            authStore,
+            store: createSqlVaultStore(f.sql),
+            encryptionKey: ENCRYPTION_KEY,
+            supabase: {
+              supabaseUrl: "https://supabase.test",
+              anonKey: "fixture",
+              fetch: async () => Response.json({ id: f.people.owner }),
+            },
+            data: createSqlData(f.sql),
+            runtimeMcp: service,
+            runtimeSend: send,
+            providers: {
+              async resolve() {
+                throw Error("MCP must not resolve native/provider tools");
+              },
             },
           },
-        },
-      );
-      if (!response) throw Error("Missing API route");
-      return response;
-    },
-    configuration() {
-      const snapshot = f.mcpSnapshots.at(-1);
-      if (!snapshot) throw Error("Runner did not pass MCP to driver");
-      const server = Object.values(snapshot.servers)[0];
-      if (!server || server.type !== "http") throw Error("Missing HTTP gateway snapshot");
-      return {
-        snapshot,
-        server,
-        hash: createHash("sha256").update(server.headers!.Authorization!.slice(7)).digest("hex"),
-      };
-    },
-  };
+        );
+        if (!response) throw Error("Missing API route");
+        return response;
+      },
+      configuration() {
+        const snapshot = f.mcpSnapshots.at(-1);
+        if (!snapshot) throw Error("Runner did not pass MCP to driver");
+        const server = Object.values(snapshot.servers)[0];
+        if (!server || server.type !== "http") throw Error("Missing HTTP gateway snapshot");
+        return {
+          snapshot,
+          server,
+          hash: createHash("sha256").update(server.headers!.Authorization!.slice(7)).digest("hex"),
+        };
+      },
+    };
+  });
 }
 
 test("Modal runtime MCP lease spans the command ceiling but follows live sandbox admission", async () => {

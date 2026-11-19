@@ -1134,8 +1134,10 @@ export function createDockerHostStore(sql: Sql, key: string) {
           (await tx.query(`select 1 from public.docker_host_jobs where request_id=$1`, [selection.requestId])).rows
             .length > 0;
         if (!known && selection.operation === "stop" && selection.onlyIfIdle && row.status === "ready") {
-          const pendingTurns = await tx.query(
-            `select 1 from public.account_turn_queue where sandbox_id=$1 and state in ('queued','dispatching')
+          const pendingWork = await tx.query(
+            `select 1 from public.docker_launch_requests where sandbox_id=$1 and result_enc is null
+             union all
+             select 1 from public.account_turn_queue where sandbox_id=$1 and state in ('queued','dispatching')
              union all
              select 1 from public.docker_queued_prompts where sandbox_id=$1 and status in ('queued','dispatching')
              union all
@@ -1143,7 +1145,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
              limit 1`,
             [sandboxId, row.lifecycle_generation, host.id],
           );
-          if (pendingTurns.rows.length) deny();
+          if (pendingWork.rows.length) deny();
         }
         // A drain refuses new optional work. Keep replay of already-admitted requests
         // under their original binding so a lost enqueue response is recoverable.
