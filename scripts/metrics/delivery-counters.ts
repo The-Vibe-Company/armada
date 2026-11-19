@@ -135,6 +135,7 @@ async function main(args: string[]) {
 }
 
 if (import.meta.main) {
+  // Driver errors and argument text can contain the URL. Print only a fixed diagnostic.
   await main(Bun.argv.slice(2)).catch(() => {
     console.error(
       `Unable to collect delivery counters. Use --offline or --read-only, optionally with --week-ending=YYYY-MM-DD. ${databaseHelp}`,
