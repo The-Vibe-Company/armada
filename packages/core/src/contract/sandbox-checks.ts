@@ -30,6 +30,7 @@ export const sandboxCheckOperations = {
       "missing_credential",
       "rate_limited",
       "credential_binding_required",
+      "credential_refused",
     ],
     description: "Test a model on a running sandbox with its current bound API-key account. Owner only.",
     input: { body: z.strictObject({ id: uuid, model: z.string(), org }) },
