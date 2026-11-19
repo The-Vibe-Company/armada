@@ -61,7 +61,6 @@ test("server assembly preserves worker lane order and isolation", () => {
       ],
       "managed": [
         "sandbox-lifecycle",
-        "pull-requests",
         "jobs",
         "outputs",
         "webhooks",
@@ -81,6 +80,6 @@ test("server assembly preserves worker lane order and isolation", () => {
     githubApp: null,
   }).planWorkers().description;
   expect(minimal.background).toEqual(["routines"]);
-  expect(minimal.managed).not.toContain("pull-requests");
+  expect(minimal.managed).toContain("jobs");
   expect(minimal.isolated.map(({ name }) => name)).not.toContain("docker-inventory:host-1");
 });

@@ -3,9 +3,12 @@ import type { PromptRequest, Provider, SandboxInfo, Sql } from "@armada/core";
 import { createSqlVaultStore, encryptSecret } from "@armada/core/server";
 import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import { createSqlData } from "../src/data.ts";
+import { createJobsRunner } from "../src/jobs/runner.ts";
+import { createJobsStore } from "../src/jobs/store.ts";
 import { nativeQuiescent } from "../src/native-idle.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
-import { createSandboxPullRequests } from "../src/sandbox-pull-requests.ts";
+import { createPullRequestScanJob } from "../src/sandbox-pull-requests.ts";
+import { sqlOver } from "../src/sql.ts";
 import { callSharedTool } from "../src/tool-api.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { bunLikeSql, ENCRYPTION_KEY } from "./support.ts";
@@ -472,6 +475,7 @@ test.each([
   "ledger gap",
   "ledger hook missing",
   "ledger hook restored",
+  "generation changed during exec",
   "open",
   "closed",
   "no push",
@@ -637,32 +641,52 @@ test.each([
     { preconnect: fetch.preconnect },
   );
   const observe = async (stdout: string) => {
-    const observer = createSandboxPullRequests(
-      f.sql,
+    const sql = sqlOver({
+      unsafe: async (query, params) => (await f.db.query(query, params)).rows,
+      begin: (work) =>
+        f.db.transaction((tx) => work({ unsafe: async (query, params) => (await tx.query(query, params)).rows })),
+    });
+    const jobs = createJobsStore(sql);
+    const at = Date.now();
+    const handler = createPullRequestScanJob(
+      sql,
+      jobs,
       {
         store: createSqlVaultStore(f.sql),
         encryptionKey: ENCRYPTION_KEY,
         app: { clientId: "fixture_app", clientSecret: "fixture_client" },
         fetch: fetchGitHub,
       },
-      async (_target, request) => ({
-        detached: false,
-        exitCode: 0,
-        // Two checkouts of one repository pushed `topic`: one at the merged PR's
-        // head, the other later at a commit with no PR yet. Their ledgers carry
-        // no order between them, whichever checkout is configured first.
-        stdout: state.startsWith("later push in")
-          ? request.cwd === (state === "later push in second checkout" ? "/home/user/copy" : "/home/user/repo")
-            ? `topic\t${"b".repeat(40)}\n`
-            : stdout
-          : stdout,
-        stderr: "",
-        timedOut: false,
-        truncated: false,
-      }),
+      async (_target, request) => {
+        if (state === "generation changed during exec")
+          await f.db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [f.id]);
+        return {
+          detached: false,
+          exitCode: 0,
+          // Two checkouts of one repository pushed `topic`: one at the merged PR's
+          // head, the other later at a commit with no PR yet. Their ledgers carry
+          // no order between them, whichever checkout is configured first.
+          stdout:
+            state === "generation changed during exec"
+              ? "!untracked\n"
+              : state.startsWith("later push in")
+                ? request.cwd === (state === "later push in second checkout" ? "/home/user/copy" : "/home/user/repo")
+                  ? `topic\t${"b".repeat(40)}\n`
+                  : stdout
+                : stdout,
+          stderr: "",
+          timedOut: false,
+          truncated: false,
+        };
+      },
+      () => at,
     );
-    await observer.reconcileOne(new AbortController().signal);
-    await observer.drain();
+    const runner = createJobsRunner(jobs, { pr_scan: handler }, undefined, () => () => {});
+    expect(await runner.reconcileOne(new AbortController().signal)).toBe(true);
+    await runner.drain();
+    expect((await f.db.query("select state,attempts from jobs where sandbox_id=$1", [f.id])).rows).toEqual([
+      state === "generation changed during exec" ? { state: "failed", attempts: 1 } : { state: "queued", attempts: 0 },
+    ]);
   };
   // The lifecycle worker settles the finished turn before a scan may prove a
   // stop; its timer is not due yet, so this tick stops nothing.
@@ -676,17 +700,17 @@ test.each([
     expect(
       (await f.db.query("select pull_request_scan->'untracked' as u from sandboxes where id=$1", [f.id])).rows[0],
     ).toEqual({ u: true });
-    await f.db.query("update sandboxes set pull_request_check_after=now() where id=$1", [f.id]);
+    await f.db.query("update jobs set run_after=now() where sandbox_id=$1", [f.id]);
   }
   if (state === "later push in dropped checkout") {
     // A revised grant drops the checkout whose later push has no PR yet. Its
     // latest push, read before, still has to be at a pull request head.
     await observe(`topic\t${sha}\n`);
     await f.db.query(
-      `update sandboxes set pull_request_check_after=now(),
-         pull_request_source=jsonb_set(pull_request_source,'{repositories}',$2::jsonb) where id=$1`,
+      `update sandboxes set pull_request_source=jsonb_set(pull_request_source,'{repositories}',$2::jsonb) where id=$1`,
       [f.id, JSON.stringify([{ url: `https://github.com/${repository}.git`, dir: "copy" }])],
     );
+    await f.db.query("update jobs set run_after=now() where sandbox_id=$1", [f.id]);
   }
   await observe(
     ledger[state] ??
@@ -700,6 +724,10 @@ test.each([
               : ""
           }${state.startsWith("merged with") ? `scratch\t${"c".repeat(40)}\n` : ""}${state === "unmerged PR at attempt" ? `~\tother\t${"f".repeat(40)}\n` : ""}${state === "rejected attempt" ? `?\tmain\t${"9".repeat(40)}\n` : ""}`),
   );
+  if (state === "generation changed during exec")
+    expect((await f.db.query("select pull_request_scan as scan from sandboxes where id=$1", [f.id])).rows).toEqual([
+      { scan: null },
+    ]);
   if (state === "revoked") await f.db.query("update github_connections set revoked_at=now() where user_id=$1", [owner]);
   if (state === "opted out") await f.db.query("update sandboxes set stop_when_work_merged=false where id=$1", [f.id]);
   // A turn the proof did not see is in flight: stop admission rechecks settlement.
@@ -722,6 +750,7 @@ test.each([
   if (shouldStop) expect(sandbox?.statusReason).toBe("work_merged");
   expect(sandbox?.pullRequests?.map((pr) => pr.state)).toEqual(
     state === "no push" ||
+      state === "generation changed during exec" ||
       state === "other commit" ||
       state === "merged before launch at pushed commit" ||
       state === "merged after head advanced past an unknown push" ||

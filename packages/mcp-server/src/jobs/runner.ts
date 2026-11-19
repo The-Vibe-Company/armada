@@ -27,7 +27,8 @@ export interface JobStore {
   complete(job: Job, owner: string, result: JobResult): Promise<boolean>;
 }
 
-interface JobKind {
+export interface JobKind {
+  prepare?(): Promise<boolean>;
   concurrency: number;
   run(job: Job, context: { signal: AbortSignal; canDispatch(): Promise<boolean> }): Promise<JobResult>;
 }
@@ -111,6 +112,8 @@ export function createJobsRunner(
         const registration = registrations[nextKind]!;
         nextKind = (nextKind + 1) % registrations.length;
         const { kind, handler } = registration;
+        if (handler.prepare && !(await handler.prepare())) continue;
+        if (signal.aborted || shutdown.signal.aborted) return false;
         const lease = new AbortController();
         const cancelExpiry = schedule(LEASE_SECONDS * 1000, () => lease.abort());
         let claimed = false;
