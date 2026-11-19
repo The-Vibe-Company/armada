@@ -52,7 +52,7 @@ export const DOCKER_JOB_REQUEST_OUTCOME_SQL =
   "case when j.refused_resume_generation is not null then 'failed' else j.outcome end";
 const settledRefusedResumeSql = `
   j.refused_resume_generation is not null and j.bound_operation='resume'
-  and j.outcome in ('completed','failed') and j.cancelled_at is null
+  and (j.outcome='completed' or j.outcome='failed') and j.cancelled_at is null
   and s.docker_host_id=j.host_id and s.docker_installation_id=$2
   and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>now()
   and s.status='starting' and s.lifecycle_generation=j.refused_resume_generation`;
