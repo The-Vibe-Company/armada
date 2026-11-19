@@ -567,12 +567,17 @@ function configureTools(
           stopRequested: true,
           ...(found.statusReason === "expired" ? { statusReason: "expired" } : {}),
         },
-        async (signal) => {
+        async (signal, token) => {
           signal.throwIfAborted();
           // A historical warning is not proof that this stop has captured current work.
           const preservation = await data.sandboxes
-            .preserveWork?.(found.id, provider, found.providerSandboxId)
-            .catch(() => {});
+            .preserveWork?.(found.id, provider, found.providerSandboxId, {
+              kind: "activity",
+              token,
+              generation: found.lifecycleGeneration === undefined ? undefined : found.lifecycleGeneration + 1,
+              signal,
+            })
+            .catch(() => "pending" as const);
           signal.throwIfAborted();
           if (preservation === "pending")
             return {

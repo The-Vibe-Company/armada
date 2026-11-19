@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createMemoryAuthStore } from "@armada/auth";
-import type { Provider, Sql } from "@armada/core/server";
+import type { Sql } from "@armada/core/server";
 import { createSqlVaultStore, DelegatedAuthority } from "@armada/core/server";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
@@ -8,7 +8,7 @@ import { observeRequest } from "../src/request-observability.ts";
 import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeHistory } from "../src/runtime-history.ts";
-import { createRuntimeProvider } from "../src/runtime-provider.ts";
+import { createRuntimeProvider, type RuntimeWorkProvider } from "../src/runtime-provider.ts";
 import { callSharedTool } from "../src/tool-api.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { runtimeFixture } from "./runtime.fixture.ts";
@@ -20,17 +20,20 @@ function stopPort(f: Awaited<ReturnType<typeof runtimeFixture>>) {
   let stopped = false,
     calls = 0;
   const host = {
-    id: "boat",
+    id: f.row.provider,
     async get() {
       return stopped
         ? { id: "physical", state: "stopped", stoppedAt: new Date(), retainedSnapshot: "usable" }
-        : { id: "physical", state: "running" };
+        : { id: "physical", state: "running", physicalGeneration: "2" };
+    },
+    async captureRuntimeWork() {
+      return { status: "clean" };
     },
     async stop() {
       calls++;
       stopped = true;
     },
-  } as unknown as Provider;
+  } as unknown as RuntimeWorkProvider;
   return {
     context: {
       ...f.context,
@@ -47,8 +50,8 @@ function stopPort(f: Awaited<ReturnType<typeof runtimeFixture>>) {
 }
 const args = (id: string) => ({ id, request_id: crypto.randomUUID(), runtimeVersion: 1 as const });
 
-test("undelivered checkpoint intent and a lost response reconcile after stop without waking the guest", async () => {
-  const f = await runtimeFixture(await database());
+test.each(["boat", "modal"] as const)("%s checkpoint retry after stop", async (provider) => {
+  const f = await runtimeFixture(await database(), provider);
   try {
     const input = args(f.row.id);
     const unavailable = {
@@ -122,9 +125,20 @@ test("undelivered checkpoint intent and a lost response reconcile after stop wit
       );
       expect(rows[0]?.ok).toBe(false);
     }
-    expect((await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))?.preservationNote).toContain(
-      "host stop is confirmed",
-    );
+    const final = await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id);
+    if (provider === "boat") expect(final?.preservationNote).toContain("host stop is confirmed");
+    else {
+      expect(final?.status).toBe("stopped");
+      expect(final?.preservationNote).toBeNull();
+      expect(
+        (
+          await f.db.query(
+            "select preservation_stop_generation=stop_generation as captured from sandboxes where id=$1",
+            [f.row.id],
+          )
+        ).rows,
+      ).toEqual([{ captured: true }]);
+    }
     expect(stop.calls()).toBe(1);
     expect(f.starts).toHaveLength(1);
   } finally {

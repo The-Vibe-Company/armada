@@ -42,7 +42,7 @@ import { createResourceStore, type ResourceStore } from "./resource-store.ts";
 import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
 import { SANDBOX_MEMBER, SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 import { admittedTurnContexts, stampTurnPricing, withServerCost } from "./turn-pricing.ts";
-import { preserveBeforeStop, readWorkRecovery } from "./work-preservation.ts";
+import { preserveBeforeStop, readWorkRecovery, type StopAuthority } from "./work-preservation.ts";
 
 /** A sandbox with what the caller needs to know about its golden. */
 export interface SandboxView extends SandboxRecord {
@@ -104,7 +104,12 @@ export interface ServerSandboxStore extends SandboxStore {
       completed?: ReadonlyMap<string, string>;
     },
   ): Promise<void>;
-  preserveWork?(id: string, provider: Provider, providerId: string): Promise<"pending" | void>;
+  preserveWork?(
+    id: string,
+    provider: Provider,
+    providerId: string,
+    authority: StopAuthority,
+  ): Promise<"pending" | void>;
   readWorkRecovery?(id: string, recoveryId?: string): Promise<string | null>;
   reportTaskOutcome?(id: string, promptId: string, outcome: TaskOutcome, expectedGeneration?: number): Promise<void>;
   /** Null when it does not exist or the caller may not see it: the two are not told apart. */
@@ -684,10 +689,10 @@ export function createSqlData(
             "sandbox_not_ready",
           );
       },
-      async preserveWork(id, provider, providerId) {
+      async preserveWork(id, provider, providerId, authority) {
         const selected = await sandboxes.get(id);
         if (!selected) throw new DataError("No such sandbox.");
-        return preserveBeforeStop(sql, provider, id, providerId, "user_stop");
+        return preserveBeforeStop(sql, provider, id, providerId, "user_stop", authority);
       },
       async readWorkRecovery(id, recoveryId) {
         if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");

@@ -763,8 +763,7 @@ test("runtime lifecycle stops compute with explicit no-checkpoint note, without 
   await lifecycle.drain();
 });
 
-// Expiry must stop enrolled Modal compute even though native quiesce is unavailable.
-test("expired Modal dial-out reaches compute stop without tunnel quiescence or preservation exec", async () => {
+test.each(["active", "terminate", "booting"] as const)("expired Modal stop from %s", async (phase) => {
   const { db, people } = await sharedDatabase();
   const sql = bunLikeSql(db);
   const golden = (
@@ -783,8 +782,25 @@ test("expired Modal dial-out reaches compute stop without tunnel quiescence or p
   let stopped = false;
   const provider = {
     id: "modal",
-    get: async () => ({ id: "compute", state: stopped ? "stopped" : "running" }),
+    get: async () => ({
+      id: "compute",
+      state: stopped ? "stopped" : "running",
+      providerState: phase,
+      physicalGeneration: "3",
+    }),
+    captureRuntimeWork: async () => {
+      if (phase !== "active") throw Error("Only active compute can preserve work");
+      return { status: "clean" };
+    },
     stop: async () => {
+      expect(
+        (
+          await db.query(
+            "select coalesce(preservation_stop_generation=stop_generation,false) as captured from sandboxes where id=$1",
+            [id],
+          )
+        ).rows,
+      ).toEqual([{ captured: phase === "active" }]);
       stopped = true;
     },
     quiesce: async () => {
@@ -799,7 +815,7 @@ test("expired Modal dial-out reaches compute stop without tunnel quiescence or p
   expect(stopped).toBe(true);
   expect((await db.query("select status,preservation_note from sandboxes where id=$1", [id])).rows[0]).toMatchObject({
     status: "stopped",
-    preservation_note: expect.stringContaining("disk retention, resume"),
+    preservation_note: null,
   });
   await worker.drain();
 });

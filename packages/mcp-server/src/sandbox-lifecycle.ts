@@ -487,13 +487,12 @@ export function createSandboxLifecycle(
           signal?.throwIfAborted();
           if (
             !reconcilingStop &&
-            (await preserveBeforeStop(
-              sql,
-              preservationProvider,
-              row.id,
-              row.provider_sandbox_id,
-              "lifecycle_stop",
-            ).catch(() => {})) === "pending"
+            (await preserveBeforeStop(sql, preservationProvider, row.id, row.provider_sandbox_id, "lifecycle_stop", {
+              kind: "reconcile",
+              token,
+              generation: row.lifecycle_generation,
+              signal,
+            }).catch(() => "pending" as const)) === "pending"
           )
             throw new ProviderError({
               provider: provider.id,

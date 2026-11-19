@@ -210,7 +210,9 @@ export function createRuntimeCheckpoint(
           [sandbox.id, intent.epoch, proof.watermark],
         );
         await tx.query(
-          "update public.sandboxes set preservation_note=$2 where id=$1 and stopped_at is not null and status in ('stopped','failed') and not application_secret_tainted",
+          `update public.sandboxes set preservation_note=$2
+           where id=$1 and stopped_at is not null and status in ('stopped','failed') and not application_secret_tainted
+             and preservation_stop_generation is distinct from stop_generation`,
           [
             sandbox.id,
             `Armada runtime checkpoint acknowledged for epoch ${intent.epoch} through event ${proof.watermark}; host stop is confirmed. No Git work archive is claimed.`,

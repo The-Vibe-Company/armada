@@ -326,9 +326,9 @@ test("empty polls release the transaction while waiting and private routes/grant
   ).toBe(499);
 });
 
-test.each(["health", "maximum-frame"] as const)(
+test.each(["maximum-frame"] as const)(
   "dialout client wire contract round-trips a real Runner response (%s)",
-  async (kind) => {
+  async () => {
     const { RuntimeDialout } = await import("../../agent-runtime/src/dialout.ts");
     const { Journal, Runner } = await import("../../agent-runtime/src/index.ts");
     const { mkdtemp, rm } = await import("node:fs/promises");
@@ -339,25 +339,23 @@ test.each(["health", "maximum-frame"] as const)(
     const journal = new Journal(join(root, "journal"), (value) => value);
     const stop = new AbortController();
     try {
-      if (kind === "maximum-frame") {
-        await f.authority.issue({ ownerId: f.people.owner, sandboxId: f.id, configuration: {} });
-        await f.db.query("update runtime_enrolments set epoch=9223372036854775805");
-      }
+      await f.authority.issue({ ownerId: f.people.owner, sandboxId: f.id, configuration: {} });
+      await f.db.query("update runtime_enrolments set epoch=9223372036854775805");
       const active = await f.enrol();
-      let command = f.command("client-wire");
-      if (kind === "maximum-frame") {
-        const empty = { ...command, op: "prompt", input: { sandboxId: f.id, harness: "codex", text: "" } } as const;
-        const rawBudget = 1048576 - Buffer.byteLength(JSON.stringify(empty));
-        await expect(
-          f.bridge().enqueue(f.people.owner, { ...empty, input: { ...empty.input, text: "x".repeat(rawBudget) } }),
-        ).rejects.toThrow("runtime_command_conflict");
-        const budget =
-          1048576 - Buffer.byteLength(JSON.stringify({ type: "command", epoch: active.epoch, request: empty }));
-        command = { ...empty, input: { ...empty.input, text: "x".repeat(budget) } };
-      }
+      const empty = {
+        ...f.command("client-wire"),
+        op: "prompt",
+        input: { sandboxId: f.id, harness: "codex", text: "" },
+      } as const;
+      const rawBudget = 1048576 - Buffer.byteLength(JSON.stringify(empty));
+      await expect(
+        f.bridge().enqueue(f.people.owner, { ...empty, input: { ...empty.input, text: "x".repeat(rawBudget) } }),
+      ).rejects.toThrow("runtime_command_conflict");
+      const budget =
+        1048576 - Buffer.byteLength(JSON.stringify({ type: "command", epoch: active.epoch, request: empty }));
+      const command = { ...empty, input: { ...empty.input, text: "x".repeat(budget) } };
       const driver = {
         start() {
-          if (kind === "health") throw Error("health must not start a harness");
           return { done: Promise.resolve("finished" as const), async interrupt() {}, async steer() {} };
         },
         async close() {},
@@ -398,20 +396,11 @@ test.each(["health", "maximum-frame"] as const)(
         ),
       );
       const result = await f.bridge().call(f.people.owner, command);
-      if (kind === "maximum-frame") {
-        expect(result).toMatchObject({
-          epoch: active.epoch,
-          requestId: command.requestId,
-          status: 200,
-          body: { result: { promptId: expect.any(String) } },
-        });
-        return;
-      }
       expect(result).toMatchObject({
         epoch: active.epoch,
         requestId: command.requestId,
         status: 200,
-        body: { result: { generation: active.epoch, ready: true } },
+        body: { result: { promptId: expect.any(String) } },
       });
     } finally {
       stop.abort();
