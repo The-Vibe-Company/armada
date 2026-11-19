@@ -44,14 +44,17 @@ git archive "$RELEASE_SHA" | tar -x -C "$source_dir"
 # git archive intentionally omits generated release metadata. Carry only the
 # validated public pin into the source-built server, never the tooling checkout.
 pin=packages/core/src/official-sandbox-image.json
+pin_image=none
 if [[ -f "$pin" ]] && jq -e 'type == "object"' "$pin" >/dev/null; then
   jq -e --arg version "$RELEASE_VERSION" '.version == $version and (.image | test("^ghcr[.]io/the-vibe-company/armada-sandbox@sha256:[a-f0-9]{64}$"))' "$pin" >/dev/null \
     || fail 'Official sandbox image pin does not match this release.'
+  pin_image=$(jq -er '.image' "$pin")
   cp "$pin" "$source_dir/$pin"
 fi
 # Bundle the archive's identity, independent of Railway's optional/stale Git metadata.
 jq -n --arg commit "$RELEASE_SHA" '{commit: $commit}' > "$source_dir/packages/mcp-server/src/source-identity.json"
-health_tool="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/deployment-health.ts"
+health_tool="$(dirname "$history_tool")/deployment-health.ts"
+skip_tool="$(dirname "$history_tool")/stage-skip.ts"
 cd "$source_dir"
 
 supabase link --project-ref "$SUPABASE_PROJECT_ID"
@@ -81,10 +84,32 @@ supabase migration list --linked
 rm -rf supabase/.temp
 
 # --ci can finish after build logs; explicitly poll this upload's deployment ID instead.
-upload=$(railway up --detach --json --project "$RAILWAY_PROJECT_ID" \
-  --environment "$RAILWAY_ENVIRONMENT_ID" --service "$RAILWAY_SERVICE_ID" \
-  --message "Release $RELEASE_VERSION ($RELEASE_SHA)")
-deployment_id=$(jq -er '.deploymentId | select(type == "string" and length > 0)' <<< "$upload")
+list_deployments() {
+  railway deployment list --json --project "$RAILWAY_PROJECT_ID" \
+    --environment "$RAILWAY_ENVIRONMENT_ID" --service "$RAILWAY_SERVICE_ID"
+}
+deployment_message="Release $RELEASE_VERSION ($RELEASE_SHA), sandbox image: $pin_image"
+server_done=false
+dashboard_done=false
+if [[ "${RELEASE_RESUME:-}" == true ]]; then
+  if deployments=$(list_deployments) \
+      && latest_deployment=$(jq -ce '.[0] | select(. != null) | {status, meta: {commitMessage: .meta.commitMessage}}' <<< "$deployments") \
+      && curl --fail --silent --show-error --max-time 15 "${ARMADA_SERVER_URL%/}/healthz" \
+        | bun "$skip_tool" server "$latest_deployment" "$deployment_message"; then
+    server_done=true
+    echo "::notice::Skipping Railway upload: latest deployment succeeded and health reports $RELEASE_SHA."
+  fi
+  if bun "$skip_tool" dashboard; then
+    dashboard_done=true
+    echo "::notice::Skipping Vercel build and deploy: ready production dashboard reports $RELEASE_SHA."
+  fi
+fi
+if [[ "$server_done" == false ]]; then
+  upload=$(railway up --detach --json --project "$RAILWAY_PROJECT_ID" \
+    --environment "$RAILWAY_ENVIRONMENT_ID" --service "$RAILWAY_SERVICE_ID" \
+    --message "$deployment_message")
+  deployment_id=$(jq -er '.deploymentId | select(type == "string" and length > 0)' <<< "$upload")
+fi
 wait_for_server() {
   echo "Waiting for Railway deployment $deployment_id"
   deadline=$((SECONDS + 900))
@@ -92,8 +117,7 @@ wait_for_server() {
     # A transient list/decode failure is retried within the same deadline; only a
     # terminal status or the deadline fails the release.
     status=
-    if ! deployments=$(railway deployment list --json --project "$RAILWAY_PROJECT_ID" \
-        --environment "$RAILWAY_ENVIRONMENT_ID" --service "$RAILWAY_SERVICE_ID") \
+    if ! deployments=$(list_deployments) \
       || ! status=$(jq -r --arg id "$deployment_id" '.[] | select(.id == $id) | .status' <<< "$deployments"); then
       status=
       echo "Railway deployment list failed or was unparseable; retrying until the deadline."
@@ -128,17 +152,19 @@ build_dashboard() {
   vercel build --prod
 }
 
-if [[ "${RELEASE_ENVIRONMENT:-}" == production ]]; then
+if [[ "$server_done" == false && "$dashboard_done" == false && "${RELEASE_ENVIRONMENT:-}" == production ]]; then
   wait_for_server &
   railway_wait_pid=$!
   build_dashboard
   wait "$railway_wait_pid"
   railway_wait_pid=
 else
-  wait_for_server
-  build_dashboard
+  if [[ "$server_done" == false ]]; then wait_for_server; fi
+  if [[ "$dashboard_done" == false ]]; then build_dashboard; fi
 fi
 # Wait for Ready; upload only the output, with no remote Vercel build.
-vercel deploy --prebuilt --prod --yes \
-  --meta "githubCommitSha=$RELEASE_SHA" --meta "armadaVersion=$RELEASE_VERSION"
+if [[ "$dashboard_done" == false ]]; then
+  vercel deploy --prebuilt --prod --yes \
+    --meta "githubCommitSha=$RELEASE_SHA" --meta "armadaVersion=$RELEASE_VERSION"
+fi
 echo "Released server and dashboard $RELEASE_VERSION from $RELEASE_SHA" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"

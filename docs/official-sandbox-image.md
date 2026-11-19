@@ -6,7 +6,7 @@ only for a validated release source, and only `linux/amd64`. PR CI never builds 
 The workflow builds a SHA-specific candidate and promotes the tested digest to
 the version tag after staging smoke passes.
 There is no `latest` alias: a release records `version` and `image@sha256:…`
-in the `official-sandbox-image` workflow artifact. Release binary jobs download
+in the `official-sandbox-image-<sha>` workflow artifact. Release binary jobs download
 that pin into core before compiling CLI/server, so `officialSandboxImage()`
 returns that version's digest. Source/dev builds without a release pin retain the
 server-owned immutable bootstrap baseline; see `docker-staging-image-compatibility.md`.
