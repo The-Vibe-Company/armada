@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { createMemoryAuthStore } from "@armada/auth";
-import { createSqlMcpLeasePort, createSqlMcpRegistry, createSqlVaultStore } from "@armada/core/server";
+import { createSqlMcpLeasePort, createSqlMcpRegistry, createSqlVaultStore, encryptSecret } from "@armada/core/server";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -498,6 +498,31 @@ test("a connected pinned stdio definition reaches the runtime without a gateway 
     expect((await x.service.prepare(f.caller, f.row.id))?.revision).not.toBe(receipt?.revision);
     await x.registry.setEnabled(f.people.owner, f.people.org, local.id, false);
     await expect(x.service.prepare(f.caller, f.row.id)).rejects.toMatchObject({ code: "forbidden" });
+  } finally {
+    await f.close();
+  }
+});
+
+test("preflight and launch reject stdio grant env that exceeds the runtime limit", async () => {
+  const { f, registry, service } = await fixture();
+  try {
+    const local = await registry.save(f.people.owner, f.people.org, {
+      name: "local",
+      scope: "personal",
+      transport: "stdio",
+      command: "npx",
+      args: ["@example/mcp@1.2.3"],
+    });
+    const secret = "x".repeat(8193);
+    await f.db.query("update mcp_grants set value_enc=$2 where connection_id=$1", [
+      local.id,
+      await encryptSecret(JSON.stringify({ MCP_PRIVATE_VALUE: secret }), ENCRYPTION_KEY),
+    ]);
+    const input = { org: f.people.org, connections: [local.id] };
+    await expect(service.preflight(f.caller, input)).rejects.toMatchObject({ code: "invalid" });
+    await expect(
+      service.connections.validate({ userId: f.people.owner, orgId: f.people.org }, input.connections, "org"),
+    ).rejects.toMatchObject({ code: "invalid" });
   } finally {
     await f.close();
   }
