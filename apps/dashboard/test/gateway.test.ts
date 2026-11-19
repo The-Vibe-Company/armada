@@ -57,8 +57,8 @@ describe("gateway", () => {
         name: "send",
         arguments: { id: "sandbox-9", prompt: "again", request_id: "request-1" },
       },
-      { name: "steer", arguments: { id: "sandbox-9", text: "use the fixture" } },
-      { name: "interrupt", arguments: { id: "sandbox-9" } },
+      { name: "send", arguments: { id: "sandbox-9", prompt: "use the fixture", steer: true } },
+      { name: "stop", arguments: { id: "sandbox-9", turn: true } },
     ]);
   });
 

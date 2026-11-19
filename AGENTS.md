@@ -7,6 +7,7 @@ Rules only. Procedures live in the documents listed under "Where truth lives".
 - It is a launcher, not a workflow engine. Waits, captains and orchestration live in API clients, not in Armada.
 - `armada-server` is one TypeScript/Bun server on PostgreSQL (Supabase). The `armada` CLI and the SDK are API-only clients.
 - Two agent paths exist until the native retirement finishes: the provider-run path (Boat agent API, Modal runner) and the Armada runtime (`packages/agent-runtime`). The target is the runtime only.
+- New machine lifecycle adapters implement the server-only `Machine` contract and expose capabilities through the core registry. Integration and cutover follow `docs/machine-contract.md`.
 - `docs/architecture.md` is the target for new code. Do not migrate existing code toward it outside a program ticket.
 
 ## Layout

@@ -175,6 +175,18 @@ event ID. On `access-ended` or stream closure, reconnect or reauthorize as
 appropriate. See [sandbox viewers](sandbox-viewer.md) for proxy and polling
 details.
 
+## Drive a turn over MCP
+
+| Tool | Mode | Result |
+| --- | --- | --- |
+| `send` | `steer: true`, with the instruction in `prompt` | Redirect the running turn. The receipt includes `delivery` and `mode`. |
+| `status` | `wait: true` | Wait for settlement and return status with `timedOut`. Omit `recorded` when waiting. |
+| `stop` | `turn: true`, optionally with `conversation_id` | Interrupt the turn and keep the machine up. The receipt includes `interrupted`. |
+
+The wait mode accepts `timeout_seconds` from 0 to 600 and defaults to 60.
+The standalone steer, wait and interrupt operations are available through the
+REST API.
+
 ## Drive the sandbox from your backend
 
 These routes are POSTs under `/api/v1/`. The table shows JSON body fields.
