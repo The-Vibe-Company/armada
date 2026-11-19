@@ -61,9 +61,12 @@ const other: GoldenActor = { userId: OTHER, orgId: ORG, role: "member" };
 
 describe("launch", () => {
   for (const provider of ["boat", "modal"] as const)
-    test.each([true, false])(
-      `${provider} runtime default prepares workspace before publication/inference (prompt=%s)`,
-      async (prompted) => {
+    test.each(provider === "modal" ? (["prompted", "idle", "private"] as const) : (["prompted", "idle"] as const))(
+      `${provider} runtime default prepares workspace before publication/inference (%s)`,
+      async (mode) => {
+        const prompted = mode === "prompted";
+        const visibility = mode === "private" ? "private" : "org";
+        const readyOrder = ["bind", "start", "workspace", "mcp", ...(mode === "private" ? [] : ["admit"])];
         const source = golden("org");
         const world = setup({
             golden: {
@@ -111,14 +114,20 @@ describe("launch", () => {
           owner,
           { golden: "web", harness: "codex", ...(prompted ? { prompt: "ordinary request" } : {}) },
           {
-            beforeStart: async () => {
-              order.push("admit");
-            },
+            ...(mode === "private"
+              ? { privateVisibility: true }
+              : {
+                  beforeStart: async () => {
+                    order.push("admit");
+                  },
+                }),
             [provider === "boat" ? "boatRuntimeDefault" : "modalRuntimeDefault"]: {
               provider: async () => compute,
               credentials,
               connections: {
-                async validate() {},
+                async validate(_actor, _ids, scope) {
+                  expect(scope).toBe(visibility);
+                },
                 async bind() {
                   order.push("bind");
                 },
@@ -169,7 +178,7 @@ describe("launch", () => {
                       return { status: "not_connected" };
                     },
                     async prompt() {
-                      expect(order).toEqual(["bind", "start", "workspace", "mcp", "admit"]);
+                      expect(order).toEqual(readyOrder);
                       return { promptId: "runtime", conversationId: "conversation", status: "queued" };
                     },
                   };
@@ -180,10 +189,12 @@ describe("launch", () => {
         );
         expect(result.runtime).toEqual({ kind: "armada", epoch: "1" });
         expect(result.sandbox.provider).toBe(provider);
+        expect(world.rows.get(result.sandbox.id)?.visibility).toBe(visibility);
+        expect(result.golden.visibility).toBe("org");
         expect(result.sandbox.providerSandboxId).toBe(childId);
         expect(result.sandbox.runtimeTransport).toBe(provider === "modal" ? "dialout" : undefined);
         expect(result.sandbox.boatRuntime).toBe(provider === "boat" ? true : undefined);
-        expect(order).toEqual(["bind", "start", "workspace", "mcp", "admit"]);
+        expect(order).toEqual(readyOrder);
         if (!prompted) {
           expect(result.sandbox.status).toBe("ready");
           expect(result.sandbox.conversationIds).toEqual([]);
@@ -199,7 +210,7 @@ describe("launch", () => {
         expect(world.forks[0]?.env).toEqual({});
       },
     );
-  test.each(["startup", "account", "provider"] as const)(
+  test.each(["startup", "account", "provider", "scoped bootstrap"] as const)(
     "Modal default refuses %s without native fallback",
     async (failure) => {
       const world = setup({
@@ -238,6 +249,14 @@ describe("launch", () => {
           owner,
           { golden: "web", harness: "codex", prompt: "answer" },
           {
+            ...(failure === "scoped bootstrap"
+              ? {
+                  privateVisibility: true,
+                  async beforeStart() {
+                    throw Error("Scoped bootstrap must not run");
+                  },
+                }
+              : {}),
             modalRuntimeDefault: {
               provider: async () => (failure === "provider" ? { ...compute, id: "boat" } : compute),
               credentials: {
@@ -261,7 +280,10 @@ describe("launch", () => {
       ).rejects.toMatchObject(
         failure === "account"
           ? { code: "credential_binding_required", message: expect.stringContaining("--credential-id") }
-          : { code: failure === "startup" ? "start_failed" : "invalid_request" },
+          : {
+              code: failure === "startup" ? "start_failed" : "invalid_request",
+              ...(failure === "scoped bootstrap" ? { message: expect.stringContaining("Scoped access") } : {}),
+            },
       );
       expect(nativeForks).toBe(0);
       expect(world.prompts).toEqual([]);
