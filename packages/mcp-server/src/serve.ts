@@ -629,12 +629,15 @@ export async function startServer(
     modalTokensFor: modal.modalTokensFor,
     routes: [
       inboundTriggerRoute(createInboundTriggerStore(sql, jobs, config.encryptionKey)),
-      inboundTriggerAdminRoute(sql, (request) =>
-        authenticateCaller(request.headers.get("authorization"), {
-          store: authStore,
-          supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
-          now: new Date(),
-        }),
+      inboundTriggerAdminRoute(
+        sql,
+        (request) =>
+          authenticateCaller(request.headers.get("authorization"), {
+            store: authStore,
+            supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
+            now: new Date(),
+          }),
+        config.encryptionKey,
       ),
       outputs.route((request) =>
         authenticateCaller(request.headers.get("authorization"), {
