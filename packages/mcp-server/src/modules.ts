@@ -19,6 +19,7 @@ import { skillDefaultsRoutes } from "./skill-defaults-control.ts";
 import { skillpackRoutes } from "./skillpack-control.ts";
 import { templateRoutes } from "./template-control.ts";
 import { tokenRoutes } from "./token-control.ts";
+import { viewerRoutes } from "./viewer-control.ts";
 
 export const controlRoutes = registerRoutes([
   launchRoutes,
@@ -41,4 +42,5 @@ export const controlRoutes = registerRoutes([
   githubSandboxRoutes,
   logRoutes,
   applicationVaultRoutes,
+  viewerRoutes,
 ]);

@@ -1,4 +1,5 @@
 import { readBoundedText } from "@armada/auth";
+import { vaultControlRoute } from "@armada/core";
 import { CONTROL_BODY_MAX_BYTES, VAULT_CONTROL_BODY_MAX_BYTES, VaultError } from "@armada/core/server";
 
 const MAX_BODY_BYTES = CONTROL_BODY_MAX_BYTES;
@@ -8,15 +9,13 @@ export async function readBody(request: Request, maxBytes = MAX_BODY_BYTES): Pro
 }
 
 /** Both policies count bytes before decoding; vault bodies additionally require valid UTF-8. */
-export async function readVaultBody(request: Request): Promise<Record<string, unknown>> {
+export async function readControlBody(request: Request, route: string): Promise<Record<string, unknown>> {
+  if (!vaultControlRoute(route)) return readBody(request);
+  if (new URL(request.url).search) throw new VaultError("invalid", "Parameters must be in the request body.");
   return readJsonBody(request, true);
 }
 
-async function readJsonBody(
-  request: Request,
-  vault: boolean,
-  maxBytes = MAX_BODY_BYTES,
-): Promise<Record<string, unknown>> {
+async function readJsonBody(request: Request, vault: boolean, maxBytes = MAX_BODY_BYTES) {
   const invalid = (message: string) =>
     new VaultError("invalid", vault ? "Invalid application vault request." : message);
   const reader = vault ? request.body?.getReader() : undefined;

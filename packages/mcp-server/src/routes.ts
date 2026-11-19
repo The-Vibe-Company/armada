@@ -11,14 +11,26 @@ export interface ControlRouteContext {
 
 type ControlRouteHandler = (context: ControlRouteContext) => unknown;
 
-type RequestRoute = {
-  methods: readonly ("GET" | "POST")[];
-  respond: (request: Request, options: ControlOptions) => Response | Promise<Response>;
+type Method = "GET" | "POST" | "DELETE";
+type Dispatch = (request: Request) => Promise<Response | null>;
+
+type CommandRoute = {
+  methods: readonly Method[];
+  handler: ControlRouteHandler;
+  readBody?: (request: Request) => Record<string, unknown> | Promise<Record<string, unknown>>;
+  responseStatus?: (result: unknown) => number;
 };
 
-type Route = RequestRoute | { methods: readonly ["POST"]; handler: ControlRouteHandler };
+type RequestRoute = {
+  methods: readonly Method[];
+} & (
+  | { respond: (request: Request, options: ControlOptions) => Response | Promise<Response> }
+  | { earlyRespond: (request: Request, options: ControlOptions, dispatch: Dispatch) => Response | Promise<Response> }
+);
 
-export function defineRoutes<Handlers extends Record<string, ControlRouteHandler | RequestRoute>>(
+type Route = (CommandRoute | RequestRoute) & { pattern?: RegExp };
+
+export function defineRoutes<Handlers extends Record<string, ControlRouteHandler | Route>>(
   module: string,
   handlers: Handlers,
 ) {
@@ -38,4 +50,12 @@ export function registerRoutes(modules: readonly ReturnType<typeof defineRoutes>
     }
   }
   return routes;
+}
+
+export function matchControlRoute(routes: ReturnType<typeof registerRoutes>, path: string) {
+  const exact = routes.get(path);
+  if (exact && !exact.pattern) return exact;
+  for (const route of routes.values()) {
+    if (route.pattern?.test(path)) return route;
+  }
 }
