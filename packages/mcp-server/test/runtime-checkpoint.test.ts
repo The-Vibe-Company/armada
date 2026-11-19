@@ -35,8 +35,6 @@ afterAll(async () => {
 
 function checkpointFixture(provider: "boat" | "modal" = "boat", idle = false) {
   if (!shared) throw Error("Checkpoint database is not open");
-  // These cases only mutate their own sandbox, enrolment, and runtime rows.
-  // The shared account, people, and goldens are read-only for the suite.
   return runtimeFixture(shared, provider, "codex", idle, undefined, {
     goldenId: provider === "modal" ? shared.modalGoldenId : shared.sharedGoldenId,
     providerSandboxId: crypto.randomUUID(),

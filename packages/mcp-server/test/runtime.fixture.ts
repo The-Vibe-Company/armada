@@ -16,7 +16,7 @@ export async function runtimeFixtureGolden(
   db: Awaited<ReturnType<typeof database>>["db"],
   people: People,
   provider: "boat" | "modal",
-): Promise<string> {
+) {
   if (provider === "boat") {
     const { rows } = await db.query<{ id: string }>(
       "select id from goldens where org_id=$1 and visibility='org' and provider='boat'",
