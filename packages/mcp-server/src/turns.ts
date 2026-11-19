@@ -23,6 +23,7 @@ import {
 import { nativeExhaustionEvidence } from "./account-exhaustion.ts";
 import { completedUsageTurns } from "./account-spend.ts";
 import { DataError, type SandboxView, type ServerSandboxStore } from "./data.ts";
+import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 
 export const INTERRUPTED_LAUNCH_REASON =
   "Launch interrupted before completion; provider cleanup is retried until confirmed.";
@@ -105,7 +106,7 @@ const hasReportedCounters = (row: TurnTokenUsage) =>
 /**
  * Reads where a sandbox is and records it. The prompt's status comes from `getPrompt` (events are
  * rewritten in place); a turn boat calls `finished` after a usage limit or an expired login is `failed`.
- * A live machine is `running` while a turn runs, `ready` after one ends, and `failed` only when the machine failed.
+ * Runtime prompt activity is reported separately from the enrolled machine state.
  */
 export async function readStatus(
   provider: Provider | null,
@@ -279,6 +280,13 @@ export async function readStatus(
     const refreshed = await store.get(sandbox.id);
     if (refreshed?.usage) sandbox = { ...sandbox, usage: refreshed.usage };
   }
+
+  if (
+    runtimeBridgeTarget(sandbox) &&
+    (sandbox.status === "ready" || sandbox.status === "running") &&
+    (info.state === "ready" || info.state === "running")
+  )
+    return report(sandbox, sandbox.status, info, prompt, info.expiresAt ?? null);
 
   const next = nextStatus(sandbox.status, info, prompt);
   const reason =
