@@ -9,7 +9,7 @@ retained filesystem image, proves a new-epoch same-conversation recall, then
 checkpoints and stops it again. Optional `--github`, `--mcp`, `--skills`, `--variables` and `--usage` add the scoped
 checks below; they do not claim full harness/setup parity. Configured repository refresh and init scripts run through epoch-bound private
 runtime commands before skills, MCP publication and the first prompt.
-The existing Modal tunnel path remains the default.
+New ordinary Modal launches use enrolled dial-out by default.
 
 ## Prerequisites
 
@@ -20,7 +20,7 @@ there is no manual artifact-publication step.
 
 Coordinator staging configuration:
 
-- `ARMADA_MODAL_DIALOUT=1` explicitly enables this staging-only launch route.
+- `ARMADA_MODAL_DIALOUT=1` enables the dial-out transport and is required for the runtime default.
 - `ARMADA_MODAL_RUNTIME_MANIFEST=/opt/armada/runtime-manifests/x64.json` selects
   the manifest from that deployed build for the Modal Linux x64 target.
 - Existing authorized Modal management credentials and immutable workspace,
@@ -632,22 +632,21 @@ owned; secrets/multi-conversation/default readiness and the production-day gate
 still precede authorized tunnel deletion.
 
 
-## Coordinator-controlled ordinary launch default (not activated by this PR)
+## Ordinary launch default
 
-The temporary server selector `ARMADA_MODAL_AGENT_PATH` accepts only `native`
-(default/rollback) or `runtime`. Runtime default requires the existing explicit
-`ARMADA_MODAL_DIALOUT=1` and matching `ARMADA_MODAL_RUNTIME_MANIFEST`; invalid or
-incomplete configuration fails startup, never silently chooses native. This PR
-does not set any deployment variable. Do not enable it before the readiness
-matrix and unsupported-flow decisions below are accepted.
+Set `ARMADA_MODAL_DIALOUT=1` and point `ARMADA_MODAL_RUNTIME_MANIFEST` to the
+matching artifact manifest before releasing the default change. Leave
+`ARMADA_MODAL_AGENT_PATH` unset or set it to `runtime`. Incomplete or invalid
+runtime configuration fails server startup. The coordinator validates staging
+before releasing to production.
 
 The shared core admission policy selects the compute-only Modal host, private
 model-account resolver, common MCP lifecycle and enrolled startup BEFORE fork.
 Ordinary HTTP `sandbox/launch`, MCP `launch`/sized launch, pinned templates and
 owner-scoped routines all use that policy. Request JSON cannot enable/bypass it.
 Selected provider identity must still equal the golden provider; runtime failure,
-missing account binding and unsupported raw-secret/stdio/helper flows never
-fall back to native allocation or inference.
+missing account bindings and unsupported launch inputs are refused on the
+selected path.
 
 Fresh launch receipts expose `runtime.kind/epoch` and the actual persisted Modal
 `runtimeTransport:dialout`, including ordinary MCP and template receipts. Existing
@@ -669,22 +668,14 @@ existing archive/session/epoch/checkpoint/tool/cost/disk proofs. New feature inp
 credentials, configuration mutations or artifact publication are not needed.
 Use matching account/harness flags. Unknown allocation or send is not retried.
 
-Rollback sets ONLY `ARMADA_MODAL_AGENT_PATH=native` for future launches. Keep the
-enrolled opt-in, artifacts and resume/control services available for existing
-dial-out rows; keep native control for pre-cutover rows. No resource conversion,
-row rewrite, deployment, default activation or tunnel deletion is performed here.
+For the default-on release cycle, the coordinator can set
+`ARMADA_MODAL_AGENT_PATH=native` to roll back future launches. Keep dial-out,
+artifacts and resume/control services enabled for enrolled rows. Keep native
+control for pre-cutover rows until they drain.
 
-Before any production cutover: coordinator must verify full ordinary AND explicit
-paths across supported harness/account variants, templates/routines, busy-turn
-controls, GitHub/MCP/skills/readables, idle/empty stop-wake, archives, usage/cost and
-matched cold/warm/resume timings. Raw application-secret templates remain explicitly
-refused; pinned stdio MCP and helper/parallel-conversation compatibility require
-implementation or an explicit owner scope decision before universal default/tunnel
-removal. Fail-closed refusal is not parity acceptance. Staging checks remain Modal
-+ owner Docker; Boat production checks are coordinator-only/on demand.
-
-Only after recorded staging approval may the coordinator enable production default,
-record exact SHA/config/time and one full successful production day, then explicitly
-authorize a separate tunnel deletion PR. Preserve machine management, provider
-binding, snapshots and bootstrap exec, and retire/handle old native consumers before
-removing their control/listener/grant/event/distribution paths.
+Verify ordinary and explicit paths across supported harness/account variants,
+templates/routines, busy-turn controls, GitHub/MCP/skills/readables, idle and empty
+stop-wake, archives, usage/cost and matched cold/warm/resume timings. After the
+production rollout, record the release, UTC date and checklist results in the
+[retirement ledger](native-agent-path-retirement.md#coordinator-ledger). The
+default-on cycle and checklist gate native retirement.
