@@ -610,7 +610,7 @@
     "packages/core/test/golden-adoption-postgres.release.ts": 8,
     "packages/core/test/golden-adoption.test.ts": 1,
     "packages/core/test/golden-build-jobs-postgres.release.ts": 8,
-    "packages/core/test/golden-build-modal.test.ts": 16,
+    "packages/core/test/golden-build-modal.test.ts": 12,
     "packages/core/test/golden-create-service.test.ts": 2,
     "packages/core/test/golden-create.release.ts": 11,
     "packages/core/test/golden-create.test.ts": 13,
