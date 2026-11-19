@@ -211,6 +211,7 @@ test("normal Docker reads authorize owner/admin with live membership, preserve n
     harness: "codex",
     visibility: "private",
     conversationIds: [conversationId],
+    status: "running",
     prompt: { promptId, conversationId, state: "running" },
     settled: false,
   });
@@ -235,7 +236,7 @@ test("normal Docker reads authorize owner/admin with live membership, preserve n
   ]);
   const settled = await invoke<DockerSandboxStatus>(admin, "status", { id: f.sandbox.id, prompt_id: promptId });
   expect(settled).toMatchObject({
-    status: "running",
+    status: "ready",
     settled: true,
     prompt: { promptId, conversationId, state: "finished", reason: null },
     usage: {
