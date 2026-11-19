@@ -91,6 +91,29 @@ Repository-wide search includes `skipIf`, `test.skip`, conditional test aliases,
   probe (`packages/mcp-server/test/mcp-codex-bridge.release.probe.ts`) requires
   the pinned binary and a successful process exit.
 
+## Process-spawning unit cases in `provider-modal`
+
+The [process-test allowlist](../scripts/ci/process-tests.txt) records matching
+files. For [#3179](https://github.com/The-Vibe-Company/armada/issues/3179), this
+inventory records the individual Modal cases that reach a real subprocess.
+The CI column uses the named passing lines from [run 44526380196, attempt 1](https://github.com/The-Vibe-Company/armada/actions/runs/44526380196/attempts/1).
+Parallel workers interleave their output, so a file header alone cannot
+attribute later timing lines to that file. The local column is one focused
+Linux run using Bun 1.4.2 on main at `fa1f93d9`. Both columns measure the
+whole case.
+
+| File under `packages/provider-modal/test` | Case | Local subprocess boundary | CI | Local |
+| --- | --- | --- | ---: | ---: |
+| `artifact-validation.test.ts` | embedded portable loader rejects empty/unpinned artifacts without requiring native files or host architecture | Starts Bun in a disposable package tree to exercise the real file imports. | 58.56 ms | 34.71 ms |
+| `distribution.test.ts` | image artifact RUNs replay in real Linux shells beyond MAX_ARG_STRLEN and verify bytes before publication | Checks Linux's argument size limit and replays the generated image commands in `/bin/sh`. | 332.50 ms | 243.98 ms |
+| `distribution.test.ts` | fresh saved-golden fork receives current verified runtime without editing native state or restored code | Uses sudo and routes the fixture SDK's exec calls to local processes for the runtime overlay. | 342.43 ms | 248.61 ms |
+| `security.test.ts` | snapshot quiescence shell is valid and a failed remote scrub prevents success | Runs `bash -n` inside the stubbed SDK exec and supplies a nonzero scrub result. | 4.13 ms | 2.41 ms |
+
+The audit included tracked Modal unit files and their process-capable helpers.
+The CLI boundary in `conformance-app.test.ts` injects its command runner, and
+the guest process in `runtime-bootstrap.test.ts` is simulated in a VM.
+Explicit release, conformance and probe files are outside unit discovery.
+
 ## Evidence owed after merge
 
 Run the existing publishing release validation on the exact release SHA. Verify
