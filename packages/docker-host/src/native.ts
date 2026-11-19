@@ -289,7 +289,6 @@ export function httpApi(
           !inventoryReport &&
           performance.now() >= nextInventoryAt
         ) {
-          // The preceding server release advertises inventory without an identity.
           const deploymentId =
             result.containerInventoryDeploymentId ??
             `${serverOrigin(state.server)}/${state.hostId}/${state.installationId}`;

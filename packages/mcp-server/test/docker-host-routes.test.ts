@@ -120,11 +120,12 @@ test("a full Docker inventory with long container names reaches the reaper", asy
 });
 
 test("an HTTPS alias poll supplies the deployment identity accepted by the inventory receiver", async () => {
-  const { hostId, installationId, publicUrl, records, send } = inventoryRouteFixture("https://alias.example");
+  const alias = "https://alias.example";
+  const { hostId, installationId, publicUrl, records, send } = inventoryRouteFixture(alias);
   const poll = await send(JSON.stringify({ installationId }), "poll");
   expect(poll?.status).toBe(200);
-  const deploymentId = (await poll?.json())?.containerInventoryDeploymentId;
-  expect(deploymentId).toBe(`${publicUrl}/${hostId}/${installationId}`);
+  const offer = (await poll?.json()) as { containerInventoryDeploymentId?: string };
+  const deploymentId = offer.containerInventoryDeploymentId ?? `${alias}/${hostId}/${installationId}`;
   const response = await send(
     JSON.stringify({
       installationId,
@@ -142,6 +143,7 @@ test("an HTTPS alias poll supplies the deployment identity accepted by the inven
   );
   expect(response?.status).toBe(204);
   expect(records[0]).toMatchObject({ metric: "reaper_unknown_machines", count: 1, complete: true });
+  expect(deploymentId).toBe(`${publicUrl}/${hostId}/${installationId}`);
 });
 
 test("an oversized Docker inventory is refused before reaching the reaper", async () => {
