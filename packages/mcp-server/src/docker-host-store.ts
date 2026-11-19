@@ -50,6 +50,13 @@ type Actor = { userId: string; orgId: string };
 type Job = DockerHostJob;
 export const DOCKER_JOB_REQUEST_OUTCOME_SQL =
   "case when j.refused_resume_generation is not null then 'failed' else j.outcome end";
+const settledRefusedResumeSql = `
+  j.refused_resume_generation is not null and j.bound_operation='resume'
+  and j.outcome in ('completed','failed') and j.cancelled_at is null
+  and s.docker_host_id=j.host_id and s.docker_installation_id=$2
+  and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>now()
+  and s.status='starting' and s.lifecycle_generation=j.refused_resume_generation`;
+
 type Host = { id: string; org_id: string; owner_id: string };
 type Bound = {
   snapshot_id?: string | null;
@@ -505,7 +512,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         )
       ).rows[0];
       if (!refused) return false;
-      if (refused.outcome === "completed") {
+      if (refused.outcome !== null) {
         const row =
           (await tx.query<Sandbox>("select * from public.sandboxes where id=$1", [sandboxId])).rows[0] ?? deny();
         await settleRefusedResume(tx, row, refused);
@@ -710,6 +717,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
           `select exists(select 1 from public.docker_host_jobs j join public.docker_hosts h on h.id=j.host_id
              where h.hash=$1 and h.installation_id=$2 and h.revoked_at is null and j.outcome is null
                and (not $3::boolean or j.snapshot_id is null) and ${notRunning(4)} and ${supportsJob(6)})
+           or exists(select 1 from public.docker_host_jobs j join public.docker_hosts h on h.id=j.host_id
+             join public.sandboxes s on s.id=j.bound_sandbox_id
+             where h.hash=$1 and h.installation_id=$2 and h.revoked_at is null and ${settledRefusedResumeSql})
            or ($5::boolean and exists(select 1 from public.docker_resume_claims c
              join public.docker_hosts h on h.id=c.host_id join public.sandboxes s on s.id=c.sandbox_id
              where h.hash=$1 and h.installation_id=$2 and h.revoked_at is null
@@ -1342,11 +1352,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         const refusals = (
           await tx.query<StoredJob>(
             `select j.* from public.docker_host_jobs j join public.sandboxes s on s.id=j.bound_sandbox_id
-             where j.host_id=$1 and j.refused_resume_generation is not null
-             and j.outcome='completed' and j.cancelled_at is null
-             and s.docker_host_id=$1 and s.docker_installation_id=$2
-             and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>now()
-             and s.status='starting' and s.lifecycle_generation=j.refused_resume_generation
+             where j.host_id=$1 and ${settledRefusedResumeSql}
              order by j.position`,
             [host.id, installationId],
           )
@@ -1746,14 +1752,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
             );
           }
         } else if (result.imageId !== undefined) deny();
-        // A repeated same-outcome machine fact also repairs a logical transition
-        // missed by an earlier server; conflicting facts still fail above.
-        if (logical) {
-          if (result.outcome === "completed") {
-            await settleRefusedResume(tx, logical, job);
-          } else if (job.outcome !== null || !(await settleRefusedResume(tx, logical, job))) {
-            await startupFailed(tx, logical, job, result.reason);
-          }
+        if (logical && !(await settleRefusedResume(tx, logical, job)) && result.outcome === "failed") {
+          await startupFailed(tx, logical, job, result.reason);
         }
         // Persist terminal receipts below, but never replay old stop/delete
         // effects onto a lifecycle admitted after that job.
@@ -1816,11 +1816,6 @@ export function createDockerHostStore(sql: Sql, key: string) {
               [job.bound_sandbox_id],
             );
         }
-        // The first host receipt is the terminal machine fact. Clearing
-        // cancelled_at in the same write makes later conflicting receipts fail
-        // the immutability check above, and lets capacity follow the normal rule:
-        // a completed create/resume reserves, a failed one stays reserved until a
-        // physical stop/delete/expiry proves the machine is gone.
         if (job.outcome === null || job.cancelled_at !== null) {
           await tx.query(
             `update public.docker_host_jobs set outcome=$2,completed_at=now(),result_image_id=$3,cancelled_at=null where request_id=$1`,
