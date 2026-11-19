@@ -722,7 +722,7 @@ for (const proof of [
 
 test("production scoped MCP/API gateway uses epoch child authority and never owner dispatch", async () => {
   const { close, sql, p, id, parent, authority, token, selection } = await fixture("ready");
-  const { ORCHESTRATOR_SCOPED_PATH } = await import("../src/sandbox-access-scoped-gateway.ts");
+  const { ORCHESTRATOR_SCOPED_PATH } = await import("@armada/core/contract");
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
   const { StreamableHTTPClientTransport } = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
   const { createSandboxScopedGateway } = await import("../src/sandbox-access-scoped-gateway.ts");
@@ -767,6 +767,9 @@ test("production scoped MCP/API gateway uses epoch child authority and never own
         ).rows[0];
         if (!child) throw Error("missing owned child");
         await boat.provider.stop({ sandboxId: child.provider_sandbox_id });
+      },
+      async extend(_op, ttlSeconds) {
+        expect(ttlSeconds).toBe(60);
       },
       async reconcile(op) {
         return { operationId: op.id, sandboxId: op.sandboxId, state: "unknown" };
@@ -848,9 +851,40 @@ test("production scoped MCP/API gateway uses epoch child authority and never own
           body: JSON.stringify(payload),
         }),
       )) ?? new Response(null, { status: 404 });
-    expect((await api("launch", { selection: { ...selection, size: "small" } }, token, "mcp-child")).status).toBe(200);
+    const { publishedResponse } = await import("./published-response.ts");
+    const launchResponse = await api("launch", { selection: { ...selection, size: "small" } }, token, "mcp-child");
+    expect(launchResponse.status).toBe(200);
+    expect(publishedResponse("orchestrator-tools/launch").safeParse(await launchResponse.json()).success).toBe(true);
+    const services = createSandboxAccessServices({
+      sql,
+      providers: { resolve: async () => boat.provider },
+      credentials: launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY),
+      connections: undefined,
+      encryptionKey: ENCRYPTION_KEY,
+      scopedMcpUrl: "https://armada.example/mcp",
+    });
+    const readResponse = await services.scopedToolsRoute(
+      new Request(`https://armada.example.com${ORCHESTRATOR_SCOPED_PATH}/read`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ sandboxId: receipt.sandboxId }),
+      }),
+    );
+    if (!readResponse) throw new Error("Scoped read did not dispatch.");
+    expect(readResponse.status).toBe(200);
+    expect(publishedResponse("orchestrator-tools/read").safeParse(await readResponse.json()).success).toBe(true);
     expect(boat.forks).toHaveLength(1);
-    expect((await api("stop", { sandboxId: receipt.sandboxId }, token, "api-child-stop")).status).toBe(200);
+    for (const [method, body, key] of [
+      ["message", { text: "continue the same ticket" }, "mcp-child-message"],
+      ["extend", { ttlSeconds: 60 }, "api-child-extend"],
+      ["stop", {}, "api-child-stop"],
+    ] as const) {
+      const response = await api(method, { ...body, sandboxId: receipt.sandboxId }, token, key);
+      expect(response.status).toBe(200);
+      const parsed = publishedResponse(`orchestrator-tools/${method}`).safeParse(await response.json());
+      expect(parsed).toMatchObject({ success: true, data: { result: { state: "succeeded" } } });
+    }
+    expect(boat.prompts).toHaveLength(1);
     expect((await api("stop", { sandboxId: receipt.sandboxId }, token, "api-child-stop")).status).toBe(200);
     expect(boat.stops).toHaveLength(1);
     for (const method of ["exec", "credentials", "admin", "owner", "token_create"])
@@ -859,13 +893,14 @@ test("production scoped MCP/API gateway uses epoch child authority and never own
     const denied = await api("read", { sandboxId: unrelated.id });
     expect(denied.status).toBe(403);
     expect((await denied.text()).includes(token)).toBe(false);
+    const oversizedSerializedPrompt = "\\".repeat(70_000);
     expect(
       (
         await route(
           new Request(`https://armada.example.com${ORCHESTRATOR_SCOPED_PATH}/launch`, {
             method: "POST",
-            headers: { authorization: `Bearer ${token}` },
-            body: "x".repeat(129 * 1024),
+            headers: { authorization: `Bearer ${token}`, "idempotency-key": "oversized-launch" },
+            body: JSON.stringify({ selection: { ...selection, prompt: oversizedSerializedPrompt } }),
           }),
         )
       )?.status,

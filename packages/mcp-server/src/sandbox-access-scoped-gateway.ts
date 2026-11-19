@@ -1,5 +1,11 @@
 import { VERSION } from "@armada/core";
-import { isScopedMethod, scopedOperations } from "@armada/core/contract";
+import {
+  isScopedMethod,
+  ORCHESTRATOR_SCOPED_PATH,
+  type ScopedErrorCode,
+  scopedOperations,
+  scopedRestOperations,
+} from "@armada/core/contract";
 import { type DelegatedAuthority, DelegatedAuthorityDenied } from "@armada/core/server";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
@@ -9,26 +15,17 @@ import { createObservedMcpTransport } from "./observed-mcp-transport.ts";
 import type { createSandboxChildren } from "./sandbox-access-children.ts";
 import { InvalidOrchestratorBody, readOrchestratorBody } from "./sandbox-access-http-body.ts";
 
-/** Trusted662 bootstrap URL: never point an epoch grant at the generic owner /mcp. */
-export const ORCHESTRATOR_SCOPED_PATH = "/api/v1/orchestrator-tools";
+/** Resolve the scoped MCP endpoint for an epoch grant. */
 export function orchestratorScopedMcpUrl(publicUrl: string): string {
   const url = new URL(publicUrl);
   if (!["https:", "http:"].includes(url.protocol) || url.username || url.password || url.search || url.hash)
     throw new Error("Invalid scoped gateway origin.");
   return new URL(`${ORCHESTRATOR_SCOPED_PATH}/mcp`, url).toString();
 }
-const restSchemas = {
-  finish: scopedOperations.finish.input,
-  launch: scopedOperations.launch.input.omit({ idempotencyKey: true }),
-  read: scopedOperations.read.input,
-  message: scopedOperations.message.input.omit({ idempotencyKey: true }),
-  stop: scopedOperations.stop.input.omit({ idempotencyKey: true }),
-  extend: scopedOperations.extend.input.omit({ idempotencyKey: true }),
-};
 const waitMethods = new Set(["wait_record", "wait_renew", "wait_complete"]);
 class InvalidScopedRequest extends Error {}
 class WaitAuthorityUnavailable extends Error {}
-const fail = (status: number, code: string) =>
+const fail = (status: number, code: ScopedErrorCode | "admit_wait_not_supported") =>
   Response.json({ error: { code, message: code } }, { status, headers: { "cache-control": "no-store" } });
 
 export function createSandboxScopedGateway(
@@ -89,20 +86,21 @@ export function createSandboxScopedGateway(
       request.headers.get("authorization") ?? "",
     );
     if (!match?.[1]) return fail(401, "invalid_epoch_authority");
-    if (request.method !== "POST") return fail(405, "use_post");
+    const operation = isScopedMethod(suffix) ? scopedRestOperations[suffix] : undefined;
+    if (request.method !== (operation?.route.method ?? "POST")) return fail(405, "use_post");
     const token = match[1];
     try {
       const raw = await readOrchestratorBody(request);
       const decoded: unknown = JSON.parse(raw);
       if (suffix !== "mcp") {
         if (waitMethods.has(suffix)) return fail(503, "admit_wait_not_supported");
-        if (!isScopedMethod(suffix)) return fail(403, "scoped_method_denied");
-        const input = restSchemas[suffix].safeParse(decoded);
+        if (!operation || operation.route.path !== url.pathname) return fail(403, "scoped_method_denied");
+        const input = operation.input.body.safeParse(decoded);
         if (!input.success) throw new InvalidScopedRequest();
-        const args =
-          suffix === "read" || suffix === "finish"
-            ? input.data
-            : { ...input.data, idempotencyKey: request.headers.get("idempotency-key") };
+        const headers = operation.input.headers;
+        const args = headers
+          ? { ...input.data, idempotencyKey: headers["Idempotency-Key"].parse(request.headers.get("Idempotency-Key")) }
+          : input.data;
         return Response.json({ result: await call(token, suffix, args) }, { headers: { "cache-control": "no-store" } });
       }
       if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) throw new InvalidScopedRequest();
