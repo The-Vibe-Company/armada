@@ -735,23 +735,48 @@ test("a host reporting many retained deadlines still fits the poll body limit", 
 });
 
 test("physical-only mailbox delivery requires the capability on the current poll", async () => {
-  const { userId, orgId, store, post } = await fixture();
+  const { db, userId, orgId, store, post } = await fixture();
   const actor = { userId, orgId };
   const ticket = await store.issueRegistration(actor);
   const installationId = randomUUID();
   const host = await store.exchangeRegistration(ticket.registrationToken, installationId);
+  const sandboxId = randomUUID();
+  const generation = randomUUID();
+  const image = `example/worker@sha256:${"a".repeat(64)}`;
+  await db.query(
+    `insert into sandboxes(id,org_id,owner_id,provider,provider_sandbox_id,harness,status,
+      docker_host_id,docker_installation_id,docker_generation,docker_image,expires_at,effective_ttl_seconds)
+     values($1,$2,$3,'docker',$4,'codex','starting',$5,$6,$7,$8,now()+interval '1 hour',3600)`,
+    [
+      sandboxId,
+      orgId,
+      userId,
+      `armada-${installationId}-${host.hostId}-${sandboxId}-${generation}`,
+      host.hostId,
+      installationId,
+      generation,
+      image,
+    ],
+  );
+  const createId = randomUUID();
+  await store.enqueueSandbox(actor, sandboxId, { requestId: createId, operation: "create" });
+  const created = await store.poll(host.hostToken, installationId);
+  if (created?.operation !== "create") throw new Error("Expected bound create");
+  await store.complete(host.hostToken, installationId, { requestId: createId, outcome: "completed" });
+  await db.query("update sandboxes set status='failed' where id=$1", [sandboxId]);
   const job = {
     requestId: randomUUID(),
     operation: "deletePhysical" as const,
     machineId: "a".repeat(64),
-    request: {
-      sandboxId: randomUUID(),
-      generation: randomUUID(),
-      image: `example/worker@sha256:${"a".repeat(64)}`,
-      ttlSeconds: 300,
-    },
+    request: created.request,
   };
-  await store.enqueue(actor, host.hostId, job);
+  await expect(store.enqueue(actor, host.hostId, job)).rejects.toThrow("Docker host denied");
+  await store.enqueueSandbox(actor, sandboxId, {
+    requestId: job.requestId,
+    operation: job.operation,
+    machineId: job.machineId,
+    lifecycleGeneration: 1,
+  });
   const poll = async (capability?: string) => {
     const response = await post(
       "/api/docker-host/poll",
