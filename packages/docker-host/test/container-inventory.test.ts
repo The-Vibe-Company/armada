@@ -73,7 +73,12 @@ test("a container disappearing before inspection makes the inventory incomplete"
   await expect(Array.fromAsync(inventory.listInventory())).rejects.toThrow("Incomplete Docker container inspection");
 });
 
-test("posts a complete authenticated inventory with the server identity after a version-one offer", async () => {
+const identityOffers = [
+  ["canonical", deploymentId, deploymentId],
+  ["preceding release", undefined, `${state.server}/${state.hostId}/${state.installationId}`],
+] as const;
+
+test.each(identityOffers)("posts authenticated inventory for the %s offer", async (_name, offer, expectedId) => {
   let capability: number | undefined;
   let scans = 0;
   const reports: unknown[] = [];
@@ -84,7 +89,7 @@ test("posts a complete authenticated inventory with the server identity after a 
         return Response.json({
           job: null,
           containerInventory: capability,
-          containerInventoryDeploymentId: deploymentId,
+          containerInventoryDeploymentId: offer,
         });
       expect(url).toBe(`${state.server}/api/docker-host/container-inventory`);
       expect(new Headers(init?.headers).get("authorization")).toBe(`Bearer ${state.hostToken}`);
@@ -133,7 +138,7 @@ test("posts a complete authenticated inventory with the server identity after a 
           machineId: owned,
           sandboxId,
           generation,
-          deploymentId,
+          deploymentId: expectedId,
           containerName: "observed-container",
           createdAt: "2026-11-18T15:01:02.123Z",
         },
