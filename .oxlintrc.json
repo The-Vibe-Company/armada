@@ -17,7 +17,6 @@
       "files": [
         "packages/core/src/routine-schedule.ts",
         "packages/core/test/github-reconnect-postgres.release.ts",
-        "packages/core/test/golden-os.probe.ts",
         "packages/mcp-server/test/github-boat-os.test.ts",
         "packages/mcp-server/test/mcp-codex-bridge.release.ts",
         "packages/provider-boat/test/integration.coordinator.ts",
@@ -31,7 +30,6 @@
             "allow": {
               "packages/core/src/routine-schedule.ts": 1,
               "packages/core/test/github-reconnect-postgres.release.ts": 1,
-              "packages/core/test/golden-os.probe.ts": 1,
               "packages/mcp-server/test/github-boat-os.test.ts": 1,
               "packages/mcp-server/test/mcp-codex-bridge.release.ts": 1,
               "packages/provider-boat/test/integration.coordinator.ts": 1,
