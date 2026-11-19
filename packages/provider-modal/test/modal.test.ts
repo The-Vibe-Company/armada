@@ -1997,7 +1997,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await expect(f.provider.getSnapshot(name)).rejects.toMatchObject({ code: "not_found" });
     expect((await f.store.images(builder.id)).find((x) => x.info.name === name)?.collecting).toBe(true);
     // The source is busy with its own lifecycle, and the claimed image is still collected.
-    await f.store.lease(builder.id, () => f.provider.collectGarbage());
+    await f.store.lease(builder.id, () => f.provider.collectRetiredSnapshot(name));
     expect(await f.store.tombstoneSources()).not.toContain(builder.id);
   });
   test("a concurrent sweep skips a live dispatch claim and recovers an expired one", async () => {
@@ -2020,7 +2020,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     const retiring = f.provider.deleteSnapshot(name);
     await entered.promise;
     // An overlapping sweep while the claim is live dispatches nothing.
-    await f.provider.collectGarbage();
+    await expect(f.provider.collectRetiredSnapshot(name)).resolves.toBe("pending");
     expect(calls).toBe(1);
     const expire = () =>
       db.query(
@@ -2037,7 +2037,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(claimed?.collectToken).toBe("newer");
     // A crashed newer holder's claim expires too, and the next sweep takes and completes it.
     await expire();
-    await f.provider.collectGarbage();
+    await expect(f.provider.collectRetiredSnapshot(name)).resolves.toBe("collected");
     expect(calls).toBe(2);
     expect(await f.store.tombstoneSources()).not.toContain(builder.id);
   });
@@ -2665,15 +2665,12 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(JSON.stringify((await db.query("select record from public.modal_machines")).rows)).not.toContain(
       "synthetic-fallback-secret",
     );
-    // Earlier tests leave tombstones in this shared scope; collect them first so the counts below
-    // concern only this snapshot.
-    await userKey.provider.collectGarbage();
     let calls = f.log.filter((x) => x === "delete-image").length;
     await provider.deleteSnapshot(snapshot);
     expect(f.log.filter((x) => x === "delete-image")).toHaveLength(calls);
     await settleDetachedModalCollections();
     calls = f.log.filter((x) => x === "delete-image").length;
-    await userKey.provider.collectGarbage();
+    await expect(userKey.provider.collectRetiredSnapshot(snapshot)).resolves.toBe("pending");
     expect(f.log.filter((x) => x === "delete-image")).toHaveLength(calls); // Cannot collect another authority's tombstone.
     await restoredConnection.delete({ sandboxId: fork.id });
     expect(f.log.filter((x) => x === "delete-image").length).toBeGreaterThan(calls);

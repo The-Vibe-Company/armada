@@ -1057,7 +1057,7 @@
     "packages/provider-modal/test/conformance-app.ts": 5,
     "packages/provider-modal/test/conformance-live.ts": 8,
     "packages/provider-modal/test/distribution.test.ts": 10,
-    "packages/provider-modal/test/modal.test.ts": 57,
+    "packages/provider-modal/test/modal.test.ts": 55,
     "packages/provider-modal/test/nnp-ssh-conformance.ts": 1,
     "packages/provider-modal/test/os-build-conformance.ts": 2,
     "packages/provider-modal/test/process-scope-conformance.ts": 3,
