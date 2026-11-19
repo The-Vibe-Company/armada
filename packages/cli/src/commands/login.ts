@@ -25,7 +25,6 @@ does not unset that environment variable. Keep tokens in a secure environment, n
 Example: armada login --email you@example.com
 Example: armada --profile staging login --url https://staging.example.com --provider github
 `,
-  completionBefore: "snapshot",
   useSelectedOrg: false,
   async run(argv, { auth }) {
     const parsed = parseAuth(argv);

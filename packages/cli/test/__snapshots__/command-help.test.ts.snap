@@ -506,3 +506,128 @@ Example: armada template list --org ORG_UUID --json
 Example: armada template get TEMPLATE_UUID --revision 1 --org ORG_UUID --json
 "
 `;
+
+exports[`armada snapshot help preserves its output 1`] = `
+"Usage: armada snapshot <command> [arguments]
+Manage provider-scoped snapshots. Use a leaf command with --help or -h for syntax.
+Boat/Modal:
+  create       Build a snapshot from repositories/config.
+  update       Append repositories or explicitly replace the complete config.
+  build-find   Find an active build by name.
+  build-status Inspect a job or recover admission using its saved key.
+  build-cancel Cancel your queued, never-started build.
+  capabilities Read server-authoritative capacity.
+  size-policy  Inspect or replace future-launch size defaults.
+  remove       Remove from launch selection, retaining children/provider artifacts.
+  visibility   Change visibility using the snapshot record ID.
+  retirement dry-run|reconcile  Review history and reconcile reviewed receipts.
+Docker:
+  create       Build a host-local snapshot (--provider docker, host/org required).
+  get          Read saved build state.
+  rebuild      Build a new snapshot on the original host, keeping the old one.
+Shared:
+  list         List visible snapshots; Docker requires an organization UUID.
+Operations require Armada login and server authorization; help does not.
+The legacy golden spelling is accepted; guidance uses snapshot.
+Example: armada snapshot list --provider modal --json
+Example: armada snapshot create --help
+"
+`;
+
+exports[`armada snapshot create help preserves its output 1`] = `
+"Usage: armada snapshot create <name> (--repo <url>[@branch] ... | --config <file>)
+  [--init <command> ...] [--setup <local-file>] [--provider boat|modal]
+  [--private] [--org <org>] [--idempotency-key <key>] [--timeout <seconds>] [--json]
+Docker: armada snapshot create <name> --provider docker --host UUID|NAME --org UUID
+  (--config <file> | --repo <url>[@branch] ... [--init <command> ...])
+  [--private] [--request-id UUID] [--json]
+--config cannot be combined with --repo or --init; include init commands in the JSON file.
+Docker builds a host-local snapshot; --setup and durable-job flags above are Boat/Modal only.
+Boat/Modal --timeout defaults to 60 seconds (0 returns after admission, maximum 600).
+Save --idempotency-key to recover uncertain admission with snapshot build-status.
+Requires Armada login, a connected provider and GitHub repository authorization.
+Builds, scans and snapshots on the server; do not include secrets in setup.
+Example: armada snapshot create starter --provider modal --repo https://github.com/octocat/Hello-World --org my-team
+"
+`;
+
+exports[`armada snapshot retirement reconcile help preserves its output 1`] = `
+"Usage: armada snapshot retirement reconcile <snapshot-UUID> [--file <path>] [--limit <1-50>] [--org UUID] [--json]
+Reconcile reviewed history and enqueue eligible retirement work after Armada login and authorization.
+Supply reviewed dry-run JSON via stdin or --file; do not invent receipts.
+The JSON must contain 1–50 valid receipts in results. Limit defaults to 20.
+Omit --file for stdin; --file - is not the stdin spelling for this command.
+Server rechecks authority, history and references; eligible work is queued, not proof of deletion.
+Output is always JSON. Use the snapshot record UUID, not a provider artifact ID.
+Example: armada snapshot retirement reconcile SNAPSHOT_UUID --org ORG_UUID --file reviewed.json
+"
+`;
+
+exports[`armada golden retirement dry-run help preserves its output 1`] = `
+"Usage: armada snapshot retirement dry-run <snapshot-UUID> [--limit <1-50>] [--org UUID] [--json]
+Review bounded historical snapshot retirement candidates after Armada login.
+Requires server owner/admin authorization. Limit defaults to 20; output is always JSON.
+Use the snapshot record UUID, not a sandbox ID or provider artifact ID.
+Review the results and receipts before using retirement reconcile. No provider mutation in this review.
+Example: armada snapshot retirement dry-run SNAPSHOT_UUID --org ORG_UUID --limit 20
+"
+`;
+
+exports[`armada creds help preserves its output 1`] = `
+"Usage: armada creds <command> [arguments]
+Manage encrypted model/provider credentials, not application variables/secrets.
+Use a leaf command with --help or -h for its flags and secure input instructions.
+Native subscription accounts:
+  login codex  Authorize native Codex in your browser; keep the terminal open.
+  import       Import an existing Claude token or Codex auth JSON securely.
+API connections:
+  presets      List built-in provider choices without login.
+  connect      Store a named API connection using a preset.
+  set          Store a supported credential kind or custom endpoint.
+  test         Test a sandbox's bound model connection; may incur a provider charge.
+Account metadata:
+  list         List metadata/IDs, never credential values.
+  rename       Rename by account ID.
+  default      Select a default account by ID.
+  remove       Remove an account by ID.
+  rm           Legacy kind-scoped removal; not an alias for remove <id>.
+Native subscriptions require eligible subscription access; API keys use provider billing.
+Read secret inputs from stdin/hidden input or private files, never command arguments.
+For application environment values use vars or secrets instead. Server authorization still applies.
+Example: armada creds presets --json
+Example: armada creds import --help
+"
+`;
+
+exports[`armada creds import claude help preserves its output 1`] = `
+"Usage: armada creds import claude (--name <name> | --id <id> --expected-version <version>) [--file <path>] [--org <name>]
+Import an existing native credential after Armada login; no native login is started.
+Claude: run claude setup-token locally. Codex: supply native auth JSON.
+Read the credential from stdin/hidden input or a private --file, never command arguments.
+Use --name to create; replacement requires --id and a positive integer --expected-version.
+Omit --org for personal scope; pass it for organization scope.
+Credentials are stored encrypted; allowance information may be unavailable.
+Example: armada creds import claude --name personal --file /private/native-credential
+"
+`;
+
+exports[`armada creds connect help preserves its output 1`] = `
+"Usage: armada creds connect <preset> --name <name> [--file <path>] [--org <name>] [--json]
+  [--models <id,...>] [--base-url <HTTPS-url>] [--api-version <version>]
+  [--max-agents <positive-integer> | --unlimited]
+Store a named connection after Armada login. Choose a preset with armada creds presets --json.
+Supply only the API key through stdin/hidden input or a private --file, never command arguments or JSON.
+Presets with harness models reject --models, --base-url and --api-version.
+Chosen-model presets require --models and, unless fixed by the preset, --base-url.
+Fixed-address presets reject --base-url; --api-version is only accepted by supporting presets.
+Official Azure addresses are tested with a tiny billable request per deployment before saving;
+a failed check saves nothing. Omit --org for personal scope.
+Morph defaults to 2 simultaneous agents; other accounts default to unlimited.
+Use --max-agents N or --unlimited on connect, import, login and set.
+Change an existing cap with armada creds limits ACCOUNT_UUID --max-agents 2 or --unlimited.
+Morph: armada creds connect morph --name shared --file /private/morph-key
+Use Claude Code, Codex or OpenCode on Modal, Docker or runtime-backed Boat.
+At launch choose --credential-id ACCOUNT_UUID and a Morph plan model with --model.
+Example: armada creds connect openai --name personal --file /private/api-key
+"
+`;

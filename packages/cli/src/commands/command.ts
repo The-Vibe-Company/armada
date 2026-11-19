@@ -19,7 +19,11 @@ export type UsageGroup =
   | "vault"
   | "mcp"
   | "mcp-bindings"
-  | "bind-credential";
+  | "bind-credential"
+  | "snapshots"
+  | "snapshot-admin"
+  | "credential-setup"
+  | "credential-accounts";
 
 export type Command = {
   name: string;
@@ -29,7 +33,6 @@ export type Command = {
   subcommandHelp?: Readonly<Record<string, string>>;
   helpWhenBare?: boolean;
   validateProfileForHelp?: boolean;
-  completionBefore?: string;
   useSelectedOrg?: boolean | ((argv: readonly string[]) => boolean);
   run: (argv: readonly string[], context: { io: Io; deps: Deps; auth: AuthIo }) => Promise<number>;
 };
