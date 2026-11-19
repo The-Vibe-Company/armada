@@ -148,7 +148,9 @@ export class Journal {
     } catch {
       return this.redact(body);
     }
-    return event?.kind ? this.eventBody(event, false) : this.redact(body);
+    return event?.kind === "message" || (event?.kind === "other" && event.type === "armada/opencodeMcp")
+      ? this.eventBody(event, false)
+      : this.redact(body);
   }
   transition(prompt: StoredPrompt, status: PromptStatus, reason?: string) {
     this.db.transaction(() => {

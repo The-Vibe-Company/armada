@@ -1,3 +1,4 @@
+import type { EventPage } from "@armada/core";
 import { RequestRefused } from "./errors.ts";
 import type { Journal } from "./journal.ts";
 import type { RunnerRequest } from "./protocol.ts";
@@ -54,7 +55,11 @@ export async function executeWithReceipt(
   }
   if (request.op === "events") {
     const envelope = JSON.parse(journal.redact(JSON.stringify({ version: 1, requestId: request.requestId })));
-    return Response.json({ ...envelope, result });
+    const page = result as EventPage;
+    return Response.json({
+      ...envelope,
+      result: { ...page, events: page.events.map((event) => journal.redactEvent(event)) },
+    });
   }
   const body = journal.redact(JSON.stringify({ version: 1, requestId: request.requestId, result }));
   if (mutating) journal.db.query("INSERT OR REPLACE INTO requests VALUES(?,?)").run(request.requestId, body);
