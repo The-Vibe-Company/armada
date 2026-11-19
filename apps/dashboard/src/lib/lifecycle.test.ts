@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { formatDuration, lifecycleView, readLifecycle, type SandboxLifecycle } from "../src/lib/lifecycle.ts";
+import { formatDuration, lifecycleView, readLifecycle, type SandboxLifecycle } from "./lifecycle.ts";
 
 const NOW = new Date("2026-11-09T12:00:00Z");
 const BASE: SandboxLifecycle = {

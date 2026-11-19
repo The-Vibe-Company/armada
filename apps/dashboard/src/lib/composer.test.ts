@@ -7,7 +7,7 @@ import {
   PINNED_MODEL,
   pinnedSend,
   UNCONFIRMED_ACTION,
-} from "../src/lib/composer.ts";
+} from "./composer.ts";
 
 const fields = (model = "", otherModel = "", reasoningEffort = "") => ({ model, otherModel, reasoningEffort });
 

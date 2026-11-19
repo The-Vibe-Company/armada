@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { done, fail } from "../src/lib/action.ts";
-import { addToast, closeToast, type ToastItem, toastFromResult } from "../src/lib/toast.ts";
+import { done, fail } from "./action.ts";
+import { addToast, closeToast, type ToastItem, toastFromResult } from "./toast.ts";
 
 const ok = (id: number, title = `toast ${id}`) => ({ id, tone: "success" as const, title });
 
