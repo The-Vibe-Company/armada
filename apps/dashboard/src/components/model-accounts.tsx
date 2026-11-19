@@ -92,6 +92,7 @@ import {
   kindNote,
   MAX_ACCOUNT_NAME,
   type ModelAccount,
+  monthlyApiSpendLabel,
   orderAccounts,
   PASTE_SIGN_IN,
   relativeTime,
@@ -456,6 +457,8 @@ export function AccountRow({
   /** Which control opened the dialog, so closing it gives focus back there. */
   const opener = useRef<"menu" | "row">("menu");
   const info = KIND_INFO[account.kind];
+  const spendLabel = monthlyApiSpendLabel(account);
+  const spokenSpendLabel = spendLabel?.replace("—", "unknown");
   const state = modelsPageStatus(account, now);
   const exhaustion = modelsPageExhaustion(account, now);
   const StateIcon = STATE_ICON[state.tone];
@@ -500,6 +503,18 @@ export function AccountRow({
           <span className="block text-xs text-muted-foreground">
             {info.label} · {account.scope === "user" ? "Only you" : orgName}
           </span>
+          {spendLabel && (
+            <span className="mt-1 block text-xs break-words text-muted-foreground tabular-nums">
+              {spokenSpendLabel === spendLabel ? (
+                spendLabel
+              ) : (
+                <>
+                  <span aria-hidden="true">{spendLabel}</span>
+                  <span className="sr-only">{spokenSpendLabel}</span>
+                </>
+              )}
+            </span>
+          )}
           {exhaustion && <span className="block text-xs text-foreground">{exhaustion}</span>}
         </span>
         <span className={cn("shrink-0 text-xs", STATE_TONE[state.tone])}>
