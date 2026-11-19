@@ -1,8 +1,4 @@
 #!/usr/bin/env node
-// The `armada` bin of the npm package. The CLI uses Bun APIs, so the package does not ship
-// JavaScript to run: it ships one compiled binary per platform, each in its own package that
-// npm and Bun install as an optional dependency matching `os` and `cpu`. This file finds that
-// binary and runs it, under Node or Bun, with no postinstall script.
 "use strict";
 
 const { chmodSync } = require("node:fs");

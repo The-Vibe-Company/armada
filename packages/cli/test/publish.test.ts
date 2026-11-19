@@ -123,7 +123,6 @@ test.each(["delayed", "independent-delay"])(
 );
 
 test("each platform starts its registry check without waiting for the other uploads", () => {
-  // darwin-arm64's upload blocks until linux-x64 starts its registry check.
   const result = publish("overlap");
   expect(result.exitCode).toBe(0);
   const mainPublish = result.events.findIndex((event) =>

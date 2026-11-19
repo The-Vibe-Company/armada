@@ -105,7 +105,6 @@ async function invoke(
   return { code, out, err, requests };
 }
 
-// CLI owns argv-to-authenticated-API translation; SQL authorization is owned by server tests.
 test("all eight routine commands use the API-only contract and preserve JSON envelopes", async () => {
   const { name: _, ...create } = config;
   const cases: { args: string[]; route: string; body: Record<string, unknown>; file?: string }[] = [

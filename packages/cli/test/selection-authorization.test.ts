@@ -57,7 +57,7 @@ test("org use persists a validated UUID per server and scopes commands while exp
     const path = join(directory, "preferences.json");
     h.auth.preferences = filePreferences(path);
     expect(await h.run(["org", "use", "Team"])).toBe(0);
-    h.auth.preferences = filePreferences(path); // a new CLI process re-opens the preference file
+    h.auth.preferences = filePreferences(path);
     expect(await h.run(["list"])).toBe(0);
     expect(bodies.at(-1)).toEqual({ org });
     expect(await h.run(["list", "--org", "override"])).toBe(0);
