@@ -1016,3 +1016,29 @@ test("stdio grant writes refuse authority revoked after the registry pre-read", 
     }
   }
 });
+
+test("stdio configure cannot reconnect a grant revoked after the registry pre-read", async () => {
+  const { close, db, people: p } = await fixture();
+  try {
+    const registry = createSqlMcpRegistry(db, ENCRYPTION_KEY);
+    const { id } = await registry.save(p.owner, p.org, {
+      name: "Local tools",
+      scope: "personal",
+      transport: "stdio",
+      command: "npx",
+      args: ["server@1.2.3"],
+    });
+    const boundary: Sql = {
+      async query<T>(statement: string, params?: unknown[]) {
+        if (statement.includes("set status='connected',generation=")) await registry.revoke(p.owner, p.org, id);
+        return db.query<T>(statement, params);
+      },
+    };
+    await expect(createSqlMcpRegistry(boundary, ENCRYPTION_KEY).configureStdio(p.owner, p.org, id)).rejects.toThrow(
+      /definition changed/,
+    );
+    expect((await registry.get(p.owner, p.org, id)).status).toBe("not_connected");
+  } finally {
+    await close();
+  }
+});

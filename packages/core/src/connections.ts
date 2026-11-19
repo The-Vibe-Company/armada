@@ -89,9 +89,10 @@ type Row = {
   auth_type: McpConnectionDto["authType"];
   status: McpConnectionDto["status"];
   disabled: boolean;
+  generation: number;
 };
 const columns =
-  "c.catalog_id,c.default_for_launch,c.id,c.org_id,c.name,c.scope,c.transport,c.url,c.command,c.args,c.auth_type,c.disabled,public.mcp_grant_effective_status(g.status,g.revoked_at,g.refresh_consumed,g.refresh_until) as status";
+  "c.catalog_id,c.default_for_launch,c.id,c.org_id,c.name,c.scope,c.transport,c.url,c.command,c.args,c.auth_type,c.disabled,g.generation,public.mcp_grant_effective_status(g.status,g.revoked_at,g.refresh_consumed,g.refresh_until) as status";
 function dto(r: Row): McpConnectionDto {
   return {
     catalogId: r.catalog_id,
@@ -274,11 +275,17 @@ export function createSqlMcpRegistry(
         authType: row.auth_type,
       });
       const result = await sql.query<{ id: string }>(
-        `update public.mcp_grants g set status='connected',generation=generation+1,
-        version=version+1,revoked_at=null,refresh_consumed=false,refresh_owner=null,refresh_until=null
-        from public.mcp_connections c where c.id=$1::uuid and g.connection_id=c.id
-        and c.transport='stdio' and c.auth_type='none' and not c.disabled returning g.id`,
-        [id],
+        `with actor as materialized (
+          select role from public.members where org_id=$2::uuid and user_id=$3::uuid for share
+        )
+        update public.mcp_grants g set status='connected',generation=g.generation+1,
+          version=g.version+1,revoked_at=null,refresh_consumed=false,refresh_owner=null,refresh_until=null
+        from public.mcp_connections c cross join actor
+        where c.id=$1::uuid and c.org_id=$2::uuid and g.connection_id=c.id and g.generation=$4
+          and c.transport='stdio' and c.auth_type='none' and not c.disabled
+          and ((c.scope='org' and actor.role='admin') or (c.scope='personal' and c.owner_id=$3::uuid))
+        returning g.id`,
+        [id, org, user, row.generation],
       );
       if (!result.rows[0]) throw new VaultError("conflict", "The stdio definition changed; reload before configuring.");
       return dto(await get(user, org, id));
