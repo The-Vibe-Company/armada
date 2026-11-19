@@ -129,7 +129,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
           : JSON.parse(await decryptSecret(Uint8Array.from(Buffer.from(payload_enc, "hex")), encryptionKey));
       return { ...job, payload };
     },
-    async inspect(job, owner, tx) {
+    async inspect(job, owner, tx?: Sql) {
       const { rows } = await (tx ?? sql).query<{ state: "dispatch" | "reconcile" | "stale" }>(
         `select case when j.generation is not null and s.lifecycle_generation is distinct from j.generation
                        then 'stale'
