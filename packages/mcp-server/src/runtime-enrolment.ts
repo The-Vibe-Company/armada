@@ -53,7 +53,7 @@ export const scopedRuntimeSql = (tx: Sql): Sql => ({ query: tx.query.bind(tx), t
 export async function preserveResumeRefusalTicket(
   tx: Sql,
   sandboxId: string,
-  generation: string,
+  generation: string | number,
   enrolmentToken: string,
   fail: () => Promise<boolean | undefined>,
 ) {
