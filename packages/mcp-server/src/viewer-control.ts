@@ -1,4 +1,4 @@
-import { sandboxViewerOperations } from "@armada/core/contract";
+import { sandboxViewerOperations, VIEWER_ACCESS_DENIED } from "@armada/core/contract";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
 import type { ControlOptions } from "./control.ts";
 import { readBody } from "./control-body.ts";
@@ -50,10 +50,9 @@ async function viewerControl(
   action?: ViewerAction,
 ): Promise<Response> {
   const url = new URL(request.url);
-
   const authorization = request.headers.get("authorization") ?? "";
   const fail = (status: number) =>
-    Response.json({ error: "viewer_access_denied" }, { status, headers: { "cache-control": "no-store" } });
+    Response.json({ error: VIEWER_ACCESS_DENIED }, { status, headers: { "cache-control": "no-store" } });
   const now = () => (options.now?.() ?? new Date()).getTime();
   try {
     if (action === "mint") {
@@ -135,7 +134,7 @@ async function viewerControl(
       const { message, requestId } = input.data;
       return invoke("sandbox/send", {
         prompt: message,
-        ...(requestId === undefined ? {} : { request_id: requestId }),
+        ...(typeof requestId === "string" ? { request_id: requestId } : {}),
       });
     }
     // The schemas select only viewer fields. The grant supplies the sandbox ID.

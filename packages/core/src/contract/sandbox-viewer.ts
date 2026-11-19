@@ -9,19 +9,28 @@ const cursor = z
   .regex(/^[^\r\n]*$/)
   .nullish();
 const pageInput = z.object({ cursor });
-const viewerAccessErrors = ["viewer_access_denied"] as const;
+export const VIEWER_ACCESS_DENIED = "viewer_access_denied";
+const viewerAccessErrors = [VIEWER_ACCESS_DENIED] as const;
+const viewerDenial = z.object({ error: z.literal(VIEWER_ACCESS_DENIED) });
+const viewerDispatchFailure = z.union([
+  viewerDenial,
+  z.object({
+    error: z.looseObject({ code: z.string(), message: z.string(), details: z.unknown().optional() }),
+  }),
+]);
 
 export const sandboxViewerOperations = {
   mint: {
     name: "createSandboxViewerToken",
     route: { method: "POST", path: "/api/v1/sandbox/viewer-token" },
-    input: { body: z.object({ id: z.string().regex(/^[0-9a-f-]{36}$/i) }) },
+    input: { body: z.object({ id: z.string().regex(/^[0-9a-fA-F-]{36}$/) }) },
     output: z.object({ token: z.string(), expiresAt: z.iso.datetime() }),
     readOnly: false,
     destructive: false,
     audience: "public",
     description: "Issue a short-lived viewer grant for one sandbox visible to a service credential.",
     errors: viewerAccessErrors,
+    errorOutput: viewerDenial,
   },
   logs: {
     name: "readViewerLogs",
@@ -33,6 +42,7 @@ export const sandboxViewerOperations = {
     audience: "public",
     description: "Read a log page for the sandbox bound to the viewer grant.",
     errors: [...viewerAccessErrors, ...readLogsOperation.errors],
+    errorOutput: viewerDispatchFailure,
   },
   status: {
     name: "readViewerStatus",
@@ -43,7 +53,8 @@ export const sandboxViewerOperations = {
     destructive: false,
     audience: "public",
     description: "Read status for the sandbox bound to the viewer grant.",
-    errors: [...viewerAccessErrors, ...sandboxOperations.sandboxStatus.errors],
+    errors: [...viewerAccessErrors, ...sandboxOperations.sandboxStatus.errors, "provider_routing_unavailable"],
+    errorOutput: viewerDispatchFailure,
   },
   send: {
     name: "sendViewerPrompt",
@@ -51,7 +62,7 @@ export const sandboxViewerOperations = {
     input: {
       body: pageInput.extend({
         message: z.string().regex(/\S/),
-        requestId: z.string().optional().catch(undefined),
+        requestId: z.unknown().optional().describe("Only string values are forwarded as a replay identifier."),
       }),
     },
     output: sandboxOperations.sendPrompt.output,
@@ -59,7 +70,13 @@ export const sandboxViewerOperations = {
     destructive: false,
     audience: "public",
     description: "Send a prompt to the sandbox bound to the viewer grant.",
-    errors: [...viewerAccessErrors, ...sandboxOperations.sendPrompt.errors],
+    errors: [
+      ...viewerAccessErrors,
+      ...sandboxOperations.sendPrompt.errors,
+      "credential_refused",
+      "provider_routing_unavailable",
+    ],
+    errorOutput: viewerDispatchFailure,
   },
   events: {
     name: "streamViewerEvents",
@@ -75,5 +92,6 @@ export const sandboxViewerOperations = {
     audience: "public",
     description: "Stream log pages for a viewer grant. Resume with the cursor query parameter or Last-Event-ID.",
     errors: [...viewerAccessErrors, ...readLogsOperation.errors],
+    errorOutput: viewerDispatchFailure,
   },
 } as const satisfies Record<string, Operation<z.ZodType, z.ZodType>>;

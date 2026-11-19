@@ -24,7 +24,7 @@ export { sandboxCheckOperations } from "./sandbox-checks.ts";
 export { launchOptionsOperation, MAX_LOG_PAGES, readLogsOperation } from "./sandbox-reads.ts";
 export { sandboxExtensionLifetime, sandboxRestOperations } from "./sandbox-rest.ts";
 
-export { sandboxViewerOperations } from "./sandbox-viewer.ts";
+export { sandboxViewerOperations, VIEWER_ACCESS_DENIED } from "./sandbox-viewer.ts";
 
 export interface Operation<Input extends z.ZodType, Output extends z.ZodType | undefined = undefined> {
   readonly name: string;
@@ -32,6 +32,7 @@ export interface Operation<Input extends z.ZodType, Output extends z.ZodType | u
   readonly input: { readonly body: Input; readonly query?: z.ZodType };
   readonly output: Output;
   readonly outputMediaType?: string;
+  readonly errorOutput?: z.ZodType;
   readonly successStatus?: number;
   readonly readOnly: boolean;
   readonly destructive: boolean;
