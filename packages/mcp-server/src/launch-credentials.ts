@@ -57,9 +57,21 @@ export function launchCredentials(
   ownership?: ModelAuthOwnership,
   /** Runtime preflight only: never add this GitHub token to harness credentials/env. */
   repositoryGithub?: GitHubLaunchOptions,
-): LaunchCredentialResolver {
+): LaunchCredentialResolver & {
+  resolveModel: (...args: Parameters<LaunchCredentialResolver["resolve"]>) => ReturnType<typeof resolveCredentials>;
+} {
+  async function resolveModel(actor: GoldenActor, harness: Harness, credentialId?: string, credentialVersion?: number) {
+    return resolveCredentials(reader, encryptionKey, {
+      userId: actor.userId,
+      orgId: actor.orgId,
+      harness,
+      ...(credentialId !== undefined ? { credentialId } : {}),
+      ...(credentialVersion !== undefined ? { credentialVersion } : {}),
+    });
+  }
   const repositoryAccess = github ?? repositoryGithub;
   return {
+    resolveModel,
     installPrivateSkill,
     ...(repositoryAccess
       ? ({
@@ -245,13 +257,7 @@ export function launchCredentials(
       credentialId?: string,
       credentialVersion?: number,
     ): Promise<HarnessCredentials> {
-      const resolved = await resolveCredentials(reader, encryptionKey, {
-        userId: actor.userId,
-        orgId: actor.orgId,
-        harness,
-        ...(credentialId !== undefined ? { credentialId } : {}),
-        ...(credentialVersion !== undefined ? { credentialVersion } : {}),
-      });
+      const resolved = await resolveModel(actor, harness, credentialId, credentialVersion);
       const access = github
         ? await resolveGitHubAccess(
             { ...github, caller: "launch", encryptionKey, minimumLifetimeMs: 60 * 60 * 1000 },
@@ -294,7 +300,17 @@ export async function exposedSecrets(
     for (const row of await reader.credentials(scope, owner)) {
       if (!SECRET_KINDS.includes(row.kind)) continue;
       const value = await decryptSecret(new Uint8Array(row.valueEnc), encryptionKey);
-      if ((row.kind === "openai" || row.kind === "anthropic" || row.kind === "opencode") && value.startsWith("{")) {
+      if (row.kind === "morph" && value.trimStart().startsWith("{")) {
+        try {
+          const { apiKey } = JSON.parse(parseCredentialValue(row.kind, value));
+          values.push(value, apiKey);
+        } catch {
+          values.push(value, ...jsonLeaves(value));
+        }
+      } else if (
+        (row.kind === "openai" || row.kind === "anthropic" || row.kind === "opencode") &&
+        value.startsWith("{")
+      ) {
         const connection = JSON.parse(parseCredentialValue(row.kind, value));
         // Keep full-secret and endpoint/key redaction, not unrelated non-secret numeric prices.
         values.push(

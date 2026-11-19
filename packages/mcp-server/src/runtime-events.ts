@@ -1,6 +1,7 @@
 import {
   type AgentEvent,
   type Harness,
+  isModelOutput,
   type MemberRole,
   modelRateLimit,
   PROMPT_STATUSES,
@@ -9,6 +10,7 @@ import {
   VaultError,
 } from "@armada/core";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
+import { UUID } from "./control-input.ts";
 import { createSqlData } from "./data.ts";
 import type { Route } from "./http.ts";
 import { type createRuntimeEnrolments, RuntimeEnrolmentDenied, runtimeTransaction } from "./runtime-enrolment.ts";
@@ -186,6 +188,7 @@ export function createRuntimeEvents(
       const sequences: number[] = [];
       const markers: (string | null)[] = [];
       const encrypted: string[] = [];
+      const visibleTextPromptIds: (string | null)[] = [];
       for (const item of items) {
         if (item.sequence > ack + 1) break; // Commit only the contiguous prefix, never an event beyond a gap.
         const previous = existing.get(item.sequence);
@@ -198,6 +201,16 @@ export function createRuntimeEvents(
           const marker = item.event.promptId && !known.has(item.event.promptId) ? item.event.promptId : null;
           sequences.push(item.sequence);
           markers.push(marker);
+          const { event } = item;
+          visibleTextPromptIds.push(
+            event.kind === "message" &&
+              isModelOutput(event) &&
+              event.text.trim() &&
+              event.promptId &&
+              UUID.test(event.promptId)
+              ? event.promptId
+              : null,
+          );
           // Send hex as text so both SQL adapters and direct drivers preserve the encrypted bytes.
           encrypted.push(Buffer.from(await encryptSecret(item.serialized, key)).toString("hex"));
           pending.set(item.sequence, item.serialized);
@@ -211,10 +224,10 @@ export function createRuntimeEvents(
       }
       if (sequences.length)
         await tx.query(
-          `insert into public.runtime_events(sandbox_id,sequence,epoch,counted_prompt_id,event_enc)
-           select $1,sequence,$2,marker,decode(event_hex,'hex')
-           from unnest($3::bigint[],$4::text[],$5::text[]) as batch(sequence,marker,event_hex)`,
-          [scope.sandboxId, scope.epoch, sequences, markers, encrypted],
+          `insert into public.runtime_events(sandbox_id,sequence,epoch,counted_prompt_id,event_enc,visible_text_prompt_id)
+           select $1,sequence,$2,marker,decode(event_hex,'hex'),text_prompt_id
+           from unnest($3::bigint[],$4::text[],$5::text[],$6::uuid[]) as batch(sequence,marker,event_hex,text_prompt_id)`,
+          [scope.sandboxId, scope.epoch, sequences, markers, encrypted, visibleTextPromptIds],
         );
       // Project only the newly committed contiguous archive prefix. Replays cannot
       // resurrect waits, and assistant progress or terminal events clear them.

@@ -3,9 +3,9 @@ import type { Sql } from "@armada/core/server";
 import { createSqlVaultStore } from "@armada/core/server";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
-import { call, ENCRYPTION_KEY, harness, PUBLIC_URL } from "./support.ts";
+import { ENCRYPTION_KEY, harness, PUBLIC_URL } from "./support.ts";
 
-test("HTTP and MCP report real capacity, busy and binding conflicts without allocating or leaking", async () => {
+test("REST reports real capacity, busy and binding conflicts without allocating or leaking", async () => {
   let allocations = 0;
   const account = "backend-hidden-account";
 
@@ -46,29 +46,22 @@ test("HTTP and MCP report real capacity, busy and binding conflicts without allo
           ? { config: { repos: [{ url: "https://github.com/acme/web.git" }], init: [] } }
           : {}),
       };
-      const [http, mcp] = await Promise.all([
-        handleControlRequest(
-          new Request(PUBLIC_URL + "/api/v1/golden/" + operation, {
-            method: "POST",
-            headers: { authorization: "Bearer " + token },
-            body: JSON.stringify(body),
-          }),
-          control,
-        ),
-        server.client(token).then((client) => call(client, "golden_" + operation, body)),
-      ]);
+      const http = await handleControlRequest(
+        new Request(PUBLIC_URL + "/api/v1/golden/" + operation, {
+          method: "POST",
+          headers: { authorization: "Bearer " + token },
+          body: JSON.stringify(body),
+        }),
+        control,
+      );
       expect(http?.status).toBe(409);
       const json = (await http!.json()) as { error: { code: string; message: string } };
       expect(json.error.code).toBe("conflict");
       expect(json.error.message).toMatch(
         /golden capacity|reservation with no durable job|not bound to the connected provider account/,
       );
-      expect(mcp.isError).toBe(true);
-      expect(mcp.text).toContain("error code: conflict");
-      expect(mcp.text).toContain(json.error.message);
       for (const value of [account, hidden.id, "mine", people.owner, "golden_backend_slots", "23505", "P0001"]) {
         expect(JSON.stringify(json)).not.toContain(value);
-        expect(mcp.text).not.toContain(value);
       }
       expect(allocations).toBe(0);
       expect((await db.query("select * from goldens order by id")).rows).toEqual(goldensBefore);
@@ -152,7 +145,6 @@ test("unexpected SQL and provider failures stay server errors rather than becomi
       return { id: "account" };
     };
     const token = await server.token(people.admin);
-    const client = await server.client(token);
     const control = {
       authStore: server.auth,
       supabase: { supabaseUrl: "https://unused.test", anonKey: "test" },
@@ -175,11 +167,6 @@ test("unexpected SQL and provider failures stay server errors rather than becomi
       expect(await response!.json()).toEqual({
         error: { code: "internal", message: expect.stringContaining("Check the current state before retrying.") },
       });
-      const mcp = await call(client, "golden_create", body);
-      expect(mcp.isError).toBe(true);
-      expect(mcp.text).toContain("error code: internal");
-      expect(mcp.text).not.toContain("unexpected database failure");
-      expect(mcp.text).not.toContain("golden backend capacity reached");
     }
     expect(allocations).toBe(0);
     expect((await db.query("select * from golden_backend_slots")).rows).toHaveLength(0);

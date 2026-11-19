@@ -1,11 +1,13 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { COMPATIBLE_MODEL_PROVIDERS } from "../packages/core/src/compatible-providers.ts";
 import { MODEL_CATALOG } from "../packages/core/src/models.ts";
-import connections from "../packages/core/src/pricing/connection-catalog.json";
 import catalog from "../packages/core/src/pricing/model-catalog.json";
+import {
+  CONNECTION_MODELS,
+  MORPH_ENDPOINTS,
+  MORPH_MODEL_IDS,
+} from "../packages/core/src/pricing/model-options.generated.ts";
 import overlay from "../packages/core/src/pricing/model-overlay.json";
-import prices from "../packages/core/src/pricing/models-dev.json";
 import { buildModelCatalog, snapshotModels } from "./refresh-model-prices.ts";
 
 test("one upstream snapshot and the reviewed overlay supply the model catalog", () => {
@@ -61,21 +63,19 @@ test("one upstream snapshot and the reviewed overlay supply the model catalog", 
   expect(result.vendorLimitHints["anthropic/demo"]).toEqual({ context: 128_000 });
 });
 
-test("vendored model projections preserve the pre-consolidation values", () => {
+test("the vendored model catalog preserves the pre-consolidation values", () => {
   const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
   expect(buildModelCatalog(catalog.snapshot, overlay)).toEqual(catalog);
   expect(MODEL_CATALOG).toEqual(catalog.harnesses);
-  expect<unknown>(COMPATIBLE_MODEL_PROVIDERS).toEqual(catalog.compatibleProviders);
-  expect(prices.models).toEqual(catalog.snapshot.models);
-  expect(connections.providers).toEqual(catalog.snapshot.providers);
-  expect(prices.sha256).toBe(catalog.snapshot.sha256);
-  expect(connections.sha256).toBe(catalog.snapshot.sha256);
+  const generatedMorph = { models: MORPH_MODEL_IDS, ...MORPH_ENDPOINTS };
+  expect<unknown>(generatedMorph).toEqual(catalog.compatibleProviders.morph);
+  expect<unknown>(CONNECTION_MODELS).toEqual(catalog.snapshot.providers);
   // Captured from the original catalogs at 22f9482b, before switching them to generated data.
   expect({
     harnesses: digest(MODEL_CATALOG),
-    compatibleProviders: digest(COMPATIBLE_MODEL_PROVIDERS),
-    models: digest(prices.models),
-    providers: digest(connections.providers),
+    compatibleProviders: digest({ morph: generatedMorph }),
+    models: digest(catalog.snapshot.models),
+    providers: digest(CONNECTION_MODELS),
   }).toEqual({
     harnesses: "eaa18ffb23a7bd6ef560724f16c20afa4b177a9de43ad945d1723bbbc9046b5c",
     compatibleProviders: "8d65b0d96776542cad4e82aa89b5d80fa99c974e0fcfa985fdde7b081e717f7f",

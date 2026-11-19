@@ -4,7 +4,6 @@ import {
   type ClientConfig,
   type CredentialReader,
   createProviderRegistry,
-  type GoldenBuildJobs,
   type LaunchOptions,
   type LaunchStores,
   type ModalBinding,
@@ -25,14 +24,11 @@ import { observeNativeFirstToken } from "./launch-stage-record.ts";
 import type { ModelAuthOwnership } from "./model-auth.ts";
 import { createObservedMcpTransport } from "./observed-mcp-transport.ts";
 import type { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
-import type { ProviderMetadataFor } from "./provider-metadata.ts";
 import { diagnosticSandboxId } from "./provider-sandbox-target.ts";
 import { REQUEST_BODY_LIMIT_BYTES, withRequestBodyCeiling } from "./request-body-ceiling.ts";
 import { observeRequest, recordOperatorFailure } from "./request-observability.ts";
-import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
-import type { RuntimeResume } from "./runtime-resume.ts";
 import { createArmadaServer } from "./tools.ts";
 
 export const MCP_PATH = "/mcp";
@@ -48,8 +44,6 @@ export interface HandlerOptions {
   ) => Promise<import("./sandbox-billing-account.ts").SandboxBillingAccount | null>;
   dockerControls?: import("./docker-sandbox-controls.ts").DockerSandboxControls;
   runtimeGitHub?: RuntimeGitHub;
-  runtimeResume?: RuntimeResume;
-  runtimeCheckpoint?: RuntimeCheckpoint;
   runtimeSend?: RuntimeFollowup;
   accountTurns?: import("./account-turn-queue.ts").AccountTurnQueue;
   runtimeProviderFor?: (
@@ -82,9 +76,6 @@ export interface HandlerOptions {
   encryptionKey: string | undefined;
   /** Each caller's GitHub connection, refreshed at launch so git and gh in the sandbox act as them. */
   github?: GitHubLaunchOptions;
-  /** Secure, server-orchestrated multi-repo golden creation (`golden_create`). Absent: the tool refuses. */
-  goldenBuilds?: GoldenBuildJobs;
-  goldenAdoption?: import("@armada/core/server").GoldenAdoption;
   /** A provider for one boat.dev key. The key is used in this process only. */
   providerFor(apiKey: string, caller?: { userId: string; orgId: string }, sandboxId?: string): Provider;
   /**
@@ -107,8 +98,6 @@ export interface HandlerOptions {
     target: ProviderTarget,
     caller: { userId: string },
   ) => Promise<ModalTokenPair & { scope: "user" | "org" }>;
-  providerMetadata?: ProviderMetadataFor;
-  goldenTarget?: (target: Omit<ProviderTarget, "modal">, caller: { userId: string }) => Promise<ProviderTarget>;
   /** Mounted after the OAuth routes and before `/mcp`, for example #461's control API. */
   routes?: readonly Route[];
   now?: () => Date;
@@ -200,8 +189,6 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
         ...(options.dockerControls ? { dockerControls: options.dockerControls } : {}),
         ...(options.runtimeSend ? { runtimeSend: options.runtimeSend } : {}),
         ...(options.accountTurns ? { accountTurns: options.accountTurns } : {}),
-        ...(options.runtimeCheckpoint ? { runtimeCheckpoint: options.runtimeCheckpoint } : {}),
-        ...(options.runtimeResume ? { runtimeResume: options.runtimeResume } : {}),
         ...(options.runtimeGitHub ? { runtimeGitHub: options.runtimeGitHub } : {}),
         ...(options.skillDefaults ? { skillDefaults: options.skillDefaults } : {}),
         ...(options.templates ? { templates: options.templates } : {}),
@@ -210,14 +197,6 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
         launchCredentials: launchCredentials(options.vault, options.encryptionKey, options.github, options.modelAuth),
         exposedSecrets: (orgId) =>
           exposedSecrets(options.vault, options.encryptionKey, { userId: caller.userId, orgId }),
-        ...(options.goldenTarget
-          ? { goldenTarget: (target: Omit<ProviderTarget, "modal">) => options.goldenTarget!(target, caller) }
-          : {}),
-        ...(options.providerMetadata
-          ? {
-              providerMetadata: (selection) => options.providerMetadata!(selection, caller),
-            }
-          : {}),
         storedProviders: options.storedProviderFor
           ? { modal: (target) => options.storedProviderFor!(target, caller) }
           : {},
@@ -228,8 +207,6 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
         logError: log,
         ...(options.ordinaryLaunchReceipts ? { ordinaryLaunchReceipts: options.ordinaryLaunchReceipts } : {}),
         ...(options.launch ? { launch: options.launch } : {}),
-        ...(options.goldenAdoption ? { goldenAdoption: options.goldenAdoption } : {}),
-        ...(options.goldenBuilds ? { goldenBuilds: options.goldenBuilds } : {}),
       },
       VERSION,
     );

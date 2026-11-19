@@ -1,16 +1,16 @@
 /**
  * The providers the dashboard offers when someone adds a model connection (#1483). Choosing one fixes which
  * credential kind is saved, so which agent can use it is shown, never asked. Known models and their public prices
- * come from the generated connection projection of the vendored model catalog; nothing is fetched at runtime.
+ * come from the vendored model catalog; nothing is fetched at runtime.
  * Browser-safe: no Node builtins.
  */
 import { validateAzureOpenAIAddress } from "./azure-endpoint.ts";
 import { parseCredentialValue } from "./credentials.ts";
 import type { ModelPriceOverrides } from "./model-price-overrides.ts";
 import { CONNECTION_MODEL_ID, MAX_CONNECTION_MODELS, OPENCODE_CONNECTION_PROVIDER } from "./opencode-endpoint.ts";
-// Read the catalog only inside functions: a top-level read keeps this JSON in every bundle of the core index,
-// including the GitHub broker, whose private transport budget is 64 KiB (packages/mcp-server/src/github-boat.ts).
-import catalog from "./pricing/connection-catalog.json";
+// Keep this generated browser projection behind a function so consumers such as the
+// GitHub broker can omit it when bundling the core index.
+import { CONNECTION_MODELS } from "./pricing/model-options.generated.ts";
 import { validRate } from "./pricing/rates.ts";
 import { VaultError } from "./vault-error.ts";
 
@@ -27,7 +27,7 @@ export type ConnectionPresetId =
   | "openrouter"
   | "openai-compatible";
 
-type CatalogProvider = keyof typeof catalog.providers;
+type CatalogProvider = keyof typeof CONNECTION_MODELS;
 
 export interface ConnectionPreset {
   id: ConnectionPresetId;
@@ -62,10 +62,10 @@ export const CONNECTION_PRESETS: readonly ConnectionPreset[] = [
     id: "morph",
     label: "Morph",
     kind: "morph",
-    hint: "One account for Claude Code and Codex; choose a Morph plan model at launch",
+    hint: "Claude Code, Codex and OpenCode on Modal, Docker or runtime-backed Boat",
     models: "harness",
     baseUrl: null,
-    keyHint: "Your Morph API key. Shared by Claude Code and Codex; OpenCode is not supported by this account.",
+    keyHint: "Your Morph API key. Use a Morph plan model on Modal, Docker or runtime-backed Boat.",
   },
   {
     id: "openai",
@@ -191,7 +191,7 @@ export interface CatalogModel {
 
 /** The known agent-capable models of a preset, newest first; empty when it has no catalog. */
 export function presetModels(preset: ConnectionPreset): readonly CatalogModel[] {
-  return preset.catalog && !preset.deploymentNames ? (catalog.providers[preset.catalog] as CatalogModel[]) : [];
+  return preset.catalog && !preset.deploymentNames ? CONNECTION_MODELS[preset.catalog] : [];
 }
 
 /**

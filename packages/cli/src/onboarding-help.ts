@@ -687,8 +687,8 @@ Morph defaults to 2 simultaneous agents; other accounts default to unlimited.
 Use --max-agents N or --unlimited on connect, import, login and set.
 Change an existing cap with armada creds limits ACCOUNT_UUID --max-agents 2 or --unlimited.
 Morph: armada creds connect morph --name shared --file /private/morph-key
-One account supports Claude Code, Codex and OpenCode. At launch choose --credential-id ACCOUNT_UUID
-and --model morph-kimik31, morph-dsv41flash or morph-dsv41flash-1017.
+Use Claude Code, Codex or OpenCode on Modal, Docker or runtime-backed Boat.
+At launch choose --credential-id ACCOUNT_UUID and a Morph plan model with --model.
 Example: armada creds connect openai --name personal --file /private/api-key
 `,
   "creds limits": `Usage: armada creds limits <account-id> [--model <model-id>] --max-agents N | --unlimited [--org <name>] [--json]

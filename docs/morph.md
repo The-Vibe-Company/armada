@@ -13,8 +13,7 @@ armada creds list
 
 Alternatively, dashboard **What agents have → Models → Add account → Morph**: name the
 account, paste the key and save. Select that same account for any of these harnesses.
-The model picker offers `morph-kimik31`, `morph-dsv41flash` and
-`morph-dsv41flash-1017`. The key is encrypted and is never returned by listing.
+The model picker offers the catalog’s Morph plan models. The key is encrypted and is never returned by listing.
 
 Use the ordinary launch flow for the target snapshot or Docker host, with
 `--credential-id ACCOUNT_UUID --model morph-kimik31` and the desired harness.
