@@ -65,9 +65,7 @@ export async function seedDatabase(db: PGlite): Promise<{ db: PGlite; people: Pe
     member: crypto.randomUUID(),
     admin: crypto.randomUUID(),
   };
-  for (const user of [people.owner, people.member, people.admin]) {
-    await db.query("insert into auth.users (id) values ($1)", [user]);
-  }
+  await db.query("insert into auth.users (id) values ($1), ($2), ($3)", [people.owner, people.member, people.admin]);
   await db.query("insert into orgs (id, name, boat_api_key_enc) values ($1, 'Example', $2), ($3, 'Other', null)", [
     people.org,
     await encryptSecret(SECRETS.orgBoat, ENCRYPTION_KEY),
@@ -99,17 +97,19 @@ export async function seedDatabase(db: PGlite): Promise<{ db: PGlite; people: Pe
       people.member,
     ],
   );
-  const credential = async (scope: string, owner: string, kind: string, value: string) =>
-    db.query("insert into credentials (scope, owner_id, kind, value_enc) values ($1, $2, $3, $4)", [
-      scope,
-      owner,
-      kind,
-      await encryptSecret(value, ENCRYPTION_KEY),
-    ]);
-  await credential("user", people.owner, "claude_oauth", SECRETS.ownerClaude);
-  await credential("user", people.owner, "boat", SECRETS.personalBoat);
-  await credential("org", people.org, "claude_oauth", SECRETS.orgClaude);
-  await credential("org", people.org, "openai", SECRETS.orgOpenai);
+  const [ownerClaude, personalBoat, orgClaude, orgOpenai] = await Promise.all(
+    [SECRETS.ownerClaude, SECRETS.personalBoat, SECRETS.orgClaude, SECRETS.orgOpenai].map((value) =>
+      encryptSecret(value, ENCRYPTION_KEY),
+    ),
+  );
+  await db.query(
+    `insert into credentials (scope, owner_id, kind, value_enc) values
+      ('user', $1, 'claude_oauth', $3),
+      ('user', $1, 'boat', $4),
+      ('org', $2, 'claude_oauth', $5),
+      ('org', $2, 'openai', $6)`,
+    [people.owner, people.org, ownerClaude, personalBoat, orgClaude, orgOpenai],
+  );
   return { db, people };
 }
 
