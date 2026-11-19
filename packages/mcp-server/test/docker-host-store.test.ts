@@ -535,6 +535,8 @@ test.each(["pending", "completed"] as const)(
     await database().query("update sandboxes set status='stopping' where id=$1", [a.sandboxId]);
     await store.complete(a.hostToken, a.installationId, { requestId: a.cleanupId, outcome: "completed" });
     expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "stopping", lifecycle_generation: "2" });
+    const receipt = await database().query("select outcome from docker_host_jobs where request_id=$1", [a.cleanupId]);
+    expect(receipt.rows).toEqual([{ outcome: "completed" }]);
   },
 );
 
@@ -550,16 +552,30 @@ test("an older restore cannot fence a predecessor receipt for a generation with 
   expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "deleted", lifecycle_generation: "4" });
 });
 
-test("an unauthentic restore envelope cannot block a predecessor cleanup receipt", async () => {
-  const a = await restoreFixture();
-  await database().query("update docker_host_jobs set input_enc=$2 where request_id=$1", [
-    a.restore.requestId,
-    new Uint8Array(32),
-  ]);
+test.each(["target", "predecessor", "ciphertext"] as const)(
+  "a restore with a mismatched %s cannot block a predecessor cleanup receipt",
+  async (mismatch) => {
+    const a = await restoreFixture();
+    const { requestId, ...job } = a.restore;
+    const generation = randomUUID();
+    const intent = {
+      ...job,
+      request: mismatch === "target" ? { ...job.request, generation } : job.request,
+      predecessor:
+        mismatch === "predecessor"
+          ? { ...job.predecessor, request: { ...job.predecessor.request, generation } }
+          : job.predecessor,
+    };
+    const input =
+      mismatch === "ciphertext"
+        ? new Uint8Array(32)
+        : await encryptSecret(JSON.stringify({ bound: 1, job: intent, lifecycleGeneration: "2" }), key);
+    await database().query("update docker_host_jobs set input_enc=$2 where request_id=$1", [requestId, input]);
 
-  await store.cleaned(a.hostToken, a.installationId, { requestId: a.cleanupId });
-  expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "deleted", lifecycle_generation: "3" });
-});
+    await store.cleaned(a.hostToken, a.installationId, { requestId: a.cleanupId });
+    expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "deleted", lifecycle_generation: "3" });
+  },
+);
 
 test("a malformed restore intent does not hide unrelated work", async () => {
   const a = await restoreFixture();
