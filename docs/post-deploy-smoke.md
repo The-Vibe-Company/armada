@@ -1949,10 +1949,17 @@ After an ambiguous response it reads sandbox inventory using the launch's
 unique reference. A recovered launch records the full elapsed time. An
 unresolved launch records the reference and any available server request ID.
 
-The ordinary Modal lifecycle and preservation launches also use keyed
-observation and read their timeout from the `launch` entry, with a ten-minute
-default. Runs that check default-skill receipts or scoped parent configuration
-still require the original launch receipt.
+The Modal lifecycle and preservation launches also use keyed observation and
+read their timeout from the `launch` entry, with a ten-minute default. Public
+and private template installs use their named launch entries and keep the
+ten-minute default when there are too few samples. Inventory can identify
+allocations for cleanup after an ambiguous response. Snapshot, default-skill,
+scoped-parent and template-install checks still require their launch-specific
+proof before they can pass. Scoped child evidence comes from the parent's
+keyed tool receipt when its delivery is delayed, and scheduled routine
+evidence comes from occurrence history. The generated table also records
+measured deadlines for other steps. Only the launch consumers described here
+currently apply the table to request and observation timeouts.
 
 Ordinary provider parity records launch latency as `parity_modal_launch` and
 `parity_docker_launch`. It uses the corresponding entry for its response and
