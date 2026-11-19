@@ -507,7 +507,7 @@ test("GitHub slice validates native receipts twice and cleans scratch before san
       ARMADA_SMOKE_GITHUB_GATE: "true",
       ARMADA_SMOKE_SERVER_REVISION: "a".repeat(40),
       ARMADA_SMOKE_RUNTIME_REVISION: "b".repeat(40),
-      ARMADA_SMOKE_CASES: JSON.stringify(cases),
+      ARMADA_SMOKE_CASES: JSON.stringify([...cases, { provider: "docker", harness: "codex" }]),
     };
     const io = {
       ...fake.io,
@@ -2329,6 +2329,14 @@ test("the advertised smoke workflow invocation admits ordinary staging checks", 
               goldenId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
               modelAccountId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
               scriptedModelAccountId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+            },
+            {
+              provider: "docker",
+              harness: "codex",
+              org: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+              hostId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+              modelAccountId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+              model: "model",
             },
           ]),
         },
