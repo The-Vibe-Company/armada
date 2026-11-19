@@ -40,6 +40,7 @@ import type { Caller } from "./caller.ts";
 import { scopedOrg } from "./control-caller.ts";
 import { createResourceStore, type ResourceStore } from "./resource-store.ts";
 import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
+import { recordObservedRuntimeFailure } from "./sandbox-lifecycle.ts";
 import { SANDBOX_MEMBER, SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 import { admittedTurnContexts, stampTurnPricing, withServerCost } from "./turn-pricing.ts";
 import { preserveBeforeStop, readWorkRecovery, type StopAuthority } from "./work-preservation.ts";
@@ -57,6 +58,7 @@ export interface SandboxView extends SandboxRecord {
 export interface ServerSandboxPatch extends SandboxPatch {
   onlyIfIdle?: boolean;
   modalRuntimeExtensionTarget?: string;
+  runtimeFailureFrom?: "ready" | "running";
 }
 
 export interface ServerSandboxStore extends SandboxStore {
@@ -737,6 +739,20 @@ export function createSqlData(
         );
       },
       async update(id, patch) {
+        if (patch.runtimeFailureFrom !== undefined) {
+          if (patch.expectedGeneration === undefined || patch.statusReason == null)
+            throw new DataError("Runtime failure publication requires a transaction, generation and diagnostic.");
+          const result = await recordObservedRuntimeFailure(sql, scope, {
+            sandboxId: id,
+            generation: patch.expectedGeneration,
+            fromState: patch.runtimeFailureFrom,
+            reason: patch.statusReason,
+            stoppedAt: patch.stoppedAt ?? null,
+          });
+          if (result.kind === "conflict")
+            throw new DataError("Runtime failure observation is stale.", "sandbox_not_ready");
+          return;
+        }
         const sets: string[] = [];
         const params: unknown[] = [...scope, id];
         const set = (column: string, value: unknown, cast: string) => {
