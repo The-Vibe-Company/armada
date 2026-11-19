@@ -1,10 +1,6 @@
 import { z } from "zod";
 import type { GoldenErrorCode } from "../golden-config.ts";
 
-/**
- * Shared HTTP 200 envelope for golden and Docker launches.
- * Nested records stay open to provider-specific fields.
- */
 export const launchEnvelope = z.strictObject({
   sandbox: z
     .object({
@@ -29,7 +25,6 @@ export const launchEnvelope = z.strictObject({
   runtime: z.object({ kind: z.literal("armada"), epoch: z.string() }).nullable(),
 });
 
-/** States of `public.template_launch_requests.state`. */
 const TEMPLATE_LAUNCH_STATES = ["claimed", "allocating", "succeeded", "failed", "reconciling"] as const;
 
 const TEMPLATE_LAUNCH_RECEIPT = z
@@ -48,7 +43,6 @@ const TEMPLATE_LAUNCH_RECEIPT = z
   .passthrough()
   .describe("A recorded launch request.");
 
-/** Every GoldenErrorCode, checked both ways at compile time. */
 const GOLDEN_ERROR_CODES = [
   "invalid_config",
   "forbidden",
@@ -63,7 +57,6 @@ const goldenCodesComplete: [Exclude<GoldenErrorCode, (typeof GOLDEN_ERROR_CODES)
   : never = true;
 void goldenCodesComplete;
 
-/** Golden admission refused before any request was recorded: nothing was launched and there is no requestId. */
 const TEMPLATE_LAUNCH_REFUSAL = z
   .strictObject({
     state: z.literal("failed"),
@@ -77,5 +70,3 @@ export const templateLaunchResponse = z
   .describe("A receipt has requestId; a pre-admission refusal has none.");
 
 export const launchOutput = z.union([launchEnvelope, templateLaunchResponse]);
-
-export type LaunchEnvelope = z.output<typeof launchEnvelope>;

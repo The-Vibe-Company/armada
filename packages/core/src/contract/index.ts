@@ -3,7 +3,7 @@ import { launchInput } from "./launch.ts";
 import { launchOutput } from "./launch-response.ts";
 
 export type { LaunchInput } from "./launch.ts";
-export { type LaunchEnvelope, launchEnvelope, templateLaunchResponse } from "./launch-response.ts";
+export { launchEnvelope, templateLaunchResponse } from "./launch-response.ts";
 
 export interface Operation<Input extends z.ZodType, Output extends z.ZodType | undefined = undefined> {
   readonly name: string;

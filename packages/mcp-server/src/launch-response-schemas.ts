@@ -1,13 +1,16 @@
 import { SANDBOX_PROVIDERS } from "@armada/core";
-import type { LaunchEnvelope } from "@armada/core/contract";
 import { z } from "zod";
 import { LOGS_OUTPUT } from "./sandbox-tool-schemas.ts";
 
-/** Fill missing fields from asynchronous Docker launches and stored golden receipts. */
-export function canonicalLaunchResponse(
-  result: Omit<LaunchEnvelope, "helper" | "runtime" | "promptId" | "conversationId"> &
-    Partial<Pick<LaunchEnvelope, "helper" | "runtime" | "promptId" | "conversationId">>,
-): LaunchEnvelope {
+/** Fill missing fields from asynchronous Docker launches and pre-existing golden receipts. */
+export function canonicalLaunchResponse<
+  T extends {
+    helper?: { status: string } | null;
+    runtime?: { kind: "armada"; epoch: string } | null;
+    promptId?: string | null;
+    conversationId?: string | null;
+  },
+>(result: T) {
   return {
     ...result,
     helper: result.helper ?? null,
