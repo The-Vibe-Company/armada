@@ -62,7 +62,6 @@ test("MCP allocation before failed registration returns a receipt ID and fences 
   const first = launchEnvelope.parse(await callSharedTool(context, "launch", successInput));
   expect(await callSharedTool(context, "launch", successInput)).toEqual(first);
 
-  // A completion written before the envelope cutover still owns the replay key.
   await db.query("update ordinary_launch_receipts set response=$1::jsonb where request_key=$2", [
     JSON.stringify({ id: first.sandbox.id, provider: "boat", golden: "shared" }),
     successInput.idempotencyKey,
