@@ -80,8 +80,6 @@ packages/mcp-server/src/sandbox-outputs.ts	sandboxes	update
 packages/mcp-server/src/sandbox-outputs.ts	sandboxes	update
 packages/mcp-server/src/sandbox-outputs.ts	sandboxes	update
 packages/mcp-server/src/sandbox-outputs.ts	sandboxes	update
-packages/mcp-server/src/sandbox-outputs.ts	sandboxes	update
-packages/mcp-server/src/sandbox-outputs.ts	sandboxes	update
 packages/mcp-server/src/sandbox-pull-requests.ts	sandboxes	update
 packages/mcp-server/src/sandbox-pull-requests.ts	sandboxes	update
 packages/mcp-server/src/sandbox-pull-requests.ts	sandboxes	update

@@ -3,6 +3,7 @@ import {
   accountModelCountsSql,
   accountWaitingCountSql,
   accountWorkingCountSql,
+  decryptSecret,
   type Sql,
   VaultError,
 } from "@armada/core/server";
@@ -37,7 +38,7 @@ beforeAll(async () => {
     create table mcp_actor_epochs(org_id uuid,user_id uuid,epoch bigint);
     create table sandboxes(id uuid primary key,harness text default 'codex',provider text,boat_runtime boolean,runtime_transport text,model text,reasoning_effort text,credential_id uuid,credential_version int,org_id uuid,owner_id uuid,
       conversation_ids text[],visibility text default 'private',status_reason text,preservation_note text,status text,deleted_at timestamptz,stopped_at timestamptz,stop_requested_at timestamptz,expires_at timestamptz,
-      activity_lease_id uuid,task_prompt_id text,lifecycle_generation bigint default 0,reconcile_lease_until timestamptz);
+      activity_lease_id uuid,task_prompt_id text,lifecycle_generation bigint default 1,reconcile_lease_until timestamptz);
     create table runtime_commands(sandbox_id uuid,sequence bigint,request_id text);
     create table runtime_enrolments(sandbox_id uuid,epoch bigint);
     create table runtime_checkpoints(sandbox_id uuid,epoch bigint,merge_stop boolean);
@@ -51,11 +52,14 @@ beforeAll(async () => {
   ).text();
   // Role grants are outside the admission contract and these roles do not exist in PGlite.
   await database().exec(migration.split("alter table")[0]!);
-  await database().exec("create role anon; create role authenticated");
+  await database().exec("create role anon; create role authenticated; create role service_role");
   await database().exec(
     await Bun.file(
       new URL("../../../supabase/migrations/20261116060000_repair_account_turn_queue.sql", import.meta.url),
     ).text(),
+  );
+  await database().exec(
+    await Bun.file(new URL("../../../supabase/migrations/20261119024017_jobs.sql", import.meta.url)).text(),
   );
   await database().query("insert into credentials values($1,'Shared account',1,1,'active',null,'user',$2)", [
     account,
@@ -85,8 +89,49 @@ afterAll(async () => {
 });
 beforeEach(async () => {
   await database().exec(
-    "update credentials set max_agents=1,model_limits='{}'::jsonb; delete from runtime_commands; delete from runtime_checkpoints; delete from runtime_enrolments; delete from docker_host_jobs; delete from runtime_resumes; delete from account_turn_queue; delete from account_agent_reservations; delete from runtime_idle_turns; update sandboxes set status='ready',status_reason=null,task_prompt_id=null,stopped_at=null,stop_requested_at=null,lifecycle_generation=0,activity_lease_id=null,provider=null,boat_runtime=false,runtime_transport=null; update mcp_actor_epochs set epoch=1;",
+    "update credentials set max_agents=1,model_limits='{}'::jsonb; delete from runtime_commands; delete from runtime_checkpoints; delete from runtime_enrolments; delete from docker_host_jobs; delete from runtime_resumes; delete from jobs; delete from account_turn_queue; delete from account_agent_reservations; delete from runtime_idle_turns; update sandboxes set status='ready',status_reason=null,task_prompt_id=null,stopped_at=null,stop_requested_at=null,lifecycle_generation=1,activity_lease_id=null,provider=null,boat_runtime=false,runtime_transport=null; update mcp_actor_epochs set epoch=1;",
   );
+});
+
+test("an accepted request creates one generation-fenced dispatch job across identical retries", async () => {
+  const input = { id: ids[0]!, request_id: requests[0]!, prompt: "next instruction" };
+  await database().query("update sandboxes set lifecycle_generation=7 where id=$1", [input.id]);
+  expect(await queue.accept(caller, input)).toMatchObject({ status: "queued" });
+  await database().query("update sandboxes set lifecycle_generation=8 where id=$1", [input.id]);
+  expect(await queue.accept(caller, input)).toMatchObject({ status: "queued" });
+  const { rows } = await database().query<{
+    kind: string;
+    sandbox_id: string;
+    org_id: string;
+    generation: string;
+    state: string;
+    payload_enc: Uint8Array<ArrayBuffer>;
+  }>("select kind,sandbox_id,org_id,generation::text,state,payload_enc from public.jobs");
+  expect(rows).toEqual([
+    {
+      kind: "turn_dispatch",
+      sandbox_id: input.id,
+      org_id: org,
+      generation: "7",
+      state: "queued",
+      payload_enc: expect.any(Uint8Array),
+    },
+  ]);
+  expect(JSON.parse(await decryptSecret(rows[0]!.payload_enc, btoa("x".repeat(32))))).toEqual({
+    requestId: input.request_id,
+  });
+});
+
+test("dispatch job insertion failure rolls back the queued prompt", async () => {
+  const input = { id: ids[0]!, request_id: requests[0]!, prompt: "next instruction" };
+  await database().exec("alter table public.jobs add constraint reject_dispatch check (kind <> 'turn_dispatch')");
+  try {
+    await expect(queue.accept(caller, input)).rejects.toThrow("reject_dispatch");
+    expect(await queue.status(caller, input.id, input.request_id)).toBeNull();
+  } finally {
+    await database().exec("alter table public.jobs drop constraint reject_dispatch");
+  }
+  expect(await queue.accept(caller, input)).toMatchObject({ status: "queued" });
 });
 
 test("full-account prompts persist, dispatch FIFO after a turn settles, and queued IDs resolve to actual receipts", async () => {
@@ -191,7 +236,7 @@ test("send replay keeps the original receipt while new sends target the current 
 test("uncertain native dispatch is not retried and confirmed stop releases the account for the next queued turn", async () => {
   for (const stopBeforeFailure of [false, true]) {
     await database().exec(
-      "delete from account_turn_queue; delete from account_agent_reservations; update sandboxes set status='ready',stopped_at=null,stop_requested_at=null,lifecycle_generation=0,activity_lease_id=null,model=null",
+      "delete from jobs; delete from account_turn_queue; delete from account_agent_reservations; update sandboxes set status='ready',stopped_at=null,stop_requested_at=null,lifecycle_generation=1,activity_lease_id=null,model=null",
     );
     const first = { id: ids[1]!, request_id: requests[0]!, prompt: "uncertain instruction", model: "gpt-5.4" };
     const second = { id: ids[2]!, request_id: requests[1]!, prompt: "next instruction", model: "gpt-5.4" };
@@ -642,7 +687,7 @@ test("runtime dispatch leases survive a server restart without replaying while a
   await database().query("update sandboxes set provider='docker' where id=$1", [input.id]);
   await queue.accept(caller, input);
   await database().query(
-    "update account_turn_queue set state='dispatching',dispatch_generation=0,dispatch_until=now()+interval '1 hour' where sandbox_id=$1",
+    "update account_turn_queue set state='dispatching',dispatch_generation=1,dispatch_until=now()+interval '1 hour' where sandbox_id=$1",
     [input.id],
   );
   await database().query("insert into account_agent_reservations values($1,$2)", [input.id, account]);
@@ -722,7 +767,7 @@ test("unlimited accounts dispatch three turns without waiting for another dispat
 
 test("a stop after acceptance fails waiting work instead of resurrecting it", async () => {
   await queue.accept(caller, { id: ids[0]!, prompt: "next" });
-  await database().query("update sandboxes set status='stopped',stopped_at=now(),lifecycle_generation=1 where id=$1", [
+  await database().query("update sandboxes set status='stopped',stopped_at=now(),lifecycle_generation=2 where id=$1", [
     ids[0],
   ]);
   queue.setDispatch(async () => {
@@ -801,7 +846,7 @@ test.each(["boat", "modal"])("native %s restart releases only proven pre-dispatc
   await database().query("update sandboxes set provider=$2 where id=$1", [input.id, provider]);
   await queue.accept(caller, input);
   await database().query(
-    "update account_turn_queue set state='dispatching',dispatch_generation=0,dispatch_until=now()-interval '1 second' where sandbox_id=$1",
+    "update account_turn_queue set state='dispatching',dispatch_generation=1,dispatch_until=now()-interval '1 second' where sandbox_id=$1",
     [input.id],
   );
   await database().query("insert into account_agent_reservations values($1,$2)", [input.id, account]);
@@ -958,7 +1003,7 @@ test.each(["boat", "modal", "docker"])(
     );
     await queue.accept(caller, input);
     await database().query(
-      "update account_turn_queue set state='dispatching',dispatch_generation=0,dispatch_until=now()-interval '1 second' where sandbox_id=$1",
+      "update account_turn_queue set state='dispatching',dispatch_generation=1,dispatch_until=now()-interval '1 second' where sandbox_id=$1",
       [input.id],
     );
     await database().query("insert into runtime_commands values($1,1,$2)", [input.id, `follow_${input.request_id}`]);
@@ -992,10 +1037,10 @@ test("expired native post-admission claims fail visibly without replay after res
   const input = { id: ids[1]!, request_id: requests[0]!, prompt: "uncertain after restart" };
   await queue.accept(caller, input);
   await database().query(
-    "update account_turn_queue set state='dispatching',dispatch_generation=0,dispatch_until=now()-interval '1 second' where sandbox_id=$1",
+    "update account_turn_queue set state='dispatching',dispatch_generation=1,dispatch_until=now()-interval '1 second' where sandbox_id=$1",
     [input.id],
   );
-  await database().query("update sandboxes set lifecycle_generation=1 where id=$1", [input.id]);
+  await database().query("update sandboxes set lifecycle_generation=2 where id=$1", [input.id]);
   let calls = 0;
   queue.setDispatch(async () => {
     calls++;
