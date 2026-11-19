@@ -507,22 +507,32 @@ export async function failDockerResumeActivation(
 }
 
 export async function requestRefusedDockerResumeStop(tx: Sql, sandboxId: string, generation: string) {
-  const stopped = await tx.query(
-    `update public.sandboxes set status='stopping',status_reason=null,
-       stop_requested_at=now(),lifecycle_generation=lifecycle_generation+1,
-       transition_context=jsonb_build_object('actor','docker_host','code','docker_resume_refusal_stop')
-     where id=$1 and provider='docker' and stop_requested_at is null and deleted_at is null
-       and expires_at>now()
-       and ((status='starting' and lifecycle_generation=$2::bigint)
-         or (status='failed' and lifecycle_generation=$2::bigint+1 and exists (
-           select 1 from public.sandbox_transitions t where t.sandbox_id=sandboxes.id
-             and t.generation=sandboxes.lifecycle_generation and t.from_status='starting'
+  const {
+    rows: [eligible],
+  } = await tx.query<{ status: "starting" | "failed"; generation: string }>(
+    `select s.status,s.lifecycle_generation::text as generation from public.sandboxes s
+     where s.id=$1 and s.provider='docker' and s.stop_requested_at is null and s.deleted_at is null
+       and s.expires_at>now()
+       and ((s.status='starting' and s.lifecycle_generation=$2::bigint)
+         or (s.status='failed' and s.lifecycle_generation=$2::bigint+1 and exists (
+           select 1 from public.sandbox_transitions t where t.sandbox_id=s.id
+             and t.generation=s.lifecycle_generation and t.from_status='starting'
              and t.to_status='failed' and t.actor='docker_host' and t.code='resume_ack_failed'
          )))
-     returning id`,
+     for update`,
     [sandboxId, generation],
   );
-  return stopped.rows.length > 0;
+  if (!eligible) return false;
+  const result = await transitionSandbox(tx, {
+    sandboxId,
+    expectedGeneration: eligible.generation,
+    fromStates: [eligible.status],
+    toState: "stopping",
+    actor: "docker_host",
+    code: "docker_resume_refusal_stop",
+    effects: [],
+  });
+  return result.kind === "applied";
 }
 
 export async function confirmRefusedDockerResumeRetention(
