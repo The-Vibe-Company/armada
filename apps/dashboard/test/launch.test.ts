@@ -8,6 +8,7 @@ import {
   LAUNCH_TIMEOUT_MS,
   launchFailureMessage,
   launchSandbox,
+  postSandboxLaunch,
 } from "../src/lib/launch.ts";
 import { LAUNCH_KEY_FIELD, launchKeyFor } from "../src/lib/launch-key.ts";
 
@@ -55,6 +56,12 @@ test("an unusable success receipt leaves the launch outcome unknown", async () =
   for (const payload of [{ sandbox: { id: "s1" } }, null]) {
     await expect(launchSandbox(answering(payload), args)).rejects.toMatchObject({ outcomeUnknown: true });
   }
+});
+
+test("a golden receipt in response to a Docker launch leaves its outcome unknown", async () => {
+  await expect(
+    postSandboxLaunch(answering(goldenReceipt), { provider: "docker" }, "launching on Docker hosts"),
+  ).rejects.toMatchObject({ outcomeUnknown: true });
 });
 
 test("an explicit size or stored defaults carry the sizing version on the canonical route", async () => {

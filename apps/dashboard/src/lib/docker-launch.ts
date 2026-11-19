@@ -187,7 +187,9 @@ export function dockerLaunchBody(args: DockerLaunchArgs): DockerLaunchRequest {
 }
 
 /** The launched sandbox's id from the normal launch envelope, checked to be a Docker sandbox. */
-export function launchedDockerSandbox(receipt: LaunchEnvelope): string | null {
+export function launchedDockerSandbox(receipt: {
+  sandbox: Pick<LaunchEnvelope["sandbox"], "id" | "provider">;
+}): string | null {
   const { id, provider } = receipt.sandbox;
   return provider === "docker" && isUuid(id) ? id : null;
 }

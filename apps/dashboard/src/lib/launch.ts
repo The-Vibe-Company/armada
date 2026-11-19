@@ -2,6 +2,7 @@ import { launchFailureHelp } from "@armada/core";
 import { launchEnvelope } from "@armada/core/contract";
 import { isUuid } from "./action.ts";
 import { type ArmadaApiOptions, ControlError, controlPost, LAUNCH_TIMEOUT_MS } from "./control.ts";
+import { launchedDockerSandbox } from "./docker-launch.ts";
 import type { LaunchArgs } from "./model-choice.ts";
 import { skillLaunchFailure } from "./skills";
 import { launchReason } from "./templates.ts";
@@ -18,7 +19,11 @@ export { LAUNCH_TIMEOUT_MS } from "./control.ts";
 const LAUNCH_PATH = "/api/v1/sandbox/launch";
 
 /** A successful HTTP status with an unusable receipt leaves allocation uncertain. */
-export async function postSandboxLaunch(options: ArmadaApiOptions, body: object, feature: string) {
+export async function postSandboxLaunch(
+  options: ArmadaApiOptions,
+  body: { provider: string } & Record<string, unknown>,
+  feature: string,
+) {
   const invalidReceipt = () =>
     new ControlError("The Armada server sent an invalid launch response.", undefined, undefined, {
       outcomeUnknown: true,
@@ -35,6 +40,7 @@ export async function postSandboxLaunch(options: ArmadaApiOptions, body: object,
   });
   const receipt = launchEnvelope.safeParse(payload);
   if (!receipt.success || !receipt.data.sandbox.id) throw invalidReceipt();
+  if (body.provider === "docker" && !launchedDockerSandbox(receipt.data)) throw invalidReceipt();
   return receipt.data;
 }
 
@@ -213,7 +219,6 @@ export async function followTemplateLaunch(deps: {
       throw new ControlError("Launch is still being confirmed.", undefined, "outcome_unknown");
     },
     created: async () => {
-      // A transport failure has no receipt. Replay the same frozen request, never a fresh launch.
       outcome ??= await deps.launch();
       if (outcome.state === "succeeded") return outcome.id;
       if (outcome.state === "failed") throw new ControlError(launchReason(outcome.reason), 400, outcome.reason);

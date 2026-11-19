@@ -17,13 +17,7 @@ import {
   HOSTS_PATH,
   hostNameInput,
 } from "@/lib/docker-hosts";
-import {
-  dockerHarnesses,
-  dockerLaunchBlocker,
-  dockerLaunchBody,
-  launchedDockerSandbox,
-  UNKNOWN_DOCKER_LAUNCH,
-} from "@/lib/docker-launch";
+import { dockerHarnesses, dockerLaunchBlocker, dockerLaunchBody, UNKNOWN_DOCKER_LAUNCH } from "@/lib/docker-launch";
 import { mcpUrl } from "@/lib/env";
 import { HARNESS_LABELS } from "@/lib/labels";
 import { postSandboxLaunch } from "@/lib/launch";
@@ -172,37 +166,34 @@ export async function launchOnDockerHost(
   const serverUrl = mcpUrl();
   if (!serverUrl || !viewer.token) return fail("The Armada server is not configured for this dashboard.");
   const prompt = formString(data, "prompt").trim();
-  let id: string | null;
+  let id: string;
   try {
-    id = launchedDockerSandbox(
-      await postSandboxLaunch(
-        { serverUrl, token: viewer.token },
-        {
-          ...dockerLaunchBody({
-            org,
-            hostId,
-            harness,
-            credentialId: account.id,
-            requestId,
-            model: choice.args.model,
-            reasoningEffort: choice.args.reasoningEffort,
-            ...(ttl.value === undefined ? {} : { ttlSeconds: ttl.value }),
-            ...(prompt ? { prompt } : {}),
-          }),
-          ...(skills.length ? { skills } : {}),
-          ...(connections === undefined ? {} : { connections }),
-        },
-        "launching on Docker hosts",
-      ),
+    const receipt = await postSandboxLaunch(
+      { serverUrl, token: viewer.token },
+      {
+        ...dockerLaunchBody({
+          org,
+          hostId,
+          harness,
+          credentialId: account.id,
+          requestId,
+          model: choice.args.model,
+          reasoningEffort: choice.args.reasoningEffort,
+          ...(ttl.value === undefined ? {} : { ttlSeconds: ttl.value }),
+          ...(prompt ? { prompt } : {}),
+        }),
+        ...(skills.length ? { skills } : {}),
+        ...(connections === undefined ? {} : { connections }),
+      },
+      "launching on Docker hosts",
     );
+    id = receipt.sandbox.id;
   } catch (error) {
     if (!(error instanceof ControlError)) throw error;
     if (error.outcomeUnknown || error.code === "outcome_unknown")
       return fail(UNKNOWN_DOCKER_LAUNCH, { href: "/sandboxes?owner=me&sort=newest", label: "See newest sandboxes" });
     return fail(dockerHostActionFailure(error.status, "launch", error.code));
   }
-  if (!id)
-    return fail(UNKNOWN_DOCKER_LAUNCH, { href: "/sandboxes?owner=me&sort=newest", label: "See newest sandboxes" });
   revalidatePath("/sandboxes");
   // The dialog navigates once it has forgotten this launch's request key, so a later launch is a new request.
   return { ok: true, message: "Launched. Opening the sandbox…", sandboxId: id };
