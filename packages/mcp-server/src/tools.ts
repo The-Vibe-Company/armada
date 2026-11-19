@@ -38,7 +38,13 @@ import type { RuntimeFollowup } from "./runtime-followup.ts";
 import { appendConversation, sandboxActivity } from "./sandbox-activity.ts";
 import { sandboxControlRefusal } from "./sandbox-control-refusal.ts";
 import { refuseConversationSelector } from "./sandbox-conversation.ts";
-import { sandboxIdInput as id, LOGS_OUTPUT, taskOutcome } from "./sandbox-tool-schemas.ts";
+import {
+  sandboxIdInput as id,
+  LOGS_OUTPUT,
+  SANDBOX_STATUSES,
+  statusOutput,
+  taskOutcome,
+} from "./sandbox-tool-schemas.ts";
 import { ToolError } from "./tool-error.ts";
 import { collectSandboxUsage, latestPrompt, readStatus } from "./turns.ts";
 import { stopAndObserve } from "./work-preservation.ts";
