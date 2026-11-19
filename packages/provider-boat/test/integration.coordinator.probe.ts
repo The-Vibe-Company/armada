@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { setTimeout as wait } from "node:timers/promises";
 import { type AgentEvent, isFinalPromptStatus, type Provider } from "@armada/core";
 import { createBoatProvider } from "../src/provider.ts";
 
@@ -6,16 +8,24 @@ const apiKey = process.env.BOAT_API_KEY;
 if (!apiKey || process.env.ARMADA_RUN_LIVE_BOAT_TESTS !== "1") {
   throw new Error("The Boat integration probe requires BOAT_API_KEY and ARMADA_RUN_LIVE_BOAT_TESTS=1.");
 }
-const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+const phaseDeadline = new AsyncLocalStorage<AbortSignal>();
 
 async function until<T>(what: string, read: () => Promise<T | undefined>, timeoutMs: number) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const value = await read();
-    if (value !== undefined) return value;
-    await wait(1000);
-  }
-  throw new Error(`Timed out waiting for ${what}.`);
+  const signal = AbortSignal.timeout(timeoutMs);
+  return phaseDeadline.run(signal, async () => {
+    try {
+      for (;;) {
+        signal.throwIfAborted();
+        const value = await read();
+        signal.throwIfAborted();
+        if (value !== undefined) return value;
+        await wait(1000, undefined, { signal });
+      }
+    } catch (error) {
+      if (signal.aborted) throw new Error(`Timed out waiting for ${what}.`, { cause: error });
+      throw error;
+    }
+  });
 }
 
 async function ready(provider: Provider, sandboxId: string) {
@@ -33,7 +43,11 @@ async function ready(provider: Provider, sandboxId: string) {
 const boundedFetch: typeof fetch = Object.assign(
   (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
     const timeout = AbortSignal.timeout(120_000);
-    const signal = init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout;
+    const deadlines = [timeout];
+    const phase = phaseDeadline.getStore();
+    if (phase) deadlines.push(phase);
+    if (init?.signal) deadlines.push(init.signal);
+    const signal = AbortSignal.any(deadlines);
     return fetch(input, { ...init, signal });
   },
   { preconnect: fetch.preconnect },
@@ -48,12 +62,12 @@ const cleanup: Array<() => Promise<unknown>> = [];
 try {
   let snapshot = process.env.BOAT_TEST_SNAPSHOT;
   if (!snapshot) {
-    const name = `armada-it-${Date.now().toString(36)}`;
+    const name = `armada-it-${crypto.randomUUID()}`;
     const golden = await provider.createGolden({ name, ttlSeconds: 1800 });
     cleanup.push(() => provider.delete({ sandboxId: golden.id }));
     await ready(provider, golden.id);
-    await provider.snapshot({ sandboxId: golden.id, name });
     cleanup.push(() => provider.deleteSnapshot(name));
+    await provider.snapshot({ sandboxId: golden.id, name });
     await until(
       `snapshot ${name}`,
       async () => {
