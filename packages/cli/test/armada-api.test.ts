@@ -81,6 +81,14 @@ describe("API client origin and session safety", () => {
     expect(authorization).toBe(`Bearer ${token}`);
   });
 
+  test("golden list rejects a receipt missing the provider", async () => {
+    const client = await createArmadaApiClient({
+      ...io({ ARMADA_TOKEN: token }),
+      fetch: async () => Response.json({ goldens: [{ name: "web", config: { repos: [] } }] }),
+    });
+    await expect(client.golden("list", {})).rejects.toThrow("invalid success receipt");
+  });
+
   test("refuses protocol-relative and backslash paths that escape the API origin", async () => {
     const client = await createArmadaApiClient({
       ...io({ ARMADA_TOKEN: token }),
