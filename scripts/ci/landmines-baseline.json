@@ -73,7 +73,7 @@
     ".railway/railway.ts": 3,
     "apps/dashboard/e2e/fixture-expiry.ts": 1,
     "apps/dashboard/e2e/github-fetch.cjs": 2,
-    "apps/dashboard/e2e/mock-supabase.ts": 94,
+    "apps/dashboard/e2e/mock-supabase.ts": 93,
     "apps/dashboard/next.config.ts": 5,
     "apps/dashboard/scripts/landing-transcript.ts": 8,
     "apps/dashboard/src/app/(app)/environments/page.tsx": 1,

@@ -112,3 +112,49 @@ test("Acme: a disconnected tool cannot be selected", { session: "alice" }, async
   await expect(attention.getByText("Acme Sentry", { exact: true })).toBeVisible();
   await expect(screen.getByRole("switch", "Acme Sentry")).toHaveCount(0);
 });
+
+test("Large: build a Docker snapshot in the composer and launch with the same task", { session: "large" }, async ({
+  app,
+  screen,
+  browser,
+}) => {
+  const github = await fetch(`${mock}/__test/github-connect`, {
+    method: "POST",
+    body: JSON.stringify({ user: "00000000-0000-4000-8000-000000000001", login: "fixture_user" }),
+  });
+  if (!github.ok) throw new Error("Could not connect the fixture GitHub account");
+  await app.open("/sandboxes");
+  await screen.getByRole("button", "Launch a sandbox").tap();
+  const task = screen.getByLabel("Task");
+  await task.fill("Inspect the new Docker repository");
+  await screen.getByRole("button", "No repository", { exact: true }).tap();
+  await screen.getByPlaceholder("Search or type owner/repo").fill("example/new-docker-repo");
+  await screen.getByRole("option", /Use example\/new-docker-repo/).tap();
+  await screen.getByRole("button", "Create a snapshot", { exact: true }).tap();
+  const build = screen.getByRole("region", "Snapshot build");
+  const host = build.getByRole("button", /^Docker host Large platform/);
+  await host.tap();
+  await expect(build.getByText("Init commands (optional)")).toBeVisible();
+  await build.getByRole("button", "Build snapshot", { exact: true }).tap();
+  await expect(screen.getByText("new-docker-repo is ready and selected.", { exact: true })).toBeVisible();
+  await expect(task).toHaveValue("Inspect the new Docker repository");
+  await screen.getByRole("button", /^(Claude Code|Codex|OpenCode) ·/).tap();
+  await screen.getByRole("radio", "Claude Code", { exact: true }).tap();
+  await screen.getByRole("button", /^(as |Choose an account)/).tap();
+  await screen.getByRole("option", /^model-account-006/).tap();
+  await screen
+    .getByRole("option", /Claude Opus/, { disabled: false })
+    .first()
+    .tap();
+  await screen.getByRole("button", "Launch", { exact: true }).tap();
+  await expect(browser).toHaveURL(/\/sandboxes\/[0-9a-f-]+$/);
+  const response = await fetch(`${mock}/__test/state`);
+  if (!response.ok) throw new Error("Could not read fixture launch receipt");
+  const state = await response.json();
+  expect(state.launches.at(-1)).toMatchObject({
+    provider: "docker",
+    snapshotId: expect.any(String),
+    prompt: "Inspect the new Docker repository",
+  });
+  expect(state.launches.at(-1)).not.toHaveProperty("repo");
+});

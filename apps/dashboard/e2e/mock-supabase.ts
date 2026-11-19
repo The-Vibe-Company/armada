@@ -7,6 +7,7 @@ import {
   type MachineSizePolicy,
   MODEL_CREDENTIAL_KINDS,
   parseDockerSnapshotRecord,
+  parseSnapshotConfig,
   ROUTINE_REASON_HELP,
   resolveMachineSize,
 } from "@armada/core";
@@ -66,6 +67,7 @@ type State = {
   events: Map<string, Row[]>;
   /** Every launch body that reached allocation, as the dashboard sent it. */
   launches: Row[];
+  dockerSnapshotBuilds: Map<string, ReturnType<typeof parseDockerSnapshotRecord>>;
   /** Per-provider snapshot capacity returned by the mock. */
   capabilities: Record<
     "boat" | "modal",
@@ -316,6 +318,7 @@ function seed(): State {
     ],
     events: new Map(),
     launches: [],
+    dockerSnapshotBuilds: new Map(),
     agentDefaults: {},
     // A Boat account holds one golden; Modal is unbounded.
     capabilities: { boat: { maxGoldens: 1 }, modal: { maxGoldens: null } },
@@ -1392,7 +1395,11 @@ function launchRoute(body: Row, userId: string | null): Response {
   }
   if (body.provider === "docker") {
     if (!isMember(body.org, userId)) return controlFail(403, "forbidden", "Only organization members can launch.");
-    const host = (body.org === LARGE ? largeHosts() : []).find((row) => row.id === body.hostId);
+    const snapshot = body.snapshotId ? state.dockerSnapshotBuilds.get(String(body.snapshotId)) : undefined;
+    if (body.snapshotId && (!snapshot || snapshot.orgId !== body.org || snapshot.ownerId !== userId))
+      return controlFail(404, "not_found", "No such snapshot.");
+    const hostId = snapshot?.hostId ?? body.hostId;
+    const host = (body.org === LARGE ? largeHosts() : []).find((row) => row.id === hostId);
     if (!host) return controlFail(404, "not_found", "No such host.");
     if (host.state !== "online") return controlFail(409, "conflict", "The host is not online.");
     const account = state.credentials.find(
@@ -1416,7 +1423,8 @@ function launchRoute(body: Row, userId: string | null): Response {
       provider: "docker",
       golden_id: null,
       boat_id: null,
-      docker_host_id: body.hostId,
+      docker_host_id: hostId,
+      docker_snapshot_id: snapshot?.id ?? null,
       connections: ids,
       credential_id: body.credentialId,
       credential_version: account.version,
@@ -3092,11 +3100,34 @@ const server = Bun.serve({
           return controlFail(403, "forbidden", "Only organization members can list hosts.");
         return json({ placement: true, hosts: largeHosts() });
       }
-      if (route === "docker/snapshots/list" && body.org === LARGE) {
+      if ((route === "docker/snapshots/list" || route === "docker/snapshots/create") && body.org === LARGE) {
         const caller = viewer(request);
         if (!caller || !isMember(body.org, caller))
-          return controlFail(403, "forbidden", "Only organization members can list snapshots.");
-        return json({ snapshots: largeHostSnapshots() });
+          return controlFail(403, "forbidden", "Only organization members can access host snapshots.");
+        if (route === "docker/snapshots/list") {
+          const builds = [...state.dockerSnapshotBuilds.values()].filter(
+            (snapshot) => snapshot.ownerId === caller || snapshot.visibility === "org",
+          );
+          return json({ snapshots: [...largeHostSnapshots(), ...builds] });
+        }
+        const existing = state.dockerSnapshotBuilds.get(String(body.requestId));
+        if (existing?.ownerId === caller) return json({ snapshot: existing });
+        if (existing || body.hostId !== LARGE_HOST)
+          return controlFail(409, "conflict", "Snapshot placement unavailable.");
+        if (body.visibility === "org" && !isAdmin(LARGE, caller))
+          return controlFail(403, "forbidden", "Only an admin publishes shared snapshots.");
+        const baseline = largeHostSnapshots()[0];
+        const snapshot = parseDockerSnapshotRecord({
+          ...baseline,
+          id: body.requestId,
+          ownerId: caller,
+          name: body.name,
+          visibility: body.visibility,
+          config: parseSnapshotConfig(body.config),
+          createdAt: new Date().toISOString(),
+        });
+        state.dockerSnapshotBuilds.set(snapshot.id, snapshot);
+        return json({ snapshot: { ...snapshot, status: "building", image: null } });
       }
       if (route === "launch/options" && isMember(LARGE, viewer(request) ?? "")) {
         if (!viewer(request)) return controlFail(401, "unauthorized", "Sign in again.");
