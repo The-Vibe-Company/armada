@@ -144,7 +144,6 @@ export interface SandboxStore {
     provider: SandboxProviderId;
     providerSandboxId: string;
     goldenId: string;
-    /** Immutable provider snapshot handle used by ordinary golden launch. */
     sourceSnapshotId?: string;
     orgId: string;
     ownerId: string;
