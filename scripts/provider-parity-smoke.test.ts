@@ -346,47 +346,45 @@ for (const mode of [
           { provider: "boat", harness: "invalid" },
         ]),
       },
-      dockerLaunchScenario
-        ? ["--parity", "--only", "docker", "--feature", "codex"]
-        : modalLaunchScenario
-          ? ["--parity", "--only", "modal", "--feature", "codex"]
-          : mode.startsWith("subscription_probe") && mode !== "subscription_probe_full"
-            ? ["--parity", "--feature", "subscription-account"]
-            : mode === "readable_full"
-              ? ["--parity"]
-              : mode.startsWith("readable_")
-                ? ["--parity", "--feature", "readable-variables"]
-                : mode.startsWith("idle_")
-                  ? ["--parity", "--feature", mode === "idle_pause" ? "idle-pause" : "wake-on-send"]
-                  : mode.startsWith("snapshot_")
-                    ? ["--parity", "--feature", "launch-snapshot"]
-                    : mode === "routine_full"
-                      ? ["--parity"]
-                      : mode.startsWith("routine_")
-                        ? ["--parity", "--feature", "routines"]
-                        : mode === "template_full"
-                          ? ["--parity"]
-                          : mode.startsWith("template_")
-                            ? ["--parity", "--feature", "templates"]
-                            : mode.startsWith("h_")
-                              ? ["--parity", "--feature", requestedHarness]
-                              : ["control_api_unsupported", "control_full"].includes(mode)
-                                ? ["--parity"]
-                                : mode.startsWith("control_")
-                                  ? ["--parity", "--feature", controlFeature]
-                                  : mode.startsWith("github")
-                                    ? ["--parity", "--feature", "github"]
-                                    : mode.startsWith("accounts")
-                                      ? ["--parity", "--accounts"]
-                                      : mode === "usage_filter"
-                                        ? ["--parity", "--only", "docker", "--feature", "exact-cost"]
-                                        : mode === "filtered"
-                                          ? ["--parity", "--only", "docker", "--feature", "exec"]
-                                          : debtFeature
-                                            ? ["--parity", "--feature", debtFeature]
-                                            : mode === "invalid_filter"
-                                              ? ["--parity", "--feature", "typo"]
-                                              : ["--parity"],
+      dockerLaunchScenario || modalLaunchScenario
+        ? ["--parity", "--only", dockerLaunchScenario ? "docker" : "modal", "--feature", "codex"]
+        : mode.startsWith("subscription_probe") && mode !== "subscription_probe_full"
+          ? ["--parity", "--feature", "subscription-account"]
+          : mode === "readable_full"
+            ? ["--parity"]
+            : mode.startsWith("readable_")
+              ? ["--parity", "--feature", "readable-variables"]
+              : mode.startsWith("idle_")
+                ? ["--parity", "--feature", mode === "idle_pause" ? "idle-pause" : "wake-on-send"]
+                : mode.startsWith("snapshot_")
+                  ? ["--parity", "--feature", "launch-snapshot"]
+                  : mode === "routine_full"
+                    ? ["--parity"]
+                    : mode.startsWith("routine_")
+                      ? ["--parity", "--feature", "routines"]
+                      : mode === "template_full"
+                        ? ["--parity"]
+                        : mode.startsWith("template_")
+                          ? ["--parity", "--feature", "templates"]
+                          : mode.startsWith("h_")
+                            ? ["--parity", "--feature", requestedHarness]
+                            : ["control_api_unsupported", "control_full"].includes(mode)
+                              ? ["--parity"]
+                              : mode.startsWith("control_")
+                                ? ["--parity", "--feature", controlFeature]
+                                : mode.startsWith("github")
+                                  ? ["--parity", "--feature", "github"]
+                                  : mode.startsWith("accounts")
+                                    ? ["--parity", "--accounts"]
+                                    : mode === "usage_filter"
+                                      ? ["--parity", "--only", "docker", "--feature", "exact-cost"]
+                                      : mode === "filtered"
+                                        ? ["--parity", "--only", "docker", "--feature", "exec"]
+                                        : debtFeature
+                                          ? ["--parity", "--feature", debtFeature]
+                                          : mode === "invalid_filter"
+                                            ? ["--parity", "--feature", "typo"]
+                                            : ["--parity"],
       {
         now: () => clock,
         ...(modalLaunchScenario || dockerLaunchScenario ? { deadline: 3_500 } : {}),
