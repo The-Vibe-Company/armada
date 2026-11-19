@@ -58,6 +58,8 @@ describe("launch through the Armada API", () => {
           [
             "launch",
             "web",
+            "--provider",
+            "boat",
             "--agent",
             "codex",
             "do it",
@@ -123,6 +125,7 @@ describe("launch through the Armada API", () => {
         expect(launchRequest?.headers.get("authorization")).toBe(`Bearer ${token}`);
         expect(await launchRequest?.json()).toEqual({
           skills: ["example/notes@1.0.0", "other@2.0.0"],
+          provider: "boat",
           golden: "web",
           ...(repo === undefined ? { credentialId: "33333333-3333-4333-8333-333333333333" } : { repo }),
           ...(selection === undefined ? {} : { connections: [...selection] }),
@@ -138,7 +141,7 @@ describe("launch through the Armada API", () => {
   test("decodes serialized expiry for text output without hiding a created sandbox", async () => {
     let out = "";
     const code = await run(
-      ["launch", "web", "--agent", "codex", "do it", "--ttl", "30m"],
+      ["launch", "web", "--provider", "boat", "--agent", "codex", "do it", "--ttl", "30m"],
       { out: (text) => (out += text), err: () => undefined },
       {
         auth: {
@@ -166,7 +169,7 @@ describe("launch through the Armada API", () => {
         throw new Error("unexpected request");
       };
       const code = await run(
-        ["launch", "web", "--agent", "codex", "--org", "org", option, ...values],
+        ["launch", "web", "--provider", "boat", "--agent", "codex", "--org", "org", option, ...values],
         { out: () => undefined, err: (text) => (err += text) },
         {
           env: { ARMADA_TOKEN: token },
@@ -191,6 +194,8 @@ for (const visibility of [undefined, "private", "org"]) {
         [
           "launch",
           "web",
+          "--provider",
+          "boat",
           "--agent",
           "codex",
           "--json",
@@ -237,7 +242,7 @@ for (const visibility of [undefined, "private", "org"]) {
 test("repository authorization refusal keeps no_credentials and the reconnect remedy in CLI JSON", async () => {
   let errors = "";
   const code = await run(
-    ["launch", "web", "--agent", "codex", "--json"],
+    ["launch", "web", "--provider", "boat", "--agent", "codex", "--json"],
     { out: () => {}, err: (text) => (errors += text) },
     {
       auth: {

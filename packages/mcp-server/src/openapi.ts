@@ -11,6 +11,7 @@ import {
   VERSION,
   vaultControlRoute,
 } from "@armada/core";
+import { launch } from "@armada/core/contract";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { z } from "zod";
@@ -23,7 +24,6 @@ import {
   GOLDEN_CAPABILITIES_REQUEST,
   GOLDEN_CAPABILITIES_RESPONSE,
 } from "./golden-rest-schemas.ts";
-import { LAUNCH_REQUEST_VARIANTS } from "./launch-request-schema.ts";
 import {
   GOLDEN_LIST_RESPONSE,
   LAUNCH_OPTIONS_RESPONSE,
@@ -367,7 +367,7 @@ export async function generateOpenApi() {
       const oversizedStatus = vaultControlRoute(route) ? 400 : 413;
       if (route === "sandbox/launch") {
         request = {
-          oneOf: LAUNCH_REQUEST_VARIANTS.map((variant) => {
+          oneOf: launch.input.body.options.map((variant) => {
             const { $schema: _dialect, ...schema } = requestJsonSchema(variant);
             boundByBody(schema, "prompt", maxBodyBytes);
             return schema;

@@ -71,6 +71,8 @@ test("compiled launch preserves account selection and owner defaults without all
           binary,
           "launch",
           "fixture",
+          "--provider",
+          "boat",
           "--agent",
           "codex",
           "--credential-id",

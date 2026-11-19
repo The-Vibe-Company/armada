@@ -81,7 +81,6 @@ import type { Invitations } from "./invitations.ts";
 import { launchActor, launchRoute, launchTemplate, templateRuntime } from "./launch-control.ts";
 import { exposedSecrets, launchCredentials } from "./launch-credentials.ts";
 import { launchOptions, launchProviderOptions } from "./launch-options.ts";
-import { GOLDEN_LAUNCH_REQUEST } from "./launch-request-schema.ts";
 import { canonicalLaunchResponse } from "./launch-response-schemas.ts";
 import { dispatchMcp, type McpControlOptions } from "./mcp-control.ts";
 import { type ModelAuthOwnership, modelAuthCapabilities } from "./model-auth.ts";
@@ -675,43 +674,33 @@ export async function dispatchControlCommand(
   if (route === "org/provider/disconnect")
     return disconnectOrgProvider(store, caller, optional(body, "org"), required(body, "provider"));
   if (route === "sandbox/launch") {
-    if (body.provider === "docker") {
-      const org = scopedOrg(caller, optional(body, "org"));
-      const parsed = launchOperation.input.body.safeParse(body);
-      if (!parsed.success || parsed.data.provider !== "docker")
-        throw new VaultError(
-          "invalid",
-          Object.hasOwn(body, "image")
-            ? "Remove the image field and retry. Armada chooses the Docker environment automatically."
-            : "Invalid Docker launch request.",
-        );
+    const parsed = launchOperation.input.body.safeParse(body);
+    if (!parsed.success)
+      throw new VaultError(
+        "invalid",
+        body.provider === "docker" && Object.hasOwn(body, "image")
+          ? "Remove the image field and retry. Armada chooses the Docker environment automatically."
+          : "Invalid launch request. See the sandbox/launch request schema.",
+      );
+    const launch = parsed.data;
+    if (launch.provider === "docker") {
+      const org = scopedOrg(caller, launch.org);
       const dockerLaunch = options.dockerLaunch;
       if (!dockerLaunch) throw new VaultError("unavailable", "Normal Docker launch is not configured.");
       const organization = await resolveOrg(store, userId, org);
       const selected = { ...caller, orgs: caller.orgs.filter((item) => item.orgId === organization.id) };
       const launchDocker = (request: Record<string, unknown>) =>
         dockerLaunch.launch(selected, { ...request, org: organization.id });
-      if ("idempotencyKey" in parsed.data) {
+      if ("idempotencyKey" in launch) {
         if (!encryptionKey) throw new VaultError("unavailable", "Docker launch replay keys are unavailable.");
-        const { idempotencyKey, ...request } = parsed.data;
+        const { idempotencyKey, ...request } = launch;
         const requestId = dockerLaunchRequestId(encryptionKey, userId, organization.id, idempotencyKey);
         return canonicalLaunchResponse(await launchDocker({ ...request, requestId }));
       }
-      return canonicalLaunchResponse(await launchDocker(parsed.data));
+      return canonicalLaunchResponse(await launchDocker(launch));
     }
-    const sharedRequest =
-      "id" in body || "runtimeVersion" in body || "boatRuntime" in body || "runtimeTransport" in body
-        ? launchOperation.input.body.safeParse(body)
-        : undefined;
-    if (sharedRequest && !sharedRequest.success) {
-      throw new VaultError(
-        "invalid",
-        "id" in body ? "Invalid pinned Modal launch request." : "Invalid explicit runtime launch request.",
-      );
-    }
-    const runtime = sharedRequest?.data;
-    if (runtime && "id" in runtime) {
-      const template = runtime;
+    if ("id" in launch) {
+      const template = launch;
       const templateOrg = scopedOrg(caller, template.org);
       if (!options.modalRuntimeLaunch || !options.modalRuntimeHostFor)
         throw new VaultError("unavailable", "Modal runtime staging opt-in is disabled.");
@@ -749,24 +738,20 @@ export async function dispatchControlCommand(
         "template_rest",
       );
     }
-    if (runtime && "golden" in runtime && "runtimeVersion" in runtime) {
-      scopedOrg(caller, runtime.org);
-      if ("runtimeTransport" in runtime) {
+    scopedOrg(caller, launch.org);
+    if ("runtimeVersion" in launch) {
+      if ("runtimeTransport" in launch) {
         if (!options.modalRuntimeLaunch || !options.modalRuntimeHostFor)
           throw new VaultError("unavailable", "Modal runtime staging opt-in is disabled.");
-        if (runtime.prompt === undefined && !options.runtimeSend)
+        if (launch.prompt === undefined && !options.runtimeSend)
           throw new VaultError("unavailable", "Modal runtime idle first send is unavailable.");
-        return canonicalLaunchResponse(await launchRoute(options, caller, runtime, "modal"));
+        return canonicalLaunchResponse(await launchRoute(options, caller, launch, "modal"));
       }
       if (!options.boatRuntimeLaunch || !options.runtimeHostFor)
         throw new VaultError("unavailable", "Experimental Boat runtime launch is not configured.");
-      return canonicalLaunchResponse(await launchRoute(options, caller, runtime, true));
+      return canonicalLaunchResponse(await launchRoute(options, caller, launch, true));
     }
-    scopedOrg(caller, optional(body, "org"));
-    const golden = GOLDEN_LAUNCH_REQUEST.safeParse(body);
-    if (!golden.success)
-      throw new VaultError("invalid", "Invalid golden launch request. See the sandbox/launch request schema.");
-    return canonicalLaunchResponse(await launchRoute(options, caller, golden.data));
+    return canonicalLaunchResponse(await launchRoute(options, caller, launch));
   }
   const org = scopedOrg(caller, optional(body, "org"));
   switch (route) {

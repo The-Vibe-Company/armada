@@ -220,8 +220,11 @@ test("noninteractive, JSON and fully specified launches never perform interactiv
   };
   expect(await prepareLaunch(["--json"], f.auth)).toEqual(["--json"]);
   expect(
-    await prepareLaunch(["app", "--agent", "codex", "--credential-id", "account", "--org", "org"], f.auth),
-  ).toEqual(["app", "--agent", "codex", "--credential-id", "account", "--org", "org"]);
+    await prepareLaunch(
+      ["app", "--provider", "boat", "--agent", "codex", "--credential-id", "account", "--org", "org"],
+      f.auth,
+    ),
+  ).toEqual(["app", "--provider", "boat", "--agent", "codex", "--credential-id", "account", "--org", "org"]);
   expect(f.paths).toEqual([]);
 });
 

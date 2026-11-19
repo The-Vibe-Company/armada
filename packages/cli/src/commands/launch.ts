@@ -51,6 +51,8 @@ const run: Command["run"] = async (argv, { io, deps, auth }) => {
     )
   )
     throw new GoldenError("invalid_config", "Docker placement flags require --provider docker.");
+  const provider = providerFlag(args);
+  if (provider === undefined) throw new GoldenError("invalid_config", "Pass --provider boat, modal, or docker.");
   const maxActiveChildren = single(args, "--max-active-children");
   if (
     maxActiveChildren !== undefined &&
@@ -109,7 +111,7 @@ const run: Command["run"] = async (argv, { io, deps, auth }) => {
         credentialId: single(args, "--credential-id"),
         golden: name,
         ...(repo === undefined ? {} : { repo }),
-        ...(providerFlag(args) ? { provider: providerFlag(args) } : {}),
+        provider,
         harness,
         ...(single(args, "--model") === undefined ? {} : { model: single(args, "--model") }),
         ...(single(args, "--reasoning-effort") === undefined
@@ -150,7 +152,7 @@ export default {
                                            Docker launch through the normal Armada API using the official Armada environment.`,
     launch: `  armada launch <snapshot> --agent ${HARNESSES.join("|")} ["prompt"] [--model <id>] [--reasoning-effort <level>]
                                            [--armada-access [--credential-id <id>] [--max-active-children <1..100>]]
-                [--provider boat|modal] [--repo <configured-dir|owner/repo>] [--ttl 4h] [--json]
+                --provider boat|modal [--repo <configured-dir|owner/repo>] [--ttl 4h] [--json]
                 [--skill org/slug@version|slug@version ...] [--connections <id,...> | --no-connections] [--org <org>]
                 Omit connections to request server defaults; --no-connections opts out.
                                            Fork a snapshot into a sandbox. With a prompt the agent starts at once;
@@ -161,7 +163,7 @@ export default {
                                            Defaults:
                                            ${modelDefaults()}`,
   },
-  help: `Usage: armada launch <snapshot> --agent claude|codex|opencode ["prompt"] [options]
+  help: `Usage: armada launch <snapshot> --provider boat|modal --agent claude|codex|opencode ["prompt"] [options]
 Fork a visible snapshot; a prompt starts the agent, otherwise wait for the first send.
 Sign in with armada login or set ARMADA_TOKEN for scripts.
 Find snapshots with armada snapshot list; select an organization with --org or armada org use.

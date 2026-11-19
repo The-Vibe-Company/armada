@@ -13,7 +13,7 @@ false leaves access disabled. The versioned route prevents an older server from
 silently launching an access-enabled CLI request without access.
 
 ```sh
-armada launch my-golden --agent codex --credential-id ACCOUNT_ID \
+armada launch my-golden --provider boat --agent codex --credential-id ACCOUNT_ID \
   --armada-access --max-active-children 3 "Your task"
 ```
 
