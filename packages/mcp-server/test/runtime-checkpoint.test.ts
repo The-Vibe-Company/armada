@@ -229,6 +229,21 @@ test("a definite runtime checkpoint refusal still allows compute cleanup", async
   }
 });
 
+test("an unreadable runtime checkpoint acknowledgement never allows compute cleanup", async () => {
+  const f = await checkpointFixture("modal");
+  try {
+    f.github(async () => {
+      throw Error("runtime_result_unavailable");
+    });
+    const stop = stopPort(f);
+    await expect(callSharedTool(stop.context, "stop", { id: f.row.id })).rejects.toMatchObject({ code: "conflict" });
+    expect(stop.calls()).toBe(0);
+    expect((await f.context.data.sandboxes.get(f.row.id))?.status).toBe("running");
+  } finally {
+    await f.close();
+  }
+});
+
 test("idle-only stop refuses a queued turn before creating a checkpoint", async () => {
   const f = await checkpointFixture("modal", true);
   try {

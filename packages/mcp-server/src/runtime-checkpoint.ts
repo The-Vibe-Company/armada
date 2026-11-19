@@ -186,7 +186,7 @@ export function createRuntimeCheckpoint(
         reply.epoch === intent.epoch &&
         reply.requestId === commandId &&
         typeof reply.body?.error === "string" &&
-        reply.body.error !== "request_outcome_unknown"
+        !["request_outcome_unknown", "runtime_result_unavailable"].includes(reply.body.error)
       )
         throw new RuntimeCheckpointRejected();
       const proof = checkpointProof(reply, intent.epoch, commandId);
