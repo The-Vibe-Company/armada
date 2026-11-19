@@ -49,7 +49,11 @@ test.each([
   "native evidence",
   "runtime evidence",
   "dispatching",
-  "stopped",
+  "stopped with queued",
+  "stopped with queued dispatch evidence",
+  "stopped with dispatching",
+  "stopped after retarget",
+  "wake-on-send",
   "failed",
   "admitted",
   "missing",
@@ -62,7 +66,20 @@ test.each([
   const options = { orgId: people.org, maxAttempts: 2 };
   const enqueue = () => store.enqueue("turn_dispatch", sandboxId, 2, requestId, { requestId }, options);
   const id = await enqueue();
-  const state = ["failed", "admitted", "dispatching"].includes(scenario) ? scenario : "queued";
+  const retargetedBeforeStop = scenario === "stopped after retarget";
+  const cancelled =
+    scenario === "stopped with queued" ||
+    scenario === "stopped with queued dispatch evidence" ||
+    scenario === "stopped with dispatching" ||
+    retargetedBeforeStop;
+  const stopped = cancelled || scenario === "wake-on-send";
+  const state =
+    scenario === "stopped with dispatching" || scenario === "dispatching"
+      ? "dispatching"
+      : scenario === "failed" || scenario === "admitted"
+        ? scenario
+        : "queued";
+  if (retargetedBeforeStop) await db.query("update jobs set generation=3 where id=$1", [id]);
   await db.query("update account_turn_queue set state=$1, native_prompt_id=$2 where sandbox_id=$3", [
     state,
     scenario === "native evidence" ? "prior-prompt" : null,
@@ -70,16 +87,19 @@ test.each([
   ]);
   if (scenario !== "failed")
     await db.query(
-      `update sandboxes set lifecycle_generation=3, status=$2, stopped_at=$3,
+      `update sandboxes set lifecycle_generation=$6, status=$2, stopped_at=$3,
            activity_lease_id=$4, activity_until=$5 where id=$1`,
       [
         sandboxId,
-        scenario === "stopped" ? "stopped" : "ready",
-        scenario === "stopped" ? "2026-01-01" : null,
+        stopped ? "stopped" : "ready",
+        stopped ? "2026-01-01" : null,
         scenario === "runtime evidence" ? requestId : null,
         scenario === "runtime evidence" ? "infinity" : null,
+        scenario === "wake-on-send" ? 2 : 3,
       ],
     );
+  if (scenario === "stopped with queued dispatch evidence")
+    await db.query("update sandboxes set task_prompt_id=$2 where id=$1", [sandboxId, requestId]);
   const delivered: Job[] = [];
   const runner = createJobsRunner(
     store,
@@ -98,16 +118,75 @@ test.each([
   expect(await runner.reconcileOne(signal)).toBe(true);
   await runner.drain();
   const retargeted = scenario === "queued";
-  expect(delivered).toHaveLength(retargeted ? 1 : 0);
+  expect(delivered).toHaveLength(retargeted || scenario === "wake-on-send" ? 1 : 0);
   if (retargeted) expect(delivered[0]).toMatchObject({ id, generation: "3", payload: { requestId } });
   expect((await db.query("select state, generation::text from jobs where id=$1", [id])).rows).toEqual([
     {
       state:
-        retargeted || scenario === "failed" || scenario === "admitted" || scenario === "missing" ? "done" : "failed",
-      generation: retargeted ? "3" : "2",
+        retargeted ||
+        scenario === "wake-on-send" ||
+        scenario === "failed" ||
+        scenario === "admitted" ||
+        scenario === "missing"
+          ? "done"
+          : "failed",
+      generation: retargeted || retargetedBeforeStop ? "3" : "2",
     },
   ]);
+  if (cancelled)
+    expect(
+      (await db.query("select state, failure_reason from account_turn_queue where request_id=$1", [requestId])).rows,
+    ).toEqual([
+      {
+        state: "failed",
+        failure_reason:
+          scenario === "stopped with queued dispatch evidence"
+            ? "Queued receipt already has dispatch evidence; inspect sandbox history before resending."
+            : state === "queued"
+              ? "Queued prompt cannot start: sandbox stopped, deleted, expired, or stopping."
+              : "Dispatch cancelled by confirmed stop.",
+      },
+    ]);
   expect(await enqueue()).toBe(id);
+});
+
+test("a failed receipt write leaves the stopped turn recoverable by the next job lease", async () => {
+  const f = await fixture();
+  const { db, people, store } = f;
+  const sandboxId = await sandbox(f);
+  const requestId = crypto.randomUUID();
+  await seedTurn(f, sandboxId, requestId);
+  const id = await store.enqueue(
+    "turn_dispatch",
+    sandboxId,
+    2,
+    requestId,
+    { requestId },
+    {
+      orgId: people.org,
+      maxAttempts: 2,
+    },
+  );
+  await db.query("update sandboxes set lifecycle_generation=3, status='stopped', stopped_at=now() where id=$1", [
+    sandboxId,
+  ]);
+  await db.exec("alter table account_turn_queue add constraint reject_failure check (state <> 'failed')");
+  try {
+    await expect(store.claim("turn_dispatch", crypto.randomUUID(), 30, 1)).rejects.toThrow("reject_failure");
+  } finally {
+    await db.exec("alter table account_turn_queue drop constraint reject_failure");
+  }
+  const states = async () =>
+    (
+      await db.query(
+        "select j.state as job, q.state as receipt from jobs j join account_turn_queue q on q.sandbox_id=j.sandbox_id where j.id=$1",
+        [id],
+      )
+    ).rows;
+  expect(await states()).toEqual([{ job: "leased", receipt: "queued" }]);
+  await db.query("update jobs set lease_until='-infinity' where id=$1", [id]);
+  await store.claim("turn_dispatch", crypto.randomUUID(), 30, 1);
+  expect(await states()).toEqual([{ job: "failed", receipt: "failed" }]);
 });
 
 test("transactional enqueue wakes after commit and replays the encrypted job by key", async () => {

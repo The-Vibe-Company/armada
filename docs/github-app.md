@@ -4,13 +4,13 @@ Inside every sandbox Armada launches, `git commit`, `git push` and the `gh` CLI 
 
 ## How it works
 
-1. **Connect GitHub** (dashboard, Your connections). The person authorizes the Armada GitHub App. GitHub calls back `<origin>/github/callback` with a one-time code. The dashboard trades it for a user access token (8 hours) and a refresh token (6 months), asks GitHub who the person is, then lists the App installations that token can see (`GET /user/installations`, kept only when the installation's app slug or app id is this App).
+1. **Connect GitHub** (dashboard, **Setup → Your connections**). The person authorizes the Armada GitHub App. GitHub calls back `<origin>/github/callback` with a one-time code. The dashboard trades it for a user access token (8 hours) and a refresh token (6 months), asks GitHub who the person is, then lists the App installations that token can see (`GET /user/installations`, kept only when the installation's app slug or app id is this App).
    - Already installed: the refresh token is sealed with `ARMADA_ENCRYPTION_KEY` and stored in `github_connections` through `save_github_connection`, with the GitHub id, login and those installations (which account or org, and whether the App sees all repositories or a selected set). The access token is dropped.
    - Not installed, and `GITHUB_APP_SLUG` is set: nothing is stored yet. The browser is sent to `https://github.com/apps/<slug>/installations/new` with the same state cookie and `state` parameter. With **Request user authorization (OAuth) during installation** on, GitHub installs the App and authorizes in one step, then calls the callback with `code`, `installation_id` and `setup_action` (`install` or `update`).
    - That install return is accepted even when the state cookie is missing (the install started on GitHub, or in another browser). A signed-in Armada session is required; the code is exchanged and the `installation_id` must be an installation of this App, and only then is the connection saved. With no session the login page says so, and nothing is saved. A plain OAuth callback, with no `setup_action`, still requires the state cookie.
    - A user JWT cannot read the ciphertext column or write the table directly (it only selects the other columns, including `installations`, and deletes its row); row level security keeps each row to its owner. Your connections shows the recorded installations, a Manage installation link for each, and a warning when none are recorded.
 2. **Launch** (`armada launch`, the MCP `launch` tool). The server reads the caller's row, refreshes to get a fresh access token, stores the rotated refresh token (compare-and-swap, so two launches racing cannot lose the new token) and:
-   - puts `GH_TOKEN` and `GITHUB_TOKEN` in the fork's environment (never in a golden; forks stay `noEnv` apart from the credentials Armada injects);
+   - puts `GH_TOKEN` and `GITHUB_TOKEN` in the fork's environment (never in a snapshot; forks stay `noEnv` apart from the credentials Armada injects);
    - sets the global git identity to `<name or login>` and `<id>+<login>@users.noreply.github.com`;
    - installs a git credential helper for `https://github.com` that reads `$GH_TOKEN` at run time (no token is written to disk) and rewrites `git@github.com:` and `ssh://git@github.com/` remotes to HTTPS. `gh` reads `GH_TOKEN` by itself.
 3. **No connection, a revoked grant or an outage**: the launch still succeeds. The result says `GitHub: not set up.` with the reason (CLI text, `--json` and the MCP `launch` output carry `github: {status, login, message}`; status is `connected`, `not_connected`, `revoked` or `unavailable`). If the git setup itself fails inside the sandbox, the launch fails loudly.
@@ -19,14 +19,14 @@ Inside every sandbox Armada launches, `git commit`, `git push` and the `gh` CLI 
 ## Limits to know
 
 - Static sandbox tokens share the owner connection: GitHub advertises eight hours from issuance, but rotation or revocation can invalidate them earlier. Launch does not reset that clock. See [Early rotation investigation](#shared-token-lifetime-and-diagnostics) for repair and automatic-refresh guidance.
-- `gh` must exist in the golden. Add an init command that installs the GitHub CLI. Without it git works as the user and `gh` does not (the launch says so).
+- `gh` must exist in the snapshot. Add an init command that installs the GitHub CLI. Without it git works as the user and `gh` does not (the launch says so).
 - The App acts only on repositories where it is installed and the person has access. Install it on each org or account whose repositories sandboxes push to.
 - Disconnect in Your connections deletes Armada's row. To invalidate tokens already issued, also revoke the authorization in GitHub (Settings, Applications, Authorized GitHub Apps).
 - No org-level fallback (an installation-token bot) is implemented. Someone who has not connected GitHub gets no GitHub identity.
 
-The normal server image includes `openssh-client` for the disposable golden
+The normal server image includes `openssh-client` for the disposable snapshot
 builder's authenticated checkout. For builder ownership and cleanup, see
-[golden creation](golden-create.md).
+[snapshot creation](golden-create.md).
 
 ## Create the GitHub App (owner, once)
 
@@ -56,7 +56,9 @@ Then, on the app's page:
 2. **Generate a new client secret** and copy it once.
 3. Install the app (Install App) on every account or org whose repositories sandboxes push to, selecting those repositories.
 
-The App ID and a private key are **not** needed: nothing uses installation tokens.
+User OAuth needs the client ID and secret. To let snapshot builds mint
+repository-limited installation tokens, also configure the App ID and a private
+key on the server.
 
 ## Environment variables
 
@@ -65,12 +67,13 @@ The App ID and a private key are **not** needed: nothing uses installation token
 | `GITHUB_APP_CLIENT_ID` | yes, build and runtime | yes |
 | `GITHUB_APP_CLIENT_SECRET` | yes, runtime | yes |
 | `GITHUB_APP_SLUG` | the slug of the App (`https://github.com/apps/<slug>`). Connect redirects there when the person has no installation, and Your connections links to it | no |
-| `GITHUB_APP_ID` | optional numeric App ID (not the client id). When set together with the slug, an installation must match both | no |
+| `GITHUB_APP_ID` | optional numeric App ID (not the client id). When set together with the slug, an installation must match both | optional numeric App ID for snapshot checkout |
+| `GITHUB_APP_PRIVATE_KEY` | no | optional PEM key for snapshot checkout, paired with `GITHUB_APP_ID` |
 | `ARMADA_ENCRYPTION_KEY` | already set (seals the refresh token) | already set (opens it) |
 
 The two services must hold the same client id and secret and the same `ARMADA_ENCRYPTION_KEY`. Apply the migrations `supabase/migrations/20261108180000_github_connections.sql`, `20261108190000_revoke_default_grants.sql`, `20261108200000_token_hash_column_grants.sql` and `20261108210000_github_installations.sql` to the Supabase project. `20261108190000` removes Supabase's default table grants, without which a user JWT can read `refresh_token_enc`. `20261108210000` adds the `installations` column and the `installation_list` argument of `save_github_connection`; without it Connect cannot store which accounts have the App. If either variable is missing, Your connections says GitHub is not configured and launches report GitHub as `unavailable`.
 
-Nothing secret is printed or logged. Tokens are masked in command output (`gh[pousr]_...`), kept out of goldens, and the refresh token only ever exists as ciphertext. When GitHub refuses the callback or the token request, the dashboard logs only the OAuth `error` and `error_description` (for example `redirect_uri_mismatch`), so a misconfigured App can be diagnosed without a code, a state or a token in the log.
+Nothing secret is printed or logged. Tokens are masked in command output (`gh[pousr]_...`), kept out of snapshots, and the refresh token only ever exists as ciphertext. When GitHub refuses the callback or the token request, the dashboard logs only the OAuth `error` and `error_description` (for example `redirect_uri_mismatch`), so a misconfigured App can be diagnosed without a code, a state or a token in the log.
 
 ## Reconnect cache deployment (#585)
 
@@ -109,9 +112,9 @@ overlap budget in [Production readiness](production-readiness.md#connection-resi
 
 GitHub advertises eight-hour access tokens, but refreshing the shared owner
 connection invalidates older copies. Armada uses the returned expiry, not a
-hardcoded eight-hour lifetime. Launch and Modal restore require more than one
-hour remaining; golden creation, account status and managed-runtime brokering
-use five minutes; legacy repair/prompt hydration uses zero. Repair may reuse an
+hardcoded eight-hour lifetime. Launch, Modal restore, and cloud and Docker snapshot creation require more than
+one hour remaining. Account status and managed-runtime brokering use five
+minutes. Legacy repair and prompt hydration use zero. Repair may reuse an
 older token and does not reset its issuance time. See [#952](https://github.com/The-Vibe-Company/armada/issues/952)
 for the historical investigation and expiry/fence code trace.
 
@@ -126,7 +129,7 @@ No credential material is logged. Historical events before this instrumentation
 cannot be reconstructed.
 
 Static copies have no guaranteed usable lifetime after another client's rotation.
-Push work frequently. Use `armada github refresh <sandbox>` for legacy Boat repair;
+Push work frequently. Use `armada github refresh SANDBOX_UUID` for legacy Boat repair;
 reconnect only for revoked or uncertain grants. Automatic credential-helper
 refresh (#908) is the durable remedy, not weakening the refresh fence.
 
@@ -146,7 +149,7 @@ type without connecting that user will not create a GitHub grant.
 
 Docker, managed Boat and managed Modal share the user-token resolver and runtime
 credential broker. There is no organization-installation fallback for runtime
-`git`/`gh`. Golden/snapshot builds are different: after authorizing the creating
+`git`/`gh`. Snapshot builds are different: after authorizing the creating
 user, their shared build adapter can mint a repository-limited installation token
 for disposable checkout. That build token is not the running agent's identity.
 

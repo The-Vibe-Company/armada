@@ -13,6 +13,19 @@ export const RUNTIME_REQUEST_EVIDENCE = `(s.activity_lease_id=q.request_id
   or exists(select 1 from public.docker_host_jobs j where j.bound_sandbox_id=s.id and j.request_id=q.request_id))`;
 export const RUNTIME_LANE = `(s.provider='docker' or s.boat_runtime or s.runtime_transport='dialout')`;
 
+export async function failStoppedTurn(tx: Sql, sandboxId: string, requestId: string) {
+  await tx.query(
+    `update public.account_turn_queue q set state='failed', failure_reason=case
+       when q.state='dispatching' then 'Dispatch cancelled by confirmed stop.'
+       when s.task_prompt_id=q.request_id::text or ${RUNTIME_REQUEST_EVIDENCE}
+         then 'Queued receipt already has dispatch evidence; inspect sandbox history before resending.'
+       else 'Queued prompt cannot start: sandbox stopped, deleted, expired, or stopping.' end
+     from public.sandboxes s
+     where q.sandbox_id=$1 and q.request_id=$2 and q.state in ('queued','dispatching') and s.id=q.sandbox_id`,
+    [sandboxId, requestId],
+  );
+}
+
 const dispatchRefusalCodes = new Set([
   ...Object.keys(API_FAILURE_STATUS),
   ...sandboxOperations.sendPrompt.errors,
