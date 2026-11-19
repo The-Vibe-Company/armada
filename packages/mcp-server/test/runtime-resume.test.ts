@@ -169,6 +169,7 @@ describe.each([
   test("explicit resume wakes a checkpointed runtime in the same conversation; replay never activates or starts a turn twice", async () => {
     const f = await fixture();
     const old = f.active;
+    f.deliverPromptEventsBeforeReply();
     let activations = 0;
     let preparations = 0;
     let githubPreparations = 0;
@@ -179,15 +180,7 @@ describe.each([
       async () => ({
         async start(_signal, restore) {
           activations++;
-          const active = await f.reboot(restore);
-          const handle = f.runner.handle.bind(f.runner);
-          spyOn(f.runner, "handle").mockImplementation(async (request) => {
-            const command = (await request.clone().json()) as { op: string };
-            const response = await handle(request);
-            if (command.op === "prompt") await f.runner.flushOutbox();
-            return response;
-          });
-          return active;
+          return f.reboot(restore);
         },
         async stop() {
           throw Error("Healthy resume must not stop compute");
