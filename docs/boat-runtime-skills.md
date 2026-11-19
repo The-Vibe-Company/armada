@@ -22,7 +22,7 @@ Arbitrary enrolled `exec` remains disabled.
 
 Use the **armada-server staging HTTPS origin** and the same existing Armada
 login/token, organization, golden and Codex credential inputs documented in
-[the MCP check](boat-runtime-mcp.md). The existing connected default-for-launch
+[the MCP check](boat-runtime-first-prompt.md#staging-acceptance). The existing connected default-for-launch
 remote MCP connection/tool inputs and linked GitHub repository are unchanged.
 **Do not supply skill pins, SKILL.md substrings or a Skillpack key.**
 
