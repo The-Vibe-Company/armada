@@ -72,13 +72,23 @@ const idleLane: LaneFactory = ({ sql, config, runtimeCheckpoint, idleDelayMs, do
       : {}),
   });
 
-const jobsLane: LaneFactory = ({ jobs, options, outputs, config }) => {
-  const kinds = config.encryptionKey ? { [OUTPUTS_CAPTURE]: outputs.captureJob } : {};
-  const runner = createJobsRunner(jobs, kinds, options.logError);
+const jobsLane: LaneFactory = ({ jobs, options, outputs, config, webhooks }) => {
+  const runner = createJobsRunner(
+    jobs,
+    {
+      webhook: { concurrency: 1, run: webhooks.run },
+      ...(config.encryptionKey ? { [OUTPUTS_CAPTURE]: outputs.captureJob } : {}),
+    },
+    options.logError,
+  );
   return {
     ...runner,
     async reconcileOne(signal) {
-      await outputs.enqueueCaptures(jobs, signal);
+      try {
+        await outputs.enqueueCaptures(jobs, signal);
+      } catch {
+        (options.logError ?? console.error)("armada: output capture scheduling unavailable.");
+      }
       return runner.reconcileOne(signal);
     },
     async drain() {
@@ -116,9 +126,8 @@ export const jobsModule: ServerModule = ({ workers }) => {
   workers.managed.set("pull-requests", pullRequestLane);
   workers.managed.set("jobs", jobsLane);
 };
-export const outputModule: ServerModule = ({ mounts, workers }) => {
+export const outputModule: ServerModule = ({ mounts }) => {
   mounts.push(outputMounts);
-  workers.managed.set("webhooks", ({ webhooks }) => webhooks);
 };
 export const nativeModule: ServerModule = ({ workers }) => {
   workers.managed.set("native-prompts", ({ nativePrompts }) => nativePrompts);

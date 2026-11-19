@@ -28,7 +28,7 @@ test("server assembly preserves worker lane order and isolation", () => {
     control: { invitations: {} },
     githubApp: {},
     outputs: { captureJob: { concurrency: 4, run: neverCall } },
-    webhooks: passiveLane,
+    webhooks: { run: neverCall },
     delegatedAccess: { childWorker: passiveLane },
     accountTurns: passiveLane,
     langfuse: passiveLane,
@@ -42,6 +42,10 @@ test("server assembly preserves worker lane order and isolation", () => {
         "routines",
       ],
       "isolated": [
+        {
+          "name": "golden-builds",
+          "sweep": true,
+        },
         {
           "name": "langfuse",
           "sweep": false,
@@ -63,7 +67,6 @@ test("server assembly preserves worker lane order and isolation", () => {
         "sandbox-lifecycle",
         "pull-requests",
         "jobs",
-        "webhooks",
         "native-prompts",
         "delegated-access",
         "docker-cleanup",

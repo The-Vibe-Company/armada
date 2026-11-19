@@ -82,10 +82,14 @@ Repository-wide search includes `skipIf`, `test.skip`, conditional test aliases,
   build the local image using the [golden OS fixture recipe](../scripts/fixtures/golden-os/README.md)
   and run `bun scripts/prepare-runtime.ts` after installing dependencies. Then run
   `ARMADA_GOLDEN_OS_IMAGE=<fixture-image> bun packages/mcp-server/test/github-boat-os.probe.ts`.
-- `provider-boat/integration.coordinator.ts` is no longer automatically
-  discovered at all. Only the coordinator may explicitly invoke its documented
-  billed-compute opt-in command. It is not part of release/staging acceptance:
-  `boat: not part of the release gate`.
+- The Boat integration probe is coordinator-only and spends sandbox and model
+  credits. With `BOAT_API_KEY` exported and Claude Code configured on the Boat
+  account, run
+  `ARMADA_RUN_LIVE_BOAT_TESTS=1 bun packages/provider-boat/test/integration.coordinator.probe.ts`.
+  Set `BOAT_TEST_SNAPSHOT` to fork an existing snapshot or leave it unset to
+  build a disposable one (snapshot creation requires a paid account).
+  `BOAT_BASE_URL` can select a different Boat API. The probe is outside unit
+  discovery, CI, staging acceptance, and the release gate.
 - PostgreSQL skips and artifact portable-manifest skips were replaced by
   explicit release prerequisites. The native `mcp-codex-bridge` release
   probe (`packages/mcp-server/test/mcp-codex-bridge.release.probe.ts`) requires
@@ -113,6 +117,21 @@ The audit included tracked Modal unit files and their process-capable helpers.
 The CLI boundary in `conformance-app.test.ts` injects its command runner, and
 the guest process in `runtime-bootstrap.test.ts` is simulated in a VM.
 Explicit release, conformance and probe files are outside unit discovery.
+
+## Process-spawning unit cases in Dashboard
+
+The three Dashboard entries in the [process-test allowlist](../scripts/ci/process-tests.txt)
+each contain one case that reaches a subprocess. The times below measure each
+whole case in a focused Linux run using Bun 1.4.2 on main at `67d096dd`.
+
+| File under `apps/dashboard/test` | Case | Local subprocess boundary | Local |
+| --- | --- | --- | ---: |
+| `routine-staging-transport.test.ts` | routine cleanup DELETE reaches the configured control API through the public origin | Python runs the routine staging checker's request construction with a fake opener. The test forwards the captured request through the Dashboard proxy in process. | 75.06 ms |
+| `staging-check-route-parity.test.ts` | staging checker status and stop preserve CLI public-proxy routes, identity and org | Python sends the staging checker's requests to a loopback Dashboard proxy fixture with a fake upstream. | 65.40 ms |
+| `stats-db.test.ts` | stats client omits pooler-incompatible startup parameters | A Bun subprocess isolates the `postgres` module mock and captures the stats client's connection options. | 5.31 ms |
+
+The missing-database-URL case in `stats-db.test.ts` runs in process. Both
+staging-checker cases use local fixtures and make no calls to deployed services.
 
 ## Evidence owed after merge
 

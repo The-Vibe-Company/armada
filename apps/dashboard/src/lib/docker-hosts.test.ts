@@ -159,6 +159,7 @@ test("revoking says queued launches stop holding capacity and admins can still r
 });
 
 test("only an unmounted host route (404 or 405 without a code) reads as Docker not enabled", () => {
+  expect(isRouteAbsent({ status: 404, code: "unknown_route" })).toBe(true);
   expect(isRouteAbsent({ status: 404, code: undefined })).toBe(true);
   expect(isRouteAbsent({ status: 405, code: undefined })).toBe(true);
   expect(isRouteAbsent({ status: 404, code: "not_found" })).toBe(false);

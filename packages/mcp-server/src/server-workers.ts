@@ -1,5 +1,3 @@
-import type { GoldenBuildJobs } from "@armada/core/server";
-import { startGoldenWorker } from "./golden-worker.ts";
 import { JOBS_WAKE } from "./jobs/store.ts";
 import { runtimeWakes, waitForTimeout } from "./wake-bus.ts";
 
@@ -11,9 +9,7 @@ export interface ServerLifecycleLane {
   isolatedSweep?: true;
 }
 
-/** Independent tracked lanes: a golden build can legitimately take an hour. */
 export function startServerWorkers(
-  goldens: Pick<GoldenBuildJobs, "runOne" | "reconcileOne">,
   lifecycle: ServerLifecycleLane,
   log: (line: string) => void = console.error,
   retirements?: { runOne(signal: AbortSignal): Promise<boolean> },
@@ -21,7 +17,6 @@ export function startServerWorkers(
   managed: readonly ServerLifecycleLane[] | ServerLifecycleLane = [],
   isolated: readonly ServerLifecycleLane[] = [],
 ) {
-  const goldenWorker = startGoldenWorker(goldens, log);
   const lanes = [lifecycle, ...("reconcileOne" in managed ? [managed] : managed)];
   const shutdown = new AbortController();
   async function runLanes(group: readonly ServerLifecycleLane[], timebox = true, wakes = false) {
@@ -133,17 +128,13 @@ export function startServerWorkers(
         });
     }
   })();
-  const done = Promise.all([goldenWorker.done, lifecycleDone, retirementDone, maintenanceDone, isolatedDone]).then(
-    () => {},
-  );
+  const done = Promise.all([lifecycleDone, retirementDone, maintenanceDone, isolatedDone]).then(() => {});
   return {
-    goldenWorker,
     lifecycleWorker: { done: lifecycleDone },
     retirementWorker: { done: retirementDone },
     done,
     stop() {
       for (const lane of [...lanes, ...isolated]) lane.stopAdmission?.();
-      goldenWorker.stop();
       shutdown.abort();
     },
   };
