@@ -10,7 +10,9 @@ import {
 } from "@armada/core/server";
 import type { Image, ModalClient, Sandbox } from "modal";
 import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
-import { type Driver, Journal, Runner } from "../../agent-runtime/src/index.ts";
+import { Journal } from "../../agent-runtime/src/journal.ts";
+import type { Driver } from "../../agent-runtime/src/protocol.ts";
+import { Runner } from "../../agent-runtime/src/runtime.ts";
 import { createMemoryAuthStore } from "../../auth/src/index.ts";
 import { sandboxFailure } from "../../cli/src/sandbox-errors.ts";
 import { type ControlOptions, handleControlRequest } from "../../mcp-server/src/control.ts";
@@ -30,11 +32,15 @@ import {
   modalFailureReceipt,
   type RunnerDistribution,
   type Scope,
+  scopeKey,
   settleDetachedModalCollections,
 } from "../src/index.ts";
 
 let db: Awaited<ReturnType<typeof openMigratedDatabase>>;
 let workerSnapshot: string;
+let goldenTemplate: Machine;
+let workerTemplate: Machine;
+let imageTemplate: Awaited<ReturnType<ReturnType<typeof fixture>["store"]["image"]>>;
 const scope: Scope = {
   orgId: "00000000-0000-0000-0000-000000000001",
   userId: "00000000-0000-0000-0000-000000000002",
@@ -44,6 +50,7 @@ const scope: Scope = {
 beforeAll(async () => {
   db = await openMigratedDatabase();
   await db.exec(`
+    set plan_cache_mode = force_generic_plan;
     insert into auth.users(id) values
       ('${scope.userId}'), ('00000000-0000-0000-0000-000000000004');
     insert into orgs(id,name) values ('${scope.orgId}','modal');
@@ -52,17 +59,53 @@ beforeAll(async () => {
       ('${scope.orgId}','00000000-0000-0000-0000-000000000004','member');
   `);
   // Worker lifecycle cases need a saved image. Golden lifecycle cases create their own.
-  const { provider } = fixture();
+  const { provider, store } = fixture();
   const builder = await provider.createGolden({});
+  goldenTemplate = await store.get(builder.id);
   workerSnapshot = crypto.randomUUID();
   await provider.snapshot({ sandboxId: builder.id, name: workerSnapshot });
+  imageTemplate = await store.image(workerSnapshot);
+  const worker = await provider.fork({ from: workerSnapshot });
+  workerTemplate = await store.get(worker.id);
+  // The template worker is captured in JS. It must not keep a live image reference.
+  await db.query("delete from public.modal_machines where id=$1", [worker.id]);
 });
 afterAll(async () => {
   await db.close();
 });
+const prepared = new Map<string, Promise<string>>();
+// PGlite's regular query path sends several WASM protocol messages for
+// every statement. Reuse PostgreSQL plans for the fake SDK fixture's scalar
+// store calls. Keep transaction and error-injection cases on the regular client.
+const fixtureSql: Sql = {
+  transaction: (work) => db.transaction(work),
+  async query<T>(statement: string, params: unknown[] = []) {
+    if (
+      !params.length ||
+      params.some((value) => value !== null && typeof value !== "string" && typeof value !== "number")
+    )
+      return db.query<T>(statement, params);
+    let entry = prepared.get(statement);
+    if (!entry) {
+      const name = `modal_fixture_${prepared.size}`;
+      entry = db.exec(`prepare ${name} as ${statement}`).then(() => name);
+      prepared.set(statement, entry);
+    }
+    const name = await entry;
+    const args = params
+      .map((value) => {
+        if (value === null) return "null";
+        const escaped = String(value).replaceAll("\\", "\\\\").replaceAll("'", "''");
+        return `E'${escaped}'`;
+      })
+      .join(",");
+    const [result] = await db.exec(`execute ${name}(${args})`);
+    return { rows: result!.rows as T[] };
+  },
+};
 function fixture(
   accessScope: Scope = scope,
-  sql: Sql = db,
+  sql: Sql = fixtureSql,
   beforePrompt?: ModalProviderOptions["beforePrompt"],
   beforeResume?: ModalProviderOptions["beforeResume"],
   commonRuntime?: true,
@@ -91,7 +134,7 @@ function fixture(
   const bootstraps = new Map<string, { grant: { token: string; generation: string } }>();
   const machines = new Map<string, { sb: Sandbox; exit: number | null }>();
   const names = new Map<string, Sandbox>();
-  const client = {
+  const fakeClient = {
     apps: {
       fromName: async (_name: string, params: object) => {
         expect(params).toEqual({ environment: "main", createIfMissing: false });
@@ -204,7 +247,8 @@ function fixture(
       },
     },
     close: () => {},
-  } as unknown as ModalClient;
+  };
+  const client = fakeClient as unknown as ModalClient;
   const capabilities = {
     steer: "native" as const,
     interrupt: true,
@@ -278,6 +322,41 @@ function fixture(
     },
   });
   return {
+    async seedActive(template: Machine) {
+      const id = crypto.randomUUID();
+      const physicalName = `fixture-${id}`;
+      const { sandboxId: physicalId } = await fakeClient.sandboxes.create(undefined, undefined, {
+        name: physicalName,
+        env: {},
+        secrets: [],
+        tags: {
+          armada_sandbox: id,
+          armada_scope: scopeKey(accessScope),
+          armada_generation: String(template.generation),
+        },
+      });
+      const machine: Machine = {
+        ...template,
+        info: { ...template.info, id, name: id },
+        physicalName,
+        physicalId,
+        ...(template.processBaseline ? { processBaseline: { ...template.processBaseline, physicalId } } : {}),
+        ...(template.runtimeEvidence ? { runtimeEvidence: { ...template.runtimeEvidence, physicalId } } : {}),
+      };
+      await sql.query(
+        `insert into public.modal_machines(scope,org_id,owner_id,visibility,id,request_key,record)
+         values($1,$2,$3,$4,$5,$5,$6::jsonb)`,
+        [
+          scopeKey(accessScope),
+          accessScope.orgId,
+          accessScope.userId,
+          accessScope.visibility,
+          id,
+          JSON.stringify(machine),
+        ],
+      );
+      return machine.info;
+    },
     cleanupDelays,
     /** Runs the retired-image collections that deletes detached, in order. */
     runDetached: async () => {
@@ -336,9 +415,20 @@ function fixture(
     },
   };
 }
+// Read-path cases need committed history. The HTTP ingest and replay cases
+// below exercise how the writer commits and acknowledges those rows.
+async function seedHistory(sandboxId: string, events: AgentEvent[]) {
+  await db.query(
+    `insert into public.modal_events(scope,sandbox_id,generation,producer_sequence,event)
+     select $1,$2,'1',sequence,event
+     from jsonb_array_elements($3::jsonb) with ordinality as history(event,sequence)`,
+    [scopeKey(scope), sandboxId, JSON.stringify(events)],
+  );
+}
+
 test("stored composition reads ingested turns without any live SDK, runner or lifecycle lease", async () => {
   const f = fixture();
-  const row = await runningFork(f);
+  const row = await activeWorker(f);
   const event = {
     id: "terminal",
     at: 1,
@@ -355,13 +445,7 @@ test("stored composition reads ingested turns without any live SDK, runner or li
     ),
     { ...event, id: "terminal-final", at: 2000 },
   ];
-  await appendModalEvents(
-    db,
-    scope,
-    row.id,
-    "1",
-    history.map((event, i) => ({ sequence: i + 1, event })),
-  );
+  await seedHistory(row.id, history);
   let queries = 0;
   const tracedSql: Sql = {
     query: (text, params) => {
@@ -431,7 +515,7 @@ test("stored composition reads ingested turns without any live SDK, runner or li
 
 test.each(["foreign-source", "deleted"] as const)("history refuses an invalid machine (%s)", async (invalid) => {
   const f = fixture();
-  const row = await runningFork(f);
+  const row = await activeWorker(f);
   await f.store.lease(row.id, async (record, save) => {
     if (invalid === "deleted") record.phase = "deleted";
     else {
@@ -447,7 +531,7 @@ test.each(["foreign-source", "deleted"] as const)("history refuses an invalid ma
 
 test("detail verifies the App once per read and still rejects a changed binding", async () => {
   const f = fixture();
-  const row = await runningFork(f);
+  const row = await activeWorker(f);
   const lookup = f.client.apps.fromName;
   let appReads = 0;
   f.client.apps.fromName = async (...args) => {
@@ -900,11 +984,34 @@ test("invalid Modal size is refused without a physical create", async () => {
 function runningFork(f: ReturnType<typeof fixture>) {
   return f.provider.fork({ from: workerSnapshot });
 }
+// A read or a turn on an already active worker need not replay launch, boot
+// and admission. The launch tests still call fork against the real store.
+function activeWorker(f: ReturnType<typeof fixture>) {
+  return f.seedActive(workerTemplate);
+}
+
+async function savedGolden(f: ReturnType<typeof fixture>) {
+  const name = crypto.randomUUID();
+  const imageId = `im_${crypto.randomUUID()}`;
+  const builder = await f.seedActive({ ...goldenTemplate, snapshotImages: [{ name, imageId }] });
+  const image = {
+    ...imageTemplate,
+    sourceId: builder.id,
+    imageId,
+    info: { ...imageTemplate.info, name, artifactId: imageId, sourceSandboxId: builder.id },
+  };
+  await fixtureSql.query("insert into public.modal_images(scope,name,source_id,record) values($1,$2,$3,$4::jsonb)", [
+    scopeKey(scope),
+    name,
+    builder.id,
+    JSON.stringify(image),
+  ]);
+  return { builder, name };
+}
+
 test("overlapping forks refuse source contention definitively before allocating", async () => {
   const f = fixture();
-  const builder = await f.provider.createGolden({});
-  const name = crypto.randomUUID();
-  await f.provider.snapshot({ sandboxId: builder.id, name });
+  const { name } = await savedGolden(f);
   const entered = deferred();
   const release = deferred();
   f.distribution.start = async () => {
@@ -925,7 +1032,7 @@ test("overlapping forks refuse source contention definitively before allocating"
   }
 });
 test("enrolled Modal host forks never start or call the tunnel and stop without a recovery claim", async () => {
-  const f = fixture(scope, db, undefined, undefined, true);
+  const f = fixture(scope, fixtureSql, undefined, undefined, true);
   const row = await runningFork(f);
   expect(await f.store.get(row.id)).toMatchObject({ commonRuntime: true, phase: "active" });
   const afterFork = f.log.length;
@@ -968,7 +1075,7 @@ test("enrolled Modal host forks never start or call the tunnel and stop without 
 });
 
 test("retained enrolled Modal stop snapshots only after quiescence and resumes its exact checkpoint without tunnel or history purge", async () => {
-  const f = fixture(scope, db, undefined, undefined, true);
+  const f = fixture(scope, fixtureSql, undefined, undefined, true);
   const worker = await runningFork(f);
   const original = await f.store.get(worker.id);
   const bootstrap = {
@@ -1028,7 +1135,7 @@ test("retained enrolled Modal stop snapshots only after quiescence and resumes i
 });
 
 test("cleanup reconciles an unknown enrolled Modal resume create without activating or allocating again", async () => {
-  const f = fixture(scope, db, undefined, undefined, true);
+  const f = fixture(scope, fixtureSql, undefined, undefined, true);
   const worker = await runningFork(f);
   await f.provider.stopRuntime({ sandboxId: worker.id, physicalGeneration: "1", epoch: "1", watermark: 2 });
   f.failCreate(true);
@@ -1052,7 +1159,7 @@ test("cleanup reconciles an unknown enrolled Modal resume create without activat
 });
 
 test("uncertain enrolled Modal snapshot refuses retry or resume and compute fallback drops retention", async () => {
-  const f = fixture(scope, db, undefined, undefined, true);
+  const f = fixture(scope, fixtureSql, undefined, undefined, true);
   const worker = await runningFork(f);
   const proof = { sandboxId: worker.id, physicalGeneration: "1", epoch: "1", watermark: 2 };
   const afterLaunch = f.log.length;
@@ -1112,7 +1219,7 @@ function compositionOptions(
     scope: target,
     sourceScope,
     appName: "pinned",
-    sql: db,
+    sql: fixtureSql,
     signingKey: new Uint8Array(32).fill(23),
     ingestUrl: "https://ingest.example/api/v1/modal/events",
     client: f.client,
@@ -1162,9 +1269,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test.each([false, true])("keyed fork reuses its physical machine (lost response=%s)", async (lostResponse) => {
     const f = fixture();
-    const builder = await f.provider.createGolden({});
-    const from = crypto.randomUUID();
-    await f.provider.snapshot({ sandboxId: builder.id, name: from });
+    const { name: from } = await savedGolden(f);
     const request = { from, idempotencyKey: crypto.randomUUID() };
     const creates = f.creates;
     if (lostResponse) {
@@ -1187,9 +1292,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("keyed fork cannot reactivate a machine deleted before its child lease", async () => {
     const f = fixture();
-    const builder = await f.provider.createGolden({});
-    const from = crypto.randomUUID();
-    await f.provider.snapshot({ sandboxId: builder.id, name: from });
+    const { name: from } = await savedGolden(f);
     const idempotencyKey = crypto.randomUUID();
     const request = { from, idempotencyKey };
     f.failCreate(true);
@@ -1312,12 +1415,10 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(f.provisioned).toBe(false);
   });
   test("native resume refusal fences restoration under the provider lifecycle lease", async () => {
-    const f = fixture(scope, db, undefined, async () => {
+    const f = fixture(scope, fixtureSql, undefined, async () => {
       throw new ProviderError({ provider: "modal", code: "conflict", message: "credential_busy", retryable: false });
     });
-    const builder = await f.provider.createGolden({});
-    const snapshot = crypto.randomUUID();
-    await f.provider.snapshot({ sandboxId: builder.id, name: snapshot });
+    const { name: snapshot } = await savedGolden(f);
     const row = await f.provider.fork({ from: snapshot });
     await f.provider.stop({ sandboxId: row.id });
     const creates = f.creates;
@@ -1328,7 +1429,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("snapshot failure never terminates or reports a durable stop", async () => {
     const f = fixture();
-    const row = await f.provider.createGolden({});
+    const row = await f.seedActive(goldenTemplate);
     f.failSnapshot(true);
     await expect(f.provider.stop({ sandboxId: row.id })).rejects.toMatchObject({ code: "unknown" });
     expect(f.log).not.toContain("terminate");
@@ -1339,7 +1440,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     "ordinary stop bounds failed %s and terminates without stale disk recovery",
     async (stage) => {
       const f = fixture();
-      const row = await runningFork(f);
+      const row = await activeWorker(f);
       let scrubs = 0;
       if (stage === "scrub")
         f.onScrub(async () => {
@@ -1371,7 +1472,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   );
   test("checkpoint, scrub, save, commit and terminate; resume retains logical ID with fenced new generation", async () => {
     const f = fixture();
-    const row = await runningFork(f);
+    const row = await activeWorker(f);
     await f.provider.stop({ sandboxId: row.id });
     expect(f.log.slice(-4)).toEqual(["checkpoint", "scrub", "snapshot", "terminate"]);
     const stopped = await f.store.get(row.id);
@@ -1391,7 +1492,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("stopped prompt reads preserve durable outcomes without restoring compute", async () => {
     const f = fixture();
-    const row = await runningFork(f);
+    const row = await activeWorker(f);
     const statuses = ["queued", "running", "finished", "failed", "interrupted"] as const;
     await appendModalEvents(
       db,
@@ -1437,40 +1538,31 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     // Real migrations + PostgreSQL execution own this regression: the old ORDER BY
     // resolves the text output name, not the bigint used by the resume predicate.
     const f = fixture();
-    const row = await runningFork(f);
+    const row = await activeWorker(f);
+    const eventCount = 13;
+    const pageSize = 5;
     const maximum = await db.query<{ cursor: string }>(
       "select coalesce(max(cursor),0)::text as cursor from public.modal_events",
     );
-    const start = 10 ** String(Number(maximum.rows[0]?.cursor ?? 0) + 130).length - 30;
+    const start = 10 ** String(Number(maximum.rows[0]?.cursor ?? 0) + eventCount).length - 4;
     await db.query("select setval('public.modal_events_cursor_seq', $1, false)", [start]);
-    const events: AgentEvent[] = Array.from({ length: 130 }, (_, i) => ({
+    const events: AgentEvent[] = Array.from({ length: eventCount }, (_, i) => ({
       id: `ordered-${i}`,
       // Deliberately not time/UUID ordered: the durable cursor is authoritative.
-      at: 130 - i,
+      at: eventCount - i,
       promptId: "ordered-prompt",
-      conversationId: i > 1 && i < 129 && i % 7 === 3 ? "other-conversation" : "ordered-conversation",
-      ...(i === 0 || i === 1 || i === 129
+      conversationId: i > 1 && i < eventCount - 1 && i % 7 === 3 ? "other-conversation" : "ordered-conversation",
+      ...(i === 0 || i === 1 || i === eventCount - 1
         ? {
             kind: "prompt" as const,
             text: "task",
             status: i === 0 ? ("queued" as const) : i === 1 ? ("running" as const) : ("finished" as const),
           }
-        : { kind: "message" as const, text: `delta-${i}`, partial: i !== 128, tools: [] }),
+        : { kind: "message" as const, text: `delta-${i}`, partial: i !== eventCount - 2, tools: [] }),
     }));
-    expect(
-      await appendModalEvents(
-        db,
-        scope,
-        row.id,
-        "1",
-        events.map((event, i) => ({
-          sequence: i + 1,
-          event,
-        })),
-      ),
-    ).toBe(130);
+    await seedHistory(row.id, events);
     f.onRpc(async (_row, op) =>
-      op === "checkpoint" ? { watermark: 130, acknowledgedSequence: 130, generation: "1" } : undefined,
+      op === "checkpoint" ? { watermark: eventCount, acknowledgedSequence: eventCount, generation: "1" } : undefined,
     );
     await f.provider.stop({ sandboxId: row.id });
     const before = await f.store.get(row.id);
@@ -1483,7 +1575,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       for (let pages = 0; pages < 20; pages++) {
         const page = await f.provider.events({
           sandboxId: row.id,
-          limit: 17,
+          limit: pageSize,
           ...(cursor ? { cursor } : {}),
           ...(conversationId ? { conversationId } : {}),
         });
@@ -1499,9 +1591,9 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     }
     const all = await read();
     expect(all.collected).toEqual(events);
-    expect(all.cursor).toBe(String(start + 129));
-    expect(await read(undefined, String(start + 16))).toEqual({
-      collected: events.slice(17),
+    expect(all.cursor).toBe(String(start + eventCount - 1));
+    expect(await read(undefined, String(start + pageSize - 1))).toEqual({
+      collected: events.slice(pageSize),
       cursor: all.cursor,
     });
     expect((await read("ordered-conversation")).collected).toEqual(
@@ -1520,7 +1612,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("a prompt observation delayed across stop never enters activation", async () => {
     const f = fixture();
-    const row = await runningFork(f);
+    const row = await activeWorker(f);
     const entered = deferred();
     const release = deferred();
     const get = f.store.get;
@@ -1544,9 +1636,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("snapshot deletion leaves already reserved forks usable", async () => {
     const f = fixture();
-    const builder = await f.provider.createGolden({});
-    const name = crypto.randomUUID();
-    await f.provider.snapshot({ sandboxId: builder.id, name });
+    const { builder, name } = await savedGolden(f);
     const fork = await f.provider.fork({ from: name });
     await f.provider.deleteSnapshot(name);
     expect(f.log).not.toContain("delete-image");
@@ -1562,9 +1652,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("a retired image still referenced by a live fork never leases its source", async () => {
     const f = fixture();
-    const builder = await f.provider.createGolden({});
-    const name = crypto.randomUUID();
-    await f.provider.snapshot({ sandboxId: builder.id, name });
+    const { builder, name } = await savedGolden(f);
     const first = await f.provider.fork({ from: name });
     const second = await f.provider.fork({ from: name });
     await f.provider.deleteSnapshot(name);
@@ -1587,9 +1675,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("a busy retired source neither fails nor delays a fork's deletion", async () => {
     const f = fixture();
-    const builder = await f.provider.createGolden({});
-    const name = crypto.randomUUID();
-    await f.provider.snapshot({ sandboxId: builder.id, name });
+    const { builder, name } = await savedGolden(f);
     const fork = await f.provider.fork({ from: name });
     await f.provider.deleteSnapshot(name);
     await f.provider.stop({ sandboxId: fork.id });
@@ -1618,10 +1704,8 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("another source's failing retired image never blocks a snapshot's collection retry", async () => {
     const f = fixture();
-    const [a, b] = [await f.provider.createGolden({}), await f.provider.createGolden({})];
-    const [first, broken] = [crypto.randomUUID(), crypto.randomUUID()];
-    await f.provider.snapshot({ sandboxId: a.id, name: first });
-    await f.provider.snapshot({ sandboxId: b.id, name: broken });
+    const { builder: a, name: first } = await savedGolden(f);
+    const { builder: b, name: broken } = await savedGolden(f);
     const brokenImage = (await f.store.image(broken)).imageId;
     f.onImageDelete(async (id) => {
       if (id === brokenImage) throw new Error("image service refused");
@@ -1636,9 +1720,8 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("a failing retired image never blocks collection of another snapshot from the same source", async () => {
     const f = fixture();
-    const builder = await f.provider.createGolden({});
-    const [broken, next] = [crypto.randomUUID(), crypto.randomUUID()];
-    await f.provider.snapshot({ sandboxId: builder.id, name: broken });
+    const { builder, name: broken } = await savedGolden(f);
+    const next = crypto.randomUUID();
     await f.provider.delete({ sandboxId: builder.id });
     await f.provider.restoreGoldenMaster({ snapshotId: broken });
     await f.provider.snapshot({ sandboxId: builder.id, name: next });
@@ -1681,9 +1764,9 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("a held retired-image deletion never fences its source's lifecycle", async () => {
     const f = fixture();
-    const builder = await f.provider.createGolden({});
-    const [first, restore, second] = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
-    await f.provider.snapshot({ sandboxId: builder.id, name: first });
+    const { builder, name: first } = await savedGolden(f);
+    const restore = crypto.randomUUID(),
+      second = crypto.randomUUID();
     // Restore from a later snapshot so the builder itself no longer references the first image.
     await f.provider.delete({ sandboxId: builder.id });
     await f.provider.restoreGoldenMaster({ snapshotId: first });
@@ -1724,9 +1807,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("a claimed retired image whose deletion failed is retried without its source lease", async () => {
     const f = fixture();
-    const builder = await f.provider.createGolden({});
-    const name = crypto.randomUUID();
-    await f.provider.snapshot({ sandboxId: builder.id, name });
+    const { builder, name } = await savedGolden(f);
     // The first physical deletion fails after the claim; the tombstone stays claimed.
     let failures = 1;
     f.onImageDelete(async () => {
@@ -1743,9 +1824,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("a concurrent sweep skips a live dispatch claim and recovers an expired one", async () => {
     const f = fixture();
-    const builder = await f.provider.createGolden({});
-    const name = crypto.randomUUID();
-    await f.provider.snapshot({ sandboxId: builder.id, name });
+    const { builder, name } = await savedGolden(f);
     const imageId = (await f.store.image(name)).imageId;
     const entered = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
@@ -1786,9 +1865,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("a snapshot retired after restore read it never gains a restore reference", async () => {
     const f = fixture();
-    const builder = await f.provider.createGolden({});
-    const name = crypto.randomUUID();
-    await f.provider.snapshot({ sandboxId: builder.id, name });
+    const { builder, name } = await savedGolden(f);
     await f.provider.delete({ sandboxId: builder.id });
     const lease = f.store.lease.bind(f.store);
     // Retirement writes the tombstone between restore's read and its source lease.
@@ -1806,9 +1883,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("a busy snapshot source refuses retirement before any tombstone, as non-mutating", async () => {
     const f = fixture();
-    const builder = await f.provider.createGolden({});
-    const name = crypto.randomUUID();
-    await f.provider.snapshot({ sandboxId: builder.id, name });
+    const { builder, name } = await savedGolden(f);
     let refused: unknown;
     await f.store.lease(builder.id, async () => {
       refused = await f.provider.deleteSnapshot(name).catch((error) => error);
@@ -1822,9 +1897,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("recovery references do not depend on a saved label surviving retirement", async () => {
     const f = fixture();
-    const builder = await f.provider.createGolden({});
-    const name = crypto.randomUUID();
-    await f.provider.snapshot({ sandboxId: builder.id, name });
+    const { name } = await savedGolden(f);
     const saved = await f.store.image(name);
     const child = await f.provider.fork({ from: name });
     await f.provider.stop({ sandboxId: child.id });
@@ -1841,10 +1914,8 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("retiring one saved handle preserves another live handle sharing its artifact", async () => {
     const f = fixture();
-    const builder = await f.provider.createGolden({});
-    const old = crypto.randomUUID(),
-      current = crypto.randomUUID();
-    await f.provider.snapshot({ sandboxId: builder.id, name: old });
+    const { name: old } = await savedGolden(f);
+    const current = crypto.randomUUID();
     const image = await f.store.image(old);
     await f.store.saveImage({ ...image, info: { ...image.info, name: current } });
     await f.provider.deleteSnapshot(old);
@@ -1855,9 +1926,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("snapshot provenance projection never substitutes cached info for missing canonical image or authority", async () => {
     const f = fixture();
-    const builder = await f.provider.createGolden({});
-    const name = crypto.randomUUID();
-    await f.provider.snapshot({ sandboxId: builder.id, name });
+    const { builder, name } = await savedGolden(f);
     const original = await f.store.image(name);
     expect(original.imageId).toBeDefined();
     expect(original.managementAuthority).toBeDefined();
@@ -1923,14 +1992,14 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("concurrent lifecycle lease cannot write through the active holder", async () => {
     const f = fixture();
-    const row = await f.provider.createGolden({});
+    const row = await f.seedActive(goldenTemplate);
     await f.store.lease(row.id, async () => {
       await expect(f.store.lease(row.id, async () => undefined)).rejects.toMatchObject({ code: "conflict" });
     });
   });
   test("HTTP ingest retains message semantics through SQL replay, pagination and conversation filtering", async () => {
     const f = fixture();
-    const row = await f.provider.createGolden({});
+    const row = await f.seedActive(goldenTemplate);
     const handler = createModalIngestHandler({
       sql: db,
       verifyGrant: async () => ({
@@ -1995,7 +2064,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("native outbox drains large UTF-8 conversations through HTTP ingest and remains readable after stop", async () => {
     const f = fixture();
-    const row = await f.provider.createGolden({});
+    const row = await f.seedActive(goldenTemplate);
     const grant = {
       token: "fixture-ingest-private-grant",
       sandboxId: row.id,
@@ -2036,7 +2105,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
         status: "running",
       },
       ...Array.from(
-        { length: 5 },
+        { length: 4 },
         (_, i): AgentEvent => ({
           id: `${harness}-${i}`,
           at: i + 2,
@@ -2102,7 +2171,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("tail history, older history and live follow stitch without gaps or duplicates", async () => {
     const f = fixture();
-    const row = await f.provider.createGolden({});
+    const row = await f.seedActive(goldenTemplate);
     expect(await f.provider.events({ sandboxId: row.id, direction: "backward" })).toEqual({
       events: [],
       hasMore: false,
@@ -2154,7 +2223,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("events dedupe, acknowledge only contiguous commit and fence old generation", async () => {
     const f = fixture();
-    const row = await f.provider.createGolden({});
+    const row = await f.seedActive(goldenTemplate);
     const event = { id: "event", at: 1, kind: "other" as const, type: "test", data: {} };
     expect(await appendModalEvents(db, scope, row.id, "1", [{ sequence: 2, event }])).toBe(0);
     expect(
@@ -2170,7 +2239,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("restored producer sequences continue checkpoint watermark instead of waiting for sequence one", async () => {
     const f = fixture();
-    const row = await f.provider.createGolden({});
+    const row = await f.seedActive(goldenTemplate);
     await f.store.lease(row.id, async (current, save) => {
       current.generation = 2;
       current.eventBase = 42;
@@ -2532,9 +2601,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("golden restore retries unknown create by deterministic identity and never discards an uncertain checkpoint", async () => {
     const f = fixture();
-    const builder = await f.provider.createGolden({});
-    const name = crypto.randomUUID();
-    await f.provider.snapshot({ sandboxId: builder.id, name });
+    const { builder, name } = await savedGolden(f);
     await f.provider.delete({ sandboxId: builder.id });
     f.failCreate(true);
     await expect(f.provider.restoreGoldenMaster({ snapshotId: name })).rejects.toMatchObject({ code: "unknown" });
@@ -2664,7 +2731,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("golden history cleanup and filesystem save never run before the exact durable event ACK", async () => {
     const f = fixture();
-    const builder = await f.provider.createGolden({});
+    const builder = await f.seedActive(goldenTemplate);
     f.onRpc(async (row, op) =>
       op === "checkpoint" ? { generation: String(row.generation), watermark: 1, acknowledgedSequence: 1 } : undefined,
     );
@@ -2677,9 +2744,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("failed fork boot exports exact reservation/physical/image provenance for scoped disposable cleanup", async () => {
     const f = fixture();
-    const builder = await f.provider.createGolden({});
-    const name = crypto.randomUUID();
-    await f.provider.snapshot({ sandboxId: builder.id, name });
+    const { builder, name } = await savedGolden(f);
     const sourceImage = (await f.store.image(name)).imageId;
     f.failBoot(true);
     let receipt: ReturnType<typeof modalFailureReceipt>;
@@ -2723,7 +2788,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       },
     };
     const f = fixture(scope, sql);
-    const builder = await f.provider.createGolden({});
+    const builder = await f.seedActive(goldenTemplate);
     const name = crypto.randomUUID();
     fail = true;
     let receipt: ReturnType<typeof modalFailureReceipt>;
@@ -2745,10 +2810,10 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test.each([true, false])("prompt performs one final health probe after preparation (healthy=%s)", async (healthy) => {
     let prepared = false;
-    const f = fixture(scope, db, async () => {
+    const f = fixture(scope, fixtureSql, async () => {
       prepared = true;
     });
-    const row = await runningFork(f);
+    const row = await activeWorker(f);
     f.log.length = 0;
     f.onRpc(async (machine, op) =>
       op === "health" ? { generation: String(machine.generation), ready: healthy || !prepared } : undefined,
@@ -2778,13 +2843,13 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
         configuration: { revision: `generation-${info.physicalGeneration}`, servers: {} },
       });
     };
-    const f = fixture(scope, db, beforePrompt, undefined, undefined, admission.wait);
+    const f = fixture(scope, fixtureSql, beforePrompt, undefined, undefined, admission.wait);
     f.onRpc(async (machine, op, input) => {
       if (op !== "configureReadableVariables") return undefined;
       hydrated.push({ generation: machine.generation, variables: (input as { variables: unknown }).variables });
       return { acknowledged: true };
     });
-    const row = await runningFork(f);
+    const row = await activeWorker(f);
     admission.track(f.store, row.id);
     await Promise.all(
       (["claude", "codex"] as const).map((harness) =>
@@ -2806,13 +2871,13 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   test("beforePrompt failure or an intervening checkpoint/restore refuses submission; goldens never call the hook", async () => {
     let fail = true,
       calls = 0;
-    const f = fixture(scope, db, async (provider, id) => {
+    const f = fixture(scope, fixtureSql, async (provider, id) => {
       calls++;
       if (fail) throw Error("private registry failure must not leak");
       await provider.stop({ sandboxId: id });
       await provider.exec({ sandboxId: id, command: "restore" });
     });
-    const row = await runningFork(f);
+    const row = await activeWorker(f);
     await expect(
       f.provider.prompt({ sandboxId: row.id, harness: "claude", text: "must not start" }),
     ).rejects.toMatchObject({ code: "unknown" });
@@ -2823,7 +2888,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     ).rejects.toMatchObject({ code: "conflict" });
     expect((await f.store.get(row.id)).generation).toBe(2);
     expect(f.log).not.toContain("prompt");
-    const builder = await f.provider.createGolden({});
+    const builder = await f.seedActive(goldenTemplate);
     const before = calls;
     await expect(
       f.provider.prompt({ sandboxId: builder.id, harness: "claude", text: "no hook on builder" }),
@@ -2832,10 +2897,10 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("beforePrompt fence is rechecked after healthyAdmission mutates the runner incarnation", async () => {
     let prepared = false;
-    const f = fixture(scope, db, async () => {
+    const f = fixture(scope, fixtureSql, async () => {
       prepared = true;
     });
-    const row = await runningFork(f);
+    const row = await activeWorker(f);
     f.onRpc(async (current, op) => {
       if (prepared && op === "health") {
         current.generation++;
@@ -2849,10 +2914,10 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("golden exec alone takes scoped leased SDK root control, worker exec stays journaled runner, and unsupported/closed requests refuse", async () => {
     const delays: number[] = [];
-    const f = fixture(scope, db, undefined, undefined, undefined, async (ms) => {
+    const f = fixture(scope, fixtureSql, undefined, undefined, undefined, async (ms) => {
       delays.push(ms);
     });
-    const builder = await f.provider.createGolden({});
+    const builder = await f.seedActive(goldenTemplate);
     await f.provider.exec({ sandboxId: builder.id, command: "root scanner", timeoutSeconds: 600 });
     expect(f.log).toContain("root-exec");
     expect(f.log).not.toContain("exec");
@@ -2867,10 +2932,26 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       code: "invalid_request",
     });
     expect(f.log.filter((x) => x === "root-exec")).toHaveLength(count);
-    await f.store.lease(builder.id, async () => {
-      await expect(f.provider.exec({ sandboxId: builder.id, command: "busy" })).rejects.toMatchObject({
-        providerCode: "lifecycle_lease_busy",
-      });
+    const lease = f.store.lease.bind(f.store);
+    const get = f.store.get.bind(f.store);
+    await lease(builder.id, async (active) => {
+      const conflict = await lease(builder.id, async () => {
+        throw new Error("Busy lease unexpectedly acquired");
+      }).catch((error: unknown) => error);
+      expect(conflict).toMatchObject({ providerCode: "lifecycle_lease_busy" });
+      // The holder remains active for this entire retry-budget assertion.
+      f.store.lease = async () => {
+        throw conflict;
+      };
+      f.store.get = async (id) => (id === builder.id ? active : get(id));
+      try {
+        await expect(f.provider.exec({ sandboxId: builder.id, command: "busy" })).rejects.toMatchObject({
+          providerCode: "lifecycle_lease_busy",
+        });
+      } finally {
+        f.store.lease = lease;
+        f.store.get = get;
+      }
     });
     expect(delays).toEqual(Array(99).fill(20));
     expect(f.log.filter((x) => x === "root-exec")).toHaveLength(count);
@@ -2886,10 +2967,10 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("admission never retries a busy-shaped error after entering the callback", async () => {
     const delays: number[] = [];
-    const f = fixture(scope, db, undefined, undefined, undefined, async (ms) => {
+    const f = fixture(scope, fixtureSql, undefined, undefined, undefined, async (ms) => {
       delays.push(ms);
     });
-    const worker = await runningFork(f);
+    const worker = await activeWorker(f);
     let calls = 0;
     f.onRpc(async () => {
       calls++;
@@ -2911,7 +2992,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("native harness cwd is durable per harness and forwarded privately on prompt/resume without changing text, exec or steer", async () => {
     const f = fixture();
-    const row = await runningFork(f);
+    const row = await activeWorker(f);
     const claudeCwd = "/home/user/repos/repo with spaces;$(not-a-command)",
       codexCwd = "/home/user/repos/backend";
     const originalCreates = f.creates;
@@ -2976,7 +3057,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("native cwd preparation validates path data and owner/admission while unprepared prompts use runtime defaults", async () => {
     const f = fixture();
-    const row = await runningFork(f);
+    const row = await activeWorker(f);
     for (const cwd of [
       "relative/repo",
       "/home/user/../repo",
@@ -3008,15 +3089,14 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await expect(
       f.provider.prepareNativeHarnessCwd({ sandboxId: row.id, harness: "claude", cwd: "/home/user/repos/valid" }),
     ).rejects.toMatchObject({ code: "sandbox_not_ready" });
-    const builder = await f.provider.createGolden({});
-    await f.provider.snapshot({ sandboxId: builder.id, name: crypto.randomUUID() });
+    const { builder } = await savedGolden(f);
     await expect(
       f.provider.prepareNativeHarnessCwd({ sandboxId: builder.id, harness: "claude", cwd: "/home/user/repos/valid" }),
     ).rejects.toMatchObject({ code: "invalid_request" });
   });
   test("GitHub private configuration binds an active native generation and never restores stopped machines or persists capabilities", async () => {
     const f = fixture();
-    const row = await runningFork(f);
+    const row = await activeWorker(f);
     const machine = await f.store.get(row.id);
     const configuration = {
       version: 1 as const,
@@ -3047,8 +3127,8 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("configureMcp serializes transient authority with turn admission, returns only revision and never persists config", async () => {
     const admission = admissionBarrier();
-    const f = fixture(scope, db, undefined, undefined, undefined, admission.wait);
-    const row = await runningFork(f);
+    const f = fixture(scope, fixtureSql, undefined, undefined, undefined, admission.wait);
+    const row = await activeWorker(f);
     admission.track(f.store, row.id);
     const entered = deferred(),
       release = deferred();
@@ -3099,7 +3179,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("configureMcp resumes under the new generation lease, supports empty servers, rejects bad receipts and sealed goldens", async () => {
     const f = fixture();
-    const row = await runningFork(f);
+    const row = await activeWorker(f);
     await f.provider.stop({ sandboxId: row.id });
     const empty = { revision: "remove-connections", servers: {} };
     f.onRpc(async (current, op, input) => {
@@ -3119,8 +3199,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await expect(f.provider.configureMcp({ sandboxId: row.id, configuration: empty })).rejects.toMatchObject({
       code: "unavailable",
     });
-    const builder = await f.provider.createGolden({});
-    await f.provider.snapshot({ sandboxId: builder.id, name: crypto.randomUUID() });
+    const { builder } = await savedGolden(f);
     await f.provider.stop({ sandboxId: builder.id });
     const before = await f.store.get(builder.id);
     const calls = f.log.filter((x) => x === "configureMcp").length;
@@ -3133,7 +3212,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("configure and new turns refuse a live physical runner whose admission or generation is sealed", async () => {
     const f = fixture();
-    const row = await runningFork(f);
+    const row = await activeWorker(f);
     f.onRpc(async (current, op) =>
       op === "health" ? { generation: String(current.generation), ready: false } : undefined,
     );
@@ -3152,7 +3231,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("configureMcp wire preserves protocol identity/current grant and maps safe errors without auth output", async () => {
     const f = fixture();
-    const info = await runningFork(f);
+    const info = await activeWorker(f);
     const row = await f.store.get(info.id);
     const configuration = {
       revision: "wire-revision",
@@ -3215,7 +3294,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("tenant and membership isolation; user roles cannot read control or event tables", async () => {
     const f = fixture();
-    const row = await f.provider.createGolden({});
+    const row = await f.seedActive(goldenTemplate);
     const other = createSqlModalStore(db, { ...scope, binding: { ...scope.binding, appId: "ap_other" } });
     await expect(other.get(row.id)).rejects.toMatchObject({ code: "not_found" });
     const outsider = createSqlModalStore(db, { ...scope, userId: "00000000-0000-0000-0000-000000000003" });
@@ -3248,7 +3327,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("runner uses nested prompt input, distinct proxy bearer and application header, validates response identity", async () => {
     const f = fixture();
-    const info = await f.provider.createGolden({});
+    const info = await f.seedActive(goldenTemplate);
     const row = await f.store.get(info.id);
     const transport = createRunnerTransport(
       async () => ({
@@ -3276,7 +3355,7 @@ for (const mode of ["checkpoint", "hard_exit", "legacy_scrub_failure"])
   test(`server deadline reconciler settles Modal after ${mode}`, async () => {
     const hardExit = mode === "hard_exit";
     const f = fixture();
-    const machine = await runningFork(f);
+    const machine = await activeWorker(f);
     const goldenId = crypto.randomUUID();
     const id = crypto.randomUUID();
     await db.query(
@@ -3317,7 +3396,7 @@ for (const mode of ["checkpoint", "hard_exit", "legacy_scrub_failure"])
     }
     const baseline = f.log.length;
     let resolved = 0;
-    const lifecycle = createSandboxLifecycle(db, async () => {
+    const lifecycle = createSandboxLifecycle(fixtureSql, async () => {
       resolved++;
       return f.provider;
     });
@@ -3358,7 +3437,7 @@ for (const mode of ["checkpoint", "hard_exit", "legacy_scrub_failure"])
 
 test("private scoped transport requires exact active incarnation and ACK, never restores stopped compute", async () => {
   const f = fixture();
-  const parent = await runningFork(f);
+  const parent = await activeWorker(f);
   const binding = { epoch: "1", physicalGeneration: (await f.provider.get(parent.id)).physicalGeneration ?? "missing" };
   const request = {
     sandboxId: parent.id,
@@ -3492,7 +3571,7 @@ test("only newly managed VM incarnations expose resource observations", async ()
 
 test("declared outputs are read on live compute only, never by resuming a stopped recovery image", async () => {
   const f = fixture();
-  const fork = await runningFork(f);
+  const fork = await activeWorker(f);
   // Observation never takes the lifecycle lease: a sample overlapping a stop or prompt does not refuse it.
   const read = await f.store.lease(fork.id, async () => f.provider.readOutputs?.({ sandboxId: fork.id }));
   expect(read?.map((file) => [file.name, Buffer.from(file.bytes).toString()])).toEqual([["final.pdf", "final"]]);
@@ -3673,7 +3752,7 @@ test.each(["runtime", "baseline", "fresh", "start", "active_publication"] as con
 
 test("unscoped Modal steer preserves no_running_turn and 409 at the control boundary", async () => {
   const f = fixture();
-  const row = await runningFork(f);
+  const row = await activeWorker(f);
 
   const journal = new Journal(":memory:", (s) => s);
   const driver: Driver = {
@@ -3761,7 +3840,7 @@ test("unscoped Modal steer preserves no_running_turn and 409 at the control boun
 
 test("Modal lifecycle refusals do not resume stopped steer or admit send during transitions", async () => {
   const f = fixture();
-  const row = await runningFork(f);
+  const row = await activeWorker(f);
 
   const active = await f.store.get(row.id);
   for (const phase of ["booting", "terminate"] as const) {
@@ -3794,7 +3873,7 @@ test("Modal lifecycle refusals do not resume stopped steer or admit send during 
 
 test("connection probe uses only the active runtime and validates its receipt without restoring stopped machines", async () => {
   const f = fixture(scope, db);
-  const row = await runningFork(f);
+  const row = await activeWorker(f);
   const expected = { ok: false, status: 401, error: "provider_rejected", code: "invalid_api_key" } as const;
   let receipt: unknown = expected;
   f.onRpc(async (_machine, op, input) => {
