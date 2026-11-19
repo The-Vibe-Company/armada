@@ -1826,7 +1826,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         (!response.ok ||
           provider !== body.provider ||
           result?.sandbox?.provider !== body.provider ||
-          (keyedDockerLaunch && result.sandbox.externalRef !== key));
+          (keyedDockerLaunch && result?.sandbox?.externalRef !== key));
       if (!unverifiedLaunch && typeof id === "string" && SANDBOX_ID.test(id) && typeof org === "string") {
         const row: SmokeSandboxReceipt = {
           requestKey,
