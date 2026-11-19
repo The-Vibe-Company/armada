@@ -36,6 +36,30 @@ export type Database = {
           },
         ];
       };
+      account_exhaustion: {
+        Row: {
+          account_id: string;
+          credential_version: number;
+          code: string;
+          resets_at: string | null;
+          event_at: number;
+        };
+        Insert: {
+          account_id: string;
+          credential_version: number;
+          code: string;
+          resets_at?: string | null;
+          event_at: number;
+        };
+        Update: {
+          account_id?: string;
+          credential_version?: number;
+          code?: string;
+          resets_at?: string | null;
+          event_at?: number;
+        };
+        Relationships: [];
+      };
       account_spend: {
         Row: {
           account_id: string;
@@ -5464,6 +5488,7 @@ export type Database = {
 };
 
 export type AccountAgentReservationRow = Database["public"]["Tables"]["account_agent_reservations"]["Row"];
+export type AccountExhaustionRow = Database["public"]["Tables"]["account_exhaustion"]["Row"];
 export type AccountSpendRow = Database["public"]["Tables"]["account_spend"]["Row"];
 export type AccountSpendTurnRow = Database["public"]["Tables"]["account_spend_turns"]["Row"];
 export type AccountTurnQueueRow = Database["public"]["Tables"]["account_turn_queue"]["Row"];
