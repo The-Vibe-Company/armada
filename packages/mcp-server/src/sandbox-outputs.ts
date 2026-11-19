@@ -20,8 +20,7 @@ import {
   type Provider,
   type Sql,
 } from "@armada/core/server";
-import type { CallerResult } from "./caller.ts";
-import type { Route } from "./http.ts";
+import type { Caller, CallerResult } from "./caller.ts";
 import type { Job, JobResult } from "./jobs/runner.ts";
 import type { createJobsStore } from "./jobs/store.ts";
 import { BOAT_RETAINED_OUTPUT_STOP, collectOutputTransfers, remainingOutputOrgBytes } from "./output-transfers.ts";
@@ -530,7 +529,139 @@ export function createSandboxOutputs(
 ) {
   const pending = new Map<Promise<boolean>, { provider: SandboxPlacementProviderId; retained: boolean }>();
   const writes = new Set<Promise<unknown>>();
+  async function readSnapshot(
+    caller: Caller,
+    id: string,
+    downloadName: string | undefined,
+    headers: Headers,
+    signal: AbortSignal,
+  ): Promise<Response> {
+    const read = sandboxOutputOperations.readSandboxOutput;
+    // Owner or org admin, current membership: checked on entry and again after the snapshot
+    // is read (and decrypted), so access revoked meanwhile never receives metadata or bytes.
+    const authorize = async () =>
+      (
+        await sql.query<{ id: string; outputs_failure_reasons: string[] }>(
+          `select s.id,s.outputs_failure_reasons from public.sandboxes s join public.members m on m.org_id=s.org_id
+      where s.id=$1 and s.status<>'deleted' and not s.application_secret_tainted and m.user_id=$2 and s.org_id=any($3::uuid[])
+      and (s.owner_id=$2 or m.role='admin') and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)`,
+          [id, caller.userId, caller.orgs.map((o) => o.orgId)],
+        )
+      ).rows[0];
+    const notFound = () => Response.json({ error: "not_found" }, { status: 404 });
+    const row = await authorize();
+    if (!row) return Response.json({ error: "not_found" }, { status: 404 });
+    if (downloadName === undefined) {
+      const files = await sql.query<{
+        name: string;
+        size: number;
+        sha256: string | null;
+        updatedAt: string;
+        skipped?: string | null;
+      }>(
+        `select name,size::double precision as size,digest as sha256,updated_at as "updatedAt",skipped
+          from public.sandbox_outputs where sandbox_id=$1 order by name limit ${OUTPUT_MAX_FILES}`,
+        [row.id],
+      );
+      const current = await authorize();
+      if (!current) return notFound();
+      return Response.json(
+        {
+          directory: OUTPUT_DIRECTORY,
+          limits: {
+            maxFiles: OUTPUT_MAX_FILES,
+            maxFileBytes: OUTPUT_MAX_FILE_BYTES,
+            maxSandboxBytes: OUTPUT_MAX_SANDBOX_BYTES,
+            maxOrgBytes: OUTPUT_MAX_ORG_BYTES,
+          },
+          files: files.rows.map(({ skipped, ...file }) => (skipped ? { ...file, skipped } : file)),
+          ...(current.outputs_failure_reasons.includes("collector_unsupported")
+            ? { unavailable: "collector_unsupported" }
+            : {}),
+        },
+        { headers: { "cache-control": "private, no-store" } },
+      );
+    }
+    const nameResult = read.input.path.name.safeParse(downloadName);
+    if (!nameResult.success) return Response.json({ error: "invalid_name" }, { status: 400 });
+    const name = nameResult.data;
+    const file = (
+      await sql.query<{
+        name: string;
+        size: number;
+        transfer_id: string | null;
+        digest: string;
+        content_enc: Uint8Array<ArrayBuffer> | null;
+      }>(
+        `select name,content_enc,size::integer,transfer_id,digest from public.sandbox_outputs
+          where sandbox_id=$1 and name=$2 and skipped is null`,
+        [row.id, name],
+      )
+    ).rows[0];
+    if (!file) return notFound();
+    if (!key) return Response.json({ error: "unavailable" }, { status: 503 });
+    const bytes = file.content_enc ? Buffer.from(await decryptSecret(file.content_enc, key), "base64") : null;
+    if (!(await authorize())) return notFound();
+    const size = bytes?.length ?? file.size;
+    const etag = JSON.stringify(file.digest);
+    const ifRange = headers.get("if-range");
+    const requestedRange = !ifRange || ifRange === etag ? headers.get("range") : null;
+    const range = requestedRange ? outputRange(requestedRange, size) : { start: 0, end: size };
+    if (!range)
+      return new Response(null, {
+        status: 416,
+        headers: { "content-range": `bytes */${size}`, "cache-control": "private, no-store" },
+      });
+    const { start, end } = range;
+    let offset = start;
+    const stream =
+      file.transfer_id && end > start
+        ? new ReadableStream<Uint8Array>(
+            {
+              // Pull at most one encrypted chunk at a time, with backpressure from the HTTP consumer.
+              async pull(controller) {
+                signal.throwIfAborted();
+                const base = offset - (offset % OUTPUT_CHUNK_BYTES);
+                const chunk = (
+                  await sql.query<{ content_enc: Uint8Array<ArrayBuffer> }>(
+                    `select c.content_enc from public.sandbox_output_chunks c
+            join public.sandbox_outputs o on o.transfer_id=c.transfer_id
+            where c.transfer_id=$1 and c.byte_offset=$2 and o.sandbox_id=$3 and o.name=$4`,
+                    [file.transfer_id, base, row.id, name],
+                  )
+                ).rows[0];
+                if (!chunk) throw Error("output_snapshot_changed");
+                const buffer = Buffer.from(await decryptSecret(chunk.content_enc, key), "base64");
+                if (!(await authorize())) throw Error("output_unavailable");
+                signal.throwIfAborted();
+                if (buffer.length !== Math.min(size - base, OUTPUT_CHUNK_BYTES)) throw Error("invalid_output_chunk");
+                const next = Math.min(end, base + buffer.length);
+                controller.enqueue(buffer.subarray(offset - base, next - base));
+                offset = next;
+                if (offset === end) controller.close();
+              },
+            },
+            { highWaterMark: 0 },
+          )
+        : null;
+    const type = new Blob([], { type: Bun.file(file.name).type }).type || read.outputMediaType;
+    return new Response(bytes?.subarray(start, end) ?? stream, {
+      status: requestedRange ? 206 : 200,
+      headers: {
+        "content-type": type,
+        "accept-ranges": "bytes",
+        etag,
+        ...(requestedRange ? { "content-range": `bytes ${start}-${end - 1}/${size}` } : {}),
+        "content-length": String(end - start),
+        "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`,
+        "x-content-type-options": "nosniff",
+        "cache-control": "private, no-store",
+      },
+    });
+  }
+
   return {
+    readSnapshot,
     async enqueueCaptures(jobs: Pick<ReturnType<typeof createJobsStore>, "enqueue">, signal: AbortSignal) {
       if (!key || signal.aborted) return;
       const { rows } = await sql.query<{ id: string; org_id: string; generation: string }>(
@@ -629,13 +760,13 @@ export function createSandboxOutputs(
     async drain() {
       await Promise.allSettled([...writes]);
     },
-    route(authenticate: (request: Request) => Promise<CallerResult>): Route {
+    route(authenticate: (request: Request) => Promise<CallerResult>) {
       const list = sandboxOutputOperations.listSandboxOutputs;
       const read = sandboxOutputOperations.readSandboxOutput;
       const pattern = (path: string) => new URLPattern({ pathname: path.replaceAll(/\{(\w+)\}/g, ":$1") });
       const listPath = pattern(list.route.path);
       const readPath = pattern(read.route.path);
-      return async (request) => {
+      return async (request: Request) => {
         const url = new URL(request.url);
         const download = readPath.exec(url);
         const match = download ?? listPath.exec(url);
@@ -647,135 +778,15 @@ export function createSandboxOutputs(
           return Response.json({ error: `Use ${operation.route.method}` }, { status: 405 });
         const auth = await authenticate(request);
         if (!auth.ok) return Response.json({ error: "unauthorized" }, { status: 401 });
-        const caller = auth.caller;
-        // Owner or org admin, current membership: checked on entry and again after the snapshot
-        // is read (and decrypted), so access revoked meanwhile never receives metadata or bytes.
-        const authorize = async () =>
-          (
-            await sql.query<{ id: string; outputs_failure_reasons: string[] }>(
-              `select s.id,s.outputs_failure_reasons from public.sandboxes s join public.members m on m.org_id=s.org_id
-          where s.id=$1 and s.status<>'deleted' and not s.application_secret_tainted and m.user_id=$2 and s.org_id=any($3::uuid[])
-          and (s.owner_id=$2 or m.role='admin') and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)`,
-              [id.data, caller.userId, caller.orgs.map((o) => o.orgId)],
-            )
-          ).rows[0];
-        const notFound = () => Response.json({ error: "not_found" }, { status: 404 });
-        const row = await authorize();
-        if (!row) return Response.json({ error: "not_found" }, { status: 404 });
-        if (!download) {
-          const files = await sql.query<{
-            name: string;
-            size: number;
-            sha256: string | null;
-            updatedAt: string;
-            skipped?: string | null;
-          }>(
-            `select name,size::double precision as size,digest as sha256,updated_at as "updatedAt",skipped
-              from public.sandbox_outputs where sandbox_id=$1 order by name limit ${OUTPUT_MAX_FILES}`,
-            [row.id],
-          );
-          const current = await authorize();
-          if (!current) return notFound();
-          return Response.json(
-            {
-              directory: OUTPUT_DIRECTORY,
-              limits: {
-                maxFiles: OUTPUT_MAX_FILES,
-                maxFileBytes: OUTPUT_MAX_FILE_BYTES,
-                maxSandboxBytes: OUTPUT_MAX_SANDBOX_BYTES,
-                maxOrgBytes: OUTPUT_MAX_ORG_BYTES,
-              },
-              files: files.rows.map(({ skipped, ...file }) => (skipped ? { ...file, skipped } : file)),
-              ...(current.outputs_failure_reasons.includes("collector_unsupported")
-                ? { unavailable: "collector_unsupported" }
-                : {}),
-            },
-            { headers: { "cache-control": "private, no-store" } },
-          );
+        let name: string | undefined;
+        if (download) {
+          try {
+            name = decodeURIComponent(download.pathname.groups.name ?? "");
+          } catch {
+            name = "";
+          }
         }
-        let decodedName: string;
-        try {
-          decodedName = decodeURIComponent(download.pathname.groups.name ?? "");
-        } catch {
-          return Response.json({ error: "invalid_name" }, { status: 400 });
-        }
-        const nameResult = read.input.path.name.safeParse(decodedName);
-        if (!nameResult.success) return Response.json({ error: "invalid_name" }, { status: 400 });
-        const name = nameResult.data;
-        const file = (
-          await sql.query<{
-            name: string;
-            size: number;
-            transfer_id: string | null;
-            digest: string;
-            content_enc: Uint8Array<ArrayBuffer> | null;
-          }>(
-            `select name,content_enc,size::integer,transfer_id,digest from public.sandbox_outputs
-              where sandbox_id=$1 and name=$2 and skipped is null`,
-            [row.id, name],
-          )
-        ).rows[0];
-        if (!file) return notFound();
-        if (!key) return Response.json({ error: "unavailable" }, { status: 503 });
-        const bytes = file.content_enc ? Buffer.from(await decryptSecret(file.content_enc, key), "base64") : null;
-        if (!(await authorize())) return notFound();
-        const size = bytes?.length ?? file.size;
-        const etag = JSON.stringify(file.digest);
-        const ifRange = request.headers.get("if-range");
-        const requestedRange = !ifRange || ifRange === etag ? request.headers.get("range") : null;
-        const range = requestedRange ? outputRange(requestedRange, size) : { start: 0, end: size };
-        if (!range)
-          return new Response(null, {
-            status: 416,
-            headers: { "content-range": `bytes */${size}`, "cache-control": "private, no-store" },
-          });
-        const { start, end } = range;
-        let offset = start;
-        const stream =
-          file.transfer_id && end > start
-            ? new ReadableStream<Uint8Array>(
-                {
-                  // Pull at most one encrypted chunk at a time, with backpressure from the HTTP consumer.
-                  async pull(controller) {
-                    request.signal.throwIfAborted();
-                    const base = offset - (offset % OUTPUT_CHUNK_BYTES);
-                    const chunk = (
-                      await sql.query<{ content_enc: Uint8Array<ArrayBuffer> }>(
-                        `select c.content_enc from public.sandbox_output_chunks c
-                join public.sandbox_outputs o on o.transfer_id=c.transfer_id
-                where c.transfer_id=$1 and c.byte_offset=$2 and o.sandbox_id=$3 and o.name=$4`,
-                        [file.transfer_id, base, row.id, name],
-                      )
-                    ).rows[0];
-                    if (!chunk) throw Error("output_snapshot_changed");
-                    const buffer = Buffer.from(await decryptSecret(chunk.content_enc, key), "base64");
-                    if (!(await authorize())) throw Error("output_unavailable");
-                    request.signal.throwIfAborted();
-                    if (buffer.length !== Math.min(size - base, OUTPUT_CHUNK_BYTES))
-                      throw Error("invalid_output_chunk");
-                    const next = Math.min(end, base + buffer.length);
-                    controller.enqueue(buffer.subarray(offset - base, next - base));
-                    offset = next;
-                    if (offset === end) controller.close();
-                  },
-                },
-                { highWaterMark: 0 },
-              )
-            : null;
-        const type = new Blob([], { type: Bun.file(file.name).type }).type || read.outputMediaType;
-        return new Response(bytes?.subarray(start, end) ?? stream, {
-          status: requestedRange ? 206 : 200,
-          headers: {
-            "content-type": type,
-            "accept-ranges": "bytes",
-            etag,
-            ...(requestedRange ? { "content-range": `bytes ${start}-${end - 1}/${size}` } : {}),
-            "content-length": String(end - start),
-            "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`,
-            "x-content-type-options": "nosniff",
-            "cache-control": "private, no-store",
-          },
-        });
+        return readSnapshot(auth.caller, id.data, name, request.headers, request.signal);
       };
     },
   };

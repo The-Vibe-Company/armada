@@ -877,7 +877,7 @@
     "packages/mcp-server/src/sandbox-extend.ts": 3,
     "packages/mcp-server/src/sandbox-finish.ts": 8,
     "packages/mcp-server/src/sandbox-lifecycle.ts": 22,
-    "packages/mcp-server/src/sandbox-outputs.ts": 45,
+    "packages/mcp-server/src/sandbox-outputs.ts": 41,
     "packages/mcp-server/src/sandbox-pull-requests.ts": 92,
     "packages/mcp-server/src/serve.ts": 9,
     "packages/mcp-server/src/server-request-drain.ts": 4,

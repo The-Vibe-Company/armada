@@ -28,7 +28,7 @@ export function controlRouteKey<Path extends string>(route: { readonly path: `/a
 }
 
 export { sandboxCheckOperations } from "./sandbox-checks.ts";
-export { sandboxOutputOperations } from "./sandbox-outputs.ts";
+export { MCP_OUTPUT_MAX_BYTES, sandboxOutputOperations } from "./sandbox-outputs.ts";
 export { launchOptionsOperation, MAX_LOG_PAGES, readLogsOperation } from "./sandbox-reads.ts";
 export { sandboxExtensionLifetime, sandboxRestOperations } from "./sandbox-rest.ts";
 export { sandboxViewerOperations, VIEWER_ACCESS_DENIED } from "./sandbox-viewer.ts";
