@@ -90,6 +90,7 @@ function ToolMenu({
 }) {
   const [query, setQuery] = useState("");
   const searchInput = useRef<HTMLInputElement>(null);
+  const connectLink = useRef<HTMLAnchorElement>(null);
   const [initialSelection, setInitialSelection] = useState<ReadonlyMap<string, boolean>>(() => new Map());
   const selectionWithNewTools = rememberLaunchToolSelection(initialSelection, tools, chosen);
   if (selectionWithNewTools !== initialSelection) setInitialSelection(selectionWithNewTools);
@@ -148,7 +149,7 @@ function ToolMenu({
             variant="ghost"
             size="sm"
             onClick={() => {
-              searchInput.current?.focus();
+              (searchInput.current ?? connectLink.current)?.focus();
               onReset();
             }}
           >
@@ -156,7 +157,7 @@ function ToolMenu({
           </Button>
         )}
         <Button asChild variant="ghost" size="sm" className="ml-auto">
-          <Link href="/tools">Connect a tool</Link>
+          <Link ref={connectLink} href="/tools">Connect a tool</Link>
         </Button>
       </div>
     </div>
