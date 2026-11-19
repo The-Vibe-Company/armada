@@ -117,15 +117,21 @@ test.each(["complete", "takeover", "stale", "rollback"] as const)(
           async run(job, context) {
             if (scenario === "rollback") {
               await expect(
-                context.handoffGeneration(async (tx) => {
-                  await tx.query(advance, [sandboxId]);
-                  throw new Error("Admission interrupted.");
+                context.handoffGeneration({
+                  async lockPrerequisites() {},
+                  async advance(tx) {
+                    await tx.query(advance, [sandboxId]);
+                    throw new Error("Admission interrupted.");
+                  },
                 }),
               ).rejects.toThrow("Admission interrupted.");
             } else {
               expect(
-                await context.handoffGeneration(async (tx) => {
-                  await tx.query(advance, [sandboxId]);
+                await context.handoffGeneration({
+                  async lockPrerequisites() {},
+                  async advance(tx) {
+                    await tx.query(advance, [sandboxId]);
+                  },
                 }),
               ).toBe("3");
               expect(await context.canDispatch()).toBe(true);

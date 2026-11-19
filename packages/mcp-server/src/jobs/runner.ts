@@ -13,6 +13,11 @@ export interface Job {
   outcome: unknown;
 }
 
+export interface GenerationHandoff {
+  lockPrerequisites(tx: Sql): Promise<void>;
+  advance(tx: Sql): Promise<void>;
+}
+
 export type JobResult = (
   | { status: "done"; outcome?: unknown }
   | { status: "retry"; after: Date; outcome?: unknown }
@@ -23,7 +28,7 @@ export interface JobStore {
   claim(kind: string, owner: string, seconds: number, concurrency: number): Promise<Job | undefined>;
   inspect(job: Job, owner: string): Promise<"dispatch" | "reconcile" | "stale" | "lost">;
   retireStale(job: Job, owner: string): Promise<void>;
-  handoffGeneration(job: Job, owner: string, advance: (tx: Sql) => Promise<void>): Promise<string>;
+  handoffGeneration(job: Job, owner: string, handoff: GenerationHandoff): Promise<string>;
   renew(job: Job, owner: string, seconds: number): Promise<boolean>;
   complete(job: Job, owner: string, result: JobResult): Promise<boolean>;
 }
@@ -31,8 +36,7 @@ export interface JobStore {
 interface JobContext {
   signal: AbortSignal;
   canDispatch(): Promise<boolean>;
-  /** Run the turn's durable admission and move its job fence in the same transaction. */
-  handoffGeneration(advance: (tx: Sql) => Promise<void>): Promise<string>;
+  handoffGeneration(handoff: GenerationHandoff): Promise<string>;
 }
 
 interface JobKind {
@@ -103,12 +107,15 @@ export function createJobsRunner(
         async canDispatch() {
           return !signal.aborted && (await store.inspect(job, owner)) === "dispatch" && !signal.aborted;
         },
-        async handoffGeneration(advance) {
+        async handoffGeneration(handoff) {
           signal.throwIfAborted();
-          const generation = await store.handoffGeneration(job, owner, async (tx) => {
-            signal.throwIfAborted();
-            await advance(tx);
-            signal.throwIfAborted();
+          const generation = await store.handoffGeneration(job, owner, {
+            lockPrerequisites: handoff.lockPrerequisites,
+            async advance(tx) {
+              signal.throwIfAborted();
+              await handoff.advance(tx);
+              signal.throwIfAborted();
+            },
           });
           signal.throwIfAborted();
           return generation;

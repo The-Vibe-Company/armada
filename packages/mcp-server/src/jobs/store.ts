@@ -18,12 +18,16 @@ interface EnqueueOptions {
 }
 
 export function createJobsStore(sql: Sql, encryptionKey?: string) {
-  // A turn can move its fence without changing its claim identity. Resolve the
-  // durable generation under the same sandbox lock used by the lease RPCs.
-  async function withGeneration<T>(job: Job, owner: string, work: (db: Sql, generation: string | null) => Promise<T>) {
+  async function withLockedTurnGeneration<T>(
+    job: Job,
+    owner: string,
+    work: (db: Sql, generation: string | null) => Promise<T>,
+    lockPrerequisites?: (tx: Sql) => Promise<void>,
+  ) {
     if (job.kind !== "turn_dispatch") return work(sql, job.generation);
     if (!sql.transaction) throw new Error("Turn job fencing requires a transaction.");
     return sql.transaction(async (tx) => {
+      await lockPrerequisites?.(tx);
       await tx.query("select id from public.sandboxes where id = $1 for update", [job.sandbox_id]);
       const { rows } = await tx.query<{ generation: string }>(
         `select j.generation::text from public.jobs j
@@ -133,36 +137,41 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
         );
       });
     },
-    async handoffGeneration(job, owner, advance) {
+    async handoffGeneration(job, owner, handoff) {
       if (job.kind !== "turn_dispatch" || job.generation === null)
         throw new Error("Only a sandbox turn job can hand off its generation.");
-      const generation = await withGeneration(job, owner, async (tx, current) => {
-        const claim = claimKey(job, owner);
-        const { rows } = await tx.query(
-          `select j.id from public.jobs j where ${fence} and j.generation = $4
+      const generation = await withLockedTurnGeneration(
+        job,
+        owner,
+        async (tx, current) => {
+          const claim = claimKey(job, owner);
+          const { rows } = await tx.query(
+            `select j.id from public.jobs j where ${fence} and j.generation = $4
              and j.attempts <= j.max_attempts and (j.deadline_at is null or j.deadline_at > clock_timestamp())
            for update`,
-          claim,
-        );
-        if (current !== job.generation || !rows[0]) throw new Error("Turn job cannot admit another generation.");
-        await advance(tx);
-        const updated = await tx.query<{ generation: string }>(
-          `update public.jobs j set generation = s.lifecycle_generation from public.sandboxes s
+            claim,
+          );
+          if (current !== job.generation || !rows[0]) throw new Error("Turn job cannot admit another generation.");
+          await handoff.advance(tx);
+          const updated = await tx.query<{ generation: string }>(
+            `update public.jobs j set generation = s.lifecycle_generation from public.sandboxes s
            where ${fence} and j.generation = $4 and s.id = j.sandbox_id
              and s.lifecycle_generation = j.generation + 1
              and (j.deadline_at is null or j.deadline_at > clock_timestamp())
            returning j.generation::text`,
-          claim,
-        );
-        if (!updated.rows[0]) throw new Error("Turn admission did not advance its fenced generation.");
-        return updated.rows[0].generation;
-      });
+            claim,
+          );
+          if (!updated.rows[0]) throw new Error("Turn admission did not advance its fenced generation.");
+          return updated.rows[0].generation;
+        },
+        handoff.lockPrerequisites,
+      );
       if (generation === undefined) throw new Error("Turn job lease is no longer current.");
       return generation;
     },
     async renew(job, owner, seconds) {
       return (
-        (await withGeneration(job, owner, async (db, generation) => {
+        (await withLockedTurnGeneration(job, owner, async (db, generation) => {
           const { rows } = await db.query<{ renewed: boolean }>("select public.renew_job($1,$2,$3,$4,$5) as renewed", [
             ...claimIdentity(job, owner),
             generation,
@@ -193,7 +202,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
         if (rows[0]?.completed) await result.commit?.(db);
         return rows[0]?.completed === true;
       };
-      if (job.kind === "turn_dispatch") return (await withGeneration(job, owner, complete)) ?? false;
+      if (job.kind === "turn_dispatch") return (await withLockedTurnGeneration(job, owner, complete)) ?? false;
       if (result.commit) {
         if (!sql.transaction) throw new Error("Job completion requires a transaction.");
         return sql.transaction((tx) => complete(tx, job.generation));
