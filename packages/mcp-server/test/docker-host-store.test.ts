@@ -383,7 +383,7 @@ async function boundFixture(registered?: Awaited<ReturnType<typeof fixture>>) {
   return { ...host, sandboxId, generation, owner, create };
 }
 
-test("bound physical deletion records a receipt without requiring a create job or deleting the sandbox", async () => {
+test("bound physical deletion records an older generation receipt without deleting the current sandbox", async () => {
   const db = database();
   const a = await boundFixture();
   const requestId = randomUUID();
@@ -393,7 +393,7 @@ test("bound physical deletion records a receipt without requiring a create job o
       job: {
         operation: "deletePhysical",
         machineId: "a".repeat(64),
-        request: { ...job().request, sandboxId: a.sandboxId, generation: a.generation },
+        request: { ...job().request, sandboxId: a.sandboxId },
       },
     }),
     key,
