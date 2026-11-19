@@ -99,7 +99,14 @@ test("an accepted request creates one generation-fenced dispatch job across iden
   expect(await queue.accept(caller, input)).toMatchObject({ status: "queued" });
   await database().query("update sandboxes set lifecycle_generation=8 where id=$1", [input.id]);
   expect(await queue.accept(caller, input)).toMatchObject({ status: "queued" });
-  const { rows } = await database().query<{ payload_enc: Uint8Array<ArrayBuffer> }>(
+  const { rows } = await database().query<{
+    kind: string;
+    sandbox_id: string;
+    org_id: string;
+    generation: string;
+    state: string;
+    payload_enc: Uint8Array<ArrayBuffer>;
+  }>(
     "select kind,sandbox_id,org_id,generation::text,state,payload_enc from public.jobs",
   );
   expect(rows).toEqual([
