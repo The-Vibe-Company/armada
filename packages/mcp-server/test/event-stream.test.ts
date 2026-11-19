@@ -120,3 +120,22 @@ test("refuses an authenticated caller outside the sandbox scope before sending s
   expect(response?.status).toBe(403);
   expect(await response?.json()).toMatchObject({ error: { code: "forbidden" } });
 });
+
+test("server drain ends an idle feed so the client can reconnect", async () => {
+  const f = await fixture();
+  const drain = new AbortController();
+  const { promise: waiting, resolve: enteredWait } = Promise.withResolvers<void>();
+  const response = await createEventStream({
+    now: () => 0,
+    wait: (_ms, signal) =>
+      new Promise<void>((resolve) => {
+        signal.addEventListener("abort", () => resolve(), { once: true });
+        enteredWait();
+      }),
+  })(f.request(), { ...f.options, eventStreamShutdown: drain.signal });
+  const reader = response.body!.getReader();
+  const pending = reader.read();
+  await waiting;
+  drain.abort();
+  expect((await pending).done).toBe(true);
+});

@@ -12,6 +12,8 @@ export { bunSql } from "./sql.ts";
 export async function startServer(env: Record<string, string | undefined>, options: ServerOptions = {}) {
   const services = await createServerServices(env, options);
   const { config, control, runtimeSockets } = services;
+  const eventStreamShutdown = new AbortController();
+  control.eventStreamShutdown = eventStreamShutdown.signal;
   const assembly = assembleServer(services);
   let configureDockerArchiveTimeout: ((request: Request) => void) | undefined;
   const handler = createHandler({
@@ -53,8 +55,8 @@ export async function startServer(env: Record<string, string | undefined>, optio
   // Only authenticated normal Docker launches opt out; their service deadline
   // remains bounded, and other providers/routes keep their existing timeouts.
   control.configureDockerLaunchRequest = (request) => server.timeout(ingressRequest(request), 0);
-  // Archive validation and encrypted chunk publication have their own bounded deadline.
   control.configureEventStreamRequest = (request) => server.timeout(ingressRequest(request), 30);
+  // Archive validation and encrypted chunk publication have their own bounded deadline.
   configureDockerArchiveTimeout = (request) => server.timeout(ingressRequest(request), 45);
   services.configureAccountDispatch();
   const workers = assembly.planWorkers().start();
@@ -62,6 +64,7 @@ export async function startServer(env: Record<string, string | undefined>, optio
     ...assembly.shutdown,
     beginDrain: () => {
       requestDrain.beginDrain();
+      eventStreamShutdown.abort();
       workers.stop();
     },
     workersDone: workers.done,

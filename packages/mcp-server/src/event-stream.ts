@@ -46,17 +46,16 @@ export function createEventStream(time = { now: () => performance.now(), wait: w
     const read = eventReader(request, options, options.eventFeed, sandboxId);
     const wake = runtimeWakes.watch(eventFeedWakeKey(sandboxId));
     const cancel = new AbortController();
-    const signal = AbortSignal.any([request.signal, cancel.signal]);
-    const close = () => {
-      wake.close();
-      signal.removeEventListener("abort", close);
-    };
-    signal.addEventListener("abort", close, { once: true });
+    const signal = AbortSignal.any([
+      request.signal,
+      cancel.signal,
+      ...(options.eventStreamShutdown ? [options.eventStreamShutdown] : []),
+    ]);
 
     try {
       const initial = await read(cursor);
       if (!initial || signal.aborted) {
-        close();
+        wake.close();
         return denied();
       }
       options.configureEventStreamRequest?.(request);
@@ -72,9 +71,16 @@ export function createEventStream(time = { now: () => performance.now(), wait: w
         heartbeatAt = time.now() + HEARTBEAT_MS;
       }
 
+      let finish: (() => void) | undefined;
       const stream = new ReadableStream<Uint8Array>(
         {
           start(controller) {
+            finish = () => {
+              signal.removeEventListener("abort", finish!);
+              wake.close();
+              if (!cancel.signal.aborted) controller.close();
+            };
+            signal.addEventListener("abort", finish, { once: true });
             if (initial.length) emit(controller, initial);
           },
           async pull(controller) {
@@ -87,9 +93,10 @@ export function createEventStream(time = { now: () => performance.now(), wait: w
                   return;
                 }
                 if (wait) await wake.wait(signal, Math.min(RECHECK_MS, remaining), time.wait);
-                if (signal.aborted) break;
+                if (signal.aborted) return;
                 const page = await read(cursor);
-                if (!page || signal.aborted) break;
+                if (signal.aborted) return;
+                if (!page) break;
                 wait = page.length < EVENT_PAGE_SIZE;
                 if (page.length) {
                   emit(controller, page);
@@ -97,16 +104,12 @@ export function createEventStream(time = { now: () => performance.now(), wait: w
                 }
               }
             } catch {
-              close();
-              if (!cancel.signal.aborted) controller.close();
-              return;
+              if (signal.aborted) return;
             }
-            close();
-            if (!cancel.signal.aborted) controller.close();
+            finish?.();
           },
           cancel() {
             cancel.abort();
-            close();
           },
         },
         { highWaterMark: 0 },
@@ -119,7 +122,7 @@ export function createEventStream(time = { now: () => performance.now(), wait: w
         },
       });
     } catch {
-      close();
+      wake.close();
       return fail(503, "unavailable", "Sandbox events are unavailable.");
     }
   };
