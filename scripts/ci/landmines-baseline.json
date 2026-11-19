@@ -724,7 +724,7 @@
     "packages/core/src/resource-validation.ts": 1,
     "packages/core/src/routine-legacy-schedule.ts": 1,
     "packages/core/src/routine-schedule.ts": 15,
-    "packages/core/src/routine-scheduler.ts": 19,
+    "packages/core/src/routine-scheduler.ts": 17,
     "packages/core/src/routine-service.ts": 4,
     "packages/core/src/routines.ts": 4,
     "packages/core/src/runtime-bootstrap.ts": 1,
