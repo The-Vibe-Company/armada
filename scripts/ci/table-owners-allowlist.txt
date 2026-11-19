@@ -55,7 +55,6 @@ packages/mcp-server/src/runtime-checkpoint.ts	sandboxes	update
 packages/mcp-server/src/runtime-commands.ts	account_turn_queue	update
 packages/mcp-server/src/runtime-events.ts	sandbox_turn_models	update
 packages/mcp-server/src/runtime-github.ts	github_runtime_issued	insert
-packages/mcp-server/src/runtime-idle.ts	sandboxes	update
 packages/mcp-server/src/runtime-mcp.ts	mcp_bootstraps	insert
 packages/mcp-server/src/runtime-mcp.ts	mcp_bootstraps	update
 packages/mcp-server/src/runtime-resume.ts	sandbox_launch_stages	update

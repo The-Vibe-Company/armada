@@ -284,6 +284,23 @@ reasoning effort case in `acp.test.ts` is rejected before the driver spawns a
 child. The private prompt working-directory case in `cwd.test.ts` injects an
 in-process driver. The two native working-directory cases run only on Linux.
 
+### Remaining Agent Runtime subprocess cases
+
+An `execve` audit of the 55 Agent Runtime unit files at `82e5a55c` found two
+files outside the preceding inventories that start native harness fixtures.
+The direct-syntax allowlist misses both because the drivers own the spawn.
+The times are whole-case measurements from untraced Linux runs with Bun 1.4.2
+after `bun scripts/prepare-runtime.ts`.
+
+| File under `packages/agent-runtime/test` | Case | Local subprocess boundary | Local |
+| --- | --- | --- | ---: |
+| `messages.test.ts` | claude correlates deltas and snapshots without merging distinct messages | The Claude SDK starts the local `claude-process.ts` fixture. | 34.81 ms |
+| `messages.test.ts` | codex correlates deltas and snapshots without merging distinct messages | CodexDriver starts the local `app-server.ts` fixture. | 30.04 ms |
+| `request-receipts.test.ts` | a steer refused while a completed turn awaits auth publication replays its definite status | Runner starts a real CodexDriver backed by the local `app-server.ts` fixture. | 41.79 ms |
+
+The other receipt cases use injected drivers or return before starting a
+harness. The workspace tests inject synthetic children.
+
 ## Process-spawning unit cases in `provider-modal`
 
 The [process-test allowlist](../scripts/ci/process-tests.txt) records matching
@@ -306,19 +323,6 @@ The audit included tracked Modal unit files and their process-capable helpers.
 The CLI boundary in `conformance-app.test.ts` injects its command runner, and
 the guest process in `runtime-bootstrap.test.ts` is simulated in a VM.
 Explicit release, conformance and probe files are outside unit discovery.
-
-## Process-spawning unit cases in Dashboard
-
-The two Dashboard entries in the [process-test allowlist](../scripts/ci/process-tests.txt)
-each contain one case that reaches a subprocess. The times below measure each
-whole case in a focused Linux run using Bun 1.4.2 on main at `67d096dd`.
-
-| File under `apps/dashboard/test` | Case | Local subprocess boundary | Local |
-| --- | --- | --- | ---: |
-| `routine-staging-transport.test.ts` | routine cleanup DELETE reaches the configured control API through the public origin | Python runs the routine staging checker's request construction with a fake opener. The test forwards the captured request through the Dashboard proxy in process. | 75.06 ms |
-| `staging-check-route-parity.test.ts` | staging checker status and stop preserve CLI public-proxy routes, identity and org | Python sends the staging checker's requests to a loopback Dashboard proxy fixture with a fake upstream. | 65.40 ms |
-
-Both staging-checker cases use local fixtures and make no calls to deployed services.
 
 ## Process-spawning unit cases in CLI
 
@@ -995,7 +999,8 @@ synchronize through a local FIFO.
 
 ### `scripts/routines-staging.test.ts`
 
-Python runs the offline routine runner unit suite with injected HTTP.
+Python runs the offline routine runner unit suite with injected HTTP, including
+the public sandbox deletion path, bearer header and organization query.
 
 | Case | Local (ms) |
 | --- | ---: |
@@ -1003,7 +1008,8 @@ Python runs the offline routine runner unit suite with injected HTTP.
 
 ### `scripts/sandbox-access/staging-check.test.ts`
 
-Python runs the offline sandbox-access unit suite. On the baseline, this
+Python runs the offline sandbox-access unit suite, including the public status
+and stop request paths, headers and JSON bodies. On the baseline, this
 wrapper took 1,080.77 ms. Profiling attributed 900 ms to 47 default CA store
 loads, although the tests substitute the HTTP transport. The fixture now skips
 loading the host trust store while keeping the real TLS context and redirect

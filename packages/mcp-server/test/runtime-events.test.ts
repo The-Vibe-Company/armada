@@ -756,6 +756,123 @@ test("the runtime sweep settles a completed turn published by an overlapping ser
   expect(checkpoint).not.toHaveBeenCalled();
 });
 
+test.each(["current", "superseded", "rolled back"] as const)(
+  "idle stop handoff with a %s checkpoint publication",
+  async (scenario) => {
+    const f = await fixture();
+    const active = await f.enrol();
+    const promptId = crypto.randomUUID();
+    await f.db.query(
+      `update sandboxes set task_prompt_id=$2,expires_at=now()+interval '1 hour',
+       reconcile_after=now()+interval '1 hour' where id=$1`,
+      [f.id, promptId],
+    );
+    const event: AgentEvent = { id: promptId, kind: "prompt", promptId, status: "finished", at: 1, text: "" };
+    expect((await f.publish(active, [{ sequence: 1, event }])).status).toBe(200);
+    const read = async () =>
+      (
+        await f.db.query<{
+          status: string;
+          status_reason: string | null;
+          lifecycle_generation: string;
+          stop_generation: string;
+          expires_at: string;
+          stop_requested: boolean;
+          due: boolean;
+        }>(
+          `select status,status_reason,lifecycle_generation::text,stop_generation::text,expires_at::text,
+                stop_requested_at is not null as stop_requested,reconcile_after<=now() as due
+         from sandboxes where id=$1`,
+          [f.id],
+        )
+      ).rows[0]!;
+    const before = await read();
+    const checkpointRequests: string[] = [];
+    let now = 100;
+    const idle = createRuntimeIdle(
+      f.sql,
+      ENCRYPTION_KEY,
+      async (_actor, input, guard) => {
+        await guard!(f.sql);
+        await f.db.query(
+          `insert into runtime_checkpoints(sandbox_id,epoch,request_id,watermark,completed_at)
+         values($1,$2,$3,1,now()) on conflict (sandbox_id,epoch) do nothing`,
+          [f.id, active.epoch, input.request_id],
+        );
+        if (scenario === "superseded")
+          await f.db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [f.id]);
+        checkpointRequests.push(input.request_id);
+        return {
+          id: input.id,
+          requestId: input.request_id,
+          runtime: { kind: "armada", epoch: active.epoch },
+          checkpoint: { state: "complete", watermark: 1, acknowledgedSequence: 1 },
+        };
+      },
+      { delayMs: 10, now: () => now },
+    );
+    const sweep = () => idle.reconcileOne(new AbortController().signal);
+    const readJournal = async () =>
+      (
+        await f.db.query(
+          `select from_status,to_status,actor,code,generation::text
+         from sandbox_transitions where sandbox_id=$1 and to_status='stopping'`,
+          [f.id],
+        )
+      ).rows;
+    if (scenario === "rolled back") {
+      await f.db.exec(`
+        create function fail_idle_stop_publication() returns trigger language plpgsql as $$
+        begin
+          raise exception 'idle stop publication failed';
+        end $$;
+        create trigger fail_idle_stop_publication after update of status on sandboxes
+        for each row when (new.status = 'stopping') execute function fail_idle_stop_publication();
+      `);
+      try {
+        await sweep();
+        expect(await read()).toEqual(before);
+        expect(await readJournal()).toEqual([]);
+        expect(checkpointRequests).toHaveLength(1);
+      } finally {
+        await f.db.exec(
+          "drop trigger fail_idle_stop_publication on sandboxes; drop function fail_idle_stop_publication()",
+        );
+      }
+      now += 60_000;
+    }
+    await sweep();
+    expect(checkpointRequests).toHaveLength(scenario === "rolled back" ? 2 : 1);
+    if (scenario === "rolled back") expect(checkpointRequests[1]).toBe(checkpointRequests[0]);
+    const journal = await readJournal();
+    if (scenario === "superseded") {
+      expect(journal).toEqual([]);
+      expect(await read()).toEqual({
+        ...before,
+        lifecycle_generation: String(Number(before.lifecycle_generation) + 1),
+      });
+    } else {
+      expect(journal).toEqual([
+        {
+          from_status: "ready",
+          to_status: "stopping",
+          actor: "idle",
+          code: "runtime_checkpoint_idle_paused",
+          generation: before.lifecycle_generation,
+        },
+      ]);
+      expect(await read()).toEqual({
+        ...before,
+        status: "stopping",
+        status_reason: "idle_paused",
+        stop_requested: true,
+        stop_generation: String(Number(before.stop_generation) + 1),
+        due: true,
+      });
+    }
+  },
+);
+
 test("idle evidence upgrades long archives, survives enrolment renewal, and blocks unresolved turns and commands", async () => {
   const f = await fixture();
   let active = await f.enrol();

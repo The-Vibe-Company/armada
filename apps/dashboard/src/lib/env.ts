@@ -1,4 +1,4 @@
-export type SupabaseEnv = { url: string; anonKey: string };
+type SupabaseEnv = { url: string; anonKey: string };
 
 /** The only Supabase settings the dashboard has: a URL and the public anon key. Never a service key. */
 export function supabaseEnv(): SupabaseEnv {
