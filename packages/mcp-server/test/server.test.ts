@@ -694,7 +694,7 @@ describe("tools", () => {
       `select e.account_id, e.account_version, e.code, e.resets_at, e.event_at::text
        from account_exhaustion e join sandboxes s on s.credential_id=e.account_id and s.credential_version=e.account_version
        where s.id=$1`,
-      [launched.data.id],
+      [launchSandboxId(launched.data)],
     );
     expect(health.rows).toMatchObject([
       { code: "usage_limit_exceeded", resets_at: new Date(resetsAt), event_at: "10" },
@@ -705,12 +705,13 @@ describe("tools", () => {
     const { token, client, people, boat, db } = await start();
     const mcp = await client(await token(people.member));
     const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude", prompt: "go" });
+    const id = launchSandboxId(launched.data);
     const promptId = "prompt_1";
     const resetsAt = "2026-11-10T00:00:00.000Z";
     const limit = { code: "usage_limit_exceeded", resetsAt };
     const { model } = boat.prompts[0]!;
     await db.query("update sandbox_turn_models set evidence=$3::jsonb where sandbox_id=$1 and prompt_id=$2", [
-      launched.data.id,
+      id,
       promptId,
       JSON.stringify({
         requestedModel: model,
@@ -730,7 +731,7 @@ describe("tools", () => {
     });
     boat.finish("bx_1", promptId, "failed");
 
-    const status = await call(mcp, "status", { id: launched.data.id, prompt_id: promptId });
+    const status = await call(mcp, "status", { id, prompt_id: promptId });
     expect(status.data.prompt).toMatchObject({ state: "failed", limit });
     const health = await db.query("select resets_at,event_at::text from account_exhaustion");
     expect(health.rows).toEqual([{ resets_at: new Date(resetsAt), event_at: "10" }]);
