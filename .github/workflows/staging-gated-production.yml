@@ -234,8 +234,9 @@ jobs:
         env:
           ARMADA_SMOKE: create_real_compute
           ARMADA_SMOKE_JOURNAL: .smoke/sandboxes.json
+          REAPER_OUTCOME: ${{ steps.reaper.outcome }}
         run: |
-          if [[ "${{ steps.reaper.outcome }}" != success ]]; then
+          if [[ "$REAPER_OUTCOME" != success ]]; then
             printf '%s\n' '{"step":"smoke_reaper_evidence","pass":false,"code":"reaper_preflight_failed"}' > "$RUNNER_TEMP/armada-smoke.jsonl"
             : > "$RUNNER_TEMP/dashboard-smoke.jsonl"
             exit 1
