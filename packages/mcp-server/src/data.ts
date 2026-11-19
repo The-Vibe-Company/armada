@@ -740,14 +740,15 @@ export function createSqlData(
         );
       },
       async update(id, patch) {
+        const reason = statusReasonOf(patch);
         if (patch.runtimeFailureFrom !== undefined) {
-          if (patch.expectedGeneration === undefined || patch.statusReason == null)
+          if (patch.expectedGeneration === undefined || reason === undefined)
             throw new DataError("Runtime failure publication requires a transaction, generation and diagnostic.");
           const result = await recordObservedRuntimeFailure(sql, scope, {
             sandboxId: id,
             generation: patch.expectedGeneration,
             fromState: patch.runtimeFailureFrom,
-            reason: patch.statusReason,
+            reason,
             stoppedAt: patch.stoppedAt ?? null,
           });
           if (result.kind === "conflict")
@@ -815,7 +816,6 @@ export function createSqlData(
         const extensionDeadlineParam = patch.expiresAt === undefined ? undefined : params.length;
         if (patch.effectiveTtlSeconds !== undefined)
           set("effective_ttl_seconds", patch.effectiveTtlSeconds, "::integer");
-        const reason = statusReasonOf(patch);
         if (reason !== undefined) set("status_reason", reason, "::text");
         if (sets.length === 0) return;
         let fence = "";

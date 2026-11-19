@@ -92,8 +92,9 @@ test.each([
   { outcome: "applied", confirmed: false },
   { outcome: "stale", confirmed: true },
   { outcome: "rollback", confirmed: true },
+  { outcome: "release_failed", confirmed: true },
 ] as const)("runtime physical failure ($outcome, exit confirmed=$confirmed)", async ({ outcome, confirmed }) => {
-  const { db, people, sharedGoldenId } = await failureDatabase();
+  const { db, people, sharedGoldenId, openaiCredentialId } = await failureDatabase();
   const boat = fakeBoat();
   const machine = await boat.provider.fork({ from: "snapshot" });
   const id = crypto.randomUUID();
@@ -109,7 +110,17 @@ test.each([
     via: "service",
   }).sandboxes;
   const sandbox = (await store.get(id))!;
-  const diagnostic = "Provider reported a runtime failure.";
+  const diagnostic = confirmed ? "Provider reported a runtime failure. ".repeat(100) : "";
+  await db.query(
+    `insert into account_turn_queue(sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,
+      input_hash,input_enc,conversation_id,state,dispatch_generation)
+     values ($1,$2,$3,$4,$5,1,1,'hash','data','conversation','dispatching',$6)`,
+    [id, crypto.randomUUID(), openaiCredentialId, people.owner, people.org, sandbox.lifecycleGeneration],
+  );
+  await db.query("insert into account_agent_reservations(sandbox_id,account_id) values ($1,$2)", [
+    id,
+    openaiCredentialId,
+  ]);
   Object.assign(boat.sandbox(machine.id).info, {
     state: "failed",
     providerState: "failed",
@@ -120,9 +131,15 @@ test.each([
     await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [id]);
   if (outcome === "rollback")
     await db.exec("alter table sandboxes add constraint reject_observed_exit check (stopped_at is null)");
+  if (outcome === "release_failed")
+    await db.exec(`create function reject_reservation_release() returns trigger language plpgsql as $$
+      begin raise exception 'Reservation release failed'; end $$;
+      create trigger reject_reservation_release before delete on account_agent_reservations
+      for each row execute function reject_reservation_release();`);
   try {
     const read = readStatus(boat.provider, store, sandbox, { now });
     if (outcome === "rollback") await expect(read).rejects.toThrow("reject_observed_exit");
+    else if (outcome === "release_failed") await expect(read).rejects.toThrow("Reservation release failed");
     else expect(await read).toMatchObject({ status: outcome === "applied" ? "failed" : "ready" });
 
     const journal = await db.query(
@@ -130,6 +147,8 @@ test.each([
       [id],
     );
     const row = await store.get(id);
+    const reservation = await db.query("select sandbox_id from account_agent_reservations where sandbox_id=$1", [id]);
+    expect(reservation.rows).toEqual(outcome === "applied" && confirmed ? [] : [{ sandbox_id: id }]);
     if (outcome === "applied") {
       expect(journal.rows).toEqual([
         {
@@ -142,7 +161,7 @@ test.each([
       ]);
       expect(row).toMatchObject({
         status: "failed",
-        statusReason: diagnostic,
+        statusReason: confirmed ? diagnostic.slice(0, 2000) : null,
         stoppedAt: confirmed ? now.toISOString() : null,
       });
     } else {
@@ -151,5 +170,9 @@ test.each([
     }
   } finally {
     if (outcome === "rollback") await db.exec("alter table sandboxes drop constraint reject_observed_exit");
+    if (outcome === "release_failed")
+      await db.exec(
+        "drop trigger reject_reservation_release on account_agent_reservations; drop function reject_reservation_release()",
+      );
   }
 });

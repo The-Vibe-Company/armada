@@ -9,6 +9,7 @@ import {
   VaultError,
 } from "@armada/core/server";
 import type { ModalProvider } from "@armada/provider-modal";
+import { releaseAccountCapacity } from "./account-capacity.ts";
 import { mergedWorkProof } from "./merged-work.ts";
 
 import { nativeIdleDue, nativeQuiescent } from "./native-idle.ts";
@@ -106,7 +107,7 @@ export async function recordObservedRuntimeFailure(
     sandboxId: string;
     generation: number;
     fromState: "ready" | "running";
-    reason: string;
+    reason: string | null;
     stoppedAt: string | null;
   },
 ) {
@@ -133,11 +134,13 @@ export async function recordObservedRuntimeFailure(
       code: "runtime_provider_failure",
       effects: [],
     });
-    if (result.kind === "applied")
+    if (result.kind === "applied") {
       await tx.query(
         "update public.sandboxes set status_reason=$2,stopped_at=coalesce($3::timestamptz,stopped_at) where id=$1",
         [sandboxId, reason, stoppedAt],
       );
+      if (stoppedAt !== null) await releaseAccountCapacity(tx, sandboxId);
+    }
     return result;
   });
 }
