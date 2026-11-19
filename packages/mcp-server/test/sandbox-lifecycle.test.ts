@@ -872,3 +872,48 @@ for (const loss of ["membership", "credential", "credential_stale_generation", "
     expect(await worker.reconcileOne()).toBe(false);
   });
 }
+
+test.each(["queued", "dispatching"])("idle-only stop preserves %s account work", async (state) => {
+  const { db, people } = await sharedDatabase();
+  const sql: Sql = {
+    query: (q, v) => db.query(q, v),
+    transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
+  };
+  const store = createSqlData(sql)({
+    userId: people.owner,
+    orgs: [{ orgId: people.org, role: "member" }],
+    via: "service",
+  }).sandboxes;
+  const id = crypto.randomUUID();
+  await db.query(
+    `insert into sandboxes (id, provider, provider_sandbox_id, golden_id, org_id, owner_id, harness, status)
+     select $1,'boat','idle-stop-race',id,$2,$3,'claude','ready' from goldens where name='shared'`,
+    [id, people.org, people.owner],
+  );
+  const idle = await store.get(id);
+  if (!idle) throw Error("missing sandbox");
+  // Queue acceptance has won since the idle observation, without changing its generation.
+  await db.query(
+    `insert into account_turn_queue
+       (sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id,state)
+     select $1,gen_random_uuid(),id,$2,$3,1,1,'hash',decode('00','hex'),'conversation',$4
+     from credentials where scope='org' and owner_id=$3 and kind='openai'`,
+    [id, people.owner, people.org, state],
+  );
+
+  const admission = { status: "stopping", stopRequested: true, onlyIfIdle: true } as const;
+  const stop = (patch: typeof admission | Omit<typeof admission, "onlyIfIdle">) =>
+    sandboxActivity(store, idle, patch, async () => ({
+      result: "stopped",
+      patch: { status: "stopped", stoppedAt: new Date().toISOString(), stopRequested: false },
+    }));
+
+  await expect(stop(admission)).rejects.toThrow("The sandbox is busy");
+  expect(await store.get(id)).toMatchObject({ status: "ready", lifecycleGeneration: idle.lifecycleGeneration });
+  expect((await db.query("select state from account_turn_queue where sandbox_id=$1", [id])).rows).toEqual([{ state }]);
+
+  expect(await stop({ status: "stopping", stopRequested: true })).toBe("stopped");
+  expect((await db.query("select state from account_turn_queue where sandbox_id=$1", [id])).rows).toEqual([
+    { state: "failed" },
+  ]);
+});

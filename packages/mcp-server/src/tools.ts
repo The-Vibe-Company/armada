@@ -19,7 +19,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as z from "zod";
 import type { Caller } from "./caller.ts";
 import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
-import type { SandboxView, ScopedData } from "./data.ts";
+import type { SandboxView, ScopedData, ServerSandboxPatch } from "./data.ts";
 import type { GoldenLaunchCredentials } from "./launch-account-admission.ts";
 import { mcpLaunchContract, runMcpLaunch } from "./mcp-launch-tool.ts";
 import { registerListTool, registerLogsTool, registerStatusTools } from "./mcp-read-tools.ts";
@@ -676,8 +676,9 @@ function createToolServer(
           status: found.status === "failed" ? "failed" : "stopping",
           stoppedAt: null,
           stopRequested: true,
+          onlyIfIdle: args.only_if_idle === true,
           ...(found.statusReason === "expired" ? { statusReason: "expired" } : {}),
-        },
+        } satisfies ServerSandboxPatch,
         async (signal) => {
           signal.throwIfAborted();
           // A historical warning is not proof that this stop has captured current work.
