@@ -291,7 +291,7 @@ test("Modal queued authority is rechecked and a lost worker fence cannot publish
     const fenced = await f.jobs.admit(f.provider, f.actor, { ...f.input, name: "fenced" }, crypto.randomUUID());
     worker = dispatchGoldenBuild(f.db, f.jobs);
     await started;
-    await f.db.query("update golden_build_jobs set lease_until=now()-interval '1 second' where id=$1", [fenced.jobId]);
+    await f.db.query("update golden_build_jobs set deadline='-infinity' where id=$1", [fenced.jobId]);
     // Preserve the live shared lease until the original worker stops, then recover the receipt.
     expect(await dispatchGoldenBuild(f.db, f.jobs)).toBe(false);
     release();
@@ -460,7 +460,6 @@ test("a lease that expires during rollback cleanup hands the recorded artifact t
       if (!swept) {
         swept = true;
         // The attempt's lease expires while its collection call is open; another worker tick sweeps it.
-        await f.db.query("update golden_build_jobs set lease_until='-infinity'");
         await f.db.query("update public.jobs set lease_until='-infinity' where state='leased'");
         await dispatchGoldenBuild(f.db, f.jobs);
       }
@@ -548,7 +547,6 @@ test("a worker replaced during the image call after a failed first record leaves
       if (calls > 2) return "collected";
       // The worker's lease expires while its image call is open and another tick sweeps it. The
       // call then never returns before recovery: the original worker is gone.
-      await f.db.query("update golden_build_jobs set lease_until='-infinity'");
       await f.db.query("update public.jobs set lease_until='-infinity' where state='leased'");
       await dispatchGoldenBuild(f.db, f.jobs);
       replaced();
