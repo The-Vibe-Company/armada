@@ -16,3 +16,5 @@ Follows #1040's relationship-first navigation. The template panel's environment,
 ## Validation
 
 Browser coverage follows a template → environment → template → variable on desktop and phone, verifies the tool/account destinations, checks partial-revision usage and secret/skill metadata links. Existing Templates and Build-section checks run alongside it. Dashboard unit tests and full-repo lint/typecheck also run locally. Independent review and CI belong to coordinator automation; no CI polling.
+
+The phone regression uses valid 128-character synthetic variable and secret keys. It checks individual text-fragment bounds, link and row overflow, and version-label bounds inside the sheet. The pre-fix badge clipped a line. Allowing the badge to shrink and unbroken text to wrap keeps the keys and version labels visible.
