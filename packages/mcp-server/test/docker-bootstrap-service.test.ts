@@ -753,11 +753,11 @@ test.each(["cleanup", "claim"] as const)(
     // A held poll's read-only recheck wakes for the unacknowledged claim alone.
     expect(await hosts.mayHaveWork(f.hostToken, f.installationId, false, [], false)).toBe(false);
     expect(await hosts.mayHaveWork(f.hostToken, f.installationId, false, [], true)).toBe(true);
-    const replacementId = randomUUID();
     if (winner === "claim") {
       await tick(store, api, executor, false, () => 999);
       // An abandoned request cannot reserve this lifecycle against a new caller
       // request. The replacement must get its own durable host acknowledgement.
+      const replacementId = randomUUID();
       expect((await service.resume(f.actor, f.sandbox.id, replacementId)).state).toBe("claiming");
       await tick(store, api, executor, false, () => 999);
       // An acknowledged claim from before timestamp storage must stay undated on replay.
@@ -787,7 +787,6 @@ test.each(["cleanup", "claim"] as const)(
       const lateId = randomUUID();
       expect((await service.resume(f.actor, f.sandbox.id, lateId)).state).toBe("claiming");
       expect((await service.resume(f.actor, f.sandbox.id, requestId)).state).toBe("pending");
-      await denied(service.resume(f.actor, f.sandbox.id, replacementId));
       expect((await service.resume(f.actor, f.sandbox.id, requestId)).state).toBe("pending");
       expect(
         (
@@ -833,6 +832,46 @@ test.each(["cleanup", "claim"] as const)(
     }
   },
 );
+
+test("resume admission rejects a generation change after claim selection", async () => {
+  const db = database();
+  const f = await fixture();
+  await service.bootstrap(f.actor, f.sandbox.id, f.requestId);
+  await hosts.complete(f.hostToken, f.installationId, { requestId: f.requestId, outcome: "completed" });
+  await db.query("update public.sandboxes set status='stopped',stopped_at=now() where id=$1", [f.sandbox.id]);
+  const requestId = randomUUID();
+  expect((await service.resume(f.actor, f.sandbox.id, requestId)).state).toBe("claiming");
+  await hosts.claimResume(f.hostToken, f.installationId, requestId, true);
+
+  await db.exec(`create function public.advance_resume_generation() returns trigger language plpgsql as $$
+    begin
+      update public.sandboxes set lifecycle_generation=lifecycle_generation+1 where id=new.sandbox_id;
+      return new;
+    end $$;
+    create trigger advance_resume_generation after update on public.docker_resume_claims for each row
+      execute function public.advance_resume_generation();`);
+  try {
+    await denied(service.resume(f.actor, f.sandbox.id, requestId));
+  } finally {
+    await db.exec(
+      "drop trigger advance_resume_generation on public.docker_resume_claims; drop function public.advance_resume_generation();",
+    );
+  }
+  expect(
+    (
+      await db.query(
+        `select s.status, s.lifecycle_generation=c.lifecycle_generation as same_generation,
+           r.lifecycle_generation=c.lifecycle_generation as same_ticket,
+           exists(select 1 from public.sandbox_transitions t where t.sandbox_id=s.id and t.to_status='starting') as journaled,
+           exists(select 1 from public.docker_host_jobs j where j.request_id=c.request_id) as enqueued
+         from public.sandboxes s join public.docker_resume_claims c on c.sandbox_id=s.id and c.request_id=$2
+         join public.runtime_enrolments r on r.sandbox_id=s.id where s.id=$1`,
+        [f.sandbox.id, requestId],
+      )
+    ).rows,
+  ).toEqual([{ status: "stopped", same_generation: true, same_ticket: true, journaled: false, enqueued: false }]);
+  expect((await service.resume(f.actor, f.sandbox.id, requestId)).state).toBe("pending");
+});
 
 test("a failed resume mailbox insert rolls back admission and can replay the acknowledged claim", async () => {
   const db = database();
