@@ -104,8 +104,7 @@ lost answers, `outcome_unknown` (on any status), other 5xx and an unknown code w
 message to `unconfirmed` (check the list before launching again). Each code selects
 local text adapted from the dashboard's failure help; validation codes and codes without
 local text add the server's own message, on one line of at most 300 characters.
-The sandbox deletion API is `DELETE /api/v1/sandboxes/{id}`. The iOS command
-surface covers launch, stop, and resume.
+The sandbox deletion API is `DELETE /api/v1/sandboxes/{id}`.
 
 ## Upgrade compatibility
 
