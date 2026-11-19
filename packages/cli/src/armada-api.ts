@@ -90,11 +90,16 @@ export async function createArmadaApiClient(
     token = saved.accessToken;
   }
 
+  const rawResponses = options.rawJson ? new WeakMap<Response, Response>() : undefined;
   return commandClient(
     origin,
     {
       // Bun has an independent idle deadline. The explicit signal owns the request budget.
-      fetch: (input, options) => io.fetch(input, { ...options, ...{ timeout: false } }),
+      fetch: async (input, options) => {
+        const response = await io.fetch(input, { ...options, ...{ timeout: false } });
+        if (rawResponses && response.ok && response.body) rawResponses.set(response, response.clone());
+        return response;
+      },
       token: () => token,
       timeoutMs,
       invalidPath: (error) => {
@@ -126,7 +131,8 @@ export async function createArmadaApiClient(
             `Armada API request failed (HTTP ${response.status}).`,
           );
         if (bodyReadFailed) throw new AuthError("Armada API response could not be read.", "unavailable");
-        return payload;
+        if (response.status === 204 || response.status === 205) return "";
+        return rawJsonText(rawResponses?.get(response), payload);
       }
       if (result.kind === "transport") {
         throw new AuthError(
@@ -385,6 +391,18 @@ export async function createArmadaApiClient(
       throw new AuthError(apiMessage(payload, `Armada server request failed (${response.status}).`), "unavailable");
     },
   );
+}
+
+async function rawJsonText(response: Response | undefined, payload: unknown): Promise<string> {
+  let text: string | undefined;
+  try {
+    text = await response?.text();
+  } catch {
+    throw new AuthError("Armada API response could not be read.", "unavailable");
+  }
+  if (!text || (payload === null && !/^[\t\n\r ]*null[\t\n\r ]*$/.test(text)))
+    throw new AuthError("Armada API response was not valid JSON.", "unavailable");
+  return text;
 }
 
 async function refresh(

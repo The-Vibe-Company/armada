@@ -108,3 +108,20 @@ test("api rejects malformed JSON without echoing the input or making a request",
   expect(output.stderr).toContain("Request body must be valid JSON.");
   expect(output.stderr).not.toContain(secret);
 });
+
+test.each([
+  ["<html>proxy</html>", 1, ""],
+  ["null", 0, "null\n"],
+  ['{"count":9007199254740993}', 0, '{"count":9007199254740993}\n'],
+])("api distinguishes malformed success from a JSON response %s", async (body, code, stdout) => {
+  const output = await invoke(["org/list"], () => new Response(body));
+  expect(output.code).toBe(code);
+  expect(output.stdout).toBe(stdout);
+  if (code) expect(output.stderr).toContain("Armada API response was not valid JSON.");
+  else expect(output.stderr).toBe("");
+});
+
+test("api accepts a no-content success without printing JSON", async () => {
+  const output = await invoke(["org/list"], () => new Response(null, { status: 204 }));
+  expect(output).toEqual({ code: 0, stdout: "", stderr: "" });
+});

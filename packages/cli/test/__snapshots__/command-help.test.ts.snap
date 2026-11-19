@@ -215,7 +215,7 @@ exports[`armada api help preserves its output 1`] = `
 "Usage: armada api ROUTE [JSON|-]
 POST to /api/v1/ROUTE using the selected Armada login and print the JSON response.
 Pass the route relative to /api/v1/. With no body argument, send {}.
-Pass - to read JSON from stdin, including for bodies that contain secrets.
+Pass - to read JSON from a pipe or redirected file. Use stdin for bodies that contain secrets.
 Treat stdout as sensitive if the endpoint returns credentials.
 Example: armada api org/list
 "
