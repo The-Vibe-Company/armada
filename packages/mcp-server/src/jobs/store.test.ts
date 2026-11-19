@@ -150,6 +150,64 @@ test.each([
   expect(await enqueue()).toBe(id);
 });
 
+test.each([
+  ["unsupported queued state", "queued", "starting", 2, "infinity", false, false],
+  ["stop intent", "queued", "ready", 2, "infinity", true, false],
+  ["expiry", "queued", "running", 2, "-infinity", false, false],
+  ["failed sandbox", "dispatching", "failed", 2, "infinity", false, false],
+  ["deleted sandbox", "dispatching", "deleted", 2, "infinity", false, false],
+  ["stopping after claim", "dispatching", "stopping", 3, "infinity", false, true],
+] as const)(
+  "a turn lease settles the receipt after %s",
+  async (_scenario, state, status, generation, expiry, stopRequested, afterClaim) => {
+    const f = await fixture();
+    const { db, people, store } = f;
+    const sandboxId = await sandbox(f);
+    const requestId = crypto.randomUUID();
+    await seedTurn(f, sandboxId, requestId);
+    await db.query("update account_turn_queue set state=$2 where request_id=$1", [requestId, state]);
+    const jobId = await store.enqueue(
+      "turn_dispatch",
+      sandboxId,
+      2,
+      requestId,
+      { requestId },
+      {
+        orgId: people.org,
+        maxAttempts: 2,
+      },
+    );
+    const changeSandbox = () =>
+      db.query(
+        `update sandboxes set status=$2, lifecycle_generation=$3, expires_at=$4,
+           stop_requested_at=case when $5 then now() end,
+           deleted_at=case when $6 then now() end where id=$1`,
+        [sandboxId, status, generation, expiry, stopRequested, status === "deleted"],
+      );
+    if (!afterClaim) await changeSandbox();
+    const owner = crypto.randomUUID();
+    const job = (await store.claim("turn_dispatch", owner, 30, 1))!;
+    if (afterClaim) {
+      await changeSandbox();
+      expect(await store.inspect(job, owner)).toBe("stale");
+      await store.retireStale(job, owner, "before_handler");
+    }
+    expect(await store.inspect(job, owner)).toBe("lost");
+    expect((await db.query("select state from jobs where id=$1", [jobId])).rows).toEqual([{ state: "failed" }]);
+    expect(
+      (await db.query("select state, failure_reason from account_turn_queue where request_id=$1", [requestId])).rows,
+    ).toEqual([
+      {
+        state: "failed",
+        failure_reason:
+          state === "queued"
+            ? "Queued prompt cannot start: sandbox stopped, deleted, expired, or stopping."
+            : "Dispatch cancelled by confirmed stop.",
+      },
+    ]);
+  },
+);
+
 test("a failed receipt write leaves the stopped turn recoverable by the next job lease", async () => {
   const f = await fixture();
   const { db, people, store } = f;
