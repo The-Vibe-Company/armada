@@ -47,6 +47,7 @@ const jobsLane: LaneFactory = ({
   goldenRetirements,
   options,
   outputs,
+  langfuse,
 }) => {
   const prScan = githubApp
     ? createPullRequestScanJob(
@@ -88,6 +89,7 @@ const jobsLane: LaneFactory = ({
         timeoutMs: 30_000,
         run: (job, context) => goldenRetirements.runJob(job.id, context),
       },
+      langfuse_export: langfuse.exportJob,
       webhook: { concurrency: 1, run: webhooks.run },
       ...(prScan ? { pr_scan: prScan } : {}),
       ...(config.encryptionKey ? { [OUTPUTS_CAPTURE]: outputs.captureJob } : {}),
@@ -173,7 +175,6 @@ export const runtimeModule: ServerModule = ({ mounts, workers, shutdown }) => {
   mounts.push(runtimeMounts);
   workers.managed.set("account-turns", ({ accountTurns }) => accountTurns);
   workers.managed.set("runtime-idle", idleLane);
-  workers.isolated.set("langfuse", ({ langfuse }) => langfuse);
   workers.isolated.set("steer-recovery", ({ nativePrompts }) => nativePrompts.steerRecovery);
   shutdown.stopSockets = ({ runtimeSockets }) => runtimeSockets.stop();
 };

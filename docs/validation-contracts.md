@@ -138,10 +138,123 @@ Linux run using Bun 1.4.2 on main at `5b591243`, after
 | `tool-cache.test.ts` | runtime tool preparation refuses unsafe redirects, changed bytes and failed version self-tests | The bad-version fixture reaches a real shell-script probe. Redirect and digest rejection happen before any probe starts. | 8.57 ms |
 
 The other five cases in `runtime.test.ts` run in process. The delayed detached
-close case replaces `ChildOwner.spawn` with a synthetic child. Other indirect
-runtime paths still need case-level timings, including native harness fixtures
-in `codex.test.ts`, `claude.test.ts`, `native-resume.test.ts` and
-`driver-rate-limit.test.ts`.
+close case replaces `ChildOwner.spawn` with a synthetic child.
+
+### Agent Runtime harness fixture cases
+
+The four files below start local harness fixtures through their production
+drivers or SDKs. The direct-syntax process guard does not see these calls.
+Timings measure whole cases in a focused Linux run using Bun 1.4.2 at
+`42585581`, after `bun scripts/prepare-runtime.ts`.
+
+#### `codex.test.ts`
+
+Process boundary: CodexDriver starts the local `app-server.ts` fixture over JSONL; CodexDriver starts `recorded-resume.ts` for the recorded protocol.
+
+| Case | Local |
+| --- | ---: |
+| Codex waits for interrupt terminal then sends steer once on the same resumed thread | 27.54 ms |
+| Codex usage snapshot includes all native turns restarted by steer within one Armada prompt | 22.90 ms |
+| Codex terminal recorded-failure is a typed failure, never successful completion | 21.21 ms |
+| Codex terminal unauthorized is a typed failure, never successful completion | 19.82 ms |
+| Codex terminal usageLimitExceeded is a typed failure, never successful completion | 20.59 ms |
+| Codex terminal output-limit is a typed failure, never successful completion | 20.17 ms |
+| Codex reports malformed JSON buffered after a terminal notification | 24.00 ms |
+| Codex delivers MCP header and stdio env only through private JSONL, not native argv or global env | 21.73 ms |
+| Codex no-text verification resumes the stored thread without creating a thread or starting a turn | 21.59 ms |
+| Codex no-text verification rejects a mismatched native thread response | 20.64 ms |
+| Codex no-text verification rejects a mismatched native model response | 19.87 ms |
+| native account snapshot reported stays private and never blocks the coding turn | 21.44 ms |
+| native account snapshot unavailable stays private and never blocks the coding turn | 20.99 ms |
+| native renewable writer admission is exclusive only when managed (true) | 45.38 ms |
+| native renewable writer admission is exclusive only when managed (false) | 63.33 ms |
+| external subscription refresh completes an already-running Codex turn over private RPC | 22.54 ms |
+| native usageLimitExceeded preserves only exhausted-window reset evidence in public outcomes (updated, exhausted primary) | 22.51 ms |
+| native usageLimitExceeded preserves only exhausted-window reset evidence in public outcomes (updated, invalid reset) | 21.02 ms |
+| native usageLimitExceeded preserves only exhausted-window reset evidence in public outcomes (updated, primary below cap) | 20.55 ms |
+| native usageLimitExceeded preserves only exhausted-window reset evidence in public outcomes (read fallback) | 19.90 ms |
+| native usageLimitExceeded preserves only exhausted-window reset evidence in public outcomes (raced update) | 20.44 ms |
+| Codex usage trusts native model metadata (fresh, native selected) | 23.94 ms |
+| Codex usage trusts native model metadata (fresh, requested alias) | 23.80 ms |
+| Codex usage trusts native model metadata (resumed, requested alias) | 25.36 ms |
+| Codex usage trusts native model metadata (missing native model) | 22.38 ms |
+| Codex usage trusts native model metadata (current reroute) | 22.17 ms |
+| Codex usage trusts native model metadata (foreign reroute) | 24.83 ms |
+| Codex resumed baseline before is adopted only before dispatch on the verified thread | 21.94 ms |
+| Codex resumed baseline after is adopted only before dispatch on the verified thread | 24.68 ms |
+| Codex resumed baseline partial is adopted only before dispatch on the verified thread | 25.16 ms |
+| Codex resumed baseline foreign is adopted only before dispatch on the verified thread | 22.57 ms |
+| Codex resumed baseline invalid is adopted only before dispatch on the verified thread | 46.08 ms |
+| Codex resumed baseline regressed is adopted only before dispatch on the verified thread | 22.36 ms |
+| Codex resumed baseline lost-optional is adopted only before dispatch on the verified thread | 22.75 ms |
+| Codex resumed baseline late is adopted only before dispatch on the verified thread | 22.09 ms |
+| recorded cold Codex resume publishes one unknown snapshot, never historical totals | 19.52 ms |
+| cold Codex resume validates persisted history: closed | 24.70 ms |
+| cold Codex resume validates persisted history: after-abort | 20.91 ms |
+| cold Codex resume validates persisted history: unclosed | 21.59 ms |
+| cold Codex resume validates persisted history: wrong-session | 20.68 ms |
+| cold Codex resume validates persisted history: corrupt | 20.41 ms |
+| Codex journals a terminal rate limit and remains interruptible during backoff | 20.56 ms |
+| Codex resumes the same thread after throttling without a real wait | 20.87 ms |
+| Codex interrupt during model backoff needs no native interrupt | 21.07 ms |
+| Codex steer during model backoff needs no native interrupt | 20.25 ms |
+| Codex refuses a steer after its turn closed with a replayable refusal | 21.23 ms |
+
+#### `claude.test.ts`
+
+Process boundary: the pinned Claude SDK starts the local `claude-process.ts` fixture.
+
+| Case | Local |
+| --- | ---: |
+| Claude SDK consumes native steering and finishes a merged two-input result once | 24.54 ms |
+| closing one Claude SDK turn leaves another conversation alive for its own interrupt | 26.31 ms |
+| Claude MCP secrets travel only through a private config file and are removed after turn shutdown | 22.84 ms |
+| Claude names a turn cut by the model output limit instead of a configuration failure | 20.03 ms |
+| Claude names a result-only output-limit terminal with no assistant error frame | 20.63 ms |
+| Claude native /usage fallback does not become public assistant text or partials | 22.56 ms |
+| a native result acknowledgement ends private usage suppression before subsequent steered work | 24.53 ms |
+| Claude resumed=false usage never attributes saved session totals to a new prompt | 22.77 ms |
+| Claude resumed=true usage never attributes saved session totals to a new prompt | 22.54 ms |
+| Claude native session reset=false during steer keeps only attributable usage | 23.60 ms |
+| Claude native session reset=true during steer keeps only attributable usage | 21.11 ms |
+| Claude cold resume accounting: saved | 23.98 ms |
+| Claude cold resume accounting: missing | 21.31 ms |
+| Claude cold resume accounting: corrupt | 20.89 ms |
+| Claude cold resume accounting: wrong-session | 21.77 ms |
+| Claude cold resume accounting: reset | 22.62 ms |
+| Claude cold resume accounting: lost-model | 22.92 ms |
+| Claude cold resume accounting: new-model | 23.73 ms |
+| Claude cold resume accounting: optional-absent | 24.32 ms |
+| Claude cold resume accounting: unrelated-corrupt | 23.02 ms |
+| Claude refuses a steer after its stream closed with a replayable refusal | 22.61 ms |
+
+#### `native-resume.test.ts`
+
+Process boundary: the runtime verifies Codex and Claude session continuity through the corresponding local fixture.
+
+| Case | Local |
+| --- | ---: |
+| private native resume verifies the persisted session without prompt/events and denies absent or cross-harness identities | 30.31 ms |
+| Claude native resume initializes the existing session without creating a user turn | 44.77 ms |
+
+#### `driver-rate-limit.test.ts`
+
+Process boundary: the Claude SDK and OpenCode driver start their local fixtures for retry and shutdown scenarios.
+
+| Case | Local |
+| --- | ---: |
+| claude terminal 429 continues the same turn after a fake-clock backoff | 22.47 ms |
+| claude terminal 529 continues the same turn after a fake-clock backoff | 21.86 ms |
+| opencode terminal 429 continues the same turn after a fake-clock backoff | 102.00 ms |
+| opencode terminal 529 continues the same turn after a fake-clock backoff | 95.96 ms |
+| Claude native API retries are reported without starting an Armada backoff | 22.24 ms |
+| OpenCode does not reuse a preceding throttle when the resumed process fails before new output | 96.47 ms |
+| runner shutdown interrupts a turn waiting in OpenCode model backoff | 53.12 ms |
+
+Five other cases in these files run in process. The Codex process-loss
+regression calls the accounting logic directly. Claude's unsafe-home and
+unsupported-reasoning cases reject during preflight. The native-resume
+serialization and credential lifecycle cases use synthetic drivers.
 
 ## Process-spawning unit cases in `provider-modal`
 

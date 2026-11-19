@@ -80,7 +80,9 @@ async function admitGoldenLaunch(
     () => stores.credentials.admit?.(actor, credentials, id, choice.model),
     () => options.beforeFork?.(id),
   );
+  await options.templateSnapshotAdmission?.admit();
   beforeAllocation();
+  const env = forkEnv();
   allocationRisk(true);
   return provider
     .fork({
@@ -88,7 +90,7 @@ async function admitGoldenLaunch(
       ...(golden.provider === "modal" ? { idempotencyKey: id } : {}),
       ...(machineSize.effective ? { size: machineSize.effective } : {}),
       noEnv: true,
-      env: forkEnv(),
+      env,
       ttlSeconds: allocationTtlSeconds,
       labels: {
         armada: "sandbox",
