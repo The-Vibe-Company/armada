@@ -11,20 +11,5 @@
         "publicApi": ["/packages/sdk/"]
       }
     ]
-  },
-  "overrides": [
-    {
-      "files": ["packages/core/src/routine-schedule.ts"],
-      "rules": {
-        "landmines-testing/no-flake-masking": [
-          "error",
-          {
-            "allow": {
-              "packages/core/src/routine-schedule.ts": 1
-            }
-          }
-        ]
-      }
-    }
-  ]
+  }
 }
