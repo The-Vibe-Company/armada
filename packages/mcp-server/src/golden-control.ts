@@ -165,7 +165,7 @@ export async function updateGoldenRoute(
   );
 }
 
-export async function snapshotGoldenRoute(
+async function snapshotGoldenRoute(
   options: GoldenControlOptions,
   caller: Caller,
   body: Record<string, unknown>,
@@ -191,7 +191,7 @@ export async function snapshotGoldenRoute(
   return { name: saved.golden.name, snapshot: saved.snapshotName };
 }
 
-export async function connectGoldenRoute(options: GoldenControlOptions, caller: Caller, body: Record<string, unknown>) {
+async function connectGoldenRoute(options: GoldenControlOptions, caller: Caller, body: Record<string, unknown>) {
   const org = await resolveOrg(options.store, caller.userId, scopedOrg(caller, optional(body, "org")));
   if (!options.providerFor) throw new VaultError("unavailable", "Golden connection is not configured on this server.");
   const name = required(body, "name");

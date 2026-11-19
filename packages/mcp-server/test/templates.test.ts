@@ -18,6 +18,7 @@ import {
   type TemplateRuntime,
   VaultError,
 } from "@armada/core/server";
+import { resetMigratedDatabaseRows } from "../../../scripts/test-support/migrated-database.ts";
 import { AUTH_HEADER, type Driver, Journal, Runner } from "../../agent-runtime/src/index.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
@@ -41,12 +42,17 @@ afterAll(async () => {
 // Primary contract owner: real migrations + service-role authorization/admission, fake physical provider only.
 async function fixture() {
   if (!database) throw new Error("Template database is not open");
-  // Revisions and the last org admin have delete guards, so truncate those tables.
-  await database.exec(`
+  await resetMigratedDatabaseRows(
+    database,
+    `
     reset role;
     reset all;
     set search_path=public;
-    truncate template_launch_requests, launch_template_revisions, launch_templates, members cascade;
+    delete from template_launch_requests;
+    alter table launch_template_revisions disable trigger immutable_template_revision;
+    delete from launch_template_revisions;
+    alter table launch_template_revisions enable trigger immutable_template_revision;
+    delete from launch_templates;
     delete from provider_launch_requests;
     delete from ordinary_launch_receipts;
     delete from sandboxes;
@@ -55,10 +61,14 @@ async function fixture() {
     delete from readable_variables;
     delete from application_secrets;
     delete from credentials;
+    alter table members disable trigger members_guard;
+    delete from members;
+    alter table members enable trigger members_guard;
     delete from orgs;
     delete from auth.users;
     delete from mcp_invalidations;
-  `);
+  `,
+  );
   const { db, people, sharedGoldenId: goldenId, openaiCredentialId: credential } = await seedDatabase(database);
   const queries: string[] = [];
   const sql: Sql = {

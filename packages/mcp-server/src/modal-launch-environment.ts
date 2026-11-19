@@ -12,7 +12,7 @@ import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
 import type { GitHubLaunchOptions } from "./launch-credentials.ts";
 import type { ModelAuthOwnership } from "./model-auth.ts";
 
-export interface ModalLaunchEnvironmentOptions {
+interface ModalLaunchEnvironmentOptions {
   modelAuth?: ModelAuthOwnership;
   sql: Sql;
   vault: CredentialReader;
