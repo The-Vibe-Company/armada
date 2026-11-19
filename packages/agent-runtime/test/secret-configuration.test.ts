@@ -156,9 +156,18 @@ test("receipts and command errors mask short text while retaining command correl
     });
     expect(refused.status).toBe(409);
     expect(await refused.json()).toEqual({ error: "prefix[REDACTED]" });
+    const uncertain = { ...request, requestId: "uncertain" };
+    await expect(
+      executeWithReceipt(journal, uncertain, () => Promise.reject(Error("dispatch interrupted"))),
+    ).rejects.toThrow("dispatch interrupted");
+    journal.registerSecrets(["outcome"]);
+    journal.registerApplicationSecrets(["outcome"]);
+    const fenced = await executeWithReceipt(journal, uncertain, () => Promise.reject(Error("unexpected dispatch")));
+    expect(fenced.status).toBe(200);
+    expect(await fenced.json()).toMatchObject({ error: "request_outcome_unknown" });
     const failed = await runner.handleDialout({ ...command, op: "events", cursor: "bad" });
     expect(failed.status).toBe(409);
-    expect(await failed.json()).toEqual({ error: "invalid_[REDACTED]" });
+    expect(await failed.json()).toEqual({ error: "invalid_cursor" });
   } finally {
     await runner.close();
     journal.close();

@@ -254,7 +254,7 @@ async function main(dialout = false) {
       if (!committed) throw Error("native_auth_publication_conflict");
     }
   };
-  const state = new HarnessState(config.root, journal.redact);
+  const state = new HarnessState(config.root, (text) => journal.redact(text, "transcript"));
   const sourceIdentity = journal.assertRestoreSource(config.grant);
   const restore = config.restoreCheckpoint;
   if (restore) {
@@ -423,7 +423,7 @@ async function main(dialout = false) {
         root: `${config.root}/opencode`,
         cwd: config.cwd,
         env: opencodeEnv,
-        redact: journal.redact,
+        redact: (text) => journal.redact(text, "transcript"),
       }),
       claude: new ClaudeDriver({ cwd: config.cwd, executable: config.claudeExecutable, env: config.claudeEnv }),
       codex: new CodexDriver({

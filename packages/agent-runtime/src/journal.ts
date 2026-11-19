@@ -69,49 +69,120 @@ function maskText(original: string, scrubbed: string, mask: (text: string) => st
   return original === scrubbed ? short : "[REDACTED]";
 }
 
-const protocolIdentityFields = new Set([
-  "id",
-  "uuid",
-  "sandboxId",
-  "conversationId",
-  "promptId",
-  "requestId",
-  "sessionId",
-  "session_id",
-  "threadId",
-  "thread_id",
-  "messageId",
-  "parentUuid",
-  "leafUuid",
-  "generation",
-  "epoch",
+const protocolText = {
+  events: new Set(["id", "kind", "conversationId", "promptId"]),
+  prompts: new Set(["promptId", "conversationId", "request/sandboxId", "request/conversationId", "request/harness"]),
+  processes: new Set(["identity/boot", "identity/start"]),
+  requests: new Set([
+    "requestId",
+    "result/promptId",
+    "result/conversationId",
+    "result/generation",
+    "result/physicalGeneration",
+    "result/nativeSessionId",
+    "result/state",
+    "result/evidence",
+    "result/restoredFrom/epoch",
+    "result/restoredFrom/conversationId",
+    "result/identity/boot",
+    "result/identity/start",
+  ]),
+  transcript: new Set([
+    "type",
+    "uuid",
+    "parentUuid",
+    "sessionId",
+    "payload/id",
+    "payload/session_id",
+    "payload/type",
+    "payload/role",
+    "payload/model",
+    "payload/content/#/type",
+    "message/id",
+    "message/type",
+    "message/role",
+    "message/model",
+    "message/content/#/type",
+    "info/id",
+    "info/projectID",
+    "info/directory",
+    "messages/#/info/id",
+    "messages/#/info/sessionID",
+    "messages/#/info/parentID",
+    "messages/#/info/role",
+    "messages/#/info/modelID",
+    "messages/#/info/providerID",
+    "messages/#/parts/#/id",
+    "messages/#/parts/#/messageID",
+    "messages/#/parts/#/sessionID",
+    "messages/#/parts/#/type",
+    "messages/#/parts/#/callID",
+    "messages/#/parts/#/tool",
+    "messages/#/parts/#/state/status",
+  ]),
+};
+type RedactionContext = keyof typeof protocolText;
+const runtimeErrorCodes = new Set([
+  "not_found",
+  "no_running_turn",
+  "invalid_request",
+  "invalid_cursor",
+  "invalid_cwd",
+  "unsupported_fast_model",
+  "invalid_effort",
+  "invalid_native_resume",
+  "native_resume_unsupported",
+  "builder_model_prompts_forbidden",
+  "invalid_operation",
+  "invalid_harness_protocol",
+  "workspace_request_invalid",
+  "unselected_runtime_harness",
+  "conversation_harness_mismatch",
+  "conversation_busy",
+  "native_resume_unavailable",
+  "native_session_identity_changed",
+  "native_resume_in_progress",
+  "workspace_launch_only",
+  "skills_install_denied",
+  "native_auth_writer_busy",
+  "checkpoint_in_progress",
+  "workspace_setup_in_progress",
+  "skills_install_in_progress",
+  "request_outcome_unknown",
+  "unauthorized",
 ]);
 const controlStatuses = new Set<string>([
   ...PROMPT_STATUSES,
-  "running_after_restart",
   "exited",
+  "running_after_restart",
   "unknown_after_restart",
 ]);
 
-function maskJsonText(original: unknown, scrubbed: unknown, mask: (text: string) => string): unknown {
-  if (typeof original === "string" && typeof scrubbed === "string") return maskText(original, scrubbed, mask);
+function maskJsonText(
+  original: unknown,
+  scrubbed: unknown,
+  mask: (text: string) => string,
+  context?: RedactionContext,
+  path = "",
+): unknown {
+  if (typeof original === "string" && typeof scrubbed === "string") {
+    if (
+      ((context === "events" || context === "prompts" || context === "processes" || context === "requests") &&
+        (path === "status" || path === "result/status") &&
+        controlStatuses.has(original)) ||
+      (context === "requests" && path === "error" && runtimeErrorCodes.has(original))
+    )
+      return original;
+    return context !== undefined && protocolText[context].has(path) ? scrubbed : maskText(original, scrubbed, mask);
+  }
   if (Array.isArray(original) && Array.isArray(scrubbed))
-    return scrubbed.map((value, index) => maskJsonText(original[index], value, mask));
+    return scrubbed.map((value, index) => maskJsonText(original[index], value, mask, context, `${path}/#`));
   if (!original || typeof original !== "object" || !scrubbed || typeof scrubbed !== "object") return scrubbed;
   const source = original as Record<string, unknown>;
   return Object.fromEntries(
     Object.entries(scrubbed).map(([key, value]) => {
-      const before = source[key];
-      const processIdentity =
-        key === "identity" && typeof source.pid === "number" && controlStatuses.has(String(source.status));
-      const control =
-        protocolIdentityFields.has(key) ||
-        processIdentity ||
-        key === "type" ||
-        (key === "status" && typeof before === "string" && controlStatuses.has(before)) ||
-        (key === "harness" && (HARNESSES as readonly unknown[]).includes(before)) ||
-        (key === "error" && before === "request_outcome_unknown");
-      return [key, control ? value : maskJsonText(before, value, mask)];
+      const segment = key.replaceAll("/", "~1").replaceAll("#", "~2");
+      return [key, maskJsonText(source[key], value, mask, context, path ? `${path}/${segment}` : segment)];
     }),
   );
 }
@@ -376,7 +447,7 @@ function maskProofData(
 
 export class Journal {
   readonly db: Database;
-  readonly redact: (text: string) => string;
+  readonly redact: (text: string, context?: RedactionContext) => string;
   private dynamicRedactor = createRedactor([]);
   private shortWordRedactor = createRedactor([]);
   private readonly redactProtocol: (text: string) => string;
@@ -410,7 +481,7 @@ export class Journal {
   }
   constructor(path: string, redact: (text: string) => string) {
     this.redactProtocol = (text) => this.shortWordRedactor(this.dynamicRedactor(redact(text)));
-    this.redact = (text) => {
+    this.redact = (text, context) => {
       const scrubbed = this.dynamicRedactor(redact(text));
       const mask = this.redactShortApplicationText;
       if (!mask) return scrubbed;
@@ -421,7 +492,7 @@ export class Journal {
       } catch {
         return maskText(text, scrubbed, mask);
       }
-      return JSON.stringify(maskJsonText(original, JSON.parse(scrubbed), mask));
+      return JSON.stringify(maskJsonText(original, JSON.parse(scrubbed), mask, context));
     };
     this.db = new Database(path, { create: true });
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA secure_delete=ON;
@@ -463,7 +534,7 @@ export class Journal {
     const shaped =
       event.kind === "message" ||
       (event.kind === "other" && (event.type === "harness_stderr" || isStructuredDiagnostic(event.type)));
-    const body = shaped ? this.redactProtocol(serialized) : this.redact(serialized);
+    const body = shaped ? this.redactProtocol(serialized) : this.redact(serialized, "events");
     if (event.kind === "prompt") return JSON.stringify({ ...JSON.parse(body), kind: event.kind, status: event.status });
     if (event.kind === "steer") return JSON.stringify({ ...JSON.parse(body), kind: event.kind });
     if (event.kind === "message") {
@@ -595,7 +666,12 @@ export class Journal {
     this.db.transaction(() => {
       this.db
         .query("INSERT OR REPLACE INTO prompts VALUES(?,?,?,?)")
-        .run(prompt.promptId, prompt.conversationId, status, this.redact(JSON.stringify({ ...prompt, status })));
+        .run(
+          prompt.promptId,
+          prompt.conversationId,
+          status,
+          this.redact(JSON.stringify({ ...prompt, status }), "prompts"),
+        );
       this.append({
         id: crypto.randomUUID(),
         at: Date.now(),
@@ -630,8 +706,8 @@ export class Journal {
       !session ||
       session.length > 256 ||
       !(HARNESSES as readonly string[]).includes(harness) ||
-      this.redact(JSON.stringify({ conversationId: conversation, sessionId: session })) !==
-        JSON.stringify({ conversationId: conversation, sessionId: session })
+      this.redactProtocol(conversation) !== conversation ||
+      this.redactProtocol(session) !== session
     )
       throw Error("invalid_native_session_identity");
     const saved = this.db
@@ -764,7 +840,7 @@ export class Journal {
             body: string;
           } | null;
           if (!row) break;
-          update.run(table === "events" ? this.sanitizeEvent(row.body) : this.redact(row.body), row.recordId);
+          update.run(table === "events" ? this.sanitizeEvent(row.body) : this.redact(row.body, table), row.recordId);
           cursor = row.recordId;
         }
       }
