@@ -18,14 +18,14 @@ test("the SDK keeps the drain refusal's Retry-After through the dashboard proxy,
     token: "service_placeholder",
     url: "https://dashboard.test",
     readRetries: 3,
-    fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
-      const request = new Request(input, init);
+    fetch: async (input, init) => {
+      const request = input instanceof Request ? new Request(input, init) : new Request(String(input), init);
       const path = new URL(request.url).pathname.replace(/^\/api\/v1\//, "").split("/");
       return forwardControl(request, path, async (target, upstreamInit) => {
         upstreamCalls++;
-        return drain.fetch(new Request(target, upstreamInit));
+        return drain.fetch(new Request(target.href, upstreamInit));
       });
-    }) as import("../../sdk/src/index.ts").Fetch,
+    },
   });
   const error = await client.stop({ id: "sandbox_placeholder" }).catch((caught: unknown) => caught);
   expect(error).toBeInstanceOf(ArmadaError);
@@ -71,7 +71,7 @@ test("proxy-generated failures match the published failure schema and decode to 
       outcomeUnknown: typed.outcomeUnknown,
     };
   };
-  const request = (headers: Record<string, string>, body: BodyInit = "{}") =>
+  const request = (headers: Record<string, string>, body = "{}") =>
     new Request("https://dashboard.test/api/v1/sandbox/status", { method: "POST", headers, body });
   try {
     delete process.env.ARMADA_MCP_URL;

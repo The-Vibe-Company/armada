@@ -1,6 +1,5 @@
 import { CONTROL_BODY_MAX_BYTES } from "@armada/core";
 import { PUBLIC_CONTROL_ROUTES } from "@armada/core/contract";
-import { NextResponse } from "next/server";
 
 const CONTROL_PREFIX = "/api/v1/";
 const MAX_BODY_BYTES = CONTROL_BODY_MAX_BYTES;
@@ -161,7 +160,7 @@ const PROXY_FAILURE_CODE = {
 } as const;
 
 function fail(status: keyof typeof PROXY_FAILURE_CODE, message: string): Response {
-  return NextResponse.json(
+  return Response.json(
     { error: { code: PROXY_FAILURE_CODE[status], message: status === 404 ? "Unknown route." : message } },
     { status, headers: { "cache-control": "no-store" } },
   );

@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { PUBLIC_CONTROL_ROUTES } from "@armada/core/contract";
 import { forwardControl } from "./control-proxy.ts";
+import { POST } from "./route.ts";
 
 const env = process.env.ARMADA_MCP_URL;
 
@@ -371,7 +372,10 @@ test("provider setup and sizing preserve request bytes through the proxy", async
       ],
     ] as const) {
       const count = received.length;
-      const anonymous = await post(path, { body });
+      const anonymous = await POST(
+        new Request(`https://dashboard.test/api/v1/${path}`, { method: "POST", body, signal: AbortSignal.abort() }),
+        { params: Promise.resolve({ path: path.split("/") }) },
+      );
       expect(anonymous.status).toBe(401);
       expect(received).toHaveLength(count);
       const response = await post(path, {
