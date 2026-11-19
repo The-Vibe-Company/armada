@@ -3,9 +3,8 @@ import type { Caller } from "./caller.ts";
 import { createSqlData } from "./data.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import { runtimeHarnessSupported } from "./provider-runtime-admission.ts";
-import { createRuntimeCommands } from "./runtime-commands.ts";
-import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
-import { collectTransactionWakes } from "./wake-bus.ts";
+import type { createRuntimeCommands } from "./runtime-commands.ts";
+import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 
 interface Intent {
   epoch: string;
@@ -44,6 +43,22 @@ function checkpointProof(reply: unknown, epoch: string, commandId: string): { wa
     return undefined;
   return { watermark: proof.watermark };
 }
+function scrubAcknowledged(
+  reply: Awaited<ReturnType<ReturnType<typeof createRuntimeCommands>["call"]>>,
+  epoch: string,
+  requestId: string,
+) {
+  return (
+    reply.status === 200 &&
+    reply.epoch === epoch &&
+    reply.requestId === requestId &&
+    reply.body.version === 1 &&
+    reply.body.requestId === requestId &&
+    reply.body.error === undefined &&
+    (reply.body.result as { acknowledged?: unknown } | undefined)?.acknowledged === true
+  );
+}
+
 export interface RuntimeCheckpointInput {
   id: string;
   request_id: string;
@@ -213,7 +228,6 @@ export function createRuntimeCheckpoint(
     }
     if (!["ready", "running"].includes(sandbox.status) || sandbox.stopRequestedAt)
       throw new VaultError("conflict", "Stopped runtime has no acknowledged checkpoint; no compute was resumed.");
-    let publishWakes: (() => void) | undefined;
     const intent = await createRuntimeEnrolments(sql, key).withOwner(sandbox.id, caller.userId, async (tx, scope) => {
       const lease = (
         await tx.query<{ busy: boolean }>(
@@ -235,40 +249,62 @@ export function createRuntimeCheckpoint(
       ).rows[0];
       if (current && current.request_id !== requestId)
         throw new VaultError("conflict", "Reuse the original checkpoint request_id for this epoch.");
+      const parent = (
+        await tx.query<{ id: string }>(
+          "select id from public.armada_access_parents where sandbox_id=$1 and kind='sandbox'",
+          [sandbox.id],
+        )
+      ).rows[0];
       if (!current) {
-        const parent = (
-          await tx.query<{ id: string }>(
-            "select id from public.armada_access_parents where sandbox_id=$1 and kind='sandbox'",
-            [sandbox.id],
-          )
-        ).rows[0];
         if (parent) {
-          await new DelegatedAuthority(tx, async () => {}).revoke(parent.id);
-          const local = scopedRuntimeSql(tx);
-          publishWakes = collectTransactionWakes(tx);
-          // Queue before publishing the intent. The intent fences later installs, and
-          // the runner itself refuses to checkpoint while a grant remains installed.
-          await createRuntimeCommands(createRuntimeEnrolments(local, key), key).enqueue(
-            caller.userId,
-            {
-              version: 1,
-              sandboxId: sandbox.id,
-              requestId: `scrub_checkpoint_${requestId}`,
-              op: "scrubOrchestratorEpoch",
-            },
-            scope.epoch,
+          const locked = await tx.query(
+            "select id from public.armada_access_parents where id=$1 for update skip locked",
+            [parent.id],
           );
+          if (!locked.rows.length)
+            throw new VaultError("conflict", "Scoped parent authority is busy. Retry checkpoint.");
+          await new DelegatedAuthority(tx, async () => {}).revoke(parent.id);
         }
         await tx.query(
           "insert into public.runtime_checkpoints(sandbox_id,epoch,request_id,merge_stop) values($1,$2,$3,$4)",
           [sandbox.id, scope.epoch, requestId, mergeStop],
         );
       }
-      return { epoch: scope.epoch, current_epoch: scope.epoch, request_id: requestId, watermark: null };
+      return {
+        epoch: scope.epoch,
+        current_epoch: scope.epoch,
+        request_id: requestId,
+        watermark: null,
+        scrub: !!parent,
+      };
     });
-    publishWakes?.();
     try {
-      // The boundary records `ok` only for the acknowledgement `finish` will publish.
+      if (intent.scrub) {
+        const prefix = `scrub_checkpoint_${requestId}_`;
+        const previous = (
+          await sql.query<{
+            request_id: string;
+            sequence: string;
+            result_enc: Uint8Array<ArrayBuffer> | null;
+          }>(
+            `select request_id,sequence::text,result_enc from public.runtime_commands
+             where sandbox_id=$1 and epoch=$2 and starts_with(request_id,$3) order by sequence desc limit 1`,
+            [sandbox.id, intent.epoch, prefix],
+          )
+        ).rows[0];
+        const stored = previous?.result_enc ? JSON.parse(await decryptSecret(previous.result_enc, key)) : undefined;
+        if (!stored || !scrubAcknowledged(stored, intent.epoch, previous!.request_id)) {
+          const scrubId = stored ? `${prefix}${previous!.sequence}` : (previous?.request_id ?? `${prefix}0`);
+          const accept = (reply: Parameters<typeof scrubAcknowledged>[0]) =>
+            scrubAcknowledged(reply, intent.epoch, scrubId);
+          const reply = await commands.call(
+            caller.userId,
+            { version: 1, sandboxId: sandbox.id, requestId: scrubId, op: "scrubOrchestratorEpoch" },
+            { expectedEpoch: intent.epoch, accept },
+          );
+          if (!accept(reply)) throw new Error("Scoped parent scrub was not acknowledged.");
+        }
+      }
       await commands.call(
         caller.userId,
         { version: 1, sandboxId: sandbox.id, requestId: `checkpoint_${requestId}`, op: "checkpoint" },

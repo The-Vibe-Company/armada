@@ -134,6 +134,7 @@ test("undelivered checkpoint intent and a lost response reconcile after stop wit
 
 test("an enrolled scoped parent loses its grant before checkpoint dispatch and scrubs on recovery", async () => {
   const f = await runtimeFixture(await database(), "modal", "codex", true);
+  const done = Promise.withResolvers<"finished">();
   try {
     const id = f.row.id;
     await f.db.query("update sandboxes set visibility='private', access_owner_id=owner_id where id=$1", [id]);
@@ -182,6 +183,8 @@ test("an enrolled scoped parent loses its grant before checkpoint dispatch and s
     await expect(admit()).resolves.toBe(true);
 
     const input = args(id);
+    f.hold(done.promise);
+    await f.send(f.caller, f.input("hold the turn open"));
     const beforeDispatch = {
       ...f.bridge,
       async call() {
@@ -194,9 +197,14 @@ test("an enrolled scoped parent loses its grant before checkpoint dispatch and s
       },
     );
     await expect(admit()).rejects.toThrow("denied");
-    const recovered = await createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, f.bridge)(f.caller, input);
+    const checkpoint = createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, f.bridge);
+    await expect(checkpoint(f.caller, input)).rejects.toMatchObject({ code: "conflict" });
+    done.resolve("finished");
+    await f.runner.flushOutbox();
+    const recovered = await checkpoint(f.caller, input);
     expect(recovered.checkpoint.state).toBe("complete");
   } finally {
+    done.resolve("finished");
     await f.close();
   }
 });
