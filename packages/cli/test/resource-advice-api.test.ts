@@ -5,7 +5,6 @@ import { printOptionalResourceAdvice, resourceAdviceText } from "../src/resource
 import { run } from "../src/run.ts";
 import { memorySessionStore } from "../src/session.ts";
 
-// Synthetic transport evidence exercises presentation only, never provider measurement validity.
 const evidence: ResourceAdvice = {
   version: 1,
   scope: {

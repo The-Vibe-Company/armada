@@ -1,7 +1,6 @@
 import type { ResourceAdvice, ResourceAdviceRequest, ResourceAdviceResponse } from "@armada/core";
 import type { ArmadaCommandClient } from "./armada-api.ts";
 
-/** Only positive, sufficiently supported advice earns space in human output. */
 export function resourceAdviceText(advice: ResourceAdvice): string | null {
   if (
     advice.version !== 1 ||
@@ -28,7 +27,6 @@ export function resourceAdviceText(advice: ResourceAdvice): string | null {
   ].join("\n");
 }
 
-/** Optional launch guidance is bounded and fail-open, including rolling older servers. */
 export async function printOptionalResourceAdvice(
   client: Pick<ArmadaCommandClient, "sandboxes">,
   id: string,
@@ -43,6 +41,5 @@ export async function printOptionalResourceAdvice(
     const text = resourceAdviceText(advice);
     if (text) err(`${text}\n`);
   } catch {
-    // Telemetry is not required for successful launch/status; no recurring missing-data warnings.
   }
 }
