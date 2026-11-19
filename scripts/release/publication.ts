@@ -21,7 +21,7 @@ function command(...args: string[]) {
   return result.stdout.toString().trim();
 }
 
-function versionAt(ref: string): string {
+function versionAt(ref: string) {
   const { version } = JSON.parse(command("git", "show", `${ref}:packages/core/package.json`));
   if (typeof version !== "string" || !/^\d+\.\d+\.\d+$/.test(version)) {
     throw new Error("Publication requires a stable version");

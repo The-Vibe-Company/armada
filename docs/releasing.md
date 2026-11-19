@@ -595,7 +595,7 @@ Dispatch the **Release** workflow from main with `version` and a full commit
 selects the workflow ref independently of its input values. Validate the SHA
 belongs to main, contains the matching version PR merge and has that version
 in source. Use the selected SHA for source and builds. Continue the existing
-[workflow-revision checkout for recovery tooling](../.github/workflows/release.yml#L482-L489)
+[workflow-revision checkout for recovery tooling](../.github/workflows/release.yml#L541-L546)
 so a tooling fix on main can recover an older source SHA. Before publication,
 repeat validation and exact-source smoke for the selected SHA. If a tag
 exists without a release, require that exact SHA and smoke it again before

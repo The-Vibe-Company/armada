@@ -1312,7 +1312,7 @@
     "scripts/publish-runtime-artifacts.ts": 2,
     "scripts/refresh-model-prices.test.ts": 1,
     "scripts/refresh-model-prices.ts": 3,
-    "scripts/release/configuration.test.ts": 2,
+    "scripts/release/configuration.test.ts": 1,
     "scripts/release/deploy-production.test.ts": 5,
     "scripts/release/deployment-health.ts": 1,
     "scripts/release/smoke-receipt.ts": 3,
