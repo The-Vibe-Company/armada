@@ -1,0 +1,40 @@
+name: Rollback preflight
+
+on:
+  workflow_dispatch:
+    inputs:
+      to_version:
+        description: "Previous stable release tag (vMAJOR.MINOR.PATCH)"
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+# Hold the same lock as Release while reading the active deployment and receipts.
+concurrency:
+  group: release-production
+  queue: max
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment:
+      name: production
+      deployment: false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - name: Check rollback eligibility
+        env:
+          ARMADA_SERVER_URL: ${{ secrets.ARMADA_SERVER_URL }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ROLLBACK_TO_VERSION: ${{ inputs.to_version }}
+        run: bun scripts/release/rollback.ts
