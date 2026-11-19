@@ -118,6 +118,8 @@ returns boolean
 language plpgsql
 set search_path = ''
 as $$
+declare
+  job_kind text;
 begin
   if p_lease_seconds is null or p_lease_seconds <= 0 then
     raise exception 'invalid job lease duration' using errcode = '22023';
@@ -132,7 +134,14 @@ begin
     end if;
   end if;
 
-  perform 1 from public.jobs where id = p_id for update;
+  select kind into job_kind from public.jobs where id = p_id for update;
+  if not found then
+    return false;
+  end if;
+  -- Until this transaction commits, a claim can see the pre-renewal
+  -- expiry. Share the capacity lock so it cannot allocate that slot.
+  -- Claim skips held row locks, so it cannot wait on either row above.
+  perform pg_advisory_xact_lock(hashtextextended('armada.jobs:' || job_kind, 0));
   update public.jobs set lease_until = clock_timestamp() + make_interval(secs => p_lease_seconds)
     where id = p_id and state = 'leased' and lease_owner = p_owner
       and lease_epoch = p_epoch and generation is not distinct from p_generation
