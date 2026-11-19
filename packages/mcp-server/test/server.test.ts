@@ -1266,6 +1266,35 @@ describe("tools", () => {
     expect(boat.stops).toEqual([]);
   });
 
+  test("stop after settlement admits an idle stop", async () => {
+    const { token, client, people, boat } = await start();
+    const mcp = await client(await token(people.member));
+    const { data } = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude", prompt: "go" });
+    boat.finish("bx_1", "prompt_1", "finished");
+
+    const stopped = await call(mcp, "stop", { id: data.id, after: true, timeout_seconds: 3 });
+    expect(stopped.isError).toBe(false);
+    expect(stopped.data).toMatchObject({ id: data.id, status: "stopped" });
+    expect(boat.stops).toEqual(["bx_1"]);
+  });
+
+  test("stop after settlement leaves compute up when a settled read returns at the deadline", async () => {
+    const { token, client, people, boat, clock } = await start();
+    const mcp = await client(await token(people.member));
+    const { data } = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude", prompt: "go" });
+    boat.finish("bx_1", "prompt_1", "finished");
+    const getPrompt = boat.provider.getPrompt;
+    boat.provider.getPrompt = async (args) => {
+      clock.now = new Date(clock.now.getTime() + 3000);
+      return getPrompt(args);
+    };
+
+    const stopped = await call(mcp, "stop", { id: data.id, after: true, timeout_seconds: 3 });
+    expect(stopped.isError).toBe(false);
+    expect(stopped.data).toMatchObject({ id: data.id, status: "ready", timedOut: true });
+    expect(boat.stops).toEqual([]);
+  });
+
   test.each(["running", "failed"])(
     "a mid-turn stop queues until interruption settles and retains %s state",
     async (state) => {

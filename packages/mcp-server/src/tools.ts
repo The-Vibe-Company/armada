@@ -22,7 +22,7 @@ import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
 import type { SandboxView, ScopedData, ServerSandboxPatch } from "./data.ts";
 import type { GoldenLaunchCredentials } from "./launch-account-admission.ts";
 import { mcpLaunchContract, runMcpLaunch } from "./mcp-launch-tool.ts";
-import { registerListTool, registerLogsTool, registerStatusTools } from "./mcp-read-tools.ts";
+import { DEFAULT_WAIT_SECONDS, registerListTool, registerLogsTool, registerStatusTools } from "./mcp-read-tools.ts";
 import type { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import { recordOperatorFailure } from "./request-observability.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
@@ -803,19 +803,38 @@ function createToolServer(
       "stop",
       {
         ...stopTool,
-        description: `${stopTool.description} Set turn to interrupt the current turn and keep the machine up.`,
+        description:
+          `${stopTool.description} Set turn to interrupt the current turn and keep the machine up. ` +
+          "Set after to wait for settlement and stop only if still idle. A timedOut receipt leaves compute up.",
         input: z.strictObject({
           ...stopTool.input,
           turn: z.boolean().optional().describe("Interrupt the turn without stopping the sandbox."),
+          after: z.boolean().optional().describe("Wait for settlement before attempting an idle-only stop."),
+          timeout_seconds: waitTool.input.timeout_seconds,
         }),
         output: {
           ...stopTool.output,
           status: stopTool.output.status.optional(),
           interrupted: interruptTool.output.interrupted.optional(),
+          timedOut: waitTool.output.timedOut.optional(),
         },
       },
-      async ({ turn, ...args }) => {
+      async ({ turn, after, timeout_seconds, ...args }) => {
+        if (!after && timeout_seconds !== undefined) return invalidToolInput("stop", "timeout_seconds requires after.");
+        if (after && (turn || args.only_if_idle !== undefined))
+          return invalidToolInput("stop", "Use after without turn or only_if_idle.");
         if (turn && args.only_if_idle) return invalidToolInput("stop", "Use turn without only_if_idle.");
+        if (after) {
+          const seconds = timeout_seconds ?? DEFAULT_WAIT_SECONDS;
+          const deadline = context.now().getTime() + seconds * 1000;
+          const waited = await waitTool.invoke({ id: args.id, timeout_seconds: seconds });
+          if (waited.isError || !waited.structuredContent) return waited;
+          if (waited.structuredContent.timedOut || context.now().getTime() >= deadline) {
+            const result = { id: args.id, status: waited.structuredContent.status, timedOut: true };
+            return { structuredContent: result, content: [{ type: "text", text: JSON.stringify(result) }] };
+          }
+          return stopTool.invoke({ ...args, only_if_idle: true });
+        }
         return turn ? interruptTool.invoke({ id: args.id, request_id: args.request_id }) : stopTool.invoke(args);
       },
     );
