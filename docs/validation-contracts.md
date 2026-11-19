@@ -284,6 +284,23 @@ reasoning effort case in `acp.test.ts` is rejected before the driver spawns a
 child. The private prompt working-directory case in `cwd.test.ts` injects an
 in-process driver. The two native working-directory cases run only on Linux.
 
+### Remaining Agent Runtime subprocess cases
+
+An `execve` audit of the 55 Agent Runtime unit files at `82e5a55c` found two
+files outside the preceding inventories that start native harness fixtures.
+The direct-syntax allowlist misses both because the drivers own the spawn.
+The times are whole-case measurements from untraced Linux runs with Bun 1.4.2
+after `bun scripts/prepare-runtime.ts`.
+
+| File under `packages/agent-runtime/test` | Case | Local subprocess boundary | Local |
+| --- | --- | --- | ---: |
+| `messages.test.ts` | claude correlates deltas and snapshots without merging distinct messages | The Claude SDK starts the local `claude-process.ts` fixture. | 34.81 ms |
+| `messages.test.ts` | codex correlates deltas and snapshots without merging distinct messages | CodexDriver starts the local `app-server.ts` fixture. | 30.04 ms |
+| `request-receipts.test.ts` | a steer refused while a completed turn awaits auth publication replays its definite status | Runner starts a real CodexDriver backed by the local `app-server.ts` fixture. | 41.79 ms |
+
+The other receipt cases use injected drivers or return before starting a
+harness. The workspace tests inject synthetic children.
+
 ## Process-spawning unit cases in `provider-modal`
 
 The [process-test allowlist](../scripts/ci/process-tests.txt) records matching
