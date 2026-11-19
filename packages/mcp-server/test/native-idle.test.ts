@@ -476,6 +476,7 @@ test.each([
   "ledger hook missing",
   "ledger hook restored",
   "generation changed during exec",
+  "tainted after enqueue",
   "open",
   "closed",
   "no push",
@@ -681,11 +682,19 @@ test.each([
       },
       () => at,
     );
+    if (state === "tainted after enqueue") {
+      await handler.prepare();
+      await f.db.query("update sandboxes set application_secret_tainted=true where id=$1", [f.id]);
+    }
     const runner = createJobsRunner(jobs, { pr_scan: handler }, undefined, () => () => {});
     expect(await runner.reconcileOne(new AbortController().signal)).toBe(true);
     await runner.drain();
     expect((await f.db.query("select state,attempts from jobs where sandbox_id=$1", [f.id])).rows).toEqual([
-      state === "generation changed during exec" ? { state: "failed", attempts: 1 } : { state: "queued", attempts: 0 },
+      state === "generation changed during exec"
+        ? { state: "failed", attempts: 1 }
+        : state === "tainted after enqueue"
+          ? { state: "done", attempts: 1 }
+          : { state: "queued", attempts: 0 },
     ]);
   };
   // The lifecycle worker settles the finished turn before a scan may prove a
@@ -751,6 +760,7 @@ test.each([
   expect(sandbox?.pullRequests?.map((pr) => pr.state)).toEqual(
     state === "no push" ||
       state === "generation changed during exec" ||
+      state === "tainted after enqueue" ||
       state === "other commit" ||
       state === "merged before launch at pushed commit" ||
       state === "merged after head advanced past an unknown push" ||

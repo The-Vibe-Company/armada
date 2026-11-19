@@ -263,6 +263,7 @@ export function createPullRequestScanJob(
         ).rows[0],
     );
     if (!row) return;
+    nextScan = now() + 15_000;
     try {
       const configured = repos.parse(row.repositories);
       const scan = row.pull_request_scan ?? { pushes: {}, discovered: [] };
@@ -695,7 +696,6 @@ export function createPullRequestScanJob(
     prepare,
     async run(job, context) {
       if (job.sandbox_id === null || job.generation === null) return { status: "fail", reason: "missing_scan_target" };
-      nextScan = now() + 15_000;
       const signal = AbortSignal.any([context.signal, AbortSignal.timeout(45_000)]);
       try {
         if (await context.canDispatch()) {
@@ -705,9 +705,11 @@ export function createPullRequestScanJob(
       } catch {
         // A timeout, denied grant or partial result preserves the last complete list.
       }
-      const { rows } = await sql.query("select 1 from public.sandboxes where id=$1 and status <> 'deleted'", [
-        job.sandbox_id,
-      ]);
+      const { rows } = await sql.query(
+        `select 1 from public.sandboxes where id=$1 and status <> 'deleted'
+         and not application_secret_tainted and (status <> 'stopped' or expires_at > now())`,
+        [job.sandbox_id],
+      );
       return rows.length
         ? {
             status: "retry",
