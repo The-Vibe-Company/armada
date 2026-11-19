@@ -7,6 +7,7 @@ type Step = { id?: string; name?: string; run?: string; env?: Record<string, str
 type Job = {
   steps: Step[];
   needs?: string | string[];
+  environment?: string;
   outputs?: Record<string, string>;
   env?: Record<string, string>;
 };
@@ -129,6 +130,13 @@ test("the production consumer rechecks its configuration in its actual first ste
   }
 });
 
+test("production approval gates deployment after finalization accepts work or receipts", () => {
+  const approval = workflow.jobs["production-approval"];
+  expect(approval?.environment).toBe("production-deploy");
+  expect(approval?.needs).toEqual(["release-metadata", "finalize-release"]);
+  expect(workflow.jobs.production?.needs).toContain("production-approval");
+});
+
 test("binary and publish jobs use the validated release version for npm artifacts", () => {
   const binary = workflow.jobs.binary;
   const publish = workflow.jobs.publish;
@@ -144,8 +152,9 @@ test("binary and publish jobs use the validated release version for npm artifact
   expect(publish.needs).toContain("release-metadata");
   expect(collection?.env?.VERSION).toBe(version);
   expect(publish.env?.VERSION).toBe(version);
-  expect(artifact?.with?.name).toBe(`npm-tarballs-${version}-\${{ matrix.target }}`);
-  expect(download?.with?.pattern).toBe(`npm-tarballs-${version}-*`);
+  const sha = `\${{ needs.release-metadata.outputs.sha }}`;
+  expect(artifact?.with?.name).toBe(`npm-tarballs-${version}-${sha}-\${{ matrix.target }}`);
+  expect(download?.with?.pattern).toBe(`npm-tarballs-${version}-${sha}-*`);
 });
 
 const verifiedPublish = workflow.jobs.publish?.steps.find((step) => step.id === "verified-npm-publish");
