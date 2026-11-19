@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { createAccountControl } from "../src/lib/account-control.ts";
+import producer from "../../test/fixtures/model-usage-v3.json";
+import { createAccountControl } from "./account-control.ts";
 import {
   ACCOUNT_KINDS,
   type AccountUsage,
@@ -21,13 +22,12 @@ import {
   parseUsage,
   terminalLogin,
   usageView,
-} from "../src/lib/model-accounts.ts";
-import producer from "./fixtures/model-usage-v3.json";
+} from "./model-accounts.ts";
 
 const NOW = Date.parse("2026-11-09T12:00:00.000Z");
 const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 
-function account(n: number, fields: Partial<ModelAccount> = {}): ModelAccount {
+function account(n: number, fields: Partial<ModelAccount> = {}) {
   return {
     id: uuid(n),
     scope: "user",
@@ -39,7 +39,7 @@ function account(n: number, fields: Partial<ModelAccount> = {}): ModelAccount {
     updatedAt: "2026-11-08T10:00:00.000Z",
     version: 1,
     ...fields,
-  };
+  } satisfies ModelAccount;
 }
 
 describe("the account a launch bills", () => {
@@ -131,8 +131,6 @@ describe("the account a launch request bills, as the server action checks it", (
 });
 
 describe("an account that may become the default", () => {
-  // The server resolves an implicit launch to the default with no fallback, so a default that cannot run would
-  // refuse every launch that names no account.
   const accounts = [
     account(1, { name: "Work" }),
     account(2, { name: "Old", status: "revoked" }),
@@ -268,7 +266,6 @@ describe("usage", () => {
   ] as const)("%s reads as %s", (_name, usage, kind) => {
     const view = usageView(usage, { version: 1 });
     expect(view.kind).toBe(kind);
-    // Only a report with windows ever carries numbers; nothing else becomes zero.
     expect("windows" in view).toBe(kind === "fresh" || kind === "stale");
   });
 
@@ -280,17 +277,14 @@ describe("usage", () => {
       limit: 20,
       currency: "USD",
     });
-    // A zero-decimal currency is not divided by 100.
     expect(extra({ enabled: true, currency: "JPY", usedMinor: 450, limitMinor: null })).toEqual({
       used: 450,
       limit: null,
       currency: "JPY",
     });
-    // The producer's major-unit aliases win over our own exponent table (HUF is 2 in ISO, 0 for some processors).
     expect(
       extra({ enabled: true, currency: "HUF", usedMinor: 45000, limitMinor: null, used: 450, limit: null }),
     ).toEqual({ used: 450, limit: null, currency: "HUF" });
-    // An explicit null major amount is the producer saying it could not tell: no conversion of its own.
     expect(
       extra({ enabled: true, currency: "HUF", usedMinor: 45000, limitMinor: null, used: null, limit: null }),
     ).toBeNull();
@@ -317,7 +311,6 @@ describe("usage", () => {
     expect(parsed?.hiddenWindows).toBe(1);
     const view = parsed && usageView(parsed, { version: 1 });
     expect(view?.kind).toBe("fresh");
-    // Repeated identities are all shown under distinct keys, and none is counted as unreadable.
     const repeated = parseUsage({
       ...report,
       windows: [
@@ -331,13 +324,11 @@ describe("usage", () => {
     ]);
     expect(new Set(repeated?.windows.map((window) => window.id)).size).toBe(2);
     expect(repeated?.hiddenWindows).toBe(0);
-    // #624 v1 sends its own stable id and source-derived label: used as they are.
     const v1 = parseUsage({
       ...report,
       windows: [{ id: "five_hour", label: "5-hour limit", kind: "five_hour", usedPercent: 30, resetsAt: null }],
     });
     expect(v1?.windows.map((window) => [window.id, window.label])).toEqual([["five_hour", "5-hour limit"]]);
-    // Only a report none of whose windows can be read is an unrecognized format.
     expect(parseUsage({ ...report, windows: [{ kind: "monthly", utilization: 0.4 }] })).toBeNull();
   });
 
@@ -349,7 +340,6 @@ describe("usage", () => {
         fetch: (async () => Response.json({ error: { message } }, { status })) as unknown as typeof fetch,
       });
     expect(await answer(404, "Unknown route.").usage(uuid(1))).toBeNull();
-    // The server's read worked but its window is not one this dashboard reads: not a failure, not "no allowance".
     const unreadable = createAccountControl({
       serverUrl: "https://armada.test/mcp",
       token: "session",
@@ -365,7 +355,6 @@ describe("usage", () => {
 
 describe("#624 v3 native credits and meters, as the producer reports them", () => {
   type Case = Exclude<keyof typeof producer, "$comment">;
-  /** The producer's own response for a case and the view of it, read under the same account version. */
   const read = (name: Case) => {
     const usage = parseUsage(producer[name].usage);
     const view = usageView(usage, { version: 1 });
@@ -380,7 +369,6 @@ describe("#624 v3 native credits and meters, as the producer reports them", () =
   ] as const)("a %s reading is a reading on its own, kept exactly as the provider sent it", (name, credits) => {
     const view = read(name);
     expect(view.kind).toBe("fresh");
-    // One meter, once: the summary and its identical map view are the same reading. The string is never a number.
     expect(view.credits).toEqual([
       { key: "summary", sourceId: "codex", label: "codex", ...credits, observedAt: "2026-11-09T12:00:16.000Z" },
     ]);
@@ -400,7 +388,6 @@ describe("#624 v3 native credits and meters, as the producer reports them", () =
       ["codex · Primary (meter view)", "codex", 26, 300],
     ]);
     expect(new Set(view.windows.map((window) => window.id)).size).toBe(view.windows.length);
-    // Balances per meter, never added up: the summary's "0" and the codex map's "1.200" are both actual readings.
     expect(view.credits.map((meter) => [meter.label, meter.sourceId, meter.balance, meter.unlimited])).toEqual([
       ["codex", "codex", "0", false],
       ["codex (meter view)", "codex", "1.200", false],
@@ -417,7 +404,6 @@ describe("#624 v3 native credits and meters, as the producer reports them", () =
       ["codex", 31, "2026-11-09T12:01:33.000Z"],
       ["review", 42, "2026-11-09T12:00:16.000Z"],
     ]);
-    // The retained balances keep the time they were read, not the time of the update that left them out.
     expect(view.credits.map((meter) => [meter.sourceId, meter.balance, meter.observedAt])).toEqual([
       ["codex", "0.000", "2026-11-09T12:00:16.000Z"],
       ["review", "12.3400", "2026-11-09T12:00:16.000Z"],
@@ -438,7 +424,6 @@ describe("#624 v3 native credits and meters, as the producer reports them", () =
 });
 
 test("the terminal sign-in is only the command the server reports, with the name as one literal argument", () => {
-  // #604's nested shape: the documented `--name <name>` template is canonicalized to its allowlisted base.
   const reported = parseAuthCapabilities({
     hostedOAuth: false,
     claude: { login: null, import: "armada creds import claude --name <name> --file <private-token-file>" },
@@ -449,10 +434,8 @@ test("the terminal sign-in is only the command the server reports, with the name
   expect(terminalLogin(reported, "codex_auth", `Bob's $HOME`)).toBe(
     `armada creds login codex --name 'Bob'\\''s $HOME'`,
   );
-  // A command that is not a plain `armada creds login`, or a server that reports nothing, offers no terminal path.
   expect(terminalLogin(reported, "claude_oauth", "Work")).toBeNull();
   expect(terminalLogin(null, "codex_auth", "Work")).toBeNull();
-  // Arbitrary shell, another placeholder or an extra flag is never shown, in either shape.
   for (const command of [
     "armada creds login codex; curl https://example.test",
     "armada creds login codex --name <name> --org <org>",

@@ -48,7 +48,8 @@ any receipt UUID returned. On success, pass `sandbox.id` to subsequent tools.
   revision specifying a golden, harness and configuration. Use IDs if names clash.
   Use `armada snapshot capabilities --json` for provider capacity and the
   authenticated REST adoption endpoint for canonical Boat golden adoption.
-- For MCP `launch`, choose `provider: "boat"` or `provider: "modal"` from discovery,
+- Call MCP `launch_options` with `{}` for the server’s harnesses, models, sizes and TTL limits.
+  MCP `launch` takes a Boat or Modal golden. Choose `provider: "boat"` or `provider: "modal"`,
   specify `harness`, and use `ttlSeconds` and `reasoningEffort` for launch overrides.
   For scoped tokens, omit `org` or use the scoped org UUID.
 - Choose the provider that owns the golden. A golden built on one provider

@@ -152,7 +152,7 @@ export async function createArmadaApiClient(
             response.status,
             "Armada returned an invalid success receipt. The operation may have been accepted; inspect its state before retrying. For sandbox operations, run armada status <id> or armada list. Do not replay a mutation blindly.",
           );
-        return normalizeProviderDto(path, payload);
+        return payload;
       }
       if (response.status === 409 && failureCode === "host_full")
         throw new ArmadaApiError(
@@ -160,10 +160,7 @@ export async function createArmadaApiClient(
           409,
           "The selected Docker host is full. Stop a sandbox on that host or raise its limit before retrying.",
         );
-      const legacyUnknownRoute =
-        failureCode === "not_found" &&
-        (payload as { error?: { message?: unknown } }).error?.message === "Unknown route.";
-      if (response.status === 404 && (!failureCode || failureCode === "unknown_route" || legacyUnknownRoute))
+      if (response.status === 404 && (!failureCode || failureCode === "unknown_route"))
         throw new ArmadaApiError(
           "unavailable",
           response.status,
@@ -187,17 +184,7 @@ export async function createArmadaApiClient(
           409: "Application vault conflict. List entries and check the current version, duplicate name or revoked status before retrying.",
         };
         throw new ArmadaApiError(
-          response.status === 400
-            ? "invalid"
-            : response.status === 401
-              ? "unauthorized"
-              : response.status === 403
-                ? "forbidden"
-                : response.status === 404
-                  ? "not_found"
-                  : response.status === 409
-                    ? "conflict"
-                    : "unavailable",
+          resourceFailureCode(response.status),
           response.status,
           (response.status === 409 && Object.hasOwn(known, message) ? known[message] : undefined) ??
             messages[response.status] ??
@@ -213,17 +200,7 @@ export async function createArmadaApiClient(
           409: "Routine conflict. Show the routine and check owner access, references and the current --expected-version before retrying.",
         };
         throw new ArmadaApiError(
-          response.status === 400
-            ? "invalid"
-            : response.status === 401
-              ? "unauthorized"
-              : response.status === 403
-                ? "forbidden"
-                : response.status === 404
-                  ? "not_found"
-                  : response.status === 409
-                    ? "conflict"
-                    : "unavailable",
+          resourceFailureCode(response.status),
           response.status,
           messages[response.status] ??
             "Routine operation unavailable. Inspect the routine before retrying; a mutation may have been accepted.",
@@ -257,17 +234,7 @@ export async function createArmadaApiClient(
         };
         const message = apiMessage(payload, "");
         throw new ArmadaApiError(
-          response.status === 400
-            ? "invalid"
-            : response.status === 401
-              ? "unauthorized"
-              : response.status === 403
-                ? "forbidden"
-                : response.status === 404
-                  ? "not_found"
-                  : response.status === 409
-                    ? "conflict"
-                    : "unavailable",
+          resourceFailureCode(response.status),
           response.status,
           (Object.hasOwn(known, message) ? known[message] : undefined) ??
             fallback[response.status] ??
@@ -501,32 +468,28 @@ export function armadaApiUrl(value: string | undefined): string {
   }
 }
 
+function resourceFailureCode(status: number) {
+  switch (status) {
+    case 400:
+      return "invalid";
+    case 401:
+      return "unauthorized";
+    case 403:
+      return "forbidden";
+    case 404:
+      return "not_found";
+    case 409:
+      return "conflict";
+    default:
+      return "unavailable";
+  }
+}
+
 function apiMessage(payload: unknown, fallback: string): string {
   if (typeof payload !== "object" || payload === null || Array.isArray(payload)) return fallback;
   const error = (payload as Record<string, unknown>).error;
   const message = typeof error === "object" && error !== null ? (error as Record<string, unknown>).message : undefined;
   return typeof message === "string" && message.length > 0 ? message : fallback;
-}
-
-function normalizeProviderDto(path: string, payload: unknown): unknown {
-  if (path !== "/api/v1/golden/list" || !payload || typeof payload !== "object") return payload;
-  const body = payload as Record<string, unknown>;
-  if (!Array.isArray(body.goldens)) return payload;
-  return {
-    ...body,
-    goldens: body.goldens.map((value: unknown) => {
-      if (!value || typeof value !== "object" || Array.isArray(value)) return value;
-      const row = value as Record<string, unknown>;
-      if (row.provider !== undefined || !("boatSandboxId" in row || "boatSnapshotId" in row)) return row;
-      return {
-        ...row,
-        provider: "boat",
-        modal: null,
-        providerSandboxId: row.boatSandboxId ?? null,
-        providerSnapshotId: row.boatSnapshotId ?? null,
-      };
-    }),
-  };
 }
 
 function invitationReasonMessage(payload: unknown): string | undefined {
