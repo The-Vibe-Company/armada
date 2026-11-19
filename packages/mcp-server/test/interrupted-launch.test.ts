@@ -30,6 +30,7 @@ for (const outcome of ["allocated", "missing", "unavailable"] as const) {
       harness: "claude",
       status: "starting",
       activityLeaseId: crypto.randomUUID(),
+      ...(outcome === "allocated" ? { boatRuntime: true } : {}),
       model: "claude-sonnet-4-6",
       reasoningEffort: "default",
     });

@@ -126,6 +126,7 @@ export function createSandboxLifecycle(
           credential_version: number | null;
           owner_is_member: boolean;
           retained_resume: boolean;
+          interrupted_resume: boolean;
           work_merged: boolean | null;
           preservation_note: string | null;
           stop_requested_at: Date | string | null;
@@ -155,12 +156,16 @@ export function createSandboxLifecycle(
         where s.id=due.id
         returning s.id,s.provider_sandbox_id,s.runtime_transport,s.boat_runtime,s.lifecycle_generation,s.expires_at,s.status::text as status,s.status_reason,s.task_prompt_id,s.activity_lease_id,s.application_secret_tainted,s.credential_id,s.credential_version,s.stop_requested_at,s.preservation_note,
           ${mergedWorkProof("s")} as work_merged,due.retained_resume,
+          (s.provider='boat' and s.boat_runtime and s.status='starting' and exists(
+            select 1 from public.runtime_resumes r where r.sandbox_id=s.id and r.request_id=s.activity_lease_id
+              and r.phase='dispatched' and r.receipt is null
+          )) as interrupted_resume,
           exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id) as owner_is_member`,
           [token, providerId, UNENROLLED_RESUME_STOP, `${OPERATOR_CLEANUP_PREFIX}%`],
         )
       ).rows[0];
       if (!row) return false;
-      if (providerId === "boat" && row.boat_runtime && row.status === "starting" && row.activity_lease_id) {
+      if (row.interrupted_resume) {
         if (!sql.transaction) throw Error("Boat resume recovery requires a SQL transaction.");
         const handedOff = await sql.transaction(async (tx) => {
           const owned = await tx.query(

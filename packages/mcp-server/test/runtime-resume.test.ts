@@ -299,7 +299,7 @@ test("an unenrolled Boat resume returns to a confirmed retained stop before anot
 });
 
 test.each(["activation receipt", "pending ticket"])(
-  "the worker recovers an interrupted Boat resume proved by a %s",
+  "the worker recovers an interrupted Boat resume with %s evidence",
   async (proof) => {
     const f = await stopped();
     try {
