@@ -383,9 +383,12 @@ jobs:
           overwrite: true
 
   staging-smoke:
+    # The reusable job declares these scopes. Its pinned path skips reporting.
     permissions:
       contents: read
       actions: read
+      issues: write
+      statuses: write
     name: Smoke exact release commit on staging
     needs: [check, binary, sandbox-image]
     if: ${{ !cancelled() && needs.check.outputs.publish == 'true' && needs.check.result == 'success' && needs.binary.result == 'success' }}
