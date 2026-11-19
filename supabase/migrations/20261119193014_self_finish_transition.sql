@@ -21,6 +21,7 @@ declare
   allowed_actors text[];
   allowed_effects text[];
   effect record;
+  docker_resume boolean;
   self_finish boolean := (p_actor = 'finish' and p_code = 'agent_finished' and p_to_state = 'stopping') is true;
 begin
   select s.* into sandbox from public.sandboxes s where s.id = p_id for update;
@@ -28,6 +29,18 @@ begin
     or (sandbox.status = any(p_from_states)) is not true then
     return query select false, null::bigint;
     return;
+  end if;
+
+  docker_resume := p_code = 'docker_resume_admitted';
+  if docker_resume then
+    if sandbox.provider <> 'docker' or p_actor is distinct from 'resume_admission'
+      or p_to_state <> 'starting' then
+      raise exception 'invalid Docker resume transition' using errcode = '22023';
+    end if;
+    if sandbox.deleted_at is not null or sandbox.expires_at <= clock_timestamp() then
+      return query select false, null::bigint;
+      return;
+    end if;
   end if;
 
   -- ready is the persisted availability state during the writer rollout.
@@ -71,6 +84,10 @@ begin
     raise exception 'runtime stop observation requires an exit timestamp' using errcode = '22023';
   end if;
 
+  -- Docker resume enqueues its host mailbox job in the admission transaction.
+  if docker_resume and jsonb_array_length(p_effects) <> 0 then
+    raise exception 'Docker resume uses the host mailbox' using errcode = '22023';
+  end if;
   if self_finish then
     if sandbox.stop_requested_at is not null or sandbox.status not in ('ready', 'running') then
       return query select false, null::bigint;
@@ -79,7 +96,9 @@ begin
     if jsonb_array_length(p_effects) <> 0 then
       raise exception 'self-finish already has a stop handoff' using errcode = '22023';
     end if;
-  elsif p_to_state in ('starting', 'stopping') and jsonb_array_length(p_effects) <> 1 then
+  end if;
+  if p_to_state in ('starting', 'stopping') and not self_finish and not coalesce(docker_resume, false)
+    and jsonb_array_length(p_effects) <> 1 then
     raise exception 'sandbox transition requires one lifecycle job' using errcode = '22023';
   end if;
 
@@ -97,6 +116,7 @@ begin
       lifecycle_generation = sandbox.lifecycle_generation,
       stop_generation = case when self_finish and s.provider <> 'docker' then s.stop_generation + 1 else s.stop_generation end,
       reconcile_after = case when self_finish then now() else s.reconcile_after end,
+      docker_retention_deadline = case when docker_resume then null else s.docker_retention_deadline end,
       status_reason = case when p_actor in ('reconciler', 'runtime_observation') then p_status_reason else case p_to_state
         when 'starting' then null
         when 'stopping' then case
