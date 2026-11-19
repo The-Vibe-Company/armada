@@ -332,13 +332,16 @@ async function resolveGoldenLaunch(
     runtime &&
     (!["boat", "modal"].includes(provider.id) ||
       (harness !== "codex" && harness !== "claude" && harness !== "opencode") ||
-      options.privateParent ||
-      options.privateVisibility)
+      options.privateParent)
   )
     throw new LaunchError(
       "invalid_request",
       "The experimental runtime supports ordinary Boat or Modal Codex/Claude/OpenCode workers only.",
     );
+  // The scoped-access caller pairs visibility narrowing with a native grant bootstrap.
+  // Refuse that combination before allocation until grant delivery can use the enrolled runtime.
+  if (runtime && options.privateVisibility && options.beforeStart)
+    throw new LaunchError("invalid_request", "Scoped access requires grant delivery over the enrolled runtime.");
   const prompt = checkPrompt(request.prompt);
   request = applyLaunchAccountDefaults(request, await stores.credentials.defaults?.(actor, harness));
   const choice = checkModel(provider, harness, request, Boolean(runtime));
@@ -394,7 +397,7 @@ async function resolveGoldenLaunch(
   if (repositoryDir !== null && !prepareNativeCwd && !runtime)
     throw new LaunchError("invalid_request", `${provider.id} cannot prepare a native repository working directory.`);
   // Public launch visibility cannot change access or source authority. Only the
-  // trusted managed-parent caller may narrow sandbox access; the source stays unchanged.
+  // trusted launch caller may narrow sandbox access; the source stays unchanged.
   const visibility = options.privateParent || options.privateVisibility ? "private" : golden.visibility;
   const connectionIds = await resolveLaunchConnections(
     request.connections,
