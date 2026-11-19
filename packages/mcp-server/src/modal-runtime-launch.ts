@@ -12,6 +12,7 @@ export function modalRuntimeLaunch(
 ): NonNullable<LaunchOptions["runtime"]> {
   const startRuntime = createRuntimeLaunch(options, "modal");
   return {
+    supportsScopedAccess: true,
     async start(input) {
       const { host, actor, sandbox, credentials } = input;
       if (host.id !== "modal" || sandbox.runtimeTransport !== "dialout") throw Error("runtime_selection_required");
