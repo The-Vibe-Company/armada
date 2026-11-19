@@ -17,12 +17,12 @@ const pathToken = /^[\p{L}\p{N}_.*{(-][\p{L}\p{M}\p{N}_./*{},@()+-]*$/u;
 
 function hasKnownExtension(token: string) {
   if (fileExtension.test(token)) return true;
-  const dot = token.lastIndexOf(".");
-  if (dot === -1) return false;
-  const suffix = token.slice(dot);
-  if (!/[*{]/.test(suffix)) return false;
-  const glob = new Bun.Glob(suffix.toLowerCase());
-  return extensions.some((extension) => glob.match(`.${extension}`));
+  if (!/[*{]/.test(token)) return false;
+  for (let dot = token.indexOf("."); dot !== -1; dot = token.indexOf(".", dot + 1)) {
+    const glob = new Bun.Glob(token.slice(dot).toLowerCase());
+    if (extensions.some((extension) => glob.match(`.${extension}`))) return true;
+  }
+  return false;
 }
 
 export function checkAgentsFiles(files: ReadonlyMap<string, string>, exists: (path: string) => boolean) {
