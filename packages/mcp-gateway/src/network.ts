@@ -1,18 +1,12 @@
 import { lookup } from "node:dns/promises";
-import type { IncomingMessage } from "node:http";
 import { request } from "node:https";
 import { isIP } from "node:net";
-import { Readable } from "node:stream";
 import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
 
-export class GatewayError extends Error {
-  constructor(
-    public readonly code: "denied" | "unsafe_endpoint" | "unsupported" | "needs_reconnect" | "busy" | "upstream",
-    public readonly action: string,
-  ) {
-    super(code);
-  }
-}
+import { GatewayError, receivePublicResponse } from "./network-response.ts";
+
+export { GatewayError } from "./network-response.ts";
+
 export function endpoint(value: string | URL) {
   const url = new URL(value);
   if (
@@ -79,38 +73,6 @@ export const publicFetch: FetchLike = async (input, init) => {
     outgoing.end(body);
   });
 };
-export function receivePublicResponse(
-  incoming: IncomingMessage,
-  resolve: (response: Response) => void,
-  reject: (error: GatewayError) => void,
-) {
-  try {
-    const headers = new Headers();
-    for (const [key, value] of Object.entries(incoming.headers))
-      if (value) headers.set(key, Array.isArray(value) ? value.join(", ") : value);
-    const status = incoming.statusCode;
-    if (status === undefined || !Number.isInteger(status) || status < 200 || status > 599)
-      throw new GatewayError("upstream", "Upstream returned an invalid HTTP status.");
-    if (status >= 300 && status < 400) {
-      incoming.destroy();
-      reject(new GatewayError("unsafe_endpoint", "Redirects are not permitted. Configure the final endpoint."));
-      return;
-    }
-    resolve(
-      new Response([204, 205, 304].includes(status) ? null : (Readable.toWeb(incoming) as ReadableStream<Uint8Array>), {
-        status,
-        headers,
-      }),
-    );
-  } catch (error) {
-    incoming.destroy();
-    reject(
-      error instanceof GatewayError
-        ? error
-        : new GatewayError("upstream", "Upstream returned an invalid HTTP response."),
-    );
-  }
-}
 export function restrictedFetch(fetcher: FetchLike, allowed: (url: URL) => boolean) {
   const fetchRestricted: FetchLike = async (input, init) => {
     const req = new Request(input instanceof URL ? input.href : input, init);

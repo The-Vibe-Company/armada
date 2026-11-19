@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { IncomingMessage } from "node:http";
 import { Socket } from "node:net";
 import { publicFetch, restrictedFetch } from "../src/index.ts";
-import { receivePublicResponse } from "../src/network.ts";
+import { receivePublicResponse } from "../src/network-response.ts";
 
 test("outbound boundary rejects unsafe URLs, origin escape and redirects before forwarding secrets", async () => {
   let calls = 0;
