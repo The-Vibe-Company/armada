@@ -381,7 +381,7 @@ export async function startServer(
       manifest: dockerManifest,
       architecture: dockerManifest.architecture,
       // Plain-image launches resolve only the model account, not GitHub or host credentials.
-      credentials: dockerCredentials,
+      credentials: { ...dockerCredentials, admit: dockerCredentials.admitExistingSandbox },
       modelAuth,
     });
   }
