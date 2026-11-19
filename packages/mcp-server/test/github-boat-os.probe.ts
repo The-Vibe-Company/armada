@@ -100,11 +100,15 @@ c=Private('private');c.request('POST','/redact',value['sample'].encode());r=c.ge
     assert.equal(authorized.status, 0);
     assert.equal(authorized.stdout, "");
   } finally {
-    docker(["rm", "-f", name]);
+    const removed = docker(["rm", "-f", name]);
+    if (removed.status !== 0) {
+      console.error(`Could not remove GitHub SSH fixture ${name}.`);
+      process.exitCode = 1;
+    }
   }
 }
 
 const image = process.env.ARMADA_GOLDEN_OS_IMAGE;
 if (!image) throw new Error("ARMADA_GOLDEN_OS_IMAGE is required");
 await runProbe(image);
-console.log("GitHub SSH OS fixture passed.");
+if (!process.exitCode) console.log("GitHub SSH OS fixture passed.");
