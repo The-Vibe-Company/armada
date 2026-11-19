@@ -46,6 +46,7 @@ import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
 import {
   confirmRefusedDockerResumeRetention,
   failDockerResumeActivation,
+  failDockerStartup,
   recordDockerCleanupReceipt,
   requestRefusedDockerResumeStop,
 } from "./sandbox-lifecycle.ts";
@@ -483,11 +484,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
     if (operation === "resume")
       return failDockerResumeActivation(tx, row.id, row.lifecycle_generation, job.request_id, message);
     if (operation !== "create" && operation !== "bootstrap") return;
-    await tx.query(
-      `update public.sandboxes set status='failed',status_reason=$2,
-       lifecycle_generation=lifecycle_generation+1 where id=$1 and status in ('starting','ready','running') and stop_requested_at is null`,
-      [row.id, message],
-    );
+    await failDockerStartup(tx, row.id, row.lifecycle_generation, "docker_startup_failed", message);
   }
   async function failResumeAck(tx: Sql, row: Sandbox, job: StoredJob, reason?: DockerJobFailureReason) {
     const request = await readJob(job);
@@ -509,19 +506,15 @@ export function createDockerHostStore(sql: Sql, key: string) {
        where host_id=$1 and status='building'`,
       [hostId, reason.snapshot],
     );
-    const startups = await tx.query<{ bound_sandbox_id: string }>(
-      `select bound_sandbox_id from public.docker_host_jobs
-       where host_id=$1 and outcome is null and bound_sandbox_id is not null
-         and bound_operation in ('create','bootstrap','resume') for update`,
+    const startups = await tx.query<{ id: string; generation: string }>(
+      `select s.id,s.lifecycle_generation::text as generation from public.docker_host_jobs j
+       join public.sandboxes s on s.id=j.bound_sandbox_id and s.docker_host_id=j.host_id
+       where j.host_id=$1 and j.outcome is null
+         and j.bound_operation in ('create','bootstrap','resume') for update of j`,
       [hostId],
     );
-    for (const job of startups.rows)
-      await tx.query(
-        `update public.sandboxes set status='failed',status_reason=$2,
-         lifecycle_generation=lifecycle_generation+1
-         where id=$1 and status in ('starting','ready','running') and stop_requested_at is null`,
-        [job.bound_sandbox_id, reason.sandbox],
-      );
+    for (const startup of startups.rows)
+      await failDockerStartup(tx, startup.id, startup.generation, "docker_host_retired", reason.sandbox);
     await tx.query(
       `update public.docker_host_jobs set outcome='failed',completed_at=now(),cancelled_at=now()
        where host_id=$1 and outcome is null

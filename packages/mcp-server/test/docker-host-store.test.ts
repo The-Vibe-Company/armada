@@ -997,6 +997,16 @@ test("expiry accepts only this installation's bound frozen startup machine, neve
   expect((await lifecycle(a.sandboxId))?.stopped_at).toBeNull();
 });
 
+async function failureJournal(sandboxId: string) {
+  return (
+    await database().query(
+      `select from_status,actor,code,generation::text from public.sandbox_transitions
+       where sandbox_id=$1 and to_status='failed'`,
+      [sandboxId],
+    )
+  ).rows;
+}
+
 test("failed startup ACK or rejected admission fails logical startup without claiming a physical stop", async () => {
   const db = database();
   for (const operation of ["create", "bootstrap"] as const) {
@@ -1027,6 +1037,14 @@ test("failed startup ACK or rejected admission fails logical startup without cla
       if (failure === "historical-ack") expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
       else await store.complete(a.hostToken, a.installationId, { requestId: a.startup.requestId, outcome: "failed" });
       expect(await lifecycle(a.sandboxId)).toEqual(failed);
+      expect(await failureJournal(a.sandboxId)).toEqual([
+        {
+          from_status: before?.status,
+          actor: "docker_host",
+          code: "docker_startup_failed",
+          generation: String(failed.lifecycle_generation),
+        },
+      ]);
       // Only a subsequent physical fact may populate stopped_at; failed is retained.
       const stop = { requestId: randomUUID(), operation: "stop" as const };
       await store.enqueueSandbox(a.actor, a.sandboxId, stop);
@@ -1066,14 +1084,35 @@ test("a host that could not fetch the image fails the sandbox in plain words; a 
   }
 });
 
-test("a raced disk-floor refusal records an actionable startup failure", async () => {
+test("a disk-floor refusal rolls back with its journal and preserves its actionable reason on replay", async () => {
   const a = await boundStartup("create");
-  await store.complete(a.hostToken, a.installationId, {
-    requestId: a.startup.requestId,
-    outcome: "failed",
-    reason: "disk_full",
-  });
+  const receipt = { requestId: a.startup.requestId, outcome: "failed", reason: "disk_full" } as const;
+  const before = await lifecycle(a.sandboxId);
+  const db = database();
+  await db.query(
+    "alter table public.sandbox_transitions add constraint refuse_startup_journal check (code <> 'docker_startup_failed') not valid",
+  );
+  try {
+    await expect(store.complete(a.hostToken, a.installationId, receipt)).rejects.toMatchObject({
+      cause: { constraint: "refuse_startup_journal" },
+    });
+    expect(await lifecycle(a.sandboxId)).toEqual(before);
+    expect((await store.poll(a.hostToken, a.installationId))?.requestId).toBe(receipt.requestId);
+  } finally {
+    await db.query("alter table public.sandbox_transitions drop constraint refuse_startup_journal");
+  }
+  await store.complete(a.hostToken, a.installationId, receipt);
   expect((await lifecycle(a.sandboxId))?.status_reason).toContain("10 GB floor");
+});
+
+test("a failed startup receipt cannot replace durable stop intent", async () => {
+  const a = await boundStartup("create");
+  await store.enqueueSandbox(a.actor, a.sandboxId, { requestId: randomUUID(), operation: "stop" });
+  const stopping = await lifecycle(a.sandboxId);
+  expect(stopping?.status).toBe("stopping");
+  await store.complete(a.hostToken, a.installationId, { requestId: a.startup.requestId, outcome: "failed" });
+  expect(await lifecycle(a.sandboxId)).toEqual(stopping);
+  expect(await failureJournal(a.sandboxId)).toEqual([]);
 });
 
 // Real migrated mailbox/ACK flow protects drain order and lost-revocation-response recovery.
@@ -1147,7 +1186,7 @@ test("a completed Docker delete proves exit and journals deletion of a failed sa
   expect(
     (
       await database().query(
-        `select from_status, to_status, generation::text from public.sandbox_transitions where sandbox_id=$1`,
+        `select from_status, to_status, generation::text from public.sandbox_transitions where sandbox_id=$1 and to_status='deleted'`,
         [a.sandboxId],
       )
     ).rows,
@@ -1579,6 +1618,14 @@ test("removing the host owner retires queued startup before the denied poll", as
   await denied(store.poll(a.hostToken, a.installationId));
   const failed = await lifecycle(a.sandboxId);
   expect(failed?.status).toBe("failed");
+  expect(await failureJournal(a.sandboxId)).toEqual([
+    {
+      from_status: "starting",
+      actor: "docker_host",
+      code: "docker_host_retired",
+      generation: String(failed?.lifecycle_generation),
+    },
+  ]);
   expect(failed?.status_reason).toBe(DOCKER_LAUNCH_FAILURE_MESSAGES.hostUnavailable);
   expect(failed?.stopped_at).toBeNull();
   expect((await store.list({ ...a.actor, userId: a.backupAdmin }))[0]?.running).toBe(0);
