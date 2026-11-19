@@ -1238,7 +1238,7 @@
     "packages/mcp-server/test/templates.test.ts": 2,
     "packages/mcp-server/test/work-preservation.test.ts": 2,
     "packages/provider-modal/test/modal.test.ts": 5,
-    "packages/sdk/test/sdk.test.ts": 4,
+    "packages/sdk/test/sdk.test.ts": 2,
     "scripts/local-ports.test.ts": 3,
     "scripts/production-health.test.ts": 6,
     "scripts/test-support/github-audit.ts": 1
