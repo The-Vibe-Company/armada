@@ -842,6 +842,7 @@ const refusalOrders = [
   "refusal first",
   "failed ACK",
   "ACK first",
+  "failed ACK first",
   "previous server ACK",
   "previous server failed ACK",
   "ACK transaction rollback",
@@ -887,10 +888,15 @@ test.each(refusalOrders)(
       );
 
     if (order === "ACK first") await ack(job.requestId);
+    if (order === "failed ACK first") {
+      await ack(job.requestId, "failed");
+      expect((await reservations.get(f.actor, id)).status).toBe("failed");
+      await expect(authority.enrol(job.bootstrap.enrolmentToken)).rejects.toThrow("runtime_enrolment_denied");
+    }
     const response = await refuse();
     expect(response?.status).toBe(409);
     expect(await response?.json()).toEqual({ error: "runtime_protocol_unsupported" });
-    if (order !== "ACK first") {
+    if (order !== "ACK first" && order !== "failed ACK first") {
       expect((await reservations.get(f.actor, id)).status).toBe("starting");
       expect((await hosts.poll(f.hostToken, f.installationId))?.requestId).toBe(job.requestId);
       if (order === "previous server ACK" || order === "previous server failed ACK") {
@@ -950,7 +956,7 @@ test.each(refusalOrders)(
     expect(next.state).toBe("pending");
     const nextJob = await hosts.poll(f.hostToken, f.installationId);
     if (nextJob?.operation !== "resume") throw Error("missing replacement resume");
-    if (order === "previous server failed ACK") {
+    if (order === "previous server failed ACK" || order === "failed ACK first") {
       await ack(job.requestId, "failed");
       await ack(stop.requestId);
       expect((await reservations.get(f.actor, id)).status).toBe("starting");

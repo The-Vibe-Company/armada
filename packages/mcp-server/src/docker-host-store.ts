@@ -450,7 +450,15 @@ export function createDockerHostStore(sql: Sql, key: string) {
       if (error instanceof DockerHostDenied) return false;
       throw error;
     }
-    if (!(await requestRefusedDockerResumeStop(tx, row.id, generation))) return false;
+    if (
+      !(await requestRefusedDockerResumeStop(
+        tx,
+        row.id,
+        generation,
+        row.status === "failed" && job.outcome === "failed",
+      ))
+    )
+      return false;
     await insert(
       tx,
       row.docker_host_id,
@@ -513,7 +521,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
         await tx.query<StoredJob>(
           `update public.docker_host_jobs j set refused_resume_generation=$2
            from public.sandboxes s join public.docker_resume_claims c on c.sandbox_id=s.id
-           where s.id=$1 and s.status='starting' and s.lifecycle_generation=$2::bigint
+           where s.id=$1
+             and ((s.status='starting' and s.lifecycle_generation=$2::bigint)
+               or (s.status='failed' and s.lifecycle_generation=$2::bigint+1 and j.outcome='failed'))
              and j.request_id=c.request_id and j.bound_sandbox_id=s.id and j.bound_operation='resume'
              and j.host_id=s.docker_host_id and c.host_id=j.host_id and c.installation_id=s.docker_installation_id
              and c.generation=s.docker_generation and c.accepted and c.lifecycle_generation+1=$2::bigint
@@ -528,7 +538,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
       if (refused.outcome !== null) {
         const row =
           (await tx.query<Sandbox>("select * from public.sandboxes where id=$1", [sandboxId])).rows[0] ?? deny();
-        await settleRefusedResume(tx, row, refused);
+        const settled = await settleRefusedResume(tx, row, refused);
+        if (row.status === "failed") return settled;
       }
       return true;
     },

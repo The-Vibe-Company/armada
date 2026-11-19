@@ -95,8 +95,17 @@ export async function failDockerResumeActivation(
   requestId: string,
   reason: string,
 ) {
-  await tx.query(
+  const pending = (
+    await tx.query<{ enrolment_hash: string; enrolment_expires_at: string }>(
+      `select enrolment_hash,enrolment_expires_at::text from public.runtime_enrolments
+       where sandbox_id=$1 and lifecycle_generation=$2 and enrolment_hash is not null
+         and enrolment_expires_at>now() and configuration_enc is not null`,
+      [sandboxId, generation],
+    )
+  ).rows[0];
+  const failed = await tx.query(
     `update public.sandboxes s set status='failed',status_reason=$4,
+       transition_context=jsonb_build_object('actor','docker_resume','code','failed_ack'),
        lifecycle_generation=s.lifecycle_generation+1
      from public.docker_host_jobs resumed
      where s.id=$1 and s.lifecycle_generation=$2 and s.provider='docker'
@@ -106,20 +115,37 @@ export async function failDockerResumeActivation(
        and not exists (
          select 1 from public.docker_host_jobs later where later.bound_sandbox_id=s.id
            and later.host_id=resumed.host_id and later.bound_operation='resume' and later.position>resumed.position
-       )`,
+       ) returning s.id`,
     [sandboxId, generation, requestId, reason],
   );
+  if (failed.rows.length && pending) {
+    // The lifecycle trigger revoked the credential. Keep only proof for refusal.
+    await tx.query(
+      `update public.runtime_enrolments set enrolment_hash=$2,enrolment_expires_at=$3
+       where sandbox_id=$1`,
+      [sandboxId, pending.enrolment_hash, pending.enrolment_expires_at],
+    );
+  }
 }
 
-export async function requestRefusedDockerResumeStop(tx: Sql, sandboxId: string, generation: string) {
+export async function requestRefusedDockerResumeStop(
+  tx: Sql,
+  sandboxId: string,
+  ticketGeneration: string,
+  failedAck: boolean,
+) {
   const stopped = await tx.query(
     `update public.sandboxes set status='stopping',status_reason=null,
        stop_requested_at=now(),lifecycle_generation=lifecycle_generation+1
      where id=$1 and provider='docker' and stop_requested_at is null and deleted_at is null
        and expires_at>now()
-       and status='starting' and lifecycle_generation=$2
+       and ((not $3 and status='starting' and lifecycle_generation=$2::bigint)
+         or ($3 and status='failed' and lifecycle_generation=$2::bigint+1
+           and exists(select 1 from public.sandbox_transitions t where t.sandbox_id=sandboxes.id
+             and t.generation=sandboxes.lifecycle_generation and t.to_status='failed'
+             and t.actor='docker_resume' and t.code='failed_ack')))
      returning id`,
-    [sandboxId, generation],
+    [sandboxId, ticketGeneration, failedAck],
   );
   return stopped.rows.length > 0;
 }
