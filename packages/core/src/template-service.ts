@@ -982,6 +982,21 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       variables: await resolveEnvironment(actor, m),
     });
   }
-  return { command, prepare };
+  async function validateBindingInTransaction(tx: Sql, actor: ApplicationVaultActor, org: string, templateId: string) {
+    const a = await member(tx, actor, org);
+    if (a.role !== "admin") throw new VaultError("forbidden", "Organization admin access is required.");
+    const h = await header(tx, a, templateId);
+    const { definition } = await revision(tx, h);
+    const { host } = await references(tx, a, h.scope, definition);
+    if (host) {
+      const { rows } = await tx.query(
+        "select 1 from public.members where org_id = $1 and user_id = $2 for share nowait",
+        [org, host.ownerId],
+      );
+      if (!rows.length) unavailable("environment_unavailable");
+    }
+    return { harness: definition.harness, modelAccount: definition.modelAccount };
+  }
+  return { command, prepare, validateBindingInTransaction };
 }
 export type TemplateService = ReturnType<typeof createTemplateService>;

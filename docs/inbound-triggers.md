@@ -67,10 +67,22 @@ Pass `org` as the organization UUID on both requests.
   `receivedAt` and `jobState` (`queued`, `leased`, `done` or `failed`).
   This is the shared runner's processing state. Launch outcomes are tracked in #2823.
 
-## Rotation and disable API
+## Creation, rotation and disable API
 
 Use the same organization scope and admin authentication as the inspection API.
 
+- `POST /api/v1/triggers?org=<org UUID>` takes a JSON body containing
+  `templateId`, `poolHarness`, `ratePerMinute`, and `concurrency`. Both
+  limits are positive integers. The caller becomes the launch owner. The
+  selected template must be active, visible to the caller and use the selected
+  harness. Its resources must be available, and the caller's default account
+  for that harness must be active and accessible in the organization. Any
+  explicit template model account must match that default. An unavailable
+  binding returns HTTP 409. Success returns HTTP 201 with
+  `{triggerId, signingSecret}`. The response is non-cacheable. Decode the
+  base64 value to obtain the 32-byte HMAC key. Use the trigger ID with the
+  existing hook path. If the new trigger is listed after a lost response,
+  rotate its key to retrieve a fresh one.
 - `POST /api/v1/triggers/<trigger UUID>/rotate?org=<org UUID>` replaces the key
   of an enabled trigger and returns HTTP 200 with `{signingSecret}`. The
   response is non-cacheable. Decode the base64 value to obtain the 32-byte HMAC
