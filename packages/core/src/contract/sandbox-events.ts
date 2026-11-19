@@ -3,7 +3,10 @@ import type { Operation } from "./index.ts";
 
 const position = z.string().regex(/^(0|[1-9][0-9]{0,18})$/);
 const maxId = "9223372036854775807";
-const cursor = position.refine((value) => value.length < 19 || value <= maxId).optional();
+const cursor = position
+  .refine((value) => value.length < 19 || value <= maxId)
+  .optional()
+  .describe(`A decimal event ID from 0 through ${maxId}.`);
 
 export const streamSandboxEvents = {
   name: "streamSandboxEvents",
