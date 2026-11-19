@@ -355,8 +355,8 @@ Example: armada stop SANDBOX_UUID --org ORG_UUID --json
 `;
 
 exports[`armada interrupt help preserves its output 1`] = `
-"Usage: armada interrupt <sandbox-id> [--conversation <id>] [--org UUID] [--json]
-Interrupt the running turn of one conversation, or all, after Armada login and authorization.
+"Usage: armada interrupt <sandbox-id> [--org UUID] [--json]
+Interrupt the sandbox's running turn after Armada login and authorization.
 The sandbox stays up for the next send. This does not stop or delete the machine.
 Availability depends on the provider/harness; the server can refuse unsupported interruption.
 Output is JSON even without --json.
@@ -405,7 +405,7 @@ Example: armada send SANDBOX_UUID --org ORG_UUID -- "Review the changes"
 `;
 
 exports[`armada steer help preserves its output 1`] = `
-"Usage: armada steer <sandbox-id> <text> [--conversation <id>] [--org UUID] [--json]
+"Usage: armada steer <sandbox-id> <text> [--org UUID] [--json]
 Redirect a currently running turn after Armada login and server authorization.
 Refused when no turn is running; use send for a new turn.
 Delivery may join the turn natively or interrupt/restart the same conversation;

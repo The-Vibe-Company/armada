@@ -117,7 +117,6 @@ export function assertSendConversation(requested: unknown, current: string | und
 export const serverInfo = { name: "armada" } as const;
 
 const id = z.string().describe("Armada's sandbox id (a uuid, as returned by launch and list).");
-const conversationId = z.string().min(1).optional().describe("A conversation of the sandbox. Default: the latest.");
 
 const modelCatalogText = Object.entries(MODEL_CATALOG)
   .map(
@@ -1241,7 +1240,7 @@ function createToolServer(
           .string()
           .min(1)
           .optional()
-          .describe("The sandbox's current conversation ID. Omit to target it automatically."),
+          .describe("The sandbox's current conversation ID for a new turn. Omit to target it automatically."),
         model: modelInput,
         reasoning_effort: effortInput,
       },
@@ -1270,7 +1269,6 @@ function createToolServer(
       input: {
         id,
         text: z.string().min(1),
-        conversation_id: conversationId,
         request_id: z
           .string()
           .uuid()
@@ -1292,13 +1290,14 @@ function createToolServer(
       const delivery = provider.capabilities[found.harness]?.steer ?? "none";
       if (delivery === "none") throw new ToolError("unsupported", `${found.harness} cannot be steered here.`);
       if (!enrolled && delivery === "restart" && found.credentialId) await turnCredentials(found);
+      const conversationId = enrolled ? undefined : found.conversationIds.at(-1);
       const dispatchSteer = () =>
         provider
           .steer({
             sandboxId: found.providerSandboxId,
             ...(args.request_id ? { requestId: args.request_id } : {}),
             text: args.text,
-            ...(args.conversation_id ? { conversationId: args.conversation_id } : {}),
+            ...(conversationId ? { conversationId } : {}),
           })
           .catch(unknownMutationOutcome);
       if (enrolled) {
@@ -1368,10 +1367,9 @@ function createToolServer(
     "interrupt",
     {
       title: "Interrupt the running turn",
-      description: "Stops the running turn of one conversation, or of all. The sandbox stays up for the next send.",
+      description: "Interrupts the sandbox's running turn. The sandbox stays up for the next send.",
       input: {
         id,
-        conversation_id: conversationId,
         request_id: z
           .string()
           .uuid()
@@ -1383,15 +1381,16 @@ function createToolServer(
       output: { id: z.string(), interrupted: z.boolean() },
     },
     async (args) => {
-      const { sandbox: found, provider } = await liveControl(args);
+      const { sandbox: found, provider, enrolled } = await liveControl(args);
       if (!provider.capabilities[found.harness]?.interrupt) {
         throw new ToolError("unsupported", `${found.harness} cannot be interrupted here.`);
       }
+      const conversationId = enrolled ? undefined : found.conversationIds.at(-1);
       await provider
         .interrupt({
           sandboxId: found.providerSandboxId,
           ...(args.request_id ? { requestId: args.request_id } : {}),
-          ...(args.conversation_id ? { conversationId: args.conversation_id } : {}),
+          ...(conversationId ? { conversationId } : {}),
         })
         .catch(unknownMutationOutcome);
       return { id: found.id, interrupted: true };
@@ -1636,10 +1635,11 @@ function createToolServer(
         if (!steer) return sendTool.invoke(args);
         if (args.model !== undefined || args.reasoning_effort !== undefined)
           return invalidToolInput("send", "Model and effort overrides require a new turn.");
+        if (args.conversation_id !== undefined)
+          return invalidToolInput("send", "Steer targets the sandbox. Omit conversation_id.");
         return steerTool.invoke({
           id: args.id,
           text: args.prompt,
-          conversation_id: args.conversation_id,
           request_id: args.request_id,
         });
       },
@@ -1670,23 +1670,19 @@ function createToolServer(
       {
         ...stopTool,
         description: `${stopTool.description} Set turn to interrupt the current turn and keep the machine up.`,
-        input: {
+        input: z.strictObject({
           ...stopTool.input,
-          conversation_id: interruptTool.input.conversation_id,
           turn: z.boolean().optional().describe("Interrupt the turn without stopping the sandbox."),
-        },
+        }),
         output: {
           ...stopTool.output,
           status: stopTool.output.status.optional(),
           interrupted: interruptTool.output.interrupted.optional(),
         },
       },
-      async ({ turn, conversation_id, ...args }) => {
+      async ({ turn, ...args }) => {
         if (turn && args.only_if_idle) return invalidToolInput("stop", "Use turn without only_if_idle.");
-        if (!turn && conversation_id !== undefined) return invalidToolInput("stop", "conversation_id requires turn.");
-        return turn
-          ? interruptTool.invoke({ id: args.id, request_id: args.request_id, conversation_id })
-          : stopTool.invoke(args);
+        return turn ? interruptTool.invoke({ id: args.id, request_id: args.request_id }) : stopTool.invoke(args);
       },
     );
   }

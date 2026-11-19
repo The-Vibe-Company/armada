@@ -732,7 +732,7 @@ def main():
             receipt = api("sandbox/send", {"id": sandbox_id, "request_id": str(uuid.uuid4()),
                 "conversation_id": conversation,
                 "prompt": "Run the shell command sleep 120, then reply DOCKER_NOT_REDIRECTED. Wait for the command to finish."}, normal=True)
-            control = {"id": sandbox_id, "request_id": str(uuid.uuid4()), "conversation_id": conversation}
+            control = {"id": sandbox_id, "request_id": str(uuid.uuid4())}
             if operation == "steer":
                 control["text"] = "Stop waiting. Reply with exactly DOCKER_STEER_OK. Do not run more tools."
             redirected = api("sandbox/" + operation, control, normal=True)

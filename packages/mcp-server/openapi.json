@@ -3958,7 +3958,7 @@
                         "maxLength": 131072
                       },
                       "conversation_id": {
-                        "description": "The sandbox's current conversation ID. Omit to target it automatically.",
+                        "description": "The sandbox's current conversation ID for a new turn. Omit to target it automatically.",
                         "type": "string",
                         "minLength": 1
                       },
@@ -4004,7 +4004,7 @@
                             "maxLength": 131072
                           },
                           "conversation_id": {
-                            "description": "The sandbox's current conversation ID. Omit to target it automatically.",
+                            "description": "The sandbox's current conversation ID for a new turn. Omit to target it automatically.",
                             "type": "string",
                             "minLength": 1
                           },
@@ -5997,11 +5997,6 @@
                     "type": "string",
                     "minLength": 1
                   },
-                  "conversation_id": {
-                    "description": "A conversation of the sandbox. Default: the latest.",
-                    "type": "string",
-                    "minLength": 1
-                  },
                   "request_id": {
                     "description": "Optional durable runtime request ID (runtime sandboxes only); reuse identical input after uncertain delivery.",
                     "type": "string",
@@ -6117,7 +6112,7 @@
     "/api/v1/sandbox/interrupt": {
       "post": {
         "operationId": "sandbox_interrupt",
-        "description": "Stops the running turn of one conversation, or of all. The sandbox stays up for the next send.",
+        "description": "Interrupts the sandbox's running turn. The sandbox stays up for the next send.",
         "security": [
           {
             "serviceToken": []
@@ -6136,11 +6131,6 @@
                   "id": {
                     "type": "string",
                     "description": "Armada's sandbox id (a uuid, as returned by launch and list)."
-                  },
-                  "conversation_id": {
-                    "description": "A conversation of the sandbox. Default: the latest.",
-                    "type": "string",
-                    "minLength": 1
                   },
                   "request_id": {
                     "description": "Optional durable runtime request ID (runtime sandboxes only); reuse identical input after uncertain delivery.",
