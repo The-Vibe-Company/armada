@@ -90,7 +90,7 @@ export async function createArmadaApiClient(
     token = saved.accessToken;
   }
 
-  const rawResponses = options.rawJson ? new WeakMap<Response, Response>() : undefined;
+  const rawResponses = options.rawJson ? new WeakMap<object, Pick<Response, "text">>() : undefined;
   return commandClient(
     origin,
     {
@@ -393,7 +393,7 @@ export async function createArmadaApiClient(
   );
 }
 
-async function rawJsonText(response: Response | undefined, payload: unknown): Promise<string> {
+async function rawJsonText(response: Pick<Response, "text"> | undefined, payload: unknown) {
   let text: string | undefined;
   try {
     text = await response?.text();
