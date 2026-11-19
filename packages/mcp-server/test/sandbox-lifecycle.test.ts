@@ -425,6 +425,14 @@ for (const outcome of [
       });
       expect(await worker.reconcileOne()).toBe(false);
       if (outcome === "snapshot-pending") {
+        expect(
+          (
+            await db.query(
+              "select isfinite(reconcile_after) and reconcile_after>now() as scheduled from sandboxes where id=$1",
+              [id],
+            )
+          ).rows,
+        ).toEqual([{ scheduled: true }]);
         await db.query("update sandboxes set reconcile_after=now()-interval '1 second' where id=$1", [id]);
         expect(await worker.reconcileOne()).toBe(true);
         expect(await readStopIntent()).toEqual(intent);
