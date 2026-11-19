@@ -374,15 +374,16 @@ test.each(interruptedResumeProofs)(
       const cancelled = proof === "cancelled observation" ? new AbortController() : undefined;
       const interruption = Error("Lifecycle lane cancelled");
       const observationError = observationErrors.get(proof);
+      const unrecognized = proof === "unrecognized state";
       const { provider, requests } = fakeBoat(
         ...(observationError ? [{ status: observationError }] : []),
-        ...(proof === "observed archive" || observationError || cancelled
+        ...(unrecognized
+          ? [{ body: { sandbox: sdkSandbox({ id: f.row.providerSandboxId, state: "unrecognized" }) } }]
+          : []),
+        ...(proof === "observed archive" || observationError || cancelled || unrecognized
           ? [{ body: { sandbox: retainedSandbox({ id: f.row.providerSandboxId, snapshotAvailable: false }) } }]
           : []),
         ...(proof === "observed running" ? [running, running, {}] : []),
-        ...(proof === "unrecognized state"
-          ? [{ body: { sandbox: sdkSandbox({ id: f.row.providerSandboxId, state: "unrecognized" }) } }, {}]
-          : []),
         { body: { sandbox: retainedSandbox({ id: f.row.providerSandboxId }) } },
       );
       const worker = createSandboxLifecycle(f.sql, async () => ({
@@ -403,15 +404,12 @@ test.each(interruptedResumeProofs)(
         await f.db.query("update sandboxes set reconcile_lease_until=now() where id=$1", [f.row.id]);
       }
       expect(await worker.reconcileOne()).toBe(true);
-      if (observationError) {
+      if (observationError || unrecognized) {
+        expect(requests.map(({ method }) => method)).toEqual(["GET"]);
         expect((await store.get(f.row.id))?.status).toBe("starting");
         expect(await worker.reconcileOne()).toBe(false);
         await f.db.query("update sandboxes set reconcile_after=now() where id=$1", [f.row.id]);
         expect(await worker.reconcileOne()).toBe(true);
-      }
-      if (proof === "unrecognized state") {
-        expect((await store.get(f.row.id))?.status).toBe("failed");
-        return;
       }
       expect((await store.get(f.row.id))?.status).toBe("stopping");
       if (proof === "observed running") expect(requests.map(({ method }) => method)).toEqual(["GET"]);
