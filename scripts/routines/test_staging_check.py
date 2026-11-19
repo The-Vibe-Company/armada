@@ -230,6 +230,21 @@ class CoordinatorTests(unittest.TestCase):
             check.parser().parse_args(["--provider", "synthetic-private-value"])
         self.assertNotIn("synthetic-private-value", errors.getvalue())
 
+    def test_cleanup_uses_bodyless_public_delete_with_bearer_and_query_org(self):
+        origin, token = "https://staging.example", "fixture-routine"
+        api = check.Api(origin, ORG, token)
+        scenario = check.Scenario(api)
+        with patch.object(api.opener, "open", return_value=io.BytesIO(b'{"status":"deleted"}')) as opened, \
+                patch.object(scenario, "sleep", side_effect=AssertionError("unexpected cleanup retry")):
+            scenario.stop_delete(SANDBOX, api.deadline)
+        opened.assert_called_once()
+        request = opened.call_args.args[0]
+        self.assertEqual(request.full_url, f"{origin}/api/v1/sandboxes/{SANDBOX}?org={ORG}")
+        self.assertEqual(request.get_method(), "DELETE")
+        self.assertEqual(request.get_header("Authorization"), "Bearer " + token)
+        self.assertIsNone(request.data)
+        self.assertIn(SANDBOX, scenario.deleted)
+
     def test_transport_token_header_only_no_redirect_or_raw_errors(self):
         token = "synthetic-not-a-real-token"
         api = check.Api("https://staging.example", ORG, token)
