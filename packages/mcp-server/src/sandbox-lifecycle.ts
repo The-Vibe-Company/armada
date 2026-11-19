@@ -36,6 +36,7 @@ interface SandboxTransition {
   actor:
     | "resume_admission"
     | "runtime_enrolment"
+    | "runtime_observation"
     | "owner"
     | "finish"
     | "expiry"
@@ -48,7 +49,7 @@ interface SandboxTransition {
   code: string;
   effects: readonly SandboxTransitionEffect[];
   settlement?: {
-    lease: string;
+    lease: string | null;
     statusReason: string | null;
     stopRequestedAt: string | null;
     stoppedAt: string | null;
@@ -146,19 +147,20 @@ export async function recordRuntimeStartupFailure(
   return result;
 }
 
-export async function recordObservedRuntimeFailure(
+export async function recordObservedRuntimeState(
   sql: Sql,
   scope: [string[], string],
   observation: {
     sandboxId: string;
     generation: number;
     fromState: "ready" | "running";
+    toState: "failed" | "stopped";
     reason: string | null;
     stoppedAt: string | null;
   },
 ) {
-  if (!sql.transaction) throw new Error("Runtime failure publication requires a transaction.");
-  const { sandboxId, generation, fromState, reason, stoppedAt } = observation;
+  if (!sql.transaction) throw new Error("Runtime observation publication requires a transaction.");
+  const { sandboxId, generation, fromState, toState, reason, stoppedAt } = observation;
   return sql.transaction(async (tx) => {
     const eligible = await tx.query(
       `select s.id from public.sandboxes s
@@ -175,16 +177,20 @@ export async function recordObservedRuntimeFailure(
       sandboxId,
       expectedGeneration: generation,
       fromStates: [fromState],
-      toState: "failed",
-      actor: "lifecycle_runner",
-      code: "runtime_provider_failure",
+      toState,
+      actor: toState === "stopped" ? "runtime_observation" : "lifecycle_runner",
+      code: toState === "stopped" ? "runtime_provider_stopped" : "runtime_provider_failure",
       effects: [],
+      ...(toState === "stopped"
+        ? { settlement: { lease: null, statusReason: reason, stopRequestedAt: null, stoppedAt } }
+        : {}),
     });
     if (result.kind === "applied") {
-      await tx.query(
-        "update public.sandboxes set status_reason=$2,stopped_at=coalesce($3::timestamptz,stopped_at) where id=$1",
-        [sandboxId, reason, stoppedAt],
-      );
+      if (toState === "failed")
+        await tx.query(
+          "update public.sandboxes set status_reason=$2,stopped_at=coalesce($3::timestamptz,stopped_at) where id=$1",
+          [sandboxId, reason, stoppedAt],
+        );
       if (stoppedAt !== null) await releaseAccountCapacity(tx, sandboxId);
     }
     return result;
