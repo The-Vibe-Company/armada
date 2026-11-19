@@ -246,8 +246,9 @@ export function createSandboxLifecycle(
             or (recovery.retained_resume and coalesce(candidate.lifecycle_error,'') not like $4))
           and (candidate.activity_until is null or candidate.activity_until<now())
           and (candidate.reconcile_lease_until is null or candidate.reconcile_lease_until<now())
-          order by case when recovery.retained_resume
-            then coalesce(candidate.reconcile_lease_until,candidate.stop_requested_at)
+          order by case
+            when recovery.retained_resume then coalesce(candidate.reconcile_lease_until,candidate.stop_requested_at)
+            when recovery.modal_resume then candidate.activity_until
             else candidate.reconcile_after end
           limit 1 for update of candidate skip locked
         ) due
