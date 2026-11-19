@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { MODEL_CATALOG } from "@armada/core";
 import { initialLaunchSelection, launchPickerGroups } from "../src/lib/launch-picker";
 import { accountsFromList, launchAccounts, type ModelAccount } from "../src/lib/model-accounts";
-import { modelsPageDefault, modelsPageModel, modelsPageStatus } from "../src/lib/models-page";
+import { modelsPageDefault, modelsPageExhaustion, modelsPageModel, modelsPageStatus } from "../src/lib/models-page";
 
 const account: ModelAccount = {
   id: "account_id",
@@ -33,8 +33,9 @@ test("Models shows the API exhaustion deadline until the reset", () => {
     "org",
   );
   const listed = accounts[0]!;
-  expect(modelsPageStatus(listed, reset - 1).label).toBe("Exhausted until 2026-11-19 14:00 UTC");
-  expect(modelsPageStatus(listed, reset).label).toBe("At its limit");
+  expect(modelsPageExhaustion(listed, reset - 1)).toBe("Exhausted until 2026-11-19 14:00 UTC");
+  expect(modelsPageStatus(listed, reset - 1).label).toBe("At its limit");
+  expect(modelsPageExhaustion(listed, reset)).toBeNull();
 });
 test("custom endpoint models are not mistaken for a saved default", () => {
   expect(modelsPageModel({ ...account, models: [{ model: "deployment", input: null, output: null }] }, "codex")).toBe(
