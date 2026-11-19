@@ -9,19 +9,15 @@ import {
   goldenResponse,
   isSandboxProvider,
   LaunchError,
-  type LaunchResult,
-  launchResponse,
   type Provider,
   ProviderError,
   ProviderRoutingError,
   parseSnapshotConfig,
-  resolveModelChoice,
   type SandboxProviderId,
   VaultError,
   VERSION,
 } from "@armada/core";
 import { accountCommand } from "./account-commands.ts";
-import { requireLaunchAgent } from "./agent-validation.ts";
 import { applicationVaultCommand } from "./application-vault-commands.ts";
 import { acceptedOptions, flag, parseArgs, providerFlag, single, values } from "./args.ts";
 import { ArmadaApiError, createArmadaApiClient, resolveArmadaOrigin } from "./armada-api.ts";
@@ -34,18 +30,16 @@ import {
   tokenList,
   tokenRevoke,
 } from "./auth-commands.ts";
-import { commandWords, HELP, LOGS_HELP } from "./command-catalog.ts";
+import { commandWords, completion, HELP, LOGS_HELP } from "./command-catalog.ts";
 import { findCommand } from "./commands/index.ts";
-import { completion, doctor, prepareLaunch } from "./devx.ts";
-import { launchDocker } from "./docker-launch.ts";
+import { doctor } from "./devx.ts";
 import { dockerSnapshotCommand } from "./docker-snapshots.ts";
 import { failureHint } from "./failure-hint.ts";
 import { hostCommand } from "./host-commands.ts";
 import { type LocalHostIo, localHostCommand, productionLocalHostIo } from "./local-host.ts";
 import { onboardingHelp } from "./onboarding-help.ts";
-import { operation, parseTtl } from "./operations.ts";
+import { operation } from "./operations.ts";
 import { profileStores, selectProfile } from "./profiles.ts";
-import { printOptionalResourceAdvice } from "./resource-advice.ts";
 import { routineCommand } from "./routine-commands.ts";
 import { promptSecret } from "./secret-input.ts";
 import { sizePolicyCommand } from "./size-policy-command.ts";
@@ -252,7 +246,7 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
   let rest = original;
   const terminator = rest.indexOf("--");
   const optionArgs = terminator < 0 ? rest : rest.slice(0, terminator);
-  const scoped = ["doctor", "host", "golden", "launch", "bind-credential", "logs", "mcp"];
+  const scoped = ["doctor", "host", "golden", "bind-credential", "logs", "mcp"];
   if (
     command &&
     ((registered && registered.useSelectedOrg !== false) ||
@@ -270,7 +264,7 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
         split < 0 ? [...rest, "--org", selected] : [...rest.slice(0, split), "--org", selected, ...rest.slice(split)];
     }
   }
-  if (registered) return registered.run(rest, authOf(io, deps));
+  if (registered) return registered.run(rest, { io, deps, auth: authOf(io, deps) });
   switch (command) {
     case "--version":
     case "-v":
@@ -290,8 +284,6 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
       return hostCommand(rest, { ...authOf(io, deps), ...io });
     case "golden":
       return golden(rest, io, deps);
-    case "launch":
-      return launch(rest, io, deps);
     case "bind-credential":
     case "mcp":
       return operation(
@@ -811,136 +803,6 @@ async function list(args: ReturnType<typeof parseArgs>, io: Io, deps: Deps): Pro
   return 0;
 }
 
-/** The control API serializes Date fields as ISO strings; convert only at the CLI boundary. */
-type LaunchWireResult = Omit<LaunchResult, "expiresAt"> & { expiresAt?: string | null };
-
-function decodeLaunchResult(result: LaunchWireResult): LaunchResult {
-  const { expiresAt, ...launch } = result;
-  return {
-    ...launch,
-    ...(expiresAt === null || expiresAt === undefined ? {} : { expiresAt: new Date(expiresAt) }),
-  };
-}
-
-async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
-  argv = await prepareLaunch(argv, { ...authOf(io, deps), ...io });
-  const args = parseArgs(
-    argv,
-    [
-      "--skill",
-      "--max-active-children",
-      "--host",
-      "--image",
-      "--request-id",
-      "--credential-version",
-      "--variable",
-      "--secret",
-      "--golden",
-    ],
-    ["--armada-access", "--keep-after-merge"],
-  );
-  if (single(args, "--provider") === "docker") {
-    const auth = authOf(io, deps);
-    return launchDocker(args, io, { ...auth, fetch: deps.fetch ?? auth.fetch });
-  }
-  if (
-    ["--host", "--image", "--request-id", "--credential-version", "--golden", "--variable", "--secret"].some(
-      (key) => single(args, key) !== undefined,
-    )
-  )
-    throw new GoldenError("invalid_config", "Docker placement flags require --provider docker.");
-  const maxActiveChildren = single(args, "--max-active-children");
-  if (
-    maxActiveChildren !== undefined &&
-    (!flag(args, "--armada-access") || !/^[1-9][0-9]*$/.test(maxActiveChildren) || Number(maxActiveChildren) > 100)
-  )
-    throw new GoldenError(
-      "invalid_config",
-      "--max-active-children requires --armada-access and a limit from 1 to 100.",
-    );
-  if (flag(args, "--no-connections") && single(args, "--connections") !== undefined)
-    throw new GoldenError("invalid_config", "Use --connections or --no-connections, not both.");
-  const legacyVisibility = single(args, "--visibility");
-  if (legacyVisibility !== undefined) {
-    if (legacyVisibility !== "private" && legacyVisibility !== "org")
-      throw new GoldenError("invalid_config", "Legacy --visibility must be private or org.");
-    io.err(
-      "Warning: --visibility is deprecated and ignored. The server enforces sandbox access and resolves omitted connection defaults.\n",
-    );
-  }
-  const connections = single(args, "--connections");
-  if (connections !== undefined && connections.split(",").some((id) => !id.trim()))
-    throw new GoldenError(
-      "invalid_config",
-      "--connections needs a comma-separated list of nonempty IDs; use --no-connections to opt out.",
-    );
-  const [name, prompt, ...extra] = args.positionals;
-  if (name === undefined || extra.length > 0) {
-    throw new GoldenError("invalid_config", "Give a snapshot name and at most one prompt.");
-  }
-  const harness = requireLaunchAgent(single(args, "--agent"));
-  const repo = single(args, "--repo");
-  resolveModelChoice(harness, { model: single(args, "--model"), reasoningEffort: single(args, "--reasoning-effort") });
-  const ttl = single(args, "--ttl");
-  const ttlSeconds = ttl === undefined ? undefined : parseTtl(ttl);
-  const auth = authOf(io, deps);
-  const client = await createArmadaApiClient({
-    env: auth.env,
-    fetch: deps.fetch ?? auth.fetch,
-    session: auth.session,
-    ...(auth.timeoutMs === undefined ? {} : { timeoutMs: auth.timeoutMs }),
-  });
-  const result = decodeLaunchResult(
-    await client.sandboxes.launch<LaunchWireResult>(
-      {
-        ...(flag(args, "--no-connections") ? { connections: [] } : {}),
-        ...(flag(args, "--keep-after-merge") ? { stopWhenWorkMerged: false } : {}),
-        ...(values(args, "--skill").length ? { skills: values(args, "--skill") } : {}),
-        ...(connections === undefined ? {} : { connections: connections.split(",") }),
-        ...(flag(args, "--armada-access")
-          ? {
-              armadaAccessVersion: 1,
-              armadaAccess: {
-                ...(maxActiveChildren === undefined ? {} : { maxActiveChildren: Number(maxActiveChildren) }),
-              },
-            }
-          : {}),
-        credentialId: single(args, "--credential-id"),
-        golden: name,
-        ...(repo === undefined ? {} : { repo }),
-        ...(providerFlag(args) ? { provider: providerFlag(args) } : {}),
-        harness,
-        ...(single(args, "--model") === undefined ? {} : { model: single(args, "--model") }),
-        ...(single(args, "--reasoning-effort") === undefined
-          ? {}
-          : { reasoningEffort: single(args, "--reasoning-effort") }),
-        ...(prompt === undefined ? {} : { prompt }),
-        ...(ttlSeconds === undefined ? {} : { ttlSeconds }),
-        ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
-      },
-      { signal: AbortSignal.timeout(10 * 60_000) },
-    ),
-  );
-  io.out(
-    flag(args, "--json")
-      ? `${JSON.stringify(
-          {
-            ...launchResponse(result),
-            sandbox: result.sandbox,
-            runtime: result.runtime ?? null,
-            helper: result.helper ?? null,
-            conversationId: result.conversationId ?? null,
-          },
-          null,
-          2,
-        )}\n`
-      : launchText(result, auth.now()),
-  );
-  if (!flag(args, "--json"))
-    await printOptionalResourceAdvice(client, result.sandbox.id, single(args, "--org"), io.err);
-  return 0;
-}
-
 const FOLLOW_DELAY_MS = 1_000;
 
 type LogsWireResult = {
@@ -1027,56 +889,6 @@ function eventText(event: Awaited<ReturnType<Provider["events"]>>["events"][numb
       return `${data.message} (retry ${data.retryCount}, total wait ${Number(data.totalWaitMs) / 1000} s)`;
   }
   return JSON.stringify(event);
-}
-
-function launchText(result: LaunchResult, now: Date): string {
-  const { sandbox, golden } = result;
-  const lines = [
-    `Launched ${sandbox.harness} sandbox from snapshot ${golden.name}.`,
-    "Access: enforced by the server; metadata hints do not grant interior access.",
-    `Sandbox: ${sandbox.id}`,
-    `${sandbox.provider === "boat" ? "Boat" : "Modal"} sandbox: ${sandbox.providerSandboxId}`,
-    `Status: ${sandbox.status}`,
-    ...(sandbox.machineSize
-      ? [
-          `Size: ${sandbox.machineSize.effective ?? "unknown (legacy)"} (requested ${sandbox.machineSize.requested ?? "none"}; source ${sandbox.machineSize.source}).`,
-        ]
-      : []),
-    ...(sandbox.repositoryDir
-      ? [`Repository context: ${sandbox.repositoryDir} (native agent cwd; not an isolation boundary).`]
-      : []),
-    ...(sandbox.skills?.map((skill) => `Skill: ${skill.reference} (${skill.checksum})`) ?? []),
-    `Model: ${sandbox.model ?? "provider default"} (reasoning effort ${sandbox.reasoningEffort ?? "default"})`,
-  ];
-  if (sandbox.credentialId)
-    lines.push(`Credential account: ${sandbox.credentialId} (revision ${sandbox.credentialVersion}).`);
-  if (result.conversationId) lines.push(`Conversation: ${result.conversationId}`);
-  else lines.push("No prompt sent: the sandbox is ready for the first prompt.");
-  lines.push(githubLine(result, now));
-  if (result.github.status === "connected" && result.github.message) lines.push(`Note: ${result.github.message}`);
-  lines.push(
-    result.expiresAt
-      ? `Stops by itself at ${new Date(result.expiresAt).toISOString()} (TTL ${result.ttlSeconds}s).`
-      : `Stops by itself after ${result.ttlSeconds}s.`,
-  );
-  return `${lines.join("\n")}\n`;
-}
-
-function githubLine(result: LaunchResult, now: Date): string {
-  const { github } = result;
-  if (github.status === "connected") {
-    const expiry = github.tokenExpiresAt ? new Date(github.tokenExpiresAt) : null;
-    const lifetime =
-      expiry && Number.isFinite(expiry.getTime())
-        ? `launch token expires at ${expiry.toISOString()} (~${Math.max(0, Math.floor((expiry.getTime() - now.getTime()) / 60_000))} minutes remaining)`
-        : "launch token remaining lifetime unknown";
-    const repair =
-      result.sandbox.provider === "boat"
-        ? `Use armada github refresh ${result.sandbox.id} for a running legacy sandbox; automatic next-prompt repair is experimental and off by default.`
-        : "Reconnect GitHub if needed and resume to re-resolve credentials.";
-    return `GitHub: git and gh act as ${github.login} (${lifetime}; shared owner refresh may invalidate it earlier). ${repair}`;
-  }
-  return `GitHub: not set up. ${github.message ?? ""}`.trim();
 }
 
 function line(row: GoldenRecord): string {

@@ -1,4 +1,6 @@
-import { HARNESSES, MODEL_CATALOG, VERSION } from "@armada/core";
+import { AuthError } from "@armada/auth";
+import { VERSION } from "@armada/core";
+import type { AuthIo } from "./auth-commands.ts";
 import { commands, sandboxUsage } from "./commands/index.ts";
 import { helpOptionWords } from "./onboarding-help.ts";
 
@@ -42,8 +44,7 @@ Usage:
   armada host limits HOST [--cpus N] [--memory SIZE] [--max-sandboxes N | --auto] [--org UUID]
   armada host retention HOST --retention 24h [--org UUID]
   armada host revoke UUID [--org UUID]
-  armada launch [prompt] --provider docker [--host UUID|NAME | --golden snapshot-UUID] --agent claude|codex|opencode [--credential-id UUID] [--org NAME|UUID] [--repo owner/repo[@branch] ...] [--variable KEY:UUID:VERSION ...] [--secret KEY:UUID:VERSION ...] [--request-id UUID] [--json]
-                                           Docker launch through the normal Armada API using the official Armada environment.
+${sandboxUsage("docker-launch")}
   armada doctor [--org UUID] [--json]      Check session, server, GitHub, hosts and model accounts
   armada completion bash|zsh|fish           Print a shell completion script
   armada --version                         Print the version
@@ -88,18 +89,7 @@ Usage:
                                            Read snapshot build state; launch ready snapshots with launch --provider docker --agent codex --golden UUID.
   armada snapshot rebuild UUID --provider docker --org UUID [--request-id UUID] [--json]
                                            Build a new snapshot from saved repos/setup on its original host; keep the old one.
-  armada launch <snapshot> --agent ${HARNESSES.join("|")} ["prompt"] [--model <id>] [--reasoning-effort <level>]
-                                           [--armada-access [--credential-id <id>] [--max-active-children <1..100>]]
-                [--provider boat|modal] [--repo <configured-dir|owner/repo>] [--ttl 4h] [--json]
-                [--skill org/slug@version|slug@version ...] [--connections <id,...> | --no-connections] [--org <org>]
-                Omit connections to request server defaults; --no-connections opts out.
-                                           Fork a snapshot into a sandbox. With a prompt the agent starts at once;
-                                           without one the sandbox waits, ready, for the first prompt. The model
-                                           and effort apply to every later turn too. --credential-id UUID selects a model account;
-                                           otherwise use your personal or organization default.
-                                           --repo selects the native agent's initial working directory, including when idle.
-                                           Defaults:
-                                           ${modelDefaults()}
+${sandboxUsage("launch")}
 ${sandboxUsage("list")}
   armada mcp sandbox-connections <sandbox-uuid> [--org UUID] [--json]
                                            Read actual bound connection metadata, never mutate bindings
@@ -235,8 +225,16 @@ export const optionWords = [
   ]),
 ];
 
-function modelDefaults(): string {
-  return Object.entries(MODEL_CATALOG)
-    .map(([h, e]) => `${h} ${e.defaultModel} ${e.defaultReasoningEffort}`)
-    .join(", ");
+export function completion(argv: readonly string[], auth: Pick<AuthIo, "out">) {
+  if (argv.length !== 1 || !["bash", "zsh", "fish"].includes(argv[0] ?? ""))
+    throw new AuthError("Run armada completion bash|zsh|fish, then source the generated script.", "usage");
+  const words = [...commandWords, ...optionWords].join(" ");
+  auth.out(
+    argv[0] === "bash"
+      ? `complete -W '${words}' armada\n`
+      : argv[0] === "zsh"
+        ? `#compdef armada\n_armada() { compadd -- ${words}; }\ncompdef _armada armada\n`
+        : `complete -c armada -f -a '${commandWords.join(" ")}'\n${optionWords.map((word) => `complete -c armada -l '${word.slice(2)}'`).join("\n")}\n`,
+  );
+  return 0;
 }
