@@ -2,6 +2,7 @@ import type { z } from "zod";
 import { createdInboundTrigger, createInboundTriggerBody, createInboundTriggerQuery } from "./inbound-trigger.ts";
 import { launchInput } from "./launch.ts";
 import { launchOutput } from "./launch-response.ts";
+import { publicAuthOperations } from "./public-auth.ts";
 import { githubOperations, goldenOperations, launchTemplateOperation } from "./resources.ts";
 import { sandboxOperations } from "./sandbox.ts";
 import { sandboxCheckOperations } from "./sandbox-checks.ts";
@@ -13,6 +14,7 @@ import { sandboxViewerOperations } from "./sandbox-viewer.ts";
 export type { CreatedInboundTrigger } from "./inbound-trigger.ts";
 export { dockerHostLaunchFields, dockerSnapshotLaunchFields, type LaunchInput } from "./launch.ts";
 export { type LaunchEnvelope, launchEnvelope, templateLaunchResponse } from "./launch-response.ts";
+export { publicAuthOperations, signInMethod } from "./public-auth.ts";
 export { githubOperations, goldenOperations, launchTemplateOperation } from "./resources.ts";
 export {
   DEFAULT_WAIT_SECONDS,
@@ -47,6 +49,8 @@ export interface Operation<Input extends z.ZodType, Output extends z.ZodType | u
   };
   readonly output: Output;
   readonly directServer?: true;
+  readonly anonymous?: true;
+  readonly successHeaders?: Readonly<Record<string, z.ZodType>>;
   readonly outputMediaType?: string;
   readonly errorOutput?: z.ZodType;
   readonly successStatus?: number;
@@ -92,6 +96,7 @@ export const createInboundTrigger = {
 
 export const operations = {
   launch,
+  ...publicAuthOperations,
   ...goldenOperations,
   ...githubOperations,
   launchTemplate: launchTemplateOperation,

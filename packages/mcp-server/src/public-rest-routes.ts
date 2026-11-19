@@ -4,7 +4,6 @@
  * one, so a new route there must be published or given a reason.
  */
 export const UNPUBLISHED_REST_ROUTES: Readonly<Record<string, string>> = {
-  "auth/": "Interactive sign-in for the CLI and dashboard; integrations use service tokens.",
   "github/oauth/callback": "Browser OAuth redirect target.",
   "account/": "Signed-in account session management.",
   "token/": "Service token administration.",
