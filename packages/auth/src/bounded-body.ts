@@ -1,4 +1,3 @@
-/** A request exceeded its route's raw-byte budget. */
 export class BodyTooLargeError extends Error {
   constructor() {
     super("The request is too large.");
@@ -6,7 +5,6 @@ export class BodyTooLargeError extends Error {
   }
 }
 
-/** Bound bytes before buffering or decoding, including requests without a trustworthy length. */
 export async function readBoundedText(request: Request, maxBytes: number): Promise<string> {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) throw new RangeError("Invalid body limit.");
   if (!request.body) return "";
@@ -19,7 +17,6 @@ export async function readBoundedText(request: Request, maxBytes: number): Promi
       if (done) break;
       bytes += value.byteLength;
       if (bytes > maxBytes) {
-        // Cancellation is advisory: an untrusted underlying source may never settle it.
         void reader.cancel().catch(() => {});
         throw new BodyTooLargeError();
       }

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { MODEL_CATALOG } from "@armada/core";
-import { initialLaunchSelection, launchPickerGroups } from "./launch-picker";
+import { initialLaunchSelection, launchHarnessForSource, launchPickerGroups } from "./launch-picker";
 import type { ModelAccount } from "./model-accounts";
 
 const account: ModelAccount = {
@@ -46,4 +46,10 @@ test("a Morph account without model metadata offers no model and initializes no 
   expect(
     initialLaunchSelection({ state: "ready", accounts: [morph], now, orgName: "Example" }, MODEL_CATALOG, "codex"),
   ).toEqual({ credentialId: morph.id, model: "" });
+});
+
+test("a rebuilt starting point retains the current agent only while it can run it", () => {
+  expect(launchHarnessForSource("opencode", undefined, true)).toBe("claude");
+  expect(launchHarnessForSource("opencode", undefined, false)).toBe("opencode");
+  expect(launchHarnessForSource("claude", ["codex", "opencode"], false)).toBe("codex");
 });

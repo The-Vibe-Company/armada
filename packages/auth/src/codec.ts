@@ -25,7 +25,6 @@ export function randomHex(size: number): string {
   return [...randomBytes(size)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-/** Lowercase sha-256 hex, the only form the token tables accept. */
 export async function sha256Hex(value: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -43,12 +42,10 @@ const TOKEN_PREFIX = {
 
 type IssuedKind = keyof typeof TOKEN_PREFIX;
 
-/** 32 bytes of entropy, prefixed so a bearer can be told from a refresh token before the lookup. */
 export function generateToken(kind: IssuedKind): string {
   return `${TOKEN_PREFIX[kind]}${base64url(randomBytes(32))}`;
 }
 
-/** An authorization code. It is not a bearer: it has no `armada_` prefix. */
 export function generateCode(): string {
   return base64url(randomBytes(32));
 }

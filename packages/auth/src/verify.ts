@@ -2,11 +2,6 @@ import { bearerKind, sha256Hex } from "./codec.ts";
 import { ACCESS_TOKEN_TTL_MS, assertPublicUrl } from "./limits.ts";
 import type { AuthStore, MemberRole } from "./types.ts";
 
-/**
- * Who a bearer token is. `authenticate` reads the token row on every call and
- * keeps no cache, so a revocation or a removed membership fails the next request.
- * #464 should not cache this result.
- */
 interface Principal {
   userId: string;
   orgId: string;
@@ -17,11 +12,6 @@ interface Principal {
 
 type AuthResult = { ok: true; principal: Principal } | { ok: false; error: "invalid_token" };
 
-/**
- * Resolves `(user, org)` from an `Authorization: Bearer` header.
- * Service tokens do not expire. MCP access tokens expire an hour after `created_at`.
- * A refresh token is not a bearer.
- */
 export async function authenticate(authorization: string | null, store: AuthStore, now: Date): Promise<AuthResult> {
   const token = bearer(authorization);
   const kind = token === null ? null : bearerKind(token);
@@ -48,7 +38,6 @@ export async function authenticate(authorization: string | null, store: AuthStor
   };
 }
 
-/** 401 that tells an MCP client where to start OAuth. */
 export function oauthChallenge(publicUrl: string): Response {
   const origin = assertPublicUrl(publicUrl);
   return new Response(JSON.stringify({ error: "invalid_token" }), {

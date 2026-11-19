@@ -1,7 +1,5 @@
-/** Supabase Auth session returned by server-side code exchange and refresh. */
 export interface Session {
   supabaseUrl: string;
-  /** Optional discovery settings carried by the Supabase session DTO. */
   anonKey?: string;
   armadaUrl?: string;
   accessToken: string;
