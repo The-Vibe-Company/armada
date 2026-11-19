@@ -29,6 +29,7 @@ export interface JobStore {
 
 interface JobKind {
   concurrency: number;
+  timeoutMs?: number;
   run(job: Job, context: { signal: AbortSignal; canDispatch(tx?: Sql): Promise<boolean> }): Promise<JobResult>;
 }
 
@@ -49,13 +50,15 @@ export function createJobsRunner(
   const registrations = Object.entries(kinds).map(([kind, handler]) => {
     if (!Number.isSafeInteger(handler.concurrency) || handler.concurrency <= 0)
       throw new Error("Invalid jobs concurrency.");
-    return { kind, handler };
+    return { kind, handler, active: 0 };
   });
   const pending = new Set<Promise<void>>();
   let nextKind = 0;
 
   async function run(job: Job, handler: JobKind, cancelClaimExpiry: () => void, lease: AbortController) {
     const signal = AbortSignal.any([lease.signal, shutdown.signal]);
+    const cancelDeadline =
+      handler.timeoutMs === undefined ? undefined : schedule(handler.timeoutMs, () => lease.abort());
     let cancelExpiry = cancelClaimExpiry;
     let renewal: Promise<void> | undefined;
     let cancelRenewal: (() => void) | undefined;
@@ -100,6 +103,7 @@ export function createJobsRunner(
     } finally {
       lease.abort();
       cancelExpiry();
+      cancelDeadline?.();
       cancelRenewal?.();
       await renewal;
     }
@@ -111,6 +115,7 @@ export function createJobsRunner(
         const registration = registrations[nextKind]!;
         nextKind = (nextKind + 1) % registrations.length;
         const { kind, handler } = registration;
+        if (handler.timeoutMs !== undefined && registration.active >= handler.concurrency) continue;
         const lease = new AbortController();
         const cancelExpiry = schedule(LEASE_SECONDS * 1000, () => lease.abort());
         let claimed = false;
@@ -118,9 +123,13 @@ export function createJobsRunner(
           const job = await store.claim(kind, owner, LEASE_SECONDS, handler.concurrency);
           if (!job || signal.aborted || shutdown.signal.aborted) continue;
           claimed = true;
+          registration.active++;
           const work = run(job, handler, cancelExpiry, lease)
             .catch(() => log("armada: job execution unavailable; durable lease remains fenced."))
-            .finally(() => pending.delete(work));
+            .finally(() => {
+              registration.active--;
+              pending.delete(work);
+            });
           pending.add(work);
           return true;
         } finally {

@@ -77,13 +77,8 @@ const jobsLane: LaneFactory = ({ jobs, goldenRetirements, options }) =>
     {
       snapshot_retirement: {
         concurrency: 4,
-        run(job, context) {
-          const signal = AbortSignal.any([context.signal, AbortSignal.timeout(30_000)]);
-          return goldenRetirements.runJob(job.id, {
-            signal,
-            canDispatch: async (tx) => !signal.aborted && (await context.canDispatch(tx)) && !signal.aborted,
-          });
-        },
+        timeoutMs: 30_000,
+        run: (job, context) => goldenRetirements.runJob(job.id, context),
       },
     },
     options.logError,

@@ -130,14 +130,16 @@ async function fixture(
     },
   };
   const retirement = new GoldenSnapshotRetirements({ sql, encryptionKey: KEY, provider: async () => provider });
-  const publish = async () => {
+  const publish = async (tx?: Sql) => {
     const a = await captureGoldenPublication(provider, actor, target, golden.id, old, "builder-" + old);
     const b = await captureGoldenPublication(provider, actor, target, golden.id, next, "builder-" + next);
-    await sql.transaction!(async (tx) => {
-      await tx.query("select id from goldens where id=$1 for update", [golden.id]);
-      await storeFor(tx).setSnapshot(golden.id, next);
-      await enqueueGoldenRetirement(tx, await recordGoldenPublication(tx, a), await recordGoldenPublication(tx, b));
-    });
+    const write = async (db: Sql) => {
+      await db.query("select id from goldens where id=$1 for update", [golden.id]);
+      await storeFor(db).setSnapshot(golden.id, next);
+      await enqueueGoldenRetirement(db, await recordGoldenPublication(db, a), await recordGoldenPublication(db, b));
+    };
+    if (tx) await write(tx);
+    else await sql.transaction!(write);
   };
   const due = async () => {
     await sql.query(
@@ -405,6 +407,49 @@ test.each(["success", "absent", "refusal", "busy", "unknown"])(
     await expect(f.store.setSnapshot(f.golden.id, f.old)).rejects.toThrow("unavailable");
   },
 );
+
+test("handoff backfills a legacy retirement only after its old claim expires", async () => {
+  const db = database();
+  const f = await fixture(db);
+  const migrations = new URL("../../../supabase/migrations/", import.meta.url);
+  const [migration] = Array.from(new Bun.Glob("*_snapshot_retirement_jobs.sql").scanSync(migrations.pathname));
+  const handoff = await Bun.file(new URL(migration!, migrations)).text();
+  await db.transaction(async (tx) => {
+    await tx.exec(`
+      drop trigger snapshot_retirement_enqueue on golden_snapshot_retirements;
+      drop function adopt_snapshot_retirement(uuid);
+      drop function enqueue_snapshot_retirement_job();
+    `);
+    await f.publish(tx);
+    await tx.exec(`
+      update golden_snapshot_retirements set claim_id=gen_random_uuid(), claim_until='2100-01-01',
+        next_attempt_at='2099-01-01';
+    `);
+    await tx.exec(handoff);
+    const { rows } = await tx.query(
+      `select j.org_id, j.kind, j.run_after = r.claim_until as waits_for_claim
+       from jobs j join golden_snapshot_retirements r on j.id = r.id`,
+    );
+    expect(rows).toEqual([{ org_id: f.actor.orgId, kind: "snapshot_retirement", waits_for_claim: true }]);
+  });
+  expect(await runRetirementJob(db, f.retirement, f.now)).toBe(false);
+  await f.due();
+  await runRetirementJob(db, f.retirement, f.now);
+  expect(f.deleted).toEqual([]);
+  const [legacy] = (
+    await db.query<{ claim_id: string }>(
+      "update golden_snapshot_retirements set claim_until=now()-interval '1 second',next_attempt_at=now() returning claim_id",
+    )
+  ).rows;
+  await f.due();
+  await runRetirementJob(db, f.retirement, f.now);
+  expect(f.deleted).toEqual([f.old]);
+  const { rows } = await db.query(
+    "update golden_snapshot_retirements set reason='late result' where claim_id=$1 returning id",
+    [legacy!.claim_id],
+  );
+  expect(rows).toEqual([]);
+});
 
 test("a job whose lease expires during inspection cannot leave a delete intent", async () => {
   const db = database();

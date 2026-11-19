@@ -537,13 +537,19 @@ export class GoldenSnapshotRetirements {
     };
     const prepared = await this.transaction(async (tx) => {
       const candidate = (
-        await tx.query<{ id: string }>(
-          `select g.id from public.golden_snapshot_retirements r join public.goldens g on g.id=r.golden_id
-           where r.id=$1 and r.state<>'retired' for update of g`,
+        await tx.query<Pick<Candidate, "provider" | "old_snapshot">>(
+          `select r.provider,r.old_snapshot from public.golden_snapshot_retirements r
+           join public.goldens g on g.id=r.golden_id where r.id=$1 and r.state<>'retired' for update of g`,
           [id],
         )
       ).rows[0];
       if (!candidate) return null;
+      await tx.query("select public.lock_golden_snapshot($1,$2)", [candidate.provider, candidate.old_snapshot]);
+      if (!(await canDispatch(tx))) return "handoff_pending";
+      const adopted = (
+        await tx.query<{ adopted: boolean }>("select public.adopt_snapshot_retirement($1) as adopted", [id])
+      ).rows[0]?.adopted;
+      if (!adopted) return "handoff_pending";
       const c = (
         await tx.query<Candidate>("select * from public.golden_snapshot_retirements where id=$1 and state<>'retired'", [
           id,
@@ -574,14 +580,13 @@ export class GoldenSnapshotRetirements {
         !targetMatches(replacement.target, proof.target)
       )
         return "provenance_unavailable";
-      await tx.query("select public.lock_golden_snapshot($1,$2)", [c.provider, c.old_snapshot]);
       const protectedBy = await this.protection(tx, c);
       if (protectedBy) return protectedBy;
-      if (!(await canDispatch(tx))) return "lease_unavailable";
       await tx.query("update public.golden_snapshot_retirements set sealed=true where id=$1", [id]);
       return { row: c, proof };
     });
     if (!prepared) return { status: "done" as const };
+    if (prepared === "handoff_pending") return { status: "retry" as const, after: new Date(now() + 30_000) };
     if (typeof prepared === "string") return finish("deferred", prepared);
     const { row, proof } = prepared;
 
