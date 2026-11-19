@@ -164,6 +164,56 @@ test.each(["boat", "modal"] as const)(
   },
 );
 
+test("an accepted initial launch prompt publishes under the enrolled generation", async () => {
+  const f = await fixture("modal");
+  const activityToken = crypto.randomUUID();
+  await f.db.query(
+    `update sandboxes set status='starting',activity_lease_id=$2,
+     activity_until=now()+interval '1 minute' where id=$1`,
+    [f.id, activityToken],
+  );
+  const ticket = await f.issue();
+  const session = await f.service().enrol(ticket.enrolmentToken);
+  const expectedGeneration = Number(ticket.lifecycleGeneration);
+  const store = createSqlData(f.sql)({
+    userId: f.people.owner,
+    orgs: [{ orgId: f.people.org, role: "member" }],
+    via: "service",
+  }).sandboxes;
+  const patch = {
+    status: "running",
+    taskPromptId: "first-prompt",
+    conversationIds: ["conversation"],
+    finishActivity: true,
+    activityToken,
+    expectedGeneration,
+  } satisfies Parameters<typeof store.update>[1];
+
+  await expect(store.update(f.id, { ...patch, activityToken: crypto.randomUUID() })).rejects.toThrow();
+  const publish = () => store.update(f.id, patch);
+  await f.db.exec(`alter table sandboxes add constraint test_running_publication
+    check (status <> 'running' or activity_lease_id is not null) not valid`);
+  try {
+    await expect(publish()).rejects.toThrow("test_running_publication");
+  } finally {
+    await f.db.exec("alter table sandboxes drop constraint test_running_publication");
+  }
+  expect(await store.get(f.id)).toMatchObject({ status: "starting", taskPromptId: null, conversationIds: [] });
+
+  await publish();
+  expect(await store.get(f.id)).toMatchObject({
+    status: "running",
+    lifecycleGeneration: expectedGeneration,
+    taskPromptId: "first-prompt",
+    conversationIds: ["conversation"],
+  });
+  expect(
+    (await f.db.query("select to_status,actor,generation::text from sandbox_transitions where sandbox_id=$1", [f.id]))
+      .rows,
+  ).toEqual([{ to_status: "running", actor: "runtime_enrolment", generation: ticket.lifecycleGeneration }]);
+  expect((await f.request("session", session.runtimeToken, session.epoch)).status).toBe(200);
+});
+
 test("runtime readiness rechecks the activity deadline after locking the enrolled runtime", async () => {
   const f = await fixture();
   const activityToken = crypto.randomUUID();

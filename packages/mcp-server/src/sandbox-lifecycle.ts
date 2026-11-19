@@ -125,12 +125,13 @@ export async function publishDockerRuntimeReadiness(
   return transition.kind === "applied";
 }
 
-export async function finishEnrolledRuntimeReadiness(
+export async function finishEnrolledRuntimeLaunch(
   tx: Sql,
   scope: [string[], string],
   sandboxId: string,
   generation: number,
   activityToken: string,
+  prompt?: { promptId: string; conversationIds: string[] },
 ) {
   const {
     rows: [sandbox],
@@ -151,25 +152,36 @@ export async function finishEnrolledRuntimeReadiness(
   if (!live.rows.length) return "conflict";
   const eligible = await tx.query(
     `select s.id from public.sandboxes s where s.id=$3 and ${SANDBOX_VISIBLE}
+      and s.status='starting' and s.lifecycle_generation=$5
       and s.activity_lease_id=$4 and s.activity_until>clock_timestamp() and s.expires_at>clock_timestamp()
       and s.stopped_at is null and s.stop_requested_at is null and s.deleted_at is null
       and not s.application_secret_tainted
       and (s.reconcile_lease_until is null or s.reconcile_lease_until<=clock_timestamp())
       and s.task_prompt_id is null and cardinality(s.conversation_ids)=0`,
-    [...scope, sandboxId, activityToken],
+    [...scope, sandboxId, activityToken, generation],
   );
   if (!eligible.rows.length) return "conflict";
   const result = await transitionSandbox(tx, {
     sandboxId,
     expectedGeneration: generation,
     fromStates: ["starting"],
-    toState: "ready",
+    toState: prompt ? "running" : "ready",
     actor: "runtime_enrolment",
     code: "runtime_enrolled",
     effects: [],
   });
   if (result.kind === "conflict") return "conflict";
-  await tx.query("update public.sandboxes set activity_lease_id=null,activity_until=null where id=$1", [sandboxId]);
+  if (prompt) {
+    await tx.query(
+      `update public.sandboxes set task_prompt_id=$2,conversation_ids=$3::text[],
+        activity_lease_id=null,activity_until=null where id=$1`,
+      [sandboxId, prompt.promptId, prompt.conversationIds],
+    );
+    await releaseAccountCapacity(tx, sandboxId);
+    await settleRuntimeTurn(tx, sandboxId, generation);
+  } else {
+    await tx.query("update public.sandboxes set activity_lease_id=null,activity_until=null where id=$1", [sandboxId]);
+  }
   return "applied";
 }
 

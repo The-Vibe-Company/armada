@@ -3263,11 +3263,9 @@ test.each([
           expect(input.sandbox.provider).toBe("modal");
           expect(input.sandbox.runtimeTransport).toBe("dialout");
           expect(input.sandbox.boatRuntime).toBeUndefined();
-          if (scoped)
-            await enrolments.enrol(
-              (await enrolments.issue({ sandboxId: input.sandbox.id, ownerId: STAN, configuration: {} }))
-                .enrolmentToken,
-            );
+          await enrolments.enrol(
+            (await enrolments.issue({ sandboxId: input.sandbox.id, ownerId: STAN, configuration: {} })).enrolmentToken,
+          );
           return {
             async installScopedReference(request) {
               expect(mcpPrepared).toBe(true);
