@@ -6,6 +6,7 @@ import extend from "./extend.ts";
 import interrupt from "./interrupt.ts";
 import launch from "./launch.ts";
 import list from "./list.ts";
+import logs from "./logs.ts";
 import recovery from "./recovery.ts";
 import report from "./report.ts";
 import rm from "./rm.ts";
@@ -31,6 +32,7 @@ export const commands: readonly Command[] = [
   send,
   steer,
   exec,
+  logs,
 ];
 
 const byName = new Map(commands.map((command) => [command.name, command]));

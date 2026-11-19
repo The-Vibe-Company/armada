@@ -107,8 +107,7 @@ ${sandboxUsage("sandbox")}
   armada mcp add NAME URL [--scope personal|org] [--org UUID]
                                            Public/OAuth URL shortcut; auto discovery, no secret argv
   armada mcp list|add|update|connect|status|reconnect|enable|disable|revoke|delete [id] [--org UUID] [--file JSON]
-  armada logs <sandbox-id> [--tail [n]] [--all] [--follow] [--json]
-                                           Read agent events; --all drains available pages, --follow waits for new pages until settled
+${sandboxUsage("logs")}
   armada login [--url <url>] [--provider github|google | --email <address>]
                                            Discovers enabled methods; prompts for email when available.
                                            --email: open the emailed link on this machine, or type its code (use one, not both)
@@ -184,34 +183,6 @@ Environment:
   ARMADA_URL                               Armada API server (default: https://armada.thevibecompany.co).
 `;
 
-export const LOGS_HELP = `Read agent events from a sandbox.
-
-Usage:
-  armada logs <sandbox-id> [--since <cursor>] [--all] [--follow] [--org <org>] [--json]
-  armada logs <sandbox-id> --tail [n] [--follow] [--org <org>] [--json]
-
-Options:
-  --since <cursor>  Resume after an opaque cursor returned by a JSON page.
-  --tail [n]        Last n events (1–1000; default 100). You cannot combine
-                    --tail with --all or --since. With --follow, tail is read once.
-  --all             Drain all currently available pages, without polling delays.
-  --follow          Drain pages, then poll while active until settled.
-                    Ctrl-C stops only this reader, not the agent.
-  --org <org>       Override the organization selected by armada org use.
-  --json            Stream page objects: events, cursor, hasMore, settled.
-                    Multiple pages are not one JSON array. Errors use stderr.
-
-Without --all, --follow or --tail, read one bounded page.
-Use armada list --json to find a visible sandbox ID.
-
-Examples:
-  armada logs SANDBOX_ID --tail 20
-  armada logs SANDBOX_ID --since CURSOR --follow
-  armada logs SANDBOX_ID --all --json | jq -c '.events[]'
-
-For other commands and authentication settings: armada --help.
-`;
-
 export const commandWords = [
   ...new Set([
     ...[...HELP.matchAll(/armada ([a-z][a-z|-]*)/g)].flatMap((match) => match[1]!.split("|")),
@@ -219,10 +190,7 @@ export const commandWords = [
   ]),
 ];
 export const optionWords = [
-  ...new Set([
-    ...helpOptionWords,
-    ...[...`${HELP}\n${LOGS_HELP}`.matchAll(/--[a-z][a-z-]*/g)].map((match) => match[0]),
-  ]),
+  ...new Set([...helpOptionWords, ...[...HELP.matchAll(/--[a-z][a-z-]*/g)].map((match) => match[0])]),
 ];
 
 export function completion(argv: readonly string[], auth: Pick<AuthIo, "out">) {
