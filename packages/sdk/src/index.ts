@@ -69,7 +69,7 @@ export interface GoldenLaunchInput {
   golden: string;
   harness: "claude" | "codex" | "opencode";
   org?: string;
-  provider?: "boat" | "modal";
+  provider: "boat" | "modal";
   prompt?: string;
   model?: string;
   reasoningEffort?: string;

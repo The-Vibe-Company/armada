@@ -1,6 +1,6 @@
 # Persisted native repository context
 
-`armada launch <golden> --agent codex --repo <configured-dir|owner/repo>` selects a recorded repository as the native agent's initial working directory, including for an idle launch without a prompt. This is **not directory confinement or an authorization boundary**.
+`armada launch <golden> --provider boat --agent codex --repo <configured-dir|owner/repo>` selects a recorded repository as the native agent's initial working directory, including for an idle launch without a prompt. This is **not directory confinement or an authorization boundary**.
 
 ## Public contract
 
