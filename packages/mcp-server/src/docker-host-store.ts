@@ -57,6 +57,13 @@ const settledRefusedResumeSql = `
   and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>now()
   and s.status='starting' and s.lifecycle_generation=j.refused_resume_generation`;
 
+const pendingRefusedResumeSql = `j.bound_operation='resume' and j.refused_resume_generation is not null
+  and exists(select 1 from public.sandboxes s where s.id=j.bound_sandbox_id and s.docker_host_id=j.host_id
+    and s.status='starting' and s.lifecycle_generation=j.refused_resume_generation
+    and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>now())`;
+const dispatchPriority = `case when j.bound_operation in ('stop','delete') then 0
+  when ${pendingRefusedResumeSql} then 1 else 2 end,(j.snapshot_id is not null),j.position`;
+
 type Host = { id: string; org_id: string; owner_id: string };
 type Bound = {
   snapshot_id?: string | null;
@@ -1335,7 +1342,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         const hint = (
           await tx.query<StoredJob>(
             `select j.* from public.docker_host_jobs j join public.docker_hosts h on h.id=j.host_id
-           where h.hash=$1 and h.installation_id=$2 and j.outcome is null and (not $3::boolean or j.snapshot_id is null) and ${notRunning(4)} and ${supportsJob(5)} order by case when j.bound_operation in ('stop','delete') then 0 else 1 end,(j.snapshot_id is not null),j.position limit 1`,
+           where h.hash=$1 and h.installation_id=$2 and j.outcome is null and (not $3::boolean or j.snapshot_id is null) and ${notRunning(4)} and ${supportsJob(5)} order by ${dispatchPriority} limit 1`,
             [hash(hostToken), installationId, skipSnapshots, running, supportsPhysicalDelete],
           )
         ).rows[0];
@@ -1413,22 +1420,14 @@ export function createDockerHostStore(sql: Sql, key: string) {
           }
         }
         const row = (
-          await tx.query<StoredJob>(
-            `select j.* from public.docker_host_jobs j where j.host_id=$1 and j.outcome is null and (not $2::boolean or j.snapshot_id is null) and ${notRunning(3)} and ${supportsJob(4)} order by case when j.bound_operation in ('stop','delete') then 0 else 1 end,(j.snapshot_id is not null),j.position limit 1`,
+          await tx.query<StoredJob & { recovering_receipt: boolean }>(
+            `select j.*, (${pendingRefusedResumeSql}) as recovering_receipt
+            from public.docker_host_jobs j where j.host_id=$1 and j.outcome is null and (not $2::boolean or j.snapshot_id is null) and ${notRunning(3)} and ${supportsJob(4)} order by ${dispatchPriority} limit 1`,
             [host.id, skipSnapshots, running, supportsPhysicalDelete],
           )
         ).rows[0];
         if (!row || row.request_id !== hint?.request_id) return null;
-        // The refused ticket proves this exact resume reached the daemon. Its
-        // durable ledger replays or settles the receipt without starting compute.
-        const refusedResume =
-          row.bound_operation === "resume" && row.refused_resume_generation != null && row.bound_sandbox_id
-            ? await sandbox(tx, row.bound_sandbox_id, host, installationId)
-            : undefined;
-        const recoveringReceipt =
-          refusedResume?.status === "starting" &&
-          String(refusedResume.lifecycle_generation) === String(row.refused_resume_generation);
-        if (!recoveringReceipt && !["stop", "delete"].includes(row.bound_operation ?? "")) {
+        if (!row.recovering_receipt && !["stop", "delete"].includes(row.bound_operation ?? "")) {
           const policyRow = (
             await tx.query<DockerPolicyRow>(
               "select machine_cpus,machine_memory_bytes,sandbox_cpus,sandbox_memory_bytes,max_sandboxes,available_cpus,available_memory_bytes from public.docker_hosts where id=$1",
@@ -1475,6 +1474,12 @@ export function createDockerHostStore(sql: Sql, key: string) {
           let verified: Sandbox | undefined;
           try {
             const logical = await boundMachine(tx, row, host, installationId);
+            if (
+              row.recovering_receipt &&
+              (logical.status !== "starting" ||
+                String(logical.lifecycle_generation) !== String(row.refused_resume_generation))
+            )
+              return null;
             verified = logical;
             await permission(
               tx,

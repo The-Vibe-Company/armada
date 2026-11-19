@@ -875,8 +875,29 @@ test.each(refusalOrders)(
     const ack = (requestId: string, outcome: "completed" | "failed" = "completed") =>
       hosts.complete(f.hostToken, f.installationId, { requestId, outcome });
     await ack(previousStop.requestId);
+    const missingAck = order === "missing ACK after daemon restart";
+    const earlier = missingAck
+      ? await reservations.reserve(f.actor, {
+          requestId: randomUUID(),
+          hostId: f.hostId,
+          image: `worker@sha256:${"a".repeat(64)}`,
+          credentialId: f.credentialId,
+          credentialVersion: 1,
+          harness: "codex",
+        })
+      : undefined;
     const resume = await admittedResume(f, randomUUID());
-    const job = await hosts.poll(f.hostToken, f.installationId, "3.0.0");
+    const job = await hosts.poll(
+      f.hostToken,
+      f.installationId,
+      "3.0.0",
+      false,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      earlier ? [earlier.id] : [],
+    );
     if (job?.operation !== "resume") throw Error("missing resume");
     const refuse = (enrolments = authority) =>
       enrolments.route(
@@ -927,10 +948,9 @@ test.each(refusalOrders)(
     const response = await refuse();
     expect(response?.status).toBe(409);
     expect(await response?.json()).toEqual({ error: "runtime_protocol_unsupported" });
-    const missingAck = order === "missing ACK after daemon restart";
     if (missingAck) {
       await database().query(
-        `update public.docker_hosts set machine_cpus=4,machine_memory_bytes=8589934592,sandbox_cpus=2
+        `update public.docker_hosts set machine_cpus=8,machine_memory_bytes=17179869184,sandbox_cpus=2
          where id=$1`,
         [f.hostId],
       );
@@ -1039,8 +1059,11 @@ test.each(refusalOrders)(
     expect(stop.request).toEqual(job.request);
     await ack(stop.requestId);
     expect((await reservations.get(f.actor, id)).status).toBe("stopped");
-    if (missingAck) {
-      await hosts.poll(f.hostToken, f.installationId, "3.0.0", false, undefined, 1);
+    if (earlier) {
+      expect((await hosts.poll(f.hostToken, f.installationId, "3.0.0", false, undefined, 1))?.requestId).toBe(
+        earlier.id,
+      );
+      await ack(earlier.id);
     }
     const next = await admittedResume(f, randomUUID());
     expect(next.state).toBe("pending");
