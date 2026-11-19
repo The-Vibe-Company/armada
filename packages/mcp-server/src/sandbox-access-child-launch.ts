@@ -38,11 +38,12 @@ export class ChildLaunchNotAllocated extends Error {
       error instanceof ProviderError
         ? error.code
         : this.reason;
-    recordOperatorDiagnostic(`scoped.child_launch.${this.guard}`, failureDiagnostic(error ?? this), {
-      sandboxId: operation.sandboxId,
-      operationId: operation.id,
-      code,
-    });
+    const diagnostic = failureDiagnostic(error ?? this);
+    recordOperatorDiagnostic(
+      `scoped.child_launch.${this.guard}`,
+      error instanceof GoldenError ? { ...diagnostic, errorClass: "GoldenError" } : diagnostic,
+      { sandboxId: operation.sandboxId, operationId: operation.id, code },
+    );
   }
 }
 

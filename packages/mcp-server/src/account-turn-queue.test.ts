@@ -180,7 +180,7 @@ test.each(["modal", "boat", "docker"])("a pre-activation %s wake refusal fails t
   queue.setDispatch(async () => {
     throw new VaultError("conflict", "No current synchronized checkpoint");
   });
-  const log = spyOn(console, "info");
+  const log = spyOn(console, "error");
   try {
     expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
     await queue.drain();
@@ -188,16 +188,18 @@ test.each(["modal", "boat", "docker"])("a pre-activation %s wake refusal fails t
       failed: true,
       message: "Queued prompt rejected before dispatch; inspect sandbox and account settings before resending.",
     });
-    expect(
-      log.mock.calls.map(([line]) => String(line)).filter((line) => line.includes("sandbox_resume_dispatch_refused")),
-    ).toEqual([
-      JSON.stringify({
-        event: "sandbox_resume_dispatch_refused",
+    const lines = log.mock.calls.map(([line]) => String(line));
+    expect(lines.map((line) => JSON.parse(line))).toEqual([
+      expect.objectContaining({
+        event: "operator_failure",
+        phase: "account_turn.dispatch.send",
         sandboxId: input.id,
-        requestId: input.request_id,
+        operationSequence: expect.any(String),
         code: "conflict",
+        errorClass: "VaultError",
       }),
     ]);
+    expect(lines.join("\n")).not.toContain(input.request_id);
   } finally {
     log.mockRestore();
   }
@@ -218,7 +220,7 @@ test("a rejected first Modal turn logs bounded evidence and releases its reserva
   queue.setDispatch(async () => {
     throw new ToolApiError("invalid_request", "private upstream detail");
   });
-  const log = spyOn(console, "error").mockImplementation(() => {});
+  const log = spyOn(console, "error");
   try {
     expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
     await queue.drain();
@@ -232,12 +234,13 @@ test("a rejected first Modal turn logs bounded evidence and releases its reserva
         code: "invalid_request",
         errorClass: "ToolApiError",
         sandboxId: input.id,
-        operationId: input.request_id,
+        operationSequence: expect.any(String),
         requestId: expect.any(String),
       }),
     ]);
     expect(JSON.parse(lines[0]!).requestId).toBe(requestId);
     expect(lines.join("\n")).not.toContain("private");
+    expect(lines.join("\n")).not.toContain(input.request_id);
   } finally {
     log.mockRestore();
   }

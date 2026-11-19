@@ -1120,11 +1120,15 @@ test.each(["checkpoint", "handler", "both"])("scoped Modal stop replay after los
   }
 });
 
-test.each(["placement refusal", "parent revocation during configuration"] as const)(
+test.each(["golden lookup failure", "placement refusal", "parent revocation during configuration"] as const)(
   "scoped Modal launch fences host dispatch after %s",
   async (scenario) => {
     const { close, sql, authority, id, token, selection } = await fixture("running", "anthropic", "modal");
     try {
+      if (scenario === "golden lookup failure") {
+        await sql.query("update goldens set config='{}'::jsonb where id=$1", [selection.goldenId]);
+      }
+      const preallocationRefused = scenario !== "parent revocation during configuration";
       const fake = fakeBoat();
       const credentials = launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY);
       let bootstraps = 0;
@@ -1160,23 +1164,26 @@ test.each(["placement refusal", "parent revocation during configuration"] as con
           },
         },
       });
-      const log = spyOn(console, "error").mockImplementation(() => {});
+      const log = spyOn(console, "error");
       try {
         let receipt: Awaited<ReturnType<typeof services.childWorker.launch>> | undefined;
         const response = await observeRequest(async () => {
           receipt = await services.childWorker.launch(token, scenario, selection);
           return new Response();
         }, console.error);
-        expect(receipt?.state).toBe(scenario === "placement refusal" ? "failed" : "uncertain");
-        if (scenario === "placement refusal") {
+        expect(receipt?.state).toBe(preallocationRefused ? "failed" : "uncertain");
+        if (preallocationRefused) {
+          expect(await services.childWorker.launch(token, scenario, selection)).toEqual(receipt);
+          const placementRefused = scenario === "placement refusal";
+
           const diagnostics = log.mock.calls
             .map(([line]) => String(line))
             .filter((line) => line.includes("operator_failure"));
           expect(diagnostics.map((line) => JSON.parse(line))).toEqual([
             expect.objectContaining({
-              phase: "scoped.child_launch.provider_placement",
-              code: "unavailable",
-              errorClass: "VaultError",
+              phase: placementRefused ? "scoped.child_launch.provider_placement" : "scoped.child_launch.golden_lookup",
+              code: placementRefused ? "unavailable" : "invalid_config",
+              errorClass: placementRefused ? "VaultError" : "GoldenError",
               sandboxId: receipt?.sandboxId,
               operationId: receipt?.id,
               requestId: response?.headers.get("x-request-id"),
@@ -1195,7 +1202,7 @@ test.each(["placement refusal", "parent revocation during configuration"] as con
       } finally {
         log.mockRestore();
       }
-      expect(fake.forks).toHaveLength(scenario === "placement refusal" ? 0 : 1);
+      expect(fake.forks).toHaveLength(preallocationRefused ? 0 : 1);
       expect(bootstraps).toBe(0);
     } finally {
       await close();

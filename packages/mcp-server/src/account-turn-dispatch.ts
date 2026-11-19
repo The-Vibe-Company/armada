@@ -29,6 +29,7 @@ const dispatchRefusalCodes = new Set([
 type DispatchEntry = {
   account_id: string;
   sandbox_id: string;
+  sequence: string;
   request_id: string;
   input_enc: Uint8Array<ArrayBuffer>;
 };
@@ -75,7 +76,7 @@ export async function dispatchAccountTurn(
       error.code === "conflict" &&
       (error.message === "Template launch refused: secret_unavailable." ||
         error.message === "Template launch refused: secret_version_changed.");
-    const refusal = await sql.transaction!(async (tx) => {
+    const rejected = await sql.transaction!(async (tx) => {
       await tx.query("select id from public.credentials where id=$1 for update", [entry.account_id]);
       const unchanged = await tx.query<{ stopped_runtime: boolean }>(
         `select (s.status='stopped' and coalesce(${RUNTIME_LANE},false)) as stopped_runtime from public.sandboxes s
@@ -109,7 +110,7 @@ export async function dispatchAccountTurn(
               : "Queued prompt rejected before dispatch; inspect sandbox and account settings before resending.",
           ],
         );
-        return { stopped: target.stopped_runtime, retry };
+        return !retry;
       } else {
         await tx.query(
           `update public.account_turn_queue q set failure_reason='Dispatch outcome uncertain; inspect sandbox history before resending.',
@@ -119,9 +120,9 @@ export async function dispatchAccountTurn(
           [entry.sandbox_id, entry.request_id],
         );
       }
-      return undefined;
+      return false;
     });
-    if (refusal && !refusal.retry) {
+    if (rejected) {
       const diagnostic = failureDiagnostic(error);
       const errorClass =
         error instanceof ToolApiError
@@ -134,20 +135,11 @@ export async function dispatchAccountTurn(
         { ...diagnostic, errorClass },
         {
           sandboxId: entry.sandbox_id,
-          operationId: entry.request_id,
+          operationSequence: String(entry.sequence),
           correlationId: correlationId ?? null,
           code: refusalCode && dispatchRefusalCodes.has(refusalCode) ? refusalCode : undefined,
         },
       );
     }
-    if (refusal?.stopped)
-      console.info(
-        JSON.stringify({
-          event: "sandbox_resume_dispatch_refused",
-          sandboxId: entry.sandbox_id,
-          requestId: entry.request_id,
-          code: refusalCode,
-        }),
-      );
   }
 }

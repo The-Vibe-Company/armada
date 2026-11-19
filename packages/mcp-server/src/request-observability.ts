@@ -69,6 +69,7 @@ export function recordOperatorDiagnostic(
     sandboxId?: string | undefined;
     correlationId?: string | null;
     operationId?: string;
+    operationSequence?: string;
     code?: string | undefined;
     log?: Log;
   } = {},
@@ -83,6 +84,10 @@ export function recordOperatorDiagnostic(
         requestId: options.correlationId && serverId.test(options.correlationId) ? options.correlationId : request?.id,
         sandboxId: options.sandboxId && serverId.test(options.sandboxId) ? options.sandboxId : undefined,
         operationId: options.operationId && serverId.test(options.operationId) ? options.operationId : undefined,
+        operationSequence:
+          options.operationSequence && /^[0-9]{1,19}$/.test(options.operationSequence)
+            ? options.operationSequence
+            : undefined,
         code: options.code,
         ...diagnostic,
       }),
