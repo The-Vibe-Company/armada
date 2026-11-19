@@ -145,8 +145,7 @@ for (const adapter of ["client", "controlPost"] as const) {
 
   test(`${adapter}: fetch and body aborts report an unknown outcome without retrying or leaking the bearer`, async () => {
     for (const phase of ["fetch", "body", "stalled body"] as const) {
-      const controller = new AbortController();
-      const deadline = spyOn(AbortSignal, "timeout").mockReturnValue(controller.signal);
+      const deadline = spyOn(AbortSignal, "timeout");
       let calls = 0;
       try {
         const result = post({
@@ -155,14 +154,16 @@ for (const adapter of ["client", "controlPost"] as const) {
           timeoutMs: 1234,
           fetch: (async (_input, init) => {
             calls++;
-            expect(init?.signal).toBe(controller.signal);
+            const signal = init?.signal;
+            if (!signal) throw new Error("Expected a request deadline signal");
+            expect(signal).toBe(deadline.mock.results[0]?.value);
             if (phase === "fetch") throw new DOMException(TOKEN, "AbortError");
             return {
               status: 200,
               ok: true,
               json: async () => {
                 if (phase === "body") throw new DOMException(TOKEN, "AbortError");
-                queueMicrotask(() => controller.abort(new DOMException(TOKEN, "TimeoutError")));
+                signal.dispatchEvent(new Event("abort"));
                 return new Promise(() => {});
               },
             } as Response;
