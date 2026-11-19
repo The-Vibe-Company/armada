@@ -9,7 +9,7 @@ test("Boat inventory uses the deployment label on managed forks and rechecks sco
   const provider = createBoatProvider({ apiKey: KEY, deploymentId, fetch: boat.fetch });
   await provider.fork({ from: "golden", labels: { armada: "sandbox", [deploymentLabel]: "foreign" } });
   const labels = (boat.requests[0]?.body as { labels: Record<string, string> } | undefined)?.labels ?? {};
-  expect(labels[deploymentLabel]).toMatch(/^[a-f0-9]{64}$/);
+  expect(labels[deploymentLabel]).toBe("e1baae800b32c14f86d994e54558a11aeee43726be9481e54a25ef67195f11f7");
 
   const owned = sandbox({ labels, machineProvider: "hetzner" });
   const listing = fakeBoat(
@@ -18,6 +18,7 @@ test("Boat inventory uses the deployment label on managed forks and rechecks sco
         sandboxes: [
           { ...owned, id: "foreign", labels: { ...labels, [deploymentLabel]: "foreign" } },
           { ...owned, id: "owner-manual", labels: {} },
+          { ...owned, id: "owner-tagged", labels: { [deploymentLabel]: labels[deploymentLabel] } },
           { ...owned, id: "stopped", machineProvider: null },
           { ...owned, id: "invalid-time", createdAt: "invalid" },
         ],
