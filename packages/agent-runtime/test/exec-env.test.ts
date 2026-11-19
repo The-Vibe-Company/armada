@@ -179,7 +179,7 @@ test("exec bootstrap rejects model/provider/unknown variables and credential-fre
 });
 
 test.skipIf(process.platform !== "linux")(
-  "exec close redacts newly rotated native auth before response and process recording",
+  "exec close sanitizes output before replying, recording the process or replaying the command",
   async () => {
     const root = await mkdtemp(join(tmpdir(), "armada-rotated-auth-"));
     await mkdir(join(root, "codex"), { mode: 0o700 });
@@ -193,20 +193,28 @@ test.skipIf(process.platform !== "linux")(
     try {
       const state =
         '{"tokens":{"access_token":"synthetic-new-access","refresh_token":"synthetic-new-refresh","account_id":"native"}}';
-      const response = await call(runner, "exec", {
+      journal.registerApplicationSecrets(["tπz"]);
+      const command = {
+        requestId: "fixture_exec",
         input: {
           sandboxId: "s",
           cwd: root,
-          command: `umask 077; printf '%s' '${state}' > codex/auth.json; printf '%s' 'synthetic-new-refresh'`,
+          command: `umask 077; printf '%s' '${state}' > codex/auth.json
+printf '%s' 'prefixtπzsuffix synthetic-new-refresh'
+printf '%65535s%s' '' 'tπz' >&2`,
         },
-      });
-      const body = await response.text();
+      };
+      const response = await call(runner, "exec", command);
       expect(response.status).toBe(200);
-      expect(body).not.toContain("synthetic-new-refresh");
-      expect(body).not.toContain("synthetic-new-access");
-      expect(JSON.stringify(journal.db.query("select body from processes").all())).not.toContain(
-        "synthetic-new-refresh",
-      );
+      const body = await response.json();
+      expect(journal.redact("synthetic-new-refresh")).toBe("[REDACTED]");
+      const output = { stdout: "[REDACTED]", stderr: "[REDACTED]", truncated: true };
+      expect(body).toMatchObject({ result: output });
+      const process = journal.db.query<{ pid: number; body: string }, []>("select pid, body from processes").get()!;
+      expect(JSON.parse(process.body)).toMatchObject(output);
+      const recorded = await call(runner, "getExec", { processId: process.pid });
+      expect(await recorded.json()).toMatchObject({ result: output });
+      expect(await (await call(runner, "exec", command)).json()).toEqual(body);
     } finally {
       await runner.close();
       journal.close();
