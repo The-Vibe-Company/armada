@@ -323,7 +323,7 @@ export function createSandboxLifecycle(
         if (
           canDeferInterruptedResume &&
           info.id === row.provider_sandbox_id &&
-          info.state === "starting" &&
+          ["starting", "stopping", "failed"].includes(info.state) &&
           !info.physicalExitConfirmed
         ) {
           handingOffObservedResume = true;
