@@ -49,6 +49,7 @@ any receipt UUID returned. On success, pass `sandbox.id` to subsequent tools.
   Use `armada snapshot capabilities --json` for provider capacity and the
   authenticated REST adoption endpoint for canonical Boat golden adoption.
 - Call MCP `launch_options` with `{}` for the server’s harnesses, models, sizes and TTL limits.
+- Call MCP `outputs_list` with `id` to list the stored output snapshot. Call `output_read` with `id` and `name` for base64 contents up to 32 KiB. Use the REST output download for larger files.
   MCP `launch` takes a Boat or Modal golden. Choose `provider: "boat"` or `provider: "modal"`,
   specify `harness`, and use `ttlSeconds` and `reasoningEffort` for launch overrides.
   For scoped tokens, omit `org` or use the scoped org UUID.
