@@ -26,17 +26,19 @@ import {
   OUTPUT_COLLECTOR,
   OUTPUT_COLLECTOR_PROBE,
   outputEntryCollector,
+  preserveWork,
   readCollectorChunk,
   readCollectorEntries,
   readCollectorProbeResult,
   readCollectorResult,
   runtimeBootstrapScript,
+  type WorkPreservation,
 } from "@armada/core/server";
 import type { App, ModalClient, Sandbox } from "modal";
 import { chooseManagementAuthority, matchesManagementAuthority } from "./authority.ts";
 import { type ModalConnection, modalConnection } from "./client.ts";
 import { lifecycleStep, ModalOperationError, modalBuilderImageError, modalError, refusal } from "./errors.ts";
-import { executeGoldenCommand } from "./golden-exec.ts";
+import { executeGoldenCommand, executeWorkspaceCommand } from "./golden-exec.ts";
 import type {
   Machine,
   McpConfiguration,
@@ -49,6 +51,7 @@ import type {
   Scope,
   SshPreparation,
 } from "./ports.ts";
+import { quiesceSandboxProcesses } from "./process-scope.ts";
 import { createSshPreparation, SSH_PORT } from "./ssh.ts";
 import { scopeKey } from "./store.ts";
 
@@ -108,6 +111,13 @@ export interface ModalProvider extends Provider {
     cacheDir: string;
     artifact: { sha256: string; bytes: number };
   }): Promise<void>;
+  captureRuntimeWork(input: {
+    sandboxId: string;
+    physicalGeneration: string;
+    signal: AbortSignal;
+    context: NonNullable<Parameters<Provider["exec"]>[0]["preservationContext"]>;
+    onWorkAtRisk?: () => void;
+  }): Promise<WorkPreservation>;
   /** Trusted server only: common checkpoint has been durably sealed and ACKed. */
   stopRuntime(input: {
     sandboxId: string;
@@ -1058,6 +1068,37 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           throw refusal("unavailable", "Enrolled Modal bootstrap failed; spawn outcome must be reconciled.");
         }
       });
+    },
+    async captureRuntimeWork({ sandboxId, physicalGeneration, signal, context, onWorkAtRisk }) {
+      signal.throwIfAborted();
+      const row = await store.get(sandboxId);
+      if (
+        !row.commonRuntime ||
+        row.golden ||
+        row.phase !== "active" ||
+        !row.physicalId ||
+        String(row.generation) !== physicalGeneration
+      )
+        throw refusal("sandbox_not_ready", "Work capture requires the exact active common runtime incarnation.");
+      const sandbox = await physical(row, signal);
+      signal.throwIfAborted();
+      if ((await abortable(sandbox.poll(), signal)) !== null)
+        throw refusal("sandbox_not_ready", "Work capture requires live physical compute.");
+      signal.throwIfAborted();
+      await abortable(quiesceSandboxProcesses(sandbox, row, signal), signal);
+      signal.throwIfAborted();
+      return preserveWork(
+        {
+          exec(request) {
+            request.signal?.throwIfAborted();
+            return abortable(executeWorkspaceCommand(sandbox, request), request.signal);
+          },
+        },
+        sandboxId,
+        signal,
+        onWorkAtRisk,
+        context,
+      );
     },
     async stopRuntime(input) {
       if (!/^[1-9][0-9]{0,18}$/.test(input.epoch) || !Number.isSafeInteger(input.watermark) || input.watermark < 0)
