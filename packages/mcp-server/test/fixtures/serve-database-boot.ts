@@ -167,14 +167,25 @@ try {
     const stream = await fetch(`http://127.0.0.1:${server.port}/stream-fixture`, { method: "POST" });
     const streamText = stream.text();
     const request = fetch(`http://127.0.0.1:${server.port}/drain-fixture`);
-    await entered.promise;
-    const stopped = server.stop(false);
-    assert.equal(server.stop(false), stopped, "Repeated stop shares one cleanup");
-    release.resolve();
-    assert.equal(await (await request).text(), "finished");
-    streamed.resolve();
-    assert.equal(await streamText, "startedfinished");
-    await stopped;
+    try {
+      await Promise.race([
+        entered.promise,
+        request.then((response) => {
+          throw new Error(`Drain handler did not hold the request (HTTP ${response.status})`);
+        }),
+      ]);
+      const stopped = server.stop(false);
+      assert.equal(server.stop(false), stopped, "Repeated stop shares one cleanup");
+      release.resolve();
+      assert.equal(await (await request).text(), "finished");
+      streamed.resolve();
+      assert.equal(await streamText, "startedfinished");
+      await stopped;
+    } finally {
+      release.resolve();
+      streamed.resolve();
+      await Promise.allSettled([request, streamText]);
+    }
   } finally {
     await server.stop(true);
     await server.workerDone;
