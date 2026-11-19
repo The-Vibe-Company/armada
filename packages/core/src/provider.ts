@@ -274,6 +274,7 @@ export interface SandboxInfo {
   labels: Readonly<Record<string, string>>;
   createdAt?: Date;
   stoppedAt?: Date;
+  retainedSnapshot?: "pending" | "unconfirmed" | "usable";
   /** SDK-confirmed physical exit, without claiming a fresh resumable checkpoint. */
   physicalExitConfirmed?: boolean;
   /** Closed ordinary-stop receipt: current disk was not saved. */

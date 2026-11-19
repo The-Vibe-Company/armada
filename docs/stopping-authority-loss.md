@@ -26,11 +26,18 @@ or permission bypass. Do not execute it as part of a PR or an audit.
    Transport failures, missing credentials and SQL status are not proof of exit.
 3. Record provider evidence of confirmed stop or definitive absence for that exact
    identity in the operator incident record. Do not infer absence across accounts.
+   Before publishing a Boat stop, obtain an archived observation for that exact
+   machine in its original account. Require snapshot availability, no current
+   stop or pending or failed snapshot attempt, and a snapshot verification time
+   at or after the reported stop time (use the successful completion time when
+   Boat omits the verification time). Confirm that the data has not expired and
+   snapshots are enabled. If any of this evidence is unknown, leave the hold.
 4. In a transaction lock the original row and compare the recorded lifecycle
    generation, stop generation, provider binding, exact machine ID and pending stop
    request. Require status still stopping and no live activity/reconciliation lease.
    If anything changed, abort and investigate; never publish an old observation over
-   a resumed generation. Only with confirmed evidence set status stopped,
+   a resumed generation. Only with confirmed evidence set status stopped
+   (for Boat, definitive absence never authorizes this transition),
    stopped_at to the evidence time, stop_requested_at null, lifecycle_error null,
    and clear reconciliation leases. Do not delete retained identity or data.
 

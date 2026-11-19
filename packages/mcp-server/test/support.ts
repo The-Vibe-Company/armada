@@ -235,7 +235,12 @@ export function fakeBoat() {
     async stop(request: { sandboxId: string }) {
       stops.push(request.sandboxId);
       const sandbox = find(request.sandboxId);
-      sandbox.info = { ...sandbox.info, state: "stopped" as SandboxState, providerState: "archived" };
+      sandbox.info = {
+        ...sandbox.info,
+        state: "stopped" as SandboxState,
+        providerState: "archived",
+        retainedSnapshot: "usable",
+      };
     },
     async delete() {
       return { status: "pending" };

@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { createMemoryAuthStore } from "@armada/auth";
 import { createSqlVaultStore, type Provider } from "@armada/core/server";
-import { fakeBoat, sandbox as sdkSandbox } from "../../provider-boat/test/support.ts";
+import { fakeBoat, retainedSandbox, sandbox as sdkSandbox } from "../../provider-boat/test/support.ts";
 import { boatRuntimeResume } from "../src/boat-runtime-resume.ts";
 import { dispatchControlCommand } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
@@ -233,11 +233,10 @@ test("activation uncertainty never dispatches again under another key or on retr
 test("an unenrolled Boat resume returns to a confirmed retained stop before another request can resume", async () => {
   const f = await stopped();
   try {
-    let state = "running";
     let retainedStops = 0;
     const host = {
       id: "boat",
-      get: async () => ({ id: "physical", state }),
+      get: async () => ({ id: "physical", state: "running" }),
       async stop() {
         retainedStops++;
       },
@@ -286,9 +285,26 @@ test("an unenrolled Boat resume returns to a confirmed retained stop before anot
     expect(retainedStops).toBe(1);
     expect((await callerStore.get(f.row.id))?.status).toBe("stopping");
 
-    state = "stopped";
+    const archivedWorker = createSandboxLifecycle(
+      f.sql,
+      async () => fakeBoat({ body: { sandbox: sdkSandbox(archive) } }).provider,
+    );
+    const archivedAt = "2026-11-19T00:00:00Z";
+    let archive = {
+      id: f.row.providerSandboxId,
+      state: "archived",
+      snapshotAvailable: false,
+      stoppedAt: archivedAt,
+      snapshotVerifiedAt: archivedAt,
+    };
     await f.db.query("update sandboxes set reconcile_lease_until=now()-interval '1 second' where id=$1", [f.row.id]);
-    expect(await worker.reconcileOne()).toBe(true);
+    expect(await archivedWorker.reconcileOne()).toBe(true);
+    expect((await callerStore.get(f.row.id))?.status).toBe("stopping");
+    await expect(resume(f.caller, input(f.row.id))).rejects.toMatchObject({ code: "conflict" });
+
+    archive = { ...archive, snapshotAvailable: true };
+    await f.db.query("update sandboxes set reconcile_lease_until=now()-interval '1 second' where id=$1", [f.row.id]);
+    expect(await archivedWorker.reconcileOne()).toBe(true);
     expect((await callerStore.get(f.row.id))?.status).toBe("stopped");
     await expect(resume(f.caller, first)).rejects.toMatchObject({ code: "conflict" });
     expect((await resume(f.caller, input(f.row.id))).sourceCheckpoint.epoch).toBe(f.cp.runtime.epoch);
@@ -326,7 +342,7 @@ test.each(["activation receipt", "pending ticket"])(
       const store = createSqlData(f.sql)(f.caller).sandboxes;
       expect((await store.get(f.row.id))?.status).toBe("starting");
       const { provider } = fakeBoat({
-        body: { sandbox: sdkSandbox({ id: f.row.providerSandboxId, state: "archived", snapshotAvailable: true }) },
+        body: { sandbox: retainedSandbox({ id: f.row.providerSandboxId }) },
       });
       const worker = createSandboxLifecycle(f.sql, async () => provider);
       expect(await worker.reconcileOne()).toBe(true);
@@ -475,7 +491,7 @@ test.each(["confirmed", "tainted", "lease expired"])(
       if (url.endsWith("/stop")) activated = false;
       return Response.json({
         ok: true,
-        sandbox: sdkSandbox({ id: "physical", state: activated ? "running" : "archived" }),
+        sandbox: activated ? sdkSandbox({ id: "physical", state: "running" }) : retainedSandbox({ id: "physical" }),
       });
     }) as typeof fetch);
     try {
@@ -518,7 +534,7 @@ test.each(["confirmed", "tainted", "lease expired"])(
       if (!taint) expect(requests.some((path) => path.endsWith("/stop"))).toBe(false);
       if (condition === "confirmed") {
         const { provider } = fakeBoat({
-          body: { sandbox: sdkSandbox({ id: f.row.providerSandboxId, state: "archived", snapshotAvailable: true }) },
+          body: { sandbox: retainedSandbox({ id: f.row.providerSandboxId }) },
         });
         const worker = createSandboxLifecycle(f.sql, async () => provider);
         expect(await worker.reconcileOne()).toBe(true);

@@ -122,6 +122,17 @@ function sandboxState(providerState: string): SandboxState {
   return "starting";
 }
 
+function archivedRetention(sandbox: Sandbox) {
+  if (sandbox.dataExpiredAt || sandbox.snapshots === false) return "unconfirmed";
+  if (sandbox.stop || sandbox.lastSnapshotStatus === "queued" || sandbox.lastSnapshotStatus === "in_progress")
+    return "pending";
+  if (sandbox.snapshotAvailable !== true || (sandbox.lastSnapshotStatus && sandbox.lastSnapshotStatus !== "completed"))
+    return "unconfirmed";
+  const stoppedAt = sandbox.stoppedAt?.getTime();
+  const verifiedAt = (sandbox.snapshotVerifiedAt ?? sandbox.snapshotCompletedAt)?.getTime();
+  return stoppedAt !== undefined && verifiedAt !== undefined && verifiedAt >= stoppedAt ? "usable" : "unconfirmed";
+}
+
 function sandboxInfo(sandbox: Sandbox): SandboxInfo {
   const info: SandboxInfo = {
     id: sandbox.id,
@@ -130,6 +141,7 @@ function sandboxInfo(sandbox: Sandbox): SandboxInfo {
     providerState: sandbox.state,
     labels: sandbox.labels ?? {},
   };
+  if (sandbox.state === "archived") info.retainedSnapshot = archivedRetention(sandbox);
   if (sandbox.error) info.error = sandbox.error;
   if (sandbox.createdAt) info.createdAt = sandbox.createdAt;
   if (sandbox.stoppedAt && Number.isFinite(sandbox.stoppedAt.getTime())) info.stoppedAt = sandbox.stoppedAt;
@@ -486,16 +498,8 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       if (current?.id !== sandboxId) throw unexpectedAnswer("retained sandbox");
       if (current.state === "cancelled" || current.dataExpiredAt || current.snapshots === false) return "gone";
       if (current.state !== "archived") return "pending";
-      if (current.stop || current.lastSnapshotStatus === "queued" || current.lastSnapshotStatus === "in_progress")
-        return "pending";
-      if (!current.snapshotAvailable || (current.lastSnapshotStatus && current.lastSnapshotStatus !== "completed"))
-        return "gone";
-      // A forced or provider-initiated stop can leave an older completed snapshot.
-      // Require a verification at the stop boundary, allowing no-change saves to
-      // verify an older snapshot without creating a new one.
-      const stoppedAt = current.stoppedAt?.getTime();
-      const verifiedAt = (current.snapshotVerifiedAt ?? current.snapshotCompletedAt)?.getTime();
-      if (stoppedAt === undefined || verifiedAt === undefined || !(verifiedAt >= stoppedAt)) return "gone";
+      const retention = archivedRetention(current);
+      if (retention !== "usable") return retention === "pending" ? "pending" : "gone";
       const latest = await call(() => api.getLatestSandboxSnapshot({ sandboxId }, { signal })).catch(
         missingRetainedResource,
       );
@@ -755,6 +759,7 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       if (options.beforePrompt || options.beforeResume) {
         let info = await provider.get(request.sandboxId, { signal });
         if (info.state === "stopped") {
+          if (info.retainedSnapshot !== "usable") throw invalidRequest("Boat retained data has not been verified.");
           await request.onResumeStage?.("accepted");
           const shouldResume = await options.beforeResume?.(provider, request.sandboxId);
           if (shouldResume !== false) {

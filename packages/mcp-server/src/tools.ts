@@ -1098,6 +1098,8 @@ export function createArmadaServer(context: ToolContext, version: string, option
         : resolveModelChoice(found.harness, { model: args.model, reasoningEffort: args.reasoning_effort }, stored);
     const conversation = args.conversation_id ?? found.conversationIds.at(-1);
     const machine = await measure("send_state", () => provider.get(found.providerSandboxId));
+    if (provider.id === "boat" && machine.state === "stopped" && machine.retainedSnapshot !== "usable")
+      throw new ToolError("conflict", "Boat retained data has not been verified.");
     if (machine.state === "stopped" && found.stoppedAt === null) {
       await data.sandboxes.update(found.id, {
         status: "stopped",
@@ -1552,12 +1554,14 @@ export function createArmadaServer(context: ToolContext, version: string, option
             await provider.stop({ sandboxId: found.providerSandboxId });
             signal.throwIfAborted();
             const observed = await provider.get(found.providerSandboxId);
-            terminal = observed.state === "stopped";
+            terminal =
+              observed.state === "stopped" &&
+              (provider.id !== "boat" || observed.retainedSnapshot === "usable" || found.status === "failed");
             stoppedAt = observed.stoppedAt;
             preservationNote = observed.stopNote;
           } catch (error) {
             if (!(error instanceof ProviderError && error.code === "not_found")) throw error;
-            terminal = true;
+            terminal = provider.id !== "boat";
           }
           signal.throwIfAborted();
           const status: SandboxStatus =

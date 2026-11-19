@@ -552,7 +552,7 @@ describe("tools", () => {
       expect(resent.isError).not.toBe(true);
       boat.finish("bx_1", "prompt_2", "failed");
       await db.query("update sandboxes set status='failed',status_reason=$2 where id=$1", [launched.data.id, message]);
-      boat.sandbox("bx_1").info.state = "stopped";
+      await boat.provider.stop({ sandboxId: "bx_1" });
       const stopped = await call(mcp, "status", { id: launched.data.id });
       expect(stopped.data.status).toBe("stopped");
       boat.sandbox("bx_1").info.state = "failed";
@@ -1152,7 +1152,7 @@ describe("tools", () => {
         const info = await boat.provider.get(id);
         observing.resolve();
         await release.promise;
-        return { ...info, state: "stopped" as const };
+        return { ...info, state: "stopped" as const, retainedSnapshot: "usable" as const };
       },
     }));
     const tick = lifecycle.reconcileOne();
@@ -1402,8 +1402,9 @@ describe("tools", () => {
         if (boat.stops.length === 1)
           boat.sandbox(request.sandboxId).info = {
             ...boat.sandbox(request.sandboxId).info,
-            state: "stopping",
-            providerState: "archiving",
+            state: result === "preserved" ? "stopping" : "stopped",
+            providerState: result === "preserved" ? "archiving" : "archived",
+            retainedSnapshot: "pending",
           };
       };
       expect((await call(mcp, "stop", { id })).data.status).toBe("stopping");
@@ -1423,7 +1424,12 @@ describe("tools", () => {
       const lifecycle = createSandboxLifecycle(bunLikeSql(db), async () => boat.provider);
       expect(await lifecycle.reconcileOne()).toBe(true);
       expect(boat.stops).toHaveLength(1);
-      boat.sandbox("bx_1").info = { ...boat.sandbox("bx_1").info, state: "stopped", providerState: "archived" };
+      boat.sandbox("bx_1").info = {
+        ...boat.sandbox("bx_1").info,
+        state: "stopped",
+        providerState: "archived",
+        retainedSnapshot: "usable",
+      };
       await db.query("update sandboxes set reconcile_after=now() where id=$1", [id]);
       expect(await lifecycle.reconcileOne()).toBe(true);
       expect((await call(mcp, "stop", { id })).data.status).toBe("stopped");

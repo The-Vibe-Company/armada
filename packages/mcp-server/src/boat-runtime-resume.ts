@@ -15,7 +15,7 @@ export function boatRuntimeResume(options: RuntimeResumeOptions & { modelAuth: M
       return createObservedBoatProvider({ apiKey: management.key }, sandbox.id);
     },
     retained(current) {
-      if (current.state !== "stopped" || current.physicalExitConfirmed)
+      if (current.state !== "stopped" || current.physicalExitConfirmed || current.retainedSnapshot !== "usable")
         throw Error("runtime_resume_requires_stopped_compute");
     },
     admissionError: "runtime_resume_admission_changed",

@@ -215,7 +215,8 @@ export function createSandboxAccessServices(input: {
           // Stop dispatch is not physical closure. Keep pending stops observable by
           // lifecycle recovery, and release the status-read fence only on confirmation.
           const observed = await provider.get(saved.providerSandboxId);
-          const terminal = observed.state === "stopped";
+          const terminal =
+            observed.state === "stopped" && (provider.id !== "boat" || observed.retainedSnapshot === "usable");
           return {
             result: undefined,
             patch: {
