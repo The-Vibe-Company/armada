@@ -328,7 +328,16 @@ test("an unenrolled Boat resume returns to a confirmed retained stop before anot
   }
 });
 
-test.each(["activation receipt", "pending ticket", "observed archive", "observed running", "unrecognized state"])(
+const interruptedResumeProofs = [
+  "activation receipt",
+  "pending ticket",
+  "observed archive",
+  "observed running",
+  "transient observation failure",
+  "unrecognized state",
+] as const;
+
+test.each(interruptedResumeProofs)(
   "the worker reconciles an interrupted Boat resume with %s evidence",
   async (proof) => {
     const f = await stopped();
@@ -357,7 +366,8 @@ test.each(["activation receipt", "pending ticket", "observed archive", "observed
       expect((await store.get(f.row.id))?.status).toBe("starting");
       const running = { body: { sandbox: sdkSandbox({ id: f.row.providerSandboxId, state: "running" }) } };
       const { provider, requests } = fakeBoat(
-        ...(proof === "observed archive"
+        ...(proof === "transient observation failure" ? [{ status: 503 }] : []),
+        ...(proof === "observed archive" || proof === "transient observation failure"
           ? [{ body: { sandbox: retainedSandbox({ id: f.row.providerSandboxId, snapshotAvailable: false }) } }]
           : []),
         ...(proof === "observed running" ? [running, running, {}] : []),
@@ -368,6 +378,12 @@ test.each(["activation receipt", "pending ticket", "observed archive", "observed
       );
       const worker = createSandboxLifecycle(f.sql, async () => provider);
       expect(await worker.reconcileOne()).toBe(true);
+      if (proof === "transient observation failure") {
+        expect((await store.get(f.row.id))?.status).toBe("starting");
+        expect(await worker.reconcileOne()).toBe(false);
+        await f.db.query("update sandboxes set reconcile_after=now() where id=$1", [f.row.id]);
+        expect(await worker.reconcileOne()).toBe(true);
+      }
       if (proof === "unrecognized state") {
         expect((await store.get(f.row.id))?.status).toBe("failed");
         return;
