@@ -5,7 +5,9 @@ import type {
   ExecResult,
   ForkRequest,
   Harness,
+  ModalBinding,
   Provider,
+  ProviderInventoryMachine,
   ResumeStageObserver,
   SandboxInfo,
   SnapshotInfo,
@@ -30,7 +32,7 @@ import {
   readCollectorResult,
   runtimeBootstrapScript,
 } from "@armada/core/server";
-import type { App, Sandbox } from "modal";
+import type { App, ModalClient, Sandbox } from "modal";
 import { chooseManagementAuthority, matchesManagementAuthority } from "./authority.ts";
 import { type ModalConnection, modalConnection } from "./client.ts";
 import { lifecycleStep, ModalOperationError, modalBuilderImageError, modalError, refusal } from "./errors.ts";
@@ -52,6 +54,7 @@ import { scopeKey } from "./store.ts";
 
 /** In-request retry delays after the first attempt for deletion's image cleanup. */
 const CLEANUP_RETRY_MS = [1_000, 5_000];
+const DEPLOYMENT_TAG = "armada_deployment";
 
 export type ModalPromptPhase =
   | "modal_prepare"
@@ -64,6 +67,8 @@ export type ModalPromptPhase =
   | "modal_sandbox_create"
   | `modal_boot_${"binding" | "runtime" | "baseline" | "fresh" | "start" | "health" | "active_publication"}`;
 export interface ModalProviderOptions extends ModalConnection {
+  /** Stable, server-owned inventory identity. Direct callers without one cannot list inventory. */
+  deploymentId?: string;
   /** Trusted staging opt-in: allocate host only, never start the tunnel listener. */
   commonRuntime?: true;
   measure?<T>(phase: ModalPromptPhase, work: () => Promise<T>): Promise<T>;
@@ -95,6 +100,7 @@ export interface ModalProviderOptions extends ModalConnection {
   beforePrompt?(provider: ModalProvider, sandboxId: string): Promise<void>;
 }
 export interface ModalProvider extends Provider {
+  listInventory: NonNullable<Provider["listInventory"]>;
   startRuntime(input: {
     sandboxId: string;
     serverUrl: string;
@@ -174,19 +180,8 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
   }
   const ssh = options.ssh ?? createSshPreparation();
   const client = modalConnection(options);
-  async function bound(): Promise<App> {
-    const app = await measure("modal_app_lookup", () =>
-      client.apps.fromName(options.appName, {
-        environment: options.scope.binding.environment,
-        createIfMissing: false,
-      }),
-    );
-    if (app.appId !== options.scope.binding.appId)
-      throw refusal("forbidden", "Modal App does not match the immutable binding.");
-    // Public SDK exposes App ID/environment, not authenticated workspace identity. Globally unique
-    // App ID reached by an explicit token is authoritative; workspace label is never authentication.
-    return app;
-  }
+  const deploymentId = options.deploymentId?.trim();
+  const bound = () => measure("modal_app_lookup", () => boundModalApp(client, options.appName, options.scope.binding));
   async function snapshotBackend() {
     try {
       await bound();
@@ -259,6 +254,8 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       armada_generation: String(row.generation),
     };
   }
+  const listInventory: ModalProvider["listInventory"] = (signal) =>
+    listModalInventory(client, bound, deploymentId, signal);
   async function namedOwned(row: Machine): Promise<Sandbox> {
     assertMachineSource(row);
     // Name reconciliation exists because the create outcome is unknown: a missing App must
@@ -379,7 +376,11 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
               }
             : {}),
           name: row.physicalName,
-          tags: ownershipTags(row),
+          tags: {
+            ...ownershipTags(row),
+            // Golden builders are managed by the golden lifecycle, outside the inventory sweep.
+            ...(!row.golden && deploymentId ? { [DEPLOYMENT_TAG]: deploymentId } : {}),
+          },
           timeoutMs: row.ttlSeconds * 1000,
           workdir: "/home/user",
           unencryptedPorts: [SSH_PORT],
@@ -511,23 +512,30 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       ...(imageId ? { imageId } : {}),
       ...(sourceImage ? { sourceImage } : {}),
     });
-    let observed = row;
-    try {
+    const needsBoot = (row: Machine) => {
       if (
         row.golden !== golden ||
+        (!golden && row.generation !== 1) ||
         Boolean(row.commonRuntime) !== Boolean(!golden && options.commonRuntime) ||
         row.size !== size ||
         row.imageId !== imageId ||
         row.sourceImage?.scopeKey !== sourceImage?.scopeKey ||
         row.sourceImage?.name !== sourceImage?.name
       )
-        throw refusal("conflict", "Idempotency key belongs to another launch.");
+        throw refusal("conflict", "Idempotency key belongs to another launch or generation.");
       assertMachineSource(row);
-      if (row.phase === "active" || row.phase === "stopped") return sandboxInfo(row);
+      if (row.phase === "active" || row.phase === "stopped") return false;
       if (!["reserved", "creating", "booting"].includes(row.phase))
         throw refusal("conflict", "Launch is in a terminal or checkpoint phase.");
-      return await store.lease(row.info.id, (current, save) => {
+      return true;
+    };
+    let observed = row;
+    try {
+      if (!needsBoot(row)) return sandboxInfo(row);
+      return await store.lease(row.info.id, async (current, save) => {
         observed = current;
+        // A lifecycle operation may have changed the phase or generation before we acquired the lease.
+        if (!needsBoot(current)) return sandboxInfo(current);
         return create(current, save, "env" in request ? (request.env ?? {}) : {});
       });
     } catch (error) {
@@ -952,6 +960,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
 
   const provider: ModalProvider = {
     id: "modal",
+    listInventory,
     backendIdentity: async () => {
       await bound();
       return {
@@ -2055,7 +2064,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
   return Object.fromEntries(
     Object.entries(provider).map(([key, value]) => [
       key,
-      typeof value === "function"
+      typeof value === "function" && value !== listInventory
         ? async (...args: unknown[]) => {
             try {
               return await value(...args);
@@ -2068,8 +2077,87 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
   ) as unknown as ModalProvider;
 }
 
-/** Settles with `work`, or rejects with the signal's reason as soon as the caller aborts. */
-function abortable<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+async function boundModalApp(client: ModalClient, appName: string, binding: ModalBinding): Promise<App> {
+  const app = await client.apps.fromName(appName, { environment: binding.environment, createIfMissing: false });
+  // The globally unique App ID reached by the explicit credential verifies the binding.
+  if (app.appId !== binding.appId) throw refusal("forbidden", "Modal App does not match the immutable binding.");
+  return app;
+}
+
+export function modalDeploymentId(environment: string, publicUrl: string): string {
+  return createHash("sha256")
+    .update(JSON.stringify([environment, new URL(publicUrl).origin]))
+    .digest("hex");
+}
+
+/** Inventory-only connection for the server reaper, independent of runner and store authority. */
+export function createModalInventory(
+  client: ModalClient,
+  appName: string,
+  binding: ModalBinding,
+  deploymentId: string,
+) {
+  return {
+    listInventory: (signal?: AbortSignal) =>
+      listModalInventory(client, () => boundModalApp(client, appName, binding), deploymentId, signal),
+  };
+}
+
+async function* listModalInventory(
+  client: ModalClient,
+  bound: () => Promise<App>,
+  deploymentId: string | undefined,
+  signal?: AbortSignal,
+): AsyncGenerator<ProviderInventoryMachine> {
+  if (!deploymentId) throw refusal("provider_routing_unavailable", "Modal inventory requires a deployment identity.");
+  signal?.throwIfAborted();
+  try {
+    const { appId } = await abortable(bound(), signal);
+    const tags = [{ tagName: DEPLOYMENT_TAG, tagValue: deploymentId }];
+    let beforeTimestamp: number | undefined;
+    // The SDK iterator discards creation times. Use its listing RPC, which covers both
+    // Modal sandbox backends and scopes the query by the verified environment's App ID.
+    while (true) {
+      signal?.throwIfAborted();
+      const { sandboxes } = await client.cpClient.sandboxListV2(
+        { appId, tags, includeFinished: false, ...(beforeTimestamp === undefined ? {} : { beforeTimestamp }) },
+        signal ? { signal } : undefined,
+      );
+      if (sandboxes.length === 0) return;
+      for (const sandbox of sandboxes) {
+        signal?.throwIfAborted();
+        const ownership = new Map(sandbox.tags.map(({ tagName, tagValue }) => [tagName, tagValue]));
+        if (ownership.get(DEPLOYMENT_TAG) !== deploymentId || sandbox.appId !== appId) continue;
+        const createdAt = new Date(sandbox.createdAt * 1000);
+        if (sandbox.createdAt <= 0 || !Number.isFinite(createdAt.getTime()))
+          throw refusal("unavailable", "Modal inventory returned an invalid creation time.");
+        const sandboxId = ownership.get("armada_sandbox");
+        const generation = ownership.get("armada_generation");
+        yield {
+          machineId: sandbox.id,
+          deploymentId,
+          createdAt,
+          ...(sandboxId ? { sandboxId } : {}),
+          ...(generation ? { generation } : {}),
+        };
+      }
+      const nextTimestamp = sandboxes.at(-1)?.createdAt;
+      if (
+        nextTimestamp === undefined ||
+        !Number.isFinite(nextTimestamp) ||
+        nextTimestamp <= 0 ||
+        (beforeTimestamp !== undefined && nextTimestamp >= beforeTimestamp)
+      )
+        throw refusal("unavailable", "Modal inventory pagination did not advance.");
+      beforeTimestamp = nextTimestamp;
+    }
+  } catch (error) {
+    signal?.throwIfAborted();
+    throw modalError(error);
+  }
+}
+
+function abortable<T>(work: Promise<T>, signal: AbortSignal | undefined) {
   if (!signal) return work;
   signal.throwIfAborted();
   return new Promise<T>((resolve, reject) => {

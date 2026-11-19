@@ -1,13 +1,18 @@
 import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
-import { createSqlVaultStore } from "@armada/core/server";
+import { createMemoryAuthStore } from "@armada/auth";
+import { createSqlVaultStore, type Provider } from "@armada/core/server";
 import { sandbox as sdkSandbox } from "../../provider-boat/test/support.ts";
 import { boatRuntimeResume } from "../src/boat-runtime-resume.ts";
+import { dispatchControlCommand } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
+import { modalRuntimeLaunch } from "../src/modal-runtime-launch.ts";
+import { modalRuntimeResume } from "../src/modal-runtime-resume.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
 import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
 import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import { createRuntimeHistory } from "../src/runtime-history.ts";
 import { createRuntimeResume } from "../src/runtime-resume.ts";
+import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { runtimeFixture } from "./runtime-fixture.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
@@ -90,7 +95,24 @@ describe.each([
     const request = { id: f.row.id, request_id: crypto.randomUUID(), prompt: "continue the previous conversation" };
     const before = await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id);
     const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, undefined, resume);
-    const result = (await resume(f.caller, { ...request, runtimeVersion: 1 })) as Awaited<ReturnType<typeof resume>>;
+    const result = (await dispatchControlCommand(
+      "sandbox/resume-runtime-v1",
+      f.caller,
+      { ...request, runtimeVersion: 1 },
+      {
+        authStore: createMemoryAuthStore(),
+        supabase: { supabaseUrl: "https://unused.test", anonKey: "fixture" },
+        store: createSqlVaultStore(f.sql),
+        encryptionKey: ENCRYPTION_KEY,
+        data: createSqlData(f.sql),
+        providers: {
+          async resolve() {
+            throw Error("Runtime resume uses its own placement");
+          },
+        },
+        runtimeResume: resume,
+      },
+    )) as Awaited<ReturnType<typeof resume>>;
     expect(result).toMatchObject({
       resumed: true,
       conversationId: f.first.conversationId,
@@ -208,6 +230,130 @@ test("activation uncertainty never dispatches again under another key or on retr
   }
 });
 
+test("an unenrolled Boat resume returns to a confirmed retained stop before another request can resume", async () => {
+  const f = await stopped();
+  try {
+    let state = "running";
+    let retainedStops = 0;
+    const host = {
+      id: "boat",
+      get: async () => ({ id: "physical", state }),
+      async stop() {
+        retainedStops++;
+      },
+    } as unknown as Provider;
+    const callerStore = createSqlData(f.sql)(f.caller).sandboxes;
+    let starts = 0;
+    let refusedTicket = "";
+    let refusalStatus: number | undefined;
+    let requestSideStops = 0;
+    const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => ({
+      async start(_signal, restore) {
+        starts++;
+        if (starts > 1) return f.reboot(restore);
+        refusedTicket = (
+          await f.authority.issue({
+            sandboxId: f.row.id,
+            ownerId: f.caller.userId,
+            configuration: {},
+          })
+        ).enrolmentToken;
+        const response = await f.authority.route(
+          new Request("https://armada.example/api/runtime/enrol", {
+            method: "POST",
+            headers: { authorization: `Bearer ${refusedTicket}`, "x-armada-runtime-protocol": "0" },
+          }),
+        );
+        refusalStatus = response?.status;
+        throw Error("runtime_protocol_unsupported");
+      },
+      async stop() {
+        requestSideStops++;
+      },
+    }));
+    const first = input(f.row.id);
+    await expect(resume(f.caller, first)).rejects.toMatchObject({ code: "conflict" });
+    expect(refusalStatus).toBe(409);
+    expect(requestSideStops).toBe(0);
+    expect((await callerStore.get(f.row.id))?.status).toBe("stopping");
+    await expect(f.authority.enrol(refusedTicket)).rejects.toThrow("runtime_enrolment_denied");
+    await expect(resume(f.caller, input(f.row.id))).rejects.toMatchObject({ code: "conflict" });
+
+    const legacyDue = await f.db.query("select id from sandboxes where id=$1 and reconcile_after<=now()", [f.row.id]);
+    expect(legacyDue.rows).toHaveLength(0);
+    const worker = createSandboxLifecycle(f.sql, async () => host);
+    expect(await worker.reconcileOne()).toBe(true);
+    expect(retainedStops).toBe(1);
+    expect((await callerStore.get(f.row.id))?.status).toBe("stopping");
+
+    state = "stopped";
+    await f.db.query("update sandboxes set reconcile_lease_until=now()-interval '1 second' where id=$1", [f.row.id]);
+    expect(await worker.reconcileOne()).toBe(true);
+    expect((await callerStore.get(f.row.id))?.status).toBe("stopped");
+    await expect(resume(f.caller, first)).rejects.toMatchObject({ code: "conflict" });
+    expect((await resume(f.caller, input(f.row.id))).sourceCheckpoint.epoch).toBe(f.cp.runtime.epoch);
+    expect(starts).toBe(2);
+  } finally {
+    await f.close();
+  }
+});
+
+test("retained Modal resume enrols through bootstrap using the current deployment artifact", async () => {
+  const f = await stopped("codex", "modal");
+  try {
+    const retainedArtifact = { sha256: "a".repeat(64), bytes: 3 };
+    const currentArtifact = { sha256: "b".repeat(64), bytes: 5 };
+    let artifact = retainedArtifact;
+    let activated = false;
+    let enrolled: Awaited<ReturnType<typeof f.authority.enrol>> | undefined;
+    const host = {
+      id: "modal",
+      get: async () => ({ state: "stopped" }),
+      async resumeRuntime() {
+        activated = true;
+      },
+      async startRuntime(request: { artifact: typeof artifact; enrolmentToken: string }) {
+        expect(activated).toBe(true);
+        artifact = request.artifact;
+        enrolled = await f.authority.enrol(request.enrolmentToken);
+        throw Error("Fixture ends after enrolment, before health");
+      },
+    } as unknown as import("@armada/provider-modal").ModalProvider;
+    const prepare = modalRuntimeResume({
+      sql: f.sql,
+      vault: createSqlVaultStore(f.sql),
+      key: ENCRYPTION_KEY,
+      hostFor: async () => host,
+      policy: modalRuntimeLaunch({
+        sql: f.sql,
+        encryptionKey: ENCRYPTION_KEY,
+        serverUrl: "https://armada.example",
+        architecture: "x64",
+        manifest: {
+          protocol: 1,
+          platform: "linux",
+          architecture: "x64",
+          libc: "glibc",
+          runtime: currentArtifact,
+          harnesses: { codex: { files: [{ path: "bin/codex" }] } },
+        },
+      }),
+    });
+    const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, prepare);
+    await expect(resume(f.caller, input(f.row.id))).rejects.toMatchObject({ code: "conflict" });
+    expect(artifact).toEqual(currentArtifact);
+    expect(enrolled?.epoch).toBe("2");
+    const configuration = enrolled?.configuration as Record<string, unknown> | undefined;
+    expect(configuration?.artifactManifest).toMatchObject({ runtime: currentArtifact });
+    expect(configuration?.restoreCheckpoint).toMatchObject({
+      epoch: f.cp.runtime.epoch,
+      watermark: f.cp.checkpoint.watermark,
+    });
+  } finally {
+    await f.close();
+  }
+});
+
 test("failed GitHub reauthorization prevents resumed inference and can reconcile without reactivation", async () => {
   const f = await stopped();
   try {
@@ -298,19 +444,19 @@ test.each([false, true])(
       const request = input(f.row.id);
       await expect(createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, prepare)(f.caller, request)).rejects.toThrow();
       const { rows } = await f.db.query(
-        `select l.stage, l.at=r.created_at as at_admission
+        `select l.stage, case when l.stage='accepted' then l.at=r.created_at else l.at>=r.created_at end as dated_correctly
            from public.sandbox_launch_stages l
            join public.runtime_resumes r on r.sandbox_id=l.sandbox_id and r.request_id=$2
-          where l.sandbox_id=$1 and l.activation=2 order by l.at,l.stage`,
+          where l.sandbox_id=$1 and l.activation=2 order by l.stage`,
         [f.row.id, request.request_id],
       );
       expect(rows).toEqual([
-        { stage: "accepted", at_admission: true },
+        { stage: "accepted", dated_correctly: true },
         ...(taint
           ? []
           : [
-              { stage: "provider_claimed", at_admission: false },
-              { stage: "machine_started", at_admission: false },
+              { stage: "machine_started", dated_correctly: true },
+              { stage: "provider_claimed", dated_correctly: true },
             ]),
       ]);
       expect(requests.some((path) => path.endsWith("/resume"))).toBe(!taint);

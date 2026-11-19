@@ -1,6 +1,6 @@
+import { LAUNCH_CREDENTIAL_BINDING_GUIDANCE } from "./api-failure.ts";
 import { CLAUDE_ENDPOINT_ENV } from "./claude-endpoint.ts";
 import { CODEX_ENDPOINT_ENV } from "./codex-endpoint.ts";
-import { COMPATIBLE_MODEL_PROVIDERS } from "./compatible-providers.ts";
 import { HARNESSES, type Harness } from "./contract.ts";
 import { type HarnessCredentials, redact } from "./credentials.ts";
 import { GITHUB_NOT_CONNECTED, type GitHubAccess, type GitHubStatus, githubEnv } from "./github.ts";
@@ -39,6 +39,7 @@ import { DEFAULT_SANDBOX_EXTENSION_HEADROOM_SECONDS, SANDBOX_STOP_MARGIN_SECONDS
 import { OUTPUT_DIRECTORY } from "./sandbox-output-limits.ts";
 import * as placement from "./sandbox-provider.ts";
 import { assertProviderOf, PROVIDER_LIMITS, type SandboxProviderId } from "./sandbox-provider.ts";
+import { VaultError } from "./vault-error.ts";
 
 export { prepareLaunchWorkspace } from "./launch-workspace.ts";
 
@@ -190,8 +191,8 @@ export interface LaunchOptions extends GoldenLimits {
   modalRuntimeDefault?: NonNullable<LaunchOptions["boatRuntimeDefault"]>;
   /** Frozen template account version, not a public launch override. */
   credentialVersion?: number;
-  /** Templates requiring native-only application-secret delivery. */
-  nativeSecretBindings?: boolean;
+  /** Whether the template declares application-secret bindings. */
+  templateHasSecretBindings?: boolean;
 
   /** Trusted per-launch opt-in for common-runtime routes; private bootstrap, never a native-agent fallback. */
   runtime?: LaunchOptions["boatRuntime"];
@@ -264,6 +265,32 @@ export interface LaunchPlan {
   secrets: HarnessCredentials["secrets"];
 }
 
+/** The shared golden launcher owns these sequential intervals from admission to harness readiness. */
+function modalLaunchTiming(startedAt: number) {
+  const stages: { stage: string; ms: number }[] = [];
+  let previous = startedAt;
+  let enabled = false;
+  return {
+    mark(stage: string, at?: number) {
+      if (stage === "launch_plan") enabled = true;
+      if (!enabled) return;
+      const now = at ?? performance.now();
+      stages.push({ stage, ms: now - previous });
+      previous = now;
+    },
+    report(sandboxId: string, path: "native" | "enrolled") {
+      if (!enabled) return;
+      try {
+        console.error(
+          JSON.stringify({ event: "modal_launch_timing", sandboxId, path, totalMs: previous - startedAt, stages }),
+        );
+      } catch {
+        // Timing must not change the launch outcome.
+      }
+    },
+  };
+}
+
 function validateGoldenLaunch(request: LaunchRequest) {
   // The sandbox row (and so the stage table) exists only after the fork (#2560).
   const acceptedAt = performance.now();
@@ -283,6 +310,7 @@ async function resolveGoldenLaunch(
   actor: GoldenActor,
   validated: ReturnType<typeof validateGoldenLaunch>,
   options: LaunchOptions,
+  timing: ReturnType<typeof modalLaunchTiming>,
 ): Promise<LaunchPlan> {
   let { request } = validated;
   const { acceptedAt } = validated;
@@ -293,15 +321,6 @@ async function resolveGoldenLaunch(
   const defaultRuntime =
     !options.runtime && !options.boatRuntime ? launchPlacement.runtimeDefault(options, request.harness) : undefined;
   if (defaultRuntime) {
-    const providerName = placement.SANDBOX_PLACEMENT_LABELS[golden.provider];
-    const rollback = `ARMADA_${golden.provider.toUpperCase()}_AGENT_PATH`;
-    const refuse = (feature: string): never => {
-      throw new LaunchError(
-        "invalid_request",
-        `${providerName} runtime default cannot launch ${feature}; no native fallback. Set ${rollback}=native for rollback.`,
-      );
-    };
-    if (options.nativeSecretBindings) refuse("template application-secret bindings");
     provider = await defaultRuntime.provider(actor, golden);
     if (provider.id !== golden.provider)
       throw new LaunchError("invalid_request", "Runtime default must retain the golden provider; no native fallback.");
@@ -391,35 +410,39 @@ async function resolveGoldenLaunch(
   );
   const snapshot = golden.providerSnapshotId;
   if (!snapshot) throw new GoldenError("conflict", `Golden '${golden.name}' has no snapshot yet.`);
+  if (golden.provider === "modal") timing.mark("launch_plan");
   const credentials = await stores.credentials.resolve(actor, harness, request.credentialId, options.credentialVersion);
-  if (
-    [CLAUDE_ENDPOINT_ENV, CODEX_ENDPOINT_ENV].some((name) => {
-      const raw = credentials.env[name];
-      return (
-        raw &&
-        JSON.parse(raw).baseUrl === COMPATIBLE_MODEL_PROVIDERS.morph[harness === "claude" ? "claude" : "codex"].baseUrl
-      );
-    })
-  ) {
-    const models: readonly string[] = COMPATIBLE_MODEL_PROVIDERS.morph.models;
-    choice.model = request.model ?? models[0]!;
-    if (!models.includes(choice.model))
-      throw new LaunchError("invalid_request", "Choose a Morph plan model for this account.");
+  if (golden.provider === "modal") timing.mark("credential_resolution");
+  if (runtime && !credentials.binding)
+    throw new VaultError("credential_binding_required", LAUNCH_CREDENTIAL_BINDING_GUIDANCE);
+  if (credentials.morphModels) {
+    const models = credentials.morphModels;
+    const prefix = `${OPENCODE_CONNECTION_PROVIDER}/`;
+    let selected = request.model ?? models[0]!;
+    if (harness === "opencode" && request.model?.startsWith(prefix)) {
+      const upstream = request.model.slice(prefix.length);
+      if (models.includes(upstream)) selected = upstream;
+    }
+    if (!models.includes(selected))
+      throw new LaunchError("invalid_request", "Choose a Morph plan model configured on this account.");
+    choice.model = harness === "opencode" ? `${prefix}${selected}` : selected;
   }
   const endpointRuntime = launchPlacement.endpointRuntime?.(options);
   if (!runtime && (credentials.env[CLAUDE_ENDPOINT_ENV] || credentials.env[CODEX_ENDPOINT_ENV]) && endpointRuntime) {
     // Re-enter through the shared runtime selection before allocating compute.
     // Its resolver excludes native GitHub/model environment delivery.
-    return resolveGoldenLaunch(provider, stores, actor, validateGoldenLaunch(request), {
-      ...options,
-      boatRuntimeDefault: endpointRuntime,
-    });
-  }
-  if (defaultRuntime && !credentials.binding)
-    throw new LaunchError(
-      "invalid_request",
-      `${placement.SANDBOX_PLACEMENT_LABELS[golden.provider]} runtime default requires a bound model account; no native fallback.`,
+    return resolveGoldenLaunch(
+      provider,
+      stores,
+      actor,
+      validateGoldenLaunch(request),
+      {
+        ...options,
+        boatRuntimeDefault: endpointRuntime,
+      },
+      timing,
     );
+  }
   const customEndpoint =
     (credentials.env[CLAUDE_ENDPOINT_ENV] && "Claude gateways") ||
     (credentials.env[CODEX_ENDPOINT_ENV] && "Codex endpoints");
@@ -435,7 +458,8 @@ async function resolveGoldenLaunch(
     if (configured) {
       const endpoint = parseOpenCodeEndpoint(JSON.parse(configured));
       // Shared accounts advertise provider model IDs; native OpenCode needs its connection namespace.
-      if (endpoint.models.includes(choice.model)) choice.model = `${OPENCODE_CONNECTION_PROVIDER}/${choice.model}`;
+      if (!credentials.morphModels && endpoint.models.includes(choice.model))
+        choice.model = `${OPENCODE_CONNECTION_PROVIDER}/${choice.model}`;
       const wanted = choice.model;
       if (!endpoint.models.some((id) => wanted === `${OPENCODE_CONNECTION_PROVIDER}/${id}`))
         throw new LaunchError(
@@ -505,9 +529,11 @@ export async function launchSandbox(
   initialRequest: LaunchRequest,
   initialOptions: LaunchOptions = {},
 ): Promise<LaunchResult> {
+  const validated = validateGoldenLaunch(initialRequest);
+  const timing = modalLaunchTiming(validated.acceptedAt);
   const launch = await prepareLaunchPlan(
-    () => validateGoldenLaunch(initialRequest),
-    (validated) => resolveGoldenLaunch(initialProvider, initialStores, actor, validated, initialOptions),
+    () => validated,
+    (validated) => resolveGoldenLaunch(initialProvider, initialStores, actor, validated, initialOptions, timing),
     (plan) => goldenLaunchPlacements[plan.golden.provider],
   );
   const plan = launch.resolved;
@@ -544,12 +570,14 @@ export async function launchSandbox(
       actor,
       id,
       forkEnv: () => strategy.forkEnv(plan),
+      beforeAllocation: () => timing.mark("preallocation_admission"),
       allocationRisk: (risk) => {
         noAllocation = !risk;
       },
     });
 
     const claimedAt = performance.now();
+    timing.mark("provider_allocation", claimedAt);
     const activityLeaseId = stores.sandboxes.activityOwnership ? crypto.randomUUID() : undefined;
     let record: SandboxRecord;
     try {
@@ -642,8 +670,10 @@ export async function launchSandbox(
       progress("initialization_bind");
       await stores.connections?.bind(record.id, connectionIds);
       progress("initialization_ready");
+      timing.mark("registration_and_binding");
       const ready = await waitReady(provider, forked.id, options);
       await mark("machine_started");
+      timing.mark("machine_readiness");
       const {
         github: launchGithub,
         prompt: dispatchPrompt,
@@ -655,7 +685,11 @@ export async function launchSandbox(
         providerSandboxId: ready.id,
         signal,
         progress,
-        mark,
+        runtimeStarted: () => timing.mark("runtime_startup"),
+        mark: async (stage) => {
+          await mark(stage);
+          if (stage === "checkout_done") timing.mark("workspace_preparation");
+        },
         reportGitHub: (launchGithub) => {
           try {
             console.error(
@@ -675,9 +709,11 @@ export async function launchSandbox(
           }
         },
       });
+      timing.mark("finish_initialization");
       progress("initialization_publish");
       // Every harness and path is ready for a prompt here; a launch prompt's dispatch is not launch time.
       await mark("harness_ready");
+      timing.mark("ready_stage_record");
       if (prompt === undefined) {
         signal.throwIfAborted();
         return {
@@ -743,26 +779,35 @@ export async function launchSandbox(
         ),
       };
     };
+    const reportTiming = (result: LaunchResult) => {
+      timing.report(record.id, strategy.kind);
+      return result;
+    };
     try {
       await options.onRegistered?.(record);
       if (activityLeaseId)
-        return await sandboxActivity(stores.sandboxes, record, {}, start, {
-          initialLeaseId: activityLeaseId,
-          // Preserve each sequential pull/init command's existing timeout, plus bounded
-          // physical readiness, native preparation, credential setup and prompt overhead.
-          deadlineMs:
-            15 * 60_000 +
-            (request.skills?.length ?? 0) * 300_000 +
-            1000 *
-              (golden.config.repos.reduce((sum, repo) => sum + pullCommand(repo).timeoutSeconds, 0) +
-                golden.config.init.reduce((sum, command) => sum + initCommand(command).timeoutSeconds, 0)),
-          failurePatch: (error) => ({ status: "failed", statusReason: withSandbox(error, record.id, secrets).message }),
-        });
+        return reportTiming(
+          await sandboxActivity(stores.sandboxes, record, {}, start, {
+            initialLeaseId: activityLeaseId,
+            // Preserve each sequential pull/init command's existing timeout, plus bounded
+            // physical readiness, native preparation, credential setup and prompt overhead.
+            deadlineMs:
+              15 * 60_000 +
+              (request.skills?.length ?? 0) * 300_000 +
+              1000 *
+                (golden.config.repos.reduce((sum, repo) => sum + pullCommand(repo).timeoutSeconds, 0) +
+                  golden.config.init.reduce((sum, command) => sum + initCommand(command).timeoutSeconds, 0)),
+            failurePatch: (error) => ({
+              status: "failed",
+              statusReason: withSandbox(error, record.id, secrets).message,
+            }),
+          }),
+        );
       // Caller-role legacy stores cannot mutate server coordination columns. Keep their
       // original RLS-only flow; the deployed server always uses the owned scoped store.
       const completed = await start(new AbortController().signal);
       await stores.sandboxes.update(record.id, completed.patch);
-      return completed.result;
+      return reportTiming(completed.result);
     } catch (error) {
       const failure = withSandbox(error, record.id, secrets);
       if (!activityLeaseId)

@@ -1,5 +1,6 @@
 type RuntimeFailureCode =
   | "runtime_command_conflict"
+  | "runtime_protocol_unsupported"
   | "runtime_native_auth_not_supported"
   | "invalid_runtime_events"
   | "runtime_progress_refused"

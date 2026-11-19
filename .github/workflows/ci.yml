@@ -30,20 +30,22 @@ jobs:
           fetch-depth: 1
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
-      - run: bun run lint
-        if: matrix.shard == 1
       - run: bun scripts/generate-ios-harness.ts --check
         if: matrix.shard == 1
       - run: bun run typecheck
         if: matrix.shard == 1
+      - name: Typecheck npm smoke against emitted SDK declarations
+        if: matrix.shard == 1
+        run: bun scripts/ci/sdk-declarations.ts
       - name: Check complete unit shard coverage
         if: matrix.shard == 1
         run: bun scripts/ci/unit-shards.ts --check
 
-      - name: Check migration versions against the current base
+      - name: Check migrations and shrink-only allowlists against the base
         if: matrix.shard == 1
         env:
           BASE_BRANCH: ${{ github.base_ref || 'main' }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
           BEFORE: ${{ github.event.before }}
           EVENT_NAME: ${{ github.event_name }}
@@ -52,6 +54,10 @@ jobs:
             # Fetch now, not the potentially stale base SHA in the PR event.
             git fetch --no-tags --depth=1 origin "refs/heads/$BASE_BRANCH"
             base=$(git rev-parse FETCH_HEAD)
+            # Shrink-only allowlists use the base of this frozen PR checkout.
+            if ! git cat-file -e "$PR_BASE_SHA^{commit}"; then
+              git fetch --no-tags --depth=1 origin "$PR_BASE_SHA"
+            fi
           elif [ "$EVENT_NAME" = "merge_group" ]; then
             # Compare the entire queue candidate with its exact target-branch base.
             git fetch --no-tags --depth=1 origin "$MERGE_GROUP_BASE_SHA"
@@ -65,6 +71,16 @@ jobs:
             base=$(git rev-parse HEAD^)
           fi
           bun scripts/db/check-migrations.ts "$base"
+          bun scripts/ci/docs-guard.ts "${PR_BASE_SHA:-$base}"
+          bun scripts/ci/process-tests.ts --check "${PR_BASE_SHA:-$base}"
+          bun scripts/ci/landmines.ts "${PR_BASE_SHA:-$base}"
+          echo "TABLE_OWNERS_BASE=${PR_BASE_SHA:-$base}" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        if: matrix.shard == 1
+        with:
+          node-version: ">=22.18.0 <23"
+      - run: bun run lint
+        if: matrix.shard == 1
       - name: Test migration guard
         if: matrix.shard == 1
         run: bun test scripts/db/check-migrations.test.ts

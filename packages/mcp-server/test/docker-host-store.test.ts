@@ -1088,7 +1088,7 @@ test("retention belongs to the adding member and reports physical cleanup deadli
   const deadline = "2026-11-20T12:00:00.000Z";
   expect(
     await store.retentionForHost(a.hostToken, a.installationId, { retentionSeconds: 86400, nextCleanupAt: deadline }),
-  ).toBe(0);
+  ).toEqual({ hostId: a.hostId, retentionSeconds: 0 });
   let host = (await store.list(a.actor)).find((h) => h.id === a.hostId)!;
   expect(host.retentionSeconds).toBe(86400);
   expect(host.nextCleanupAt).toBeNull();
@@ -1136,7 +1136,7 @@ test("retired registrants retain only bound reconciliation and admin cleanup", a
     // The HTTP poll composes these policy endpoints around mailbox delivery.
     await expect(
       store.retentionForHost(a.hostToken, a.installationId, { retentionSeconds: 86400, nextCleanupAt: null }),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({ hostId: a.hostId, retentionSeconds: undefined });
     await expect(store.limitsForHost(a.hostToken, a.installationId)).resolves.toBeUndefined();
     await denied(store.expired(a.hostToken, randomUUID(), { requestId: a.startup.requestId }));
     await store.expired(a.hostToken, a.installationId, { requestId: a.startup.requestId });
@@ -1560,7 +1560,7 @@ test("docker launch stages come from host pickup and create ACK, not from ticket
   const stages = async () =>
     (
       await database().query<{ activation: string; stage: string }>(
-        "select activation::text,stage from public.sandbox_launch_stages where sandbox_id=$1 order by at,stage",
+        "select activation::text,stage from public.sandbox_launch_stages where sandbox_id=$1 order by stage",
         [a.sandboxId],
       )
     ).rows.map((row) => `${row.activation}:${row.stage}`);
@@ -1570,7 +1570,7 @@ test("docker launch stages come from host pickup and create ACK, not from ticket
   expect((await store.poll(a.hostToken, a.installationId))?.operation).toBe("create");
   expect(await stages()).toEqual(["1:accepted", "1:provider_claimed"]);
   await store.complete(a.hostToken, a.installationId, { requestId: a.create.requestId, outcome: "completed" });
-  expect(await stages()).toEqual(["1:accepted", "1:provider_claimed", "1:machine_started"]);
+  expect(await stages()).toEqual(["1:accepted", "1:machine_started", "1:provider_claimed"]);
   // A later activation (resume) whose ticket is issued before the host restores the machine.
   await database().query("update public.sandboxes set status='stopped',stopped_at=now() where id=$1", [a.sandboxId]);
   await database().query("update public.sandboxes set status='starting',stopped_at=null where id=$1", [a.sandboxId]);
@@ -1585,7 +1585,7 @@ test("docker launch stages come from host pickup and create ACK, not from ticket
   expect((await stages()).filter((stage) => stage.startsWith("2:"))).toEqual(["2:accepted"]);
   expect((await stages()).filter((stage) => stage.startsWith("1:"))).toEqual([
     "1:accepted",
-    "1:provider_claimed",
     "1:machine_started",
+    "1:provider_claimed",
   ]);
 });

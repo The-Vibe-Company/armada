@@ -25,17 +25,32 @@ access needs an authorized admin, not a retry loop.
 
 Read [setup and configuration](references/setup.md) when connecting GitHub,
 selecting model accounts, creating goldens/templates, or configuring variables.
+Manage snapshots, templates, default skill pins, variables and application secrets through
+the dashboard or the authenticated REST API. MCP `template_launch` launches an existing template.
+
+For MCP coordinator launches, call `launch` with optional `size`, a stable
+`idempotencyKey` and an `externalRef`. After an uncertain response, repeat the
+same call with the same key, then use `list` with the reference to find any
+registered sandbox. Escalate unresolved allocations with the original key and
+any receipt UUID returned.
 
 ## 2. Choose before launching
 
 - Inspect `armada snapshot list --json` and `armada template list --json`.
+  To refresh a shared snapshot, update its build configuration with the owner authorization.
   A golden is a provider-specific saved environment; a template is an immutable
   revision specifying a golden, harness and configuration. Use IDs if names clash.
+  Use `armada snapshot capabilities --json` for provider capacity and the
+  authenticated REST adoption endpoint for canonical Boat golden adoption.
 - Choose Boat or Modal explicitly when ambiguous. A golden built on one provider
   is not automatically available on the other. Check
   `armada snapshot capabilities --provider boat --json` (or substitute modal).
 - Choose the harness and a model/effort it supports. Launch selections persist
   for later turns. Do not assume provider sizes have equal price or performance.
+- If a runtime launch returns `credential_binding_required`, add the model account
+  in Models → Add account or run `armada creds set KIND --name NAME --file PATH`.
+  Use `armada creds list` to find the account ID, then retry the launch with
+  `--credential-id ACCOUNT`.
 - Bound TTL, size and concurrency to the task. Start small unless evidence calls
   for more. `armada advice SANDBOX --json` provides bounded historical resource
   evidence; unknown evidence is not a recommendation to upscale.
@@ -118,7 +133,8 @@ armada logs SANDBOX --tail 50 --json
 armada status SANDBOX --json
 ```
 
-Send starts a new turn; steer redirects an active turn:
+Send starts a new turn in the sandbox's conversation. Launch another sandbox
+for a separate conversation. Steer redirects an active turn:
 `armada steer SANDBOX "Keep the public API unchanged"`. Use
 `armada interrupt SANDBOX` to request interruption, then inspect status before
 sending replacement work. Do not treat steer as a guaranteed new turn or send
@@ -143,7 +159,12 @@ before `armada stop SANDBOX`. Stop is not delete, but provider retention is not
 a substitute for a pushed branch. Modal retains disk only after a successful
 checkpoint; checkpoint_failed_disk_not_retained means it cannot resume. `armada rm SANDBOX --yes` permanently deletes
 a stopped sandbox and recovery archives: require explicit user authorization
-and confirmed recovery first.
+and confirmed recovery first. For direct API callers, use
+`DELETE /api/v1/sandboxes/:id` or `POST /api/v1/sandbox/delete`.
+
+For resource advice and preserved archives, use `armada advice SANDBOX --json`
+and `armada recovery SANDBOX`. Explicit runtime checkpoint and resume use the
+owner REST routes `sandbox/checkpoint-runtime-v1` and `sandbox/resume-runtime-v1`.
 
 Read [failure and recovery](references/recovery.md) before recovering stopped
 machines or unpushed work. One authorized armada send to a retained stopped

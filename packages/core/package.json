@@ -1,16 +1,22 @@
 {
   "name": "@armada/core",
-  "version": "2.57.1",
+  "version": "3.0.0",
   "private": true,
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./accounts": "./src/account-binding-policy.ts",
+    "./contract": "./src/contract/index.ts",
+    "./docker": "./src/docker-api.ts",
+    "./launch": "./src/launch.ts",
+    "./runtime": "./src/runtime-startup-failure.ts",
     "./server": "./src/server.ts"
   },
   "dependencies": {
     "croner": "11.0.0",
     "cronstrue": "3.39.0",
-    "tar-stream": "3.1.7"
+    "tar-stream": "3.1.7",
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@types/tar-stream": "^3.1.5"

@@ -9,18 +9,26 @@ test("balanced shards include new files exactly once without depending on discov
     ...Array.from({ length: SHARD_COUNT }, (_, i) => `new-${i}.test.ts`),
   ];
   const weights = { "slow.test.ts": 10, "medium.test.ts": 8, "small.test.ts": 6 };
-  const plan = planShards(files, weights);
-  expect(plan).toEqual(planShards([...files].reverse(), weights));
+  const plan = planShards(files, weights, {});
+  expect(plan).toEqual(planShards([...files].reverse(), weights, {}));
   expect(plan.flat().sort()).toEqual([...files].sort());
   expect(plan.find((shard) => shard.includes("slow.test.ts"))).toEqual(["slow.test.ts"]);
   const sql = Array.from({ length: 12 }, (_, i) => `packages/mcp-server/test/atomic-${i}.test.ts`);
   const sources = Object.fromEntries(sql.map((file) => [file, "await migratedDatabase()"]));
   const observations = Array.from({ length: 6 }, (_, i) => ({ files: sql.slice(i * 2, i * 2 + 2), seconds: 10 }));
-  const atomic = planShards(sql, {}, sources, observations);
-  expect(atomic).toEqual(planShards([...sql].reverse(), {}, sources, observations));
+  const atomic = planShards(sql, {}, {}, sources, observations);
+  expect(atomic).toEqual(planShards([...sql].reverse(), {}, {}, sources, observations));
   expect(observations.every(({ files }) => atomic.some((shard) => files.every((file) => shard.includes(file))))).toBe(
     true,
   );
+});
+
+test("the planner budgets serial checks against two parallel test workers", () => {
+  const files = Array.from({ length: 26 }, (_, i) => `file-${i}`);
+  const reserve: Record<number, number> = { 4: 2 };
+  const plan = planShards(files, {}, reserve);
+  const wallTimes = plan.map((shard, index) => Math.ceil(shard.length / 2) + (reserve[index + 1] ?? 0));
+  expect(Math.max(...wallTimes)).toBe(3);
 });
 
 test("coverage guard refuses missing, duplicate, foreign and empty shard assignments", () => {

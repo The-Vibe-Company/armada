@@ -1,6 +1,6 @@
 import type { RuntimeOperatorDiagnostic } from "../../core/src/runtime-operator-diagnostic.ts";
 import type { RuntimeHarnessFailureStage, RuntimeStartupFailure } from "../../core/src/runtime-startup-failure.ts";
-import type { IngestClient, RunnerRequest } from "./protocol.ts";
+import { type IngestClient, PROTOCOL_VERSION, type RunnerRequest } from "./protocol.ts";
 
 const MAX_FRAME = 1048576;
 export class RuntimeChannelRevoked extends Error {
@@ -88,8 +88,12 @@ export async function enrolRuntime(
     redirect: "error",
     credentials: "omit",
     signal: AbortSignal.timeout(15000),
-    headers: { authorization: `Bearer ${input.enrolmentToken}` },
+    headers: {
+      authorization: `Bearer ${input.enrolmentToken}`,
+      "x-armada-runtime-protocol": String(PROTOCOL_VERSION),
+    },
   });
+  if (response.status === 409) throw Error("runtime_protocol_unsupported");
   if (response.status !== 200) throw Error("runtime_enrolment_failed");
   const body = await json(response, MAX_FRAME * 2);
   if (!validSession(body) || !object(body) || !object(body.configuration)) throw Error("invalid_runtime_enrolment");

@@ -12,6 +12,7 @@ type GoldenAdmission = {
   actor: GoldenActor;
   id: string;
   forkEnv(): HarnessCredentials["env"];
+  beforeAllocation(): void;
   allocationRisk(risk: boolean): void;
 };
 
@@ -44,8 +45,15 @@ function allocationTtlFor(
 export const goldenLaunchPlacements: Readonly<Record<SandboxProviderId, GoldenLaunchPlacement>> = {
   boat: {
     admit: admitGoldenLaunch,
-    runtimeDefault: (options, harness) =>
-      options.boatRuntimeDefault ?? (harness === "opencode" ? options.boatEndpointRuntime : undefined),
+    runtimeDefault: (options, harness) => {
+      const runtime = options.boatRuntimeDefault ?? (harness === "opencode" ? options.boatEndpointRuntime : undefined);
+      if (runtime && options.templateHasSecretBindings)
+        throw new LaunchError(
+          "invalid_request",
+          "Boat runtime default cannot launch template application-secret bindings; no native fallback. Set ARMADA_BOAT_AGENT_PATH=native for rollback.",
+        );
+      return runtime;
+    },
     endpointRuntime: (options) => options.boatEndpointRuntime,
     allocationTtlSeconds: (ttlSeconds, extensionHeadroom, privateParent) =>
       allocationTtlFor("boat", ttlSeconds, extensionHeadroom, privateParent),
@@ -58,7 +66,10 @@ export const goldenLaunchPlacements: Readonly<Record<SandboxProviderId, GoldenLa
   },
 };
 
-async function admitGoldenLaunch(plan: LaunchPlan, { actor, id, forkEnv, allocationRisk }: GoldenAdmission) {
+async function admitGoldenLaunch(
+  plan: LaunchPlan,
+  { actor, id, forkEnv, beforeAllocation, allocationRisk }: GoldenAdmission,
+) {
   const {
     provider,
     stores,
@@ -76,10 +87,12 @@ async function admitGoldenLaunch(plan: LaunchPlan, { actor, id, forkEnv, allocat
     () => stores.credentials.admit?.(actor, credentials, id, choice.model),
     () => options.beforeFork?.(id),
   );
+  beforeAllocation();
   allocationRisk(true);
   return provider
     .fork({
       from: snapshot,
+      ...(golden.provider === "modal" ? { idempotencyKey: id } : {}),
       ...(machineSize.effective ? { size: machineSize.effective } : {}),
       noEnv: true,
       env: forkEnv(),

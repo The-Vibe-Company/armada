@@ -8,16 +8,9 @@ values should not be added/subtracted as though they were a single sample.
 
 ## Local measurement before changing architecture
 
-Repeatable, offline, no SQL/provider/auth calls:
-
-```sh
-bun scripts/perf/dispatch.ts 30
-```
-
-The script runs the real server registration, in-memory MCP client/server
-negotiation, validated empty-org golden_list call and cleanup. Three warmups,
-30 samples, nearest-rank p50/p95. The database/provider ports throw if touched.
-Copy the script to baseline to compare the identical method.
+The historical offline benchmark measured server registration, in-memory MCP negotiation,
+an empty-org golden list call and cleanup. It used three warmups and 30 samples with
+nearest-rank p50 and p95. Its database and provider ports threw on access.
 
 Sequential Ubuntu x64 / Bun1.4.2 runs on this sandbox, baseline ea517c3b:
 

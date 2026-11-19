@@ -25,8 +25,7 @@ Launch through `POST /api/v1/sandbox/launch` with
 `runtimeVersion:1`, `boatRuntime:true`, `provider:"boat"`, `harness:"codex"`,
 authorized org/golden/account; the initial prompt is optional. Skip skill defaults; remote
 HTTP/SSE MCP uses the standard `connections` selection or registry
-`defaultForLaunch` defaults as described below. There is no CLI launch flag. On older servers, use
-`sandbox/launch-runtime-v1`. See the [launch route compatibility window](launch-idempotency.md#launch-route-compatibility).
+`defaultForLaunch` defaults as described below. See [explicit runtime launch](launch-idempotency.md#explicit-runtime-launch).
 
 The immutable `sandboxes.boat_runtime` decision is recorded at insert. Persisted
 owner, model/account version, cwd and provider identity govern later routing;
@@ -70,7 +69,7 @@ command receipt means admission, not a completed assistant answer.
 
 ## Checkpoint, stop and explicit resume
 
-Owner API `POST /api/v1/sandbox/checkpoint-runtime-v1` / MCP `runtime_checkpoint`:
+Owner API `POST /api/v1/sandbox/checkpoint-runtime-v1`:
 
 ```json
 {"id":"SANDBOX_UUID","request_id":"OPERATION_UUID","runtimeVersion":1}
@@ -93,7 +92,7 @@ disk. Follow with ordinary `sandbox/stop` and confirm physical stop separately.
 Raw stop still cleans compute but does not claim a checkpoint. Reuse requires a
 same-current-epoch receipt whose final prefix still matches after stop fencing.
 
-Owner API `POST /api/v1/sandbox/resume-runtime-v1` / MCP `runtime_resume`:
+Owner API `POST /api/v1/sandbox/resume-runtime-v1`:
 
 ```json
 {"id":"SANDBOX_UUID","request_id":"OPERATION_UUID","runtimeVersion":1,"conversation_id":"EXISTING_UUID","prompt":"Continue the previous conversation."}

@@ -46,7 +46,6 @@ interface Reply {
   goldens?: { id: string; name: string; provider: string; orgId: string }[];
   modalRuntime?: {
     defaultPath?: "native" | "runtime";
-    version?: number;
     enabled?: boolean;
     followupVersion?: number;
     idleLaunchVersion?: number;
@@ -108,11 +107,7 @@ async function api<T = Reply>(path: string, body: object): Promise<T> {
   }
 }
 const options = await api("launch/options", {});
-if (
-  options.modalRuntime?.version !== 1 ||
-  options.modalRuntime.enabled !== true ||
-  options.modalRuntime.followupVersion !== 1
-)
+if (options.modalRuntime?.enabled !== true || options.modalRuntime.followupVersion !== 1)
   throw Error("Modal dial-out v1 with same-conversation follow-up is unavailable; no launch attempted.");
 const ordinaryMode = process.argv.includes("--ordinary");
 if (ordinaryMode && options.modalRuntime.defaultPath !== "runtime")

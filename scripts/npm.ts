@@ -151,7 +151,7 @@ export async function stageSdk(options: { out: string; version?: string }): Prom
 }
 
 /** Emits the SDK declarations, replacing each imported core type by the literal union it names. */
-async function sdkDeclarations(entry: string): Promise<string> {
+export async function sdkDeclarations(entry: string): Promise<string> {
   const ts = (await import("typescript")).default;
   const program = ts.createProgram([entry], {
     target: ts.ScriptTarget.ES2022,

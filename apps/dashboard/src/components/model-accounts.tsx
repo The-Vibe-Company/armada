@@ -6,8 +6,9 @@ import {
   type ConnectionPreset,
   type ConnectionPresetId,
   connectionPreset,
-  HARNESS_CATALOG,
   type Harness,
+  MODEL_CATALOG,
+  MORPH_MODEL_IDS,
   shellQuote,
 } from "@armada/core";
 import {
@@ -642,7 +643,12 @@ export function AccountRow({
                     </DropdownMenuItem>
                     {!state.needsAction && (
                       <DropdownMenuItem onSelect={() => setDialog("replace")}>
-                        <KeyRoundIcon /> {info.billing === "subscription" ? "Reconnect" : `Replace ${secretWord}`}
+                        <KeyRoundIcon />{" "}
+                        {info.billing === "subscription"
+                          ? "Reconnect"
+                          : account.kind === "morph"
+                            ? "Replace key or edit model list"
+                            : `Replace ${secretWord}`}
                       </DropdownMenuItem>
                     )}
                     <DropdownMenuSeparator />
@@ -927,7 +933,7 @@ function LimitsDialog({
             </p>
           </div>
           {Object.entries(account.modelCounts ?? {}).map(([model, counts]) => (
-            <p key={model} className="text-xs text-muted-foreground">
+            <p key={model} className="text-xs wrap-anywhere text-muted-foreground">
               {model}: {counts.runningAgents} working / {counts.waitingAgents} waiting /{" "}
               {account.modelLimits?.[model] ?? "unlimited"} max
             </p>
@@ -1083,7 +1089,7 @@ function ReplaceDialog({
             </div>
           </DialogDescription>
         </DialogHeader>
-        <form ref={formRef} key={generation} action={formAction} className="space-y-4">
+        <form ref={formRef} key={`${generation}:${account.version}`} action={formAction} className="space-y-4">
           <TargetFields account={account} orgId={orgId} />
           <input type="hidden" name="kind" value={account.kind} />
           <input type="hidden" name="name" value={account.name} />
@@ -1096,8 +1102,18 @@ function ReplaceDialog({
           ) : (
             <SecretField idPrefix={id} kind={account.kind} />
           )}
+          {account.kind === "morph" &&
+            (account.models?.length ? (
+              <MorphModelField idPrefix={id} models={account.models.map(({ model }) => model)} />
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                The model list could not be loaded. Reload Models to edit it. Saving here replaces only the key.
+              </p>
+            ))}
           {state && !state.ok && <ResultLine result={state} />}
-          <SubmitButton>Save {info.valueLabel}</SubmitButton>
+          <SubmitButton>
+            {account.kind === "morph" && account.models?.length ? "Save account" : `Save ${info.valueLabel}`}
+          </SubmitButton>
         </form>
       </DialogContent>
     </Dialog>
@@ -1149,6 +1165,28 @@ function RemoveDialog({
 }
 
 /** The pasted value: a password field for a token or key, a text area for a Codex auth.json. Never prefilled. */
+function MorphModelField({ idPrefix, models }: { idPrefix: string; models: readonly string[] }) {
+  const id = `${idPrefix}-morph-models`;
+  return (
+    <div className="space-y-2">
+      <Label htmlFor={id}>Morph model IDs</Label>
+      <Textarea
+        id={id}
+        name="morphModels"
+        defaultValue={models.join("\n")}
+        aria-describedby={`${id}-hint`}
+        rows={4}
+        spellCheck={false}
+        autoComplete="off"
+        required
+      />
+      <p id={`${id}-hint`} className="text-xs text-muted-foreground">
+        Enter 1–32 model IDs, one per line. The first is used when no model is selected.
+      </p>
+    </div>
+  );
+}
+
 function SecretField({ idPrefix, kind }: { idPrefix: string; kind: AccountKind }) {
   const info = KIND_INFO[kind];
   return (
@@ -1622,6 +1660,7 @@ export function AddAccountDialog({
   const saveFields = (
     <>
       {secretFields}
+      {kind === "morph" && <MorphModelField idPrefix={id} models={MORPH_MODEL_IDS} />}
       <Label htmlFor={`${id}-default-account`} className="flex items-center gap-2 text-sm font-normal">
         <Checkbox id={`${id}-default-account`} name="default" value="on" />
         Make it the default for {info.harnessLabel}
@@ -1701,7 +1740,7 @@ export function AddAccountDialog({
                         : value === "codex_auth"
                           ? "The contents of ~/.codex/auth.json"
                           : value === "morph"
-                            ? "Morph models for Claude Code, Codex and OpenCode"
+                            ? connectionPreset(value)?.hint
                             : "Billed per token"}
                     </span>
                   </span>
@@ -2048,6 +2087,9 @@ function PersonalDefaultSentence({
   const [error, setError] = useState<string | null>(null);
   const resolved = modelsPageDefault(accounts, harness, now, [current]);
   const account = resolved.state === "resolved" || resolved.state === "unusable" ? resolved.account : null;
+  const model = account ? (current.model ?? modelsPageModel(account, harness)) : undefined;
+  const catalogModel = MODEL_CATALOG[harness].models.find((entry) => entry.id === model);
+  const modelLabel = catalogModel?.label ?? model;
   const id = useId();
   const save = async (next: AgentDefault, restoring = false) => {
     setPending(true);
@@ -2084,24 +2126,15 @@ function PersonalDefaultSentence({
             <>
               <button
                 type="button"
-                className={cn(
-                  word,
-                  !HARNESS_CATALOG[harness].models.some(
-                    (model) => model.id === (current.model ?? modelsPageModel(account, harness)),
-                  ) && "font-mono",
-                  "text-[13px]",
-                )}
+                className={cn(word, !catalogModel && "font-mono", "wrap-anywhere text-[13px]")}
                 onClick={(event) => {
                   opener.current = event.currentTarget;
                   setOpen(true);
                 }}
                 aria-label={`Change default model for ${HARNESS_LABELS[harness]}`}
+                aria-description={modelLabel}
               >
-                {HARNESS_CATALOG[harness].models.find(
-                  (model) => model.id === (current.model ?? modelsPageModel(account, harness)),
-                )?.label ??
-                  current.model ??
-                  modelsPageModel(account, harness)}
+                {modelLabel}
               </button>{" "}
             </>
           ) : resolved.state === "missing" ? (

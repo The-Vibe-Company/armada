@@ -21,14 +21,11 @@ import {
   type TemplateRuntime,
   VaultError,
 } from "@armada/core/server";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { AUTH_HEADER, CodexDriver, Journal, Runner } from "../../agent-runtime/src/index.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { createMcpLifecycle } from "../src/mcp-lifecycle.ts";
 import { callSharedTool } from "../src/tool-api.ts";
-import { createArmadaServer } from "../src/tools.ts";
 import { publishedResponse } from "./published-response.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY, fakeBoat } from "./support.ts";
@@ -466,7 +463,7 @@ test("changed variable, removed membership and invalid authority overrides fail 
   }
 });
 
-test("HTTP and MCP share strict template operations; secure routes require authentication and no query parameters", async () => {
+test("Template REST validates authoring requests and MCP can still launch an existing template", async () => {
   const f = await fixture();
   try {
     const options: ControlOptions = {
@@ -595,18 +592,6 @@ test("HTTP and MCP share strict template operations; secure routes require authe
       now: () => new Date(),
       sleep: async () => {},
     };
-    const got = (await callSharedTool(context, "template_get", { org: f.people.org, id: saved.item.id })) as {
-      item: LaunchTemplate;
-    };
-    expect(got.item.id).toBe(saved.item.id);
-    await expect(
-      callSharedTool(context, "template_publish", {
-        org: f.people.org,
-        id: saved.item.id,
-        expectedRevision: 1,
-        definition: { ...f.definition, env: { X: "no" } },
-      }),
-    ).rejects.toThrow();
     const launched = (await callSharedTool(context, "template_launch", {
       org: f.people.org,
       id: saved.item.id,
@@ -1158,51 +1143,6 @@ test("secret references authorize delivery without persisting values and revoke 
     ).rows[0]!.id;
     const binding = { key: "APP_TOKEN", secretId, version: 1 };
     const def = { ...f.definition, variables: [], secrets: [binding] };
-    // Exercise the actual remote MCP schema, not only the shared tool dispatcher.
-    const server = createArmadaServer(
-      {
-        templates: f.service,
-        caller: f.actor(),
-        data: createSqlData(f.sql)(f.actor()),
-        launchCredentials: f.runtime.stores.credentials,
-        exposedSecrets: async () => [],
-        provider: async () => f.provider,
-        now: () => new Date(),
-        sleep: async () => {},
-      },
-      "test",
-    );
-    const client = new Client({ name: "template-secret-test", version: "1" });
-    const [a, b] = InMemoryTransport.createLinkedPair();
-    await server.connect(a);
-    await client.connect(b);
-    try {
-      const created = await client.callTool({
-        name: "template_create",
-        arguments: {
-          org: f.people.org,
-          name: "mcp-secret-template",
-          scope: "personal",
-          definition: def,
-        },
-      });
-      expect(created.isError).not.toBe(true);
-      const saved = JSON.parse((created.content as { text: string }[])[0]!.text);
-      expect(saved.revision.definition.secrets).toEqual([binding]);
-      const published = await client.callTool({
-        name: "template_publish",
-        arguments: {
-          org: f.people.org,
-          id: saved.item.id,
-          expectedRevision: 1,
-          definition: def,
-        },
-      });
-      expect(published.isError).not.toBe(true);
-    } finally {
-      await client.close();
-      await server.close();
-    }
     const created = await f.create(f.people.owner, "personal", def);
     const templateId = (created.item as LaunchTemplate).id;
     const read = await f.service.command(f.actor(), "get", { org: f.people.org, id: templateId });

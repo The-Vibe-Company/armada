@@ -4,8 +4,58 @@
 and assigns every file exactly once to six nonempty shards. Stage new files
 before checking locally. Run a shard with `bun scripts/ci/unit-shards.ts 1`
 (through `6`). Shard 1 also runs static checks, sharing checkout/Bun/dependencies;
-the planner reserves 24 seconds for their measured work and extra full-history setup before placing tests.
+the planner starts each shard with its measured static reserve from
+`test-durations.json` before placing tests. An omitted shard has zero reserve.
 The required aggregate remains exactly `Lint, typecheck and test`.
+
+## Refresh timing data
+
+Refresh `test-durations.json` manually from green CI runs. Update `files` and
+`workers` from the worker completion logs described below. Update `static` from
+Actions step timestamps with the following command. Static steps belong between
+dependency installation and runtime preparation in the unit matrix.
+
+```sh
+python3 - <<'PYTHON'
+from datetime import datetime
+from json import dumps, loads
+from statistics import median
+from subprocess import check_output
+
+def api(path):
+    return loads(check_output(["gh", "api", path]))
+
+repo = "repos/The-Vibe-Company/armada/actions"
+runs = api(f"{repo}/workflows/ci.yml/runs?event=merge_group&status=success&per_page=6")["workflow_runs"]
+assert len(runs) == 6, "Expected six green queue runs"
+samples = {}
+for run in runs:
+    jobs = api(f"{repo}/runs/{run['id']}/attempts/{run['run_attempt']}/jobs?per_page=100")["jobs"]
+    for job in jobs:
+        if not job["name"].startswith("Unit tests ("):
+            continue
+        shard = int(job["name"].split("(")[1].split("/")[0])
+        steps = job["steps"]
+        names = [step["name"] for step in steps]
+        first = names.index("Run bun install --frozen-lockfile") + 1
+        last = names.index("Run bun scripts/prepare-runtime.ts")
+        assert first <= last, "Expected static steps before runtime preparation"
+        seconds = sum(
+            (datetime.fromisoformat(step["completed_at"].replace("Z", "+00:00"))
+             - datetime.fromisoformat(step["started_at"].replace("Z", "+00:00"))).total_seconds()
+            for step in steps[first:last] if step["conclusion"] == "success"
+        )
+        print(run["id"], shard, seconds)
+        samples.setdefault(shard, []).append(seconds)
+
+assert all(len(samples[shard]) == 6 for shard in range(1, 7))
+print("static =", dumps({shard: median(values) for shard, values in sorted(samples.items()) if any(values)}))
+PYTHON
+```
+
+A PR that adds a static step to a shard measures it on its own CI run and raises
+that shard's reserve in the same PR. Use the same jobs endpoint with the PR's
+green run ID and attempt and measure the added step from its timestamps.
 
 ## Worker isolation
 
@@ -58,3 +108,33 @@ Before measurements and source: completed merge-queue run 43482535658. Jobs
 waited 11–71 seconds; eight unit job runtimes ranged 60–90 seconds. Actual
 post-change queue wait and runtime must be measured on the PR/after merge; local
 worker timings or old isolated-file sums are not an observed six-shard result.
+
+## Documentation assets
+
+`bun run lint` checks `docs/` for images, video, other non-text files and
+files over 200,000 bytes. The generated `docs-guard-allowlist.json` records
+the exact paths and SHA-256 hashes of existing violations while #2713 is in
+progress. Delete the corresponding entry when a file is removed or made
+compliant. CI compares the inventory with the base commit of the checked-out candidate
+and rejects additions or hash changes.
+
+## Table ownership
+
+`bun run lint` checks literal SQL insert/update/delete statements and Supabase
+mutation chains in non-test TypeScript against the owner globs in
+[`tables.ts`](tables.ts). New writes to those tables belong in the owning module.
+Each allowlist line covers one existing write by file, table and verb. Delete the
+matching line when a write moves into its owning module or is removed. Shard 1
+checks that exception counts do not increase against the same frozen base used by the docs guard.
+Local lint uses the merge base with `origin/main` when available.
+Dynamic SQL identifiers, indirect client calls, raw HTTP requests and SQL files
+are outside the scanner's scope.
+
+## Landmines
+
+`bun run lint` runs Landmines through Oxlint with Node 22.18 or newer.
+For existing violations, lower the count in `landmines-baseline.json` or
+the native allowance in the root `.oxlintrc.json`. At zero, remove the entry
+and any matching override path. CI compares both sets of counts with the
+candidate's base and rejects additions and increases. The lint step logs
+Landmines wall time on shard 1.

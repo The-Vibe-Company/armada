@@ -62,7 +62,7 @@ const other: GoldenActor = { userId: OTHER, orgId: ORG, role: "member" };
 describe("launch", () => {
   for (const provider of ["boat", "modal"] as const)
     test.each([true, false])(
-      `${provider} ordinary runtime default prepares workspace before publication/inference (prompt=%s)`,
+      `${provider} runtime default prepares workspace before publication/inference (prompt=%s)`,
       async (prompted) => {
         const source = golden("org");
         const world = setup({
@@ -111,6 +111,7 @@ describe("launch", () => {
           owner,
           { golden: "web", harness: "codex", ...(prompted ? { prompt: "ordinary request" } : {}) },
           {
+            templateHasSecretBindings: provider === "modal",
             beforeStart: async () => {
               order.push("admit");
             },
@@ -199,7 +200,38 @@ describe("launch", () => {
         expect(world.forks[0]?.env).toEqual({});
       },
     );
-  test.each(["startup", "account", "secret", "provider"] as const)(
+  test("Boat default refuses template secret bindings before runtime selection or allocation", async () => {
+    const world = setup({ golden: golden("org") });
+    await expect(
+      launchSandbox(
+        world.provider,
+        world.stores,
+        owner,
+        { golden: "web", harness: "codex" },
+        {
+          templateHasSecretBindings: true,
+          boatRuntimeDefault: {
+            provider: async () => {
+              throw Error("Runtime provider resolved before secret admission");
+            },
+            credentials: world.stores.credentials,
+            connections: { async validate() {}, async bind() {} },
+            policy: {
+              async start() {
+                throw Error("Runtime started before secret admission");
+              },
+            },
+          },
+        },
+      ),
+    ).rejects.toMatchObject({
+      code: "invalid_request",
+      message: expect.stringContaining("template application-secret bindings"),
+    });
+    expect(world.forks).toEqual([]);
+  });
+
+  test.each(["startup", "account", "provider"] as const)(
     "Modal default refuses %s without native fallback",
     async (failure) => {
       const world = setup({
@@ -238,7 +270,6 @@ describe("launch", () => {
           owner,
           { golden: "web", harness: "codex", prompt: "answer" },
           {
-            nativeSecretBindings: failure === "secret",
             modalRuntimeDefault: {
               provider: async () => (failure === "provider" ? { ...compute, id: "boat" } : compute),
               credentials: {
@@ -259,19 +290,48 @@ describe("launch", () => {
             },
           },
         ),
-      ).rejects.toMatchObject({ code: failure === "startup" ? "start_failed" : "invalid_request" });
+      ).rejects.toMatchObject(
+        failure === "account"
+          ? { code: "credential_binding_required", message: expect.stringContaining("--credential-id") }
+          : { code: failure === "startup" ? "start_failed" : "invalid_request" },
+      );
       expect(nativeForks).toBe(0);
       expect(world.prompts).toEqual([]);
       expect(world.execs).toEqual([]);
       expect(world.forks).toHaveLength(failure === "startup" ? 1 : 0);
     },
   );
+  test("explicit runtime refuses an unbound account before allocation", async () => {
+    const world = setup({ golden: golden("org") });
+    await expect(
+      launchSandbox(
+        world.provider,
+        world.stores,
+        owner,
+        { golden: "web", harness: "codex" },
+        {
+          boatRuntime: {
+            async start() {
+              throw Error("Runtime started before account admission");
+            },
+          },
+        },
+      ),
+    ).rejects.toMatchObject({
+      code: "credential_binding_required",
+      message: expect.stringContaining("Models → Add account"),
+    });
+    expect(world.order).toEqual(["credentials"]);
+    expect(world.rows.size).toBe(0);
+  });
+
   test.each(["key", "auth", "opencode"] as const)(
     "experimental %s launch hands off after persisted selection, never native setup/prompt",
     async (kind) => {
       const world = setup({
         golden: golden("org"),
         github: { status: "connected", token: GITHUB_TOKEN, identity: IDENTITY },
+        boundCredentials: true,
         ...(kind === "auth" ? { credentials: authCredentials() } : {}),
       });
       world.stores.credentials.hydrateNative = async () => {
@@ -292,6 +352,7 @@ describe("launch", () => {
           env: { OPENCODE_API_KEY: "opencode_key" },
           secrets: ["opencode_key"],
           codexAuthJson: false,
+          binding: { credentialId: OWNER, credentialVersion: 1 },
         });
         await expect(
           launchSandbox(world.provider, world.stores, owner, {
@@ -414,7 +475,7 @@ describe("launch", () => {
   test.each(["mcp", "mcp-prepare", "skills", "parent", "selection", "startup", "invalid-epoch", "prompt"] as const)(
     "experimental launch refuses %s without a native fallback",
     async (failure) => {
-      const world = setup({ golden: golden("org") });
+      const world = setup({ golden: golden("org"), boundCredentials: true });
       world.stores.sandboxes.recordSkills = async () => {};
       world.stores.connections = {
         async validate() {
@@ -1474,6 +1535,7 @@ function golden(visibility: "org" | "private"): GoldenRecord {
 interface Setup {
   golden: GoldenRecord;
   credentials?: HarnessCredentials;
+  boundCredentials?: boolean;
   credentialError?: Error;
   exec?: (command: string) => { exitCode: number; stderr?: string; stdout?: string };
   promptError?: Error;
@@ -1579,6 +1641,7 @@ function setup(options: Setup) {
             files: [],
             sources: [],
           })),
+        ...(options.boundCredentials ? { binding: { credentialId: OWNER, credentialVersion: 1 } } : {}),
         ...(options.github ? { github: options.github } : {}),
       };
     },
@@ -2029,6 +2092,115 @@ test("host_full fork refusal remains definite and does not publish or clean up a
   expect(world.deleted).toEqual([]);
 });
 
+test("Modal golden forks receive the allocated Armada sandbox UUID as their provider key", async () => {
+  const world = setup({
+    boundCredentials: true,
+    golden: {
+      ...golden("org"),
+      provider: "modal",
+      providerSandboxId: "modal-builder",
+      providerSnapshotId: "modal-image",
+      modal: { workspace: "ws", environment: "main", appId: "app" },
+    },
+  });
+  const id = "44444444-4444-4444-8444-444444444444";
+  const key = spyOn(world.provider, "fork");
+  const result = await launchSandbox(
+    { ...world.provider, id: "modal" },
+    world.stores,
+    owner,
+    { golden: "web", harness: "codex" },
+    { newId: () => id },
+  );
+  expect(result.sandbox.id).toBe(id);
+  expect(key).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: id }));
+});
+
+test("Modal launch attributes readiness intervals in order and excludes the prompt", async () => {
+  const world = setup({
+    boundCredentials: true,
+    golden: {
+      ...golden("org"),
+      provider: "modal",
+      providerSandboxId: "modal-builder",
+      providerSnapshotId: "modal-image",
+      modal: { workspace: "ws", environment: "main", appId: "app" },
+    },
+  });
+  let time = 100;
+  const clock = spyOn(performance, "now").mockImplementation(() => time);
+  const logs: unknown[] = [];
+  const logger = spyOn(console, "error").mockImplementation((line) => logs.push(JSON.parse(line)));
+  const resolve = world.stores.credentials.resolve;
+  world.stores.credentials.resolve = async (...args) => {
+    time += 11;
+    return resolve(...args);
+  };
+  world.stores.credentials.admit = async () => {
+    time += 17;
+  };
+  const provider: Provider = {
+    ...world.provider,
+    id: "modal",
+    async fork(request) {
+      time += 23;
+      return { ...(await world.provider.fork(request)), id: "modal-child" };
+    },
+    async get(id, options) {
+      time += 4;
+      return { ...(await world.provider.get(id, options)), id: "modal-child" };
+    },
+  };
+  try {
+    const result = await launchSandbox(
+      provider,
+      world.stores,
+      owner,
+      { golden: "web", harness: "codex", prompt: "go" },
+      {
+        runtime: {
+          async start() {
+            time += 31;
+            return {
+              epoch: "1",
+              async prepareWorkspace() {
+                time += 13;
+                return { status: "not_connected" };
+              },
+              async prompt() {
+                time += 1000;
+                return { promptId: "p", conversationId: "c", status: "queued" };
+              },
+            };
+          },
+        },
+      },
+    );
+    expect(logs).toContainEqual({
+      event: "modal_launch_timing",
+      sandboxId: result.sandbox.id,
+      path: "enrolled",
+      totalMs: 99,
+      stages: [
+        { stage: "launch_plan", ms: 0 },
+        { stage: "credential_resolution", ms: 11 },
+        { stage: "preallocation_admission", ms: 17 },
+        { stage: "provider_allocation", ms: 23 },
+        { stage: "registration_and_binding", ms: 0 },
+        { stage: "machine_readiness", ms: 4 },
+        { stage: "runtime_startup", ms: 31 },
+        { stage: "workspace_preparation", ms: 13 },
+        { stage: "finish_initialization", ms: 0 },
+        { stage: "ready_stage_record", ms: 0 },
+      ],
+    });
+    expect(result.promptId).toBe("p");
+  } finally {
+    logger.mockRestore();
+    clock.mockRestore();
+  }
+});
+
 // #2560: the launch itself records its stages; readiness precedes the launch prompt for every harness and path.
 test.each([
   ["native", "claude"],
@@ -2036,7 +2208,7 @@ test.each([
   ["runtime", "claude"],
   ["runtime", "codex"],
 ] as const)("%s %s launch records each stage once, harness ready before its prompt", async (path, harness) => {
-  const world = setup({ golden: golden("org") });
+  const world = setup({ golden: golden("org"), boundCredentials: path === "runtime" });
   const elapsed: Record<string, number> = {};
   const stored: Record<string, number> = {};
   // A deterministic monotonic clock: the fork returns at once and storing `accepted` is slow, the case where reading

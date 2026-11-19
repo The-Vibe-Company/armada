@@ -6,9 +6,9 @@ fields serve that. Docker has its own [receipt lifecycle](#docker-launches).
 
 | Surface | Exactly-once field | External reference |
 | --- | --- | --- |
-| `POST /api/v1/sandbox/launch` for Boat and Modal (and the `launch-sized-v1`, `launch-access-v1`, runtime variants) | `idempotencyKey`, 16–128 characters | `externalRef` |
+| `POST /api/v1/sandbox/launch` for Boat and Modal | `idempotencyKey`, 16–128 characters | `externalRef` |
 | `POST /api/v1/sandbox/launch` for Docker | `idempotencyKey` or legacy `requestId` | `externalRef` |
-| MCP `launch` / `launch_sized_v1` | `idempotencyKey`, 16–128 characters | `externalRef` |
+| MCP `launch` | `idempotencyKey`, 16–128 characters | `externalRef` |
 | `POST /api/v1/templates/launch` | `requestKey` (required, see [templates](templates-cli.md)) | `externalRef` |
 
 `externalRef` is opaque: 1–200 characters without control characters. Armada
@@ -104,19 +104,9 @@ or may not exist. Never retry with a new key: that is how duplicates happen.
 2. Look the sandbox up by reference: `sandbox/list` with `externalRef` returns
    every sandbox you own or administer carrying it, including a launch whose
    answer was lost after the sandbox was recorded.
-3. If neither shows it and an `outcome_unknown` or `conflict` answer named a
-   receipt id, inspect it as the launching user with MCP `launch_receipt`
-   (`{"id":"<receipt UUID>"}`, plus `org` set to the organization UUID when
-   you belong to several). It lists
-   provider allocations labelled with that id, using the provider binding
-   recorded on the receipt, so a removed snapshot does not prevent the lookup.
-   An empty lookup is not proof of no allocation; keep the key and ask an
-   operator rather than relaunching.
-4. If you never received a receipt id (the first answer was lost and the replay
-   fails preflight, for example with `not_found`, or the receipt itself could
-   not be read), there is no self-service
-   lookup. Keep the original key, do not relaunch, and escalate to an operator
-   with the organization, the key and the `externalRef`.
+3. If the sandbox is still missing, escalate to an operator with the
+   organization, original key, `externalRef` and receipt UUID when available.
+   An unregistered allocation can exist even when the sandbox list is empty.
 
 Template launches follow the same rule with `requestKey`: a replay answers the
 recorded state (`succeeded`, `failed`, `reconciling`), and `reconciling` is
@@ -135,7 +125,7 @@ each payload, with null when the sandbox has no reference.
 
 ## Canonical launch API
 
-The [OpenAPI contract](openapi.json) describes the validated request variants for
+The [OpenAPI contract](../packages/mcp-server/openapi.json) describes the validated request variants for
 `POST /api/v1/sandbox/launch`: golden, explicit Boat runtime, explicit Modal
 runtime from a golden or pinned template, Docker host and Docker snapshot, each
 with its supported replay fields. Unknown fields are rejected. Use
@@ -148,13 +138,11 @@ at `sandbox.provider` and `sandbox.id`. The `golden` record is null for Docker.
 CLI JSON includes `sandbox.id` and the top-level `id` alias on all three
 providers. The CLI's `golden` field remains a name or null.
 
-## Launch route compatibility
+## Explicit runtime launch
 
 For explicit runtime launches from a golden, send the selectors to `POST /api/v1/sandbox/launch`.
 Use `runtimeVersion: 1` and `boatRuntime: true` for Boat. Use `runtimeVersion: 1`,
-`provider: "modal"` and `runtimeTransport: "dialout"` for Modal. The existing
-runtime admission checks and server opt-ins apply on both the canonical and
-compatibility routes. For a pinned Modal template, send the same Modal selectors
+`provider: "modal"` and `runtimeTransport: "dialout"` for Modal. Runtime admission checks and server opt-ins apply. For a pinned Modal template, send the same Modal selectors
 with `org` (UUID), `id`, `revision`, `requestKey` and the template's `harness` to
 `sandbox/launch`. When admission records a request, it returns a durable template
 launch receipt, including the frozen manifest on success. Replay the same body
@@ -165,16 +153,3 @@ template launches continue to use `templates/launch`.
 For REST extensions, use `ttlSeconds` on `POST /api/v1/sandbox/extend`
 as well. The server accepts the older `ttl_seconds` spelling for existing
 clients. Send only one field.
-
-| Compatibility route | Known released or external callers |
-| --- | --- |
-| `sandbox/launch-sized-v1` | Released CLI, dashboard and iOS builds with sizing or repository selection |
-| `sandbox/launch-access-v1` | Released CLI and dashboard builds with scoped access, and older scoped-access probes |
-| `sandbox/launch-runtime-v1` | Older Boat runtime probes and direct API integrations |
-| `sandbox/launch-modal-runtime-v1` | Older Modal runtime probes, direct API integrations and older explicit pinned Modal template callers |
-
-The CLI, dashboard, iOS app and direct golden smoke probes now send these
-selectors to `sandbox/launch`, including the Modal readable-variable probe's
-explicit pinned-template mode. Keep launch aliases available for at least 90 days
-after the first release carrying the first-party golden launch migration. Audit
-remaining released-client and external usage before retiring the aliases.

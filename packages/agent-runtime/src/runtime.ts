@@ -38,6 +38,8 @@ export class Runner {
   private execChildren = new ChildOwner();
   private execReleases = new Set<Promise<void>>();
   private closing = false;
+  private outboxWindow: { timer: ReturnType<typeof setTimeout>; firstSequence: number } | undefined;
+  private outboxRetry: ReturnType<typeof setInterval> | undefined;
   private shutdown: Promise<void> | undefined;
   private requests = new Set<Promise<Response>>();
   private active = new Map<
@@ -78,7 +80,7 @@ export class Runner {
     if (execution.credentialFreeBuilder !== undefined && typeof execution.credentialFreeBuilder !== "boolean")
       throw Error("invalid_exec_environment");
     this.credentialFreeBuilder = execution.credentialFreeBuilder ?? false;
-    this.readableConfigurations = new ReadableConfigurations(drivers);
+    this.readableConfigurations = new ReadableConfigurations(drivers, journal);
     this.configureGitHub = execution.configureGitHub;
     this.refreshNativeSecrets = execution.refreshNativeSecrets;
     this.publishNativeAuth = execution.publishNativeAuth;
@@ -188,7 +190,16 @@ export class Runner {
         ...[...this.active.values()].map((active) => active.done),
       ]);
     }
-    await this.flushing?.catch(() => {});
+    if (this.outboxRetry !== undefined) {
+      clearInterval(this.outboxRetry);
+      this.outboxRetry = undefined;
+      this.journal.onAppend = undefined;
+    }
+    if (this.outboxWindow !== undefined) {
+      await this.flushOutbox().catch(() => {});
+    } else {
+      await this.flushing?.catch(() => {});
+    }
     const failed = [...releases, ...owners].find((result) => result.status === "rejected");
     if (failed?.status === "rejected") throw failed.reason;
   }
@@ -269,10 +280,12 @@ export class Runner {
           this.barrier ||
           this.journal.checkpointPending(this.grant) ||
           !(HARNESSES as readonly string[]).includes(r.harness) ||
-          Object.keys(r).some((k) => !["version", "requestId", "sandboxId", "op", "harness", "variables"].includes(k))
+          Object.keys(r).some(
+            (k) => !["version", "requestId", "sandboxId", "op", "harness", "variables", "secretKeys"].includes(k),
+          )
         )
           throw Error("invalid_request");
-        this.readableConfigurations.configure(r.harness, r.variables);
+        this.readableConfigurations.configure(r.harness, r.variables, r.secretKeys);
         return Response.json({ version: 1, requestId: r.requestId, result: { acknowledged: true } });
       }
       if (r.op === "configureGitHub") {
@@ -737,7 +750,6 @@ export class Runner {
         .catch(() => this.journal.transition(p, "failed", "native_auth_state_unacknowledged"))
         .finally(() => {
           this.active.delete(p.conversationId);
-          void this.flushOutbox().catch(() => {});
         });
       active.done = done;
       this.active.set(p.conversationId, active);
@@ -760,8 +772,31 @@ export class Runner {
       );
     }
   }
+  startOutboxDelivery(): void {
+    if (!this.ingest || this.closing || this.outboxRetry !== undefined) return;
+    const flush = () => {
+      void this.flushScheduledOutbox().catch(() => {});
+    };
+    this.journal.onAppend = (firstSequence) => {
+      if (this.outboxWindow) return;
+      const timer = setTimeout(() => {
+        this.outboxWindow = undefined;
+        flush();
+      }, 50).unref();
+      this.outboxWindow = { timer, firstSequence };
+    };
+    this.outboxRetry = setInterval(flush, 1000).unref();
+  }
   private flushing: Promise<void> | undefined;
-  flushOutbox(): Promise<void> {
+  async flushOutbox(): Promise<void> {
+    // Checkpoint and shutdown drain after writers quiesce.
+    clearTimeout(this.outboxWindow?.timer);
+    this.outboxWindow = undefined;
+    if (this.flushing) await this.flushing;
+    // The previous drain may have already stopped at the coalescing boundary.
+    await this.flushScheduledOutbox();
+  }
+  private flushScheduledOutbox(): Promise<void> {
     if (!this.flushing)
       this.flushing = this.drainOutbox().finally(() => {
         this.flushing = undefined;
@@ -770,9 +805,11 @@ export class Runner {
   }
   private async drainOutbox() {
     if (!this.ingest) return;
+    // Give writes during a POST their own window, even if the ACK arrives early.
     for (;;) {
       const pending = this.journal.events(this.journal.ack, 100);
-      if (!pending.length) return;
+      const firstCoalescingSequence = this.outboxWindow?.firstSequence ?? Infinity;
+      if (!pending.length || pending[0]!.sequence >= firstCoalescingSequence) return;
       const batch = {
         sandboxId: this.grant.sandboxId,
         generation: this.grant.generation,
@@ -783,6 +820,7 @@ export class Runner {
       // never truncate or skip a journal entry to make a batch fit.
       let bytes = Buffer.byteLength(JSON.stringify(batch));
       for (const item of pending) {
+        if (item.sequence >= firstCoalescingSequence) break;
         const size = Buffer.byteLength(JSON.stringify(item)) + (batch.events.length ? 1 : 0);
         if (bytes + size > 1048576) break;
         batch.events.push(item);

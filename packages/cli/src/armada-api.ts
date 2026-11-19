@@ -19,7 +19,7 @@ import type { Session, SessionStore } from "./session.ts";
 export const DEFAULT_ARMADA_API_URL = "https://armada.thevibecompany.co";
 const DEFAULT_TIMEOUT_MS = 10_000;
 function isSandboxLaunchPath(path: string): boolean {
-  return /^\/api\/v1\/sandbox\/launch(?:-sized-v1|-access-v1)?$/.test(path);
+  return path === "/api/v1/sandbox/launch";
 }
 
 const TEMPLATE_LAUNCH_UNKNOWN =

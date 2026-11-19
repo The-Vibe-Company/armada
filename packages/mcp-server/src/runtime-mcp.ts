@@ -1,6 +1,7 @@
 import { createHash, createHmac, randomUUID } from "node:crypto";
+import { type McpConfiguration, validateMcpConfiguration } from "@armada/agent-runtime";
 import type { Harness } from "@armada/core";
-import { MAX_MCP_CONNECTIONS } from "@armada/core";
+import { MAX_MCP_CONNECTIONS, parsePinnedMcpStdio } from "@armada/core";
 import {
   createSqlMcpLaunchPort,
   createSqlMcpLeasePort,
@@ -12,16 +13,30 @@ import type { Caller } from "./caller.ts";
 import { createSqlData } from "./data.ts";
 import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
-import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
+import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
 import { selfFinishToken } from "./sandbox-finish.ts";
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const deny = (): never => {
   throw new VaultError("forbidden", "Runtime MCP access is unavailable.");
 };
+const serverName = (id: string) => `armada_${id.replaceAll("-", "_")}`;
+function pinnedServer(definition: { command?: string | null; args?: string[] }) {
+  try {
+    return { type: "stdio" as const, ...parsePinnedMcpStdio(definition.command ?? "", definition.args ?? []) };
+  } catch {
+    throw new VaultError("invalid", "Runtime MCP requires an exact pinned stdio launcher and valid arguments.");
+  }
+}
+function validateConfiguration(configuration: McpConfiguration) {
+  try {
+    validateMcpConfiguration(configuration);
+  } catch {
+    throw new VaultError("invalid", "MCP configuration exceeds runtime limits or contains invalid fields.");
+  }
+}
 export type RuntimeMcp = ReturnType<typeof createRuntimeMcp>;
-/** Remote MCP only: existing registry/grants/gateway policy, private epoch-fenced RPC.
- * No provider lookup, boot ID, SSH, native files or upstream grant material. */
+/** Configure pinned local commands and scoped remote gateway access over private epoch-fenced RPC. */
 export function createRuntimeMcp(options: {
   sql: Sql;
   key: string;
@@ -31,6 +46,14 @@ export function createRuntimeMcp(options: {
 }) {
   const { sql, key } = options,
     authority = createRuntimeEnrolments(sql, key);
+  const httpServer = (path: string, token: string) => ({
+    type: "http" as const,
+    url: new URL(path, options.origin).href,
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const gatewayServer = (id: string, token: string) => httpServer(`/mcp/gateway/${id}`, token);
+  const selfServer = (binding: Parameters<typeof selfFinishToken>[1]) =>
+    httpServer("/api/v1/orchestrator-tools/mcp", selfFinishToken(key, binding));
   const ids = (values: string[]) => {
     if (
       !Array.isArray(values) ||
@@ -43,23 +66,35 @@ export function createRuntimeMcp(options: {
   };
   async function connections(db: Sql, caller: Pick<Caller, "userId">, org: string, selected: string[]) {
     const registry = createSqlMcpRegistry(db, key),
-      result = [];
+      result = [],
+      servers: McpConfiguration["servers"] = {};
     for (const id of selected) {
       const c = await registry.get(caller.userId, org, id);
-      if (!["http", "sse"].includes(c.transport))
-        throw new VaultError("invalid", "Enrolled runtimes do not support pinned stdio MCP; no native fallback.");
       if (c.status !== "connected") return deny();
+      servers[serverName(c.id)] =
+        c.transport === "stdio" ? pinnedServer(c) : gatewayServer(c.id, `armada_gw_${"a".repeat(43)}`);
       result.push(c);
+    }
+    if (result.some((c) => c.transport === "stdio")) {
+      // Budget for the full wire configuration, including the largest database epoch and generation.
+      const placeholderId = "00000000-0000-0000-0000-000000000000";
+      servers.armada_self = selfServer({
+        sandboxId: placeholderId,
+        ownerId: placeholderId,
+        epoch: "9223372036854775807",
+        generation: 2147483647,
+      });
+      validateConfiguration({ revision: "0".repeat(64), servers });
     }
     return result;
   }
   async function preflight(caller: Caller, input: { org: string; connections: string[]; toolInventory?: boolean }) {
     if (!caller.orgs.some((m) => m.orgId === input.org)) return deny();
     const selected = ids(input.connections);
-    await connections(sql, caller, input.org, selected);
+    const definitions = await connections(sql, caller, input.org, selected);
     const inventory: { connectionId: string; tools: string[] }[] = [];
-    for (const id of selected) {
-      const result = await options.probe?.(caller.userId, input.org, id);
+    for (const { id, transport } of definitions) {
+      const result = transport === "stdio" ? undefined : await options.probe?.(caller.userId, input.org, id);
       if (result && result.status !== "connected") return deny();
       if (input.toolInventory) {
         if (
@@ -106,17 +141,36 @@ export function createRuntimeMcp(options: {
     selected: string[],
   ) {
     const current = await scope(db, s.id, epoch);
-    const defs = await connections(db, caller, s.orgId, selected);
-    const grants = (
-      await db.query<{ id: string; generation: number }>(
-        `select c.id,g.generation from public.mcp_bindings b join public.mcp_connections c on c.id=b.connection_id join public.mcp_grants g on g.id=b.grant_id where b.sandbox_id=$1 order by c.id`,
-        [s.id],
+    // Read a bound definition and its effective grant generation from the same snapshot.
+    const definitions = (
+      await db.query<{
+        id: string;
+        generation: number;
+        transport: "http" | "sse" | "stdio";
+        url: string | null;
+        command: string | null;
+        args: string[];
+      }>(
+        `select c.id,g.generation,c.transport,c.url,c.command,c.args
+        from public.mcp_bindings b join public.mcp_connections c on c.id=b.connection_id
+        join public.mcp_grants g on g.id=b.grant_id and g.connection_id=c.id
+        join public.members m on m.org_id=c.org_id and m.user_id=$2
+        where b.sandbox_id=$1 and c.org_id=$3 and (c.scope='org' or c.owner_id=$2) and not c.disabled
+          and public.mcp_grant_effective_status(g.status,g.revoked_at,g.refresh_consumed,g.refresh_until)='connected'
+        order by c.id`,
+        [s.id, caller.userId, s.orgId],
       )
     ).rows;
-    if (JSON.stringify(grants.map((c) => c.id)) !== JSON.stringify(selected)) return deny();
-    const servers: Record<string, { type: "http"; url: string; headers: { Authorization: string } }> = {};
-    for (const c of defs) {
-      const generation = grants.find((g) => g.id === c.id)?.generation ?? deny();
+    if (JSON.stringify(definitions.map((c) => c.id)) !== JSON.stringify(selected)) return deny();
+    const servers: McpConfiguration["servers"] = {};
+    const gatewayLeases: { connectionId: string; tokenHash: string; generation: number }[] = [];
+    for (const c of definitions) {
+      const { generation } = c;
+      const name = serverName(c.id);
+      if (c.transport === "stdio") {
+        servers[name] = pinnedServer(c);
+        continue;
+      }
       const payload = JSON.stringify([
         "armada/runtime/mcp/v1",
         s.id,
@@ -130,26 +184,19 @@ export function createRuntimeMcp(options: {
         c.transport,
       ]);
       const token = `armada_gw_${createHmac("sha256", Buffer.from(key, "base64")).update(payload).digest("base64url")}`;
-      servers[`armada_${c.id.replaceAll("-", "_")}`] = {
-        type: "http",
-        url: new URL(`/mcp/gateway/${c.id}`, options.origin).href,
-        headers: { Authorization: `Bearer ${token}` },
-      };
+      gatewayLeases.push({ connectionId: c.id, tokenHash: hash(token), generation });
+      servers[name] = gatewayServer(c.id, token);
     }
-    servers.armada_self = {
-      type: "http",
-      url: new URL("/api/v1/orchestrator-tools/mcp", options.origin).href,
-      headers: {
-        Authorization: `Bearer ${selfFinishToken(key, {
-          sandboxId: s.id,
-          ownerId: s.ownerId,
-          epoch,
-          generation: current.mcp_generation,
-        })}`,
-      },
-    };
-    const configuration = { revision: hash(JSON.stringify([epoch, current.mcp_generation, servers])), servers };
-    return { configuration, grants, expiresAt: new Date(current.expires_at) };
+    servers.armada_self = selfServer({
+      sandboxId: s.id,
+      ownerId: s.ownerId,
+      epoch,
+      generation: current.mcp_generation,
+    });
+    const grants = definitions.map(({ id, generation }) => [id, generation]);
+    const configuration = { revision: hash(JSON.stringify([epoch, current.mcp_generation, grants, servers])), servers };
+    validateConfiguration(configuration);
+    return { configuration, gatewayLeases, expiresAt: new Date(current.expires_at) };
   }
   const selected = async (db: Sql, id: string) =>
     (
@@ -209,12 +256,8 @@ export function createRuntimeMcp(options: {
         previous?.configured === true &&
         previous.physical_generation === `runtime:${live.epoch}` &&
         previous.revision === p.configuration.revision;
-      for (const [name, server] of Object.entries(p.configuration.servers))
-        if (
-          name !== "armada_self" &&
-          !(await createSqlMcpLeasePort(tx).validate(hash(server.headers.Authorization.slice(7)), "tools"))
-        )
-          cached = false;
+      const leases = createSqlMcpLeasePort(tx);
+      for (const { tokenHash } of p.gatewayLeases) if (!(await leases.validate(tokenHash, "tools"))) cached = false;
       return { epoch: live.epoch, selection, cached: cached ? receipt(s, live.epoch, p, selection) : undefined };
     });
     if (!initial || initial.cached) return initial?.cached;
@@ -243,10 +286,7 @@ export function createRuntimeMcp(options: {
       if (live.epoch !== initial.epoch) return deny();
       const p = await plan(tx, caller, s, live.epoch, initial.selection),
         leases = createSqlMcpLeasePort(tx);
-      for (const [name, server] of Object.entries(p.configuration.servers)) {
-        if (name === "armada_self") continue;
-        const tokenHash = hash(server.headers.Authorization.slice(7)),
-          connectionId = name.slice(7).replaceAll("_", "-");
+      for (const { connectionId, tokenHash, generation } of p.gatewayLeases) {
         const existing = (await tx.query("select id from public.mcp_leases where hash=$1", [tokenHash])).rows.length;
         if (!existing)
           await leases.issue({
@@ -265,7 +305,7 @@ export function createRuntimeMcp(options: {
         if (
           !stored ||
           stored.runtime_epoch !== live.epoch ||
-          stored.generation !== p.grants.find((g) => g.id === connectionId)?.generation ||
+          stored.generation !== generation ||
           !(await leases.validate(tokenHash, "tools"))
         )
           return deny();
@@ -284,7 +324,7 @@ export function createRuntimeMcp(options: {
       };
       // Serialize preparation AND enqueue, not network waits. Concurrent updated
       // grants can never queue an older snapshot behind a newer configuration.
-      const local: Sql = { query: tx.query.bind(tx), transaction: async (work) => work(local) };
+      const local = scopedRuntimeSql(tx);
       signal?.throwIfAborted();
       await createRuntimeCommands(createRuntimeEnrolments(local, key), key).enqueue(s.ownerId, wire, live.epoch);
       return { ...p, epoch: live.epoch, wire };
@@ -321,12 +361,8 @@ export function createRuntimeMcp(options: {
       const p = await plan(tx, caller, s, live.epoch, initial.selection);
       if (live.epoch !== prepared.epoch || JSON.stringify(p.configuration) !== JSON.stringify(prepared.configuration))
         return deny();
-      for (const [name, server] of Object.entries(p.configuration.servers))
-        if (
-          name !== "armada_self" &&
-          !(await createSqlMcpLeasePort(tx).validate(hash(server.headers.Authorization.slice(7)), "tools"))
-        )
-          return deny();
+      const leases = createSqlMcpLeasePort(tx);
+      for (const { tokenHash } of p.gatewayLeases) if (!(await leases.validate(tokenHash, "tools"))) return deny();
       const written = await tx.query(
         "update public.mcp_bootstraps set configured=true where sandbox_id=$1 and physical_generation=$2 and revision=$3 returning sandbox_id",
         [s.id, `runtime:${live.epoch}`, p.configuration.revision],
@@ -340,7 +376,7 @@ export function createRuntimeMcp(options: {
     ...launch,
     async validate(actor: Parameters<typeof launch.validate>[0], selection: string[], visibility: "private" | "org") {
       if (selection.length > MAX_MCP_CONNECTIONS)
-        throw new VaultError("invalid", `Select at most ${MAX_MCP_CONNECTIONS} remote MCP connections.`);
+        throw new VaultError("invalid", `Select at most ${MAX_MCP_CONNECTIONS} MCP connections.`);
       await launch.validate(actor, selection, visibility);
       await connections(sql, actor, actor.orgId, selection);
     },

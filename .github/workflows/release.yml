@@ -237,13 +237,21 @@ jobs:
           } >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ">=22.18.0 <23"
       - run: bun run lint
       - run: bun packages/agent-runtime/build.ts
       - run: bun scripts/validate-runtime-native.ts
       - run: bun run typecheck
-      - run: |
-          bun test --reporter=junit --reporter-outfile=/tmp/release-tests.xml
-          bun test ./packages/core/test/database-types.probe.ts ./packages/core/test/private-skill.probe.ts ./packages/core/test/golden-scan.probe.ts ./packages/core/test/work-preservation.probe.ts --reporter=junit --reporter-outfile=/tmp/release-native-tests.xml
+      - run: >-
+          bun test
+          ./packages/core/test/database-types.probe.ts
+          ./packages/core/test/private-skill.probe.ts
+          ./packages/core/test/golden-scan.probe.ts
+          ./packages/core/test/work-preservation.probe.ts
+          ./packages/provider-boat/test/native-cwd.test.ts
+          --reporter=junit --reporter-outfile=/tmp/release-native-tests.xml
       - name: Migrate disposable release contract database
         env:
           PGURL: postgres://postgres:release_fixture@127.0.0.1:5432/armada_contracts
@@ -262,8 +270,7 @@ jobs:
         run: |
           python3 - <<'PYTHON'
           import xml.etree.ElementTree as ET
-          reports = [ET.parse(path).getroot() for path in ["/tmp/release-tests.xml", "/tmp/release-native-tests.xml"]]
-          cases = [case for report in reports for case in report.iter("testcase")]
+          cases = list(ET.parse("/tmp/release-native-tests.xml").iter("testcase"))
           for name in [
               "generated types match the migrations",
               "private installer ok",

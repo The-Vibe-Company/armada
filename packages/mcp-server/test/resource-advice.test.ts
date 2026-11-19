@@ -1,10 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import {
-  type ProviderResourceObservation,
-  type ResourceAdviceResponse,
-  type ResourceProject,
-  SIZED_LAUNCH_TOOL_V1,
-} from "@armada/core";
+import type { ProviderResourceObservation, ResourceAdviceResponse, ResourceProject } from "@armada/core";
 import { createSqlVaultStore } from "@armada/core/server";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
@@ -20,13 +15,12 @@ afterAll(async () => {
   await server?.close();
 });
 
-test("API/MCP collect genuine-path bounded samples, pin project identity and abstain without complete workload evidence", async () => {
+test("The advice API collects bounded samples, pins project identity and abstains without complete workload evidence", async () => {
   const server = fixture;
   if (!server) throw new Error("Missing resource advice harness fixture");
   const token = await server.token(server.people.owner);
   const client = await server.client(token);
-  const launched = await call(client, SIZED_LAUNCH_TOOL_V1, {
-    size_policy_version: 1,
+  const launched = await call(client, "launch", {
     golden: "shared",
     org: server.people.org,
     harness: "claude",
@@ -106,9 +100,8 @@ test("API/MCP collect genuine-path bounded samples, pin project identity and abs
     sampled: { points: 1, intervals: 0 },
     observations: { memoryPeakBytes: null, activeSeconds: null },
   });
-  const same = await call(client, "resource_advice", { id });
-  expect(same.isError).toBe(false);
-  expect(same.data.advice).toEqual(body.advice);
+  const same = await http();
+  expect(await same.json()).toEqual(body);
   expect(collected).toBe(1);
   server.clock.now = new Date(server.clock.now.getTime() + 10000);
   const concurrent = await Promise.all([http(), http()]);
@@ -139,7 +132,6 @@ test("API/MCP collect genuine-path bounded samples, pin project identity and abs
   expect(metadata).not.toHaveProperty("resourceProject");
   expect(JSON.stringify(metadata)).not.toContain(row.resource_project!.url);
   expect((await http(memberToken)).status).toBe(404);
-  expect((await call(member, "resource_advice", { id })).isError).toBe(true);
   expect(collected).toBe(2);
   expect((await http(await server.token(server.people.admin))).status).toBe(200);
   expect(collected).toBe(2);

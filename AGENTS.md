@@ -7,6 +7,7 @@ Armada v1 (the fleet orchestrator) is archived at the tag `armada-v1-final`. Its
 ## Layout
 
 - `packages/core` (`@armada/core`): shared contracts/version, provider and harness catalogs, launch/golden/work-preservation policy, credentials, vault, templates and routines. `src/index.ts` (`.`) is browser-safe: no reachable Node builtins or server I/O; `src/server.ts` (`./server`) additionally exports filesystem, process, signing, SQL and service implementations. `boat-snapshot-name.ts` is server-only. `crypto.ts` is the single AES-256-GCM (`iv || ciphertext || tag`) implementation under `ARMADA_ENCRYPTION_KEY`.
+- API operation metadata and shared request schemas belong in the browser-safe `@armada/core/contract` subpath. Keep authorization and provider admission in the server.
 - Provider identity: `core/src/sandbox-provider.ts` defines golden providers Boat/Modal, host capabilities and immutable Modal workspace/environment/App binding. Build goldens separately per provider; never invent Boat aliases for Modal or plain-image Docker rows. Docker preview has separate host-bound APIs and additive launch discovery, not a golden source or enabled normal sandbox-control handler.
 - `supabase/migrations`: append-only schema/RLS history; `core/src/database.types.ts` is generated (`bun run db:types`). Supabase's broad defaults are revoked by `20261108190000_revoke_default_grants.sql`; new user-JWT access needs explicit grants. No JWT can select token hashes or `*_enc`. JWT writes must name returned columns (`select=`), never request bare `*`. `scripts/db/supabase-prereq.sql` reproduces Supabase defaults for tests.
 - `packages/auth`: Supabase login, OAuth server, service tokens and bearer verification. Tokens persist as lowercase SHA256; service-role bearer verification is uncached. `packages/cli` is the API-only `armada` client: `src/run.ts` takes injected I/O, `armada-api.ts` calls `/api/v1/`, and `session.ts` stores only the Armada login (or use `ARMADA_TOKEN`). No provider/database credentials or adapters belong in its runtime graph.
@@ -93,6 +94,7 @@ What CI does not do, and must not be added back:
 Rules for a test:
 - Fixtures must never contain literals matching real token patterns; use short underscore-separated placeholders, and construct scanner-positive token-shaped bytes only at runtime.
 - one test per behaviour, at the cheapest boundary that proves it; no network, no wall-clock wait, no child process when a function call proves the same thing;
+- no new process-spawning test files. Run `bun scripts/ci/process-tests.ts --check` and remove stale entries from `scripts/ci/process-tests.txt`; the allowlist only shrinks.
 - a test that takes more than one second is rewritten or deleted;
 - a test that fails intermittently is deleted the day it is seen, not retried, not quarantined; if the behaviour matters, a cheaper deterministic test replaces it;
 - CI has no retries.
@@ -102,10 +104,13 @@ Adding a CI job or a required check is the owner's decision, never an agent's. W
 
 ## Rules
 
+- **Landmines rules are mandatory.** Give the reason for any inline disable in the PR, and only shrink baselines.
+
 - **Separate client and server.** `armada` is an API-only client; `armada-server` contains the server and provider/database adapters. Both compile with Bun. Never import Supabase, provider implementations or server startup into the CLI runtime dependency graph.
 - **One version.** Every `packages/*/package.json` carries the same version; `@armada/core` exports it and `armada --version` prints it.
 - **Secrets never in the repository.** Keys come from the environment or Armada's encrypted store; never print one, never write one into a file, a fixture or a log. Goldens hold no secrets. In the database a secret is ciphertext (`bytea`, `*_enc`) or a token hash, and a user JWT cannot read the ciphertext columns. One encryption scheme: `encryptSecret` and `decryptSecret` in `@armada/core` with `ARMADA_ENCRYPTION_KEY`. Credential values arrive on stdin or from a file, never as arguments. **Owner-approved exception (#1453):** a single-use, five-minute Docker host registration token may appear in the one-click installer command (`sh -s -- --token ...`). The exchanged long-lived host credential must still never appear in argv, logs or public responses.
 - **Schema changes are new migrations.** Follow the [migration author checklist](docs/database-migrations.md#migration-author-checklist): use a unique 14-digit version strictly newer than current main and recheck before merge; fresh SQL tests do not verify remote history. Never rename or edit a migration that has been applied. Row level security is the access rule: members see org resources, a private resource is visible only to its owner, and only an admin changes an org golden, the members or an org key.
+- **Table owners.** Put new TypeScript table writes in the module listed in `scripts/ci/tables.ts`. Remove existing exceptions as writers move or are deleted.
 - **Fix the cause, not the symptom.** A bug fix names its root cause with evidence (the statement, state or contract that is wrong) before changing code. It then looks for every other place with the same defect and fixes those in the same change, or lists them in the pull request. Do not copy an existing workaround, and do not answer a failing check with the smallest change that makes that one check pass: three spot fixes of one cause cost more than one fix at the source. Being urgent does not waive this. When the cause cannot be established without production evidence, say so and add the diagnostic that will name it, rather than guessing a fix.
 - **Tests earn their place.** One test per behaviour at the cheapest boundary, no network, no wall-clock waits.
 - **English** in code, CLI output, docs and comments.

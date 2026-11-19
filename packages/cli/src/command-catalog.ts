@@ -1,4 +1,5 @@
 import { HARNESSES, MODEL_CATALOG, VERSION } from "@armada/core";
+import { commands, sandboxUsage } from "./commands/index.ts";
 import { helpOptionWords } from "./onboarding-help.ts";
 
 export const HELP = `armada ${VERSION}: launch coding agents in provider-scoped sandboxes
@@ -70,10 +71,6 @@ Usage:
   armada snapshot build-status <job-id>      Read the authenticated durable build status
   armada snapshot build-status --idempotency-key <key> --org <org>
                                            Recover an uncertain admission using the saved key.
-  armada snapshot connect <name> [--provider boat|modal]
-                                           Open the canonical master for maintenance
-  armada snapshot snapshot <name> [--provider boat|modal]
-                                           Scan the master sandbox and save it as a snapshot
   armada snapshot capabilities [--provider boat|modal] [--org UUID] [--json]
                                            Server-authoritative snapshot capacity; null means unbounded/unknown
   armada snapshot size-policy <name> [--provider boat|modal] [--org <org>] [--file <JSON|->] [--json]
@@ -93,46 +90,23 @@ Usage:
                                            Build a new snapshot from saved repos/setup on its original host; keep the old one.
   armada launch <snapshot> --agent ${HARNESSES.join("|")} ["prompt"] [--model <id>] [--reasoning-effort <level>]
                                            [--armada-access [--credential-id <id>] [--max-active-children <1..100>]]
-                [--provider boat|modal] [--repo <configured-dir|owner/repo>] [--size small|medium|large|xlarge | --sized] [--ttl 4h] [--json]
+                [--provider boat|modal] [--repo <configured-dir|owner/repo>] [--ttl 4h] [--json]
                 [--skill org/slug@version|slug@version ...] [--connections <id,...> | --no-connections] [--org <org>]
                 Omit connections to request server defaults; --no-connections opts out.
                                            Fork a snapshot into a sandbox. With a prompt the agent starts at once;
                                            without one the sandbox waits, ready, for the first prompt. The model
                                            and effort apply to every later turn too. --credential-id UUID selects a model account;
-                                           otherwise use your personal or organization default. --repo owner/repo selects a recorded
-                                           snapshot repository as the native agent's real initial cwd (also when idle);
-                                           omit it to keep legacy launch behavior. Size resolves on the server:
-                                           --size > selected repository default > snapshot default > legacy.
-                                           --size or --repo requires the versioned sizing server; --sized requires
-                                           default-policy resolution without overriding size. No downgrade/retry
-                                           to legacy launch on unsupported servers. Bare legacy launches keep their route.
-                                           Size labels do not promise equal performance/billing across providers.
+                                           otherwise use your personal or organization default.
+                                           --repo selects the native agent's initial working directory, including when idle.
                                            Defaults:
                                            ${modelDefaults()}
-                                           --repo prepares native agent cwd in the selected repository, including when idle; not confinement.
-  armada list [--status STATUS] [--agent|--harness ${HARNESSES.join("|")}] [--golden UUID] [--owner UUID|me]
-              [--page N] [--limit 1..200] [--org UUID] [--json] [--page-info]
-                                           Default page size 25; --json keeps {sandboxes:[...]}; --page-info adds exact totals
+${sandboxUsage("list")}
   armada mcp sandbox-connections <sandbox-uuid> [--org UUID] [--json]
                                            Read actual bound connection metadata, never mutate bindings
-  armada advice <sandbox-id> [--org UUID] [--json]
-                                           Last-10 comparable-session resource evidence; collects one bounded sample.
-                                           Missing/partial evidence abstains. Never resizes or changes defaults.
-                                           Human launch guidance uses stderr only; --json launch never requests advice.
+${sandboxUsage("advice")}
   armada bind-credential <sandbox-id> --credential-id UUID [--org UUID] [--json]
                                            Owner-only legacy Modal binding recovery; stop safely first; no restart
-  armada rm <sandbox-id> --yes [--org UUID] [--json]  Permanently delete a stopped sandbox and its recovery archives
-  armada extend <sandbox-id> --ttl <duration> [--org UUID] [--json]
-                                           TTL is measured from now, not added to the old deadline; must extend it.
-  armada status <sandbox-id> [--live] [--org UUID] [--json]
-                                           Recorded state by default (no provider probe); --live reads provider/prompt details
-  armada detail|recovery|stop|interrupt <sandbox-id> [--org UUID] [--json]
-  armada wait <sandbox-id> [--timeout <seconds>] [--org UUID] [--json]
-                                           Timeout is 0–600 seconds, default 60.
-  armada report <sandbox-id> ready|blocked --prompt-id ID [--reason TEXT] [--pr-number N] [--pr-url URL] [--head-sha SHA]
-  armada send|steer|exec <sandbox-id> <text-or-command> [--model ID] [--reasoning-effort LEVEL]
-                                           send accepts --request-id UUID to reuse an uncertain runtime instruction.
-                                           Full-account follow-up sends can queue FIFO; queued is not completed.
+${sandboxUsage("sandbox")}
   armada snapshot retirement dry-run|reconcile <snapshot-id> [--limit 1-50] [--org UUID]
   armada snapshot remove <name|snapshot-id> [--provider boat|modal] [--org UUID] [--json]
                                            Names must match one visible snapshot; use provider/org or snapshot list --json to disambiguate.
@@ -249,7 +223,10 @@ For other commands and authentication settings: armada --help.
 `;
 
 export const commandWords = [
-  ...new Set([...HELP.matchAll(/armada ([a-z][a-z|-]*)/g)].flatMap((match) => match[1]!.split("|"))),
+  ...new Set([
+    ...[...HELP.matchAll(/armada ([a-z][a-z|-]*)/g)].flatMap((match) => match[1]!.split("|")),
+    ...commands.map(({ name }) => name),
+  ]),
 ];
 export const optionWords = [
   ...new Set([

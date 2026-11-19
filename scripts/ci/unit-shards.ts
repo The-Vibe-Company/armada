@@ -6,8 +6,9 @@ import { MIGRATED_DATABASE_TEMPLATE_ENV, migratedTemplate } from "../test-suppor
 import durations from "./test-durations.json";
 
 export const SHARD_COUNT = 6;
-// Measured lint/typecheck/guard work runs once in shard 1, sharing its setup.
-const STATIC_CHECK_SECONDS = 24;
+const WORKERS_PER_SHARD = 2;
+const ARTIFACT_WRITER = "packages/mcp-server/test/github-boat.test.ts";
+const STATIC_RESERVE_SECONDS: Record<number, number> = durations.static;
 type WorkerObservation = { files: string[]; seconds: number };
 const workerKey = (files: readonly string[]) => [...files].sort().join(",");
 const root = fileURLToPath(new URL("../../", import.meta.url));
@@ -41,12 +42,17 @@ export function validatePlan(files: string[], shards: string[][]): void {
 export function planShards(
   files: string[],
   weights: Record<string, number>,
+  staticReserve: Record<number, number>,
   sources: Record<string, string> = {},
   observations: WorkerObservation[] = [],
 ): string[][] {
   const shards: string[][] = Array.from({ length: SHARD_COUNT }, () => []);
-  const loads = Array<number>(SHARD_COUNT).fill(0);
-  loads[0] = STATIC_CHECK_SECONDS;
+  const loads = shards.map((_, index) => {
+    const shard = index + 1;
+    const seconds = staticReserve[shard] ?? 0;
+    if (!Number.isFinite(seconds) || seconds < 0) throw new Error(`Invalid static reserve for shard ${shard}`);
+    return seconds;
+  });
   const measured = new Map(observations.map((worker) => [workerKey(worker.files), worker.seconds]));
   const weight = (batch: string[]) => {
     const observed = measured.get(workerKey(batch));
@@ -66,13 +72,14 @@ export function planShards(
     const batch = ordered.find((batch) => batch.length > 1)!;
     ordered.push([batch.pop()!]);
   }
-  ordered.sort((a, b) => weight(b) - weight(a) || workerKey(a).localeCompare(workerKey(b)));
+  const wallSeconds = (batch: string[]) => weight(batch) / (batch.includes(ARTIFACT_WRITER) ? 1 : WORKERS_PER_SHARD);
+  ordered.sort((a, b) => wallSeconds(b) - wallSeconds(a) || workerKey(a).localeCompare(workerKey(b)));
   for (const [position, batch] of ordered.entries()) {
     const empty = shards.flatMap((shard, index) => (shard.length === 0 ? [index] : []));
     // Retain nonempty coverage even for small plans where static work dominates.
     const index = ordered.length - position === empty.length ? empty[0]! : loads.indexOf(Math.min(...loads));
     shards[index]!.push(...batch);
-    loads[index] = loads[index]! + weight(batch);
+    loads[index] = loads[index]! + wallSeconds(batch);
   }
   for (const shard of shards) shard.sort();
   validatePlan(files, shards);
@@ -121,7 +128,7 @@ export function workerBatches(
 if (import.meta.main) {
   const allFiles = testFiles();
   const sources = Object.fromEntries(allFiles.map((path) => [path, readFileSync(join(root, path), "utf8")]));
-  const shards = planShards(allFiles, durations.files, sources, durations.workers);
+  const shards = planShards(allFiles, durations.files, STATIC_RESERVE_SECONDS, sources, durations.workers);
   console.log(
     `Validated ${shards.flat().length} test files, assigned exactly once: ${shards.map((s) => s.length).join(" / ")}`,
   );
@@ -155,14 +162,13 @@ if (import.meta.main) {
       };
       // This existing test rebuilds a repository artifact read by other suites.
       // Keep its write exclusive; new artifact fixtures must use temporary paths.
-      const writer = "packages/mcp-server/test/github-boat.test.ts";
-      for (const batch of batches.filter((batch) => batch.includes(writer))) await run(batch);
-      const parallel = batches.filter((batch) => !batch.includes(writer));
+      for (const batch of batches.filter((batch) => batch.includes(ARTIFACT_WRITER))) await run(batch);
+      const parallel = batches.filter((batch) => !batch.includes(ARTIFACT_WRITER));
       let next = 0;
       // Two isolated processes fit the measured SQL-worker memory envelope; never
       // fan out every file. This uses runner cores without requesting more jobs.
       await Promise.all(
-        Array.from({ length: 2 }, async () => {
+        Array.from({ length: WORKERS_PER_SHARD }, async () => {
           while (next < parallel.length) await run(parallel[next++]!);
         }),
       );

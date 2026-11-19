@@ -132,15 +132,27 @@ describe("run", () => {
     const forbidden = () => {
       throw new Error("Unknown command attempted I/O");
     };
-    for (const family of [undefined, "snapshot", "golden"]) {
+    const deps: Deps = {
+      auth: {
+        env: {},
+        out: forbidden,
+        err: forbidden,
+        open: forbidden,
+        now: () => new Date(0),
+        fetch: forbidden,
+        session: memorySessionStore(),
+      },
+      readStdin: forbidden,
+    };
+    for (const [args, command, checkHelp] of [
+      [["frobnicate"], "frobnicate"],
+      [["snapshot", "frobnicate", "--org", "org_placeholder"], "snapshot frobnicate"],
+      [["snapshot", "connect", "web", "--provider", "boat"], "snapshot connect", true],
+      [["golden", "snapshot", "web", "--provider", "docker"], "snapshot snapshot", true],
+    ] as const) {
       for (const json of [false, true]) {
-        const args = family ? [family, "frobnicate", "--org", "org_placeholder"] : ["frobnicate"];
-        const diagnostic = `unknown command '${family ? "snapshot " : ""}frobnicate'`;
-        const { code, out, err } = await capture([...args, ...(json ? ["--json"] : [])], {
-          env: {},
-          fetch: Object.assign(forbidden, { preconnect: forbidden }),
-          readStdin: forbidden,
-        });
+        const diagnostic = `unknown command '${command}'`;
+        const { code, out, err } = await capture([...args, ...(json ? ["--json"] : [])], deps);
         expect(code).toBe(2);
         expect(out).toBe("");
         if (json) {
@@ -154,6 +166,12 @@ describe("run", () => {
           expect(err).toContain(diagnostic);
           expect(err).toContain("armada --help");
         }
+      }
+      if (checkHelp) {
+        const help = await capture([...args.slice(0, 2), "--help"], deps);
+        expect(help.code).toBe(2);
+        expect(help.out).toBe("");
+        expect(help.err).toContain(`unknown command '${command}'`);
       }
     }
   });

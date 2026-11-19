@@ -64,18 +64,9 @@ inherit snapshot visibility. A private snapshot is visible to its owner.
   up recorded sandboxes with `POST /api/v1/sandbox/list` and
   `{"externalRef":"application-1042"}`. An empty list is expected when the
   allocation succeeded but the sandbox was never registered.
-- An `outcome_unknown` or 409 `conflict` answer for the key normally names
-  the receipt UUID, which is also the sandbox ID the launch would have. As the
-  launching user, call the MCP `launch_receipt` tool with
-  `{"id":"<receipt UUID>"}` (add `"org":"<organization UUID>"` when you belong
-  to several organizations). It looks up provider allocations through
-  the provider binding recorded on the receipt, so it works after the snapshot
-  is removed. An empty `allocations` list does not prove that nothing was
-  allocated.
-- If you never received a receipt UUID (for example the first response was
-  lost and the replay returns `not_found`), there is no self-service lookup.
-  Keep the original key, do not relaunch, and escalate to an Armada operator
-  with the organization, the idempotency key and the `externalRef`.
+- If recovery needs an operator, include the organization, idempotency key,
+  `externalRef` and receipt UUID when available. The UUID is the logical sandbox
+  ID and is recorded in the provider's sandbox ownership label.
 
 The `idempotencyKey`, `externalRef` and recovery rules above apply only to Boat
 and Modal launches. See [idempotency and recovery](../launch-idempotency.md)
@@ -245,10 +236,16 @@ this order:
    instead when check 2 or 3 fails first.
    Send with a service token created by the sandbox owner.
 
+Admission for a new send returns HTTP 409 `conflict` when `conversation_id`
+names anything other than the sandbox's current conversation. Omit the field
+to open or continue the sandbox's conversation. Launch another sandbox for a
+separate conversation. An identical retry of an admitted account-queued send
+can still retrieve its original receipt after the current conversation changes.
+
 Sends that pass these checks to a sandbox with a pinned model account, which
 includes every Docker sandbox, then pass through the account turn queue. For runtime and Docker
-sandboxes, the queue returns HTTP 400 `invalid` for a refused override or a
-`conversation_id` that names no recorded conversation. It returns HTTP 409
+sandboxes, the queue returns HTTP 400 `invalid` for a refused override. It
+returns HTTP 409
 `conflict` when the sandbox cannot accept a prompt now, for example while a
 Docker launch is still `starting`. It also returns 409 `conflict` for a reused
 `request_id` with different input, or for one whose queued send has failed.

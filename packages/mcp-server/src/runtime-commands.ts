@@ -1,5 +1,6 @@
 import type { RunnerRequest } from "@armada/agent-runtime";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
+import { UUID } from "./control-input.ts";
 import type { Route } from "./http.ts";
 import {
   currentRequestId,
@@ -9,6 +10,7 @@ import {
 } from "./request-observability.ts";
 import { type createRuntimeEnrolments, RuntimeEnrolmentDenied, type RuntimeOwnerScope } from "./runtime-enrolment.ts";
 import { runtimeHttpFailure } from "./runtime-http-failure.ts";
+import { deferTransactionWake, runtimeWakes, waitForTimeout } from "./wake-bus.ts";
 
 const MAX_COMMAND = 1048576;
 const MAX_REPLY = MAX_COMMAND * 2;
@@ -36,18 +38,7 @@ interface Clock {
 }
 const clock: Clock = {
   now: () => Date.now(),
-  async wait(ms, signal) {
-    if (signal.aborted) return;
-    await new Promise<void>((resolve) => {
-      const finish = () => {
-        clearTimeout(timer);
-        signal.removeEventListener("abort", finish);
-        resolve();
-      };
-      const timer = setTimeout(finish, ms);
-      signal.addEventListener("abort", finish, { once: true });
-    });
-  },
+  wait: waitForTimeout,
 };
 function record(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -91,7 +82,9 @@ export function createRuntimeCommands(
     const serialized = JSON.stringify(request);
     if (Buffer.byteLength(serialized) > MAX_COMMAND) throw new RuntimeCommandRefused();
     const sealed = await encryptSecret(serialized, key);
-    return authority.withOwner(request.sandboxId, ownerId, async (tx, scope) => {
+    const wakeKeys = [`socket:${request.sandboxId}`, `poll:${request.sandboxId}`];
+    let deferred = false;
+    const admitted = await authority.withOwner(request.sandboxId, ownerId, async (tx, scope) => {
       // Application-secret taint forbids file egress: never admit or replay an output read (row
       // locked here). A stored reply may predate the taint, and a read has no effect to reconcile.
       if (
@@ -152,17 +145,22 @@ export function createRuntimeCommands(
           request.op === "prompt" ? (currentRequestId() ?? null) : null,
         ],
       );
+      for (const wakeKey of wakeKeys) deferred = deferTransactionWake(tx, wakeKey);
       noteAdmission();
       return { epoch: scope.epoch, requestId: request.requestId, provider: scope.provider, fresh: true };
     });
+    if (admitted.fresh && !deferred) for (const wakeKey of wakeKeys) runtimeWakes.notify(wakeKey);
+    return admitted;
   }
   /** Keep admission fenced through synchronous socket enqueue; never await network I/O here. */
   async function withNext<T>(
     token: string,
     epoch: string,
     use: (value: { epoch: string; command: RunnerRequest | null }) => Promise<T>,
+    onScope?: (sandboxId: string) => void,
   ) {
     return authority.withSession(token, epoch, async (tx, scope) => {
+      onScope?.(scope.sandboxId);
       const row = (
         await tx.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
           `select request_enc from public.runtime_commands c where sandbox_id=$1 and epoch=$2 and result_enc is null
@@ -202,8 +200,11 @@ export function createRuntimeCommands(
       throw new RuntimeCommandConflict();
     const serialized = JSON.stringify(value);
     if (Buffer.byteLength(serialized) > MAX_REPLY) throw new RuntimeCommandConflict();
+    const candidate = record(value.body.result) ? value.body.result.promptId : undefined;
+    let acceptedPromptId =
+      value.status < 300 && typeof candidate === "string" && UUID.test(candidate) ? candidate : null;
     let sealed = await encryptSecret(serialized, key);
-    return authority.withSession(token, epoch, async (tx, scope) => {
+    const { sandboxId, ...receipt } = await authority.withSession(token, epoch, async (tx, scope) => {
       // Keep the ordered acknowledgement even if the caller's deadline or the taint fence
       // invalidated the read. No reader can use these bytes now.
       const outputDeadline = /^outputs_(\d{1,16})_/.exec(String(value.requestId))?.[1];
@@ -214,7 +215,8 @@ export function createRuntimeCommands(
               scope.sandboxId,
             ])
           ).rows.length > 0;
-        if (tainted || (outputDeadline !== undefined && Number(outputDeadline) <= time.now()))
+        if (tainted || (outputDeadline !== undefined && Number(outputDeadline) <= time.now())) {
+          acceptedPromptId = null;
           sealed = await encryptSecret(
             JSON.stringify({
               epoch: value.epoch,
@@ -224,12 +226,26 @@ export function createRuntimeCommands(
             }),
             key,
           );
+        }
+      }
+      let promptId: string | null = null;
+      if (acceptedPromptId) {
+        const command = (
+          await tx.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
+            `select request_enc from public.runtime_commands
+             where sandbox_id=$1 and request_id=$2 and epoch=$3 and result_enc is null`,
+            [scope.sandboxId, value.requestId, scope.epoch],
+          )
+        ).rows[0];
+        if (command && JSON.parse(await decryptSecret(command.request_enc, key)).op === "prompt")
+          promptId = acceptedPromptId;
       }
       const row = (
         await tx.query<{ request_id: string; result_enc: Uint8Array<ArrayBuffer> }>(
-          `update public.runtime_commands set result_enc=coalesce(result_enc,$4)
+          `update public.runtime_commands set result_enc=coalesce(result_enc,$4),
+           accepted_prompt_id=case when result_enc is null then $5::uuid else accepted_prompt_id end
          where sandbox_id=$1 and request_id=$2 and epoch=$3 returning request_id,result_enc`,
-          [scope.sandboxId, value.requestId, scope.epoch, sealed],
+          [scope.sandboxId, value.requestId, scope.epoch, sealed, promptId],
         )
       ).rows[0];
       if (!row) throw new RuntimeCommandConflict();
@@ -247,8 +263,11 @@ export function createRuntimeCommands(
           [scope.sandboxId, queued[1], result.promptId],
         );
       }
-      return { epoch: scope.epoch, requestId: value.requestId };
+      return { sandboxId: scope.sandboxId, epoch: scope.epoch, requestId: value.requestId };
     });
+    runtimeWakes.notify(`reply:${sandboxId}:${receipt.epoch}:${receipt.requestId}`);
+    runtimeWakes.notify(`socket:${sandboxId}`);
+    return receipt;
   }
   async function result(ownerId: string, sandboxId: string, id: string, expectedEpoch?: string) {
     if (!requestId(id)) throw new RuntimeCommandConflict();
@@ -327,9 +346,17 @@ export function createRuntimeCommands(
         const deadline = time.now() + timeout;
         const admitted = await enqueue(ownerId, request, options.expectedEpoch);
         provider = admitted.provider;
+        const wakeKey = `reply:${request.sandboxId}:${admitted.epoch}:${request.requestId}`;
         while (true) {
           signal.throwIfAborted();
-          const response = await result(ownerId, request.sandboxId, request.requestId, admitted.epoch);
+          // A result may commit while the read still has a pending snapshot.
+          let woken = false;
+          const unsubscribe = runtimeWakes.subscribe(wakeKey, () => {
+            woken = true;
+          });
+          const response = await result(ownerId, request.sandboxId, request.requestId, admitted.epoch).finally(
+            unsubscribe,
+          );
           signal.throwIfAborted();
           if (response.state === "finished") return response.reply;
           if (response.state !== "pending") throw new RuntimeCommandConflict();
@@ -339,7 +366,7 @@ export function createRuntimeCommands(
           if (remaining <= 0) throw new RuntimeCommandPending();
           // A final large output needs many sequential reads within the stop budget.
           const interval = request.op === "readOutputs" && request.part ? 100 : 250;
-          await time.wait(Math.min(interval, remaining), signal);
+          if (!woken) await runtimeWakes.wait(wakeKey, signal, Math.min(interval, remaining), time.wait.bind(time));
         }
       },
       (reply) => {
@@ -373,9 +400,22 @@ export function createRuntimeCommands(
         throw new RuntimeCommandConflict();
       const deadline = time.now() + 20000;
       while (!request.signal.aborted) {
-        const response = await next(token, epoch);
-        if (response.command || time.now() >= deadline) return Response.json(response, { headers });
-        await time.wait(Math.min(1000, Math.max(0, deadline - time.now())), request.signal);
+        let wake: ReturnType<typeof runtimeWakes.watch> | undefined;
+        try {
+          const response = await withNext(
+            token,
+            epoch,
+            async (value) => value,
+            (sandboxId) => {
+              wake = runtimeWakes.watch(`poll:${sandboxId}`);
+            },
+          );
+          const remaining = deadline - time.now();
+          if (response.command || remaining <= 0) return Response.json(response, { headers });
+          await wake?.wait(request.signal, Math.min(1000, remaining), time.wait.bind(time));
+        } finally {
+          wake?.close();
+        }
       }
       return new Response(null, { status: 499, headers });
     } catch (error) {

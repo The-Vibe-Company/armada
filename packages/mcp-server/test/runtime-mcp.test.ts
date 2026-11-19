@@ -469,7 +469,7 @@ test("configuration preparation commits queue order before waiting; an older ACK
   }
 });
 
-test("connection admission rejects unsupported stdio before launch binding or compute", async () => {
+test("a connected pinned stdio definition reaches the runtime without a gateway lease", async () => {
   const x = await fixture(),
     { f } = x;
   try {
@@ -479,22 +479,46 @@ test("connection admission rejects unsupported stdio before launch binding or co
       transport: "stdio",
       command: "npx",
       args: ["-y", "@example/mcp@1.2.3", "/workspace"],
-      authType: "none",
     });
-    await expect(
-      x.service.connections.validate({ userId: f.people.owner, orgId: f.people.org }, [local.id], "org"),
-    ).rejects.toMatchObject({
+    await expect(x.service.preflight(f.caller, { org: f.people.org, connections: [local.id] })).resolves.toEqual({
+      mcpReady: true,
+      connections: [local.id],
+    });
+    await x.service.connections.validate({ userId: f.people.owner, orgId: f.people.org }, [local.id], "org");
+    await x.service.connections.bind(f.row.id, [local.id]);
+    const receipt = await x.service.prepare(f.caller, f.row.id);
+    expect((await x.api("sandbox/send", f.input("use configured MCP"))).status).toBe(200);
+    expect(f.mcpSnapshots.at(-1)?.servers[`armada_${local.id.replaceAll("-", "_")}`]).toEqual({
+      type: "stdio",
+      command: "npx",
+      args: ["--yes", "--", "@example/mcp@1.2.3", "/workspace"],
+    });
+    expect((await f.db.query("select 1 from mcp_leases where connection_id=$1", [local.id])).rows).toEqual([]);
+    await f.db.query("update mcp_grants set generation=generation+1 where connection_id=$1", [local.id]);
+    expect((await x.service.prepare(f.caller, f.row.id))?.revision).not.toBe(receipt?.revision);
+    await x.registry.setEnabled(f.people.owner, f.people.org, local.id, false);
+    await expect(x.service.prepare(f.caller, f.row.id)).rejects.toMatchObject({ code: "forbidden" });
+  } finally {
+    await f.close();
+  }
+});
+
+test.each([
+  ["argument count", Array(62).fill("input")],
+  ["configuration bytes including the built-in service", Array(16).fill("x".repeat(4080))],
+])("runtime admission rejects pinned stdio beyond the limit for %s", async (_limit, args) => {
+  const { f, registry, service } = await fixture();
+  try {
+    const local = await registry.save(f.people.owner, f.people.org, {
+      name: "oversized local",
+      scope: "personal",
+      transport: "stdio",
+      command: "npx",
+      args: ["@example/mcp@1.2.3", ...args],
+    });
+    await expect(service.preflight(f.caller, { org: f.people.org, connections: [local.id] })).rejects.toMatchObject({
       code: "invalid",
-      message: "Enrolled runtimes do not support pinned stdio MCP; no native fallback.",
     });
-    expect(
-      (
-        await f.db.query<{ n: number }>(
-          "select count(*)::int as n from mcp_bindings where sandbox_id=$1 and connection_id=$2",
-          [f.row.id, local.id],
-        )
-      ).rows[0]?.n,
-    ).toBe(0);
   } finally {
     await f.close();
   }
