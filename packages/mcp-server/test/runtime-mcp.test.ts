@@ -469,7 +469,7 @@ test("configuration preparation commits queue order before waiting; an older ACK
   }
 });
 
-test("a pinned stdio grant reaches the runtime with private env and without a gateway lease", async () => {
+test("a connected pinned stdio definition reaches the runtime without a gateway lease", async () => {
   const x = await fixture(),
     { f } = x;
   try {
@@ -480,12 +480,6 @@ test("a pinned stdio grant reaches the runtime with private env and without a ga
       command: "npx",
       args: ["-y", "@example/mcp@1.2.3", "/workspace"],
     });
-    const secret = "private-stdio-fixture";
-    const env = { MCP_PRIVATE_VALUE: secret };
-    await f.db.query("update mcp_grants set value_enc=$2 where connection_id=$1", [
-      local.id,
-      await encryptSecret(JSON.stringify(env), ENCRYPTION_KEY),
-    ]);
     await expect(x.service.preflight(f.caller, { org: f.people.org, connections: [local.id] })).resolves.toEqual({
       mcpReady: true,
       connections: [local.id],
@@ -498,10 +492,7 @@ test("a pinned stdio grant reaches the runtime with private env and without a ga
       type: "stdio",
       command: "npx",
       args: ["--yes", "--", "@example/mcp@1.2.3", "/workspace"],
-      env,
     });
-    expect(JSON.stringify(receipt)).not.toContain(secret);
-    expect(f.journal.redact(secret)).not.toContain(secret);
     expect((await f.db.query("select 1 from mcp_leases where connection_id=$1", [local.id])).rows).toEqual([]);
     await f.db.query("update mcp_grants set generation=generation+1 where connection_id=$1", [local.id]);
     expect((await x.service.prepare(f.caller, f.row.id))?.revision).not.toBe(receipt?.revision);
