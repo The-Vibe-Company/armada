@@ -1,35 +1,4 @@
 /**
- * The integration REST POST inventory. The published sandbox output GET and delete operations come from
- * the shared operation table. Every other route that the dashboard forwards must have a reason
- * in `UNPUBLISHED_REST_ROUTES`. The dashboard proxy test checks both directions.
- */
-export const PUBLISHED_REST_ROUTES = [
-  // Discovery: what a launch can ask for, and which goldens it can name.
-  "launch/options",
-  "golden/list",
-  "golden/capabilities",
-  "golden/adopt",
-  "github/refresh",
-  "github/runtime-status",
-  "sandbox/list",
-  "sandbox/status",
-  "sandbox/recovery",
-  "sandbox/advice",
-  "sandbox/send",
-  "sandbox/resume",
-  "sandbox/report",
-  "sandbox/stop",
-  "sandbox/extend",
-  "sandbox/wait",
-  "sandbox/exec",
-  "sandbox/steer",
-  "sandbox/interrupt",
-  "sandbox/launch",
-  "templates/launch",
-  "logs/read",
-] as const;
-
-/**
  * Forwarded routes outside the integration description, by exact route or by a
  * namespace ending in "/". Sandbox, golden, launch and logs routes are listed one by
  * one, so a new route there must be published or given a reason.

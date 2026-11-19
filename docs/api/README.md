@@ -181,6 +181,13 @@ details.
 
 ## Drive a turn over MCP
 
+Call `launch_options` with `{}` to read the same server-wide launch catalog as
+`POST /api/v1/launch/options`. MCP `launch` accepts Boat and Modal goldens.
+Call `outputs_list` with `id` to list the stored output snapshot. Call
+`output_read` with `id` and `name` to read a file up to 32 KiB as a JSON object
+with a `base64` field. Use `GET /api/v1/sandboxes/{id}/outputs/{name}` for
+larger files. Both transports enforce the same snapshot access rules.
+
 | Tool | Mode | Result |
 | --- | --- | --- |
 | `send` | `steer: true`, with the instruction in `prompt` | Redirect the running turn. The receipt includes `delivery` and `mode`. |

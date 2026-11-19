@@ -1,5 +1,5 @@
 /** Public routing must prove both readiness and the immutable source identity. */
-export function matchesDeploymentHealth(health: unknown, version: string, commit: string): boolean {
+export function matchesDeploymentHealth(health: unknown, version: string, commit: string) {
   if (!/^[a-f0-9]{40}$/.test(commit) || !version || !health || typeof health !== "object") return false;
   const value = health as Record<string, unknown>;
   return value.ok === true && value.version === version && value.commit === commit;

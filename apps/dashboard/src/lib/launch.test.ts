@@ -1,5 +1,5 @@
 import { expect, jest, test } from "bun:test";
-import { CONTROL_TIMEOUT_MS, ControlError } from "../src/lib/control.ts";
+import { CONTROL_TIMEOUT_MS, ControlError } from "./control.ts";
 import {
   decodeLaunchAttempt,
   encodeLaunchAttempt,
@@ -9,8 +9,8 @@ import {
   launchFailureMessage,
   launchSandbox,
   postSandboxLaunch,
-} from "../src/lib/launch.ts";
-import { LAUNCH_KEY_FIELD, launchKeyFor } from "../src/lib/launch-key.ts";
+} from "./launch.ts";
+import { LAUNCH_KEY_FIELD, launchKeyFor } from "./launch-key.ts";
 
 const args = {
   golden: "web",
@@ -84,10 +84,10 @@ test("an explicit size or stored defaults carry the sizing version on the canoni
 
 test("a 404 for a sized launch fails once", async () => {
   const routes: string[] = [];
-  const unknown = { error: { code: "not_found", message: "Unknown route." } };
+  const unknown = { error: { code: "unknown_route", message: "Unknown route." } };
   const error = await launchSandbox(answeringAt(routes, unknown, 404), { ...args, size: "large" }).catch((e) => e);
   expect(error).toBeInstanceOf(ControlError);
-  expect(error.message).toBe("This Armada server does not offer launching with machine sizes yet.");
+  expect(launchFailureMessage(error)).toContain("does not offer launching with machine sizes yet");
   expect(routes).toHaveLength(1);
 });
 
@@ -175,9 +175,9 @@ test("Armada access uses the canonical route and preserves all explicit launch c
     prompt: "task",
   });
   routes.length = 0;
-  await expect(launchSandbox(answeringAt(routes, { error: { code: "not_found" } }, 404), chosen)).rejects.toThrow(
-    "does not offer launching with Armada access",
-  );
+  await expect(
+    launchSandbox(answeringAt(routes, { error: { code: "unknown_route", message: "Unknown route." } }, 404), chosen),
+  ).rejects.toThrow("does not offer launching with Armada access");
   expect(routes).toHaveLength(1);
 });
 
@@ -223,10 +223,11 @@ const unanswered = () =>
 test("a repeated submit of the same choices reuses the request key; a changed choice gets a new one", () => {
   let n = 0;
   const fresh = () => `key-${++n}`;
-  const form = (prompt: string): [string, string][] => [
-    ["golden", "web"],
-    ["prompt", prompt],
-  ];
+  const form = (prompt: string) =>
+    [
+      ["golden", "web"],
+      ["prompt", prompt],
+    ] satisfies [string, string][];
   const first = launchKeyFor(null, form("Say Hello"), fresh);
   const retry = launchKeyFor(first, [...form("Say Hello"), [LAUNCH_KEY_FIELD, first.key]], fresh);
   expect(retry.key).toBe(first.key);
@@ -270,7 +271,6 @@ test("an unanswered launch is followed to the sandbox it started, else reported 
   });
   expect(remembered).toEqual([{ key: KEY, since: 2_000 }]);
   expect(await followLaunch({ ...base, created: async () => null })).toEqual({ state: "unknown", since: 2_000 });
-  // The server saying the fork outcome is unknown, or a gateway answering for it, is followed the same way.
   for (const unsure of [new ControlError("Unknown.", 500, "outcome_unknown"), new ControlError("Bad gateway.", 502)])
     expect(
       await followLaunch({
@@ -281,7 +281,6 @@ test("an unanswered launch is followed to the sandbox it started, else reported 
         },
       }),
     ).toEqual({ state: "started", id: "s1" });
-  // A refusal the server answered is not followed: the launch failed and the person fixes its cause.
   const refused = new ControlError("No.", 400);
   const error = await followLaunch({
     ...base,
@@ -291,7 +290,6 @@ test("an unanswered launch is followed to the sandbox it started, else reported 
     },
   }).catch((e) => e);
   expect(error).toBe(refused);
-  // The refused attempt is forgotten: the next submission of the same choices launches again.
   expect(remembered.at(-1)).toBe("forgotten");
 });
 
@@ -307,7 +305,6 @@ test("a retry after a refusal the server answered launches again under the same 
     forget: () => {
       previous = null;
     },
-    // The refused attempt left only a failed row, which the live lookup does not return.
     created: async () => null,
     launch: async () => {
       launches += 1;

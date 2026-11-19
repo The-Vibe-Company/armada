@@ -32,13 +32,7 @@ const mcpLaunchArguments = z.looseObject({}).meta({
 
 export const mcpLaunchContract = {
   title: "Launch an agent",
-  description:
-    "Forks a golden into a new sandbox, pulls its repos, runs its init commands, and starts the agent. " +
-    "With `prompt` the agent starts working at once (status running). Without it the sandbox is left ready " +
-    "and the conversation starts at the first `send`. The sandbox gets only your (or your org's) Armada " +
-    "credentials for this agent, never the boat.dev account's. When the caller connected GitHub, git and gh in " +
-    "the sandbox act as that person (8 hour token): see `github` in the answer. Setup can take a few minutes. " +
-    "Personal sessions may use an org slug or UUID. For scoped tokens, omit `org` or use the scoped org UUID.",
+  description: launch.mcpDescription,
   input: mcpLaunchArguments,
   output: launchEnvelope.shape,
 };

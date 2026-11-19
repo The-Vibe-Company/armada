@@ -1,9 +1,11 @@
 import { expect, test } from "bun:test";
 import { createMemoryAuthStore, generateToken, sha256Hex } from "@armada/auth";
 import { sandboxViewerOperations } from "@armada/core/contract";
+import published from "../openapi.json";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { controlRoutes } from "../src/modules.ts";
 import { rejectUnroutedViewerRequest } from "../src/viewer-control.ts";
+import { publishedGetResponse } from "./published-response.ts";
 
 async function fixture(status: "ready" | "deleted" = "ready") {
   let time = new Date("2026-11-17T12:00:00Z");
@@ -221,4 +223,51 @@ test("viewer send forwards a structured sandbox refusal", async () => {
   expect(sandboxViewerOperations.send.errorOutput.parse(await response!.json())).toMatchObject({
     error: { code: "sandbox_terminal" },
   });
+});
+
+test("the published viewer stream 503 accepts a viewer access denial", async () => {
+  const f = await fixture();
+  const response = await handleControlRequest(
+    new Request("https://example.test/api/v1/viewer/events", {
+      headers: { authorization: `Bearer ${f.grant.token}` },
+    }),
+    {
+      ...f.options,
+      now: () => {
+        throw new Error("clock unavailable");
+      },
+    },
+  );
+  expect(response?.status).toBe(503);
+  expect(publishedGetResponse("viewer/events", "503").parse(await response!.json())).toEqual({
+    error: "viewer_access_denied",
+  });
+});
+
+test("viewer POSTs refuse oversized bodies at their published limits before dispatch", async () => {
+  const f = await fixture("deleted");
+  const cases = [
+    ["sandbox/viewer-token", f.token, { id: f.id }, 200],
+    ["viewer/logs", f.grant.token, {}, 200],
+    ["viewer/status", f.grant.token, {}, 200],
+    ["viewer/send", f.grant.token, { message: "hello" }, 409],
+  ] as const;
+  for (const [route, token, input, admittedStatus] of cases) {
+    const contract = published.paths[`/api/v1/${route}`].post.requestBody as {
+      "x-max-body-bytes"?: number;
+      "x-oversized-body-status"?: number;
+    };
+    const limit = contract["x-max-body-bytes"];
+    expect(limit ?? 0).toBeGreaterThan(0);
+    const padding = limit! - Buffer.byteLength(JSON.stringify({ ...input, pad: "" }));
+    expect([route, (await f.api(route, token, { ...input, pad: "x".repeat(padding) }))?.status]).toEqual([
+      route,
+      admittedStatus,
+    ]);
+    const dispatched = f.calls.length;
+    const refused = await f.api(route, token, { ...input, pad: "x".repeat(padding + 1) });
+    expect(refused?.status).toBe(contract["x-oversized-body-status"]);
+    expect(f.calls).toHaveLength(dispatched);
+    expect(await refused!.json()).toEqual({ error: "viewer_access_denied" });
+  }
 });

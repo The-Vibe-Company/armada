@@ -194,7 +194,7 @@ describe("vault control client", () => {
     const missing = await older.control.list(ORG).catch((caught) => caught);
     expect([missing.message, missing.code]).toEqual([
       "This Armada server does not offer variables and secrets yet.",
-      undefined,
+      "unknown_route",
     ]);
   });
 });

@@ -13,19 +13,21 @@ const skillPins = z.array(z.string().max(256).regex(SKILL_PIN_PATTERN)).max(20);
 const idempotencyKey = z.string().min(16).max(128);
 const size = z.enum(MACHINE_SIZES).optional();
 
+export const launchExternalRef = z
+  .string()
+  .min(1)
+  .max(MAX_EXTERNAL_REF_LENGTH)
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are excluded from external references
+  .regex(/^[^\x00-\x1f\x7f-\x9f]+(?![\s\S])/)
+  .optional();
+
 const common = {
   org: nonBlank.optional().describe("Organization slug or UUID."),
   harness: z.enum(HARNESSES),
   skills: skillPins.optional(),
   skipSkillDefaults: z.boolean().optional(),
   stopWhenWorkMerged: z.boolean().optional(),
-  externalRef: z
-    .string()
-    .min(1)
-    .max(MAX_EXTERNAL_REF_LENGTH)
-    // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are excluded from external references
-    .regex(/^[^\x00-\x1f\x7f-\x9f]+(?![\s\S])/)
-    .optional(),
+  externalRef: launchExternalRef,
 };
 
 function ttl(provider: SandboxPlacementProviderId) {
@@ -74,10 +76,7 @@ const pinnedModal = z.strictObject({
   runtimeTransport: z.literal("dialout"),
   id: uuid,
   revision: z.number().int().positive(),
-  requestKey: z
-    .string()
-    .regex(/^[A-Za-z0-9._:-]+$/)
-    .max(128),
+  idempotencyKey,
   prompt: nonBlank.max(100000).optional(),
   ttlSeconds: ttl("modal"),
   size,
@@ -131,4 +130,5 @@ export const launchInput = z.union([
   dockerSnapshotLaunchFields.extend({ idempotencyKey }),
 ]);
 
+export type PinnedModalLaunchInput = z.input<typeof pinnedModal>;
 export type LaunchInput = z.input<typeof launchInput>;

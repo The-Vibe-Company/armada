@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createSqlAuthStore } from "@armada/auth";
 import {
   type AgentEvent,
@@ -124,20 +124,35 @@ async function fixture(
     adminId = randomUUID(),
     otherId = randomUUID(),
     credentialId = randomUUID();
-  await db.query(`insert into auth.users(id) values($1),($2),($3)`, [userId, adminId, otherId]);
-  await db.query(`insert into public.orgs(id,name) values($1,$2)`, [orgId, `normal-launch-${orgId}`]);
+  const installationId = randomUUID();
+  const host = { hostId: randomUUID(), hostToken: randomBytes(32).toString("hex") };
   await db.query(
-    `insert into public.members(org_id,user_id,role) values($1,$2,'member'),($1,$3,'admin'),($1,$4,'member')`,
-    [orgId, userId, adminId, otherId],
+    `with users as (
+       insert into auth.users(id) values($2),($3),($4)
+     ), org as (
+       insert into public.orgs(id,name) values($1,$5)
+     ), members as (
+       insert into public.members(org_id,user_id,role) values($1,$2,'member'),($1,$3,'admin'),($1,$4,'member')
+     )
+     insert into public.docker_hosts(
+       id,org_id,owner_id,registration_expires_at,installation_id,hash,last_seen_at,daemon_version,daemon_protocol
+     ) values($6,$1,$3,now()+interval '5 minutes',$7,$8,now(),$9,$10)`,
+    [
+      orgId,
+      userId,
+      adminId,
+      otherId,
+      `normal-launch-${orgId}`,
+      host.hostId,
+      installationId,
+      createHash("sha256").update(host.hostToken).digest("hex"),
+      options.daemonVersion ?? "2.28.0",
+      DOCKER_HOST_PROTOCOL - 1,
+    ],
   );
   const actor = { userId, orgId },
     admin = { userId: adminId, orgId };
   const caller: Caller = { userId, orgs: [{ orgId, role: "member" }], via: "supabase" };
-  const registration = await hosts.issueRegistration(admin),
-    installationId = randomUUID();
-  const host = await hosts.exchangeRegistration(registration.registrationToken, installationId);
-  await hosts.poll(host.hostToken, installationId, options.daemonVersion ?? "2.28.0");
-  await db.query("update docker_hosts set daemon_protocol=$2 where id=$1", [host.hostId, DOCKER_HOST_PROTOCOL - 1]);
   const secret = `offline-normal-launch-${randomUUID()}`;
   // Omitted version must select the current pin, not fabricate version one.
   await db.query(
@@ -169,6 +184,7 @@ async function fixture(
   };
   let now = 0,
     drive = true,
+    pollResumeClaims = false,
     failCreate: false | "plain" | "image" | "disk" = false,
     malformedSkills = false;
   let session: Awaited<ReturnType<typeof authority.enrol>> | undefined;
@@ -185,11 +201,20 @@ async function fixture(
     },
   };
   const commands = createRuntimeCommands(authority, key, clock);
+  const runtimeClock = {
+    now: clock.now,
+    async wait(ms: number) {
+      now += ms;
+      if (drive) await stepRuntime();
+    },
+  };
   async function step() {
     let job: Awaited<ReturnType<typeof hosts.poll>> = null;
-    if (await hosts.mayHaveWork(host.hostToken, installationId, false, [], true)) {
-      for (const claim of await hosts.resumeClaimsForHost(host.hostToken, installationId))
-        await hosts.claimResume(host.hostToken, installationId, claim.requestId, true);
+    if (await hosts.mayHaveWork(host.hostToken, installationId, false, [], pollResumeClaims)) {
+      if (pollResumeClaims) {
+        for (const claim of await hosts.resumeClaimsForHost(host.hostToken, installationId))
+          await hosts.claimResume(host.hostToken, installationId, claim.requestId, true);
+      }
       job = await hosts.poll(host.hostToken, installationId, options.daemonVersion ?? "2.28.0");
     }
     if (job) {
@@ -212,7 +237,10 @@ async function fixture(
         ]);
       }
     }
-    if (session && job?.operation !== "stop" && job?.operation !== "delete") {
+    await stepRuntime();
+  }
+  async function stepRuntime() {
+    if (session) {
       const next = await commands.next(session.runtimeToken, session.epoch);
       if (next.command) {
         const command = next.command;
@@ -345,12 +373,7 @@ async function fixture(
     sql,
     key,
     origin: "https://armada.example",
-    commands: createRuntimeCommands(authority, key, {
-      now: clock.now,
-      wait: async () => {
-        await step();
-      },
-    }),
+    commands: createRuntimeCommands(authority, key, runtimeClock),
     github: {
       store: createSqlVaultStore(sql),
       encryptionKey: key,
@@ -362,10 +385,7 @@ async function fixture(
     },
   });
   function mcp(target = sql) {
-    const bridge = createRuntimeCommands(createRuntimeEnrolments(target, key), key, {
-      now: clock.now,
-      wait: (ms) => clock.wait(ms),
-    });
+    const bridge = createRuntimeCommands(createRuntimeEnrolments(target, key), key, runtimeClock);
     return createRuntimeMcp({ sql: target, key, origin: "https://armada.example", commands: bridge });
   }
   function service(
@@ -410,7 +430,14 @@ async function fixture(
     github,
     service,
     mcp,
-    step,
+    async resume(controls: ReturnType<typeof createDockerSandboxControls>) {
+      pollResumeClaims = true;
+      try {
+        return await controls.invoke(caller, "resume", { id: body.requestId, request_id: randomUUID() });
+      } finally {
+        pollResumeClaims = false;
+      }
+    },
     setDrive(value: boolean) {
       drive = value;
     },
@@ -2109,7 +2136,7 @@ test("Docker GitHub capabilities rotate on resume and expire on host revocation"
   const initialCapability = configuredGitHubCapability(f);
   expect((await acquireGitHub(f, initialCapability, "example/project"))?.status).toBe(200);
   await controls.invoke(f.caller, "stop", { id: f.body.requestId });
-  await controls.invoke(f.caller, "resume", { id: f.body.requestId, request_id: randomUUID() });
+  await f.resume(controls);
   expect((await f.github.status(f.caller, f.body.requestId)).configured).toBe(true);
   expect((await acquireGitHub(f, initialCapability, "example/project"))?.status).toBe(403);
   const resumedCapability = configuredGitHubCapability(f);
@@ -2150,7 +2177,7 @@ test("Docker freezes versioned readable bindings and re-delivers them before the
   expect(await f.service().launch(f.caller, body)).toMatchObject({ promptId: launched.promptId });
   const controls = createDockerSandboxControls(sql, key, { clock: f.clock, resume: bootstrap });
   await controls.invoke(f.caller, "stop", { id: f.body.requestId });
-  await controls.invoke(f.caller, "resume", { id: f.body.requestId, request_id: randomUUID() });
+  await f.resume(controls);
   const configurations = (f.native as { op: string; variables: Record<string, string> }[]).filter(
     (command) => command.op === "configureReadableVariables",
   );
@@ -2234,7 +2261,7 @@ test("Docker delivers value-free secret references through native environment an
   expect(JSON.stringify(manifest)).not.toContain(canary);
   const controls = createDockerSandboxControls(sql, key, { clock: f.clock, resume: bootstrap });
   await controls.invoke(f.caller, "stop", { id: f.body.requestId });
-  await controls.invoke(f.caller, "resume", { id: f.body.requestId, request_id: randomUUID() });
+  await f.resume(controls);
   expect((f.native as { op: string }[]).filter((command) => command.op === "configureReadableVariables")).toHaveLength(
     2,
   );
@@ -2418,7 +2445,7 @@ test("Docker re-prepares bound MCP grants before follow-up and after same-host r
     prepareMcp: f.mcp().prepare,
   });
   await controls.invoke(f.caller, "stop", { id: f.body.requestId, request_id: randomUUID() });
-  const resumed = await controls.invoke(f.caller, "resume", { id: f.body.requestId, request_id: randomUUID() });
+  const resumed = await f.resume(controls);
   expect(resumed).toEqual({ handled: true, result: { id: f.body.requestId, status: "ready" } });
   expect(configured()).toHaveLength(3);
   expect(await createSqlMcpLeasePort(sql).validate(second, "tools")).toBeNull();
@@ -2950,7 +2977,7 @@ test.each(["private", "org"] as const)(
     });
     const firstEpoch = f.session()?.epoch;
     await controls.invoke(f.caller, "stop", { id: f.body.requestId });
-    await controls.invoke(f.caller, "resume", { id: f.body.requestId, request_id: randomUUID() });
+    await f.resume(controls);
     expect(f.session()?.epoch).not.toBe(firstEpoch);
     expect(await f.github.status(f.caller, f.body.requestId)).toMatchObject({
       configured: true,
@@ -3418,9 +3445,7 @@ test("old or unreported Docker daemons get an actionable resume refusal before a
   const before = await counts(f);
   for (const protocol of [null, DOCKER_HOST_PROTOCOL + 1]) {
     await db.query("update docker_hosts set daemon_protocol=$2 where id=$1", [f.hostId, protocol]);
-    await expect(
-      controls.invoke(f.caller, "resume", { id: f.body.requestId, request_id: randomUUID() }),
-    ).rejects.toMatchObject({
+    await expect(f.resume(controls)).rejects.toMatchObject({
       code: "docker_host_upgrade_required",
       message: expect.stringContaining("Upgrade the Docker host daemon"),
     });

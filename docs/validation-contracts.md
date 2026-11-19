@@ -24,7 +24,6 @@ Missing PostgreSQL/native prerequisites fail closed. No PR job/service is added.
 | mcp-server/runtime-native-auth-postgres | credential publication/lifecycle replacement |
 | mcp-server/sql | advisory lock exclusion across commit/rollback |
 | provider-modal/artifact | built native artifact bootstrap, checkpoint, journal reopening |
-| mcp-server/mcp-codex-bridge | pinned Codex process/thread continuity through MCP credential rotation |
 | cli/binary | compiled CLI packaging and argument/environment boundaries |
 
 `scripts/build-migration.release.ts` retains the standalone compiled migration
@@ -45,6 +44,10 @@ harness and finishes in about 0.1 s.
 These Linux guest-process checks run only when explicitly invoked with
 `bun test ./path/to/file.conformance.ts`. They use temporary local fixtures.
 
+- `packages/core/test/docker-snapshot-init.conformance.ts` checks that the
+  snapshot supervisor reaps a writer that starts a new session and runs init as
+  UID 1000 with no new privileges. It requires Linux pidfd support, Python 3,
+  and root or passwordless sudo.
 - `packages/mcp-server/test/boat-delegated-access-provider.conformance.ts`
   checks SSH authorization cleanup on guest-script success and conflict.
 - `packages/provider-boat/test/native-install-race.conformance.ts` checks
@@ -62,8 +65,8 @@ These Linux guest-process checks run only when explicitly invoked with
 Repository-wide search includes `skipIf`, `test.skip`, conditional test aliases,
 `describe.skip` and `todo`. No todo declarations were found. Dispositions:
 
-- Linux platform skips remain in core `docker-snapshot-init`, `golden-helper`,
-  `golden-scan`, `golden-script-shell`; provider-modal `distribution`;
+- Linux platform skips remain in core `golden-helper`, `golden-scan`,
+  `golden-script-shell`; provider-modal `distribution`;
   provider-boat `native-cwd`;
   mcp-server `templates`, `managed-inspection`, `runtime-native-auth`;
   agent-runtime `skills`, `runtime`, `readable-variables`, `exec-env`,
@@ -79,18 +82,62 @@ Repository-wide search includes `skipIf`, `test.skip`, conditional test aliases,
   build the local image using the [golden OS fixture recipe](../scripts/fixtures/golden-os/README.md)
   and run `bun scripts/prepare-runtime.ts` after installing dependencies. Then run
   `ARMADA_GOLDEN_OS_IMAGE=<fixture-image> bun packages/mcp-server/test/github-boat-os.probe.ts`.
-- `provider-boat/integration.coordinator.ts` is no longer automatically
-  discovered at all. Only the coordinator may explicitly invoke its documented
-  billed-compute opt-in command. It is not part of release/staging acceptance:
-  `boat: not part of the release gate`.
+- The Boat integration probe is coordinator-only and spends sandbox and model
+  credits. With `BOAT_API_KEY` exported and Claude Code configured on the Boat
+  account, run
+  `ARMADA_RUN_LIVE_BOAT_TESTS=1 bun packages/provider-boat/test/integration.coordinator.probe.ts`.
+  Set `BOAT_TEST_SNAPSHOT` to fork an existing snapshot or leave it unset to
+  build a disposable one (snapshot creation requires a paid account).
+  `BOAT_BASE_URL` can select a different Boat API. The probe is outside unit
+  discovery, CI, staging acceptance, and the release gate.
 - PostgreSQL skips and artifact portable-manifest skips were replaced by
   explicit release prerequisites. The native `mcp-codex-bridge` release
-  contract requires the pinned binary and a no-skip report.
+  probe (`packages/mcp-server/test/mcp-codex-bridge.release.probe.ts`) requires
+  the pinned binary and a successful process exit.
+
+## Process-spawning unit cases in `provider-modal`
+
+The [process-test allowlist](../scripts/ci/process-tests.txt) records matching
+files. For [#3179](https://github.com/The-Vibe-Company/armada/issues/3179), this
+inventory records the individual Modal cases that reach a real subprocess.
+The CI column uses the named passing lines from [run 44526380196, attempt 1](https://github.com/The-Vibe-Company/armada/actions/runs/44526380196/attempts/1).
+Parallel workers interleave their output, so a file header alone cannot
+attribute later timing lines to that file. The local column is one focused
+Linux run using Bun 1.4.2 on main at `fa1f93d9`. Both columns measure the
+whole case.
+
+| File under `packages/provider-modal/test` | Case | Local subprocess boundary | CI | Local |
+| --- | --- | --- | ---: | ---: |
+| `artifact-validation.test.ts` | embedded portable loader rejects empty/unpinned artifacts without requiring native files or host architecture | Starts Bun in a disposable package tree to exercise the real file imports. | 58.56 ms | 34.71 ms |
+| `distribution.test.ts` | image artifact RUNs replay in real Linux shells beyond MAX_ARG_STRLEN and verify bytes before publication | Checks Linux's argument size limit and replays the generated image commands in `/bin/sh`. | 332.50 ms | 243.98 ms |
+| `distribution.test.ts` | fresh saved-golden fork receives current verified runtime without editing native state or restored code | Uses sudo and routes the fixture SDK's exec calls to local processes for the runtime overlay. | 342.43 ms | 248.61 ms |
+| `security.test.ts` | snapshot quiescence shell is valid and a failed remote scrub prevents success | Runs `bash -n` inside the stubbed SDK exec and supplies a nonzero scrub result. | 4.13 ms | 2.41 ms |
+
+The audit included tracked Modal unit files and their process-capable helpers.
+The CLI boundary in `conformance-app.test.ts` injects its command runner, and
+the guest process in `runtime-bootstrap.test.ts` is simulated in a VM.
+Explicit release, conformance and probe files are outside unit discovery.
+
+## Process-spawning unit cases in Dashboard
+
+The three Dashboard entries in the [process-test allowlist](../scripts/ci/process-tests.txt)
+each contain one case that reaches a subprocess. The times below measure each
+whole case in a focused Linux run using Bun 1.4.2 on main at `67d096dd`.
+
+| File under `apps/dashboard/test` | Case | Local subprocess boundary | Local |
+| --- | --- | --- | ---: |
+| `routine-staging-transport.test.ts` | routine cleanup DELETE reaches the configured control API through the public origin | Python runs the routine staging checker's request construction with a fake opener. The test forwards the captured request through the Dashboard proxy in process. | 75.06 ms |
+| `staging-check-route-parity.test.ts` | staging checker status and stop preserve CLI public-proxy routes, identity and org | Python sends the staging checker's requests to a loopback Dashboard proxy fixture with a fake upstream. | 65.40 ms |
+| `stats-db.test.ts` | stats client omits pooler-incompatible startup parameters | A Bun subprocess isolates the `postgres` module mock and captures the stats client's connection options. | 5.31 ms |
+
+The missing-database-URL case in `stats-db.test.ts` runs in process. Both
+staging-checker cases use local fixtures and make no calls to deployed services.
 
 ## Evidence owed after merge
 
 Run the existing publishing release validation on the exact release SHA. Verify
-all routed files print executed testcase counts with zero skips, native version
+routed Bun suites print executed testcase counts with zero skips, the native
+Codex probe reports success, and native version
 validation and checkpoint process boundaries pass. No production action or
 Boat lifecycle is required for this test-routing change. OS/container checks
 remain separately opt-in, not an implied pass from green unit CI.

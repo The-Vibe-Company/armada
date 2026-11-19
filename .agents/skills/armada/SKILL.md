@@ -48,7 +48,9 @@ any receipt UUID returned. On success, pass `sandbox.id` to subsequent tools.
   revision specifying a golden, harness and configuration. Use IDs if names clash.
   Use `armada snapshot capabilities --json` for provider capacity and the
   authenticated REST adoption endpoint for canonical Boat golden adoption.
-- For MCP `launch`, choose `provider: "boat"` or `provider: "modal"` from discovery,
+- Call MCP `launch_options` with `{}` for the server’s harnesses, models, sizes and TTL limits.
+- Call MCP `outputs_list` with `id` to list the stored output snapshot. Call `output_read` with `id` and `name` for base64 contents up to 32 KiB. Use the REST output download for larger files.
+  MCP `launch` takes a Boat or Modal golden. Choose `provider: "boat"` or `provider: "modal"`,
   specify `harness`, and use `ttlSeconds` and `reasoningEffort` for launch overrides.
   For scoped tokens, omit `org` or use the scoped org UUID.
 - Choose the provider that owns the golden. A golden built on one provider
@@ -62,7 +64,9 @@ any receipt UUID returned. On success, pass `sandbox.id` to subsequent tools.
   Docker returns `golden: null`. Docker REST launches require `idempotencyKey`.
   Save the key and replay the identical request after an uncertain launch.
   With `armada launch --provider docker`, pass the saved key as `--idempotency-key`.
-  Pinned template launches return a template receipt.
+  For a pinned Modal template on `sandbox/launch`, supply `idempotencyKey` and
+  read `sandbox.id`. With `templates/launch` or `armada template launch`, use
+  `requestKey` or `--request-key` and read the template receipt.
 - Ordinary Modal launches default to the enrolled runtime. To confirm the deployed
   default, check `modalRuntime.defaultPath` in the authenticated response to
   `POST /api/v1/launch/options`.

@@ -133,7 +133,8 @@ export interface SavedImage {
   managementAuthority?: ModalManagementProvenance;
   deleted?: boolean;
   /** Set under the source lease once a tombstone is proven unreferenced. A tombstone never gains
-   * a reference (every reference writer reads a live image under that lease), so the remote image
+   * a reference (runtime forks pin a live handle under a row lock, while native writers use
+   * the source lease), so the remote image
    * deletion and its retries run without holding the source machine's lifecycle lease. */
   collecting?: boolean;
   /** Exclusive, expiring dispatch claim on a collecting tombstone: only its holder issues the
@@ -143,7 +144,7 @@ export interface SavedImage {
 }
 /** Store instances are bound to the authenticated caller AND immutable Modal binding. No unscoped lookup. */
 export interface ModalStore {
-  reserve(key: string, machine: Machine): Promise<Machine>;
+  reserve(key: string, machine: Machine, runtimeSourceId?: string): Promise<Machine>;
   findByRequestKey(key: string): Promise<Machine | null>;
   get(id: string): Promise<Machine>;
   watermark(id: string, generation: number): Promise<number>;

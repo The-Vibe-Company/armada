@@ -145,12 +145,13 @@ test("Modal attaches deployment ownership to the allocation request for a runtim
   let machine: Machine;
   const store = {
     image: async () => snapshot,
+    get: async () => ({ golden: true }),
     reserve: async (_key: string, reservation: Machine) => {
       machine = reservation;
       return reservation;
     },
-    lease: async (id: string, work: (row: Machine, save: () => Promise<void>) => Promise<unknown>) =>
-      work(id === snapshot.sourceId ? ({ golden: true } as Machine) : machine, async () => {}),
+    lease: async (_id: string, work: (row: Machine, save: () => Promise<void>) => Promise<unknown>) =>
+      work(machine, async () => {}),
   } as unknown as ModalStore;
   let creationTags: Record<string, string> | undefined;
   const provider = fixture(

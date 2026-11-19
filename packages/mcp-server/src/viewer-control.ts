@@ -109,7 +109,7 @@ async function viewerControl(
     const body =
       action === "events"
         ? { cursor: url.searchParams.get("cursor") ?? request.headers.get("last-event-id") }
-        : await readBody(request, action === "logs" ? 512 * 1024 : undefined);
+        : await readBody(request, "maxBodyBytes" in operation.input ? operation.input.maxBodyBytes : undefined);
     const invoke = async (route: string, fields: Record<string, unknown>) => {
       if (grant.expires <= now()) return fail(401);
       const caller = await authenticatedControlCaller(

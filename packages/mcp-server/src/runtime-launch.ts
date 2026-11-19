@@ -69,6 +69,8 @@ export function createRuntimeLaunch(options: RuntimeLaunchOptions, provider: "bo
     await environment.deliver(provider, actor, sandbox.id, ready.epoch, signal);
     return {
       ...runtimeWorkspace(input, agent, ready.epoch, options.github),
+      installScopedReference: (request) =>
+        agent.workspaceExec(request, { phase: "init", index: 100, attempt: 0 }, ready.epoch, signal),
       installSkills: (references, key) => agent.installSkills(references, key, ready.epoch, signal),
       epoch: ready.epoch,
       prompt: (request) => agent.prompt(request, `launch_${sandbox.id}`, ready.epoch),

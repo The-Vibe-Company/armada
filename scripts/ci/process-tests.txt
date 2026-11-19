@@ -13,7 +13,6 @@ packages/cli/test/skill-hint.test.ts
 packages/cli/test/skill-install.test.ts
 packages/core/test/docker-machine.test.ts
 packages/core/test/docker-snapshot-build.test.ts
-packages/core/test/docker-snapshot-init.test.ts
 packages/core/test/golden-helper.test.ts
 packages/core/test/golden-script-shell.test.ts
 packages/core/test/golden-skillpack.test.ts
@@ -24,7 +23,6 @@ packages/core/test/ssh-github-token.test.ts
 packages/core/test/ssh-readable-variables.test.ts
 packages/docker-host/test/cli.test.ts
 packages/docker-host/test/runtime-install.test.ts
-packages/mcp-gateway/test/network.test.ts
 packages/mcp-server/test/boat-orchestrator-private.test.ts
 packages/mcp-server/test/docker-host-install.test.ts
 packages/mcp-server/test/main.test.ts

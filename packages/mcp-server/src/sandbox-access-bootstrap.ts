@@ -35,6 +35,7 @@ export async function bootstrapSandboxAccess(
     skillpackKey?: () => Promise<string | null>;
     recordReceipt?: (receipt: SkillReceipt | null) => Promise<void>;
     configureAuthority: () => Promise<void>;
+    exec?: Provider["exec"];
   },
 ): Promise<SkillReceipt | null> {
   const { sandboxId, projectDir, skill } = request;
@@ -63,7 +64,7 @@ export async function bootstrapSandboxAccess(
         ...(request.buildWarnings ? { buildWarnings: request.buildWarnings } : {}),
       });
     const publicSkill = skill && !privateSkill;
-    const result = await provider.exec({
+    const result = await (request.exec ?? provider.exec.bind(provider))({
       sandboxId,
       cwd: projectDir,
       timeoutSeconds: 300,

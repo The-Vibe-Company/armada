@@ -71,10 +71,12 @@ export async function prepareGoldenLaunchAccount(
   };
   if (runtimeDefault) {
     const account = await probe(runtimeDefault.credentials);
-    if (!account) return { credentials, options };
-    const selected = { ...runtimeDefault, credentials: pin(runtimeDefault.credentials, account) };
+    const selected = account
+      ? { ...runtimeDefault, credentials: pin(runtimeDefault.credentials, account) }
+      : runtimeDefault;
     return {
       credentials,
+      runtimeDefault: selected,
       options:
         golden.provider === "modal"
           ? { ...options, modalRuntimeDefault: selected }

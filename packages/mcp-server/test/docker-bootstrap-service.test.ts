@@ -1,16 +1,19 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
-import { randomUUID } from "node:crypto";
+import { afterAll, beforeAll, expect, mock, test } from "bun:test";
+import { createHash, randomUUID } from "node:crypto";
 import {
   DOCKER_HOST_PROTOCOL,
+  DOCKER_HOST_PROTOCOL_HEADER,
   DOCKER_LAUNCH_FAILURE_MESSAGES,
   DockerRetentionEnded,
   type Harness,
   type Sql,
 } from "@armada/core";
 import { createSqlVaultStore, decryptSecret, encryptSecret } from "@armada/core/server";
+import { canonicalDockerHostJob } from "../../core/src/docker-host-job.ts";
 import { type Api, type Executor, type State, type Store, tick } from "../../docker-host/src/daemon.ts";
 import { createDockerBootstrapService, DockerBootstrapDenied } from "../src/docker-bootstrap-service.ts";
 import { DockerHostDraining } from "../src/docker-capacity.ts";
+import { createDockerHostRoutes } from "../src/docker-host-routes.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
 import { createDockerRuntimeLifecycle } from "../src/docker-runtime-lifecycle.ts";
 import { createDockerSandboxControls } from "../src/docker-sandbox-controls.ts";
@@ -846,6 +849,10 @@ const refusalOrders = [
   "previous server ACK",
   "previous server failed ACK",
   "ACK transaction rollback",
+  "missing ACK after daemon restart",
+  "failed retained-stop ACK",
+  "failed retained-stop ACK after early resume failure",
+  "owner stop before refused resume ACK",
 ];
 
 test.each(refusalOrders)(
@@ -873,8 +880,29 @@ test.each(refusalOrders)(
     const ack = (requestId: string, outcome: "completed" | "failed" = "completed") =>
       hosts.complete(f.hostToken, f.installationId, { requestId, outcome });
     await ack(previousStop.requestId);
+    const missingAck = order === "missing ACK after daemon restart";
+    const earlier = missingAck
+      ? await reservations.reserve(f.actor, {
+          requestId: randomUUID(),
+          hostId: f.hostId,
+          image: `worker@sha256:${"a".repeat(64)}`,
+          credentialId: f.credentialId,
+          credentialVersion: 1,
+          harness: "codex",
+        })
+      : undefined;
     const resume = await admittedResume(f, randomUUID());
-    const job = await hosts.poll(f.hostToken, f.installationId, "3.0.0");
+    const job = await hosts.poll(
+      f.hostToken,
+      f.installationId,
+      "3.0.0",
+      false,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      earlier ? [earlier.id] : [],
+    );
     if (job?.operation !== "resume") throw Error("missing resume");
     const refuse = (enrolments = authority) =>
       enrolments.route(
@@ -888,21 +916,22 @@ test.each(refusalOrders)(
       );
 
     if (order === "ACK first") await ack(job.requestId);
-    const failedAckFirst = order === "failed ACK first";
+    const failedAckFirst =
+      order === "failed ACK first" || order === "failed retained-stop ACK after early resume failure";
+    const failWrite = (fragment: string) =>
+      ({
+        query: sql.query,
+        transaction: (work) =>
+          sql.transaction!((tx) =>
+            work({
+              query: (statement, values) => {
+                if (statement.includes(fragment)) throw Error("handoff write failed");
+                return tx.query(statement, values);
+              },
+            }),
+          ),
+      }) satisfies Sql;
     if (failedAckFirst) {
-      const failWrite = (fragment: string) =>
-        ({
-          query: sql.query,
-          transaction: (work) =>
-            sql.transaction!((tx) =>
-              work({
-                query: (statement, values) => {
-                  if (statement.includes(fragment)) throw Error("handoff write failed");
-                  return tx.query(statement, values);
-                },
-              }),
-            ),
-        }) satisfies Sql;
       await expect(
         createDockerHostStore(failWrite("set outcome=$2,completed_at=now()"), key).complete(
           f.hostToken,
@@ -922,10 +951,96 @@ test.each(refusalOrders)(
       expect((await refuse(failedStop))?.status).toBe(503);
       expect((await reservations.get(f.actor, id)).status).toBe("failed");
     }
+    const enrolmentDeadline = missingAck
+      ? (
+          await database().query<{ enrolment_expires_at: Date }>(
+            "select enrolment_expires_at from public.runtime_enrolments where sandbox_id=$1",
+            [id],
+          )
+        ).rows[0]?.enrolment_expires_at
+      : undefined;
     const response = await refuse();
     expect(response?.status).toBe(409);
     expect(await response?.json()).toEqual({ error: "runtime_protocol_unsupported" });
-    if (order !== "ACK first" && !failedAckFirst) {
+    const reportRetained = (requestId: string, store = hosts) =>
+      createDockerHostRoutes(store, async () => ({ ok: false }))(
+        new Request("https://armada.example/api/docker-host/results", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${f.hostToken}`,
+            [DOCKER_HOST_PROTOCOL_HEADER]: String(DOCKER_HOST_PROTOCOL),
+          },
+          body: JSON.stringify({ installationId: f.installationId, requestId, outcome: "failed", retained: true }),
+        }),
+      );
+    if (order === "owner stop before refused resume ACK") {
+      const ownerStop = await hosts.enqueueSandbox(f.actor, id, { operation: "stop", requestId: randomUUID() });
+      await ack(job.requestId);
+      await ack(ownerStop.requestId, "failed");
+      expect((await reportRetained(ownerStop.requestId))?.status).toBe(200);
+      expect((await reservations.get(f.actor, id)).status).toBe("stopping");
+      return;
+    }
+    if (missingAck) {
+      if (!enrolmentDeadline) throw Error("missing original enrolment deadline");
+      await database().query(
+        `update public.docker_hosts set machine_cpus=8,machine_memory_bytes=17179869184,sandbox_cpus=2
+         where id=$1`,
+        [f.hostId],
+      );
+      const poll = (running: string[] = []) =>
+        hosts.poll(f.hostToken, f.installationId, "3.0.0", false, undefined, undefined, undefined, undefined, running);
+      expect(await poll([job.requestId])).toBeNull();
+      expect((await reservations.get(f.actor, id)).status).toBe("starting");
+      expect((await service.resume(f.actor, id, resume.requestId)).state).toBe("failed");
+      let durable: State = {
+        server: job.bootstrap.serverUrl,
+        installationId: f.installationId,
+        hostId: f.hostId,
+        hostToken: f.hostToken,
+        receipts: [
+          {
+            requestId: job.requestId,
+            operation: "resume",
+            request: job.request,
+            inputHash: createHash("sha256")
+              .update(JSON.stringify({ requestId: job.requestId, input: canonicalDockerHostJob(job) }))
+              .digest("hex"),
+          },
+        ],
+      };
+      const store: Store = {
+        load: async () => structuredClone(durable),
+        save: async (next) => {
+          durable = structuredClone(next);
+        },
+      };
+      const unexpected = async () => {
+        throw Error("unexpected daemon operation");
+      };
+      const resumeCompute = mock(async () => {});
+      const startRuntime = mock(async () => {});
+      await tick(
+        store,
+        {
+          register: unexpected,
+          poll: async () => ({ job: await poll() }),
+          result: async (_state, result) => ack(result.requestId, result.outcome),
+        },
+        {
+          create: unexpected,
+          stop: unexpected,
+          delete: unexpected,
+          stopIfExpired: async () => false,
+          resume: resumeCompute,
+          startRuntime,
+        },
+        false,
+        () => enrolmentDeadline.getTime() + 1,
+      );
+      expect(resumeCompute).not.toHaveBeenCalled();
+      expect(startRuntime).not.toHaveBeenCalled();
+    } else if (order !== "ACK first" && !failedAckFirst) {
       expect((await reservations.get(f.actor, id)).status).toBe("starting");
       expect((await hosts.poll(f.hostToken, f.installationId))?.requestId).toBe(job.requestId);
       if (order === "previous server ACK" || order === "previous server failed ACK") {
@@ -979,17 +1094,58 @@ test.each(refusalOrders)(
     const stop = await hosts.poll(f.hostToken, f.installationId);
     if (stop?.operation !== "stop") throw Error("missing refusal stop");
     expect(stop.request).toEqual(job.request);
-    await ack(stop.requestId);
+    const failedRetainedStop = order.startsWith("failed retained-stop ACK");
+    if (failedRetainedStop) {
+      for (const fragment of ["from public.sandbox_transition(", "set outcome=$2,completed_at=now()"]) {
+        const failingStore = createDockerHostStore(failWrite(fragment), key);
+        expect((await reportRetained(stop.requestId, failingStore))?.status).toBe(503);
+        expect((await reservations.get(f.actor, id)).status).toBe("stopping");
+        expect((await hosts.poll(f.hostToken, f.installationId))?.requestId).toBe(stop.requestId);
+      }
+      if (!failedAckFirst) {
+        await ack(stop.requestId, "failed");
+        expect((await reservations.get(f.actor, id)).status).toBe("stopping");
+        const unrelated = await hosts.enqueueSandbox(f.actor, id, { operation: "stop", requestId: randomUUID() });
+        await ack(unrelated.requestId, "failed");
+        expect((await reportRetained(unrelated.requestId))?.status).toBe(200);
+        expect((await reservations.get(f.actor, id)).status).toBe("stopping");
+      }
+      expect((await reportRetained(stop.requestId))?.status).toBe(200);
+      await expect(ack(stop.requestId)).rejects.toThrow();
+    } else {
+      await ack(stop.requestId);
+    }
     expect((await reservations.get(f.actor, id)).status).toBe("stopped");
+    if (earlier) {
+      expect((await hosts.poll(f.hostToken, f.installationId, "3.0.0", false, undefined, 1))?.requestId).toBe(
+        earlier.id,
+      );
+      await ack(earlier.id);
+    }
     const next = await admittedResume(f, randomUUID());
     expect(next.state).toBe("pending");
-    const nextJob = await hosts.poll(f.hostToken, f.installationId);
+    const nextJob = missingAck
+      ? await hosts.poll(f.hostToken, f.installationId, "3.0.0", false, undefined, 1)
+      : await hosts.poll(f.hostToken, f.installationId);
     if (nextJob?.operation !== "resume") throw Error("missing replacement resume");
-    if (order === "previous server failed ACK" || failedAckFirst) {
+    if (order === "previous server failed ACK" || failedAckFirst || missingAck) {
       await ack(job.requestId, "failed");
-      await ack(stop.requestId);
+      await ack(stop.requestId, failedRetainedStop ? "failed" : "completed");
       expect((await reservations.get(f.actor, id)).status).toBe("starting");
       expect((await service.resume(f.actor, id, resume.requestId)).state).toBe("failed");
+    }
+    if (failedRetainedStop) {
+      expect((await reportRetained(stop.requestId))?.status).toBe(200);
+      expect((await reservations.get(f.actor, id)).status).toBe("starting");
+      expect((await service.resume(f.actor, id, resume.requestId)).state).toBe("failed");
+      expect(
+        (
+          await database().query(
+            "select from_status,to_status from public.sandbox_transitions where sandbox_id=$1 and code='docker_resume_retention_confirmed'",
+            [id],
+          )
+        ).rows,
+      ).toEqual([{ from_status: "stopping", to_status: "stopped" }]);
     }
     expect(await authority.enrol(nextJob.bootstrap.enrolmentToken)).toMatchObject({
       epoch: String(Number(source.epoch) + 1),

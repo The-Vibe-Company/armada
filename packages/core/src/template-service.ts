@@ -1,13 +1,15 @@
 import { createHash } from "node:crypto";
 import { parseApplicationSecretBindings } from "./application-secret-bindings.ts";
 import type { ApplicationVaultActor } from "./application-vault.ts";
+import type { LaunchEnvelope } from "./contract/launch-response.ts";
+import { launchTemplateOperation } from "./contract/resources.ts";
 import { HARNESS_KINDS } from "./credentials.ts";
 import type { DockerLaunchResult } from "./docker-api.ts";
 import type { GoldenActor, GoldenOperation, GoldenRecord } from "./golden.ts";
 import { GoldenError } from "./golden-config.ts";
 import { GOLDEN_SELECT, type GoldenRow, mapGoldenRow, type Sql } from "./golden-store.ts";
 import { isHarness } from "./harnesses.ts";
-import { type LaunchOptions, type LaunchStores, launchSandbox } from "./launch.ts";
+import { type LaunchOptions, type LaunchResult, type LaunchStores, launchSandbox } from "./launch.ts";
 import { LaunchError } from "./launch-error.ts";
 import {
   assertLaunchSecretBindings,
@@ -36,6 +38,7 @@ export interface TemplateRuntime {
   provider(golden: GoldenRecord): Promise<Provider>;
   /** Validate the selected definition at admission and the frozen definition on replay. */
   validateDefinition?(definition: TemplateDefinition): void | Promise<void>;
+  pinnedLaunch?: (result: LaunchResult, manifest: Manifest) => LaunchEnvelope;
   options?: LaunchOptions;
   launchDocker?(
     body: Record<string, unknown>,
@@ -155,21 +158,8 @@ function dto(h: Header): LaunchTemplate {
 }
 
 /** Every field the REST `templates/launch` route accepts; the published OpenAPI request lists exactly these. */
-export const TEMPLATE_LAUNCH_FIELDS = [
-  "org",
-  "id",
-  "revision",
-  "requestKey",
-  "prompt",
-  "ttlSeconds",
-  "size",
-  "repo",
-  "skills",
-  "skipSkillDefaults",
-  "modelAccount",
-  "externalRef",
-  "stopWhenWorkMerged",
-] as const;
+const templateLaunchFields = launchTemplateOperation.input.body.shape;
+export const TEMPLATE_LAUNCH_FIELDS = Object.freeze(Object.keys(templateLaunchFields));
 
 /** Service-role owner: both transports share validation, reference authorization and admission. */
 export function createTemplateService(sql: Sql, encryptionKey?: string) {
@@ -458,7 +448,10 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       } catch (error) {
         // Pre-claim golden admission has no durable request yet, but its public
         // refusal must use the same outcome contract as post-claim refusals.
-        if (error instanceof GoldenError) return { state: "failed", reason: error.code, message: error.message };
+        if (error instanceof GoldenError) {
+          if (runtime?.pinnedLaunch) throw error;
+          return { state: "failed", reason: error.code, message: error.message };
+        }
         const reason = refusalReason(error);
         // Closed reason only: never log credential errors, request bodies or readable values.
         if (reason) console.warn("armada: template launch refused", { reason, templateId: id(input.id), orgId: org });
@@ -520,12 +513,16 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
   ): Promise<Record<string, unknown>> {
     if (!runtime) throw new VaultError("unavailable", "Template launching unavailable.");
     id(input.id);
-    const key = text(input.requestKey, 128);
-    if (!/^[A-Za-z0-9._:-]+$/.test(key)) invalid();
+    const key = input.requestKey;
+    if (typeof key !== "string") invalid();
+    const validKey = runtime.pinnedLaunch
+      ? /^pinned-modal\/[a-f0-9]{64}$/.test(key)
+      : templateLaunchFields.requestKey.safeParse(key).success;
+    if (!validKey) invalid();
     if (input.revision !== undefined) integer(input.revision);
-    if (input.prompt !== undefined) text(input.prompt, 100000);
+    if (!templateLaunchFields.prompt.safeParse(input.prompt).success) invalid();
     if (input.ttlSeconds !== undefined) integer(input.ttlSeconds);
-    if (input.repo !== undefined) text(input.repo);
+    if (!templateLaunchFields.repo.safeParse(input.repo).success) invalid();
     if (input.skipSkillDefaults !== undefined && typeof input.skipSkillDefaults !== "boolean") invalid();
     if (input.externalRef !== undefined && !isExternalRef(input.externalRef)) invalid();
     if (input.stopWhenWorkMerged !== undefined && typeof input.stopWhenWorkMerged !== "boolean") invalid();
@@ -808,6 +805,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
             })();
       const output = {
         requestId: request.id,
+        ...(runtime.pinnedLaunch && result.golden !== null ? { envelope: runtime.pinnedLaunch(result, m) } : {}),
         ...("runtime" in result && result.runtime ? { runtime: result.runtime } : {}),
         state: "succeeded",
         id: result.sandbox.id,
@@ -843,14 +841,17 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       const refused = error instanceof ProviderError && isNonMutatingProviderRefusal(error);
       const secretRefusal = error instanceof RuntimeLaunchSecretRefusal ? error.refusal : undefined;
       const state = allocating && !refused && !secretRefusal ? "reconciling" : "failed";
+      const failureCode =
+        refused || error instanceof VaultError || error instanceof GoldenError || error instanceof ProviderRoutingError
+          ? error.code
+          : !allocating && error instanceof LaunchError
+            ? error.code
+            : undefined;
       const safeReason = refused
-        ? error.code
+        ? (failureCode ?? "launch_unavailable")
         : (secretRefusal?.reason ??
           refusalReason(error) ??
-          (error instanceof VaultError || error instanceof GoldenError || error instanceof ProviderRoutingError
-            ? error.code
-            : undefined) ??
-          (!allocating && error instanceof LaunchError ? error.code : undefined) ??
+          failureCode ??
           (allocating ? "allocation_or_start_unknown" : "launch_unavailable"));
       // A publication may have committed even if both acknowledgements were lost.
       // Keep its durable success intact; same-key replay reads the saved receipt.
@@ -875,6 +876,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
         reason: safeReason,
         ...(message ? { message } : {}),
         ...(secretRefusal ? { code: secretRefusal.code } : {}),
+        ...(runtime.pinnedLaunch && state === "failed" && failureCode ? { failureCode } : {}),
         manifest: m,
       };
       await sql.query(
