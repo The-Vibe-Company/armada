@@ -171,7 +171,8 @@ export function generateOpenApi(table: readonly OpenApiOperation[] = Object.valu
     const viewer = route.startsWith("viewer/");
     const viewerControl = viewer || route === "sandbox/viewer-token";
     const maxBodyBytes = operation.input.maxBodyBytes ?? controlBodyMaxBytes(route);
-    const oversizedStatus = viewerControl ? 503 : vaultControlRoute(route) ? 400 : 413;
+    const oversizedStatus =
+      operation.input.oversizedBodyStatus ?? (viewerControl ? 503 : vaultControlRoute(route) ? 400 : 413);
     if (route === "sandbox/launch" && operation.input.body instanceof z.ZodUnion) {
       request = {
         oneOf: operation.input.body.options.map((variant) => {
@@ -248,9 +249,11 @@ export function generateOpenApi(table: readonly OpenApiOperation[] = Object.valu
             ? `Send a JSON object of at most ${maxBodyBytes} bytes. A larger body returns HTTP 503 with viewer_access_denied before dispatch. Reduce the body before retrying.`
             : operation.directServer
               ? `Send at most ${maxBodyBytes} bytes of serialized JSON.`
-              : vaultControlRoute(route)
-                ? `Send at most ${maxBodyBytes} bytes of serialized JSON. The server reads this route with the vault body reader and refuses a larger body with HTTP 400 (code invalid); the dashboard endpoint refuses a body over ${CONTROL_BODY_MAX_BYTES} bytes with HTTP 413. Nothing is dispatched in either case.`
-                : `Send at most ${maxBodyBytes} bytes of serialized JSON. The dashboard endpoint refuses a larger body with HTTP 413 without forwarding it, and the server refuses a body over its own limit, which is never lower, with HTTP 413 before any handler runs.`,
+              : operation.input.oversizedBodyStatus === 400
+                ? `Send at most ${maxBodyBytes} bytes of serialized JSON. The server refuses larger bodies with HTTP 400 before processing the request. The dashboard proxy refuses bodies over ${CONTROL_BODY_MAX_BYTES} bytes with HTTP 413.`
+                : vaultControlRoute(route)
+                  ? `Send at most ${maxBodyBytes} bytes of serialized JSON. The server reads this route with the vault body reader and refuses a larger body with HTTP 400 (code invalid); the dashboard endpoint refuses a body over ${CONTROL_BODY_MAX_BYTES} bytes with HTTP 413. Nothing is dispatched in either case.`
+                  : `Send at most ${maxBodyBytes} bytes of serialized JSON. The dashboard endpoint refuses a larger body with HTTP 413 without forwarding it, and the server refuses a body over its own limit, which is never lower, with HTTP 413 before any handler runs.`,
           "x-max-body-bytes": maxBodyBytes,
           "x-oversized-body-status": oversizedStatus,
           content: { "application/json": { schema: request } },
@@ -277,7 +280,9 @@ export function generateOpenApi(table: readonly OpenApiOperation[] = Object.valu
           ? {
               "400": {
                 description: `Invalid request, including a serialized body over ${maxBodyBytes} bytes. Nothing was dispatched.`,
-                content: { "application/json": { schema: { $ref: "#/components/schemas/Failure" } } },
+                content: operation.errorOutput
+                  ? outputFailure(operation.errorOutput)
+                  : { "application/json": { schema: { $ref: "#/components/schemas/Failure" } } },
               },
             }
           : {}),
