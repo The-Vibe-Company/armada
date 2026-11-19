@@ -1,8 +1,10 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { encryptSecret, type ModalBinding, type ModalTokenPair, type Provider } from "@armada/core";
 import { createSqlVaultStore } from "@armada/core/server";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
+import { createOrdinaryLaunchReceipts } from "../src/ordinary-launch-receipts.ts";
+import { sqlOver } from "../src/sql.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { call, ENCRYPTION_KEY, fakeBoat, harness, PUBLIC_URL, type TestServer } from "./support.ts";
 
@@ -17,6 +19,29 @@ afterEach(async () => {
 const BINDING: ModalBinding = { workspace: "ws-acme", environment: "main", appId: "ap-0123456789abcdef" };
 const PAIR = { token_id: "ak-orgtoken0001", token_secret: "as-orgsecret0001" };
 const ROTATED = { token_id: "ak-orgtoken0002", token_secret: "as-orgsecret0002" };
+
+const launchStages = [
+  "admission",
+  "account_resolution",
+  "provider_resolution",
+  "receipt_admission",
+  "shared_launcher",
+  "response_publication",
+];
+
+type LaunchTimingSample = {
+  event: string;
+  surface: string;
+  sandboxId: string;
+  sqlStatements: number;
+  stages: { name: string; sqlStatements: number }[];
+};
+
+function launchSamples(log: { mock: { calls: unknown[][] } }) {
+  return log.mock.calls
+    .map(([line]) => JSON.parse(String(line)) as LaunchTimingSample)
+    .filter(({ event }) => event === "modal_golden_launch_timing");
+}
 
 /** A Modal golden named like the Boat org golden 'shared', written as the server would (service role). */
 async function seedModal(target: TestServer) {
@@ -123,12 +148,22 @@ describe("provider routing", () => {
         ENCRYPTION_KEY,
       ),
     ]);
-    const launched = await call(mcp, "launch", {
-      golden: "shared",
-      provider: "modal",
-      harness: "claude",
-      visibility: "private",
-    });
+    const log = spyOn(console, "info");
+    let launched: Awaited<ReturnType<typeof call>>;
+    try {
+      launched = await call(mcp, "launch", {
+        golden: "shared",
+        provider: "modal",
+        harness: "claude",
+        visibility: "private",
+      });
+      const samples = launchSamples(log);
+      expect(samples).toHaveLength(1);
+      expect(samples[0]).toMatchObject({ surface: "mcp", sandboxId: launched.data.id });
+      expect(samples[0]?.stages.map(({ name }) => name)).toEqual(launchStages);
+    } finally {
+      log.mockRestore();
+    }
     expect(launched.data.visibility).toBe("org");
     const source = (
       await server.db.query<{ source_golden_visibility: string }>(
@@ -156,5 +191,65 @@ describe("provider routing", () => {
     expect(calls.every(({ binding }) => JSON.stringify(binding) === JSON.stringify(BINDING))).toBe(true);
     expect(calls.map(({ tokens }) => tokens.tokenId)).toEqual([PAIR.token_id, PAIR.token_id, ROTATED.token_id]);
     expect(server.boat.prompts).toEqual([]);
+  });
+
+  test("REST attributes receipt SQL only to the fresh Modal launch", async () => {
+    const modal = fakeBoat();
+    server = await harness({}, await database());
+    await seedModal(server);
+    const { db, people } = server;
+    const token = await server.token(people.member);
+    const sql = sqlOver({ unsafe: async (query, params) => (await db.query(query, params)).rows });
+    const provider = {
+      ...modal.provider,
+      id: "modal" as const,
+      managementIdentity: async () => ({ scope: "org" as const, ownerId: people.org }),
+    };
+    const options = {
+      authStore: server.auth,
+      supabase: { supabaseUrl: "https://unused.test", anonKey: "test" },
+      store: createSqlVaultStore(sql),
+      encryptionKey: ENCRYPTION_KEY,
+      data: createSqlData(sql),
+      providerFor: () => provider,
+      providers: { resolve: async () => provider },
+      ordinaryLaunchReceipts: createOrdinaryLaunchReceipts(sql),
+    };
+    const launch = () =>
+      handleControlRequest(
+        new Request(PUBLIC_URL + "/api/v1/sandbox/launch", {
+          method: "POST",
+          headers: { authorization: "Bearer " + token },
+          body: JSON.stringify({
+            golden: "shared",
+            provider: "modal",
+            harness: "claude",
+            idempotencyKey: "modal-timing-request",
+          }),
+        }),
+        options,
+      );
+
+    const log = spyOn(console, "info");
+    try {
+      const fresh = await launch();
+      expect(fresh?.status).toBe(200);
+      const response = await fresh?.json();
+      const replay = await launch();
+      expect(replay?.status).toBe(200);
+      expect(await replay?.json()).toEqual(response);
+      expect(modal.forks).toHaveLength(1);
+
+      const samples = launchSamples(log);
+      expect(samples).toHaveLength(1);
+      const sample = samples[0];
+      expect(sample).toMatchObject({ surface: "rest", sandboxId: response.sandbox.id });
+      expect(sample?.stages.map(({ name }) => name)).toEqual(launchStages);
+      expect(sample?.stages.find(({ name }) => name === "admission")?.sqlStatements).toBeGreaterThan(0);
+      expect(sample?.stages.find(({ name }) => name === "receipt_admission")?.sqlStatements).toBe(1);
+      expect(sample?.stages.find(({ name }) => name === "response_publication")?.sqlStatements).toBe(1);
+    } finally {
+      log.mockRestore();
+    }
   });
 });

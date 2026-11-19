@@ -147,18 +147,3 @@ test("fresh golden launch samples partition SQL calls and time without changing 
     clock.mockRestore();
   }
 });
-
-test("returning a stored launch receipt emits no fresh Modal sample", async () => {
-  const log = spyOn(console, "info");
-  try {
-    const stored = { sandbox: { id: "prior-sandbox", provider: "modal" } };
-    const replayed = await observeGoldenLaunch("rest", async (launch) => {
-      launch.checkpoint("admission");
-      return stored;
-    });
-    expect(replayed).toBe(stored);
-    expect(log).not.toHaveBeenCalled();
-  } finally {
-    log.mockRestore();
-  }
-});

@@ -92,8 +92,9 @@ launch handler through response preparation, including receipt publication when
 used. Its consecutive intervals end after admission lookups, account resolution,
 provider resolution, receipt admission, the shared launcher, and response
 publication. The existing readiness and enrolled startup intervals overlap the
-outer `shared_launcher` interval. Use the outer intervals or their finer
-breakdown when comparing to wall time.
+outer `shared_launcher` interval. Sum the outer intervals when comparing to
+wall time. Use the finer intervals to explain parts of `shared_launcher`, which
+also includes work after harness readiness.
 
 The outer sample reports the number of server SQL adapter query attempts for
 the whole launch and each interval. This includes a query attempt that fails
