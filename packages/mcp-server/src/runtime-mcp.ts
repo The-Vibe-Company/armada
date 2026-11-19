@@ -30,18 +30,25 @@ function pinnedServer(definition: ConnectionDefinition) {
     throw new VaultError("invalid", "Runtime MCP requires an exact pinned stdio launcher and valid arguments.");
   }
 }
-async function preflightPinnedServer(
+const launcherEnvironment =
+  /^(?:PATH|HOME|USERPROFILE|PREFIX|DESTDIR|SHELL|ENV|BASH_ENV|BASHOPTS|SHELLOPTS|ZDOTDIR|COREPACK_.+|NODE(?:JS)?_.+|NPM_.+|NPX_.+|UV_.+|UVX_.+|PYTHON.*|PIP_.+|VIRTUAL_ENV.*|CONDA_.+|LD_.+|DYLD_.+|XDG_.+|GIT_.+|(?:ALL|HTTP|HTTPS|NO)_PROXY|SSL_CERT_.+|OPENSSL_.+|CURL_CA_BUNDLE|REQUESTS_CA_BUNDLE)$/i;
+
+async function boundStdioServer(
   definition: ConnectionDefinition & { value_enc: Uint8Array<ArrayBuffer> | null },
   key: string,
 ) {
   const launcher = pinnedServer(definition);
   if (definition.value_enc === null) return launcher;
+  let env: Record<string, string>;
   try {
-    const env: Record<string, string> = JSON.parse(await decryptSecret(definition.value_enc, key));
-    return { ...launcher, env };
+    env = JSON.parse(await decryptSecret(definition.value_enc, key));
+    if (!env || typeof env !== "object" || Array.isArray(env)) throw new Error();
   } catch {
     throw new VaultError("invalid", "Runtime MCP could not read the stdio grant environment.");
   }
+  if (Object.keys(env).some((name) => launcherEnvironment.test(name)))
+    throw new VaultError("invalid", "MCP stdio environment cannot override launcher settings.");
+  return { ...launcher, env };
 }
 function validateConfiguration(configuration: McpConfiguration) {
   try {
@@ -102,9 +109,7 @@ export function createRuntimeMcp(options: {
     const servers: McpConfiguration["servers"] = {};
     for (const c of result) {
       servers[serverName(c.id)] =
-        c.transport === "stdio"
-          ? await preflightPinnedServer(c, key)
-          : gatewayServer(c.id, `armada_gw_${"a".repeat(43)}`);
+        c.transport === "stdio" ? await boundStdioServer(c, key) : gatewayServer(c.id, `armada_gw_${"a".repeat(43)}`);
     }
     if (result.some((c) => c.transport === "stdio")) {
       // Budget for the full wire configuration, including the largest database epoch and generation.
@@ -181,14 +186,16 @@ export function createRuntimeMcp(options: {
         url: string | null;
         command: string | null;
         args: string[];
+        value_enc: Uint8Array<ArrayBuffer> | null;
       }>(
-        `select c.id,g.generation,c.transport,c.url,c.command,c.args
+        `select c.id,g.generation,c.transport,c.url,c.command,c.args,
+          case when c.transport='stdio' then g.value_enc end as value_enc
         from public.mcp_bindings b join public.mcp_connections c on c.id=b.connection_id
         join public.mcp_grants g on g.id=b.grant_id and g.connection_id=c.id
         join public.members m on m.org_id=c.org_id and m.user_id=$2
         where b.sandbox_id=$1 and c.org_id=$3 and (c.scope='org' or c.owner_id=$2) and not c.disabled
           and public.mcp_grant_effective_status(g.status,g.revoked_at,g.refresh_consumed,g.refresh_until)='connected'
-        order by c.id`,
+        order by c.id for share of c,g,b`,
         [s.id, caller.userId, s.orgId],
       )
     ).rows;
@@ -199,7 +206,7 @@ export function createRuntimeMcp(options: {
       const { generation } = c;
       const name = serverName(c.id);
       if (c.transport === "stdio") {
-        servers[name] = pinnedServer(c);
+        servers[name] = await boundStdioServer(c, key);
         continue;
       }
       const payload = JSON.stringify([
@@ -225,7 +232,10 @@ export function createRuntimeMcp(options: {
       generation: current.mcp_generation,
     });
     const grants = definitions.map(({ id, generation }) => [id, generation]);
-    const configuration = { revision: hash(JSON.stringify([epoch, current.mcp_generation, grants, servers])), servers };
+    const revision = createHmac("sha256", Buffer.from(key, "base64"))
+      .update(JSON.stringify([epoch, current.mcp_generation, grants, servers]))
+      .digest("hex");
+    const configuration = { revision, servers };
     validateConfiguration(configuration);
     return { configuration, gatewayLeases, expiresAt: new Date(current.expires_at) };
   }
@@ -269,6 +279,7 @@ export function createRuntimeMcp(options: {
       !accept(reply)
     )
       throw new VaultError("unavailable", failure);
+    return reply;
   };
   async function prepare(caller: Caller, id: string, signal?: AbortSignal) {
     signal?.throwIfAborted();
@@ -294,7 +305,7 @@ export function createRuntimeMcp(options: {
     if (!initial || initial.cached) return initial?.cached;
     // Feature evidence is bound to this epoch before any private configuration.
     const healthCommand = { version: 1 as const, sandboxId: s.id, requestId: randomUUID(), op: "health" as const };
-    await call(
+    const health = await call(
       s,
       healthCommand,
       initial.epoch,
@@ -312,11 +323,17 @@ export function createRuntimeMcp(options: {
         );
       },
     );
+    const features = health.body.result as { stdioMcpEnv?: unknown };
     const prepareConfiguration = () => authority.withOwner(s.id, s.ownerId, configure);
     async function configure(tx: Sql, live: { epoch: string }) {
       if (live.epoch !== initial.epoch) return deny();
-      const p = await plan(tx, caller, s, live.epoch, initial.selection),
-        leases = createSqlMcpLeasePort(tx);
+      const p = await plan(tx, caller, s, live.epoch, initial.selection);
+      if (
+        features.stdioMcpEnv !== true &&
+        Object.values(p.configuration.servers).some((server) => server.type === "stdio" && server.env !== undefined)
+      )
+        throw new VaultError("unavailable", "Stdio MCP environment requires an updated runtime artifact.");
+      const leases = createSqlMcpLeasePort(tx);
       for (const { connectionId, tokenHash, generation } of p.gatewayLeases) {
         const existing = (await tx.query("select id from public.mcp_leases where hash=$1", [tokenHash])).rows.length;
         if (!existing)
