@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
 import { MODEL_CATALOG } from "@armada/core";
-import { initialLaunchSelection, launchPickerGroups } from "../src/lib/launch-picker";
-import { accountsFromList, launchAccounts, type ModelAccount } from "../src/lib/model-accounts";
-import { modelsPageDefault, modelsPageExhaustion, modelsPageModel, modelsPageStatus } from "../src/lib/models-page";
+import { initialLaunchSelection, launchPickerGroups } from "./launch-picker";
+import { accountsFromList, launchAccounts, type ModelAccount } from "./model-accounts";
+import { modelsPageDefault, modelsPageExhaustion, modelsPageModel, modelsPageStatus } from "./models-page";
 
 const account: ModelAccount = {
   id: "account_id",
@@ -45,13 +45,13 @@ test("custom endpoint models are not mistaken for a saved default", () => {
 });
 
 test("the Morph account summary shows its first saved model as the default", () => {
-  const morph = {
-    ...account,
-    kind: "morph" as const,
+  const morph = { ...account, kind: "morph" as const };
+  const configured = {
+    ...morph,
     models: [{ model: "owner/model-v2", input: null, output: null }],
   };
-  expect(modelsPageModel(morph, "opencode")).toBe("owner/model-v2");
-  expect(modelsPageModel({ ...morph, models: undefined }, "opencode")).toBe("Model list unavailable");
+  expect(modelsPageModel(configured, "opencode")).toBe("owner/model-v2");
+  expect(modelsPageModel(morph, "opencode")).toBe("Model list unavailable");
 });
 
 test("personal per-agent accounts override account-wide defaults without billing fallback", () => {
@@ -102,6 +102,7 @@ test("OpenAI key and subscription accounts offer GPT-6.2 and select GPT-6.2 Sol 
       { state: "ready", accounts: [{ ...account, kind, maxAgents: null }], orgId: "org", orgName: "Work" },
       1,
     );
+    if (list.state !== "ready") throw new Error(`Expected ready launch accounts for ${kind}, got ${list.state}`);
     expect(launchPickerGroups(list.accounts, MODEL_CATALOG, "codex", 1)[0]?.options.map((model) => model.id)).toEqual(
       expect.arrayContaining(["gpt-6.2-sol", "gpt-6.2-astra"]),
     );
