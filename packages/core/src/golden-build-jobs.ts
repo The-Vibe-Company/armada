@@ -380,14 +380,23 @@ export class GoldenBuildJobs {
           : null,
     };
   }
-  private async lock(sql: Sql, job: Job): Promise<void> {
+  private async ownsLease(sql: Sql, id: string, epoch: string) {
+    const lease = await sql.query(
+      "select id from public.jobs where id=$1 and kind='golden_build' and state='leased' and lease_epoch=$2 and lease_until>clock_timestamp() for update",
+      [id, epoch],
+    );
+    return lease.rows.length > 0;
+  }
+  private async lock(sql: Sql, job: Job, epoch: string, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
     const owned = (
       await sql.query<{ id: string }>(
-        "select id from public.golden_build_jobs where id=$1 and state='running' and fence=$2 and lease_until>clock_timestamp() and deadline>clock_timestamp() for update",
+        "select id from public.golden_build_jobs where id=$1 and state='running' and fence=$2 and deadline>clock_timestamp() for update",
         [job.id, job.fence],
       )
     ).rows[0];
-    if (!owned) throw new GoldenError("build_failed", "Build lease is no longer owned.");
+    if (!owned || !(await this.ownsLease(sql, job.id, epoch)))
+      throw new GoldenError("build_failed", "Build lease is no longer owned.");
     await this.actor(sql, job);
     if (job.reservation_id) {
       const slot = (
@@ -600,13 +609,6 @@ export class GoldenBuildJobs {
       /* Unknown outcomes retain capacity, source and proof. No exception/payload/SDK logging. */
     }
   }
-  private expireRunningReceipts(sql: Sql, id: string | null) {
-    return sql.query(
-      "update public.golden_build_jobs set state='recovery_required',error_code='build_failed',updated_at=now() where state='running' and ($1::uuid is null or id=$1) and (lease_until<=clock_timestamp() or deadline<=clock_timestamp()) returning id",
-      [id],
-    );
-  }
-
   async dispatchReceipt(
     id: string,
     leaseEpoch: string,
@@ -616,6 +618,9 @@ export class GoldenBuildJobs {
       return true;
     },
   ) {
+    // Encode the bigint claim epoch in the receipt's existing UUID attempt identity.
+    const epochHex = BigInt(leaseEpoch).toString(16).padStart(16, "0");
+    const fence = `00000000-0000-0000-${epochHex.slice(0, 4)}-${epochHex.slice(4)}`;
     const job = await this.transaction(async (sql) => {
       const row = (
         await sql.query<Job & { expired: boolean }>(
@@ -624,14 +629,15 @@ export class GoldenBuildJobs {
         )
       ).rows[0];
       if (!row || row.state === "succeeded" || row.state === "failed") return row;
-      const lease = await sql.query(
-        "select id from public.jobs where id=$1 and kind='golden_build' and state='leased' and lease_epoch=$2 and lease_until>clock_timestamp() for update",
-        [id, leaseEpoch],
-      );
-      if (!lease.rows.length) return row;
+      if (!(await this.ownsLease(sql, id, leaseEpoch))) return row;
       signal?.throwIfAborted();
       if (row.state === "running") {
-        const expired = await this.expireRunningReceipts(sql, id);
+        const expired = await sql.query(
+          `update public.golden_build_jobs set state='recovery_required',error_code='build_failed',updated_at=now()
+            where id=$1 and (deadline<=clock_timestamp() or lease_until<=clock_timestamp()
+              or (lease_until='infinity' and fence<>$2)) returning id`,
+          [id, fence],
+        );
         return expired.rows.length ? { ...row, state: "recovery_required" as const, recover: true } : row;
       }
       if (row.state === "recovery_required") return { ...row, recover: true };
@@ -655,16 +661,20 @@ export class GoldenBuildJobs {
         return { ...row, state, processed: true };
       }
       await sql.query("select pg_advisory_xact_lock(hashtextextended('armada.jobs:golden_build',0))");
-      await this.expireRunningReceipts(sql, null);
-      const available = await sql.query(
-        `select id from public.jobs where id=$1 and lease_until>clock_timestamp()
-           and not exists (select 1 from public.golden_build_jobs where state='running')`,
-        [id],
+      // During database overlap, an older replica can still be executing under a finite
+      // receipt lease. Lock those rows before checking time so a concurrent renewal is visible.
+      const occupied = await sql.query(
+        `with previous_attempts as materialized (
+           select lease_until, deadline from public.golden_build_jobs
+            where state='running' and lease_until<'infinity' for update
+         )
+         select 1 from previous_attempts where lease_until>clock_timestamp() and deadline>clock_timestamp()`,
       );
-      if (!available.rows.length) return row;
+      if (occupied.rows.length || !(await this.ownsLease(sql, id, leaseEpoch))) return row;
+      signal?.throwIfAborted();
       const { rows } = await sql.query<Job>(
-        "update public.golden_build_jobs set state='running',phase='authorization',fence=$2,lease_until=clock_timestamp()+interval '60 seconds',deadline=clock_timestamp()+interval '60 minutes',updated_at=now() where id=$1 returning *",
-        [row.id, randomUUID()],
+        "update public.golden_build_jobs set state='running',phase='authorization',fence=$2,lease_until='infinity',deadline=clock_timestamp()+interval '60 minutes',updated_at=now() where id=$1 returning *",
+        [row.id, fence],
       );
       return { ...rows[0]!, processed: true };
     });
@@ -675,7 +685,7 @@ export class GoldenBuildJobs {
       if ("recover" in job) {
         if (!(await runRecovery((recoverySignal) => this.recoverReceipt(job, recoverySignal))))
           return { processed, pending: true };
-      } else await this.executeReceipt(job);
+      } else await this.executeReceipt(job, leaseEpoch, signal);
       const { rows } = await this.options.sql.query<Pick<Job, "state">>(
         "select state from public.golden_build_jobs where id=$1",
         [id],
@@ -685,31 +695,21 @@ export class GoldenBuildJobs {
     return { processed, pending: state === "queued" || state === "running" || state === "recovery_required" };
   }
 
-  private async executeReceipt(job: Job) {
+  private async executeReceipt(job: Job, epoch: string, signal?: AbortSignal) {
     let safeToRelease = true;
     // The candidate this attempt tried to record before publication, kept even when that record
     // failed: an unsafe outcome retries it under the fence in the final write.
     let unpublished: string | null = null;
-    let heartbeat: ReturnType<typeof setInterval> | undefined;
     try {
       const actor = await this.transaction((sql) => this.actor(sql, job));
       const input = await this.context(job);
-      const provider = await this.resolve(job, actor, input);
+      const provider = await this.resolve(job, actor, input, signal);
       const phase = async (next: string) =>
         this.transaction(async (sql) => {
-          await this.lock(sql, job);
+          await this.lock(sql, job, epoch, signal);
           await sql.query("update public.golden_build_jobs set phase=$2,updated_at=now() where id=$1", [job.id, next]);
           if (next === "builder") safeToRelease = false;
         });
-      // A live worker renews only its own unexpired fence. A database outage fences publication.
-      heartbeat = setInterval(() => {
-        void this.options.sql
-          .query(
-            "update public.golden_build_jobs set lease_until=clock_timestamp()+interval '60 seconds' where id=$1 and fence=$2 and state='running' and lease_until>clock_timestamp() and deadline>clock_timestamp()",
-            [job.id, job.fence],
-          )
-          .catch(() => {});
-      }, 10_000);
       const service = createGoldenCreateService({
         ...this.options.service,
         sql: this.options.sql,
@@ -732,16 +732,21 @@ export class GoldenBuildJobs {
           },
           builder: async (id) =>
             this.transaction(async (sql) => {
-              await this.lock(sql, job);
+              await this.lock(sql, job, epoch, signal);
               await sql.query("update public.golden_build_jobs set builder_id=$2 where id=$1", [job.id, id]);
             }),
-          lock: (sql) => this.lock(sql, job),
+          lock: (sql) => this.lock(sql, job, epoch, signal),
           complete: async (sql, goldenId, snapshot, warnings) => {
             // Recheck with wall time at the final write: PostgreSQL now() is frozen at
             // transaction start, and the lease may have expired while publication waited.
+            signal?.throwIfAborted();
             const completed = await sql.query(
-              "update public.golden_build_jobs set state='succeeded',phase='complete',golden_id=$3,snapshot=$4,build_warnings=$5::text[],lease_until=null,updated_at=now() where id=$1 and fence=$2 and state='running' and lease_until>clock_timestamp() and deadline>clock_timestamp() returning id",
-              [job.id, job.fence, goldenId, snapshot, "{" + warnings.join(",") + "}"],
+              `update public.golden_build_jobs set state='succeeded',phase='complete',golden_id=$3,snapshot=$4,
+                 build_warnings=$5::text[],lease_until=null,updated_at=now()
+               where id=$1 and fence=$2 and state='running' and deadline>clock_timestamp()
+                 and exists (select 1 from public.jobs where id=$1 and kind='golden_build' and state='leased'
+                   and lease_epoch=$6 and lease_until>clock_timestamp()) returning id`,
+              [job.id, job.fence, goldenId, snapshot, "{" + warnings.join(",") + "}", epoch],
             );
             if (!completed.rows.length)
               throw new GoldenError("build_failed", "Build lease expired before publication.");
@@ -750,7 +755,7 @@ export class GoldenBuildJobs {
       });
       await service.create(provider, actor, input, {
         sleep: async (ms) => {
-          await this.transaction((sql) => this.lock(sql, job));
+          await this.transaction((sql) => this.lock(sql, job, epoch, signal));
           await new Promise<void>((resolve) => setTimeout(resolve, ms));
         },
       });
@@ -799,8 +804,6 @@ export class GoldenBuildJobs {
           ],
         );
       });
-    } finally {
-      if (heartbeat) clearInterval(heartbeat);
     }
   }
 }

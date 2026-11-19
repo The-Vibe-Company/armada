@@ -171,7 +171,7 @@ test("REST durable admission, idempotent acknowledgement recovery and status out
   }
 });
 
-test("an active receipt still prevents shared dispatch after its shared lease expires", async () => {
+test("a live receipt from the previous revision still prevents shared dispatch", async () => {
   const s = await fixture({ isolated: true });
   try {
     const token = await s.token(s.people.admin);
@@ -189,7 +189,7 @@ test("an active receipt still prevents shared dispatch after its shared lease ex
          (id, org_id, owner_id, name, visibility, idempotency_key, request_hash, payload_enc, provider,
           state, phase, fence, lease_until, deadline)
        values ($1,$2,$3,'active-build','org',$1::uuid::text,'digest','sealed'::bytea,'modal',
-          'running','builder',$1,'infinity','infinity')`,
+          'running','builder',$1,now()+interval '1 minute','infinity')`,
       [active, s.people.org, s.people.admin],
     );
     const store = createJobsStore(s.db);
@@ -265,7 +265,7 @@ test("REST admission and rebuild failure retain last-good config/pointer and rel
         create trigger fail_job_success before update on golden_build_jobs for each row execute function fail_job_success();`);
       if (failure === "lease")
         await s.db.exec(`create function expire_job_lease() returns trigger language plpgsql as $$
-        begin update golden_build_jobs set lease_until=clock_timestamp()-interval '1 second' where state='running'; return new; end $$;
+        begin update public.jobs set lease_until='-infinity' where kind='golden_build' and state='leased'; return new; end $$;
         create trigger expire_job_lease before update of config on goldens for each row execute function expire_job_lease();`);
       const admitted = await s.http(token, "golden/update", {
         name: "retained",
@@ -444,7 +444,6 @@ test("expired execution fence cannot publish or replay; reconciliation stops a k
     );
     worker = dispatchGoldenBuild(base.db, base.builds);
     await started;
-    await base.db.query("update golden_build_jobs set lease_until=now()-interval '1 second' where id=$1", [job.jobId]);
     await base.db.query("update public.jobs set lease_until='-infinity' where id=$1", [job.jobId]);
     await runGoldenBuildJob(base.db, base.builds);
     expect((await base.builds.status(base.people.admin, job.jobId)).state).toBe("failed");
