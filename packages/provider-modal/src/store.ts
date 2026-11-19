@@ -147,10 +147,34 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
     },
     async removeImage(name) {
       await authorize();
-      await sql.query(
-        `update public.modal_images set record=jsonb_set(record,'{deleted}','true') where scope=$1 and name=$2`,
-        [key, name],
-      );
+      if (!sql.transaction) throw refusal("unavailable", "Snapshot retirement requires a database transaction.");
+      await sql.transaction(async (tx) => {
+        const current = await tx.query<{ record: SavedImage }>(
+          `select record from public.modal_images where scope=$1 and name=$2 for update`,
+          [key, name],
+        );
+        const image = current.rows[0]?.record;
+        if (!image || image.deleted) return;
+        if (image.imageId) {
+          const references = await tx.query(
+            `select 1 from public.modal_machines where record->>'commonRuntime'='true'
+             and record->>'phase' is distinct from 'deleted' and record->'sourceImage' @> $1::jsonb limit 1`,
+            [JSON.stringify({ scopeKey: key, name, imageId: image.imageId })],
+          );
+          if (references.rows.length)
+            throw new ProviderError({
+              provider: "modal",
+              code: "conflict",
+              providerCode: "snapshot_source_busy",
+              message: "A runtime sandbox references this snapshot. Delete that sandbox before retiring the snapshot.",
+              retryable: true,
+            });
+        }
+        await tx.query(
+          `update public.modal_images set record=jsonb_set(record,'{deleted}','true') where scope=$1 and name=$2`,
+          [key, name],
+        );
+      });
     },
     async purgeImage(name, sourceId, imageId) {
       await authorize();
