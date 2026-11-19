@@ -3,6 +3,7 @@ import { createdInboundTrigger, createInboundTriggerBody, createInboundTriggerQu
 import { launchInput } from "./launch.ts";
 import { launchOutput } from "./launch-response.ts";
 import { sandboxOperations } from "./sandbox.ts";
+import { launchOptionsOperation, readLogsOperation } from "./sandbox-reads.ts";
 import { sandboxRestOperations } from "./sandbox-rest.ts";
 
 export type { CreatedInboundTrigger } from "./inbound-trigger.ts";
@@ -17,6 +18,7 @@ export {
   sandboxOperations,
 } from "./sandbox.ts";
 
+export { launchOptionsOperation, MAX_LOG_PAGES, readLogsOperation } from "./sandbox-reads.ts";
 export { sandboxExtensionLifetime, sandboxRestOperations } from "./sandbox-rest.ts";
 
 export interface Operation<Input extends z.ZodType, Output extends z.ZodType | undefined = undefined> {
@@ -57,4 +59,11 @@ export const createInboundTrigger = {
   errors: ["invalid_request", "unauthorized", "forbidden", "conflict", "dependency_unavailable"],
 } as const satisfies Operation<typeof createInboundTriggerBody, typeof createdInboundTrigger>;
 
-export const operations = { launch, createInboundTrigger, ...sandboxOperations, ...sandboxRestOperations } as const;
+export const operations = {
+  launch,
+  createInboundTrigger,
+  ...sandboxOperations,
+  ...sandboxRestOperations,
+  launchOptions: launchOptionsOperation,
+  readLogs: readLogsOperation,
+} as const;

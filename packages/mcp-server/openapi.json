@@ -23,6 +23,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
                 "type": "object",
                 "properties": {}
               }
@@ -7267,7 +7268,7 @@
     "/api/v1/logs/read": {
       "post": {
         "operationId": "logs_read",
-        "description": "The agent's events oldest first: prompts (with status and failure reason), messages and tool calls, steers. The default is one bounded page (100 events). Set all to read every available page (up to 100 pages) in one response. Pass the returned cursor as cursor to read only what is new. An event read twice has the same id and the newer body; each id appears once per response.",
+        "description": "Read the agent's events, oldest first. The default is one bounded page. Pass the returned cursor as cursor to read only what is new.",
         "security": [
           {
             "serviceToken": []
@@ -7281,20 +7282,18 @@
           "content": {
             "application/json": {
               "schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
                 "type": "object",
                 "properties": {
                   "id": {
                     "type": "string",
-                    "description": "Armada's sandbox id (a uuid, as returned by launch and list)."
+                    "description": "Armada sandbox ID returned by launch and list."
                   },
-                  "limit": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 500
-                  },
-                  "all": {
-                    "description": "Read up to 100 pages. Use forward direction only.",
-                    "type": "boolean"
+                  "org": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   },
                   "direction": {
                     "type": "string",
@@ -7303,31 +7302,36 @@
                       "backward"
                     ]
                   },
+                  "limit": {
+                    "description": "Events per page, an integer from 1 to 1000 (up to 500 on Docker).",
+                    "type": "number"
+                  },
                   "maxBytes": {
-                    "type": "integer",
-                    "minimum": 256,
-                    "maximum": 1048576
+                    "description": "Page byte budget, an integer from 256 to 1048576.",
+                    "type": "number"
                   },
                   "coalesce": {
                     "type": "boolean"
                   },
                   "cursor": {
-                    "description": "The cursor of the previous page.",
-                    "type": "string",
-                    "minLength": 1
+                    "description": "The cursor of the previous page. Docker requires a nonempty string when provided.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "all": {
+                    "description": "Read up to 100 pages. Use forward direction only.",
+                    "type": "boolean"
                   },
                   "follow": {
-                    "type": "boolean",
-                    "description": "Follow events within the bounded HTTP request."
-                  },
-                  "org": {
-                    "type": "string"
+                    "description": "Follow events within the bounded HTTP request.",
+                    "type": "boolean"
                   }
                 },
                 "required": [
                   "id"
-                ],
-                "$schema": "http://json-schema.org/draft-07/schema#"
+                ]
               }
             }
           }
