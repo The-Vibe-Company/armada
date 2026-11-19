@@ -89,16 +89,20 @@ export function createProviderReaperLane(
     const observedAt = now();
     const reportOverdueMachines = () => {
       if (overdueMachineIds.length === 0) return;
-      log(
-        JSON.stringify({
-          event: "reaper_overdue_machines",
-          ...labels,
-          deploymentId: source.deploymentId,
-          observedAt,
-          machineIds: overdueMachineIds,
-        }),
-      );
-      overdueMachineIds.length = 0;
+      const machineIds = overdueMachineIds.splice(0);
+      try {
+        log(
+          JSON.stringify({
+            event: "reaper_overdue_machines",
+            ...labels,
+            deploymentId: source.deploymentId,
+            observedAt,
+            machineIds,
+          }),
+        );
+      } catch {
+        errors++;
+      }
     };
     try {
       for await (const machine of source.inventory.listInventory(signal)) {
@@ -127,10 +131,12 @@ export function createProviderReaperLane(
           errors++;
         }
       }
-      complete = !signal.aborted && errors === 0;
+      complete = !signal.aborted;
     } catch {
       if (!signal.aborted) errors++;
     } finally {
+      reportOverdueMachines();
+      complete &&= errors === 0;
       log(
         JSON.stringify({
           metric: "reaper_unknown_machines",
@@ -153,7 +159,6 @@ export function createProviderReaperLane(
           }),
         );
       }
-      reportOverdueMachines();
       if (errors > 0) {
         log(JSON.stringify({ event: "provider_reaper_retry", ...labels, errors }));
       }

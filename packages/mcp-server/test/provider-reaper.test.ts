@@ -263,3 +263,38 @@ test("report-only sources emit distinguishable inventory counts", async () => {
     complete: true,
   });
 });
+
+test("an overdue evidence log failure does not prevent live deletion", async () => {
+  let deleted = false;
+  let failLog = true;
+  const lane = createProviderReaper(
+    {
+      provider: "modal",
+      sourceId: "account_a",
+      deploymentId,
+      inventory: {
+        async *listInventory() {
+          yield oldMachine;
+        },
+      },
+      async lookupOwnership() {
+        return { kind: "absent" };
+      },
+      async deleteMachine() {
+        deleted = true;
+        return true;
+      },
+    },
+    (line) => {
+      if (failLog && JSON.parse(line).event === "reaper_overdue_machines") {
+        failLog = false;
+        throw new Error("log sink unavailable");
+      }
+    },
+    () => now,
+  );
+
+  await lane.reconcileOne(new AbortController().signal);
+
+  expect(deleted).toBe(true);
+});
