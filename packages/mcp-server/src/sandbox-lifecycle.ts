@@ -545,18 +545,12 @@ export function createSandboxLifecycle(
           await deferToOperator("original provider authority unavailable.");
           return true;
         }
-        if (
-          canDeferInterruptedResume &&
-          initialObservation &&
-          observing &&
-          !signal?.aborted &&
-          caught instanceof ProviderError &&
-          caught.retryable &&
-          caught.code !== "not_found" &&
-          !authorityLost
-        ) {
-          await deferInterruptedResume();
-          return true;
+        if (canDeferInterruptedResume && initialObservation && observing) {
+          signal?.throwIfAborted();
+          if (caught instanceof ProviderError && caught.retryable && caught.code !== "not_found" && !authorityLost) {
+            await deferInterruptedResume();
+            return true;
+          }
         }
         // A definitive absence for the exact registered identity is terminal.
         // Never infer absence from transport errors or discover resources by name.
