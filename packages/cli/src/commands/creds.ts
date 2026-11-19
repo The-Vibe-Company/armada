@@ -162,7 +162,8 @@ Example: armada creds test SANDBOX_UUID --model deployment-name --json
 Store an encrypted credential after armada login. Read the secret from hidden input,
 stdin or a private file, never command arguments. API keys use provider billing;
 subscription credentials require an eligible subscription, not an API key.
-For a model account, set its cap with --max-agents N or --unlimited.
+Set a named model account cap with --max-agents N or --unlimited.
+To save a cap, create with --name NAME or replace with --id UUID --expected-version N.
 Example: armada creds set openai --name personal --file /private/openai-key
 `,
     "creds import": importHelp(),
