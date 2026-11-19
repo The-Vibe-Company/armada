@@ -899,6 +899,7 @@ export class Runner {
     const done = new Promise<ExecResult>((resolve) =>
       child.once("close", (exitCode) => {
         clearTimeout(timer);
+        // Synchronous commands own their whole process group, including background descendants.
         terminate();
         signal?.removeEventListener("abort", terminate);
         try {
