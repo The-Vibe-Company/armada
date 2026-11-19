@@ -1,6 +1,11 @@
 import { expect, test } from "bun:test";
 import { CONTROL_BODY_MAX_BYTES } from "@armada/core";
-import { operations as contractOperations, controlRouteKey, PUBLIC_CONTROL_ROUTES } from "@armada/core/contract";
+import {
+  operations as contractOperations,
+  controlRouteKey,
+  PUBLIC_CONTROL_ROUTES,
+  tokenOperations,
+} from "@armada/core/contract";
 import {
   forwardControl,
   PARAMETERIZED_CONTROL_ROUTES,
@@ -206,6 +211,9 @@ test("every route the public proxy forwards is published or has a recorded reaso
       .map(({ method, path }) => `${method} ${path}`),
   ).toEqual([]);
   expect(publishedRoutes.filter((route) => unpublishedReason(route) !== undefined)).toEqual([]);
+  for (const { route } of Object.values(tokenOperations)) {
+    expect(publishedOperations).not.toContain(`${route.method} ${controlRouteKey(route)}`);
+  }
   expect(
     Object.keys(UNPUBLISHED_REST_ROUTES).filter((key) =>
       key.endsWith("/") ? !forwarded.some((route) => route.startsWith(key)) : !forwarded.includes(key),
