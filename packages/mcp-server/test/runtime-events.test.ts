@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, mock, spyOn, test } from "bun:test";
 import type { AgentEvent, Sql } from "@armada/core";
 import * as coreServer from "@armada/core/server";
 import { createUsagePricingContext, decryptSecret, encryptSecret } from "@armada/core/server";
@@ -169,15 +169,24 @@ test("ACK follows contiguous encrypted persistence and shared usage projection; 
       ).status,
     ).toBe(409);
     expect(await f.rows()).toHaveLength(3);
-    // Database failure after insert must roll the archive back too; never ACK lost projection work.
+    await f.db.query("update sandboxes set status='running',task_prompt_id='prompt-a' where id=$1", [f.id]);
+    const completion = [
+      { sequence: 4, event: f.usage("usage-after-fault") },
+      {
+        sequence: 5,
+        event: { id: "terminal", kind: "prompt", status: "finished", promptId: "prompt-a", text: "", at: 3 },
+      },
+    ] satisfies { sequence: number; event: AgentEvent }[];
+    const status = async () => (await f.db.query("select status from sandboxes where id=$1", [f.id])).rows;
+    // Database failure after insert must roll back the archive and lifecycle journal before ACK.
     await f.db.exec(`create function fail_runtime_usage() returns trigger language plpgsql as $$ begin raise exception 'synthetic storage failure'; end $$;
       create trigger fail_runtime_usage before update of usage_turns on sandboxes for each row execute function fail_runtime_usage();`);
-    expect((await f.publish(active, [{ sequence: 4, event: f.usage("usage-after-fault") }])).status).toBe(503);
+    expect((await f.publish(active, completion)).status).toBe(503);
     expect(await f.rows()).toHaveLength(3);
+    expect(await status()).toEqual([{ status: "running" }]);
     await f.db.exec("drop trigger fail_runtime_usage on sandboxes; drop function fail_runtime_usage()");
-    expect(await (await f.publish(active, [{ sequence: 4, event: f.usage("usage-after-fault") }])).json()).toEqual({
-      acknowledgedSequence: 4,
-    });
+    expect(await (await f.publish(active, completion)).json()).toEqual({ acknowledgedSequence: 5 });
+    expect(await status()).toEqual([{ status: "ready" }]);
     const unknown: AgentEvent = {
       id: "unknown-usage",
       at: 3,
@@ -193,8 +202,8 @@ test("ACK follows contiguous encrypted persistence and shared usage projection; 
         reasoningTokens: null,
       },
     };
-    expect(await (await f.publish(active, [{ sequence: 5, event: unknown }])).json()).toEqual({
-      acknowledgedSequence: 5,
+    expect(await (await f.publish(active, [{ sequence: 6, event: unknown }])).json()).toEqual({
+      acknowledgedSequence: 6,
     });
     expect(await f.aggregate()).toMatchObject({
       turns: expect.arrayContaining([
@@ -720,6 +729,32 @@ test.each(["boat", "modal"] as const)(
     expect(incomplete?.cost).toMatchObject({ usd: null, unknown: "tokens", unpricedTurns: 1 });
   },
 );
+
+test("the runtime sweep settles a completed turn published by an overlapping server", async () => {
+  const f = await fixture();
+  const active = await f.enrol();
+  const promptId = crypto.randomUUID();
+  const event: AgentEvent = {
+    id: crypto.randomUUID(),
+    kind: "prompt",
+    promptId,
+    status: "failed",
+    at: 1,
+    text: "",
+  };
+  expect((await f.publish(active, [{ sequence: 1, event }])).status).toBe(200);
+  await f.db.query(
+    "update sandboxes set status='running',task_prompt_id=$2,expires_at=now()+interval '1 hour' where id=$1",
+    [f.id, promptId],
+  );
+  const checkpoint = mock(async () => {
+    throw Error("A recently settled turn is not ready for idle checkpointing.");
+  });
+  const idle = createRuntimeIdle(f.sql, ENCRYPTION_KEY, checkpoint, { now: () => 2 });
+  await idle.reconcileOne(new AbortController().signal);
+  expect((await f.db.query("select status from sandboxes where id=$1", [f.id])).rows).toEqual([{ status: "ready" }]);
+  expect(checkpoint).not.toHaveBeenCalled();
+});
 
 test("idle evidence upgrades long archives, survives enrolment renewal, and blocks unresolved turns and commands", async () => {
   const f = await fixture();

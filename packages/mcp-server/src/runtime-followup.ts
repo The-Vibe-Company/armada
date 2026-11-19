@@ -221,7 +221,7 @@ export function createRuntimeFollowup(
         authority.withOwner(found.id, caller.userId, async (tx, scope) => {
           if (scope.epoch !== admitted.epoch)
             throw new VaultError("conflict", "Runtime epoch changed before publication.");
-          await createSqlData(tx)(caller).sandboxes.update(id, {
+          await createSqlData(runtimeTransaction(tx))(caller).sandboxes.update(id, {
             ...patch,
             ...(finishActivity ? { turnActivity: "finish" } : {}),
           });

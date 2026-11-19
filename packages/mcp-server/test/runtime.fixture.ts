@@ -122,6 +122,7 @@ export async function runtimeFixture(
   const starts: (string | undefined)[] = [];
   const mcpSnapshots: (import("@armada/agent-runtime").McpConfiguration | undefined)[] = [];
   let dropReplyFor: RunnerRequest["op"] | undefined;
+  let eventsBeforePromptReply = false;
   let lost = false,
     now = 0;
   let nextDone: Promise<"finished" | "interrupted"> | undefined;
@@ -201,6 +202,7 @@ export async function runtimeFixture(
           body: JSON.stringify(wire),
         }),
       );
+      if (eventsBeforePromptReply && command.op === "prompt") await runner.flushOutbox();
       const responseBody = (await reply.json()) as {
         result?: { watermark: number; acknowledgedSequence: number; generation: string };
       };
@@ -395,6 +397,9 @@ export async function runtimeFixture(
     },
     refuse(op: RunnerRequest["op"]) {
       refused.add(op);
+    },
+    deliverPromptEventsBeforeReply() {
+      eventsBeforePromptReply = true;
     },
     dropReplyOnce(op: RunnerRequest["op"]) {
       dropReplyFor = op;
