@@ -1,5 +1,6 @@
 import account from "./account.ts";
 import advice from "./advice.ts";
+import api from "./api.ts";
 import type { Command, UsageGroup } from "./command.ts";
 import completion from "./completion.ts";
 import detail from "./detail.ts";
@@ -45,6 +46,7 @@ export const commands: readonly Command[] = [
   logout,
   token,
   account,
+  api,
 ];
 
 const byName = new Map(commands.map((command) => [command.name, command]));

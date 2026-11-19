@@ -145,6 +145,7 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
     } catch (error) {
       if (
         !sessionFailure(error) ||
+        argv[0] === "api" ||
         argv[0] === "login" ||
         argv[0] === "logout" ||
         (argv[0] === "account" && argv[1] === "logout") ||
