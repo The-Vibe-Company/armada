@@ -376,7 +376,10 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     });
     const modalLaunch = path === "sandbox/launch" && (body as { provider?: unknown }).provider === "modal";
     const keyedDockerLaunch =
-      path === "sandbox/launch" && (body as { provider?: unknown }).provider === "docker" && "externalRef" in body;
+      path === "sandbox/launch" &&
+      body &&
+      (body as { provider?: unknown }).provider === "docker" &&
+      "externalRef" in body;
     const requestId = modalLaunch || keyedDockerLaunch ? response.headers.get("x-request-id") : null;
     const correlation = requestId && UUID.test(requestId) ? { requestId } : {};
     if (!response.ok) {
@@ -1473,10 +1476,8 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         stopped = true;
       }
       const requestId = crypto.randomUUID();
-      const invoke = () =>
-        request<{ id?: string; status: string }>(
-          `sandboxes/${encodeURIComponent(id)}?${new URLSearchParams({ org: c.org, requestId })}`,
-        );
+      const path = `sandboxes/${encodeURIComponent(id)}?${new URLSearchParams({ org: c.org, requestId })}`;
+      const invoke = () => request<{ id?: string; status: string }>(path);
       let receipt: { id?: string; status: string };
       // Modal termination/recovery-image cleanup can be pending, and a
       // failed attempt holds an activity lease. Reconcile the same delete;
