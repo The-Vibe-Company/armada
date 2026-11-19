@@ -36,11 +36,11 @@ import {
 import { PUBLISHED_REST_GET_ROUTES, PUBLISHED_REST_ROUTES } from "./public-rest-routes.ts";
 import { SANDBOX_REST_CONTRACTS } from "./sandbox-rest-controls.ts";
 import { DRAIN_REFUSAL } from "./server-request-drain.ts";
-import { createArmadaServer, type ToolContext } from "./tools.ts";
+import { createRestToolServer, type ToolContext } from "./tools.ts";
 
 /** MCP input names that the REST adapters (`control.ts`, `control-logs.ts`) accept under another name. */
 export const REST_FIELD_NAMES: Readonly<Record<string, Readonly<Record<string, string>>>> = {
-  "logs/read": { since_cursor: "cursor", conversation_id: "conversationId" },
+  "logs/read": { since_cursor: "cursor" },
 };
 /** REST routes whose contract is the named MCP tool, beyond the dispatcher's shared-tool table. */
 const REST_TOOL_ROUTES: Readonly<Record<string, string>> = {
@@ -329,7 +329,7 @@ const OUTPUT_OPERATIONS: Record<(typeof PUBLISHED_REST_GET_ROUTES)[number], obje
  */
 export async function generateOpenApi() {
   const context = { caller: { userId: "", orgs: [] }, data: {} } as unknown as ToolContext;
-  const server = createArmadaServer(context, VERSION);
+  const server = createRestToolServer(context, VERSION);
   const client = new Client({ name: "armada-openapi", version: VERSION });
   const [a, b] = InMemoryTransport.createLinkedPair();
   try {

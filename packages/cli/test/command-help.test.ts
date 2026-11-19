@@ -21,6 +21,8 @@ for (const command of [
   "send",
   "steer",
   "exec",
+  "routine",
+  "template",
 ]) {
   test(`armada ${command} help preserves its output`, async () => {
     async function help(flag: string) {

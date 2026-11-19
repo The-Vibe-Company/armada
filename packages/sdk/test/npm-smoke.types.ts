@@ -27,6 +27,10 @@ export async function docker() {
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
 type Assert<T extends true> = T;
 
+export type LogsInputContract = Assert<
+  Equal<Extract<"conversationId" | "conversation_id", keyof Parameters<Armada["logs"]>[0]>, never>
+>;
+
 export type GoldenReceiptContract = Assert<
   Equal<Awaited<ReturnType<typeof golden>>, { golden: string; prompt: string | null; conversation: string | null }>
 >;

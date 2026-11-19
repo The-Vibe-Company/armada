@@ -44,7 +44,10 @@ test("published OpenAPI matches current server contracts and preserves REST fiel
     }
   }
   expect(JSON.stringify(paths["/api/v1/logs/read"]!.post)).toContain("Pass the returned cursor as cursor");
-  expect(paths["/api/v1/logs/read"]!.post.requestBody.content["application/json"].schema.properties!.follow).toEqual({
+  const logsInput = paths["/api/v1/logs/read"]!.post.requestBody.content["application/json"].schema.properties!;
+  expect(logsInput).not.toHaveProperty("conversationId");
+  expect(logsInput).not.toHaveProperty("conversation_id");
+  expect(logsInput.follow).toEqual({
     type: "boolean",
     description: "Follow events within the bounded HTTP request.",
   });
