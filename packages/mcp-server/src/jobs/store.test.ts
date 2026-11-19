@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { rowOnlyDatabase } from "../../test/row-only-database.ts";
 import { sqlOver } from "../sql.ts";
 import { runtimeWakes } from "../wake-bus.ts";
-import { createJobsRunner } from "./runner.ts";
+import { createJobsRunner, type Job, type JobResult } from "./runner.ts";
 import { createJobsStore, JOBS_WAKE } from "./store.ts";
 
 const database = rowOnlyDatabase();
@@ -52,7 +52,7 @@ test("transactional enqueue wakes after commit and replays the encrypted job by 
   }
 });
 
-test("a stale lifecycle lease is retired in migrated SQL", async () => {
+test.each([1, 2])("a stale lifecycle lease is retired from claim generation %i", async (generation) => {
   const { db, people, store } = await fixture();
   const {
     rows: [golden],
@@ -64,17 +64,21 @@ test("a stale lifecycle lease is retired in migrated SQL", async () => {
     [sandboxId, golden!.id, people.org, people.owner],
   );
   const options = { orgId: people.org, maxAttempts: 2, deadline: new Date("2100-01-01") };
-  const id = await store.enqueue("stop", sandboxId, 1, "old", null, options);
+  const id = await store.enqueue("stop", sandboxId, generation, "old", null, options);
+  let invoked = false;
   const runner = createJobsRunner(store, {
     stop: {
       concurrency: 1,
       async run() {
-        throw new Error("Unexpected dispatch.");
+        invoked = true;
+        await db.query("delete from sandboxes where id = $1", [sandboxId]);
+        return { status: "done" };
       },
     },
   });
   expect(await runner.reconcileOne(signal)).toBe(true);
   await runner.drain();
+  expect(invoked).toBe(generation === 2);
   expect((await db.query("select state, outcome from jobs where id = $1", [id])).rows).toEqual([
     { state: "failed", outcome: { reason: "stale_generation" } },
   ]);
@@ -88,4 +92,39 @@ test("internal enqueue scopes the same key to each sandbox incarnation", async (
     store.enqueue("sample", id, generation, "event", null, { orgId: people.org, maxAttempts: 1 });
   const ids = await Promise.all([enqueue(first, 1), enqueue(first, 2), enqueue(second, 1)]);
   expect(new Set(ids).size).toBe(3);
+});
+
+test("a failed completion transaction replays the same job and preserves its prior evidence", async () => {
+  const { db, people, store } = await fixture();
+  const id = await store.enqueue("sample", null, null, "event", null, { orgId: people.org, maxAttempts: 1 });
+  const evidence = { phase: "observed" };
+  await db.query("update jobs set outcome = $2 where id = $1", [id, evidence]);
+  const effects = new Set<string>();
+  const epochs: string[] = [];
+  const run = async (job: Job, { canDispatch }: { canDispatch(): Promise<boolean> }): Promise<JobResult> => {
+    expect(await canDispatch()).toBe(job.attempts === 1);
+    effects.add(job.id);
+    epochs.push(job.lease_epoch);
+    if (job.attempts === 1)
+      return {
+        status: "done",
+        commit: async () => {
+          throw new Error("Crash before commit.");
+        },
+      };
+    return { status: "fail", reason: "reconciled" };
+  };
+  const runner = () => createJobsRunner(store, { sample: { concurrency: 1, run } }, () => {});
+  const first = runner();
+  expect(await first.reconcileOne(signal)).toBe(true);
+  await first.drain();
+  await db.query("update jobs set lease_until = '-infinity' where id = $1", [id]);
+  const successor = runner();
+  expect(await successor.reconcileOne(signal)).toBe(true);
+  await successor.drain();
+  expect(epochs).toEqual(["1", "2"]);
+  expect([...effects]).toEqual([id]);
+  expect((await db.query("select state, outcome from jobs where id = $1", [id])).rows).toEqual([
+    { state: "failed", outcome: { reason: "reconciled", evidence } },
+  ]);
 });

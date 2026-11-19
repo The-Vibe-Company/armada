@@ -24,7 +24,7 @@ export interface JobStore {
   inspect(job: Job, owner: string): Promise<"dispatch" | "reconcile" | "stale" | "lost">;
   retireStale(job: Job, owner: string): Promise<void>;
   renew(job: Job, owner: string, seconds: number): Promise<boolean>;
-  complete(job: Job, owner: string, result: JobResult): Promise<void>;
+  complete(job: Job, owner: string, result: JobResult): Promise<boolean>;
 }
 
 interface JobKind {
@@ -64,7 +64,10 @@ export function createJobsRunner(
       // WARNING: Arm expiry before renewal so a delayed response cannot extend local ownership.
       const cancelNextExpiry = schedule(LEASE_SECONDS * 1000, () => lease.abort());
       try {
-        if (!(await store.renew(job, owner, LEASE_SECONDS))) lease.abort();
+        if (!(await store.renew(job, owner, LEASE_SECONDS))) {
+          lease.abort();
+          await store.retireStale(job, owner);
+        }
         if (signal.aborted) return;
         cancelExpiry();
         cancelExpiry = cancelNextExpiry;
@@ -95,7 +98,7 @@ export function createJobsRunner(
           return !signal.aborted && (await store.inspect(job, owner)) === "dispatch" && !signal.aborted;
         },
       });
-      if (!signal.aborted) await store.complete(job, owner, result);
+      if (!signal.aborted && !(await store.complete(job, owner, result))) await store.retireStale(job, owner);
     } finally {
       lease.abort();
       cancelExpiry();

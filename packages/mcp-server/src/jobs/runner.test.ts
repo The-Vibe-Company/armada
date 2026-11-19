@@ -25,7 +25,6 @@ function fixture() {
     );
   const completed: string[] = [];
   let renewalGate: Promise<void> | undefined;
-  let loseCompletion = false;
   const store: JobStore = {
     async claim(kind, owner, seconds, concurrency) {
       const candidates = rows.filter((row) => row.kind === kind && !row.terminal);
@@ -50,10 +49,10 @@ function fixture() {
       return true;
     },
     async complete(job, owner) {
-      if (loseCompletion) throw new Error("Database disconnected before commit.");
       completed.push(job.id);
       const row = current(job, owner);
       if (row) row.terminal = true;
+      return Boolean(row);
     },
   };
   return {
@@ -78,9 +77,6 @@ function fixture() {
     },
     loseRenewal() {
       renewalUnavailable = true;
-    },
-    loseCompletion(value: boolean) {
-      loseCompletion = value;
     },
     completed,
     holdRenewal(gate: Promise<void>) {
@@ -137,29 +133,6 @@ test("shutdown drains a renewal that is still in flight", async () => {
     renewal.resolve();
     await drained;
   }
-});
-
-test("a crash before completion replays the same identity under a new epoch", async () => {
-  const f = fixture();
-  f.loseCompletion(true);
-  const effects = new Set<string>();
-  const epochs: string[] = [];
-  const run = async (job: Job) => {
-    effects.add(job.id);
-    epochs.push(job.lease_epoch);
-    return { status: "done" } as const;
-  };
-  const first = f.runner(run);
-  await first.reconcileOne(tick);
-  await first.drain();
-  f.loseCompletion(false);
-  f.advance(30_000);
-  const successor = f.runner(run);
-  await successor.reconcileOne(tick);
-  await successor.drain();
-  expect(epochs).toEqual(["1", "2"]);
-  expect([...effects]).toEqual(["one"]);
-  expect(f.completed).toEqual(["one"]);
 });
 
 test("a second runner respects the registered kind's capacity until the lease is released", async () => {

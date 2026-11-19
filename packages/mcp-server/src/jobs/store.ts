@@ -37,9 +37,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
       const serialized = JSON.stringify(payload);
       if (serialized === undefined) throw new Error("Job payload must be JSON.");
       const sealed = payload === null ? null : toBytea(await encryptSecret(serialized, encryptionKey));
-      const {
-        rows: [inserted],
-      } = await db.query<{ id: string }>(
+      const { rows: insertedRows } = await db.query<{ id: string }>(
         `insert into public.jobs
            (kind, sandbox_id, generation, idem_key, payload_enc, org_id, max_attempts, deadline_at,
             request_owner_id, request_digest)
@@ -58,30 +56,26 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
           request?.digest ?? null,
         ],
       );
-      if (inserted) {
-        if (!deferTransactionWake(db, JOBS_WAKE)) runtimeWakes.notify(JOBS_WAKE);
-        return inserted.id;
+      if (insertedRows[0]) {
+        if (!deferTransactionWake(db, JOBS_WAKE) && !tx) runtimeWakes.notify(JOBS_WAKE);
+        return insertedRows[0].id;
       }
-      const {
-        rows: [existing],
-      } = await db.query<{ id: string }>(
+      const { rows: existingRows } = await db.query<{ id: string }>(
         `select id from public.jobs where idem_key = $1 and request_digest is not distinct from $2`,
         [key, request?.digest ?? null],
       );
-      if (!existing) throw new Error("Conflicting job request.");
-      return existing.id;
+      if (!existingRows[0]) throw new Error("Conflicting job request.");
+      return existingRows[0].id;
     },
     async claim(kind, owner, seconds, concurrency) {
-      const {
-        rows: [row],
-      } = await sql.query<JobRow>(
+      const { rows } = await sql.query<JobRow>(
         `select id, kind, sandbox_id, generation::text, lease_epoch::text, attempts, max_attempts, outcome,
                 encode(payload_enc, 'hex') as payload_enc
          from public.claim_job($1,$2,$3,$4)`,
         [kind, owner, seconds, concurrency],
       );
-      if (!row) return;
-      const { payload_enc, ...job } = row;
+      if (!rows[0]) return;
+      const { payload_enc, ...job } = rows[0];
       const payload =
         payload_enc === null
           ? null
@@ -89,9 +83,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
       return { ...job, payload };
     },
     async inspect(job, owner) {
-      const {
-        rows: [row],
-      } = await sql.query<{ state: "dispatch" | "reconcile" | "stale" }>(
+      const { rows } = await sql.query<{ state: "dispatch" | "reconcile" | "stale" }>(
         `select case when j.generation is not null and s.lifecycle_generation is distinct from j.generation
                        then 'stale'
                      when j.attempts > j.max_attempts or j.deadline_at <= clock_timestamp()
@@ -101,18 +93,17 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
          where ${fence} and j.generation is not distinct from $4`,
         claimKey(job, owner),
       );
-      return row?.state ?? "lost";
+      return rows[0]?.state ?? "lost";
     },
     async retireStale(job, owner) {
+      if (job.generation === null) return;
       if (!sql.transaction) throw new Error("Job retirement requires a transaction.");
       await sql.transaction(async (tx) => {
-        const {
-          rows: [sandbox],
-        } = await tx.query<{ generation: string }>(
+        const { rows: sandboxRows } = await tx.query<{ generation: string }>(
           "select lifecycle_generation::text as generation from public.sandboxes where id = $1 for update",
           [job.sandbox_id],
         );
-        if (job.generation === null || sandbox?.generation === job.generation) return;
+        if (sandboxRows[0]?.generation === job.generation) return;
         await tx.query(
           `update public.jobs j set state = 'failed', lease_owner = null, lease_until = null,
              outcome = coalesce(outcome, '{}'::jsonb) || '{"reason":"stale_generation"}'::jsonb
@@ -122,38 +113,37 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
       });
     },
     async renew(job, owner, seconds) {
-      const {
-        rows: [row],
-      } = await sql.query<{ renewed: boolean }>("select public.renew_job($1,$2,$3,$4,$5) as renewed", [
+      const { rows } = await sql.query<{ renewed: boolean }>("select public.renew_job($1,$2,$3,$4,$5) as renewed", [
         ...claimKey(job, owner),
         seconds,
       ]);
-      return row?.renewed === true;
+      return rows[0]?.renewed === true;
     },
     async complete(job, owner, result) {
       const state = result.status === "retry" ? "queued" : result.status === "fail" ? "failed" : "done";
-      const outcome = result.status === "fail" ? { reason: result.reason, evidence: result.outcome } : result.outcome;
+      const outcome = result.outcome === undefined ? null : JSON.stringify(result.outcome);
       const complete = async (db: Sql) => {
-        const {
-          rows: [row],
-        } = await db.query<{ completed: boolean }>(
+        const { rows } = await db.query<{ completed: boolean }>(
           `select public.complete_job($1,$2,$3,$4,$5,
-             coalesce($6::jsonb, (select outcome from public.jobs where id = $1)),$7) as completed`,
+             case when $5 = 'failed' then jsonb_build_object('reason', $8::text, 'evidence', evidence)
+                  else evidence end, $7) as completed
+           from (select coalesce($6::jsonb, (select outcome from public.jobs where id = $1)) as evidence) data`,
           [
             ...claimKey(job, owner),
             state,
-            outcome === undefined ? null : JSON.stringify(outcome),
+            outcome,
             result.status === "retry" ? result.after : null,
+            result.status === "fail" ? result.reason : null,
           ],
         );
-        if (row?.completed) await result.commit?.(db);
+        if (rows[0]?.completed) await result.commit?.(db);
+        return rows[0]?.completed === true;
       };
       if (result.commit) {
         if (!sql.transaction) throw new Error("Job completion requires a transaction.");
-        await sql.transaction(complete);
-      } else {
-        await complete(sql);
+        return sql.transaction(complete);
       }
+      return complete(sql);
     },
   } satisfies JobStore & { enqueue: (...args: never[]) => Promise<string> };
 }
