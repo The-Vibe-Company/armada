@@ -111,7 +111,6 @@ export interface ModalProvider extends Provider {
     cacheDir: string;
     artifact: { sha256: string; bytes: number };
   }): Promise<void>;
-  /** Trusted stop owner only. The caller fences logical stop ownership and taint before capture. */
   captureRuntimeWork(input: {
     sandboxId: string;
     physicalGeneration: string;
@@ -2157,6 +2156,8 @@ async function* listModalInventory(
     const { appId } = await abortable(bound(), signal);
     const tags = [{ tagName: DEPLOYMENT_TAG, tagValue: deploymentId }];
     let beforeTimestamp: number | undefined;
+    // The SDK iterator discards creation times. Use its listing RPC, which covers both
+    // Modal sandbox backends and scopes the query by the verified environment's App ID.
     while (true) {
       signal?.throwIfAborted();
       const { sandboxes } = await client.cpClient.sandboxListV2(
