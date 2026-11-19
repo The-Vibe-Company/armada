@@ -37,10 +37,11 @@ test("forwards allowed control paths with the bearer and preserves status/body",
 test("DELETE proxy forwards only the authenticated sandbox deletion shape and organization scope and replay ID", async () => {
   process.env.ARMADA_MCP_URL = "https://armada.test/mcp";
   const id = "11111111-1111-4111-8111-111111111111";
+  const org = "22222222-2222-4222-8222-222222222222";
   const seen: Request[] = [];
-  const send = async (method: string, path: string[], bearer = true) =>
+  const send = async (method: string, path: string[], bearer = true, replay = "") =>
     forwardControl(
-      new Request(`https://dashboard.test/api/v1/${path.join("/")}?org=${id}&requestId=${id}`, {
+      new Request(`https://dashboard.test/api/v1/${path.join("/")}?org=${org}${replay}`, {
         method,
         headers: bearer ? { authorization: "Bearer masked" } : {},
       }),
@@ -57,8 +58,10 @@ test("DELETE proxy forwards only the authenticated sandbox deletion shape and or
   expect(await deleted.json()).toEqual({ id, status: "deleted" });
   expect(seen[0]?.method).toBe("DELETE");
   expect(seen[0]?.body).toBeNull();
-  expect(seen[0]?.url).toBe(`https://armada.test/api/v1/sandboxes/${id}?org=${id}&requestId=${id}`);
+  expect(seen[0]?.url).toBe(`https://armada.test/api/v1/sandboxes/${id}?org=${org}`);
   expect(seen[0]?.headers.get("authorization")).toBe("Bearer masked");
+  expect((await send("DELETE", ["sandboxes", id], true, `&requestId=${id}`)).status).toBe(200);
+  expect(seen[1]?.url).toBe(`https://armada.test/api/v1/sandboxes/${id}?org=${org}&requestId=${id}`);
   for (const [method, path] of [
     ["POST", ["sandbox", "delete"]],
     ["POST", ["sandboxes", id]],
@@ -69,7 +72,7 @@ test("DELETE proxy forwards only the authenticated sandbox deletion shape and or
     ["DELETE", ["golden", "list"]],
   ] as const)
     expect((await send(method, [...path])).status).toBe(404);
-  expect(seen).toHaveLength(1);
+  expect(seen).toHaveLength(2);
 });
 
 test("forwards anonymous public auth routes without a bearer", async () => {
