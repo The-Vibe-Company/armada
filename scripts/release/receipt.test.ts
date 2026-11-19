@@ -15,6 +15,13 @@ test("migration receipt includes SQL applied in this attempt and by a prior atte
   ).toEqual([alreadyApplied, newlyApplied]);
 });
 
+test("SQL absent from the prior production receipt survives retries even when already in the prior tag", () => {
+  const appliedOnFailedAttempt = "20261119090000";
+  expect(migrationChanges([], [appliedOnFailedAttempt], [appliedOnFailedAttempt], [])).toEqual([
+    appliedOnFailedAttempt,
+  ]);
+});
+
 test.each([
   ["PROTOCOL_VERSION", 1, 2, 1],
   ["DOCKER_HOST_PROTOCOL", 2, 2, 2],
@@ -56,5 +63,22 @@ test("surface evidence records breaking commits and removed operations and field
     "commit: chore: publish",
     "GET /items/responses/200/content/json/schema/properties/title",
     "DELETE /items",
+  ]);
+});
+
+test("a changed field type is recorded as a surface break", () => {
+  const api = (type: string) => ({
+    paths: {
+      "/items": {
+        get: {
+          responses: {
+            "200": { content: { json: { schema: { properties: { id: { type } } } } } },
+          },
+        },
+      },
+    },
+  });
+  expect(surfaceBreaks(api("string"), api("number"), [])).toEqual([
+    "GET /items/responses/200/content/json/schema/properties/id/type",
   ]);
 });

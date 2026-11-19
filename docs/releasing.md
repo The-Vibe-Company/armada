@@ -408,8 +408,8 @@ Roll forward by default with a reviewed fix or revert release. A successful
 production release attaches `release-receipt.json` to its GitHub release. The
 receipt records the deployed source, provider deployment IDs, sandbox image
 digest, migration changes, protocol values at both tags and detected surface
-breaks. Migration evidence combines production history with the tag diff so that
-a retry still records SQL applied during an earlier attempt. Missing prior
+breaks. Migration evidence combines production history with the prior receipt and tag diff so that a retry still
+records SQL applied during an earlier attempt. Missing prior production history,
 protocol or API evidence prevents a reliable rollback comparison. Host rollback
 requires schema-compatible known-good deployments and recorded approval.
 Production history/confirmed repair and dry-run remain explicit manual operator

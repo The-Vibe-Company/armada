@@ -10,31 +10,34 @@ export function protocolChange(previous: string, current: string, name: string) 
   return { from: protocol(previous, name), to: protocol(current, name) };
 }
 
-function protocol(source: string, name: string): number | null {
+function protocol(source: string, name: string) {
   const value = source.match(new RegExp(`^export const ${name} = ([1-9][0-9]*);$`, "m"))?.[1];
   return value && Number.isSafeInteger(Number(value)) ? Number(value) : null;
 }
 
-function object(value: unknown): Record<string, unknown> {
+function object(value: unknown) {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
 const methods = new Set(["get", "put", "post", "delete", "options", "head", "patch", "trace"]);
 const annotations = new Set(["description", "summary", "title", "example", "examples", "externalDocs", "$comment"]);
 
-function removedContract(previous: unknown, current: unknown, path: string): string[] {
+function removedContract(previous: unknown, current: unknown, path: string) {
   if (Array.isArray(previous)) {
-    // Ignore reordering. An altered alternative is ambiguous, so require a forward release.
     const next = Array.isArray(current) ? current : [];
     return previous.every((value) => next.some((candidate) => Bun.deepEquals(value, candidate))) ? [] : [path];
   }
 
+  if (previous === undefined) return [];
+  if (previous === null || typeof previous !== "object") return Object.is(previous, current) ? [] : [path];
+  if (!current || typeof current !== "object" || Array.isArray(current)) return [path];
+
   const before = object(previous);
   const after = object(current);
-  return Object.entries(before).flatMap(([key, value]) => {
+  const removed: string[] = Object.entries(before).flatMap(([key, value]) => {
     if (annotations.has(key) || key.startsWith("x-")) return [];
     const field = `${path}/${key}`;
-    if (!(key in after)) return [field];
+    if (!Object.hasOwn(after, key)) return [field];
     if (key === "properties") {
       return Object.entries(object(value)).flatMap(([name, schema]) => {
         const next = object(after[key]);
@@ -42,12 +45,12 @@ function removedContract(previous: unknown, current: unknown, path: string): str
         return Object.hasOwn(next, name) ? removedContract(schema, next[name], property) : [property];
       });
     }
-    if (key === "$ref" && value !== after[key]) return [field];
     return removedContract(value, after[key], field);
   });
+  return removed;
 }
 
-export function surfaceBreaks(previous: unknown, current: unknown, commits: string[]): string[] {
+export function surfaceBreaks(previous: unknown, current: unknown, commits: string[]) {
   const breaks = commits
     .filter((message) => /^[\w-]+(?:\([^\r\n]+\))?!:/.test(message) || /^BREAKING[ -]CHANGE:/m.test(message))
     .map((message) => `commit: ${message.split("\n", 1)[0]}`);
@@ -69,30 +72,60 @@ export function surfaceBreaks(previous: unknown, current: unknown, commits: stri
   return [...new Set(breaks)];
 }
 
-export function migrationChanges(previous: string[], before: string[], after: string[], changedPaths: string[]) {
+const migrationVersion = /^\d{14}$/;
+
+export function migrationChanges(previous: string[] | null, before: string[], after: string[], changedPaths: string[]) {
   const versions = changedPaths.map((path) => {
     const version = path.match(/^supabase\/migrations\/(\d{14})_[^/]+\.sql$/)?.[1];
     if (!version) throw new Error(`Invalid migration path: ${path}`);
     return version;
   });
-  // The tag comparison retains evidence when a previous attempt applied SQL and then failed.
+  const baseline = previous ?? before;
   return [
-    ...new Set([...versions, ...after.filter((version) => !before.includes(version) || !previous.includes(version))]),
+    ...new Set([
+      ...versions,
+      ...after.filter((version) => !before.includes(version) || !baseline.includes(version)),
+      ...baseline.filter((version) => !after.includes(version)),
+    ]),
   ].sort();
 }
 
-function git(...args: string[]): string {
+function git(...args: string[]) {
   const result = Bun.spawnSync(["git", ...args]);
   if (result.exitCode !== 0) throw new Error(`Git ${args[0]} failed: ${result.stderr.toString().trim()}`);
   return result.stdout.toString().trim();
 }
 
-function snapshot(ref: string, path: string): string {
+function snapshot(ref: string, path: string) {
   return git("ls-tree", "--name-only", ref, "--", path) ? git("show", `${ref}:${path}`) : "";
 }
 
-function lines(value: string): string[] {
+function lines(value: string) {
   return value.split("\n").filter(Boolean);
+}
+
+function previousProductionHistory(ref: string, tag: string) {
+  const result = Bun.spawnSync([
+    "gh",
+    "release",
+    "download",
+    tag,
+    "--pattern",
+    "release-receipt.json",
+    "--output",
+    "-",
+  ]);
+  if (result.exitCode !== 0) return null;
+  const receipt = object(JSON.parse(result.stdout.toString()));
+  const history: unknown = receipt.productionMigrationHistory;
+  if (
+    receipt.version !== tag.slice(1) ||
+    receipt.sha !== git("rev-parse", `${ref}^{commit}`) ||
+    !Array.isArray(history) ||
+    !history.every((version): version is string => typeof version === "string" && migrationVersion.test(version))
+  )
+    return null;
+  return history;
 }
 
 if (import.meta.main) {
@@ -114,14 +147,12 @@ if (import.meta.main) {
     ),
   );
   if (!serverDeployment || !dashboardDeployment || !pin) throw new Error("Missing deployment evidence");
+  const previousHistory = ref && previous ? previousProductionHistory(ref, previous) : null;
+  const productionMigrationHistory = parseMigrationHistory(after ?? "").remote;
   const migrations = migrationChanges(
-    ref
-      ? lines(git("ls-tree", "-r", "--name-only", ref, "--", "supabase/migrations")).flatMap(
-          (path) => path.match(/^supabase\/migrations\/(\d{14})_[^/]+\.sql$/)?.[1] ?? [],
-        )
-      : [],
+    previousHistory,
     parseMigrationHistory(before ?? "").remote,
-    parseMigrationHistory(after ?? "").remote,
+    productionMigrationHistory,
     ref ? lines(git("diff", "--name-only", "--no-renames", ref, sha, "--", "supabase/migrations")) : [],
   );
   const values = (path: string, name: string) =>
@@ -141,16 +172,20 @@ if (import.meta.main) {
     dashboardDeployment,
     imageDigest: pin === "none" ? null : pin.split("@")[1],
     migrations,
+    productionMigrationHistory,
     protocolBump,
-    surfaceBreak: surfaceBreaks(
-      ref ? api(ref) : null,
-      api(sha),
-      ref
-        ? git("log", "--format=%B%x00", `${ref}..${sha}`)
-            .split("\0")
-            .map((message) => message.trim())
-        : [],
-    ),
+    surfaceBreak: [
+      ...(previousHistory === null ? ["Previous production migration history unavailable"] : []),
+      ...surfaceBreaks(
+        ref ? api(ref) : null,
+        api(sha),
+        ref
+          ? git("log", "--format=%B%x00", `${ref}..${sha}`)
+              .split("\0")
+              .map((message) => message.trim())
+          : [],
+      ),
+    ],
   };
   writeFileSync(`${directory}/release-receipt.json`, `${JSON.stringify(receipt, null, 2)}\n`);
 }

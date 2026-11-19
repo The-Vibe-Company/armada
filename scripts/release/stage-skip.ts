@@ -81,7 +81,9 @@ export function canReuseServer(
 function productionDashboard(project: unknown) {
   return (
     project as {
-      targets?: { production?: { id?: string; readyState?: string; meta?: { githubCommitSha?: string } } };
+      targets?: {
+        production?: { id?: string; url?: string; readyState?: string; meta?: { githubCommitSha?: string } };
+      };
     } | null
   )?.targets?.production;
 }
@@ -89,6 +91,14 @@ function productionDashboard(project: unknown) {
 export function canReuseDashboard(project: unknown, sha: string) {
   const production = productionDashboard(project);
   return /^[a-f0-9]{40}$/.test(sha) && production?.readyState === "READY" && production.meta?.githubCommitSha === sha;
+}
+
+export function productionDashboardId(project: unknown, sha: string, expectedUrl?: string) {
+  if (!canReuseDashboard(project, sha)) return;
+  const production = productionDashboard(project);
+  if (expectedUrl !== undefined && expectedUrl !== `https://${production?.url}`) return;
+  const id = production?.id;
+  return typeof id === "string" && /^dpl_[A-Za-z0-9]+$/.test(id) ? id : undefined;
 }
 
 if (import.meta.main) {
@@ -108,13 +118,10 @@ if (import.meta.main) {
       signal: AbortSignal.timeout(15_000),
     }).catch(() => null);
     const project: unknown = response?.ok ? await response.json().catch(() => null) : null;
-    if (!canReuseDashboard(project, RELEASE_SHA)) process.exit(1);
-    if (mode === "dashboard-id") {
-      const id = productionDashboard(project)?.id;
-      if (typeof id !== "string" || !/^dpl_[A-Za-z0-9]+$/.test(id))
-        throw new Error("Could not identify the ready Vercel production deployment");
-      console.log(id);
-    }
+    if (mode === "dashboard") process.exit(canReuseDashboard(project, RELEASE_SHA) ? 0 : 1);
+    const id = productionDashboardId(project, RELEASE_SHA, latestDeployment);
+    if (!id) throw new Error("Could not identify the expected ready Vercel production deployment");
+    console.log(id);
     process.exit(0);
   }
 
