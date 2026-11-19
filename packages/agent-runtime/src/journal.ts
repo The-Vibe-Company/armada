@@ -206,7 +206,11 @@ export class Journal {
         "SELECT seq,body FROM events WHERE seq>? AND (? IS NULL OR json_extract(body,'$.conversationId')=?) ORDER BY seq LIMIT ?",
       )
       .all(after, conversation ?? null, conversation ?? null, limit) as { seq: number; body: string }[];
-    return rows.map((r) => ({ sequence: r.seq, event: JSON.parse(this.sanitizeEvent(r.body)) as AgentEvent }));
+    return rows.map((r) => ({ sequence: r.seq, event: JSON.parse(r.body) as AgentEvent }));
+  }
+
+  redactEvent(event: AgentEvent): AgentEvent {
+    return JSON.parse(this.eventBody(event, false));
   }
 
   highWatermark(): number {

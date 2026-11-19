@@ -52,7 +52,6 @@ export async function executeWithReceipt(
     if (mutating) journal.db.query("INSERT OR REPLACE INTO requests VALUES(?,?)").run(request.requestId, body);
     return new Response(body, { status: 409, headers: { "content-type": "application/json" } });
   }
-  // Event contents were masked by the journal with their protocol discriminators intact.
   if (request.op === "events") {
     const envelope = JSON.parse(journal.redact(JSON.stringify({ version: 1, requestId: request.requestId })));
     return Response.json({ ...envelope, result });

@@ -486,7 +486,7 @@ export class Runner {
       const rows = this.journal.events(after, limit + 1, r.conversationId);
       const page = rows.slice(0, limit);
       return {
-        events: page.map((x) => x.event),
+        events: page.map(({ event }) => this.journal.redactEvent(event)),
         cursor: String(page.at(-1)?.sequence ?? after),
         hasMore: rows.length > limit,
       };

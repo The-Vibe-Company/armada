@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import type { AgentEvent } from "@armada/core";
 import { type Driver, Journal, Runner } from "../src/index.ts";
 
 const grant = {
@@ -104,6 +105,33 @@ test("invalid secret keys do not configure the harness or consume its configurat
       expect(await rejected.json()).toEqual({ error: "invalid_request" });
     }
     expect((await runner.handleDialout(configure)).status).toBe(200);
+  } finally {
+    await runner.close();
+    journal.close();
+  }
+});
+
+test("event pages mask values registered after append while preserving the stored event", async () => {
+  const journal = new Journal(":memory:", (text) => text);
+  const runner = new Runner(journal, grant, {});
+  try {
+    const message = {
+      id: "stored_answer",
+      at: 1,
+      kind: "message",
+      textMode: "snapshot",
+      text: "prefix-snapshot-suffix",
+      partial: false,
+      tools: [],
+    } satisfies AgentEvent;
+    journal.append(message);
+    journal.registerApplicationSecrets(["snapshot"]);
+    const response = await runner.handleDialout({ ...command, op: "events" });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      result: { cursor: "1", hasMore: false, events: [{ ...message, text: "prefix-[REDACTED]-suffix" }] },
+    });
+    expect(journal.events()).toEqual([{ sequence: 1, event: message }]);
   } finally {
     await runner.close();
     journal.close();
