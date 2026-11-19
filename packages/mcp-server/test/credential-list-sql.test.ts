@@ -88,6 +88,14 @@ test("HTTP credentials use one statement after auth and preserve service-token b
        select to_char(start, 'YYYY-MM-DD') as period from month`,
     )
   ).rows[0]!.period;
+  const reset = (
+    await db.query<{ resets_at: string }>(
+      `insert into account_exhaustion(account_id,account_version,code,resets_at,event_at)
+       select id,version,'usage_limit_exceeded',statement_timestamp()+interval '1 hour',1
+       from credentials where kind='openai'
+       returning resets_at::text`,
+    )
+  ).rows[0]!.resets_at;
   const authStore = createMemoryAuthStore();
   authStore.addMembership(people.member, { orgId: people.org, name: "Example", role: "member" });
   authStore.addMembership(people.member, { orgId: people.otherOrg, name: "Other", role: "admin" });
@@ -132,7 +140,7 @@ test("HTTP credentials use one statement after auth and preserve service-token b
       status: response.status,
       body: (await response.json()) as {
         user?: unknown[];
-        orgs?: { id: string; credentials: { kind: string; monthlySpend?: unknown }[] }[];
+        orgs?: { id: string; credentials: { kind: string; monthlySpend?: unknown; exhaustedUntil?: string }[] }[];
         error?: { code: string };
       },
       queries,
@@ -142,6 +150,7 @@ test("HTTP credentials use one statement after auth and preserve service-token b
   expect([visible.status, visible.queries, visible.body.orgs?.map((row) => row.id)]).toEqual([200, 1, [people.org]]);
   expect(visible.body.user).toEqual([]);
   const credentials = visible.body.orgs?.[0]?.credentials;
+  expect(credentials?.find((row) => row.kind === "openai")?.exhaustedUntil).toBe(new Date(reset).toISOString());
   expect(credentials?.find((row) => row.kind === "openai")?.monthlySpend).toEqual({
     periodStart: month,
     usd: "312.125",
@@ -150,6 +159,16 @@ test("HTTP credentials use one statement after auth and preserve service-token b
   expect(credentials?.find((row) => row.kind === "claude_oauth")?.monthlySpend).toBeUndefined();
   const bound = await call(people.org, service);
   expect([bound.status, bound.queries]).toEqual([200, 1]);
+  const exhaustedUntil = async () =>
+    (await call(people.org)).body.orgs?.[0]?.credentials.find((row) => row.kind === "openai")?.exhaustedUntil;
+  await db.query(
+    "update account_exhaustion set account_version=account_version-1 where account_id in (select id from credentials where kind='openai')",
+  );
+  expect(await exhaustedUntil()).toBeUndefined();
+  await db.query(
+    "update account_exhaustion set account_version=account_version+1, resets_at=statement_timestamp() where account_id in (select id from credentials where kind='openai')",
+  );
+  expect(await exhaustedUntil()).toBeUndefined();
   const foreign = await call(people.otherOrg, service);
   expect([foreign.status, foreign.queries, foreign.body.error?.code]).toEqual([403, 0, "forbidden"]);
   await db.query("delete from members where user_id=$1 and org_id=$2", [people.member, people.org]);

@@ -13,6 +13,7 @@ import {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 type MonthlySpend = { periodStart: string; usd: string; unpricedTurns: number };
 type Row = {
+  exhausted_until: string | null;
   monthly_spend: MonthlySpend | null;
   result_scope: "user" | "org";
   org_id: string | null;
@@ -57,15 +58,17 @@ export function createSqlCredentialList(sql: Sql, store: VaultStore) {
            c.id,c.name,c.max_agents,c.model_limits,${accountModelCountsSql("c.id", "c.model_limits")} as model_counts,${accountWorkingCountSql("c.id")} as running_agents,${accountWaitingCountSql("c.id", "c.max_agents")} as waiting_agents,exists(select 1 from public.sandboxes s join public.sandbox_turn_models t on t.sandbox_id=s.id where s.credential_id=c.id and s.deleted_at is null and s.stopped_at is null and s.status='running' and t.rate_limit_retry_at > now() and t.evidence->'terminalOutcome' is null) as rate_limited,c.is_default,c.status,c.expires_at,c.updated_at,c.version,c.kind::text,c.created_at
          from memberships m left join public.credentials c
            on c.scope='org' and c.owner_id=m.org_id and c.status is distinct from 'deleted'
-       ), with_spend as (
-         select e.*, case when s.account_id is not null then jsonb_build_object(
+       ), with_account_status as (
+         select e.*, x.resets_at as exhausted_until, case when s.account_id is not null then jsonb_build_object(
            'periodStart', to_char(s.period_start, 'YYYY-MM-DD'),
            'usd', trim_scale(s.usd)::text,
            'unpricedTurns', s.unpriced_turns
          ) end as monthly_spend
          from entries e left join public.account_spend s on s.account_id=e.id
            and s.period_start=date_trunc('month', statement_timestamp() at time zone 'UTC')::date
-       ) select coalesce((select jsonb_agg(e order by lower(e.org_name), e.org_id, e.kind) from with_spend e),'[]'::jsonb) as entries,
+         left join public.account_exhaustion x on x.account_id=e.id and x.account_version=e.version
+           and x.resets_at>statement_timestamp()
+       ) select coalesce((select jsonb_agg(e order by lower(e.org_name), e.org_id, e.kind) from with_account_status e),'[]'::jsonb) as entries,
          coalesce((select jsonb_agg(jsonb_build_object('harness',d.harness,'credentialId',d.credential_id,'model',d.model) order by d.harness) from public.agent_defaults d where d.user_id=$1::uuid),'[]'::jsonb) as defaults`,
       [userId, wanted && UUID.test(wanted) ? wanted : null],
     );
@@ -92,9 +95,10 @@ export function createSqlCredentialList(sql: Sql, store: VaultStore) {
         listCredentials: async (scope, ownerId) => {
           const rows = scope === "user" ? (ownerId === userId ? user : []) : (credentials.get(ownerId) ?? []);
           // Core resolves authority first; format only the metadata it actually requests.
-          return rows.map((row): CredentialInfo & { monthlySpend?: MonthlySpend } => ({
+          return rows.map((row): CredentialInfo & { monthlySpend?: MonthlySpend; exhaustedUntil?: string } => ({
             id: row.id!,
             ...(row.monthly_spend ? { monthlySpend: row.monthly_spend } : {}),
+            ...(row.exhausted_until ? { exhaustedUntil: instant(row.exhausted_until) } : {}),
             name: row.name,
             maxAgents: row.max_agents,
             modelLimits: row.model_limits ?? {},
