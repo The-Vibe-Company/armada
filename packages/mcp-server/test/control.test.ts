@@ -3200,6 +3200,7 @@ test.each([
           encryptionKey: KEY,
           publicUrl: "https://armada.test",
           commands: {
+            enqueue: createRuntimeCommands(enrolments, KEY).enqueue,
             async call(_owner, command, delivery) {
               expect(referenceInstalled).toBe(true);
               expect(command.op).toBe("installOrchestratorEpoch");
@@ -3388,7 +3389,8 @@ test.each([
       const response = await request(input);
       if (response?.status !== 200) throw Error(JSON.stringify(await response?.json()));
       expect(response?.status).toBe(200);
-      expect(await response?.json()).toMatchObject({
+      const launched = launchEnvelope.parse(await response?.json());
+      expect(launched).toMatchObject({
         runtime: { kind: "armada", epoch: "1" },
         sandbox: { provider: "modal", runtimeTransport: "dialout", skills: [receipt] },
         promptId: idle ? null : "modal-initial",
@@ -3399,6 +3401,70 @@ test.each([
       expect(fake.forks).toHaveLength(1);
       expect(fake.prompts).toHaveLength(0);
       expect(fake.execs).toHaveLength(0);
+
+      if (scoped && !idle) {
+        const parent = await options.data!({
+          userId: STAN,
+          orgs: [{ orgId: org.id, role: "admin" }],
+          via: "service",
+        }).sandboxes.get(launched.sandbox.id);
+        if (!parent?.credentialId || !parent.credentialVersion || !parent.model)
+          throw Error("Scoped launch must retain its bound account and model");
+        const { createSandboxAccessServices } = await import("../src/sandbox-access-services.ts");
+        const credentials = launchCredentials(options.store, KEY);
+        const children = createSandboxAccessServices({
+          sql,
+          credentials,
+          connections: undefined,
+          providers: {
+            resolve: async () => {
+              throw Error("Child launch must use enrolled placement");
+            },
+          },
+          encryptionKey: KEY,
+          scopedMcpUrl: "https://armada.test",
+          runtimePlacements: {
+            modal: {
+              credentials,
+              connections: { async validate() {}, async bind() {} },
+              provider: async (_actor, target) =>
+                options.modalRuntimeHostFor!(
+                  { ...target, runtimeTransport: "dialout" },
+                  { userId: STAN, orgs: [{ orgId: org.id, role: "admin" }], via: "service" },
+                ),
+              policy: {
+                async start({ sandbox }) {
+                  expect(sandbox).toMatchObject({ visibility: "private", runtimeTransport: "dialout" });
+                  const ticket = await enrolments.issue({ sandboxId: sandbox.id, ownerId: STAN, configuration: {} });
+                  const active = await enrolments.enrol(ticket.enrolmentToken);
+                  return {
+                    epoch: active.epoch,
+                    async prepareWorkspace() {
+                      return { status: "not_connected" };
+                    },
+                    async prompt() {
+                      throw Error("The delegated child has no initial prompt");
+                    },
+                  };
+                },
+              },
+            },
+          },
+        });
+        const child = await children.childWorker.launch(token, "enrolled-child", {
+          goldenId: parent.goldenId,
+          harness: "codex",
+          credentialId: parent.credentialId,
+          credentialVersion: parent.credentialVersion,
+          model: parent.model,
+        });
+        expect(child.state).toBe("succeeded");
+        expect(
+          (await sql.query("select orchestrator_id from orchestrator_children where sandbox_id=$1", [child.sandboxId]))
+            .rows,
+        ).toEqual([{ orchestrator_id: parent.id }]);
+        expect(fake.forks).toHaveLength(2);
+      }
     });
   },
 );

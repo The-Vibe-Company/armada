@@ -232,7 +232,7 @@ export interface LaunchOptions extends GoldenLimits {
   beforeStart?: (
     provider: Provider,
     sandbox: SandboxRecord,
-    runtime?: { epoch: string; exec: Provider["exec"] },
+    runtime?: { epoch: string; exec: Provider["exec"]; signal: AbortSignal },
   ) => Promise<void>;
   /** Trusted server-only narrowing for private sandbox parents. Not a public launch field. */
   privateParent?: true;

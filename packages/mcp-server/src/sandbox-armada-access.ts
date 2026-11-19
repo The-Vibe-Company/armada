@@ -28,7 +28,7 @@ export function createSandboxArmadaAccess(input: {
   sql: Sql;
   encryptionKey: string;
   publicUrl: string;
-  commands?: Pick<ReturnType<typeof createRuntimeCommands>, "call">;
+  commands?: Pick<ReturnType<typeof createRuntimeCommands>, "call" | "enqueue">;
 }) {
   const { sql } = input;
   const enrolments = createRuntimeEnrolments(sql, input.encryptionKey);
@@ -111,7 +111,14 @@ export function createSandboxArmadaAccess(input: {
       },
     );
   }
-  async function restoreEnrolled(ownerId: string, sandboxId: string, epoch: string, lifecycleGeneration: string) {
+  async function restoreEnrolled(
+    ownerId: string,
+    sandboxId: string,
+    epoch: string,
+    lifecycleGeneration: string,
+    signal: AbortSignal,
+  ) {
+    signal.throwIfAborted();
     const parent = (
       await sql.query<{ id: string; golden_ids: string[]; credential_ids: string[] }>(
         `select p.id,p.golden_ids,p.credential_ids from public.armada_access_parents p
@@ -127,6 +134,7 @@ export function createSandboxArmadaAccess(input: {
       ownerId,
       sandboxId,
       epoch,
+      signal,
       lifecycleGeneration,
       mcpUrl: orchestratorScopedMcpUrl(input.publicUrl),
     });
@@ -155,6 +163,7 @@ export function createSandboxArmadaAccess(input: {
               [parent.id, epoch, [...workerScopes]],
             );
             if (current.rows.length) throw currentGrant;
+            signal.throwIfAborted();
             return write(tx);
           },
           lifecycleGeneration,
@@ -175,7 +184,7 @@ export function createSandboxArmadaAccess(input: {
     sandbox: SandboxRecord,
     actor: GoldenActor,
     options: SandboxArmadaAccessOptions,
-    runtime?: { epoch: string; exec: Provider["exec"] },
+    runtime?: { epoch: string; exec: Provider["exec"]; signal: AbortSignal },
   ) {
     const credentialId = sandbox.credentialId;
     if (
@@ -224,7 +233,7 @@ export function createSandboxArmadaAccess(input: {
             await register(tx);
             return row.generation;
           });
-          await restoreEnrolled(actor.userId, sandbox.id, runtime.epoch, generation);
+          await restoreEnrolled(actor.userId, sandbox.id, runtime.epoch, generation, runtime.signal);
         },
       });
       return;

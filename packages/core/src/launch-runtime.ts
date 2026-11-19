@@ -54,7 +54,7 @@ export function runtimeLaunch(runtime: NonNullable<LaunchOptions["runtime"]>): L
       await options.beforeStart?.(
         provider,
         record,
-        agent.installScopedReference ? { epoch: agent.epoch, exec: agent.installScopedReference } : undefined,
+        agent.installScopedReference ? { epoch: agent.epoch, exec: agent.installScopedReference, signal } : undefined,
       );
       reportGitHub(github);
       return { github, prompt: (request) => agent.prompt(request), runtime: { kind: "armada", epoch: agent.epoch } };

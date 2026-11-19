@@ -316,6 +316,7 @@ export function createRuntimeResume(
                 found.id,
                 admitted.op.target_epoch,
                 String(admitted.current.lifecycleGeneration),
+                signal,
               );
           }
           // #2560: restored, verified and reauthorized; the resume prompt's dispatch is not launch time.
