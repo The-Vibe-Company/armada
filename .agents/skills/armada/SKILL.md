@@ -26,7 +26,8 @@ access needs an authorized admin, not a retry loop.
 Read [setup and configuration](references/setup.md) when connecting GitHub,
 selecting model accounts, creating goldens/templates, or configuring variables.
 Manage snapshots, templates, default skill pins, variables and application secrets through
-the dashboard or the authenticated REST API. MCP `template_launch` launches an existing template.
+the dashboard or the authenticated REST API. Launch an existing template with
+`armada template launch` or `POST /api/v1/templates/launch` and reuse its request key on retry.
 
 For MCP coordinator launches, call `launch` with optional `size`, a stable
 `idempotencyKey` and an `externalRef`. After an uncertain response, repeat the
