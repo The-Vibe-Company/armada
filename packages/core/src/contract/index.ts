@@ -12,6 +12,7 @@ import { launchOptionsOperation, readLogsOperation } from "./sandbox-reads.ts";
 import { sandboxRestOperations } from "./sandbox-rest.ts";
 import { sandboxViewerOperations } from "./sandbox-viewer.ts";
 import { scopedRestOperations } from "./scoped.ts";
+import { tokenOperations } from "./tokens.ts";
 
 export type { CreatedInboundTrigger } from "./inbound-trigger.ts";
 export {
@@ -51,6 +52,8 @@ export {
   scopedOperations,
   scopedRestOperations,
 } from "./scoped.ts";
+
+export { tokenOperations } from "./tokens.ts";
 
 export interface Operation<Input extends z.ZodType, Output extends z.ZodType | undefined = undefined> {
   readonly name: string;
@@ -119,6 +122,7 @@ export const operations = {
   ...githubCallbackOperations,
   ...goldenOperations,
   ...githubOperations,
+  ...tokenOperations,
   launchTemplate: launchTemplateOperation,
   createInboundTrigger,
   ...sandboxOperations,
