@@ -9,6 +9,7 @@ import { type DockerHostResources, dockerHostResources } from "../../core/src/do
 import { OUTPUT_ARCHIVE_LIMIT } from "../../core/src/sandbox-output-limits.ts";
 import { SNAPSHOT_BASELINE_VERSION } from "../../core/src/snapshot-baseline.ts";
 import { VERSION } from "../../core/src/version.ts";
+import { createDockerContainerInventory } from "./container-inventory.ts";
 import { type Api, compactReceipts, type State, type Store, serverOrigin, validId, validToken } from "./daemon.ts";
 
 const MAX_STATE_BYTES = 16 * 1024 * 1024;
@@ -160,7 +161,9 @@ export function httpApi(
   resources?: (state: State) => Promise<DockerHostResources>,
   diskFreeBytes?: () => Promise<number | null>,
   stoppedBytes?: (state: State) => Promise<number | null>,
+  inventory?: { cli: DockerMachineCli; failed(): void },
 ): Api & {
+  stopInventory(): Promise<void>;
   retainedOutputs(state: State, requestId: string, read: () => Promise<Uint8Array<ArrayBuffer> | null>): Promise<void>;
   unregister(state: State): Promise<boolean>;
   reuseRegistration(state: State, token: string): Promise<{ hostId: string; name: string | null }>;
@@ -172,11 +175,12 @@ export function httpApi(
     body: unknown,
     timeoutMs = 8_000,
     snapshotBaseline = endpoint === "poll" ? SNAPSHOT_BASELINE_VERSION : undefined,
+    signal?: AbortSignal,
   ): Promise<unknown> {
     const response = await request(`${serverOrigin(server)}/api/docker-host/${endpoint}`, {
       method: "POST",
       redirect: "error",
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
       headers: {
         authorization: `Bearer ${token}`,
         "content-type": "application/json",
@@ -188,7 +192,7 @@ export function httpApi(
       await response.body?.cancel();
       throw new HostRequestDenied(response.status);
     }
-    if (endpoint === "results") {
+    if (endpoint === "results" || endpoint === "container-inventory") {
       await response.body?.cancel();
       return undefined;
     }
@@ -210,7 +214,29 @@ export function httpApi(
     }
     return JSON.parse(Buffer.concat(parts).toString("utf8"));
   }
+  const inventoryStop = new AbortController();
+  let inventoryReport: Promise<void> | undefined;
+  let nextInventoryAt = 0;
+  async function reportInventory(cli: DockerMachineCli, state: State) {
+    const signal = inventoryStop.signal;
+    const containers = await Array.fromAsync(createDockerContainerInventory(cli, state).listInventory(signal));
+    signal.throwIfAborted();
+    await post(
+      state.server,
+      "container-inventory",
+      state.hostToken,
+      { installationId: state.installationId, containers },
+      undefined,
+      undefined,
+      signal,
+    );
+  }
+
   return {
+    async stopInventory() {
+      inventoryStop.abort();
+      await inventoryReport;
+    },
     async reuseRegistration(state, token) {
       if (!validToken(token)) throw new Error("Invalid registration token");
       const result = await post(state.server, "reuse-registration", token, { hostId: state.hostId });
@@ -250,6 +276,29 @@ export function httpApi(
       return (await post(server, "register", token, { installationId })) as { hostId: string; hostToken: string };
     },
     async poll(state, options) {
+      async function poll(body: unknown, timeoutMs?: number) {
+        const result = (await post(state.server, "poll", state.hostToken, body, timeoutMs)) as Awaited<
+          ReturnType<Api["poll"]>
+        >;
+        if (
+          inventory &&
+          !inventoryStop.signal.aborted &&
+          result?.containerInventory === 1 &&
+          !inventoryReport &&
+          performance.now() >= nextInventoryAt
+        ) {
+          inventoryReport = reportInventory(inventory.cli, state)
+            .catch(() => {
+              if (!inventoryStop.signal.aborted) inventory.failed();
+            })
+            .finally(() => {
+              nextInventoryAt = performance.now() + 60_000;
+              inventoryReport = undefined;
+            });
+        }
+        return result;
+      }
+
       const body = {
         installationId: state.installationId,
         version: VERSION,
@@ -285,10 +334,7 @@ export function httpApi(
         // without it refuse the additive fields before claiming, and the
         // daemon then keeps its own idle period.
         try {
-          return (await post(
-            state.server,
-            "poll",
-            state.hostToken,
+          return await poll(
             {
               // No skipSnapshots: it would stay stale for the whole hold. The
               // server serializes snapshot builds from `running` instead and
@@ -305,13 +351,13 @@ export function httpApi(
               running: [...(options.running ?? [])],
             },
             options.waitSeconds * 1000 + 8_000,
-          )) as Awaited<ReturnType<Api["poll"]>>;
+          );
         } catch (error) {
           if (!(error instanceof HostRequestDenied) || error.status !== 400) throw error;
         }
       }
       try {
-        return (await post(state.server, "poll", state.hostToken, {
+        return await poll({
           ...body,
           resumeClaimProtocol: 1,
           ...retention,
@@ -319,32 +365,32 @@ export function httpApi(
           ...stopped,
           resources: sampledResources,
           resourcePolicyVersion: 1,
-        })) as Awaited<ReturnType<Api["poll"]>>;
+        });
       } catch (error) {
         // Older servers reject the additive resource field before claiming a job.
         if (!(error instanceof HostRequestDenied) || error.status !== 400) throw error;
         try {
-          return (await post(state.server, "poll", state.hostToken, {
+          return await poll({
             ...body,
             ...legacyRetention,
             ...disk,
             ...stopped,
             resources: sampledResources,
             resourcePolicyVersion: 1,
-          })) as Awaited<ReturnType<Api["poll"]>>;
+          });
         } catch (claimCompatibilityError) {
           if (!(claimCompatibilityError instanceof HostRequestDenied) || claimCompatibilityError.status !== 400)
             throw claimCompatibilityError;
         }
         if (stoppedBytes) {
           try {
-            return (await post(state.server, "poll", state.hostToken, {
+            return await poll({
               ...body,
               ...legacyRetention,
               ...disk,
               resources: sampledResources,
               resourcePolicyVersion: 1,
-            })) as Awaited<ReturnType<Api["poll"]>>;
+            });
           } catch (compatibilityError) {
             if (!(compatibilityError instanceof HostRequestDenied) || compatibilityError.status !== 400)
               throw compatibilityError;
@@ -352,23 +398,23 @@ export function httpApi(
         }
         if (diskFreeBytes) {
           try {
-            return (await post(state.server, "poll", state.hostToken, {
+            return await poll({
               ...body,
               ...legacyRetention,
               resources: sampledResources,
               resourcePolicyVersion: 1,
-            })) as Awaited<ReturnType<Api["poll"]>>;
+            });
           } catch (diskCompatibilityError) {
             if (!(diskCompatibilityError instanceof HostRequestDenied) || diskCompatibilityError.status !== 400)
               throw diskCompatibilityError;
           }
         }
         try {
-          return (await post(state.server, "poll", state.hostToken, {
+          return await poll({
             ...body,
             resources: sampledResources,
             resourcePolicyVersion: 1,
-          })) as Awaited<ReturnType<Api["poll"]>>;
+          });
         } catch (compatibilityError) {
           if (!(compatibilityError instanceof HostRequestDenied) || compatibilityError.status !== 400)
             throw compatibilityError;
@@ -376,14 +422,14 @@ export function httpApi(
         try {
           // The preceding policy-capable server knows quotas but not availability.
           // Keep its handshake so manual-limit hosts can still receive work.
-          return (await post(state.server, "poll", state.hostToken, {
+          return await poll({
             ...body,
             resources: dockerHostResources(),
             resourcePolicyVersion: 1,
-          })) as Awaited<ReturnType<Api["poll"]>>;
+          });
         } catch (legacyError) {
           if (!(legacyError instanceof HostRequestDenied) || legacyError.status !== 400) throw legacyError;
-          return (await post(state.server, "poll", state.hostToken, body)) as Awaited<ReturnType<Api["poll"]>>;
+          return await poll(body);
         }
       }
     },
