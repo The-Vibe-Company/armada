@@ -590,9 +590,10 @@ async function runPostDeploySmoke(
   async function poll<T>(
     read: (timeoutMs?: number) => Promise<T>,
     done: (value: T) => boolean,
-    limit = POLLS,
-    timeoutMs?: number,
+    options: { limit?: number; step?: string } = {},
   ): Promise<T> {
+    const timeoutMs = options.step === undefined ? undefined : (deadlines as Record<string, number>)[options.step];
+    const limit = options.limit ?? (timeoutMs === undefined ? POLLS : Number.POSITIVE_INFINITY);
     const until = timeoutMs === undefined ? undefined : Math.min(deadline, io.now() + timeoutMs);
     for (let i = 0; i < limit; i++) {
       const remaining = until === undefined ? undefined : until - io.now();
@@ -835,7 +836,7 @@ async function runPostDeploySmoke(
           sleep: io.sleep,
           deadline,
           recordSandbox: (id, key) => io.recordSandbox?.(item.org, id, key, item.provider) ?? Promise.resolve(),
-          poll: (read, done) => poll(read, done, 300),
+          poll: (read, done) => poll(read, done, { limit: 300 }),
           step,
           withCleanup,
           siblingSandboxes: (candidates) => {
@@ -1110,7 +1111,6 @@ async function runPostDeploySmoke(
           return result;
         });
         const waitStep = phase ? `${phase}_wait` : "wait";
-        const waitTimeout = (deadlines as Record<string, number>)[waitStep];
         await step(waitStep, () =>
           poll(
             (timeoutMs) =>
@@ -1145,13 +1145,13 @@ async function runPostDeploySmoke(
                 timedOut: typeof result?.timedOut === "boolean" ? result.timedOut : jsonShape(result?.timedOut),
               });
             },
-            waitTimeout === undefined ? POLLS : Number.POSITIVE_INFINITY,
-            waitTimeout,
+            { step: waitStep },
           ),
         );
-        await step(phase ? `${phase}_usage` : second ? "usage_second" : "usage", () =>
+        const usageStep = phase ? `${phase}_usage` : second ? "usage_second" : "usage";
+        await step(usageStep, () =>
           poll(
-            () =>
+            (timeoutMs) =>
               sandbox<{
                 usage?: {
                   turns?: {
@@ -1162,7 +1162,7 @@ async function runPostDeploySmoke(
                   }[];
                   tokenTotals?: { inputTokens: number | null; outputTokens: number | null; incomplete?: boolean };
                 };
-              }>("status", { id: sandboxId }),
+              }>("status", { id: sandboxId }, timeoutMs),
             (result) => {
               const row = result.usage?.turns?.find((row) => row.promptId === turn.promptId);
               // A resumed prompt must be measured, not an explicit unknown receipt.
@@ -1174,6 +1174,7 @@ async function runPostDeploySmoke(
                 typeof result.usage?.tokenTotals?.outputTokens === "number"
               );
             },
+            { step: usageStep },
           ),
         );
         if (github)
