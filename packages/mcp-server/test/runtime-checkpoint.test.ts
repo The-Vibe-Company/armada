@@ -3,10 +3,11 @@ import { createMemoryAuthStore } from "@armada/auth";
 import type { Sql } from "@armada/core/server";
 import { createSqlSandboxStore, createSqlVaultStore, DelegatedAuthority } from "@armada/core/server";
 import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
+import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { observeRequest } from "../src/request-observability.ts";
-import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
+import { createRuntimeCheckpoint, createRuntimeStopCheckpoint } from "../src/runtime-checkpoint.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
@@ -201,6 +202,10 @@ function stopPort(f: Awaited<ReturnType<typeof runtimeFixture>>) {
   return {
     context: {
       ...f.context,
+      runtimeStopCheckpoint: createRuntimeStopCheckpoint(
+        f.sql,
+        createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, f.bridge),
+      ),
       provider: async () =>
         createRuntimeProvider(host, physicalId, {
           events: ({ sandboxId: _, ...page }) => createRuntimeHistory(f.sql, ENCRYPTION_KEY)(f.caller, f.row.id, page),
@@ -214,7 +219,80 @@ function stopPort(f: Awaited<ReturnType<typeof runtimeFixture>>) {
 }
 const args = (id: string) => ({ id, request_id: crypto.randomUUID(), runtimeVersion: 1 as const });
 
-test.each(["boat", "modal"] as const)("%s checkpoint retry after stop", async (provider) => {
+test("a definite runtime checkpoint refusal still allows compute cleanup", async () => {
+  const f = await checkpointFixture("modal");
+  try {
+    f.github(async () => {
+      throw Error("checkpoint runtime teardown refused");
+    });
+    const stop = stopPort(f);
+    await expect(callSharedTool(stop.context, "stop", { id: f.row.id })).resolves.toMatchObject({
+      status: "stopped",
+      preservationNote: "Runtime checkpoint was refused. No resumable checkpoint was recorded.",
+    });
+    expect(stop.calls()).toBe(1);
+    expect(
+      (await f.db.query("select watermark from runtime_checkpoints where sandbox_id=$1", [f.row.id])).rows,
+    ).toEqual([{ watermark: null }]);
+  } finally {
+    await f.close();
+  }
+});
+
+test("an unreadable runtime checkpoint acknowledgement never allows compute cleanup", async () => {
+  const f = await checkpointFixture("modal");
+  try {
+    f.github(async () => {
+      throw Error("runtime_result_unavailable");
+    });
+    const stop = stopPort(f);
+    await expect(callSharedTool(stop.context, "stop", { id: f.row.id })).rejects.toMatchObject({ code: "conflict" });
+    expect(stop.calls()).toBe(0);
+    expect((await f.context.data.sandboxes.get(f.row.id))?.status).toBe("running");
+  } finally {
+    await f.close();
+  }
+});
+
+test("idle-only stop refuses a queued turn before creating a checkpoint", async () => {
+  const f = await checkpointFixture("modal", true);
+  try {
+    const queue = createAccountTurnQueue(f.sql, ENCRYPTION_KEY);
+    const request = f.input();
+    expect(await queue.accept(f.caller, request)).toMatchObject({ status: "queued" });
+    const sandbox = (await f.context.data.sandboxes.get(f.row.id))!;
+    await expect(stopPort(f).context.runtimeStopCheckpoint(f.caller, sandbox, true)).rejects.toThrow("work is pending");
+    expect((await f.db.query("select 1 from runtime_checkpoints where sandbox_id=$1", [f.row.id])).rows).toHaveLength(
+      0,
+    );
+    expect(await queue.status(f.caller, request.id, request.request_id)).toMatchObject({ failed: false });
+  } finally {
+    await f.close();
+  }
+});
+
+test("an organization admin can still stop another member's runtime compute", async () => {
+  const f = await checkpointFixture("modal");
+  try {
+    const admin = {
+      ...f.caller,
+      userId: f.people.admin,
+      orgs: [{ orgId: f.people.org, role: "admin" as const }],
+    };
+    const stop = stopPort(f);
+    await expect(
+      callSharedTool({ ...stop.context, caller: admin, data: createSqlData(f.sql)(admin) }, "stop", { id: f.row.id }),
+    ).resolves.toMatchObject({ status: "stopped" });
+    expect(stop.calls()).toBe(1);
+    expect((await f.db.query("select 1 from runtime_checkpoints where sandbox_id=$1", [f.row.id])).rows).toHaveLength(
+      0,
+    );
+  } finally {
+    await f.close();
+  }
+});
+
+test.each(["boat", "modal"] as const)("%s stop recovers the original checkpoint ACK", async (provider) => {
   const f = await checkpointFixture(provider);
   try {
     const input = args(f.row.id);
@@ -290,7 +368,7 @@ test.each(["boat", "modal"] as const)("%s checkpoint retry after stop", async (p
       expect(rows[0]?.ok).toBe(false);
     }
     const final = await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id);
-    if (provider === "boat") expect(final?.preservationNote).toContain("host stop is confirmed");
+    if (provider === "boat") expect(final?.preservationNote).toContain("runtime checkpoint acknowledged");
     else {
       expect(final?.status).toBe("stopped");
       expect(final?.preservationNote).toBeNull();

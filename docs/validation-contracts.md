@@ -120,9 +120,28 @@ focused Linux run using Bun 1.4.2 on main at `62a28af3`, after
 The other cases in these six files run in process. The corrupt Skillpack
 download fails digest verification before any tool self-test or installer
 shell starts. The Boat broker and parent cases use local fixtures and no
-deployed Boat service. Tests outside these six files that invoke real processes
-indirectly still need case-level timings, including Runner exec, harness driver
-fixtures and runtime tool version checks.
+deployed Boat service.
+
+### Indirect Agent Runtime subprocess calls
+
+These three files reach real subprocesses through Runner, the Codex driver,
+or the runtime tool installer. Timings measure whole cases from a focused
+Linux run using Bun 1.4.2 on main at `5b591243`, after
+`bun scripts/prepare-runtime.ts`.
+
+| File under `packages/agent-runtime/test` | Case | Local subprocess boundary | Local |
+| --- | --- | --- | ---: |
+| `runtime.test.ts` | real exec timeout reconciles missing birth evidence and detached PID retains terminal output | Runner starts Bash for the timed-out and detached commands. | 19.17 ms |
+| `runtime.test.ts` | revoking a dial-out request kills its synchronous exec before returning | Runner starts Bash. The command writes a readiness file before `exec sleep`. The file watcher revokes the request and Runner terminates the process group. | 6.29 ms |
+| `readable-variables.test.ts` | readable bootstrap reaches only intended native harness, not init/exec or request journal | Runner starts Bash for the environment checks. The real Codex driver starts the local app-server fixture. | 37.27 ms |
+| `tool-cache.test.ts` | pinned runtime tool download prepares verified foreground binaries with clean env and repairs a corrupt warm cache | The installer starts local shell-script version and help probes on cold install, warm-cache use and cache repair. Fetch is stubbed. | 43.11 ms |
+| `tool-cache.test.ts` | runtime tool preparation refuses unsafe redirects, changed bytes and failed version self-tests | The bad-version fixture reaches a real shell-script probe. Redirect and digest rejection happen before any probe starts. | 8.57 ms |
+
+The other five cases in `runtime.test.ts` run in process. The delayed detached
+close case replaces `ChildOwner.spawn` with a synthetic child. Other indirect
+runtime paths still need case-level timings, including native harness fixtures
+in `codex.test.ts`, `claude.test.ts`, `native-resume.test.ts` and
+`driver-rate-limit.test.ts`.
 
 ## Process-spawning unit cases in `provider-modal`
 

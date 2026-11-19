@@ -17,7 +17,7 @@ import type { DockerHost } from "./docker-hosts.ts";
  */
 export const LAUNCH_OPTIONS_ROUTE = "launch/options";
 
-export type DockerCapability = LaunchCapabilityName;
+type DockerCapability = LaunchCapabilityName;
 export type DockerLaunchOption = Omit<LaunchProviderOption, "id"> & { id: "docker" };
 
 /** How each capability reads in the dialog; exhaustive, so a capability the server adds must be named here. */
@@ -167,7 +167,7 @@ export function preferredHarness(
   return offered.find(usable) ?? first;
 }
 
-export type DockerLaunchArgs = {
+type DockerLaunchArgs = {
   org: string;
   hostId: string;
   harness: Harness;
