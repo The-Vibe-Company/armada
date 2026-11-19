@@ -7,9 +7,7 @@ function record(value: unknown) {
   return value as Record<string, unknown>;
 }
 
-function unexpected() {
-  return new ControlError("The Armada server sent an unexpected inbound trigger response.");
-}
+const unexpected = () => new ControlError("The Armada server sent an unexpected inbound trigger response.");
 
 function count(value: unknown, minimum: number) {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < minimum) throw unexpected();
