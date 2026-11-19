@@ -130,10 +130,10 @@ for (const mode of [
               active = provider;
               states.set(provider, "ready");
               return Response.json({ sandbox: { id: ids[provider], provider } });
-            case "sandbox/detail":
+            case "sandbox/status":
               return Response.json({
                 id: body.id,
-                status: "ready",
+                status: states.get(provider),
                 settled: true,
                 prompt: null,
                 conversationIds: mode === "conversation_missing" ? [] : [conversation],
@@ -205,8 +205,6 @@ for (const mode of [
                 ],
               });
             }
-            case "sandbox/status":
-              return Response.json({ id: body.id, status: states.get(provider), settled: true, prompt: null });
             case "sandbox/stop":
               states.set(provider, "stopped");
               return Response.json({ id: body.id, status: "stopped" });

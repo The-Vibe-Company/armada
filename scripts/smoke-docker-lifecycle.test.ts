@@ -140,7 +140,7 @@ class Opener:
                  [{"name": "commandExecution", "input": {"command": "gh api repos/example/project --jq .full_name"}, "result": {"isError": False, "output": "example/project"}}] +
                  ([{"name": "commandExecution", "input": {"command": "cat /opt/armada-build/receipt.json"}, "result": {"isError": False, "output": json.dumps({"id": snapshot_id, "hostId": "retained-host", "definitionHash": "a" * 64, "armadaVersion": "2.27.0" if mode == "snapshot-wrong-version" else "2.28.0", "initSteps": len(config["init"])})}}] if mode != "snapshot-no-init" else []) if mode.startswith("snapshot") else []},
                 {"kind": "prompt", "promptId": prompt, "status": "finished"}]}
-        elif path == "sandbox/detail":
+        elif path == "sandbox/status":
             if not any(t["promptId"] == prompt for t in prices):
                 prices.append({"promptId": prompt, "model": "test-model", "inputTokens": 10,
                                "outputTokens": 2, "pricing": {"usd": "0.01", "unknown": None}})
@@ -208,7 +208,7 @@ if mode == "preview-follow-up":
     assert "PASS: same-conversation follow-up recalled marker" in output.getvalue()
     sys.exit(0)
 assert (not lifecycle or (sends == (3 if mode.endswith("-mcp") else 2) and stops == 2))
-assert lifecycle or [path for path, _ in calls] == ["launch/options", "sandbox/launch", "sandbox/list", "logs/read", "sandbox/detail", "sandbox/stop", "sandbox/delete"]
+assert lifecycle or [path for path, _ in calls] == ["launch/options", "sandbox/launch", "sandbox/list", "logs/read", "sandbox/status", "sandbox/stop", "sandbox/delete"]
 assert "PASS: normal Docker launch route created" in output.getvalue()
 assert "offline-only" not in output.getvalue()
 `,

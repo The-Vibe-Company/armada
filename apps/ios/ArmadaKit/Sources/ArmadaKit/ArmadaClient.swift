@@ -193,7 +193,7 @@ public actor ArmadaClient {
         if let key { request.setValue(key, forHTTPHeaderField: "Idempotency-Key") }
         request.httpBody = body
         let signposter = Self.conversationSignposter
-        let intervalName: StaticString? = route == "sandbox/detail" ? "SandboxDetail" : route == "logs/read" ? "ConversationEvents" : nil
+        let intervalName: StaticString? = route == "sandbox/status" ? "SandboxDetail" : route == "logs/read" ? "ConversationEvents" : nil
         let interval = intervalName.map { signposter.beginInterval($0, id: signposter.makeSignpostID()) }
         defer {
             if let name = intervalName, let interval { signposter.endInterval(name, interval) }

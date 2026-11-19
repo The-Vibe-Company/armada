@@ -5,6 +5,8 @@ description: Use Armada from a terminal to sign in, select an organization, choo
 
 # Armada terminal guide
 
+The REST sandbox status route is `POST /api/v1/sandbox/status`.
+
 Armada launches agents; you decide task ownership, acceptance criteria and budget.
 Requires the Armada CLI and access to an Armada server. This skill ships with the
 CLI source; check `armada --version` and `armada --help` before using a differently

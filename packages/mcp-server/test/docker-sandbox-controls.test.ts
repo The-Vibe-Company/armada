@@ -669,7 +669,7 @@ test("normal API and MCP accept Docker list/status/logs rows and acknowledge cle
   const apiList = (await post("sandbox/list", {})) as { sandboxes: SandboxListMetadata[] };
   expect(parseSandboxListMetadata(apiList.sandboxes).skipped).toEqual([]);
   expect(apiList.sandboxes[0]?.provider).toBe("docker");
-  const status = (await post("sandbox/detail", { id: f.sandbox.id })) as DockerSandboxStatus;
+  const status = (await post("sandbox/status", { id: f.sandbox.id })) as DockerSandboxStatus;
   expect(status).toMatchObject({
     provider: "docker",
     golden: null,

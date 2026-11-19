@@ -40,7 +40,7 @@ struct SandboxPage: Sendable {
 }
 
 /// Interior state of a sandbox the server let this person open (owner or current admin), read from
-/// `sandbox/detail`. Built only from an authorized interior response, never from list metadata.
+/// `sandbox/status`. Built only from an authorized interior response, never from list metadata.
 struct SandboxState: Hashable, Sendable {
     enum Admission: Hashable, Sendable {
         /// A new prompt can be sent now (a stopped sandbox resumes on it).
