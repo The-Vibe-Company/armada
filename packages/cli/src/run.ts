@@ -25,7 +25,6 @@ import { dockerSnapshotCommand } from "./docker-snapshots.ts";
 import { failureHint } from "./failure-hint.ts";
 import { type LocalHostIo, localHostCommand, productionLocalHostIo } from "./local-host.ts";
 import { onboardingHelp } from "./onboarding-help.ts";
-import { operation } from "./operations.ts";
 import { profileStores, selectProfile } from "./profiles.ts";
 import { sizePolicyCommand } from "./size-policy-command.ts";
 import { skillCommand } from "./skill-install.ts";
@@ -70,7 +69,7 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
             ...(deps.readStdin ? { readStdin: deps.readStdin } : {}),
           }),
       );
-    if (localArgs.length === 1 && ["snapshot", "golden", "mcp", "creds", "skill"].includes(localArgs[0] ?? "")) {
+    if (localArgs.length === 1 && ["snapshot", "golden", "creds", "skill"].includes(localArgs[0] ?? "")) {
       const family = localArgs[0] === "golden" ? "snapshot" : (localArgs[0] ?? "");
       if (family === "skill") return skillCommand(["--help"], io);
       io.out(onboardingHelp([family, "--help"]) ?? HELP);
@@ -220,13 +219,12 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
   let rest = original;
   const terminator = rest.indexOf("--");
   const optionArgs = terminator < 0 ? rest : rest.slice(0, terminator);
-  const scoped = ["golden", "bind-credential", "mcp"];
   const useSelectedOrg = registered?.useSelectedOrg;
   const commandUsesSelection =
     typeof useSelectedOrg === "function" ? useSelectedOrg(rest) : registered && useSelectedOrg !== false;
   if (
     command &&
-    (commandUsesSelection || scoped.includes(command) || (command === "creds" && rest[0] === "list")) &&
+    (commandUsesSelection || command === "golden" || (command === "creds" && rest[0] === "list")) &&
     !optionArgs.some((arg) => arg === "--org" || arg.startsWith("--org="))
   ) {
     const auth = authOf(io, deps);
@@ -251,21 +249,6 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
       return 0;
     case "golden":
       return golden(rest, io, deps);
-    case "bind-credential":
-    case "mcp":
-      return operation(
-        command,
-        rest,
-        authOf(io, deps),
-        (path) =>
-          path
-            ? (deps.readFile ?? ((p) => Bun.file(p).text()))(path)
-            : (
-                deps.readStdin ??
-                (() => (process.stdin.isTTY ? Promise.reject(new Error("stdin required")) : Bun.stdin.text()))
-              )(),
-        () => (deps.readStdin ? deps.readStdin() : process.stdin.isTTY ? Promise.resolve("") : Bun.stdin.text()),
-      );
     case "creds":
       return credsCommand(rest, vaultIo(authOf(io, deps), deps));
     default:
