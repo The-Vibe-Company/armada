@@ -2,6 +2,7 @@ import {
   API_FAILURE_STATUS,
   CONTROL_BODY_MAX_BYTES,
   controlBodyMaxBytes,
+  MACHINE_SIZES,
   OUTPUT_DIRECTORY,
   OUTPUT_MAX_FILE_BYTES,
   OUTPUT_MAX_FILES,
@@ -45,7 +46,6 @@ export const REST_FIELD_NAMES: Readonly<Record<string, Readonly<Record<string, s
 const REST_TOOL_ROUTES: Readonly<Record<string, string>> = {
   ...CONTROL_TOOL_ROUTES,
   "sandbox/launch": "launch",
-  "templates/launch": "template_launch",
   "logs/read": "logs",
 };
 /** HTTP 200 bodies that differ from the MCP tool output (or that have no tool). */
@@ -102,13 +102,32 @@ const REST_ONLY: Readonly<
       "Reads the selected provider adapter's golden capacity without creating an App or resource. Null is unknown/unbounded, not a workspace quota.",
     input: requestJsonSchema(GOLDEN_CAPABILITIES_REQUEST),
   },
+  "templates/launch": {
+    description:
+      "Launch an immutable template revision. requestKey is required: same key/body returns the recorded request and never allocates twice. Readable variables are NOT secrets; no secret bindings or authority-enlarging overrides.",
+    input: requestJsonSchema(
+      z.strictObject({
+        org: z.string().uuid(),
+        id: z.string().uuid(),
+        revision: z.number().int().positive().optional(),
+        requestKey: z.string(),
+        prompt: z.string().optional(),
+        ttlSeconds: z.number().int().positive().optional(),
+        size: z.enum(MACHINE_SIZES).optional(),
+        repo: z.string().optional(),
+        skills: z.array(z.string()).max(20).optional(),
+        skipSkillDefaults: z.boolean().optional(),
+        stopWhenWorkMerged: z.boolean().optional(),
+      }),
+    ),
+  },
   "launch/options": {
     description:
       "What a launch can ask for on this server: harnesses with their models and credential kinds, machine sizes, TTL limits, and each provider's launch sources and capabilities. Read it before offering launch choices.",
     input: { type: "object", properties: {} },
   },
 };
-/** Fields a REST handler accepts beyond its MCP tool's input. */
+/** Additional request fields published for REST. */
 const REST_EXTRA_FIELDS: Readonly<Record<string, Readonly<Record<string, object>>>> = {
   "logs/read": { follow: { type: "boolean", description: "Follow events within the bounded HTTP request." } },
   "templates/launch": {
@@ -335,7 +354,7 @@ export async function generateOpenApi() {
       }
       if (REST_EXTRA_FIELDS[route]) input.properties = { ...input.properties, ...REST_EXTRA_FIELDS[route] };
       // REST selects org scope before calling shared tools.
-      if (tool && route !== "templates/launch") input.properties = { ...input.properties, org: { type: "string" } };
+      if (tool) input.properties = { ...input.properties, org: { type: "string" } };
       let request: object = input;
       const maxBodyBytes = controlBodyMaxBytes(route);
       // The server's own refusal of a body over maxBodyBytes: the vault reader's opaque 400, or 413.

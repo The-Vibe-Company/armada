@@ -613,7 +613,6 @@ export async function startServer(
     authStore,
     supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
     data,
-    templates,
     skillDefaults: createSkillDefaultsService(sql),
     connections: mcp.connections,
     vault: store,
