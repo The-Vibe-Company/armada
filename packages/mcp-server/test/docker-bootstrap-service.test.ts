@@ -845,7 +845,7 @@ const refusalOrders = [
   "previous server ACK",
   "previous server failed ACK",
   "ACK transaction rollback",
-] as const;
+];
 
 test.each(refusalOrders)(
   "a refused Docker resume returns to a retained stop after claim settlement (%s)",
