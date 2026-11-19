@@ -3650,6 +3650,38 @@ test("a snapshot build that fails on the disk floor persists the disk reason the
   ).toEqual({ status: "failed", failure_reason: DOCKER_LAUNCH_FAILURE_MESSAGES.disk });
 });
 
+test("Docker refuses models outside the Morph account and freezes its OpenCode default for replay", async () => {
+  const f = await fixture({ harness: "opencode" });
+  const body = { ...f.body, credentialId: randomUUID() };
+  await sql.query(
+    "insert into public.credentials(id,version,scope,owner_id,kind,value_enc) values($1,1,'user',$2,'morph',$3)",
+    [
+      body.credentialId,
+      f.actor.userId,
+      await encryptSecret(
+        JSON.stringify({ apiKey: f.secret, models: ["vendor/saved-model", "vendor/alternate"] }),
+        key,
+      ),
+    ],
+  );
+  const launcher = f.service(sql, true, 10000, officialImage, true);
+  await expect(launcher.launch(f.caller, { ...body, model: "vendor/unlisted" })).rejects.toMatchObject({
+    code: "invalid_request",
+    message: "Choose a Morph plan model configured on this account.",
+  });
+
+  const admitted = await launcher.launch(f.caller, body);
+  try {
+    expect(admitted.sandbox).toMatchObject({ status: "starting", model: "armada/vendor/saved-model" });
+    const resolutions = f.resolutions();
+    expect((await launcher.launch(f.caller, body)).sandbox.model).toBe(admitted.sandbox.model);
+    expect(f.resolutions()).toBe(resolutions);
+  } finally {
+    const controls = createDockerSandboxControls(sql, key, { clock: f.clock });
+    await controls.invoke(f.caller, "stop", { id: admitted.sandbox.id });
+  }
+});
+
 test("Docker normal launch uses the saved model unless explicitly overridden", async () => {
   for (const explicit of [false, true]) {
     const f = await fixture();

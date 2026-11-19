@@ -521,10 +521,11 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       );
       // Resolve outside the reservation transaction; only the binding is retained.
       reason = "credential_resolution";
-      const { resolved, binding } = await resolveDockerLaunchAccount(
+      const { resolved, binding, modelChoice } = await resolveDockerLaunchAccount(
         options.credentials,
         { ...actor, role: state.membership.role },
         request,
+        selected,
       );
       const launchActor = { ...actor, role: state.membership.role };
       if (needsRepositoryPreflight) {
@@ -564,14 +565,15 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         preparation: { skills, connections },
         ...(correlationId ? { correlationId } : {}),
       };
-      return { ...plan, kind: "active" as const, bootstrap, fresh: { resolved, binding, manifest } };
+      return { ...plan, kind: "active" as const, bootstrap, fresh: { resolved, binding, manifest, modelChoice } };
     };
 
     const dockerPlacement = {
       async admit(plan: Awaited<ReturnType<typeof resolve>>, launchAdmission: typeof admission) {
         const { actor, request, hash, state } = plan;
         if (plan.kind === "retained" || !plan.fresh) return state;
-        const { resolved, binding, manifest } = plan.fresh;
+        const { resolved, binding, manifest, modelChoice } = plan.fresh;
+        const choice = modelChoice ?? request;
         // The transaction queues host work atomically; a lost commit reply is ambiguous.
         reason = "reservation";
         return transaction(async (connection) => {
@@ -596,8 +598,8 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
               harness: request.harness,
               credentialId: binding.credentialId,
               credentialVersion: manifest.credentialVersion,
-              model: request.model,
-              reasoningEffort: request.reasoningEffort,
+              model: choice.model,
+              reasoningEffort: choice.reasoningEffort,
               ...(request.stopWhenWorkMerged === undefined ? {} : { stopWhenWorkMerged: request.stopWhenWorkMerged }),
               ...(body.ttlSeconds === undefined ? {} : { ttlSeconds: request.ttlSeconds }),
             },
@@ -656,6 +658,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       const manifest = state.manifest;
       diagnosticSandboxId = state.row?.id;
       if (!manifest || !state.row) throw failure("unavailable");
+      const defaults = { model: state.row.model, reasoningEffort: state.row.reasoning_effort };
       if (options.deferLaunch && !admission && !workerId) return envelope(state.row);
       // From here this call drives the host itself, even when it resumes a retried launch.
       noteAdmission();
@@ -750,7 +753,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
               sandboxId: request.requestId,
               providerSandboxId: request.requestId,
               cwd: "/home/user",
-              defaults: { model: request.model, reasoningEffort: request.reasoningEffort },
+              defaults,
             },
           );
           const warnings = await prepareLaunchWorkspace(
@@ -846,7 +849,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
               sandboxId: request.requestId,
               providerSandboxId: request.requestId,
               cwd: "/home/user",
-              defaults: { model: request.model, reasoningEffort: request.reasoningEffort },
+              defaults,
             },
           );
           const receipts = await agent.installSkills(selections.skills, skillKey, receipt.epoch);
