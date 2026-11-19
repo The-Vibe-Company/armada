@@ -73,6 +73,7 @@ export async function dispatchAccountTurn(
       [id, entry.request_id, await encryptSecret(JSON.stringify(result), key)],
     );
   } catch (error) {
+    const origin = error instanceof ToolApiError ? (error.cause ?? error) : error;
     const refusalCode =
       error instanceof ToolApiError || error instanceof VaultError || error instanceof ToolError
         ? error.code
@@ -101,8 +102,8 @@ export async function dispatchAccountTurn(
         const retry =
           !target.stopped_runtime &&
           !secretRefused &&
-          error instanceof VaultError &&
-          (error.code === "conflict" || error.code === "unavailable");
+          origin instanceof VaultError &&
+          (origin.code === "conflict" || origin.code === "unavailable");
         await tx.query(
           `with retried as (update public.account_turn_queue set state=$3,failure_reason=$4,dispatch_generation=null,dispatch_until=null
           where sandbox_id=$1 and request_id=$2 and state='dispatching' returning sandbox_id)
@@ -129,7 +130,6 @@ export async function dispatchAccountTurn(
       return false;
     });
     if (rejected) {
-      const origin = error instanceof ToolApiError ? (error.cause ?? error) : error;
       const diagnostic = failureDiagnostic(origin);
       const errorClass =
         origin instanceof ToolApiError
