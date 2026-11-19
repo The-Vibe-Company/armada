@@ -115,9 +115,7 @@ export async function settleRuntimeTurn(tx: Sql, sandboxId: string, generation: 
   );
   if (!eligible) return;
   if (eligible.provider === "docker" && key !== undefined) {
-    // An older successful receipt and a refusal both have a null accepted_prompt_id.
-    // Only the tail after the latest projected acceptance could hide a newer turn.
-    const replies = await tx.query<{ result_enc: Uint8Array<ArrayBuffer> }>(
+    const ambiguousReplies = await tx.query<{ result_enc: Uint8Array<ArrayBuffer> }>(
       `select c.result_enc from public.runtime_commands c
        where c.sandbox_id=$1 and c.epoch=$2 and starts_with(c.request_id,'docker_prompt_')
          and c.sequence>coalesce((select max(p.sequence) from public.runtime_commands p
@@ -126,7 +124,7 @@ export async function settleRuntimeTurn(tx: Sql, sandboxId: string, generation: 
        order by c.sequence desc`,
       [sandboxId, eligible.epoch],
     );
-    for (const { result_enc } of replies.rows) {
+    for (const { result_enc } of ambiguousReplies.rows) {
       const reply = JSON.parse(await decryptSecret(result_enc, key));
       if (
         (reply.status === 400 || reply.status === 409) &&
