@@ -150,8 +150,6 @@ function hash(token: unknown): string {
  * list once per held poll, and a job completed during the hold must free its sandbox
  * and the snapshot slot at once, not when the hold expires (#2561). */
 function notRunning(n: number): string {
-  // A capable daemon may report a predecessor cleanup ID solely as a poll
-  // exclusion. Its local dispatcher still serializes actually running jobs.
   return `not (j.request_id=any($${n}::uuid[])) and not exists(select 1 from public.docker_host_jobs r
     where r.host_id=j.host_id and r.request_id=any($${n}::uuid[]) and r.outcome is null
     and ((r.bound_sandbox_id=j.bound_sandbox_id
@@ -322,7 +320,14 @@ export function createDockerHostStore(sql: Sql, key: string) {
     return { requestId: job.requestId };
   }
   async function readJob(row: StoredJob, expectedGeneration?: Sandbox["lifecycle_generation"]): Promise<Job> {
-    let stored: unknown = JSON.parse(await decryptSecret(row.input_enc, key));
+    const plaintext = await decryptSecret(row.input_enc, key);
+    let stored: unknown;
+    try {
+      stored = JSON.parse(plaintext);
+    } catch (error) {
+      if (row.bound_operation === "restore") deny();
+      throw error;
+    }
     if (row.bound_sandbox_id !== null || row.snapshot_id) {
       const fenced = generationFenced(row.bound_operation);
       exact(stored, fenced ? ["bound", "job", "lifecycleGeneration"] : ["bound", "job"]);
@@ -337,7 +342,13 @@ export function createDockerHostStore(sql: Sql, key: string) {
       stored = stored.job;
     }
     if (!stored || typeof stored !== "object" || Array.isArray(stored)) deny();
-    const job = parseDockerHostJob({ ...stored, requestId: row.request_id });
+    let job: Job;
+    try {
+      job = parseDockerHostJob({ ...stored, requestId: row.request_id });
+    } catch (error) {
+      if (row.bound_operation === "restore") deny();
+      throw error;
+    }
     if (generationFenced(job.operation) && row.bound_sandbox_id === null) deny();
     if (
       row.bound_sandbox_id !== null &&
@@ -462,7 +473,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
     if (
       job.operation !== "restore" ||
       logical.status !== "starting" ||
-      logical.docker_generation !== job.request.generation ||
+      logical.docker_generation !== job.predecessor.request.generation ||
       logical.docker_image !== job.request.image ||
       (logical.docker_snapshot_id ?? null) !== (job.request.snapshot?.id ?? null) ||
       new Date(logical.expires_at).getTime() !== job.request.expiresAt
@@ -875,25 +886,30 @@ export function createDockerHostStore(sql: Sql, key: string) {
             [host.id, installationId],
           )
         ).rows;
-        const pending = rows.map((row) => ({ sandboxId: row.bound_sandbox_id, generation: row.docker_generation }));
-        if (!supportsRestore) return pending;
-        const restores = await tx.query<StoredJob>(
-          `select j.* from public.docker_host_jobs j join public.sandboxes s on s.id=j.bound_sandbox_id
-           where j.host_id=$1 and j.bound_operation='restore' and j.outcome is null
-             and s.docker_host_id=$1 and s.docker_installation_id=$2
-           order by j.position`,
-          [host.id, installationId],
+        const pending = new Map(
+          rows.map(({ bound_sandbox_id: sandboxId, docker_generation: generation }) => [
+            `${sandboxId}/${generation}`,
+            { sandboxId, generation },
+          ]),
         );
-        for (const row of restores.rows) {
-          const job = await readJob(row);
-          if (job.operation !== "restore") deny();
-          for (const { sandboxId, generation } of [job.request, job.predecessor.request]) {
-            if (!pending.some((entry) => entry.sandboxId === sandboxId && entry.generation === generation)) {
-              pending.push({ sandboxId, generation });
+        if (supportsRestore) {
+          const restores = await tx.query<StoredJob>(
+            `select j.* from public.docker_host_jobs j
+             where j.host_id=$1 and j.bound_operation='restore' and j.outcome is null order by j.position`,
+            [host.id],
+          );
+          for (const row of restores.rows) {
+            try {
+              const job = await admitRestore(tx, row, host, installationId);
+              for (const { sandboxId, generation } of [job.request, job.predecessor.request]) {
+                pending.set(`${sandboxId}/${generation}`, { sandboxId, generation });
+              }
+            } catch (error) {
+              if (!(error instanceof DockerHostDenied)) throw error;
             }
           }
         }
-        return pending;
+        return [...pending.values()];
       });
     },
     limitsForHost(hostToken: string, installationId: string) {

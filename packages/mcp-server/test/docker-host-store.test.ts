@@ -397,7 +397,7 @@ async function restoreFixture() {
   const predecessor = await bindings.bind({ sandboxId, generation: 1 });
   const generation = await bindings.bind({ sandboxId, generation: 2 });
   const expiresAt = Date.UTC(2099, 0, 1);
-  const a = await boundFixture(host, { sandboxId, generation, expiresAt });
+  const a = await boundFixture(host, { sandboxId, generation: predecessor, expiresAt });
   await db.query("update sandboxes set lifecycle_generation=2 where id=$1", [sandboxId]);
   const request = { ...job().request, sandboxId: a.sandboxId, generation, expiresAt };
   const restore = {
@@ -481,6 +481,7 @@ test("restore dispatch cancels stale intent and reconciles a late physical recei
   const a = await restoreFixture();
   const db = database();
   await db.query("update sandboxes set lifecycle_generation=3 where id=$1", [a.sandboxId]);
+  expect(await store.pendingStartsForHost(a.hostToken, a.installationId, true)).toEqual([]);
   const { faultingStore, failure } = failDockerJobCommit(a.restore.requestId, "failed");
   await expect(a.poll([a.cleanupId], true, faultingStore)).rejects.toMatchObject({ cause: failure });
   expect(await a.poll([a.cleanupId])).toBeNull();
