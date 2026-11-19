@@ -643,10 +643,6 @@ export async function dispatchControlCommand(
               ? options.providers.resolve(target, scopedCaller)
               : Promise.reject(new VaultError("unavailable", "Resource providers are not configured.")),
           ),
-        deletionProvider: (sandbox) =>
-          options.providers
-            ? options.providers.resolve(sandbox, { userId: sandbox.ownerId })
-            : Promise.reject(new VaultError("unavailable", "Resource providers are not configured.")),
         launchCredentials: launchCredentials(
           options.store,
           options.encryptionKey,

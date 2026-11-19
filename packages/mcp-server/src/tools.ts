@@ -89,8 +89,6 @@ export interface ToolContext {
   /** A provider paying with the boat.dev key of a golden of this org and visibility. The key never leaves the server. */
   /** The provider of a golden's or a sandbox's own backend (see `ProviderRegistry`). Its key never leaves the server. */
   provider(target: ProviderTarget): Promise<Provider>;
-  /** Authorized lifecycle management: resolve the sandbox owner's immutable source management authority after authorization. */
-  deletionProvider?(sandbox: SandboxView): Promise<Provider>;
   now(): Date;
   sleep(ms: number): Promise<void>;
   launch?: LaunchOptions;
