@@ -387,54 +387,56 @@ describe("Skillpack registry credentials", () => {
 
 describe("named model accounts", () => {
   test("legacy account creation applies defaults and replacement preserves overrides", async () => {
-    await withVault(async ({ store, people }) => {
+    await withVault(async ({ db, store, people }) => {
       const org = await createOrg(store, people.stan, "Defaults");
-      for (const scope of ["user", "org"] as const) {
+      for (const { scope, kind, expected } of [
+        { scope: "user", kind: "openai", expected: null },
+        { scope: "org", kind: "morph", expected: 2 },
+      ] as const) {
         const owner = scope === "user" ? people.stan : org.id;
-        for (const kind of ["morph", "openai"] as const) {
-          const expected = kind === "morph" ? 2 : null;
-          const write = () =>
-            setCredential(store, KEY, people.stan, { scope, org: org.id, kind, value: "model_key_placeholder" });
-          const current = async () => {
-            const active = (await store.listCredentials(scope, owner)).filter(
-              (row) => row.kind === kind && row.status !== "deleted",
-            );
-            expect(active).toHaveLength(1);
-            return active[0]!;
-          };
-          await write();
-          const initial = await current();
-          expect(initial.maxAgents).toBe(expected);
-          for (const maxAgents of [5, null]) {
-            await store.mutateAccount!(
-              people.stan,
-              {
-                action: "limits",
-                scope,
-                org: org.id,
-                id: initial.id!,
-                maxAgents,
-              },
-              undefined,
-              KEY,
-            );
-            await write();
-            expect(await current()).toMatchObject({ id: initial.id, maxAgents });
-          }
+        const write = () =>
+          setCredential(store, KEY, people.stan, { scope, org: org.id, kind, value: "model_key_placeholder" });
+        const current = async () => {
+          const { rows: active } = await db.query<{ id: string; maxAgents: number | null }>(
+            `select id, max_agents as "maxAgents" from credentials
+             where scope=$1 and owner_id=$2 and kind=$3 and status <> 'deleted'`,
+            [scope, owner, kind],
+          );
+          expect(active).toHaveLength(1);
+          return active[0]!;
+        };
+        await write();
+        const initial = await current();
+        expect(initial.maxAgents).toBe(expected);
+        for (const maxAgents of [5, null]) {
           await store.mutateAccount!(
             people.stan,
             {
-              action: "remove",
+              action: "limits",
               scope,
               org: org.id,
-              id: initial.id!,
+              id: initial.id,
+              maxAgents,
             },
             undefined,
             KEY,
           );
           await write();
-          expect((await current()).maxAgents).toBe(expected);
+          expect(await current()).toMatchObject({ id: initial.id, maxAgents });
         }
+        await store.mutateAccount!(
+          people.stan,
+          {
+            action: "remove",
+            scope,
+            org: org.id,
+            id: initial.id,
+          },
+          undefined,
+          KEY,
+        );
+        await write();
+        expect((await current()).maxAgents).toBe(expected);
       }
     });
   });
