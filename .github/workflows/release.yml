@@ -186,9 +186,11 @@ jobs:
           done
           [[ -z "$EXPECTED_VERSION" || "$version" == "$EXPECTED_VERSION" ]]
           case "$version" in *-*) dist_tag=next ;; *) dist_tag=latest ;; esac
+          sha=$(git rev-parse HEAD)
+          echo "Release candidate SHA: $sha"
           echo "Version $version, dist-tag $dist_tag, publish $PUBLISH."
           {
-            echo "sha=$(git rev-parse HEAD)"
+            echo "sha=$sha"
             echo "version=$version"
             echo "dist_tag=$dist_tag"
             echo "publish=$PUBLISH"
@@ -471,12 +473,26 @@ jobs:
       - name: Verify the published tag and reconcile the version PR
         run: bun scripts/release/publication.ts reconcile
 
+  production-approval:
+    name: Approve production deployment
+    needs: [release-metadata, check, binary, staging-smoke, finalize-release]
+    if: needs.release-metadata.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    environment: production-deploy
+    permissions: {}
+    steps:
+      - name: Log the approved release SHA
+        env:
+          RELEASE_SHA: ${{ needs.release-metadata.outputs.sha }}
+        run: printf 'Approved release SHA %s\n' "$RELEASE_SHA"
+
   production:
     name: Release migrations, server and dashboard
     permissions:
       contents: read
       actions: read
-    needs: [release-metadata, finalize-release]
+    needs: [release-metadata, production-approval]
     if: needs.release-metadata.outputs.publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 40
