@@ -132,6 +132,7 @@ export async function createServerServices(env: Record<string, string | undefine
     sql,
     encryptionKey: config.encryptionKey,
     publicUrl: config.publicUrl,
+    commands: runtimeCommands,
   });
   const data = createSqlData(sql);
   const templates = createTemplateService(sql, config.encryptionKey);

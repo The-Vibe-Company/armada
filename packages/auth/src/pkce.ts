@@ -1,6 +1,5 @@
 import { base64url, randomBytes } from "./codec.ts";
 
-/** S256 PKCE. The verifier stays in memory or in the encrypted cookie, never in a table. */
 export async function createPkce(): Promise<{ verifier: string; challenge: string }> {
   const verifier = base64url(randomBytes(32));
   return { verifier, challenge: await s256(verifier) };

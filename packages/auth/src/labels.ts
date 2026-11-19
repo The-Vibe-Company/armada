@@ -8,7 +8,6 @@ export function assertLabel(label: string): string {
   return trimmed;
 }
 
-/** MCP refresh tokens are bound to the client that received them. The label is not secret. */
 export function refreshLabel(clientId: string): string {
   return `refresh:${clientId}`;
 }

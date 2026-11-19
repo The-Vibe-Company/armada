@@ -56,7 +56,12 @@ export class DockerMachineError extends Error {
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const dockerContainerId = /^[a-f0-9]{64}$/;
 const prefix = "dev.armada.machine.";
+const restoredFrom = `${prefix}restored-from`;
+const workspaceCopySeconds = 240;
+const workspaceCopyImage =
+  "docker.io/library/debian@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc";
 type Row = Record<string, unknown>;
+type DockerRetainedPredecessor = { request: DockerMachineRequest; machineId: string };
 
 /** A host-local image ID (`sha256:<hex>`), as opposed to a registry reference such as `sha256:base@sha256:<hex>`. */
 const isLocalImage = (image: string) => image.startsWith("sha256:") && !image.includes("@");
@@ -281,8 +286,17 @@ export function createDockerMachineExecutor(options: {
     }
   }
 
-  async function create(request: DockerMachineRequest) {
-    let state = await owned(request);
+  async function allocate(request: DockerMachineRequest, predecessor?: DockerRetainedPredecessor) {
+    const restoreIdentity = predecessor && `${predecessor.request.generation}/${predecessor.machineId}`;
+    async function target() {
+      const state = await owned(request);
+      if (state.volume && object(state.volume.Labels)[restoredFrom] !== restoreIdentity) fail("ownership_mismatch");
+      if (state.container && object(object(state.container.Config).Labels)[restoredFrom] !== restoreIdentity)
+        fail("ownership_mismatch");
+      return state;
+    }
+
+    let state = await target();
     const absoluteCreationTime = request.expiresAt === undefined ? undefined : now();
     if (
       absoluteCreationTime !== undefined &&
@@ -293,17 +307,25 @@ export function createDockerMachineExecutor(options: {
     // An immutable local ID alone is not authorization to consume another host's cache.
     // Approval is checked before any new allocation, never required for retained cleanup/resume.
     if (!state.container) await approveLocalImage(request.image, request.snapshot);
+    if (predecessor && !state.container) {
+      const source = await owned(predecessor.request);
+      if (!source.container) fail("not_found");
+      const status = object(source.container.State);
+      if (source.container.Id !== predecessor.machineId || status.Status !== "exited" || status.Running !== false)
+        fail("ownership_mismatch");
+    }
     if (!state.volume) {
       const created = absoluteCreationTime ?? now();
       const labels = {
         ...state.labels,
+        ...(restoreIdentity === undefined ? {} : { [restoredFrom]: restoreIdentity }),
         [`${prefix}created-at`]: String(created),
         [`${prefix}expires-at`]: String(
           Math.min(request.expiresAt ?? Number.POSITIVE_INFINITY, created + request.ttlSeconds * 1000),
         ),
       };
       await checked(["volume", "create", "--driver", "local", ...labelArgs(labels), state.volumeName]);
-      state = await owned(request);
+      state = await target();
       if (!state.volume) fail("docker_failed");
     }
     if (state.expiresAt === undefined) fail("ownership_mismatch");
@@ -325,6 +347,11 @@ export function createDockerMachineExecutor(options: {
         }
         if (!pulled) fail("image_unavailable");
       }
+      if (predecessor) {
+        if (state.expiresAt <= now()) fail("expired");
+        await copyWorkspace(predecessor.machineId, state.volumeName);
+        if (state.expiresAt <= now()) fail("expired");
+      }
       const createArgs = (mountShared: boolean) => [
         "container",
         "create",
@@ -338,7 +365,7 @@ export function createDockerMachineExecutor(options: {
         "--security-opt",
         "no-new-privileges",
         "--mount",
-        `type=volume,src=${state.volumeName},dst=/home/user`,
+        `type=volume,src=${state.volumeName},dst=/home/user${predecessor ? ",volume-nocopy" : ""}`,
         ...(mountShared && shared
           ? ["--mount", `type=bind,src=${shared.dir},dst=${SHARED_ARTIFACT_CACHE_PATH},readonly`]
           : []),
@@ -351,11 +378,11 @@ export function createDockerMachineExecutor(options: {
       ];
       const mountShared = await ensureShared();
       let result = await run(createArgs(mountShared));
-      state = await owned(request);
+      state = await target();
       if (!state.container && mountShared && result.exitCode !== 0) {
         // An engine that cannot bind the host cache (confinement, remote engine) launches without it.
         result = await run(createArgs(false));
-        state = await owned(request);
+        state = await target();
       }
       if (!state.container) fail(result.exitCode === 0 ? "ownership_mismatch" : "docker_failed");
     }
@@ -371,9 +398,88 @@ export function createDockerMachineExecutor(options: {
         state.containerName,
       ]);
       await ensureShared();
+      if (state.expiresAt <= now()) fail("expired");
       await checked(["container", "start", state.containerName]);
     }
     return { containerName: state.containerName, volumeName: state.volumeName, expiresAt: state.expiresAt };
+  }
+
+  async function removeInactiveCopyHelper(name: string, sourceId: string) {
+    const helper = await inspect("container", name);
+    if (helper) {
+      const id = helper.Id;
+      const config = object(helper.Config);
+      const status = object(helper.State);
+      if (
+        helper.Name !== `/${name}` ||
+        typeof id !== "string" ||
+        !dockerContainerId.test(id) ||
+        config.Image !== workspaceCopyImage ||
+        object(config.Labels)[restoredFrom] !== sourceId
+      )
+        fail("ownership_mismatch");
+      if (status.Running !== false || (status.Status !== "created" && status.Status !== "exited"))
+        fail("docker_failed");
+      await checked(["container", "rm", id]);
+    }
+  }
+
+  async function copyWorkspace(sourceId: string, volumeName: string) {
+    const name = `${volumeName}-restore`;
+    await removeInactiveCopyHelper(name, sourceId);
+    const result = await options.cli
+      .run(
+        [
+          "run",
+          "--rm",
+          "--name",
+          name,
+          "--label",
+          `${restoredFrom}=${sourceId}`,
+          "--network",
+          "none",
+          "--read-only",
+          "--workdir",
+          "/",
+          "--memory",
+          "128m",
+          "--pids-limit",
+          "32",
+          "--cap-drop",
+          "ALL",
+          "--cap-add",
+          "CHOWN",
+          "--cap-add",
+          "DAC_OVERRIDE",
+          "--cap-add",
+          "FOWNER",
+          "--cap-add",
+          "FSETID",
+          "--security-opt",
+          "no-new-privileges",
+          "--user",
+          "0:0",
+          "--volumes-from",
+          `${sourceId}:ro`,
+          "--mount",
+          `type=volume,src=${volumeName},dst=/restore,volume-nocopy`,
+          "--entrypoint",
+          "/usr/bin/timeout",
+          workspaceCopyImage,
+          "--kill-after=2s",
+          `${workspaceCopySeconds}s`,
+          "/usr/bin/cp",
+          "--archive",
+          "--remove-destination",
+          "--",
+          "/home/user/.",
+          "/restore",
+        ],
+        undefined,
+        { timeoutMs: (workspaceCopySeconds + 5) * 1000 },
+      )
+      .catch(() => fail("docker_failed"));
+    if (result.exitCode !== 0) fail("docker_failed");
   }
 
   async function resume(request: DockerMachineRequest): Promise<void> {
@@ -458,7 +564,16 @@ export function createDockerMachineExecutor(options: {
       return;
     }
     // Successful exact absence observation is required before deleting the exact owned volume.
-    if (state.volume) await checked(["volume", "rm", state.volumeName]);
+    if (state.volume) {
+      const origin = object(state.volume.Labels)[restoredFrom];
+      if (typeof origin === "string") {
+        const [generation, sourceId, ...extra] = origin.split("/");
+        if (!generation || !uuid.test(generation) || !sourceId || !dockerContainerId.test(sourceId) || extra.length)
+          fail("ownership_mismatch");
+        await removeInactiveCopyHelper(`${state.volumeName}-restore`, sourceId);
+      }
+      await checked(["volume", "rm", state.volumeName]);
+    }
   }
 
   async function stopIfExpired(request: DockerMachineRequest): Promise<boolean> {
@@ -472,7 +587,19 @@ export function createDockerMachineExecutor(options: {
 
   return {
     resume,
-    create,
+    create(request: DockerMachineRequest) {
+      return allocate(request);
+    },
+    async restore(request: DockerMachineRequest, predecessor: DockerRetainedPredecessor) {
+      if (
+        !dockerContainerId.test(predecessor.machineId) ||
+        request.sandboxId !== predecessor.request.sandboxId ||
+        request.generation === predecessor.request.generation
+      )
+        fail("invalid_request");
+      context(predecessor.request);
+      return allocate(request, predecessor);
+    },
     bootstrap,
     installRuntime,
     stop,
