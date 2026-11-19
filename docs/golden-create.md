@@ -1,18 +1,23 @@
 # Secure, server-orchestrated snapshots
 
 Snapshots (called golden in older versions) contain repositories, dependencies and non-secret configuration, **never secrets**.
-The CLI is an authenticated Armada API client: create, update, connect and snapshot all go
-through the server's authorization and provider routing. Callers need an Armada session
+The CLI sends create and update requests through the server’s authorization and
+provider routing. The REST maintenance routes below handle connect and manual snapshot saves. Callers need an Armada session
 (`armada login`) or `ARMADA_TOKEN`, and the appropriate `ARMADA_URL`, not provider keys.
 Connect is for non-secret maintenance, not for installing credentials or secret-bearing files.
 
 ## Create or rebuild with the CLI
 
+Replace `ORG_UUID` with the target organization UUID. Save separate idempotency keys
+for the create and update requests and substitute them for `CREATE_KEY` and `UPDATE_KEY`.
+Before updating, save the complete desired repository and initialization
+configuration in the local `snapshot.json` file.
+
 ```sh
-armada snapshot create web --repo https://github.com/acme/web --provider boat --org <org> \
-  --idempotency-key <saved-key> --timeout 60
-armada snapshot update web --replace --config golden.json --provider boat --org <org> \
-  --idempotency-key <new-saved-key> --timeout 60
+armada snapshot create web --repo https://github.com/acme/web --provider boat --org ORG_UUID \
+  --idempotency-key CREATE_KEY --timeout 60
+armada snapshot update web --replace --config snapshot.json --provider boat --org ORG_UUID \
+  --idempotency-key UPDATE_KEY --timeout 60
 ```
 
 - Create/update accept repeated `--repo <url>[@branch]` or `--config <file>`. Repeated
@@ -37,11 +42,12 @@ armada snapshot update web --replace --config golden.json --provider boat --org 
   Very short waits such as `--timeout 1` can expire during the fixed two-second polling interval;
   use `0` for admission-only output. Disconnecting does not cancel or resubmit the build.
 
-Recover without starting another build:
+Recover with the returned build UUID (`JOB_UUID`) or the key saved for that
+request (`SAVED_KEY`).
 
 ```sh
-armada snapshot build-status <job-id> --json
-armada snapshot build-status --idempotency-key <saved-key> --org <org> --json
+armada snapshot build-status JOB_UUID --json
+armada snapshot build-status --idempotency-key SAVED_KEY --org ORG_UUID --json
 ```
 
 If admission's response is lost, recover by the saved key first. The same requester/org/key
