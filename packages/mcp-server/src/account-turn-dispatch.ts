@@ -11,6 +11,8 @@ export const RUNTIME_REQUEST_EVIDENCE = `(s.activity_lease_id=q.request_id
   or exists(select 1 from public.runtime_commands c where c.sandbox_id=s.id and c.request_id in ('follow_'||q.request_id::text,'docker_prompt_'||q.request_id::text,'resume_'||q.request_id::text))
   or exists(select 1 from public.runtime_resumes r where r.sandbox_id=s.id and r.request_id=q.request_id)
   or exists(select 1 from public.docker_host_jobs j where j.bound_sandbox_id=s.id and j.request_id=q.request_id))`;
+export const QUEUED_DISPATCH_EVIDENCE = `(q.native_prompt_id is not null
+  or (s.task_prompt_id=q.request_id::text) is true or (${RUNTIME_REQUEST_EVIDENCE}) is true)`;
 export const RUNTIME_LANE = `(s.provider='docker' or s.boat_runtime or s.runtime_transport='dialout')`;
 
 const TURN_LIFECYCLE_CANCELLED = `(s.deleted_at is not null or s.expires_at <= now() or s.stop_requested_at is not null
@@ -19,11 +21,11 @@ const TURN_LIFECYCLE_CANCELLED = `(s.deleted_at is not null or s.expires_at <= n
 export const QUEUED_TURN_CANCELLED = `(${TURN_LIFECYCLE_CANCELLED} or s.status not in ('ready','running','stopped'))`;
 export const DISPATCHING_TURN_CANCELLED = `(${TURN_LIFECYCLE_CANCELLED} or s.status in ('deleted','stopping','failed'))`;
 
-export async function failCancelledTurn(tx: Sql, sandboxId: string, requestId: string) {
+export async function failTurnReceipt(tx: Sql, sandboxId: string, requestId: string) {
   await tx.query(
     `update public.account_turn_queue q set state='failed', failure_reason=case
        when q.state='dispatching' then 'Dispatch cancelled by confirmed stop.'
-       when s.task_prompt_id=q.request_id::text or ${RUNTIME_REQUEST_EVIDENCE}
+       when ${QUEUED_DISPATCH_EVIDENCE}
          then 'Queued receipt already has dispatch evidence; inspect sandbox history before resending.'
        else 'Queued prompt cannot start: sandbox stopped, deleted, expired, or stopping.' end
      from public.sandboxes s
