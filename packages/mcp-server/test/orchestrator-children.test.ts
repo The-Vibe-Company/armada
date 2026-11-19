@@ -931,14 +931,25 @@ test("scoped Modal children launch and accept follow-up through the enrolled run
       id: "modal" as const,
       async get(id: string) {
         const info = await fake.provider.get(id);
-        return info.state === "ready" ? { ...info, providerState: "active", expiresAt: physicalDeadline } : info;
+        return info.state === "ready"
+          ? { ...info, providerState: "active", expiresAt: physicalDeadline, physicalGeneration: "1" }
+          : info;
+      },
+      async captureRuntimeWork() {
+        expect(checkpointRequest).toBeDefined();
+        return { status: "clean" as const };
       },
       async stop(request: Parameters<typeof fake.provider.stop>[0] & { requireRetention?: boolean }) {
         expect(checkpointRequest).toBeDefined();
         expect(request.requireRetention).toBe(true);
-        expect((await sql.query("select status_reason from sandboxes where id=$1", [logicalId])).rows[0]).toEqual({
-          status_reason: "idle_paused",
-        });
+        expect(
+          (
+            await sql.query(
+              `select status_reason,preservation_stop_generation=stop_generation as captured from sandboxes where id=$1`,
+              [logicalId],
+            )
+          ).rows[0],
+        ).toEqual({ status_reason: "idle_paused", captured: true });
         await fake.provider.stop(request);
       },
     };
