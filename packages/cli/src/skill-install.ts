@@ -69,7 +69,6 @@ async function files(path: string): Promise<string[]> {
   return result;
 }
 
-/** Preflight the complete package set before writing; existing destinations are never updated. */
 export async function copySkillPackages(checkout: string, base: string): Promise<string[]> {
   const plans: { source: string; destination: string; entries: string[] }[] = [];
   for (const root of [".agents", ".claude"]) {
@@ -90,7 +89,6 @@ export async function copySkillPackages(checkout: string, base: string): Promise
   try {
     for (const plan of plans) {
       await mkdir(dirname(plan.destination), { recursive: true });
-      // Exclusive leaf creation also refuses a destination created after preflight.
       await mkdir(plan.destination);
       created.push(plan.destination);
       for (const entry of plan.entries) {
