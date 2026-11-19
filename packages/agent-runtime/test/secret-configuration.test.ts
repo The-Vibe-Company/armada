@@ -229,6 +229,55 @@ test.each([
     },
   },
   {
+    type: "turn/completed",
+    data: {
+      threadId: "thread-prefixvalue",
+      turn: {
+        id: "turn-fixture",
+        status: "failed",
+        error: {
+          message: "Plan limit reached. Resets at 2042-01-01T00:00:00.000Z.",
+          additionalDetails: "prefixvalue",
+          codexErrorInfo: { prefixlongfixture: "prefixvalue" },
+        },
+      },
+    },
+    masked: {
+      threadId: "thread-prefix[REDACTED]",
+      turn: {
+        id: "turn-fixture",
+        status: "failed",
+        error: {
+          message: "Plan limit reached. Resets at 20[REDACTED]-01-01T00:00:00.000Z.",
+          additionalDetails: "prefix[REDACTED]",
+          codexErrorInfo: { "prefix[REDACTED]": "prefix[REDACTED]" },
+        },
+      },
+    },
+  },
+  {
+    type: "usage_limit",
+    data: { code: "usage_limit_exceeded", resetsAt: "2042-01-01T00:00:00.000Z" },
+    masked: { code: "usage_limit_exceeded", resetsAt: "20[REDACTED]-01-01T00:00:00.000Z" },
+  },
+  {
+    type: "armada/modelRateLimit",
+    data: {
+      retryCount: 2,
+      delayMs: 41000,
+      totalWaitMs: 43000,
+      reason: "model_provider_retry",
+      message: "Model provider request retrying in 41 s",
+    },
+    masked: {
+      retryCount: 2,
+      delayMs: 41000,
+      totalWaitMs: 43000,
+      reason: "model_provider_retry",
+      message: "Model [REDACTED] request retrying in 41 s",
+    },
+  },
+  {
     type: "usage_report",
     data: {
       rate_limits: {
@@ -355,6 +404,8 @@ test.each([
       type,
       "bash",
       "longfixture",
+      ...(["turn/completed", "usage_limit"].includes(type) ? ["42"] : []),
+      ...(type === "armada/modelRateLimit" ? ["provider"] : []),
       ...(type === "usage_report" ? ["limits"] : []),
       ...(type.startsWith("account/") ? ["rateLimits", "42"] : []),
       ...(type === "result" || type === "armada/turnUsage" ? ["Tokens", "tokens", "42"] : []),
@@ -370,6 +421,27 @@ test.each([
     expect(journal.events().map(({ event }) => event)).toEqual([expected, newer]);
   } finally {
     await runner.close();
+    journal.close();
+  }
+});
+
+test("terminal diagnostic keys retain stable redaction across checkpoint sanitation", () => {
+  const journal = new Journal(":memory:", (text) => text);
+  try {
+    journal.registerApplicationSecrets(["httpConnectionFailed", "REDACTED"]);
+    journal.append({
+      id: "terminal",
+      at: 1,
+      kind: "other",
+      type: "turn/completed",
+      data: { turn: { error: { codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 503 } } } } },
+    });
+    const expected = { turn: { error: { codexErrorInfo: { "[REDACTED]": { httpStatusCode: 503 } } } } };
+    expect(journal.events()[0]?.event).toMatchObject({ data: expected });
+    journal.sanitize();
+    journal.sanitize();
+    expect(journal.events()[0]?.event).toMatchObject({ data: expected });
+  } finally {
     journal.close();
   }
 });

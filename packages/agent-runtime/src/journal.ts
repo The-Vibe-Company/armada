@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import type { AgentEvent, PromptStatus } from "@armada/core";
-import { HARNESSES, isFinalPromptStatus } from "@armada/core";
+import { HARNESSES, isFinalPromptStatus, planLimitData } from "@armada/core";
 import { HarnessError } from "./errors.ts";
 import { checkpointIdentity, checkpointIdentityKey } from "./identity.ts";
 import type { CheckpointIdentity, StoredPrompt } from "./protocol.ts";
@@ -36,6 +36,7 @@ function isStructuredDiagnostic(type: string) {
     type === "result" ||
     type === "usage_report" ||
     type === "model/rerouted" ||
+    Object.hasOwn(terminalDiagnosticShapes, type) ||
     isCodexQuotaDiagnostic(type)
   );
 }
@@ -203,6 +204,26 @@ const quotaPayload = {
     ordinaryUsageAllowed: null,
   },
 };
+const terminalDiagnosticShapes: Readonly<Record<string, PayloadShape>> = {
+  "turn/completed": {
+    fields: {
+      threadId: null,
+      turn: {
+        fields: {
+          id: null,
+          status: null,
+          error: {
+            fields: { message: null, codexErrorInfo: null, additionalDetails: null, misalignment: null },
+          },
+        },
+      },
+    },
+  },
+  "armada/modelRateLimit": {
+    fields: { retryCount: null, delayMs: null, totalWaitMs: null, reason: null, message: null },
+  },
+  usage_limit: { fields: { code: null, resetsAt: null } },
+};
 const turnUsagePayload = {
   fields: {
     model: null,
@@ -234,14 +255,12 @@ const maskShapedPayload: (
     const fields = shape?.fields;
     const values = scrubbed as Record<string, unknown>;
     const collapseMarkers = (text: string) => text.replace(/\[+REDACTED\]+/g, "[REDACTED]");
-    const maskKey = shape?.entries
-      ? (key: string) => {
-          const masked = mask(key);
-          if (masked === key) return key;
-          const collapsed = collapseMarkers(masked);
-          return collapseMarkers(mask(collapsed)) === collapsed ? collapsed : "[REDACTED]";
-        }
-      : mask;
+    const maskKey = (key: string) => {
+      const masked = mask(key);
+      if (masked === key) return key;
+      const collapsed = collapseMarkers(masked);
+      return collapseMarkers(mask(collapsed)) === collapsed ? collapsed : "[REDACTED]";
+    };
     const entries = Object.entries(original).map(([key, value]) => {
       const fixed = fields && Object.hasOwn(fields, key);
       return {
@@ -454,6 +473,17 @@ export class Journal {
         scrubbed.data = maskShapedPayload(event.data, scrubbed.data, maskField, quotaPayload);
       } else if (event.type === "armada/turnUsage") {
         scrubbed.data = maskShapedPayload(event.data, scrubbed.data, maskField, turnUsagePayload);
+      } else if (Object.hasOwn(terminalDiagnosticShapes, event.type)) {
+        scrubbed.data = maskShapedPayload(event.data, scrubbed.data, maskField, terminalDiagnosticShapes[event.type]);
+        if (event.type === "usage_limit") {
+          const limit = planLimitData(event.data);
+          if (limit) scrubbed.data.code = limit.code;
+        } else if (
+          event.type === "armada/modelRateLimit" &&
+          (event.data as { reason?: unknown } | null | undefined)?.reason === "model_provider_retry"
+        ) {
+          scrubbed.data.reason = "model_provider_retry";
+        }
       } else if (event.type === "model/rerouted") {
         maskPayloadField({ data: event.data }, scrubbed, "data", maskField);
       } else {
