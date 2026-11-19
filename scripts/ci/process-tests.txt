@@ -1,6 +1,5 @@
 apps/dashboard/test/routine-staging-transport.test.ts
 apps/dashboard/test/staging-check-route-parity.test.ts
-apps/dashboard/test/stats-db.test.ts
 packages/agent-runtime/test/exec-env.test.ts
 packages/agent-runtime/test/github-bootstrap.test.ts
 packages/agent-runtime/test/github-parent.test.ts

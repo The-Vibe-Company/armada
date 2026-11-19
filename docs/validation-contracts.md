@@ -309,7 +309,7 @@ Explicit release, conformance and probe files are outside unit discovery.
 
 ## Process-spawning unit cases in Dashboard
 
-The three Dashboard entries in the [process-test allowlist](../scripts/ci/process-tests.txt)
+The two Dashboard entries in the [process-test allowlist](../scripts/ci/process-tests.txt)
 each contain one case that reaches a subprocess. The times below measure each
 whole case in a focused Linux run using Bun 1.4.2 on main at `67d096dd`.
 
@@ -317,10 +317,8 @@ whole case in a focused Linux run using Bun 1.4.2 on main at `67d096dd`.
 | --- | --- | --- | ---: |
 | `routine-staging-transport.test.ts` | routine cleanup DELETE reaches the configured control API through the public origin | Python runs the routine staging checker's request construction with a fake opener. The test forwards the captured request through the Dashboard proxy in process. | 75.06 ms |
 | `staging-check-route-parity.test.ts` | staging checker status and stop preserve CLI public-proxy routes, identity and org | Python sends the staging checker's requests to a loopback Dashboard proxy fixture with a fake upstream. | 65.40 ms |
-| `stats-db.test.ts` | stats client omits pooler-incompatible startup parameters | A Bun subprocess isolates the `postgres` module mock and captures the stats client's connection options. | 5.31 ms |
 
-The missing-database-URL case in `stats-db.test.ts` runs in process. Both
-staging-checker cases use local fixtures and make no calls to deployed services.
+Both staging-checker cases use local fixtures and make no calls to deployed services.
 
 ## Process-spawning unit cases in CLI
 
