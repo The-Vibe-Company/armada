@@ -36,14 +36,7 @@ Quick start / common examples:
   eval "$(armada completion bash)"
 
 Usage:
-  armada host install --server HTTPS_ORIGIN   Install on the Docker machine; one-use token on stdin, no login
-  armada host status|uninstall [--server HTTPS_ORIGIN]  Local host wrappers; no login
-  armada host add [--name NAME] [--org UUID]
-  armada host list [--json] [--org UUID]
-  armada host show HOST [--json] [--org UUID]
-  armada host limits HOST [--cpus N] [--memory SIZE] [--max-sandboxes N | --auto] [--org UUID]
-  armada host retention HOST --retention 24h [--org UUID]
-  armada host revoke UUID [--org UUID]
+${sandboxUsage("host")}
 ${sandboxUsage("docker-launch")}
 ${sandboxUsage("setup")}
   armada --version                         Print the version
@@ -108,28 +101,12 @@ ${sandboxUsage("sandbox")}
   armada mcp list|add|update|connect|status|reconnect|enable|disable|revoke|delete [id] [--org UUID] [--file JSON]
 ${sandboxUsage("logs")}
 ${sandboxUsage("session")}
-  armada org create <name>                 Create an org; you are its first admin
-  armada org list
-  armada org setup [--org <name>]          Show organization provider setup status
-  armada org connect boat|modal [--org <name>] [--file <path>]
-                                           Connect an org provider using hidden input, stdin or a file
-  armada org use <name|UUID|none>           Persist selection for this Armada server
-  armada org current                        Show selected organization
+${sandboxUsage("org")}
 ${sandboxUsage("account")}
   armada github status|connect|reconnect|disconnect|install|manage [installation-id]
   armada github refresh <sandbox>
                                            Browser authorization waits for real completion; --no-browser prints URL
-  armada org invitations create <email> [--role admin|member] [--org <name|UUID>] [--json]
-  armada org invitations list [--org <name|UUID>] [--json]
-  armada org invitations resend|revoke <id> [--org <name|UUID>] [--json]
-                                           Admin invitation management; --org overrides org use selection.
-                                           Email sent means provider accepted, not confirmed inbox delivery.
-  armada org invitations accept [--file <path>] [--json]
-                                           Token from stdin/file only; log in personally with the matching
-                                           verified email first. Opening a link never joins an organization.
-  armada org members list|add|remove|role  [--org <name>] add <email> [--role admin|member]
-                                           Direct membership administration; add requires an existing account,
-                                           grants membership immediately and does not send an invitation.
+${sandboxUsage("invitations")}
   armada creds login codex --name <name> [--org <name>]
                                            Native local device login; up to 16 minutes after the device code.
                                            Keep this terminal open; Ctrl-C/shell exit cancels.

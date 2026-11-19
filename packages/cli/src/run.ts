@@ -25,18 +25,16 @@ import { commandWords, HELP } from "./command-catalog.ts";
 import { findCommand } from "./commands/index.ts";
 import { dockerSnapshotCommand } from "./docker-snapshots.ts";
 import { failureHint } from "./failure-hint.ts";
-import { hostCommand } from "./host-commands.ts";
 import { type LocalHostIo, localHostCommand, productionLocalHostIo } from "./local-host.ts";
 import { onboardingHelp } from "./onboarding-help.ts";
 import { operation } from "./operations.ts";
 import { profileStores, selectProfile } from "./profiles.ts";
 import { routineCommand } from "./routine-commands.ts";
-import { promptSecret } from "./secret-input.ts";
 import { sizePolicyCommand } from "./size-policy-command.ts";
 import { skillCommand } from "./skill-install.ts";
 import { snapshotText } from "./snapshot-text.ts";
 import { templateCommand } from "./template-commands.ts";
-import { credsCommand, orgCommand, type VaultIo } from "./vault-commands.ts";
+import { credsCommand, vaultIo } from "./vault-commands.ts";
 
 export interface Io {
   out(text: string): void;
@@ -78,20 +76,9 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
       );
     if (
       localArgs.length === 1 &&
-      [
-        "snapshot",
-        "golden",
-        "host",
-        "template",
-        "routine",
-        "vars",
-        "secrets",
-        "mcp",
-        "creds",
-        "org",
-        "github",
-        "skill",
-      ].includes(localArgs[0] ?? "")
+      ["snapshot", "golden", "template", "routine", "vars", "secrets", "mcp", "creds", "github", "skill"].includes(
+        localArgs[0] ?? "",
+      )
     ) {
       const family = localArgs[0] === "golden" ? "snapshot" : (localArgs[0] ?? "");
       if (family === "skill") return skillCommand(["--help"], io);
@@ -242,16 +229,13 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
   let rest = original;
   const terminator = rest.indexOf("--");
   const optionArgs = terminator < 0 ? rest : rest.slice(0, terminator);
-  const scoped = ["host", "golden", "bind-credential", "mcp"];
+  const scoped = ["golden", "bind-credential", "mcp"];
   const useSelectedOrg = registered?.useSelectedOrg;
   const commandUsesSelection =
     typeof useSelectedOrg === "function" ? useSelectedOrg(rest) : registered && useSelectedOrg !== false;
   if (
     command &&
-    (commandUsesSelection ||
-      scoped.includes(command) ||
-      (command === "org" && ["members", "setup", "connect"].includes(rest[0] ?? "")) ||
-      (command === "creds" && rest[0] === "list")) &&
+    (commandUsesSelection || scoped.includes(command) || (command === "creds" && rest[0] === "list")) &&
     !optionArgs.some((arg) => arg === "--org" || arg.startsWith("--org="))
   ) {
     const auth = authOf(io, deps);
@@ -274,8 +258,6 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
     case "help":
       io.out(HELP);
       return 0;
-    case "host":
-      return hostCommand(rest, { ...authOf(io, deps), ...io });
     case "golden":
       return golden(rest, io, deps);
     case "bind-credential":
@@ -295,17 +277,15 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
       );
     case "github":
       return accountCommand(command, rest, authOf(io, deps));
-    case "org":
-      return orgCommand(rest, vaultIo(io, deps));
     case "routine":
-      return routineCommand(rest, vaultIo(io, deps, true));
+      return routineCommand(rest, vaultIo(authOf(io, deps), deps, true));
     case "template":
-      return templateCommand(rest, vaultIo(io, deps, true));
+      return templateCommand(rest, vaultIo(authOf(io, deps), deps, true));
     case "vars":
     case "secrets":
-      return applicationVaultCommand(command, rest, vaultIo(io, deps, true));
+      return applicationVaultCommand(command, rest, vaultIo(authOf(io, deps), deps, true));
     case "creds":
-      return credsCommand(rest, vaultIo(io, deps));
+      return credsCommand(rest, vaultIo(authOf(io, deps), deps));
     default:
       throw new AuthError(`unknown command '${command}'. Run 'armada --help'.`, "usage");
   }
@@ -828,24 +808,4 @@ async function readConfig(args: ReturnType<typeof parseArgs>, deps: Deps): Promi
 
 function authOf(io: Io, deps: Deps): AuthIo {
   return deps.auth ?? productionAuthIo(io, deps.env ?? process.env);
-}
-
-function vaultIo(io: Io, deps: Deps, strictUtf8 = false): VaultIo {
-  return {
-    auth: authOf(io, deps),
-    readFile:
-      deps.readFile ??
-      (async (path) =>
-        strictUtf8
-          ? new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(await Bun.file(path).arrayBuffer())
-          : Bun.file(path).text()),
-    readStdin:
-      deps.readStdin ??
-      (async () => {
-        if (process.stdin.isTTY) return promptSecret();
-        return strictUtf8
-          ? new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(await Bun.stdin.arrayBuffer())
-          : Bun.stdin.text();
-      }),
-  };
 }
