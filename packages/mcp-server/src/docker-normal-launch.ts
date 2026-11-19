@@ -69,6 +69,7 @@ import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
 import { type RuntimeGitHub, RuntimeGitHubConnectionError, RuntimeGitHubDeliveryError } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
+import { publishDockerRuntimeReady } from "./sandbox-lifecycle.ts";
 
 type Request = {
   repos?: GoldenRepo[];
@@ -883,9 +884,8 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         await live();
         await createRuntimeEnrolments(sql, key).withOwner(request.requestId, actor.userId, async (tx, scope) => {
           if (scope.epoch !== receipt.epoch) throw failure("sandbox_not_ready");
-          await tx.query(`update public.sandboxes set status='ready' where id=$1 and status='starting'`, [
-            request.requestId,
-          ]);
+          if (!(await publishDockerRuntimeReady(tx, request.requestId, "prepared_launch")))
+            throw failure("sandbox_not_ready");
         });
         reason = "first_prompt";
         phase = DOCKER_LAUNCH_FAILURE_MESSAGES.prompt;

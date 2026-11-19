@@ -7,7 +7,7 @@ import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import { runtimeHealthMatches } from "./runtime-agent.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
-import { transitionSandbox } from "./sandbox-lifecycle.ts";
+import { publishDockerRuntimeReady, transitionSandbox } from "./sandbox-lifecycle.ts";
 
 type Actor = { userId: string; orgId: string };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -173,13 +173,7 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
           }
           return authority.withOwner(sandboxId, actor.userId, async (fenced, scope) => {
             if (scope.epoch !== queued.epoch) deny();
-            // Private lane status transitions must not revoke their own live epoch.
-            if (activate)
-              await fenced.query(
-                `update public.sandboxes set status='ready' where id=$1 and status='starting'
-              and not exists(select 1 from public.docker_launch_requests d where d.sandbox_id=$1 and d.result_enc is null)`,
-                [sandboxId],
-              );
+            if (activate && !(await publishDockerRuntimeReady(fenced, sandboxId, "health"))) deny();
             return { state: "ready" as const, epoch: scope.epoch };
           });
         },

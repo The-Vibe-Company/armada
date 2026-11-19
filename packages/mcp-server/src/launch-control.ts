@@ -25,7 +25,7 @@ import {
 import type { Caller } from "./caller.ts";
 import type { ControlOptions } from "./control.ts";
 import { scopedOrg } from "./control-caller.ts";
-import { optional, UUID } from "./control-input.ts";
+import { UUID } from "./control-input.ts";
 import type { ScopedData } from "./data.ts";
 import { dockerLaunchRequestId } from "./docker-launch-identity.ts";
 import { providerForGolden } from "./golden-control.ts";
@@ -505,9 +505,5 @@ export const launchRoutes = defineRoutes("launch", {
     configureDockerLaunch(options, request);
     if (!options.templates) throw new VaultError("unavailable", "Templates unavailable.");
     return launchTemplate(options.templates, caller, body, templateRuntime(options, caller), "template_rest");
-  },
-  "launch/resolve": ({ caller, body }) => {
-    scopedOrg(caller, optional(body, "org"));
-    throw new VaultError("unavailable", "Client-side credential resolution is retired; use sandbox/launch.");
   },
 });
