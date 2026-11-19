@@ -30,3 +30,14 @@ timing or budget check in CI.
 Keep real Git and gh installation replays, including privilege-boundary
 verification, in staging smoke. Unit CI owns deterministic token renewal and
 redaction at their respective boundaries.
+
+## Import-boundary lint timing
+
+The import-boundary guard runs inside `bun run lint`. To check its two-second
+budget, compare the `Run bun run lint` step in `Unit tests (1/6)` across three
+PR CI runs with the guard against the median of nearby successful runs before
+the guard, using the same shard workflow and lint steps. Subtract each step's
+GitHub Actions start timestamp from its completion timestamp and record the job
+links, elapsed seconds and deltas in the PR body. These whole-second samples
+include normal runner and change-set variation. They measure the lint step
+rather than queue time or the full shard duration.
