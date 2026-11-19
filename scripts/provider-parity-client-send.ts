@@ -13,10 +13,7 @@ interface Io {
 const object = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 /** Exercise the production dashboard MCP and CLI send paths, not hand-copied payloads. */
-export async function probeClientSend(
-  input: { id: string; org: string; origin: string; token: string; conversationId: string },
-  io: Io,
-) {
+export async function probeClientSend(input: { id: string; org: string; origin: string; token: string }, io: Io) {
   const session = await createParityClients(input, io, "send");
   const fail: (code: string) => never = session.fail;
   for (const selected of ["dashboard", "cli"] as const) {
@@ -28,17 +25,7 @@ export async function probeClientSend(
       let receipt: unknown;
       if (client === "dashboard") receipt = await session.dashboard.send(input.id, prompt, {}, requestId);
       else {
-        receipt = await session.command([
-          input.id,
-          prompt,
-          "--org",
-          input.org,
-          "--conversation",
-          input.conversationId,
-          "--request-id",
-          requestId,
-          "--json",
-        ]);
+        receipt = await session.command([input.id, prompt, "--org", input.org, "--request-id", requestId, "--json"]);
       }
       const promptId = object(receipt).promptId;
       if (typeof promptId !== "string" || !promptId) fail("invalid_client_send_receipt");

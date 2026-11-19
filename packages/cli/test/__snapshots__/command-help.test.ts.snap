@@ -391,7 +391,7 @@ Example: armada report SANDBOX_UUID ready --prompt-id PROMPT_ID --pr-number 123
 `;
 
 exports[`armada send help preserves its output 1`] = `
-"Usage: armada send <sandbox-id> <text> [--conversation <id>] [--model <id>] [--reasoning-effort <level>]
+"Usage: armada send <sandbox-id> <text> [--model <id>] [--reasoning-effort <level>]
   [--request-id UUID] [--org UUID] [--json]
 Send a new instruction after Armada login and server authorization.
 Use steer to redirect a running turn. Retained stopped sandboxes can wake on send.

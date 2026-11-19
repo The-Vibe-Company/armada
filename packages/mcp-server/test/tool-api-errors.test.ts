@@ -172,6 +172,7 @@ test.each([
   { conversationIds: [], requested: "new" },
   { conversationIds: ["current"], requested: "different" },
   { conversationIds: ["previous", "current"], requested: "previous" },
+  { conversationIds: ["current"], requested: "current" },
 ])("send refuses $requested before direct dispatch", async ({ conversationIds, requested }) => {
   const ctx = context(new Error(), conversationIds);
   const provider = spyOn(ctx, "provider");

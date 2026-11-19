@@ -12,6 +12,7 @@ import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
+import { refuseConversationSelector, SINGLE_CONVERSATION_GUIDANCE } from "./sandbox-conversation.ts";
 import { requestFailedRuntimeResumeStop } from "./sandbox-lifecycle.ts";
 
 export interface RuntimeResumeInput {
@@ -19,7 +20,6 @@ export interface RuntimeResumeInput {
   request_id: string;
   runtimeVersion: 1;
   prompt: string;
-  conversation_id?: string | undefined;
 }
 export interface RuntimeResumeReceipt {
   id: string;
@@ -78,6 +78,7 @@ export function createRuntimeResume(
       )
     ).rows[0];
   return async (caller: Caller, input: RuntimeResumeInput): Promise<RuntimeResumeReceipt> => {
+    refuseConversationSelector(input);
     const requestId = input.request_id.toLowerCase();
     if (input.runtimeVersion !== 1 || !uuid.test(input.id) || !uuid.test(requestId) || !input.prompt.trim())
       throw new VaultError("invalid", "Runtime resume v1 requires UUIDs and a nonempty instruction.");
@@ -86,15 +87,10 @@ export function createRuntimeResume(
     if (!found || found.ownerId !== caller.userId || !runtimeBridgeTarget(found) || found.deletedAt)
       throw new VaultError("not_found", "No owned runtime resume target.");
     const prior = await read(sql, found.id, requestId);
-    const empty =
-      prior?.empty_checkpoint ??
-      (found.conversationIds.length === 0 && !found.taskPromptId && input.conversation_id === undefined);
+    const empty = prior?.empty_checkpoint ?? (found.conversationIds.length === 0 && !found.taskPromptId);
     const conversation =
-      input.conversation_id ??
-      prior?.conversation_id ??
-      found.conversationIds.at(-1) ??
-      (empty ? `first_${requestId}` : undefined);
-    if (!conversation || (!empty && !found.conversationIds.includes(conversation)))
+      prior?.conversation_id ?? found.conversationIds.at(-1) ?? (empty ? `first_${requestId}` : undefined);
+    if (!conversation)
       throw new VaultError("invalid", "Resume an existing conversation or a verified empty checkpoint.");
     const hash = await sha256Hex(JSON.stringify({ id: found.id, requestId, conversation, prompt: input.prompt }));
     if (prior?.request_hash !== undefined && prior.request_hash !== hash)
@@ -103,6 +99,8 @@ export function createRuntimeResume(
       if (!(await store.get(found.id))) throw new VaultError("not_found", "Runtime membership was revoked.");
       return prior.receipt;
     } // Historical accepted outcome, not a new activation.
+    if (!empty && conversation !== found.conversationIds.at(-1))
+      throw new VaultError("conflict", SINGLE_CONVERSATION_GUIDANCE);
     const actor = { userId: caller.userId, orgId: found.orgId };
     if (!prior && found.provider === "modal") await modalEnvironment.validate(actor, found.id);
     if (!sql.transaction) throw new VaultError("unavailable", "Runtime resume requires transactional admission.");
@@ -126,12 +124,15 @@ export function createRuntimeResume(
         !current.reasoningEffort ||
         current.deletedAt ||
         current.credentialId !== found.credentialId ||
-        current.credentialVersion !== found.credentialVersion ||
-        (empty
-          ? current.conversationIds.length !== 0 || Boolean(current.taskPromptId)
-          : !current.conversationIds.includes(conversation))
+        current.credentialVersion !== found.credentialVersion
       )
         throw new VaultError("conflict", "Runtime resume target changed or cannot retain secrets safely.");
+      if (
+        empty
+          ? current.conversationIds.length !== 0 || Boolean(current.taskPromptId)
+          : current.conversationIds.at(-1) !== conversation
+      )
+        throw new VaultError("conflict", SINGLE_CONVERSATION_GUIDANCE);
       const epoch = (
         await tx.query<{ epoch: string; live: boolean }>(
           "select epoch::text,(runtime_hash is not null) as live from public.runtime_enrolments where sandbox_id=$1 for update",

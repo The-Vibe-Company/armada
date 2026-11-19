@@ -55,7 +55,7 @@ by the model-only milestone.
 
 `POST /api/v1/sandbox/send` (MCP `send`) wakes a checkpointed stopped runtime
 through the existing resume path and preserves its absolute expiry. It requires a stable
-`request_id` UUID and the existing `conversation_id`. Only the owner can send;
+`request_id` UUID. Only the owner can send;
 current membership, active pinned account/version, logical expiry and runtime
 epoch are revalidated. Wait for the previous prompt's finished event before
 another send; the runtime performs the final busy check.
@@ -95,7 +95,7 @@ same-current-epoch receipt whose final prefix still matches after stop fencing.
 Owner API `POST /api/v1/sandbox/resume-runtime-v1`:
 
 ```json
-{"id":"SANDBOX_UUID","request_id":"OPERATION_UUID","runtimeVersion":1,"conversation_id":"EXISTING_UUID","prompt":"Continue the previous conversation."}
+{"id":"SANDBOX_UUID","request_id":"OPERATION_UUID","runtimeVersion":1,"prompt":"Continue the previous conversation."}
 ```
 
 This is **one explicit same-VM activation**, never a fork, new sandbox or implicit
@@ -492,7 +492,7 @@ slice changes resumed-turn preparation, not launch.
 Ordinary Boat launches honor the server default selection with or without a
 prompt. An idle runtime launch completes workspace/GitHub, skills, MCP and final
 admission before publishing `ready`, with no conversation or inference. Its first
-normal `send` (omit `conversation_id`) opens one conversation, then follows the
+normal `send` opens one conversation, then follows the
 same account, epoch, activity-lease and durable-command rules as later sends.
 A competing first send cannot create another conversation. Reuse the original
 request ID and identical payload after uncertainty; an accepted replay neither

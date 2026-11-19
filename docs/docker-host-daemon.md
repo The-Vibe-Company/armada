@@ -43,9 +43,9 @@ existing Codex subscription broker are reused; no provider credential is a model
 Defaults pending later owner decisions: host credential has no expiry and is
 revocable; default sandbox TTL is the existing four hours; no disk quota. Ordinary
 owner-trusted Docker only. The historical plain-image preview excludes snapshot
-builds, resume, gVisor and multi-tenancy. That preview admits **one native conversation per sandbox**, with explicit follow-up prompts
-using the returned conversationId. Retries reuse the same request UUID and input;
-a new request without that conversation or for another conversation is refused.
+builds, resume, gVisor and multi-tenancy. Each preview sandbox has one conversation.
+Send follow-up prompts through `sandbox/send` and reuse the same request UUID and
+input when reconciling uncertain delivery.
 Wait for the previous turn's acknowledged finished event before sending a follow-up.
 Unresolved RPC admission blocks new requests; the runtime owns busy-turn refusal.
 
@@ -147,9 +147,8 @@ bun run armada launch --provider docker --org "$ARMADA_ORG" \
   --agent codex --json 'Reply with exactly DOCKER_OK.'
 ```
 
-Normal follow-up and retained stop/resume are available; see
-[the current contract](#normal-follow-up-and-stopresume-1422). The private
-preview's explicit same-conversation follow-up is a separate historical path.
+Normal follow-up and retained stop/resume are described in
+[the current contract](#normal-follow-up-and-stopresume-1422).
 
 ### Repository history for direct launches
 
@@ -399,16 +398,15 @@ authority. Every body has `org`; all except launch have `sandboxId`.
 | `launch` | `requestId`, `hostId`, digest-pinned `image`, `credentialId`, `credentialVersion`; optional `ttlSeconds`, `model`, `reasoningEffort` | 201 private Docker record, initially starting; requestId is sandbox/create ID |
 | `bootstrap` | `requestId` | 202 original bound bootstrap phase; call only after create job completes |
 | `ready` | `requestId` | 202 pending, or 200 ready after real same-epoch health |
-| `prompt` | `requestId`, `text`, optional `conversationId` for a follow-up | 202 pending, or 200 admitted with native receipt; same UUID/text/conversation reconciles |
 | `journal` | optional numeric sequence `cursor`, `limit` 1..100 | 200 events with sequence, cursor, hasMore and saved usage |
 | `get` | none | 200 safe retained metadata/status |
 | `stop`, `delete` | `requestId` | 202 machine job; delete requires confirmed stopped/failed/deleted state |
 | `job` | `requestId` | pending/completed/failed state, or null if absent |
 
-Keep stable UUIDs for launch/bootstrap/health/prompt/cleanup retries. Never generate
+Keep stable UUIDs for launch/bootstrap/health/cleanup retries. Never generate
 replacement operations for an unknown result. Bootstrap retries cannot rotate a
 consumed/live ticket; deployment changes are not upgrades to an admitted operation.
-`ARMADA_DOCKER_PLACEMENT=0` disables new launch/bootstrap/readiness/prompt; keep
+`ARMADA_DOCKER_PLACEMENT=0` disables new launch/bootstrap/readiness; keep
 `ARMADA_DOCKER_HOSTS=1` for retained metadata/journal, cleanup and daemon polling.
 Removing the host flag unmounts both Docker API families; other providers are unaffected.
 
@@ -537,7 +535,7 @@ Expected: binary --help prints usage and exits zero, not a failure message.
 The helper **starts the stopped daemon**, reuses the registration, creates a fresh
 sandbox and sends two prompts in one returned conversation. Only the first prompt
 contains a random DOCKER_MEMORY marker; the second asks it to recall that marker
-without resending it. Require two distinct native prompt IDs, the same conversation
+without resending it. Require two distinct prompt IDs, the same conversation
 ID, both answers and reported tokens in the acknowledged journal. It then confirms
 stop/delete and prints `PASS: same-conversation follow-up recalled marker; both turns
 reported tokens; stop/delete ACKed.` The host/daemon remain for inspection and may
@@ -687,8 +685,8 @@ procedure for that evidence. Coordinator-only: workers must not run this procedu
 ### Normal follow-up and stop/resume (#1422)
 
 With Docker placement and the runtime manifest enabled, `sandbox/send` (MCP `send`)
-accepts `{id, request_id, prompt, conversation_id?}`. Reuse the UUID and identical
-input after uncertain delivery. Omitted conversation selects the retained conversation;
+accepts `{id, request_id, prompt}`. Reuse the UUID and identical input after
+uncertain delivery. The sandbox determines the conversation;
 model and effort stay pinned. Only the sandbox owner can send.
 
 `POST /api/v1/sandbox/resume` accepts `{id, request_id}` after a confirmed stop.

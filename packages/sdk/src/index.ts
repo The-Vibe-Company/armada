@@ -222,7 +222,6 @@ export interface SendInput extends SandboxRef {
   /** The whole serialized request body is limited to 128 KiB; a larger one fails with HTTP 413 before dispatch. */
   prompt: string;
   request_id?: string;
-  conversation_id?: string;
   /** Per-turn override; a Docker sandbox refuses it. */
   model?: string;
   /** Per-turn override; a Docker sandbox refuses it. */
@@ -239,8 +238,6 @@ export interface DockerSendInput extends SandboxRef {
   prompt: string;
   /** Supply it to make a retry replay instead of queuing the prompt again. */
   request_id?: string;
-  /** A lowercase conversation UUID of the sandbox. Default: the latest. */
-  conversation_id?: string;
   model?: never;
   reasoning_effort?: never;
 }

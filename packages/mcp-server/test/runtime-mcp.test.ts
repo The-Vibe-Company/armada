@@ -259,7 +259,6 @@ test.each(["boat", "modal"] as const)(
         id: f.row.id,
         request_id: crypto.randomUUID(),
         runtimeVersion: 1,
-        conversation_id: f.first.conversationId,
         prompt: "first resumed MCP turn",
       });
       const next = x.configuration();
