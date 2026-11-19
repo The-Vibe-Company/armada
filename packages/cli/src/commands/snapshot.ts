@@ -1,4 +1,3 @@
-import { snapshotCommand } from "../run.ts";
 import type { Command } from "./command.ts";
 
 export default {
@@ -188,6 +187,7 @@ Example: armada snapshot size-policy starter --provider modal --file policy.json
   },
   helpWhenBare: true,
   async run(argv, { io, deps }) {
+    const { snapshotCommand } = await import("../run.ts");
     return snapshotCommand(argv, io, deps);
   },
 } satisfies Command;
