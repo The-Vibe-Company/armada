@@ -5,11 +5,15 @@ const org = "00000000-0000-4000-8000-000000000010";
 const id = "00000000-0000-4000-8000-000000002220";
 const options = { serverUrl: "https://api.invalid/mcp", token: "viewer" };
 
+function fakeFetch(handler: (...args: Parameters<typeof fetch>) => ReturnType<typeof fetch>) {
+  return Object.assign(handler, { preconnect: () => {} });
+}
+
 test("inspects redacted trigger metadata without passing signing material to the page", async () => {
   const summary = {
     id,
     templateId: null,
-    poolHarness: "codex",
+    poolHarness: "codex" as const,
     enabled: true,
     ratePerMinute: 25,
     concurrency: 2,
@@ -18,11 +22,11 @@ test("inspects redacted trigger metadata without passing signing material to the
   const control = createInboundTriggerControl(
     {
       ...options,
-      fetch: async (url, init) => {
+      fetch: fakeFetch(async (url, init) => {
         expect(String(url)).toBe(`https://api.invalid/api/v1/triggers?org=${org}`);
         expect(init).toMatchObject({ method: "GET", cache: "no-store", headers: { authorization: "Bearer viewer" } });
         return Response.json({ triggers: [{ ...summary, signingSecret: "hidden", secretEnc: "opaque" }] });
-      },
+      }),
     },
     org,
   );
@@ -36,7 +40,7 @@ test("projects processing state without payload and rejects unknown states", asy
   const control = createInboundTriggerControl(
     {
       ...options,
-      fetch: async () => Response.json({ deliveries: [{ ...delivery, jobState, body: "hidden" }] }),
+      fetch: fakeFetch(async () => Response.json({ deliveries: [{ ...delivery, jobState, body: "hidden" }] })),
     },
     org,
   );
@@ -50,11 +54,11 @@ test("returns the key only from an uncached, org-scoped rotation mutation", asyn
   const control = createInboundTriggerControl(
     {
       ...options,
-      fetch: async (url, init) => {
+      fetch: fakeFetch(async (url, init) => {
         expect(String(url)).toBe(`https://api.invalid/api/v1/triggers/${id}/rotate?org=${org}`);
         expect(init).toMatchObject({ method: "POST", cache: "no-store" });
         return Response.json({ signingSecret });
-      },
+      }),
     },
     org,
   );
@@ -68,11 +72,11 @@ test("accepts the empty disable response and surfaces refused requests", async (
   const control = createInboundTriggerControl(
     {
       ...options,
-      fetch: async (url, init) => {
+      fetch: fakeFetch(async (url, init) => {
         expect(String(url)).toBe(`https://api.invalid/api/v1/triggers/${id}/disable?org=${org}`);
         expect(init?.method).toBe("POST");
         return new Response(null, { status });
-      },
+      }),
     },
     org,
   );
