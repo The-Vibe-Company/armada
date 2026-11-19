@@ -1,4 +1,4 @@
-import { providerRateLimitDetails } from "@armada/core";
+import { MAX_SANDBOX_EXTENSION_TTL_SECONDS, providerRateLimitDetails } from "@armada/core";
 import { GoldenError, isNonMutatingProviderRefusal, ProviderError } from "@armada/core/server";
 import { z } from "zod";
 import { validateProviderResourceObservation } from "../../core/src/resource-validation.ts";
@@ -7,6 +7,7 @@ import type { ControlOptions } from "./control.ts";
 import { measureRequestPhase } from "./request-timing.ts";
 import { summarizeResourceHistory } from "./resource-advice.ts";
 import { sandboxActivity } from "./sandbox-activity.ts";
+import { extendSandbox } from "./sandbox-extend.ts";
 import { ToolApiError } from "./tool-api.ts";
 import { describeToolFailure, ToolError } from "./tools.ts";
 
@@ -15,6 +16,18 @@ const runtimeRequest = z.object({ id, request_id: z.string().uuid(), runtimeVers
 const runtime = z.object({ kind: z.literal("armada"), epoch: z.string() });
 
 export const SANDBOX_REST_CONTRACTS = {
+  "sandbox/resume": {
+    description:
+      "Owner-only. Restarts the same Docker allocation with fresh runtime enrolment, keeping history and the original TTL. Reuse request_id after uncertainty.",
+    input: z.object({ id, request_id: z.string().uuid() }),
+    output: z.object({ id: z.string(), status: z.literal("ready") }),
+  },
+  "sandbox/extend": {
+    description:
+      "Set a later expiry, measured from now. Owner/admin only. Modal extensions must fit inside the current physical machine lifetime; stop and resume for a new physical lifetime.",
+    input: z.object({ id, ttlSeconds: z.number().int().positive().max(MAX_SANDBOX_EXTENSION_TTL_SECONDS) }),
+    output: z.object({ id: z.string(), expiresAt: z.string(), ttlSeconds: z.number().int() }),
+  },
   "sandbox/delete": {
     description:
       "Owner/admin only. Permanently removes provider resources and recovery archives. Stop first. Legacy orchestrator parents and children are refused; ordinary delegated children require a deleted parent.",
@@ -99,18 +112,51 @@ export async function dispatchSandboxRestControl(
     throw new ToolApiError("internal", `Input validation error for ${route}: ${z.prettifyError(result.error)}`);
   }
 
+  function parseControl<T extends z.ZodType>(name: string, schema: T) {
+    const result = schema.safeParse(body);
+    if (result.success) return result.data;
+    const details = result.error.issues.map((issue) => `${issue.message} at ${issue.path.join(".")}`).join("\n");
+    throw new ToolApiError(
+      "internal",
+      `MCP error -32602: Input validation error: Invalid arguments for tool ${name}: ${details}`,
+    );
+  }
+
   async function run() {
     switch (route) {
+      case "sandbox/resume": {
+        const args = parseControl("resume", SANDBOX_REST_CONTRACTS[route].input);
+        const routed = await options.dockerControls?.invoke(caller, "resume", args);
+        if (routed?.handled) return routed.result;
+        throw new ToolError("unsupported", "Normal resume is currently available only for Docker sandboxes.");
+      }
+      case "sandbox/extend": {
+        const args = parseControl("extend", SANDBOX_REST_CONTRACTS[route].input);
+        await data.sandboxes.assertExtensionAllowed?.(args.id).catch((error) => {
+          if (error instanceof GoldenError && ["not_found", "forbidden"].includes(error.code))
+            throw new ToolError(
+              error.code === "forbidden" ? "extension_not_allowed" : "extension_not_found",
+              error.message,
+            );
+          throw error;
+        });
+        const sandbox = await data.sandboxes.get(args.id);
+        if (!sandbox) throw new ToolError("extension_not_found", "Sandbox not found or not accessible.");
+        const provider = await options.providers.resolve(sandbox, { userId: sandbox.ownerId }).catch((error) => {
+          if (error instanceof ProviderError && error.code === "forbidden")
+            throw new ToolError("extension_not_allowed", "You are not allowed to extend this sandbox.");
+          throw error;
+        });
+        return extendSandbox(
+          data.sandboxes,
+          sandbox,
+          provider,
+          args.ttlSeconds,
+          () => options.connections?.renewLifetime?.(provider, sandbox.id) ?? Promise.resolve(),
+        );
+      }
       case "sandbox/delete": {
-        const input = SANDBOX_REST_CONTRACTS[route].input.safeParse(body);
-        if (!input.success) {
-          const details = input.error.issues.map((issue) => `${issue.message} at ${issue.path.join(".")}`).join("\n");
-          throw new ToolApiError(
-            "internal",
-            `MCP error -32602: Input validation error: Invalid arguments for tool delete: ${details}`,
-          );
-        }
-        const args = input.data;
+        const args = parseControl("delete", SANDBOX_REST_CONTRACTS[route].input);
         const routed = await options.dockerControls?.invoke(caller, "delete", args);
         if (routed?.handled) return routed.result;
         if (!data.sandboxes.assertDeletionAllowed)

@@ -24,7 +24,6 @@ import {
   type LaunchStores,
   launchSandbox,
   MAX_LAUNCH_TTL_SECONDS,
-  MAX_SANDBOX_EXTENSION_TTL_SECONDS,
   type MemberRole,
   MODEL_CATALOG,
   PROVIDER_LIMITS,
@@ -59,7 +58,6 @@ import type { RuntimeFollowup } from "./runtime-followup.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
 import { appendConversation, sandboxActivity } from "./sandbox-activity.ts";
 import { sandboxControlRefusal } from "./sandbox-control-refusal.ts";
-import { extendSandbox } from "./sandbox-extend.ts";
 import {
   collectSandboxUsage,
   isStatusReadFenced,
@@ -1168,20 +1166,6 @@ export function createArmadaServer(context: ToolContext, version: string, option
     },
   );
 
-  tool(
-    "resume",
-    {
-      title: "Resume a stopped Docker sandbox",
-      description:
-        "Owner-only. Restarts the same Docker allocation with fresh runtime enrolment, keeping history and the original TTL. Reuse request_id after uncertainty.",
-      input: { id, request_id: z.string().uuid() },
-      output: { id: z.string(), status: z.literal("ready") },
-    },
-    async () => {
-      throw new ToolError("unsupported", "Normal resume is currently available only for Docker sandboxes.");
-    },
-  );
-
   async function sendSandbox(args: import("./runtime-followup.ts").RuntimeFollowupInput) {
     if (context.accountTurns) {
       const queued = await context.accountTurns.accept(caller, args);
@@ -1614,41 +1598,6 @@ export function createArmadaServer(context: ToolContext, version: string, option
         },
         { deadlineMs: ((args.timeout_seconds ?? 120) + 60) * 1000 },
       ).catch((error) => publicationFailure(error, acknowledged));
-    },
-  );
-
-  tool(
-    "extend",
-    {
-      title: "Extend a sandbox lifetime",
-      description:
-        "Set a later expiry, measured from now. Owner/admin only. Modal extensions must fit inside the current physical machine lifetime; stop and resume for a new physical lifetime.",
-      input: { id, ttl_seconds: z.number().int().positive().max(MAX_SANDBOX_EXTENSION_TTL_SECONDS) },
-      output: { id: z.string(), expiresAt: z.string(), ttlSeconds: z.number().int() },
-    },
-    async (args) => {
-      await data.sandboxes.assertExtensionAllowed?.(args.id).catch((error) => {
-        if (error instanceof GoldenError && ["not_found", "forbidden"].includes(error.code))
-          throw new ToolError(
-            error.code === "forbidden" ? "extension_not_allowed" : "extension_not_found",
-            error.message,
-          );
-        throw error;
-      });
-      const sandbox = await data.sandboxes.get(args.id);
-      if (!sandbox) throw new ToolError("extension_not_found", "Sandbox not found or not accessible.");
-      const provider = await (context.deletionProvider?.(sandbox) ?? context.provider(sandbox)).catch((error) => {
-        if (error instanceof ProviderError && error.code === "forbidden")
-          throw new ToolError("extension_not_allowed", "You are not allowed to extend this sandbox.");
-        throw error;
-      });
-      return extendSandbox(
-        data.sandboxes,
-        sandbox,
-        provider,
-        args.ttl_seconds,
-        () => context.connections?.renewLifetime?.(provider, sandbox.id) ?? Promise.resolve(),
-      );
     },
   );
 
