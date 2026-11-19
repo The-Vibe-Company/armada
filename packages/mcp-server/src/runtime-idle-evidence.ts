@@ -1,9 +1,17 @@
 import { type AgentEvent, decryptSecret, encryptSecret, isFinalPromptStatus, type Sql } from "@armada/core/server";
 
-export function unsettledRuntimeCommands(sandboxId: string, generation: string) {
+export function unsettledRuntimeCommands(sandboxId: string, generation: string, dockerHostId?: string) {
+  const issuerFence = dockerHostId
+    ? `and exists(select 1 from public.docker_hosts h
+      join public.members m on m.org_id=h.org_id and m.user_id=h.owner_id
+      join public.mcp_actor_epochs e on e.org_id=m.org_id and e.user_id=m.user_id
+      where h.id=${dockerHostId} and h.revoked_at is null
+        and r.docker_issuer_fence=h.owner_id::text||':'||e.epoch::text)`
+    : "";
   return `select 1 from public.runtime_enrolments r
     join public.runtime_commands c on c.sandbox_id=r.sandbox_id and c.epoch=r.epoch
     where r.sandbox_id=${sandboxId} and r.lifecycle_generation=${generation} and r.runtime_hash is not null
+      ${issuerFence}
       and ((c.result_enc is null and not starts_with(c.request_id,'outputs_'))
         or (c.accepted_prompt_id is not null and not exists(
           select 1 from public.runtime_idle_turns t

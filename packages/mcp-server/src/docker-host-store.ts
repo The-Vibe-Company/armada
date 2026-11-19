@@ -1017,9 +1017,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
              union all
              select 1 from public.docker_queued_prompts where sandbox_id=$1 and status in ('queued','dispatching')
              union all
-             ${unsettledRuntimeCommands("$1", "$2")}
+             ${unsettledRuntimeCommands("$1", "$2", "$3")}
              limit 1`,
-            [sandboxId, row.lifecycle_generation],
+            [sandboxId, row.lifecycle_generation, host.id],
           );
           if (pendingTurns.rows.length) deny();
         }

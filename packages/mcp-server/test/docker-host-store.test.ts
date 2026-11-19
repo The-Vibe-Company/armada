@@ -522,7 +522,7 @@ test("bound bootstrap requires ACKed creation and the exact pending capability, 
   await denied(store.enqueueSandbox(a.owner, a.sandboxId, { ...selection, requestId: randomUUID() }));
 });
 
-test.each(["account", "docker", "runtime", "revoked runtime"] as const)(
+test.each(["account", "docker", "runtime", "revoked runtime", "revoked issuer"] as const)(
   "idle-only stop checks %s work",
   async (queue) => {
     const db = database();
@@ -551,12 +551,12 @@ test.each(["account", "docker", "runtime", "revoked runtime"] as const)(
         [a.sandboxId, turn, randomUUID(), "a".repeat(64), sealed],
       );
     }
-    if (queue === "runtime" || queue === "revoked runtime") {
+    if (queue === "runtime" || queue === "revoked runtime" || queue === "revoked issuer") {
       await db.query(
-        `insert into public.runtime_enrolments(sandbox_id,lifecycle_generation,epoch,runtime_hash)
-       select id,lifecycle_generation,1,encode(sha256(uuid_send(id)),'hex')
+        `insert into public.runtime_enrolments(sandbox_id,lifecycle_generation,epoch,runtime_hash,docker_issuer_fence)
+       select id,lifecycle_generation,1,encode(sha256(uuid_send(id)),'hex'),$2
        from public.sandboxes where id=$1`,
-        [a.sandboxId],
+        [a.sandboxId, `${a.actor.userId}:1`],
       );
       await db.query(
         "insert into public.runtime_commands(sandbox_id,request_id,epoch,request_enc) values($1,$2,1,$3)",
@@ -566,6 +566,14 @@ test.each(["account", "docker", "runtime", "revoked runtime"] as const)(
     const stop = { requestId: randomUUID(), operation: "stop" as const };
     if (queue === "revoked runtime") {
       await db.query("update public.runtime_enrolments set runtime_hash=null where sandbox_id=$1", [a.sandboxId]);
+      await store.enqueueSandbox(a.owner, a.sandboxId, { ...stop, onlyIfIdle: true });
+      return;
+    }
+    if (queue === "revoked issuer") {
+      await db.query("update public.mcp_actor_epochs set epoch=epoch+1 where org_id=$1 and user_id=$2", [
+        a.actor.orgId,
+        a.actor.userId,
+      ]);
       await store.enqueueSandbox(a.owner, a.sandboxId, { ...stop, onlyIfIdle: true });
       return;
     }
