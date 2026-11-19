@@ -59,6 +59,7 @@ export interface ControlOptions {
   runtimeGitHub?: RuntimeGitHub;
   runtimeResume?: RuntimeResume;
   runtimeCheckpoint?: RuntimeCheckpoint;
+  runtimeStopCheckpoint?: import("./tools.ts").ToolContext["runtimeStopCheckpoint"];
   runtimeSend?: RuntimeFollowup;
   accountTurns?: import("./account-turn-queue.ts").AccountTurnQueue;
   modalRuntimeHostFor?: (target: import("@armada/core").ProviderTarget, caller: Caller) => Promise<Provider>;

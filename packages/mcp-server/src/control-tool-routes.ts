@@ -53,6 +53,7 @@ export async function sandboxToolContext({ route, caller, body, options }: Contr
       : {}),
     ...(options.dockerControls ? { dockerControls: options.dockerControls } : {}),
     ...(options.runtimeSend ? { runtimeSend: options.runtimeSend } : {}),
+    ...(options.runtimeStopCheckpoint ? { runtimeStopCheckpoint: options.runtimeStopCheckpoint } : {}),
     ...(options.accountTurns ? { accountTurns: options.accountTurns } : {}),
     ...(options.connections ? { connections: options.connections } : {}),
     data: listRef !== undefined ? options.scopedSandboxData!(scopedCaller, listRef) : options.data(scopedCaller),
