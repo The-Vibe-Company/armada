@@ -95,23 +95,37 @@ describe.each([
     const request = { id: f.row.id, request_id: crypto.randomUUID(), prompt: "continue the previous conversation" };
     const before = await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id);
     const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, undefined, resume);
+    const controls = {
+      authStore: createMemoryAuthStore(),
+      supabase: { supabaseUrl: "https://unused.test", anonKey: "fixture" },
+      store: createSqlVaultStore(f.sql),
+      encryptionKey: ENCRYPTION_KEY,
+      data: createSqlData(f.sql),
+      providers: {
+        async resolve() {
+          throw Error("Runtime resume uses its own placement");
+        },
+      },
+      runtimeResume: resume,
+    };
+    await expect(
+      dispatchControlCommand(
+        "sandbox/resume-runtime-v1",
+        f.caller,
+        { ...request, runtimeVersion: 1, conversation_id: f.first.conversationId },
+        controls,
+      ),
+    ).rejects.toMatchObject({
+      code: "conflict",
+      status: 409,
+      message: expect.stringContaining("Launch another sandbox"),
+    });
+    expect(activations).toBe(0);
     const result = (await dispatchControlCommand(
       "sandbox/resume-runtime-v1",
       f.caller,
       { ...request, runtimeVersion: 1 },
-      {
-        authStore: createMemoryAuthStore(),
-        supabase: { supabaseUrl: "https://unused.test", anonKey: "fixture" },
-        store: createSqlVaultStore(f.sql),
-        encryptionKey: ENCRYPTION_KEY,
-        data: createSqlData(f.sql),
-        providers: {
-          async resolve() {
-            throw Error("Runtime resume uses its own placement");
-          },
-        },
-        runtimeResume: resume,
-      },
+      controls,
     )) as Awaited<ReturnType<typeof resume>>;
     expect(result).toMatchObject({
       resumed: true,

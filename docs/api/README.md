@@ -40,7 +40,7 @@ configured Codex account:
 ```
 
 Omit `prompt` to launch without starting a turn. The first
-`sandbox/send` then opens the conversation, so omit `conversation_id` on it. Save the returned Armada
+`sandbox/send` then opens the conversation. Save the returned Armada
 sandbox ID from `sandbox.id` for subsequent calls. Ordinary cloud launches
 inherit snapshot visibility. A private snapshot is visible to its owner.
 
@@ -211,16 +211,16 @@ viewer messages well below 128 KiB.
 | `sandbox/list` | None, send `{}` | `org`, `externalRef`, `harness`, `golden` (snapshot UUID), `owner` (UUID or `me`), `status` (nonempty array), `page`, `limit` | `sandboxes`, `total`, `page`, `limit`, `hasMore`, `nextPage`. Page starts at 1 and is capped at 1,000,000. Default limit 25, maximum 200. Deleted rows are excluded by default. |
 | `sandbox/status` | `id` | `prompt_id`, `recorded` (boolean) | Sandbox status and turn details. Omit `prompt_id` for the latest turn. With `recorded: true` use stored state. |
 | `sandbox/wait` | `id` | `prompt_id`, `timeout_seconds` (integer 0–600, default 60) | Status with `timedOut`. Call again to keep waiting. |
-| `sandbox/send` | `id`, `prompt` | `request_id` (UUID), `conversation_id`, `model` and `reasoning_effort`, subject to the rules below | Includes `promptId`, `conversationId` and the send status, which can be `queued`. A queued answer also includes `requestId`. |
+| `sandbox/send` | `id`, `prompt` | `request_id` (UUID), `model` and `reasoning_effort`, subject to the rules below | Includes `promptId`, `conversationId` and the send status, which can be `queued`. A queued answer also includes `requestId`. |
 | `sandbox/stop` | `id` | `request_id` (UUID), `only_if_idle` (boolean) | `id`, `status` and an optional `preservationNote`. |
 
 Send rules depend on the sandbox:
 
-| Sandbox | `request_id` | `conversation_id` | `model`, `reasoning_effort` |
-| --- | --- | --- | --- |
-| Native Boat or Modal | Optional | Optional | Optional, for this turn only |
-| Runtime Boat or Modal, including OpenCode | Required without a pinned model account. Otherwise Armada generates one when omitted. | Optional. Omit it to continue the latest conversation. On an idle sandbox with no turn yet, omitting it opens the first conversation. A supplied ID must name an existing conversation of this sandbox. | Refused. Boat accepts values equal to the launch values. |
-| Docker | Armada generates one when omitted, because every Docker sandbox has a pinned model account | Optional. Omit it to continue the latest recorded conversation, or the launch conversation when none is recorded yet. A supplied ID must name a conversation already recorded for this sandbox. | Refused |
+| Sandbox | `request_id` | `model`, `reasoning_effort` |
+| --- | --- | --- |
+| Native Boat or Modal | Optional | Optional, for this turn only |
+| Runtime Boat or Modal, including OpenCode | Required without a pinned model account. Otherwise Armada generates one when omitted. | Refused. Boat accepts values equal to the launch values. |
+| Docker | Armada generates one when omitted, because every Docker sandbox has a pinned model account | Refused |
 
 Before the queue or the provider sees a send, Armada checks the sandbox, in
 this order:
@@ -248,11 +248,12 @@ this order:
    instead when check 2 or 3 fails first.
    Send with a service token created by the sandbox owner.
 
-Admission for a new send returns HTTP 409 `conflict` when `conversation_id`
-names anything other than the sandbox's current conversation. Omit the field
-to open or continue the sandbox's conversation. Launch another sandbox for a
-separate conversation. An identical retry of an admitted account-queued send
-can still retrieve its original receipt after the current conversation changes.
+Send opens or continues the sandbox's conversation. Send and runtime resume
+refuse conversation selectors with HTTP 409 `conflict`. Launch another sandbox
+for a separate conversation. An identical retry of an admitted account-queued
+send can still retrieve its original receipt. For a send originally submitted
+with a selector, use `sandbox/status` with its original request UUID as
+`prompt_id` to reconcile the outcome.
 
 Sends that pass these checks to a sandbox with a pinned model account, which
 includes every Docker sandbox, then pass through the account turn queue. For runtime and Docker
@@ -263,8 +264,7 @@ Docker launch is still `starting`. It also returns 409 `conflict` for a reused
 `request_id` with different input, or for one whose queued send has failed.
 
 An admitted send returns `queued` with its `requestId`. Until the conversation
-is recorded, the returned `conversationId` is a placeholder. Omit
-`conversation_id` instead of sending the placeholder back. Armada dispatches
+is recorded, the returned `conversationId` is a placeholder. Armada dispatches
 the prompt after earlier prompts for the sandbox finish. Docker applies its
 own checks at dispatch, and a prompt rejected there is marked failed. Call
 `sandbox/status` with the `requestId` as `prompt_id` to follow a queued send.

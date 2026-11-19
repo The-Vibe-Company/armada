@@ -44,6 +44,7 @@ export function createDockerNormalSend(
         docker_snapshot_id?: string | null;
       },
       wake?: () => Promise<typeof row>,
+      queuedConversationId?: string,
     ) {
       if (!options.enabled) throw failure("unavailable", "Docker send is not enabled.");
       if (row.owner_id !== caller.userId) throw failure("conflict", "Only the Docker sandbox owner can send prompts.");
@@ -57,7 +58,6 @@ export function createDockerNormalSend(
         const queued = await createDockerQueuedPrompts(sql, key).accept(caller, row.id, row.org_id, {
           request_id: input.request_id,
           prompt: input.prompt,
-          ...(input.conversation_id === undefined ? {} : { conversation_id: input.conversation_id }),
         });
         if (queued) return queued;
         const current = (
@@ -99,7 +99,7 @@ export function createDockerNormalSend(
           throw failure("conflict", "Docker sandbox resume is still pending.");
       }
       await options.prepareMcp?.(caller, row.id);
-      let conversationId = input.conversation_id ?? row.conversation_ids.at(-1);
+      let conversationId = queuedConversationId ?? row.conversation_ids.at(-1);
       if (conversationId === undefined && !previous) {
         const launch = (
           await sql.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
@@ -114,8 +114,7 @@ export function createDockerNormalSend(
       }
       // Reconcile durable admission without requiring GitHub to be healthy again.
       // runtime.prompt still validates exact input, current owner and epoch.
-      if (input.conversation_id === undefined && previous)
-        conversationId = JSON.parse(await decryptSecret(previous.request_enc, key)).input.conversationId;
+      if (previous) conversationId = JSON.parse(await decryptSecret(previous.request_enc, key)).input.conversationId;
       if (!previous) {
         await createDockerLaunchEnvironment(sql, key, clock)(caller, row.id);
         await options.github?.prepareTurn(caller, row.id);

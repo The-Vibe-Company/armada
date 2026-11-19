@@ -9,7 +9,6 @@ const VALUE = new Set([
   "--idempotency-key",
   "--connections",
   "--visibility",
-  "--conversation",
   "--cwd",
   "--prompt-id",
   "--timeout",

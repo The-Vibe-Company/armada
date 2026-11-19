@@ -184,6 +184,8 @@ and confirmed recovery first. For direct API callers, use
 For resource advice and preserved archives, use `armada advice SANDBOX --json`
 and `armada recovery SANDBOX`. Explicit runtime checkpoint and resume use the
 owner REST routes `sandbox/checkpoint-runtime-v1` and `sandbox/resume-runtime-v1`.
+Send and runtime resume select the conversation from the sandbox ID. Launch another
+sandbox for a separate conversation.
 
 Read [failure and recovery](references/recovery.md) before recovering stopped
 machines or unpushed work. One authorized armada send to a retained stopped

@@ -121,8 +121,8 @@ test("queued sends recheck actor revocation without dispatching or reserving a s
   expect((await db.query("select * from account_agent_reservations")).rows).toEqual([]);
 });
 
-test("historical conversation sends can replay an admitted receipt without admitting another turn", async () => {
-  const input = { id: ids[0]!, request_id: requests[0]!, prompt: "Original instruction", conversation_id: "history" };
+test("send replay keeps the original receipt while new sends target the current conversation", async () => {
+  const input = { id: ids[0]!, request_id: requests[0]!, prompt: "Original instruction" };
   const receipt = { id: input.id, promptId: "original_turn", conversationId: "history", status: "running" };
   await queue.accept(caller, input);
   queue.setDispatch(async () => receipt);
@@ -131,9 +131,8 @@ test("historical conversation sends can replay an admitted receipt without admit
   await db.query("update sandboxes set conversation_ids=array['history','current'] where id=$1", [input.id]);
   try {
     await expect(queue.accept(caller, input)).resolves.toMatchObject(receipt);
-    await expect(queue.accept(caller, { ...input, request_id: requests[1]! })).rejects.toMatchObject({
-      code: "conflict",
-      message: expect.stringContaining("Launch another sandbox"),
+    await expect(queue.accept(caller, { ...input, request_id: requests[1]! })).resolves.toMatchObject({
+      conversationId: "current",
     });
   } finally {
     await db.query("update sandboxes set conversation_ids=array['history'] where id=$1", [input.id]);

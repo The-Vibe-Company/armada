@@ -82,10 +82,18 @@ export class ToolApiError extends Error {
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { INTERNAL_FAILURE_MESSAGE } from "./control-response.ts";
+import { refuseConversationSelector, SINGLE_CONVERSATION_GUIDANCE } from "./sandbox-conversation.ts";
 import { createRestToolServer, type ToolContext } from "./tools.ts";
 
 /** HTTP and MCP run precisely the same validated operations and authorization context. */
 export async function callSharedTool(context: ToolContext, name: string, args: Record<string, unknown>) {
+  if (name === "send") {
+    try {
+      refuseConversationSelector(args);
+    } catch {
+      throw new ToolApiError("conflict", SINGLE_CONVERSATION_GUIDANCE);
+    }
+  }
   if ((name === "steer" || name === "interrupt") && Object.hasOwn(args, "conversation_id"))
     throw new ToolApiError("invalid_request", "Turn controls target the sandbox by ID. Omit conversation_id.");
   const measure: NonNullable<ToolContext["measure"]> = context.measure ?? ((_phase, work) => work());

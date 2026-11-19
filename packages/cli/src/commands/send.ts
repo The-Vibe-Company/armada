@@ -6,7 +6,7 @@ export default sandboxOperation({
   usage: `  armada send|steer|exec <sandbox-id> <text-or-command> [--model ID] [--reasoning-effort LEVEL]
                                            send accepts --request-id UUID to reuse an uncertain runtime instruction.
                                            Full-account follow-up sends can queue FIFO; queued is not completed.`,
-  help: `Usage: armada send <sandbox-id> <text> [--conversation <id>] [--model <id>] [--reasoning-effort <level>]
+  help: `Usage: armada send <sandbox-id> <text> [--model <id>] [--reasoning-effort <level>]
   [--request-id UUID] [--org UUID] [--json]
 Send a new instruction after Armada login and server authorization.
 Use steer to redirect a running turn. Retained stopped sandboxes can wake on send.

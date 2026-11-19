@@ -1,5 +1,5 @@
 // PR typechecking resolves the workspace source. The npm smoke resolves the installed declarations.
-import { Armada, type FailureCode } from "@the-vibe-company/armada-sdk";
+import { Armada, type DockerSendInput, type FailureCode, type SendInput } from "@the-vibe-company/armada-sdk";
 
 const code: FailureCode = "outcome_unknown";
 
@@ -29,6 +29,10 @@ type Assert<T extends true> = T;
 
 export type LogsInputContract = Assert<
   Equal<Extract<"conversationId" | "conversation_id", keyof Parameters<Armada["logs"]>[0]>, never>
+>;
+
+export type SendInputContract = Assert<
+  Equal<Extract<"conversationId" | "conversation_id", keyof SendInput | keyof DockerSendInput>, never>
 >;
 
 export type GoldenReceiptContract = Assert<
