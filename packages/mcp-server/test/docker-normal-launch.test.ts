@@ -503,6 +503,12 @@ test("an initial actor epoch reserves a CLI-session Docker launch without weaken
 test("normal launch drives create, bootstrap, health and one first prompt, seals its claim and replays current metadata", async () => {
   const db = database();
   const f = await fixture();
+  const vault = createSqlVaultStore(sql);
+  await vault.setAgentDefault!(f.actor.userId, {
+    harness: "codex",
+    credentialId: f.body.credentialId,
+    model: "gpt-6-astra",
+  });
   const result = await f.service().launch(f.caller, f.body);
   expect(result).toMatchObject({
     sandbox: {
@@ -538,7 +544,7 @@ test("normal launch drives create, bootstrap, health and one first prompt, seals
   });
   expect(result.sandbox.createdAt).toMatch(/^\d{4}-/);
   expect(result.expiresAt).toBe(result.sandbox.expiresAt as string);
-  expect(result.sandbox.model).toBeString();
+  expect(result.sandbox.model).toBe("gpt-6-astra");
   expect(result.sandbox.reasoningEffort).toBeString();
   expect(await counts(f)).toEqual({ sandboxes: 1, claims: 1, jobs: 2, commands: 4 });
   expect(JSON.stringify(f.jobs)).not.toContain(f.body.prompt);
@@ -569,6 +575,15 @@ test("normal launch drives create, bootstrap, health and one first prompt, seals
   ]) {
     await rejected(f.service().launch(f.caller, { ...f.body, ...change }), "conflict");
   }
+  await vault.setAgentDefault!(f.actor.userId, {
+    harness: "codex",
+    credentialId: f.body.credentialId,
+    model: "gpt-6.1-sol",
+  });
+  expect(await f.service().launch(f.caller, f.body)).toMatchObject({
+    sandbox: { id: result.sandbox.id, model: "gpt-6-astra" },
+    promptId: result.promptId,
+  });
   expect(f.resolutions()).toBe(1);
   const cleanup = createDockerSandboxControls(sql, key, { clock: f.clock });
   await cleanup.invoke(f.caller, "stop", { id: f.body.requestId });
@@ -1180,28 +1195,70 @@ test("the normal HTTP route accepts the dashboard body and returns a launched sa
       status: "finished",
     },
   ];
-  const journal = await createRuntimeEvents(authority, key).route(
-    new Request("https://armada.example/api/runtime/events", {
-      method: "POST",
-      headers: { authorization: `Bearer ${session.runtimeToken}`, "x-armada-runtime-epoch": session.epoch },
-      body: JSON.stringify({
-        sandboxId: f.body.requestId,
-        generation: session.epoch,
-        events: events.map((event, index) => ({ sequence: index + 1, event })),
+  const scope = { org: f.actor.orgId };
+  const complete = (batch: AgentEvent[], sequence: number) =>
+    createRuntimeEvents(authority, key).route(
+      new Request("https://armada.example/api/runtime/events", {
+        method: "POST",
+        headers: { authorization: `Bearer ${session.runtimeToken}`, "x-armada-runtime-epoch": session.epoch },
+        body: JSON.stringify({
+          sandboxId: f.body.requestId,
+          generation: session.epoch,
+          events: batch.map((event, index) => ({ sequence: sequence + index, event })),
+        }),
       }),
+    );
+  await sql.query("update runtime_commands set accepted_prompt_id=null where sandbox_id=$1", [f.body.requestId]);
+  expect(await (await complete(events.slice(0, 2), 1))?.json()).toEqual({ acknowledgedSequence: 2 });
+  expect(await post("sandbox/status", { ...scope, id: f.body.requestId })).toMatchObject({ status: "running" });
+  const busyRequest = randomUUID();
+  expect(
+    await createDockerRuntimeLifecycle(sql, key, { enabled: true }).prompt(f.actor, f.body.requestId, {
+      requestId: busyRequest,
+      text: "Competing prompt",
+      conversationId: f.receipt.conversationId,
     }),
-  );
+  ).toMatchObject({ state: "pending" });
+  const competing = createRuntimeCommands(authority, key);
+  const rejectBusy = () =>
+    competing.complete(session.runtimeToken, session.epoch, {
+      epoch: session.epoch,
+      requestId: `docker_prompt_${busyRequest}`,
+      status: 409,
+      body: { version: 1, requestId: `docker_prompt_${busyRequest}`, error: "conversation_busy" },
+    });
+  const journal = await complete(events.slice(2), 3);
   expect(journal?.status).toBe(200);
   expect(await journal?.json()).toEqual({ acknowledgedSequence: 3 });
-  const scope = { org: f.actor.orgId };
-  const listed = (await post("sandbox/list", scope)) as { sandboxes: SandboxListMetadata[] };
+  expect(await post("sandbox/status", { ...scope, id: f.body.requestId })).toMatchObject({ status: "running" });
+  await database().exec(
+    "alter table sandbox_transitions add constraint test_reject_settlement check (code <> 'runtime_turn_settled') not valid",
+  );
+  try {
+    await expect(rejectBusy()).rejects.toThrow();
+    expect(await competing.result(f.actor.userId, f.body.requestId, `docker_prompt_${busyRequest}`)).toEqual({
+      state: "pending",
+    });
+  } finally {
+    await database().exec("alter table sandbox_transitions drop constraint test_reject_settlement");
+  }
+  await rejectBusy();
+  const listed = (await post("sandbox/list", { ...scope, status: ["ready"] })) as {
+    sandboxes: SandboxListMetadata[];
+  };
   expect(listed.sandboxes).toHaveLength(1);
-  expect(listed.sandboxes[0]).toMatchObject({ id: f.body.requestId, provider: "docker", boatId: null });
+  expect(listed.sandboxes[0]).toMatchObject({
+    id: f.body.requestId,
+    provider: "docker",
+    boatId: null,
+    status: "ready",
+  });
   const status = (await post("sandbox/status", { ...scope, id: f.body.requestId })) as DockerSandboxStatus;
   expect(status).toMatchObject({
     id: f.body.requestId,
     provider: "docker",
     golden: null,
+    status: "ready",
     settled: true,
     prompt: { promptId: f.receipt.promptId, state: "finished" },
   });
@@ -1230,28 +1287,43 @@ test("the normal HTTP route accepts the dashboard body and returns a launched sa
 test("normal launch claims remain service-only even for their owner's user JWT", async () => {
   const db = database();
   const f = await fixture();
-  await f.service().launch(f.caller, f.body);
-  for (const role of ["anon", "authenticated"]) {
-    for (const table of ["docker_launch_requests", "docker_queued_prompts"]) {
-      await db.transaction(async (tx) => {
-        await tx.query(`select set_config('request.jwt.claim.sub',$1,true)`, [f.actor.userId]);
-        await tx.exec(`set local role ${role}`);
-        const grants = (
-          await tx.query<{ table_access: boolean; column_access: boolean }>(
-            `select has_table_privilege(current_user,'public.${table}','SELECT,INSERT,UPDATE,DELETE,TRUNCATE') as table_access,
-         has_any_column_privilege(current_user,'public.${table}','SELECT,INSERT,UPDATE,REFERENCES') as column_access`,
-          )
-        ).rows[0];
-        expect(grants).toEqual({ table_access: false, column_access: false });
-      });
-      await expect(
-        db.transaction(async (tx) => {
+  const launch = f.service(sql, true, 10_000, officialImage, true);
+  const controls = createDockerSandboxControls(sql, key, {
+    clock: f.clock,
+    send: createDockerNormalSend(sql, key, { enabled: true, clock: f.clock }),
+  });
+  await launch.launch(f.caller, f.body);
+  try {
+    const queued = await controls.invoke(f.caller, "send", {
+      id: f.body.requestId,
+      request_id: randomUUID(),
+      prompt: "Queue a reply",
+    });
+    expect(queued).toMatchObject({ handled: true, result: { promptId: expect.any(String) } });
+    for (const role of ["anon", "authenticated"]) {
+      for (const table of ["docker_launch_requests", "docker_queued_prompts"]) {
+        await db.transaction(async (tx) => {
           await tx.query(`select set_config('request.jwt.claim.sub',$1,true)`, [f.actor.userId]);
           await tx.exec(`set local role ${role}`);
-          await tx.query(`select * from public.${table} where sandbox_id=$1`, [f.body.requestId]);
-        }),
-      ).rejects.toThrow("permission denied");
+          const grants = (
+            await tx.query<{ table_access: boolean; column_access: boolean }>(
+              `select has_table_privilege(current_user,'public.${table}','SELECT,INSERT,UPDATE,DELETE,TRUNCATE') as table_access,
+           has_any_column_privilege(current_user,'public.${table}','SELECT,INSERT,UPDATE,REFERENCES') as column_access`,
+            )
+          ).rows[0];
+          expect(grants).toEqual({ table_access: false, column_access: false });
+        });
+        await expect(
+          db.transaction(async (tx) => {
+            await tx.query(`select set_config('request.jwt.claim.sub',$1,true)`, [f.actor.userId]);
+            await tx.exec(`set local role ${role}`);
+            await tx.query(`select * from public.${table} where sandbox_id=$1`, [f.body.requestId]);
+          }),
+        ).rejects.toThrow("permission denied");
+      }
     }
+  } finally {
+    await controls.invoke(f.caller, "stop", { id: f.body.requestId });
   }
 });
 
@@ -3766,15 +3838,22 @@ test("Docker normal launch uses the saved model unless explicitly overridden", a
       credentialId: f.body.credentialId,
       model: "gpt-6-astra",
     });
-    const result = await f.service().launch(f.caller, { ...f.body, ...(explicit ? { model: "gpt-6.1-terra" } : {}) });
-    expect(result.sandbox.model).toBe(explicit ? "gpt-6.1-terra" : "gpt-6-astra");
-    await createSqlVaultStore(sql).setAgentDefault!(f.actor.userId, {
-      harness: "codex",
-      credentialId: null,
-      model: "gpt-6.1-sol",
-    });
-    const replay = await f.service().launch(f.caller, { ...f.body, ...(explicit ? { model: "gpt-6.1-terra" } : {}) });
-    expect(replay.sandbox.model).toBe(result.sandbox.model);
+    const launch = f.service(sql, true, 10_000, officialImage, true);
+    const body = { ...f.body, ...(explicit ? { model: "gpt-6.1-terra" } : {}) };
+    const result = await launch.launch(f.caller, body);
+    try {
+      expect(result.sandbox).toMatchObject({ status: "starting", model: explicit ? "gpt-6.1-terra" : "gpt-6-astra" });
+      await createSqlVaultStore(sql).setAgentDefault!(f.actor.userId, {
+        harness: "codex",
+        credentialId: null,
+        model: "gpt-6.1-sol",
+      });
+      const replay = await launch.launch(f.caller, body);
+      expect(replay.sandbox).toMatchObject({ id: result.sandbox.id, model: result.sandbox.model });
+    } finally {
+      const controls = createDockerSandboxControls(sql, key, { clock: f.clock });
+      await controls.invoke(f.caller, "stop", { id: f.body.requestId });
+    }
   }
 });
 

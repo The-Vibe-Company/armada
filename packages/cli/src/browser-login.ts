@@ -8,7 +8,6 @@ export interface SessionDto {
   expiresAt: string;
 }
 
-/** Browser PKCE login through Armada only; provider details never enter the CLI. */
 export async function browserLogin(options: {
   origin?: string;
   provider: "github" | "google";

@@ -65,7 +65,7 @@ function parentTurn() {
   return { input, launch, messageKey, stopKey, answer, noAccess };
 }
 
-test("scripts scoped launch, message, read and stop using the actual child receipt and answer", async () => {
+test("scripts scoped launch, message, read and stop from Codex runtime receipts", async () => {
   const send = await client();
   const { input, launch, messageKey, stopKey, answer } = parentTurn();
   const sandboxId = crypto.randomUUID();
@@ -82,7 +82,7 @@ test("scripts scoped launch, message, read and stop using the actual child recei
     input.push(call, {
       type: "function_call_output",
       call_id: call.call_id,
-      output: JSON.stringify({ result }),
+      output: `Wall time: 0.0024 seconds\nOutput:\n${JSON.stringify({ result })}`,
     });
   }
 
@@ -91,8 +91,8 @@ test("scripts scoped launch, message, read and stop using the actual child recei
   expect(JSON.parse(launchCall.arguments)).toEqual(launch);
   receipt(launchCall, { state: "succeeded", sandboxId });
   const message = await next();
+  expect(message).toMatchObject({ type: "function_call", namespace, name: "message" });
   const messageArgs = JSON.parse(message.arguments);
-  expect(message.name).toBe("message");
   expect(messageArgs).toMatchObject({ sandboxId, idempotencyKey: messageKey });
   const child = await (await send({ input: messageArgs.text }))?.json();
   expect(child).toMatchObject({ output: [{ content: [{ text: answer }] }] });

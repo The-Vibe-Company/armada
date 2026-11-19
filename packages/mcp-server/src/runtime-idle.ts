@@ -5,6 +5,7 @@ import { mergedWorkProof } from "./merged-work.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import { expiredOutputRead } from "./runtime-commands.ts";
 import { projectRuntimeIdle } from "./runtime-idle-evidence.ts";
+import { settleRuntimeTurn } from "./sandbox-lifecycle.ts";
 
 /** Unknown/truncated history cannot prove idle. Detached processes follow the timer,
  * not process inspection: only an active turn or admitted command blocks pause. */
@@ -115,7 +116,10 @@ export function createRuntimeIdle(
             // Upgrade pre-projection archives once, outside checkpoint admission.
             // Lock in the same order as ingestion so no committed events are lost.
             await sql.transaction!(async (tx) => {
-              await tx.query("select id from public.sandboxes where id=$1 for update", [row.id]);
+              const locked = await tx.query<{ generation: string }>(
+                "select lifecycle_generation::text as generation from public.sandboxes where id=$1 for update",
+                [row.id],
+              );
               const legacy = (
                 await tx.query<{ sequence: string }>(
                   `select coalesce(max(sequence),0)::text as sequence from public.runtime_events
@@ -126,6 +130,8 @@ export function createRuntimeIdle(
               ).rows[0];
               if (Number(legacy?.sequence) > 0)
                 await projectRuntimeIdle(tx, row.id, key, Number(legacy!.sequence), [], Number(legacy!.sequence));
+              const generation = locked.rows[0]?.generation;
+              if (generation !== undefined) await settleRuntimeTurn(tx, row.id, generation, key);
             });
             // A legacy/manual checkpoint has no merge-stop intent. It still
             // must pass the ordinary idle timer before this worker can stop it.

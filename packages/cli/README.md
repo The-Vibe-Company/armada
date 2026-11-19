@@ -21,6 +21,74 @@ provider-specific GitHub refresh refusal. Typed commands validate success receip
 before reporting success. Their control routes use JSON objects, including `{}`
 for empty acknowledgements.
 
+## Command dispatch
+
+Help and command discovery work before login and organization selection.
+Native Docker host commands do not require an Armada API session. Interactive
+session recovery can retry a command once after sign-in. API passthrough,
+explicit login and logout, JSON mode, and explicit API tokens do not trigger
+an interactive recovery prompt.
+
+Global options are read only up to `--` to preserve prompt and command payloads.
+Interactive launch discovery fills missing choices and leaves explicit placement
+and agent choices to the usual validation.
+
+For Boat and Modal snapshots, `snapshot update --add-repo` validates the
+additions and appends on the server, preserving stored repositories and init
+commands. On create or update, `--setup` reads a local file to send as setup
+content. Use `--init` for literal initialization commands.
+
+Sandbox `wait` and `exec` requests get the server budget plus 15 seconds of
+transport grace. `send`, `stop`, and `bind-credential` use a 660-second
+request deadline. That budget gives `send` time to restore paused compute
+before admitting the turn. A transport timeout does not trigger a write retry.
+
+## Docker host commands and launches
+
+Host names resolve within the selected organization through the host API.
+Local host commands with an explicit server can select an instance even if
+another server's daemon is unhealthy. If a registered daemon's server origin
+cannot be read, inspect the instance with `armada host status` before retrying
+installation. The new registration token remains unused.
+
+The wrapper uses fixed failure diagnostics to keep native output and private
+state out of CLI errors. See [Docker host installation and recovery](../../docs/docker-host-daemon.md)
+for installation path checks, registration preservation, and service repair.
+
+A plain-image Docker launch uses the Armada API without a golden or a Docker
+provider credential. If the CLI reports an unknown outcome and prints a launch key,
+retry with the same `--idempotency-key` and request body to recover the
+original launch. Transport failures, uncertain server responses, and malformed
+receipts can leave the outcome unknown.
+
+## Login and session storage
+
+Armada browser sign-in uses PKCE through the Armada server and keeps provider
+details out of the CLI. Email links carry only a state-bound PKCE code. Sign-in
+prefers email when the CLI remembers an address and email is enabled. Otherwise
+it prefers an enabled browser method. The prompts for the sign-in method
+and email address require an interactive terminal.
+
+The saved Armada API session is local, holds no provider configuration and
+uses file mode `0600`. Its login ID identifies the sign-in across token
+rotations. The SQLite lock serializes session updates across processes and
+releases on process exit, including a crash. It stores no tokens. Keep the
+lock file in place because another CLI process may already have it open.
+
+MCP connection authorization opens only a backend-issued HTTPS URL. After one
+browser handoff, the CLI checks the requested connection's server-side status
+before reporting success.
+
+Native Codex model login runs in the foreground. The CLI withholds native
+output and raw errors because provider responses may contain credentials. The
+16-minute approval budget covers Codex 0.166's 15-minute device approval
+window plus completion and authentication-file flush. The CLI checks the
+initialization and login requests for errors, including connection-level
+parse errors, and requires a matching login ID on completion. An import
+requires a stable account ID for refresh and binding, even though native
+Codex accepts a null ID. Temporary native credentials are removed during
+cleanup.
+
 ## Vault input and output
 
 Application variables and secrets use separate commands from model-account

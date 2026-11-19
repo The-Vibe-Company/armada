@@ -3,13 +3,16 @@ import type { Sql } from "@armada/core/server";
 import { createSqlVaultStore } from "@armada/core/server";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
+import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY, harness, PUBLIC_URL } from "./support.ts";
+
+const database = rowOnlyDatabase();
 
 test("REST reports real capacity, busy and binding conflicts without allocating or leaking", async () => {
   let allocations = 0;
   const account = "backend-hidden-account";
 
-  const server = await harness();
+  const server = await harness({}, await database());
   try {
     const { db, people, boat } = server;
     await server.github.connect(people.admin, "admin", 101);
@@ -126,12 +129,15 @@ test("unexpected SQL and provider failures stay server errors rather than becomi
     },
   };
 
-  const server = await harness({
-    sql: (db) => {
-      underlying = db;
-      return sql;
+  const server = await harness(
+    {
+      sql: (db) => {
+        underlying = db;
+        return sql;
+      },
     },
-  });
+    await database(),
+  );
   try {
     const { db, boat, people } = server;
     await server.github.connect(people.admin, "admin", 101);

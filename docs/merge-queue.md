@@ -25,7 +25,7 @@ gate. Screenshot evidence workflows and their one-off capture scripts are remove
 | --- | --- | --- |
 | `ci.yml` | Yes | Six unit shards (shard 1 also runs lint/typecheck and migration guards), plus their aggregate. Native/namespace contracts run in release validation. Migration versions compare the entire candidate against `merge_group.base_sha`. |
 | `apple-quality.yml` | No | Optional PR/main workflow filtered to iOS and its generated harness contract inputs. GitHub merge-group events do not support workflow-level path filters. |
-| `migration-preview.yml` | No | Optional PR dry-run, filtered to `supabase/migrations/**`, with no production credentials. |
+| `migration-preview.yml` | No | Optional PR replay on disposable PostgreSQL when migrations or replay inputs change. It uses no production credentials. |
 | `migrations.yml` | No | Manual main-only previews/history/owner repair. Production SQL applies only through a validated publishing release, never this standalone workflow or PRs. |
 | `release.yml` | No | Publishes releases from main or by version and SHA from a main workflow dispatch. |
 | `staging-gated-production.yml` | No | Deployment/smoke on main, dispatch or explicit reusable call. |

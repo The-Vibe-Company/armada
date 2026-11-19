@@ -3682,6 +3682,35 @@ export type Database = {
           },
         ];
       };
+      ordinary_launch_snapshot_intents: {
+        Row: {
+          sandbox_id: string;
+          golden_id: string;
+          provider: Database["public"]["Enums"]["sandbox_provider"];
+          snapshot_id: string;
+        };
+        Insert: {
+          sandbox_id: string;
+          golden_id: string;
+          provider: Database["public"]["Enums"]["sandbox_provider"];
+          snapshot_id: string;
+        };
+        Update: {
+          sandbox_id?: string;
+          golden_id?: string;
+          provider?: Database["public"]["Enums"]["sandbox_provider"];
+          snapshot_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "ordinary_launch_snapshot_intents_golden_id_fkey";
+            columns: ["golden_id"];
+            isOneToOne: false;
+            referencedRelation: "goldens";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       org_langfuse: {
         Row: {
           org_id: string;
@@ -4789,6 +4818,35 @@ export type Database = {
             columns: ["transfer_id"];
             isOneToOne: false;
             referencedRelation: "sandbox_output_transfers";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      sandbox_output_state: {
+        Row: {
+          sandbox_id: string;
+          upload_scan: string | null;
+          published_scan: string | null;
+          retained_generation: number | null;
+        };
+        Insert: {
+          sandbox_id: string;
+          upload_scan?: string | null;
+          published_scan?: string | null;
+          retained_generation?: number | null;
+        };
+        Update: {
+          sandbox_id?: string;
+          upload_scan?: string | null;
+          published_scan?: string | null;
+          retained_generation?: number | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "sandbox_output_state_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: true;
+            referencedRelation: "sandboxes";
             referencedColumns: ["id"];
           },
         ];

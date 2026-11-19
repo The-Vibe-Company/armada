@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
+import { createGoldenBuildJob } from "../golden-worker.ts";
 import { retentionMaintenanceJob } from "../retention-maintenance.ts";
-import { createJobsRunner, type Job, type JobStore } from "./runner.ts";
+import { createJobsRunner, type Job, type JobKind, type JobStore } from "./runner.ts";
 
 function fixture(kind = "stop") {
   let now = 0;
@@ -19,18 +20,20 @@ function fixture(kind = "stop") {
     owner: "",
     expires: 0,
     terminal: false,
+    due: 0,
   }));
   const current = (job: Job, owner: string) =>
     rows.find(
       (row) => row.id === job.id && row.owner === owner && row.lease_epoch === job.lease_epoch && row.expires > now,
     );
   const completed: string[] = [];
+  const changed = new Map<string, ReturnType<typeof Promise.withResolvers<void>>>();
   let renewalGate: Promise<void> | undefined;
   const store: JobStore = {
     async claim(kind, owner, seconds, concurrency) {
       const candidates = rows.filter((row) => row.kind === kind && !row.terminal);
       if (candidates.filter((row) => row.expires > now).length >= concurrency) return;
-      const row = candidates.find((row) => row.expires <= now);
+      const row = candidates.find((row) => row.expires <= now && row.due <= now);
       if (!row) return;
       row.owner = owner;
       row.expires = now + seconds * 1000;
@@ -52,18 +55,22 @@ function fixture(kind = "stop") {
       row.expires = now + seconds * 1000;
       return true;
     },
-    async complete(job, owner) {
+    async complete(job, owner, result) {
       completed.push(job.id);
       const row = current(job, owner);
-      if (row) row.terminal = true;
-      return Boolean(row);
+      if (!row) return false;
+      row.terminal = result.status !== "retry";
+      if (result.status === "retry") row.due = result.after.getTime();
+      row.expires = now;
+      changed.get(row.id)?.resolve();
+      return true;
     },
   };
   return {
-    runner(run: Parameters<typeof createJobsRunner>[1][string]["run"], concurrency = 1) {
+    runner(run: JobKind["run"], concurrency = 1, drain?: JobKind["drain"]) {
       return createJobsRunner(
         store,
-        { [kind]: { run, concurrency } },
+        { [kind]: { run, concurrency, ...(drain ? { drain } : {}) } },
         () => {},
         (ms, callback) => {
           timers.set(callback, now + ms);
@@ -81,6 +88,11 @@ function fixture(kind = "stop") {
     },
     loseRenewal() {
       renewalUnavailable = true;
+    },
+    settled(id: string) {
+      const settled = Promise.withResolvers<void>();
+      changed.set(id, settled);
+      return settled.promise;
     },
     completed,
     holdRenewal(gate: Promise<void>) {
@@ -188,4 +200,46 @@ test("shutdown drains an in-flight retention sweep without completing its lease"
     await drained;
   }
   expect(f.completed).toEqual([]);
+});
+
+test("hung golden recovery yields its lease to the next build and stays tracked through drain", async () => {
+  const f = fixture("golden_build");
+  const deadline = new AbortController();
+  const entered = Promise.withResolvers<AbortSignal | undefined>();
+  const released = Promise.withResolvers<void>();
+  const handler = createGoldenBuildJob(
+    {
+      async dispatchReceipt(id, _epoch, _signal, recover) {
+        if (id === "two") return { processed: true, pending: false };
+        await recover?.(async (signal) => {
+          entered.resolve(signal);
+          await released.promise;
+        });
+        return { processed: false, pending: true };
+      },
+    },
+    () => 0,
+    () => deadline.signal,
+  );
+  const runner = f.runner(handler.run, handler.concurrency, handler.drain);
+  const recoveryRetried = f.settled("one");
+  const nextBuildDone = f.settled("two");
+  try {
+    expect(await runner.reconcileOne(tick)).toBe(true);
+    const signal = await entered.promise;
+    expect(await runner.reconcileOne(tick)).toBe(false);
+    deadline.abort();
+    await recoveryRetried;
+    expect(signal?.aborted).toBe(true);
+    expect(await runner.reconcileOne(tick)).toBe(true);
+    await nextBuildDone;
+    expect(await runner.reconcileOne(tick)).toBe(false);
+    const drained = runner.drain();
+    const nextTurn = new Promise<string>((resolve) => setImmediate(() => resolve("pending")));
+    expect(await Promise.race([drained.then(() => "drained"), nextTurn])).toBe("pending");
+  } finally {
+    deadline.abort();
+    released.resolve();
+    await runner.drain();
+  }
 });

@@ -50,7 +50,7 @@ export { type GoldenGitHubAdapterOptions, goldenGitHubAdapter } from "./golden-g
 export { snapshotGolden } from "./golden-runtime.ts";
 export { GITHUB_TOKEN_PATTERN, goldenScanScript, scanGoldenSandbox } from "./golden-scan.ts";
 export * from "./golden-snapshot-retirement.ts";
-export { assertSqlGoldenMutation } from "./golden-store.ts";
+export { assertSqlGoldenMutation, beginSnapshotLaunch } from "./golden-store.ts";
 export * from "./index.ts";
 export { prepareLaunchWorkspace } from "./launch.ts";
 export {

@@ -18,7 +18,6 @@ import { resolveHost, resolveHostOrganization } from "./host-commands.ts";
 import { parseTtl } from "./operations.ts";
 
 const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
-/** API-only plain-image launch. No golden, provider credential or database dependency. */
 export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, auth: AuthIo): Promise<number> {
   const allowed = new Set([
     "--repo",
@@ -173,8 +172,6 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
       );
     return 0;
   } catch (error) {
-    // A structured refusal is definitive; transport failures, malformed receipts and
-    // server/gateway failures still need the stable request identity for recovery.
     if (
       !(
         error instanceof ArmadaApiError &&

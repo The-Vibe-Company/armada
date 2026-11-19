@@ -322,6 +322,107 @@ whole case in a focused Linux run using Bun 1.4.2 on main at `67d096dd`.
 The missing-database-URL case in `stats-db.test.ts` runs in process. Both
 staging-checker cases use local fixtures and make no calls to deployed services.
 
+## Process-spawning unit cases in CLI
+
+The [process-test allowlist](../scripts/ci/process-tests.txt) identifies four CLI
+files by direct spawn syntax. Two additional cases reach a subprocess through
+`nativeCodexLogin`. The times below measure whole cases in one focused Linux
+run using Bun 1.4.2 on main at `fbcea6e2`.
+
+| File under `packages/cli/test` | Case | Local subprocess boundary | Local |
+| --- | --- | --- | ---: |
+| `npm.test.ts` | the launcher runs the platform binary with the arguments and its exit code | Starts the staged npm launcher, which executes a local shell fixture standing in for the platform binary. | 37.06 ms |
+| `npm.test.ts` | the launcher names the missing platform package | Starts the staged launcher with the platform package absent. | 27.35 ms |
+| `publish.test.ts` | publication waits for each retrievable platform tarball before publishing the launcher (delayed) | Bash runs the publish script against local npm and sleep fixtures. | 26.84 ms |
+| `publish.test.ts` | publication waits for each retrievable platform tarball before publishing the launcher (independent-delay) | Bash runs the publish script with separate retry counts in the local npm fixture. | 35.92 ms |
+| `publish.test.ts` | each platform starts its registry check without waiting for the other uploads | Starts `mkfifo`, then runs the publish script with local npm fixtures coordinated through the FIFO. | 26.18 ms |
+| `publish.test.ts` | publication refuses the launcher when platform tarballs are unavailable | Bash runs the publish script with local npm pack failures and a fake sleep. | 33.14 ms |
+| `publish.test.ts` | publication refuses the launcher when platform tarballs are corrupt | Bash runs the publish script with a local npm fixture that returns different bytes. | 14.15 ms |
+| `publish.test.ts` | recovery retrieves existing artifacts even when the rebuild differs | Bash runs the publish script with a local npm fixture that reports existing artifacts. | 14.95 ms |
+| `publish.test.ts` | dry runs publish every staged tarball without querying registry availability | Bash runs the publish script with a local npm fixture that records dry-run commands. | 15.09 ms |
+| `publish.test.ts` | the SDK is published after the launcher | Bash runs the publish script with a local npm fixture that records order. | 23.93 ms |
+| `skill-hint.test.ts` | terminal-only skill advice is occasional, silenceable and stops after discovery | Starts `mkfifo` to supply a named pipe in place of the cooldown file. | 11.04 ms |
+| `skill-hint.test.ts` | entrypoint prints advice only on a terminal and keeps stdout clean | Python starts the Bun CLI with piped output and a pseudoterminal. | 158.30 ms |
+| `skill-hint.test.ts` | unavailable working directory never breaks a completed command, including quiet paths | Starts Bun to remove its own working directory and exercise the hint code. | 8.82 ms |
+| `skill-install.test.ts` | public CLI reports a missing Git prerequisite without a login or raw subprocess diagnostics | Starts the Bun CLI with an empty executable search directory. | 66.64 ms |
+| `skill-install.test.ts` | CLI fetches one pinned Git source and reports its actual commit and both installed agent roots | Runs Git to set up the fixture and starts the Bun CLI, which fetches the revision from the local repository. | 93.82 ms |
+| `native-model-login.test.ts` | native local login returns private auth material but exposes only the approved device challenge | The native login helper starts the local Codex JSONL fixture. | 34.63 ms |
+| `native-model-login.test.ts` | cancellation at the device challenge prevents local auth publication | The native login helper starts the same local fixture and cancels it on receipt of the device challenge. | 23.71 ms |
+
+The package manifest case in `npm.test.ts` and the five other skill-install
+cases run in process. The browser login tests inject the browser opener, and
+the local host tests inject their command runner. `binary.release.ts` is
+explicit release validation outside unit discovery.
+
+## Process-spawning unit cases in Docker Host
+
+The process-test allowlist identifies `cli.test.ts` and
+`runtime-install.test.ts` by direct spawn syntax. The daemon state test also
+spawns on Linux through `fileStore().lock()`. Whole-case timings below come
+from focused Linux runs with Bun 1.4.2 on main at `2cbf531e`.
+
+| File under `packages/docker-host/test` | Case | Local subprocess boundary | Local |
+| --- | --- | --- | ---: |
+| `cli.test.ts` | Docker host help succeeds without registration, state or Docker access | Starts the Bun CLI for each of eight help invocations, with an unusable home and executable search path. | 183.57 ms |
+| `cli.test.ts` | Docker host status identifies an unregistered installation without Docker access | Starts the Bun CLI with an empty temporary home and an unusable executable search path. | 25.17 ms |
+| `runtime-install.test.ts` | runtime starter delivers only enrolment on private stdin and detaches runtime output | Runs the bootstrap shell with a local executable fixture that reads stdin through `sha256sum`. | 6.00 ms |
+| `daemon.test.ts` | private native state survives reopening, excludes concurrent owners and rejects unsafe existing files | On Linux, the native file store starts `sh` and `flock` for acquisition and contention. The successful lease uses `cat` to hold the lock until stdin closes. | 12.99 ms |
+
+PR #3193 recorded the first three cases in CI at 189.34 ms, 798.25 ms,
+and 16.41 ms respectively. PR #3227 replaced the 2,298.20 ms managed-service
+CLI case with direct service calls using injected systemd operations. The
+other two runtime installer cases use in-process machine and fetch fixtures.
+The daemon archive case replaces `Bun.spawn` with a mock.
+
+## Process-spawning unit cases in the Boat adapter
+
+The [process-test allowlist](../scripts/ci/process-tests.txt) identifies four
+Boat adapter files by direct subprocess syntax. One additional case in
+`provider.test.ts` starts a local binary through the SSH helper. Timings
+measure whole cases in focused Linux runs with Bun 1.4.2. The four allowlisted
+files ran together on main at `7dc693ad`. The SSH case ran on its own with
+main at `c9bf4fcf`. Both runs used local fixtures.
+
+| File under `packages/provider-boat/test` | Case | Local subprocess boundary | Local |
+| --- | --- | --- | ---: |
+| `native-claude-mcp.test.ts` | ordinary Claude needs no Python bridge and managed installation refuses a missing interpreter before mutation | Bash runs the ordinary wrapper and the managed installer with Python absent from PATH. | 5.79 ms |
+| `native-claude-mcp.test.ts` | Claude refresh ACK gates turns, removes tools and preserves the process/session and internal MCP | Bash starts the managed Python bridge with a local Claude stream-JSON peer. | 108.85 ms |
+| `native-cwd.test.ts` | installs the codex VM wrapper and preserves dynamic argv without recursion | Bash runs the Linux installer with a local sudo shim, then the wrapper launches a shell peer. | 59.92 ms |
+| `native-cwd.test.ts` | installs the claude VM wrapper and preserves dynamic argv without recursion | Bash runs the Linux installer with a local sudo shim, then the wrapper launches a shell peer. | 36.38 ms |
+| `native-cwd.test.ts` | Codex wrapper enforces Boat's thread/turn protocol cwd, not only process cwd | Bash runs the relocated installer on Linux. The installed wrapper and a local Codex peer exercise transport refusal and stdio. | 361.22 ms |
+| `native-cwd.test.ts` | generic GitHub preparation preserves the managed Claude MCP bridge and rejects a tampered wrapper | Bash runs both Linux installer variants. The installed wrapper starts the managed Python bridge and a local Claude peer. | 123.53 ms |
+| `native-cwd.test.ts` | Codex bridge refuses a second message until the first turn/start replies, then recovers | The installed wrapper starts the Python bridge and a local Codex peer over stdio after Linux shell setup. | 95.99 ms |
+| `native-cwd.test.ts` | Codex lone startup abort returns readable relaunch guidance on the pending RPC | After Linux shell setup, the installed wrapper starts a local Codex peer that aborts by signal. | 83.05 ms |
+| `native-cwd.test.ts` | Codex lone startup exit returns readable relaunch guidance on the pending RPC | After Linux shell setup, the installed wrapper starts a local Codex peer that exits nonzero. | 90.81 ms |
+| `native-cwd.test.ts` | Codex boot abort before initialize still answers the later first request | After Linux shell setup, the installed wrapper starts a local Codex peer that aborts before reading stdin. | 86.15 ms |
+| `native-cwd.test.ts` | Boat-framed Codex input reaches admitted native usage through the real bridge | A stubbed guest exec runs usage commands in a local shell. Python drives the wrapper and a local Codex peer. | 179.37 ms |
+| `native-cwd.test.ts` | Boat external subscription bridge consumes refresh RPC privately and completes the same native turn | OpenSSL creates a temporary certificate. The wrapper starts a local Codex peer and the bridge calls a loopback HTTPS fixture. | 332.25 ms |
+| `native-cwd.test.ts` | Boat plan exhaustion reaches a public outcome with only validated reset evidence (updated, true) | Bash starts the Python bridge and a local Codex peer that emits the fixture error. | 77.39 ms |
+| `native-cwd.test.ts` | Boat plan exhaustion reaches a public outcome with only validated reset evidence (updated, false) | Bash starts the Python bridge and a local Codex peer that emits the fixture error. | 72.78 ms |
+| `native-cwd.test.ts` | Boat plan exhaustion reaches a public outcome with only validated reset evidence (read, true) | Bash starts the Python bridge and a local Codex peer that emits the fixture error. | 70.69 ms |
+| `native-cwd.test.ts` | Boat plan exhaustion reaches a public outcome with only validated reset evidence (read, false) | Bash starts the Python bridge and a local Codex peer that emits the fixture error. | 71.01 ms |
+| `native-cwd.test.ts` | Boat plan exhaustion reaches a public outcome with only validated reset evidence (raced, true) | Bash starts the Python bridge and a local Codex peer that emits the fixture error. | 69.96 ms |
+| `native-cwd.test.ts` | Boat plan exhaustion reaches a public outcome with only validated reset evidence (raced, false) | Bash starts the Python bridge and a local Codex peer that emits the fixture error. | 74.88 ms |
+| `native-cwd.test.ts` | Boat plan exhaustion reaches a public outcome with only validated reset evidence (unauthorized, true) | Bash starts the Python bridge and a local Codex peer that emits the fixture error. | 75.26 ms |
+| `native-cwd.test.ts` | Boat plan exhaustion reaches a public outcome with only validated reset evidence (unknown, true) | Bash starts the Python bridge and a local Codex peer that emits the fixture error. | 73.14 ms |
+| `native-usage.test.ts` | multi-turn Codex cumulative counters yield deltas, retries do not add | Python executes the embedded guest usage code with temporary state. | 28.51 ms |
+| `native-usage.test.ts` | a valid stale flush is never frozen at admission or attributed to the next turn | Python executes the embedded guest usage code with temporary state. | 28.02 ms |
+| `native-usage.test.ts` | missing resume baseline, symlink, mismatched session identity fail closed | Python executes the embedded guest usage code with temporary state. | 27.39 ms |
+| `native-usage.test.ts` | an interrupted native turn leaves counters unknown without poisoning later closed turns | Python executes the embedded guest usage code with temporary state. | 29.39 ms |
+| `native-usage.test.ts` | Claude cumulative files without a proven native boundary remain unknown | Python executes the embedded guest usage code with temporary state. | 26.53 ms |
+| `native-usage.test.ts` | expired and rejected admissions recover without letting late callbacks claim newer prompts | Python executes the embedded guest usage code with temporary state. | 28.72 ms |
+| `native-usage.test.ts` | wire codec rejects ambiguous context and legacy admissions without losing safe recovery | Python executes the embedded guest usage code with temporary state. | 27.50 ms |
+| `native-usage.test.ts` | a warm legacy bridge cannot consume a new admission whose raw text aliases an old envelope | Python executes the embedded guest usage code with temporary state. | 26.25 ms |
+| `native-usage.test.ts` | collection explains the failed stage without exposing raw state or changing counters | Python executes the embedded guest usage code with temporary state. | 26.19 ms |
+| `native-usage.test.ts` | identical ambiguous inputs stay unknown while later distinct admissions and fresh forks recover | Python executes the embedded guest usage code with temporary state. | 25.67 ms |
+| `usage-probe.test.ts` | diagnostic probe exports only metadata and does not mutate guest state | Python runs the guest metadata probe against temporary state. | 20.95 ms |
+| `provider.test.ts` | cleared Boat /run receipt restarts SSH hydration instead of trusting a previous delivery | The SSH helper starts local `ssh-keygen`. The fake provider refuses authorization before an SSH connection is opened. | 15.63 ms |
+
+The native reader transport-error case in `native-usage.test.ts` injects the
+exec response in process. The matching-receipt case in `provider.test.ts`
+returns before SSH hydration. Provider API calls use fake fetch. Explicit
+conformance and the coordinator probe are outside unit discovery.
+
 ## Evidence owed after merge
 
 Run the existing publishing release validation on the exact release SHA. Verify

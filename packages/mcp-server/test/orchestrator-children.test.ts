@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
   createSqlGoldenStore,
@@ -7,10 +7,12 @@ import {
   DelegatedAuthority,
   encryptSecret,
   type Sql,
+  VaultError,
 } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { createNativeWebhookPrompts } from "../src/native-webhook-prompts.ts";
+import { observeRequest } from "../src/request-observability.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeProvider } from "../src/runtime-provider.ts";
 import { launchSandboxChild } from "../src/sandbox-access-child-launch.ts";
@@ -363,9 +365,87 @@ test("revocation between reservation and dispatch cancels queued allocation", as
         },
       },
     );
-    const receipt = await children.launch(token, "queued-revoke", selection);
+    const lines: string[] = [];
+    let receipt: Awaited<ReturnType<typeof children.launch>> | undefined;
+    const response = await observeRequest(
+      async () => {
+        receipt = await children.launch(token, "queued-revoke", selection);
+        return new Response();
+      },
+      (line) => lines.push(line),
+    );
     expect(allocations).toBe(0);
+    if (!receipt) throw Error("Missing child receipt.");
     expect(receipt.state).toBe("failed");
+    expect(lines.map((line) => JSON.parse(line))).toContainEqual(
+      expect.objectContaining({
+        event: "operator_failure",
+        phase: "scoped.child_launch.dispatch_admission",
+        errorClass: "DelegatedAuthorityDenied",
+        sandboxId: receipt.sandboxId,
+        operationId: receipt.id,
+        requestId: response?.headers.get("x-request-id"),
+      }),
+    );
+  } finally {
+    await close();
+  }
+});
+
+test("revocation after snapshot admission releases a child allocation that never reached the provider", async () => {
+  const { close, db, sql, id, authority, token, selection } = await fixture();
+  try {
+    const boat = fakeBoat();
+    const admissionSql: Sql = {
+      query: sql.query,
+      async transaction(work) {
+        const result = await sql.transaction!(work);
+        await authority.revoke(id);
+        return result;
+      },
+    };
+    const children = createSandboxChildren(sql, authority, {
+      async launch(operation, selected) {
+        return launchSandboxChild({
+          sql,
+          provider: boat.provider,
+          operation,
+          selection: selected,
+          stores: {
+            goldens: createSqlGoldenStore(admissionSql),
+            sandboxes: createSqlSandboxStore(sql),
+            credentials: {
+              async resolve() {
+                throw Error("no legacy fallback");
+              },
+            },
+          },
+          namedCredentials: launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY),
+        });
+      },
+      async read() {
+        throw Error("unexpected");
+      },
+      async message() {
+        throw Error("unexpected");
+      },
+      async stop() {
+        throw Error("unexpected");
+      },
+      async reconcile(op) {
+        return { operationId: op.id, sandboxId: op.sandboxId, state: "unknown" };
+      },
+    });
+    const receipt = await children.launch(token, "revoked-after-admission", selection);
+    expect(receipt.state).toBe("failed");
+    expect(boat.forks).toHaveLength(0);
+    expect(
+      (
+        await db.query("select sandbox_id from ordinary_launch_snapshot_intents where sandbox_id=$1", [
+          receipt.sandboxId,
+        ])
+      ).rows,
+    ).toEqual([]);
   } finally {
     await close();
   }
@@ -1118,11 +1198,15 @@ test.each(["checkpoint", "handler", "both"])("scoped Modal stop replay after los
   }
 });
 
-test.each(["placement refusal", "parent revocation during configuration"] as const)(
+test.each(["golden lookup failure", "placement refusal", "parent revocation during configuration"] as const)(
   "scoped Modal launch fences host dispatch after %s",
   async (scenario) => {
     const { close, sql, authority, id, token, selection } = await fixture("running", "anthropic", "modal");
     try {
+      if (scenario === "golden lookup failure") {
+        await sql.query("update goldens set config='{}'::jsonb where id=$1", [selection.goldenId]);
+      }
+      const preallocationRefused = scenario !== "parent revocation during configuration";
       const fake = fakeBoat();
       const credentials = launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY);
       let bootstraps = 0;
@@ -1143,7 +1227,7 @@ test.each(["placement refusal", "parent revocation during configuration"] as con
         runtimePlacements: {
           modal: {
             async provider() {
-              if (scenario === "placement refusal") throw Error("Modal App is unavailable");
+              if (scenario === "placement refusal") throw new VaultError("unavailable", "private placement detail");
               return host;
             },
             credentials,
@@ -1158,9 +1242,46 @@ test.each(["placement refusal", "parent revocation during configuration"] as con
           },
         },
       });
-      const receipt = await services.childWorker.launch(token, scenario, selection);
-      expect(receipt.state).toBe(scenario === "placement refusal" ? "failed" : "uncertain");
-      expect(fake.forks).toHaveLength(scenario === "placement refusal" ? 0 : 1);
+      const log = spyOn(console, "error");
+      try {
+        let receipt: Awaited<ReturnType<typeof services.childWorker.launch>> | undefined;
+        const response = await observeRequest(async () => {
+          receipt = await services.childWorker.launch(token, scenario, selection);
+          return new Response();
+        }, console.error);
+        if (!receipt) throw Error("Missing child receipt.");
+        expect(receipt.state).toBe(preallocationRefused ? "failed" : "uncertain");
+        if (preallocationRefused) {
+          expect(await services.childWorker.launch(token, scenario, selection)).toEqual(receipt);
+          const placementRefused = scenario === "placement refusal";
+
+          const diagnostics = log.mock.calls
+            .map(([line]) => String(line))
+            .filter((line) => line.includes("operator_failure"));
+          expect(diagnostics.map((line) => JSON.parse(line))).toEqual([
+            expect.objectContaining({
+              phase: placementRefused ? "scoped.child_launch.provider_placement" : "scoped.child_launch.golden_lookup",
+              code: placementRefused ? "unavailable" : "invalid_config",
+              errorClass: placementRefused ? "VaultError" : "GoldenError",
+              sandboxId: receipt.sandboxId,
+              operationId: receipt.id,
+              requestId: response?.headers.get("x-request-id"),
+            }),
+          ]);
+          expect(diagnostics.join("\n")).not.toContain("private placement detail");
+          expect((await sql.query("select id from sandboxes where id=$1", [receipt.sandboxId])).rows).toEqual([]);
+          expect(
+            (
+              await sql.query("select sandbox_id from account_agent_reservations where sandbox_id=$1", [
+                receipt.sandboxId,
+              ])
+            ).rows,
+          ).toEqual([]);
+        }
+      } finally {
+        log.mockRestore();
+      }
+      expect(fake.forks).toHaveLength(preallocationRefused ? 0 : 1);
       expect(bootstraps).toBe(0);
     } finally {
       await close();

@@ -1,24 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
-import { run } from "../../../packages/cli/src/run.ts";
-import { landingTranscript } from "../scripts/landing-transcript.ts";
-import { INSTALL, SETUP, STORY } from "../src/components/landing/content.ts";
-import { BREAK_AT, createSky, INTRO, LIME, step } from "../src/components/landing/flock.ts";
-import { TRANSCRIPT } from "../src/components/landing/transcript.ts";
+import { run } from "../../../../../packages/cli/src/run.ts";
+import { landingTranscript } from "../../../scripts/landing-transcript.ts";
+import { INSTALL, SETUP, STORY } from "./content.ts";
+import { BREAK_AT, createSky, INTRO, LIME, step } from "./flock.ts";
+import { TRANSCRIPT } from "./transcript.ts";
 
-// The public landing, restored from armada-v1-final (#564), its story retold by
-// #587. What it says that the code decides is held here to that code (the CLI's
-// help and output, the token's lifetime, the cipher, the README); and: it reads
-// no session or data, it never holds the scroll, and the sky moves the same at
-// any frame rate.
-
-const ROOT = resolve(import.meta.dir, "..");
+const ROOT = resolve(import.meta.dir, "../../..");
 const REPO = resolve(ROOT, "../..");
 const read = (path: string) => readFileSync(path, "utf8");
 
-/** Every local module a file loads: types are erased. */
-function reach(start: string, seen = new Set<string>()): Set<string> {
+function reach(start: string, seen = new Set<string>()) {
   if (seen.has(start)) return seen;
   seen.add(start);
   const source = read(start);
@@ -39,11 +32,7 @@ function reach(start: string, seen = new Set<string>()): Set<string> {
 const PAGE = join(ROOT, "src/app/landing/page.tsx");
 const modules = [...reach(PAGE)];
 
-/**
- * `armada --help`, one usage block per line that starts `  armada `: the commands it documents (`snapshot <sub>`
- * for snapshots, the first word otherwise) and, for each, the text of its blocks, where its flags are.
- */
-async function help(): Promise<Map<string, string>> {
+async function help() {
   let text = "";
   expect(await run(["--help"], { out: (chunk) => (text += chunk), err: () => undefined })).toBe(0);
   const usage = new Map<string, string>();
@@ -93,7 +82,6 @@ describe("what the landing says", () => {
 describe("the landing page", () => {
   test("reads no cookie, session, database, provider or server, and fetches nothing", () => {
     const rel = modules.map((f) => relative(ROOT, f));
-    // The story's chapters are part of what the page reaches.
     expect(rel).toContain("src/components/landing/Figures.tsx");
     const offenders = modules
       .filter((f) =>

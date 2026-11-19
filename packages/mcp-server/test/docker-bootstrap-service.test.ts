@@ -600,7 +600,7 @@ test.each([false, true])("idle checkpoint fences Docker stop and retained restor
   });
   await idle.reconcileOne(new AbortController().signal);
   if (!merged) {
-    expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("running");
+    expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("ready");
     clock += 60_000;
     await idle.reconcileOne(new AbortController().signal);
   }

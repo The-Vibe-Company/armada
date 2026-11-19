@@ -6,7 +6,6 @@ import { credentialRoutes } from "./credential-control.ts";
 import { githubAccountRoutes } from "./github-account.ts";
 import { githubSandboxRoutes } from "./github-rest-controls.ts";
 import { goldenRoutes } from "./golden-control.ts";
-import { goldenBuildModule } from "./golden-worker.ts";
 import { invitationRoutes } from "./invitation-control.ts";
 import { launchRoutes } from "./launch-control.ts";
 import { mcpRoutes } from "./mcp-control.ts";
@@ -64,7 +63,6 @@ export const { controlRoutes, assembleServer } = registerServer([
   scriptedModelModule,
   triggerModule,
   jobsModule,
-  goldenBuildModule,
   outputModule,
   nativeModule,
   mcpBackgroundModule,
