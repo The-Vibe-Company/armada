@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DOCKER_DISK_FLOOR_BYTES, DockerDiskFloorError, requireDockerDiskSpace } from "../src/docker-disk-policy.ts";
 import { DOCKER_LOCAL_IMAGE_LABELS } from "../src/docker-image.ts";
 import {
   createDockerMachineExecutor,
@@ -22,6 +23,7 @@ const request: DockerMachineRequest = {
 function fixture(
   limits?: () => { cpus: number; memoryBytes: number; pids: number },
   sharedArtifacts?: { dir: string; ensure(): Promise<boolean> },
+  beforeRestoreAllocation?: () => Promise<void>,
 ) {
   const containers = new Map<string, any>();
   const volumes = new Map<string, any>();
@@ -149,6 +151,7 @@ function fixture(
     },
   };
   const executor = createDockerMachineExecutor({
+    ...(beforeRestoreAllocation ? { beforeRestoreAllocation } : {}),
     installationId: "11111111-1111-1111-1111-111111111111",
     hostId: "22222222-2222-2222-2222-222222222222",
     cli,
@@ -183,7 +186,8 @@ function fixture(
 
 describe("Docker machine executor", () => {
   test("restore retries an incomplete copy into a separate incarnation and adopts a created target", async () => {
-    const f = fixture();
+    let free = 0;
+    const f = fixture(undefined, undefined, async () => requireDockerDiskSpace(free));
     const source = await f.executor.create(request);
     const sourceContainer = f.containers.get(source.containerName);
     const predecessor = { request, machineId: sourceContainer.Id };
@@ -191,6 +195,9 @@ describe("Docker machine executor", () => {
     f.workspaces.set(source.volumeName, "retained workspace");
     await f.executor.stop(request);
 
+    await expect(f.executor.restore(target, predecessor)).rejects.toBeInstanceOf(DockerDiskFloorError);
+    expect(f.volumes.size).toBe(1);
+    free = DOCKER_DISK_FLOOR_BYTES;
     f.fail("copy");
     await expect(f.executor.restore(target, predecessor)).rejects.toThrow("docker_failed");
     expect(f.containers.size).toBe(1);
@@ -204,6 +211,7 @@ describe("Docker machine executor", () => {
     await expect(f.executor.restore(target, predecessor)).rejects.toThrow("docker_failed");
     const replacement = [...f.containers.values()].find((container) => container.Id !== predecessor.machineId);
     expect(replacement?.State.Status).toBe("created");
+    free = 0;
     f.fail("copy");
     const restored = await f.executor.restore(target, predecessor);
     expect(f.containers.get(restored.containerName).Id).toBe(replacement?.Id);

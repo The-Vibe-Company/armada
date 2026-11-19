@@ -7,7 +7,7 @@ import type { Tone } from "./status-tone.ts";
  * own. A connection's
  * state comes from the registry; its row action is {@link connectAction}'s, for whoever may manage it.
  */
-export type ToolAction = NonNullable<ReturnType<typeof connectAction>>;
+type ToolAction = NonNullable<ReturnType<typeof connectAction>>;
 
 export type ToolState = ResourceState & { action: ToolAction | null };
 
@@ -36,7 +36,7 @@ export function toolState(
  * viewer's connections came from it, and its one action. Connect adds the first account, Connect another a further
  * one (connections are independent, so a service can be added once per account); Setup is the server's to do.
  */
-export type ServiceOffer = {
+type ServiceOffer = {
   tone: Tone;
   label: string;
   /** Connections in the viewer's list created from this service. */

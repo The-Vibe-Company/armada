@@ -218,6 +218,30 @@ class Safety(unittest.TestCase):
         with mock.patch.object(run, "listing", return_value=[]), mock.patch.object(run, "stop"):
             self.assertFalse(run.cleanup())
 
+    def test_explicit_status_and_stop_use_public_paths_with_owner_and_org(self):
+        origin, token = ENV["STAGING_URL"], ENV["ARMADA_TOKEN"]
+        run = check.Run(check.arguments(ARGS), origin, OTHER, token)
+
+        def respond(request, timeout):
+            response = io.BytesIO(b'{"status":"stopped"}')
+            response.code = 200
+            return response
+
+        with mock.patch.object(run.opener, "open", side_effect=respond) as opened, \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            for action in ("status", "stop"):
+                self.assertEqual(run.tool(action, id=ID), {"status": "stopped"})
+        self.assertEqual(opened.call_count, 2)
+        for action, call in zip(("status", "stop"), opened.call_args_list):
+            request = call.args[0]
+            self.assertEqual(request.full_url, f"{origin}/api/v1/sandbox/{action}")
+            self.assertEqual(request.get_method(), "POST")
+            self.assertEqual(json.loads(request.data), {"id": ID, "org": OTHER})
+            self.assertEqual(request.get_header("Authorization"), "Bearer " + token)
+            self.assertEqual(request.get_header("Content-type"), "application/json")
+            self.assertEqual(request.get_header("Accept"), "application/json")
+        self.assertNotIn(token, output.getvalue())
+
     def test_owned_initial_status_retry_and_stop_first_cleanup_use_canonical_cli_routes(self):
         def response(body, status=200):
             result = io.BytesIO(json.dumps(body).encode())

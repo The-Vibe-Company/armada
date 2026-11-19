@@ -64,9 +64,13 @@ export async function runtimeFixture(
   commandGrantExpiresAt?: number,
   placement?: { goldenId: string; providerSandboxId: string },
 ) {
+  await using setup = new AsyncDisposableStack();
   const { db, people } = fixture ?? (await database());
+  if (!fixture) setup.defer(() => db.close());
   const root = await mkdtemp(join(tmpdir(), "runtime-followup-"));
+  setup.defer(() => rm(root, { recursive: true, force: true }));
   let journal = new Journal(join(root, "journal"), (value) => value);
+  setup.defer(() => journal.close());
   const sql: Sql = {
     query: (q, v) => db.query(q, v),
     transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
@@ -288,6 +292,7 @@ export async function runtimeFixture(
     prompt,
     request_id: crypto.randomUUID(),
   });
+  const resources = setup.move();
   return {
     root,
     mcpSnapshots,
@@ -409,9 +414,7 @@ export async function runtimeFixture(
     },
     async close() {
       await runner.flushOutbox().catch(() => {});
-      journal.close();
-      if (!fixture) await db.close();
-      await rm(root, { recursive: true, force: true });
+      await resources.disposeAsync();
     },
   };
 }

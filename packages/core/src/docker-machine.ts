@@ -89,6 +89,7 @@ export function createDockerMachineExecutor(options: {
   now: () => number;
   readArchive?: (argv: readonly string[]) => Promise<Uint8Array<ArrayBuffer> | null>;
   limits?: () => DockerSandboxLimits;
+  beforeRestoreAllocation?: () => Promise<void>;
   /**
    * Host directory of verified digest-named public artifacts, bind-mounted read-only at
    * SHARED_ARTIFACT_CACHE_PATH into new containers (#2562). The mount is an optimization:
@@ -313,6 +314,7 @@ export function createDockerMachineExecutor(options: {
       const status = object(source.container.State);
       if (source.container.Id !== predecessor.machineId || status.Status !== "exited" || status.Running !== false)
         fail("ownership_mismatch");
+      await options.beforeRestoreAllocation?.();
     }
     if (!state.volume) {
       const created = absoluteCreationTime ?? now();

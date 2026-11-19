@@ -8,9 +8,9 @@ import type { Bucket, ResourceState } from "./resource-list.ts";
  */
 export type VaultKind = "variable" | "secret";
 export type VaultScope = "personal" | "org";
-export type VaultStatus = "active" | "revoked";
+type VaultStatus = "active" | "revoked";
 /** A delete answers with its value-free tombstone; a list never includes one. */
-export type VaultAnswerStatus = VaultStatus | "deleted";
+type VaultAnswerStatus = VaultStatus | "deleted";
 
 export type VaultItem = {
   kind: VaultKind;
