@@ -4,7 +4,6 @@ if (!process.env.ARMADA_TEST_POSTGRES_URL) throw new Error("ARMADA_TEST_POSTGRES
 // Release-only PostgreSQL contracts; retained unit cases stay in the sibling test file.
 import { expect, test } from "bun:test";
 import { SQL } from "bun";
-
 import { fakeBoat } from "../../mcp-server/test/support.ts";
 import { sqlGoldenBackendSlots } from "../src/golden-create.ts";
 import {
@@ -15,6 +14,7 @@ import {
 } from "../src/golden-snapshot-retirement.ts";
 import { beginGoldenOperation, createSqlGoldenStore, type Sql } from "../src/golden-store.ts";
 import { type Provider, ProviderError, type SnapshotInfo } from "../src/provider.ts";
+import { runRetirementJob } from "./support/snapshot-retirement-jobs.ts";
 
 const KEY = Buffer.alloc(32, 29).toString("base64");
 const absent = () => new ProviderError({ provider: "boat", code: "not_found", retryable: false, message: "absent" });
@@ -123,7 +123,7 @@ async function fixture(sql: Sql, placement: "boat" | "modal" = "boat", visibilit
   };
   const due = async () => {
     await sql.query(
-      "update golden_snapshot_retirements set next_attempt_at=now()-interval '1 second',claim_until=null where golden_id=$1",
+      "update jobs set run_after=now()-interval '1 second' where id in (select id from golden_snapshot_retirements where golden_id=$1)",
       [golden.id],
     );
   };
@@ -190,24 +190,24 @@ test("PostgreSQL serializes retirement replicas, stale admission and pointer res
       await gate;
     });
     const other = new GoldenSnapshotRetirements({ sql: sqlB, encryptionKey: KEY, provider: async () => f.provider });
-    running = f.retirement.runOne();
+    running = runRetirementJob(sqlA, f.retirement);
     await entered;
     await expect(beginGoldenOperation(sqlB, f.golden.id, { snapshotId: f.old, sandboxId: null })).rejects.toMatchObject(
       { code: "conflict" },
     );
     await expect(createSqlGoldenStore(sqlB).setSnapshot(f.golden.id, f.old)).rejects.toThrow("unavailable");
-    expect(await other.runOne()).toBe(false);
+    expect(await runRetirementJob(sqlB, other)).toBe(false);
     // Expired ownership permits readback only, not a second destructive provider request.
     await sqlB.query(
-      "update golden_snapshot_retirements set claim_until=now()-interval '1 second',next_attempt_at=now()-interval '1 second' where golden_id=$1",
+      "update jobs set lease_until=now()-interval '1 second' where id in (select id from golden_snapshot_retirements where golden_id=$1)",
       [f.golden.id],
     );
-    expect(await other.runOne()).toBe(true);
+    expect(await runRetirementJob(sqlB, other)).toBe(true);
     expect(f.deleted).toEqual([f.old]);
     release();
     await running;
     await f.due();
-    await other.runOne();
+    await runRetirementJob(sqlB, other);
     expect(
       (
         await sqlB.query<{ state: string }>("select state from golden_snapshot_retirements where golden_id=$1", [

@@ -21,6 +21,7 @@ import {
   type SandboxInfo,
   type Sql,
 } from "../src/server.ts";
+import { runRetirementJob } from "./support/snapshot-retirement-jobs.ts";
 
 const KEY = Buffer.alloc(32, 7).toString("base64");
 const APP = { clientId: "Iv1.test", clientSecret: "github-client-secret" };
@@ -365,7 +366,7 @@ test("PostgreSQL concurrent rebuild publications commit exactly one replacement/
     refuse = first.snapshot;
     const { GoldenSnapshotRetirements } = await import("../src/golden-snapshot-retirement.ts");
     const worker = new GoldenSnapshotRetirements({ sql: sqlA, encryptionKey: KEY, provider: async () => provider });
-    await worker.runOne();
+    await runRetirementJob(sqlA, worker);
     expect((await createSqlGoldenStore(sqlA).findByName(actor.orgId, "web"))[0]?.providerSnapshotId).toBe(
       current.providerSnapshotId,
     );
@@ -373,10 +374,10 @@ test("PostgreSQL concurrent rebuild publications commit exactly one replacement/
     expect(snapshots.has(current.providerSnapshotId!)).toBe(true);
     refuse = undefined;
     await sqlA.query(
-      "update golden_snapshot_retirements set next_attempt_at=now()-interval '1 second' where golden_id=$1",
+      "update jobs set run_after=now()-interval '1 second' where id in (select id from golden_snapshot_retirements where golden_id=$1)",
       [current.id],
     );
-    await worker.runOne();
+    await runRetirementJob(sqlA, worker);
     expect(snapshots.has(first.snapshot)).toBe(false);
     expect(snapshots.has(current.providerSnapshotId!)).toBe(true);
   } finally {
