@@ -268,6 +268,39 @@ export async function requestFailedRuntimeResumeStop(
   return changed.rows[0]?.status;
 }
 
+const dockerStartupStates = ["starting", "ready", "running"] as const;
+
+export async function failDockerStartup(
+  tx: Sql,
+  sandboxId: string,
+  expectedGeneration: string | number,
+  code: "docker_startup_failed" | "docker_host_retired",
+  message: string,
+) {
+  const fenced = await tx.query<{ generation: string }>(
+    `update public.sandboxes set lifecycle_generation=lifecycle_generation+1
+     where id=$1 and lifecycle_generation=$2 and provider='docker'
+       and status=any($3::public.sandbox_status[]) and stop_requested_at is null
+     returning lifecycle_generation::text as generation`,
+    [sandboxId, expectedGeneration, [...dockerStartupStates]],
+  );
+  const activation = fenced.rows[0];
+  if (!activation) return false;
+
+  const result = await transitionSandbox(tx, {
+    sandboxId,
+    expectedGeneration: activation.generation,
+    fromStates: dockerStartupStates,
+    toState: "failed",
+    actor: "docker_host",
+    code,
+    effects: [],
+  });
+  if (result.kind === "conflict") throw new Error("Docker startup changed while settling its failure.");
+  await tx.query("update public.sandboxes set status_reason=$2 where id=$1", [sandboxId, message]);
+  return true;
+}
+
 export async function failDockerResumeActivation(
   tx: Sql,
   sandboxId: string,
