@@ -164,7 +164,7 @@ async function fixture() {
   };
 }
 
-test("Modal template placement retains the real golden snapshot fence and provider binding", async () => {
+test("Modal template placement uses the pinned provider binding", async () => {
   const f = await fixture();
   try {
     const goldenId = (
@@ -176,9 +176,6 @@ test("Modal template placement retains the real golden snapshot fence and provid
     if (!goldenId) throw Error("missing Modal golden");
     f.runtime.provider = async (golden) => {
       expect(golden.modal).toEqual({ workspace: "workspace", environment: "main", appId: "ap-template" });
-      expect(
-        (await f.db.query("select golden_id from golden_operation_fences where golden_id=$1", [goldenId])).rows,
-      ).toEqual([{ golden_id: goldenId }]);
       return { ...f.provider, id: "modal" };
     };
     const created = await f.create(undefined, undefined, {
@@ -190,14 +187,6 @@ test("Modal template placement retains the real golden snapshot fence and provid
     const result = await f.launch((created.item as LaunchTemplate).id);
     expect(result).toMatchObject({ state: "succeeded", provider: "modal" });
     publishedResponse("templates/launch").parse(result);
-    expect(
-      (
-        await f.db.query<{ golden_operation_fence_id: string }>(
-          "select golden_operation_fence_id from template_launch_requests where id=$1",
-          [result.requestId],
-        )
-      ).rows[0]?.golden_operation_fence_id,
-    ).toBeString();
   } finally {
     await f.close();
   }
@@ -412,7 +401,7 @@ for (const retained of [false, true]) {
       expect(await f.launch(t.id)).toEqual(result);
       expect(calls).toBe(1);
       expect((await f.db.query("select id from sandboxes")).rows).toHaveLength(0);
-      expect((await f.db.query("select id from golden_operation_fences")).rows).toHaveLength(retained ? 1 : 0);
+      expect((await f.db.query("select id from golden_operation_fences")).rows).toHaveLength(0);
     } finally {
       await f.close();
     }
@@ -443,11 +432,18 @@ test("unknown provider outcomes remain durable reconciling across service restar
   try {
     const t = (await f.create()).item as LaunchTemplate;
     let calls = 0;
+    let durableIntent: unknown;
     f.provider.fork = async () => {
       calls++;
+      durableIntent = (
+        await f.db.query(
+          "select state, (select count(*)::int from golden_operation_fences) as fences from template_launch_requests",
+        )
+      ).rows;
       throw Error("transport lost after possible allocation");
     };
     const first = await f.launch(t.id);
+    expect(durableIntent).toEqual([{ state: "allocating", fences: 0 }]);
     expect(first.state).toBe("reconciling");
     const restarted = createTemplateService(f.sql);
     const retry = await restarted.command(
@@ -459,14 +455,7 @@ test("unknown provider outcomes remain durable reconciling across service restar
     expect(retry.state).toBe("reconciling");
     expect(calls).toBe(1);
     expect(f.boat.prompts).toHaveLength(0);
-    // Unknown allocation keeps the existing retirement barrier through process restart.
-    expect(
-      (
-        await f.db.query(
-          "select f.id from golden_operation_fences f join template_launch_requests r on r.golden_operation_fence_id=f.id",
-        )
-      ).rows,
-    ).toHaveLength(1);
+    expect((await f.db.query("select id from golden_operation_fences")).rows).toHaveLength(0);
   } finally {
     await f.close();
   }
@@ -727,18 +716,16 @@ test("reference revocation during initialization stops the allocated sandbox bef
   }
 });
 
-test("a rebuild published during provider selection cannot replace or invalidate the already claimed snapshot", async () => {
+test("a rebuild published during provider selection invalidates pre-dispatch admission", async () => {
   const f = await fixture();
   try {
     const template = (await f.create()).item as LaunchTemplate;
     const rebuilt = `a${"8".repeat(62)}`;
-    let frozen = "";
     let rebuild = true;
-    f.runtime.provider = async (golden) => {
+    f.runtime.provider = async () => {
       if (rebuild) {
         rebuild = false;
-        frozen = golden.providerSnapshotId ?? "";
-        // After immutable request claim, but BEFORE normal launch's beginOperation.
+        // The request is claimed, but the allocation intent has not committed.
         await f.db.query("update goldens set provider_snapshot_id=$2,boat_snapshot_id=$2 where id=$1", [
           f.goldenId,
           rebuilt,
@@ -747,12 +734,11 @@ test("a rebuild published during provider selection cannot replace or invalidate
       return f.provider;
     };
     const first = await f.launch(template.id);
-    expect(first.state).toBe("succeeded");
-    expect(f.boat.forks.map((fork) => fork.from)).toEqual([frozen]);
+    expect(first).toMatchObject({ state: "failed", reason: "environment_snapshot_unavailable" });
     expect(await f.launch(template.id)).toEqual(first);
-    expect(f.boat.forks).toHaveLength(1);
+    expect(f.boat.forks).toHaveLength(0);
     expect((await f.launch(template.id, "after-rebuild")).state).toBe("succeeded");
-    expect(f.boat.forks.map((fork) => fork.from)).toEqual([frozen, rebuilt]);
+    expect(f.boat.forks.map((fork) => fork.from)).toEqual([rebuilt]);
     expect((await f.db.query("select id from golden_operation_fences")).rows).toHaveLength(0);
     await expect(
       f.db.query("update template_launch_requests set golden_operation_fence_id=gen_random_uuid()"),
@@ -762,7 +748,7 @@ test("a rebuild published during provider selection cannot replace or invalidate
   }
 });
 
-test("claimed snapshot fences release on pre-adoption launch refusals without losing request tombstones", async () => {
+test("pre-dispatch launch refusals preserve idempotency without a snapshot reference", async () => {
   const f = await fixture();
   try {
     const template = (await f.create()).item as LaunchTemplate;
