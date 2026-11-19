@@ -39,6 +39,7 @@ import { publishAccountSpend, unmeasuredUsage } from "./account-spend.ts";
 import type { Caller } from "./caller.ts";
 import { scopedOrg } from "./control-caller.ts";
 import { createResourceStore, type ResourceStore } from "./resource-store.ts";
+import { SANDBOX_MEMBER, SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 import { admittedTurnContexts, stampTurnPricing, withServerCost } from "./turn-pricing.ts";
 import { preserveBeforeStop, readWorkRecovery } from "./work-preservation.ts";
 
@@ -153,11 +154,6 @@ const SANDBOX_COLUMNS = `${SANDBOX_USAGE} as usage, s.runtime_transport,s.boat_r
 /** `$1` is the caller's orgs and `$2` the caller. */
 const GOLDEN_VISIBLE = `g.org_id = any($1::uuid[]) and (g.visibility = 'org' or g.owner_id = $2::uuid)
   and exists(select 1 from public.members m where m.org_id=g.org_id and m.user_id=$2::uuid)`;
-const SANDBOX_MEMBER = `not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)
-  and s.org_id=any($1::uuid[]) and exists(select 1 from public.members m
-  where m.org_id=s.org_id and m.user_id=$2::uuid)`;
-const SANDBOX_VISIBLE = `${SANDBOX_MEMBER} and exists(select 1 from public.members m
-  where m.org_id=s.org_id and m.user_id=$2::uuid and (s.owner_id=$2::uuid or m.role='admin'))`;
 // Ordinary delegated children retain their relation, but permanent parent deletion
 // fences their authority before owner/admin cleanup. Legacy orchestrators keep
 // their dedicated lifecycle. Share the policy between authorization and admission.
@@ -395,8 +391,7 @@ export function createSqlData(
         );
       },
       async recordNativeExhaustion(id, promptId, limit, at) {
-        if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
-        await recordNativeAccountExhaustion(sql, id, promptId, limit, at);
+        await recordNativeAccountExhaustion(sql, scope, id, promptId, limit, at);
       },
       async readTurnModel(id, promptId) {
         if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");

@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { createSqlAuthStore } from "@armada/auth";
-import { createSqlVaultStore, mutateCredentialAccount, ProviderError, VaultError } from "@armada/core/server";
+import {
+  createSqlSandboxStore,
+  createSqlVaultStore,
+  mutateCredentialAccount,
+  ProviderError,
+  VaultError,
+} from "@armada/core/server";
 import { BoatRetentionUnconfirmed } from "@armada/provider-boat";
 import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
 import helperManifest from "../../core/helper/manifest.json";
@@ -678,6 +684,100 @@ describe("tools", () => {
     );
     expect(health.rows).toMatchObject([
       { code: "usage_limit_exceeded", resets_at: new Date(resetsAt), event_at: "10" },
+    ]);
+  });
+
+  test("status records a reset from retained provider evidence for an already cached native outcome", async () => {
+    const { token, client, people, boat, db } = await start();
+    const mcp = await client(await token(people.member));
+    const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude", prompt: "go" });
+    const promptId = "prompt_1";
+    const resetsAt = "2026-11-10T00:00:00.000Z";
+    const limit = { code: "usage_limit_exceeded", resetsAt };
+    const { model } = boat.prompts[0]!;
+    await db.query("update sandbox_turn_models set evidence=$3::jsonb where sandbox_id=$1 and prompt_id=$2", [
+      launched.data.id,
+      promptId,
+      JSON.stringify({
+        requestedModel: model,
+        observedModel: model,
+        modelSelectionReason: null,
+        modelSelectionMessage: null,
+        terminalOutcome: { state: "failed", reason: "Plan limit reached.", limit },
+      }),
+    ]);
+    boat.sandbox("bx_1").events.push({
+      id: "limit",
+      promptId,
+      at: 10,
+      kind: "other",
+      type: "usage_limit",
+      data: limit,
+    });
+    boat.finish("bx_1", promptId, "failed");
+
+    const status = await call(mcp, "status", { id: launched.data.id, prompt_id: promptId });
+    expect(status.data.prompt).toMatchObject({ state: "failed", limit });
+    const health = await db.query("select resets_at,event_at::text from account_exhaustion");
+    expect(health.rows).toEqual([{ resets_at: new Date(resetsAt), event_at: "10" }]);
+  });
+
+  test("retained native Modal exhaustion is attributed to the turn's account after a rebind", async () => {
+    const { db, people, boat, clock } = await start();
+    const golden = (
+      await db.query<{ id: string }>(
+        `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,
+          modal_workspace,modal_environment,modal_app_id,config)
+       values($1,$2,'modal','org','modal','master','image','workspace','main','app','{"repos":[],"init":[]}')
+       returning id`,
+        [people.org, people.owner],
+      )
+    ).rows[0]!;
+    const accounts = (
+      await db.query<{ id: string; version: number }>(
+        "select id,version from credentials where kind='claude_oauth' and owner_id in ($1,$2) order by scope",
+        [people.org, people.owner],
+      )
+    ).rows;
+    const [original, replacement] = [accounts[0]!, accounts[1]!];
+    const provider = { ...boat.provider, id: "modal" as const };
+    const native = await provider.fork({ from: "image" });
+    const { promptId } = await provider.prompt({ sandboxId: native.id, harness: "claude", text: "work" });
+    const row = await createSqlSandboxStore(db).insert({
+      id: crypto.randomUUID(),
+      provider: "modal",
+      providerSandboxId: native.id,
+      goldenId: golden.id,
+      orgId: people.org,
+      ownerId: people.owner,
+      harness: "claude",
+      status: "ready",
+      credentialId: replacement.id,
+      credentialVersion: replacement.version,
+    });
+    const { sandboxes } = createSqlData(db)({
+      userId: people.owner,
+      via: "service",
+      orgs: [{ orgId: people.org, role: "member" }],
+    });
+    await sandboxes.recordTurnModel!(row.id, promptId, null, {
+      credentialId: original.id,
+      credentialVersion: original.version,
+    });
+    const resetsAt = "2026-11-10T00:00:00.000Z";
+    boat.sandbox(native.id).events.push({
+      id: "limit",
+      kind: "other",
+      type: "usage_limit",
+      data: { code: "rate_limited", resetsAt },
+      promptId,
+      at: clock.now.getTime(),
+    });
+    boat.finish(native.id, promptId, "finished");
+    await readStatus(provider, sandboxes, (await sandboxes.get(row.id))!, { promptId, now: clock.now, stored: true });
+    const health = await db.query("select account_id,account_version,resets_at from account_exhaustion");
+    expect(health.rows).toEqual([
+      { account_id: original.id, account_version: original.version, resets_at: new Date(resetsAt) },
     ]);
   });
 

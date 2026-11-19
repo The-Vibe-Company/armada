@@ -1,4 +1,5 @@
 import { type AgentEvent, type PlanLimit, planLimitData, planLimitFromMessage, type Sql } from "@armada/core";
+import { SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 
 const ACCOUNT_EXHAUSTION_UPSERT = `on conflict(account_id) do update set account_version=excluded.account_version,
   code=excluded.code,resets_at=excluded.resets_at,event_at=excluded.event_at
@@ -29,6 +30,7 @@ export async function recordAccountExhaustion(tx: Sql, sandboxId: string, events
 
 export async function recordNativeAccountExhaustion(
   sql: Sql,
+  scope: readonly [string[], string],
   id: string,
   promptId: string,
   limit: PlanLimit & { resetsAt: string },
@@ -36,15 +38,14 @@ export async function recordNativeAccountExhaustion(
 ) {
   await sql.query(
     `insert into public.account_exhaustion(account_id,account_version,code,resets_at,event_at)
-     select c.id,c.version,$3,$4,$5 from public.sandboxes s
-     join public.sandbox_turn_models t on t.sandbox_id=s.id and t.prompt_id=$2
-     join public.credentials c on c.id=s.credential_id and c.version=s.credential_version
-       and t.pricing_context->>'credentialId'=c.id::text
-       and t.pricing_context->>'credentialVersion'=c.version::text
-     where s.id=$1::uuid
-       and ((s.provider='boat' and not s.boat_runtime) or (s.provider='modal' and s.runtime_transport is null))
+     select c.id,c.version,$5,$6,$7 from public.sandboxes s
+     join public.sandbox_turn_models t on t.sandbox_id=s.id and t.prompt_id=$4
+     join public.credentials c on c.id=(t.pricing_context->>'credentialId')::uuid
+       and c.version::text=t.pricing_context->>'credentialVersion'
+     where s.id=$3::uuid and ${SANDBOX_VISIBLE}
+       and s.provider in ('boat','modal') and not s.boat_runtime and s.runtime_transport is null
      ${ACCOUNT_EXHAUSTION_UPSERT}`,
-    [id, promptId, limit.code, limit.resetsAt, at],
+    [...scope, id, promptId, limit.code, limit.resetsAt, at],
   );
 }
 
