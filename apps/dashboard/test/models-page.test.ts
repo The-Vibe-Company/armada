@@ -56,7 +56,14 @@ test("personal per-agent accounts override account-wide defaults without billing
 });
 
 test("launch initialization carries personal agent choices through the account projection", () => {
-  const shared = { ...account, id: "shared_account", kind: "morph" as const, isDefault: false, maxAgents: null };
+  const shared = {
+    ...account,
+    id: "shared_account",
+    kind: "morph" as const,
+    isDefault: false,
+    maxAgents: null,
+    models: ["morph-kimik31", "morph-dsv41flash"].map((model) => ({ model, input: null, output: null })),
+  };
   const defaults = [
     { harness: "codex" as const, credentialId: shared.id, model: "morph-dsv41flash" },
     { harness: "claude" as const, credentialId: shared.id, model: "morph-kimik31" },

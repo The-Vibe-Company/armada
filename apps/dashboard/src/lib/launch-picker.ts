@@ -1,6 +1,6 @@
-import { type Harness, harnessesForCredential, MORPH_MODEL_IDS } from "@armada/core";
+import { type Harness, harnessesForCredential } from "@armada/core";
 import type { ModelCatalog } from "@/components/model-fields";
-import { accountProblem, type LaunchAccounts, type ModelAccount } from "@/lib/model-accounts";
+import { accountProblem, type LaunchAccounts, type ModelAccount, missingMorphModels } from "@/lib/model-accounts";
 import { modelsPageDefault } from "@/lib/models-page";
 
 /** Keep unusable accounts in the picker: refusing selection must never hide the explanation. */
@@ -19,7 +19,7 @@ export function launchPickerGroups(
           ? `${account.name} is ${problem}. Repair this account first.`
           : account.maxAgents != null && (account.runningAgents ?? 0) >= account.maxAgents
             ? `${account.runningAgents} of ${account.maxAgents} agents running. Stop one, or raise the limit, to launch here.`
-            : null;
+            : missingMorphModels(account);
     const agents = harnessesForCredential(account.kind);
     // Shared accounts offer the current agent once, not three identical sets of model ids.
     const harness = agents.includes(current) ? current : (agents[0] ?? current);
@@ -27,7 +27,7 @@ export function launchPickerGroups(
     const options = account.models?.length
       ? account.models.map((row) => ({ id: row.model, label: row.model, harness, isDefault: false }))
       : account.kind === "morph"
-        ? MORPH_MODEL_IDS.map((id) => ({ id, label: id, harness, isDefault: false }))
+        ? []
         : entry.models.map((row) => ({ ...row, harness, isDefault: row.id === entry.defaultModel }));
     return { account, reason, options };
   });
@@ -44,9 +44,9 @@ export function initialLaunchSelection(accounts: LaunchAccounts, catalog: ModelC
   return {
     credentialId: account?.id ?? "",
     model:
-      savedModel ??
-      account?.models?.[0]?.model ??
-      (account?.kind === "morph" ? MORPH_MODEL_IDS[0] : catalog[harness].defaultModel),
+      account && missingMorphModels(account)
+        ? ""
+        : (savedModel ?? account?.models?.[0]?.model ?? catalog[harness].defaultModel),
   };
 }
 

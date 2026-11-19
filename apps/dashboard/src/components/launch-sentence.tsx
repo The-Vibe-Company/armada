@@ -14,7 +14,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { EFFORT_LABEL, HARNESS_LABELS } from "@/lib/labels";
 import { initialLaunchSelection, launchPickerGroups } from "@/lib/launch-picker";
-import { accountProblem, KIND_INFO, type LaunchAccounts } from "@/lib/model-accounts";
+import { accountProblem, KIND_INFO, type LaunchAccounts, missingMorphModels } from "@/lib/model-accounts";
 
 export function LaunchSentence({
   onBlocked,
@@ -81,6 +81,7 @@ export function LaunchSentence({
     (group.account.name + " " + group.options.map((row) => row.label + " " + row.id).join(" "))
       .toLowerCase()
       .includes(query.toLowerCase());
+  const modelLabel = entry.models.find((row) => row.id === model)?.label ?? (model || "Model unavailable");
   const selectedProblem = groups.find((group) => group.account.id === account)?.reason;
   useEffect(
     () => onBlocked(accounts.state === "unavailable" || (accounts.state === "ready" && (!chosen || !!selectedProblem))),
@@ -129,6 +130,9 @@ export function LaunchSentence({
                 </span>
               }
             >
+              {group.options.length === 0 && group.reason && (
+                <p className="px-2 py-2 text-xs text-muted-foreground">{group.reason}</p>
+              )}
               {group.options.map((option) => {
                 const reason =
                   group.reason ??
@@ -230,7 +234,7 @@ export function LaunchSentence({
         <LaunchSetting
           label="Agent"
           value={HARNESS_LABELS[harness]}
-          description={`${model} · ${EFFORT_LABEL[efforts.includes(effort) ? effort : entry.defaultReasoningEffort] ?? effort} effort`}
+          description={`${modelLabel} · ${EFFORT_LABEL[efforts.includes(effort) ? effort : entry.defaultReasoningEffort] ?? effort} effort`}
           mark={
             <span className="[&_svg]:size-6">
               <CatalogHarnessMark harness={harness} />
@@ -257,7 +261,7 @@ export function LaunchSentence({
             <PopoverTrigger asChild>
               <button
                 type="button"
-                aria-label={`Model: ${entry.models.find((row) => row.id === model)?.label ?? model}`}
+                aria-label={`Model: ${modelLabel}`}
                 className="grid min-h-[52px] w-full grid-cols-[84px_minmax(0,1fr)_auto] items-center gap-3 border-b px-3.5 py-2 text-left text-[13px] hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
                 onClick={() => {
                   setPickerSource("model");
@@ -266,7 +270,9 @@ export function LaunchSentence({
               >
                 <span className="text-muted-foreground">Model</span>
                 <span className="truncate font-medium">
-                  {entry.models.find((row) => row.id === model)?.label ?? <span className="font-mono">{model}</span>}
+                  {entry.models.find((row) => row.id === model)?.label ?? (
+                    <span className="font-mono">{modelLabel}</span>
+                  )}
                 </span>
                 <span aria-hidden="true" className="flex items-center gap-1 text-xs text-muted-foreground">
                   <span className="max-sm:sr-only">Change</span>
@@ -379,7 +385,8 @@ export function LaunchAccountNotice({
   const chosen = accounts.accounts.find((row) => row.id === account);
   const problem = chosen ? accountProblem(chosen, accounts.now) : null;
   const full = chosen?.maxAgents != null && (chosen.runningAgents ?? 0) >= chosen.maxAgents;
-  if (chosen && !problem && !full) return null;
+  const missingModels = chosen ? missingMorphModels(chosen) : null;
+  if (chosen && !problem && !full && !missingModels) return null;
   return (
     <>
       <p
@@ -391,11 +398,17 @@ export function LaunchAccountNotice({
           ? `${HARNESS_LABELS[harness]} has no account selected.`
           : full
             ? `${chosen.runningAgents ?? 0} of ${chosen.maxAgents} agents are working on ${chosen.name}.`
-            : `${chosen.name} is ${problem}.`}
+            : problem
+              ? `${chosen.name} is ${problem}.`
+              : missingModels}
       </p>
-      <Button asChild variant="outline" size="sm">
-        <Link href="/harness">{!chosen ? "Add an account" : full ? "Change account limit" : "Reconnect account"}</Link>
-      </Button>
+      {(!chosen || full || problem) && (
+        <Button asChild variant="outline" size="sm">
+          <Link href="/harness">
+            {!chosen ? "Add an account" : full ? "Change account limit" : "Reconnect account"}
+          </Link>
+        </Button>
+      )}
       {accounts.accounts.length > 0 && (
         <Button type="button" variant="ghost" size="sm" onClick={onPick}>
           Pick another account

@@ -108,6 +108,13 @@ describe("the account a launch request bills, as the server action checks it", (
       { ok: false, error: "Old is expired. Replace its token or choose another." },
     ],
     ["a revoked account", ready(account(4, { status: "revoked" })), "claude", uuid(4), { ok: false }],
+    [
+      "a Morph account whose models could not be loaded",
+      ready(account(5, { kind: "morph" })),
+      "codex",
+      uuid(5),
+      { ok: false, error: "Morph models could not be loaded. Reload and try again." },
+    ],
     ["a malformed id", ready(work), "claude", "not-a-uuid", { ok: false, error: "That request is not valid." }],
     [
       "an unreadable list",
