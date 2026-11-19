@@ -255,7 +255,8 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
           if (record.uncertain) await observeAllocation(record.sandboxId);
           if (result?.state !== "succeeded") launchFailure(result?.state, result?.reason);
           if (
-            !record.sandboxId ||
+            typeof result.id !== "string" ||
+            !result.id ||
             result.provider !== item.provider ||
             typeof result.promptId !== "string" ||
             !result.promptId

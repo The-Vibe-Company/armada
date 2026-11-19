@@ -147,7 +147,7 @@ function fixture(
             : {
                 state: "succeeded",
                 ...(fault === "missing_handle" ? {} : { id: `sandbox-${template.id}` }),
-                provider: selected.provider,
+                provider: input.externalRef ? "modal" : selected.provider,
                 promptId: `prompt-${template.id}`,
                 manifest: { skillReceipts: fault === "missing_receipt" || !pin ? [] : [receipt(pin)] },
               };
@@ -415,4 +415,15 @@ test("a late inventory receipt still supplies a lost template launch cleanup han
   expect(fake.calls.filter((call) => call.path === "templates/launch")).toHaveLength(1);
   expect(fake.discovered).toEqual([fake.reservedId]);
   expect(fake.stopped).toEqual([fake.reservedId]);
+});
+
+test("a template response without its sandbox ID cannot use inventory as launch proof", async () => {
+  const fake = fixture({ fault: "missing_handle", key: "absent", lateInventory: true });
+  expect(await runTemplateSkillCase({ ...selected, provider: "modal", publicSkill: undefined }, fake.io)).toBe(false);
+  expect(fake.discovered).toEqual([fake.reservedId]);
+  expect(fake.stopped).toEqual([fake.reservedId]);
+  expect(fake.calls.some((call) => call.path === "sandbox/wait")).toBe(false);
+  expect(fake.lines).toContainEqual(
+    expect.objectContaining({ step: "template_launch", pass: false, code: "invalid_response" }),
+  );
 });
