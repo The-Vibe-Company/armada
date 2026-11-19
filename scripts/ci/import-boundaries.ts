@@ -2,17 +2,12 @@ import { readFileSync } from "node:fs";
 import { dirname, join, normalize } from "node:path/posix";
 import ts from "typescript";
 import core from "../../packages/core/package.json";
-import boat from "../../packages/provider-boat/package.json";
-import modal from "../../packages/provider-modal/package.json";
 
 const coreSource = "packages/core/src/";
 const coreEntries = Object.entries(core.exports).map(
   ([key, value]) => [core.name + key.slice(1), join("packages/core", value)] as const,
 );
-const providers: ReadonlyMap<string, Readonly<Record<string, string>>> = new Map([
-  [boat.name, boat.exports],
-  [modal.name, modal.exports],
-]);
+const providers = ["provider-boat", "provider-modal"];
 const sourceExtension = /\.[cm]?[jt]sx?$/;
 const extensions = [".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs"];
 
@@ -40,12 +35,17 @@ function localTarget(file: string, specifier: string) {
   return normalize(specifier);
 }
 
-function providerInternal(file: string, specifier: string, target: string) {
-  for (const [name, entries] of providers) {
-    const directory = `packages/${name.slice("@armada/".length)}/`;
+function providerInternal(
+  file: string,
+  specifier: string,
+  target: string,
+  workspaceEntries: ReadonlyMap<string, string>,
+) {
+  for (const provider of providers) {
+    const directory = `packages/${provider}/`;
     if (file.startsWith(directory)) continue;
-    if (target.startsWith(directory) && target !== `${directory}package.json`) return true;
-    if (specifier.startsWith(`${name}/`) && !Object.hasOwn(entries, `.${specifier.slice(name.length)}`)) return true;
+    if (target.startsWith(directory) || target === `packages/${provider}`) return true;
+    if (specifier.startsWith(`@armada/${provider}/`) && !workspaceEntries.has(specifier)) return true;
   }
   return false;
 }
@@ -117,7 +117,10 @@ export function checkImportBoundaries(
       ) {
         report(file, specifier, "dashboard-service-import");
       }
-      if (providerInternal(file, specifier, target) && !existingProviderImports.has(`${file} -> ${specifier}`)) {
+      if (
+        providerInternal(file, specifier, target, workspaceEntries) &&
+        !existingProviderImports.has(`${file} -> ${specifier}`)
+      ) {
         report(file, specifier, "provider-private-import");
       }
     }

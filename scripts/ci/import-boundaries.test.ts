@@ -45,12 +45,15 @@ test("enforces provider exports across packages, including relative paths and dy
          import "@armada/provider-modal/embedded";
          import("@armada/provider-modal/src/store");
          export * from "../../provider-boat/src/native-cwd.ts";
-         import "../../provider-boat/test/support";`,
+         import "../../provider-boat/test/support";
+         import "../../provider-boat/package.json";`,
         ],
         ["packages/provider-boat/test/probe.ts", 'import "../src/native-cwd.ts";'],
       ]),
+      new Map([["@armada/provider-modal/embedded", "packages/provider-modal/src/embedded.ts"]]),
     ),
   ).toEqual([
+    "packages/mcp-server/src/provider.ts: provider-private-import: ../../provider-boat/package.json",
     "packages/mcp-server/src/provider.ts: provider-private-import: ../../provider-boat/src/native-cwd.ts",
     "packages/mcp-server/src/provider.ts: provider-private-import: ../../provider-boat/test/support",
     "packages/mcp-server/src/provider.ts: provider-private-import: @armada/provider-modal/src/store",
