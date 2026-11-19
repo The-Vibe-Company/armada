@@ -92,28 +92,29 @@ export type RequestResult =
       failure?: Failure;
     };
 
-export function apiUrl(origin: string, path: string): URL {
+export function apiUrl(origin: string, path: string) {
   if (!path.startsWith("/")) throw new TypeError("API paths must start with '/'.");
   const url = new URL(path, origin);
   if (url.origin !== origin) throw new TypeError("API paths must stay on the Armada origin.");
   return url;
 }
 
-export function jsonPost(body: unknown): RequestInit {
+export function jsonPost(body: unknown) {
   const bodyText = JSON.stringify(body);
-  return {
+  const init: RequestInit = {
     method: "POST",
     headers: { "content-type": "application/json" },
     ...(bodyText !== undefined ? { body: bodyText } : {}),
   };
+  return init;
 }
 
 /** Shared JSON transport. Callers validate their own success receipts and choose how to present errors. */
-export async function requestApi(
+export const requestApi: (
   url: URL,
   requestInit: RequestInit | (() => RequestInit),
   policy: RequestPolicy,
-): Promise<RequestResult> {
+) => Promise<RequestResult> = async (url, requestInit, policy) => {
   const { fetch, signal: callerSignal, combineSignal, timeoutMs, renewToken, readOnly, readRetries = 0 } = policy;
   const deadline = combineSignal ? AbortSignal.timeout(timeoutMs) : undefined;
   const signal = deadline
@@ -202,10 +203,10 @@ export async function requestApi(
       },
     };
   }
-}
+};
 
 /** Accept only a delay in seconds or an HTTP date (header), or a whole number of seconds (failure body). */
-function retryAfter(header: string | null, error: unknown): number | undefined {
+function retryAfter(header: string | null, error: unknown) {
   const seconds = (value: number) => (Number.isFinite(value) && value >= 0 ? Math.ceil(value) : undefined);
   if (header !== null) {
     const text = header.trim();
