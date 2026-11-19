@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { CONTROL_BODY_MAX_BYTES } from "@armada/core";
 import {
+  accountOperations,
   operations as contractOperations,
   controlRouteKey,
   PUBLIC_CONTROL_ROUTES,
@@ -113,7 +114,7 @@ test("proxy-generated failures match the published failure schema and decode to 
 const fillParameters = (template: string) =>
   template.replace("{id}", "11111111-1111-4111-8111-111111111111").replace("{name}", "memo%20v2.pdf");
 
-test("published OpenAPI operations cross the proxy unless marked direct-server", async () => {
+test("published OpenAPI and account session operations follow their proxy routing", async () => {
   const published = (await import("../openapi.json")).default as {
     paths: Record<string, Record<string, { "x-armada-direct-server"?: boolean }>>;
   };
@@ -128,6 +129,10 @@ test("published OpenAPI operations cross the proxy unless marked direct-server",
       })),
     );
     expect(operations.length).toBeGreaterThan(0);
+    for (const { route } of Object.values(accountOperations)) {
+      expect(published.paths[route.path]?.[route.method.toLowerCase()]).toBeUndefined();
+      operations.push({ path: route.path, verb: route.method, direct: false });
+    }
     const blocked: string[] = [];
     for (const { path: template, verb, direct } of operations) {
       const path = fillParameters(template);
