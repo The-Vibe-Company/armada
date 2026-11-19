@@ -4,8 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SNAPSHOT_INIT_SUPERVISOR } from "../src/docker-snapshot-init.ts";
 
-// Actual Linux process boundary: escaped-session writer must be dead/reaped
-// BEFORE trusted control can proceed to scan. No Docker, network or fixed sleeps.
 test.skipIf(process.platform !== "linux")(
   "snapshot init quiesces setsid background writers with restricted privileges",
   async () => {

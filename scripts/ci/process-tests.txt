@@ -13,7 +13,6 @@ packages/cli/test/skill-hint.test.ts
 packages/cli/test/skill-install.test.ts
 packages/core/test/docker-machine.test.ts
 packages/core/test/docker-snapshot-build.test.ts
-packages/core/test/docker-snapshot-init.test.ts
 packages/core/test/golden-helper.test.ts
 packages/core/test/golden-script-shell.test.ts
 packages/core/test/golden-skillpack.test.ts
