@@ -2,26 +2,22 @@
 
 import { CircleAlertIcon } from "lucide-react";
 import Link from "next/link";
-import { type ReactNode, useState } from "react";
+import { useRef, useState } from "react";
 import { ConnectionStatusBadge } from "@/components/connections";
 import { LaunchChip } from "@/components/launch-composer";
 import type { LaunchConnections } from "@/components/launch-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { launchBlocker, launchDefaults, type McpConnection, unreadyDefaults } from "@/lib/connections";
+import { connectAction, launchBlocker, launchDefaults, type McpConnection, unreadyDefaults } from "@/lib/connections";
 import { launchToolsSummary } from "@/lib/launch-composer";
-import { launchToolGroups, toolInitials } from "@/lib/launch-tools";
+import { launchToolGroups, rememberLaunchToolSelection, toolInitials } from "@/lib/launch-tools";
 
 export function useLaunchAccess(connections: LaunchConnections) {
-  // Null until the person changes the selection: the defaults apply until then.
   const [picked, setPicked] = useState<string[] | null>(null);
-  // A requested default that is not connected holds the launch until the person reconnects it or explicitly goes
-  // on without it. Ticking other connections does not count: it would drop the default without saying so.
   const [waived, setWaived] = useState<readonly string[]>([]);
   const list = "connections" in connections ? connections.connections : [];
   const blocked = unreadyDefaults(list);
-  // A default that is not connected cannot be ticked: it is held rather than submitted or dropped unseen.
   const chosen = picked ?? launchDefaults(list).filter((item) => !blocked.some((connection) => connection.id === item));
   const unready = blocked.filter((connection) => !waived.includes(connection.id));
 
@@ -29,7 +25,7 @@ export function useLaunchAccess(connections: LaunchConnections) {
     setPicked(on ? [...chosen, connectionId] : chosen.filter((item) => item !== connectionId));
   }
 
-  const alerts = (onContinue: () => void, idPrefix: string): ReactNode => (
+  const alerts = (onContinue: () => void, idPrefix: string) => (
     <>
       {unready.length > 0 && (
         <div data-unready-defaults className="contents">
@@ -71,11 +67,12 @@ export function useLaunchAccess(connections: LaunchConnections) {
     </>
   );
 
-  const fields = (idPrefix: string): ReactNode =>
-    "connections" in connections && (
+  const fields = (idPrefix: string) =>
+    (
       <ToolMenu
         idPrefix={idPrefix}
         tools={list}
+        unavailable={"unavailable" in connections}
         chosen={chosen}
         onChange={toggle}
         changed={picked !== null}
@@ -88,7 +85,6 @@ export function useLaunchAccess(connections: LaunchConnections) {
   const selectedTools = list.filter((connection) => chosen.includes(connection.id) && !launchBlocker(connection));
 
   return {
-    // Only a listed selection the person changed is sent; otherwise the server snapshots the defaults.
     explicit: picked !== null && "connections" in connections,
     selected: selectedTools.length,
     selectedTools,
@@ -121,13 +117,7 @@ export function LaunchTools({ access, idPrefix }: { access: ReturnType<typeof us
           : undefined
       }
     >
-      {access.unavailable ? (
-        <Button asChild variant="ghost" size="sm">
-          <Link href="/tools">Connect a tool</Link>
-        </Button>
-      ) : (
-        access.fields(idPrefix)
-      )}
+      {access.fields(idPrefix)}
     </LaunchChip>
   );
 }
@@ -135,6 +125,7 @@ export function LaunchTools({ access, idPrefix }: { access: ReturnType<typeof us
 function ToolMenu({
   idPrefix,
   tools,
+  unavailable,
   chosen,
   changed,
   onChange,
@@ -142,35 +133,39 @@ function ToolMenu({
 }: {
   idPrefix: string;
   tools: McpConnection[];
+  unavailable: boolean;
   chosen: readonly string[];
   changed: boolean;
   onChange: (id: string, checked: boolean) => void;
   onReset: () => void;
 }) {
   const [query, setQuery] = useState("");
-  // Popover and sheet content mount on open. Keep each switch in its initial group for that opening.
-  const [groups] = useState(() => launchToolGroups(tools, chosen));
+  const searchInput = useRef<HTMLInputElement>(null);
+  const connectLink = useRef<HTMLAnchorElement>(null);
+  const [initialSelection, setInitialSelection] = useState<ReadonlyMap<string, boolean>>(() => new Map());
+  const selectionWithNewTools = rememberLaunchToolSelection(initialSelection, tools, chosen);
+  if (selectionWithNewTools !== initialSelection) setInitialSelection(selectionWithNewTools);
   const search = query.trim().toLowerCase();
-  const visible = groups
-    .map(({ title, ids }) => ({
+  const visible = launchToolGroups(tools, initialSelection)
+    .map(({ title, tools: entries }) => ({
       title,
-      tools: ids.flatMap((id) => {
-        const tool = tools.find((entry) => entry.id === id);
-        return tool && `${tool.name} ${tool.scope} ${tool.accountLabel ?? ""}`.toLowerCase().includes(search)
-          ? [tool]
-          : [];
-      }),
+      tools: entries.filter((tool) =>
+        `${tool.name} ${tool.scope} ${tool.accountLabel ?? ""}`.toLowerCase().includes(search),
+      ),
     }))
     .filter((group) => group.tools.length > 0);
   return (
     <div className="space-y-3">
       {tools.length > 0 ? (
         <Input
+          ref={searchInput}
           aria-label="Search tools"
           placeholder="Search tools"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
         />
+      ) : unavailable ? (
+        <p className="p-2 text-sm text-muted-foreground">Connections could not be loaded.</p>
       ) : (
         <p className="p-2 text-sm text-muted-foreground">
           No connections.{" "}
@@ -200,12 +195,22 @@ function ToolMenu({
       )}
       <div className="flex flex-wrap items-center justify-between gap-1 border-t pt-2">
         {changed && (
-          <Button type="button" variant="ghost" size="sm" onClick={onReset}>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              (searchInput.current ?? connectLink.current)?.focus();
+              onReset();
+            }}
+          >
             Back to your defaults
           </Button>
         )}
         <Button asChild variant="ghost" size="sm" className="ml-auto">
-          <Link href="/tools">Connect a tool</Link>
+          <Link ref={connectLink} href="/tools">
+            Connect a tool
+          </Link>
         </Button>
       </div>
     </div>
@@ -238,8 +243,7 @@ function ConnectionOption({
     ]
       .filter(Boolean)
       .join(" · ");
-  const recovery =
-    connection.transport === "stdio" ? "Configure" : connection.status === "disabled" ? "Enable" : "Reconnect";
+  const recovery = connectAction(connection) ?? "Enable";
   return (
     <li className="flex min-h-11 items-center gap-2 px-2 py-2">
       <span

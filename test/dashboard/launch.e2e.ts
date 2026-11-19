@@ -1,5 +1,8 @@
 import { test } from "@e2e-dev/web";
 import { expect } from "e2e";
+import { e2eFixture, fixtureOrigin } from "../../scripts/fixture-ports.ts";
+
+const mock = fixtureOrigin(e2eFixture.mockPort);
 
 for (const organization of [
   { session: "alice", name: "Acme", source: "shared-golden", folder: "web", repository: "acme/web" },
@@ -35,7 +38,7 @@ for (const organization of [
     await screen.getByRole("button", "Launch", { exact: true }).tap();
     await expect(browser).toHaveURL(/\/sandboxes\/[0-9a-f-]+$/);
     await expect(browser.locator('[role="log"][aria-label="Messages"]')).toBeVisible();
-    const response = await fetch("http://127.0.0.1:54399/__test/state");
+    const response = await fetch(`${mock}/__test/state`);
     if (!response.ok) throw new Error("Could not read fixture launch receipt");
     const state = await response.json();
     expect(state.launches.at(-1)).toMatchObject({
@@ -74,7 +77,6 @@ test("Large: launch on the online Docker host", { session: "large" }, async ({ a
   await app.open("/sandboxes");
   await screen.getByRole("button", "Launch a sandbox").tap();
   await screen.getByRole("button", /^From ·/).tap();
-  // Search by the displayed group term: the group label and its search keywords share one wording.
   await screen.getByPlaceholder("Search from").fill("Docker host");
   await expect(screen.getByRole("group", /^Docker hosts$/)).toBeVisible();
   await screen.getByRole("option", /^Empty machine · Large platform/).tap();
@@ -91,7 +93,7 @@ test("Large: launch on the online Docker host", { session: "large" }, async ({ a
   await screen.getByRole("button", "Launch", { exact: true }).tap();
   await expect(browser).toHaveURL(/\/sandboxes\/[0-9a-f-]+$/);
   await expect(browser.locator('[role="log"][aria-label="Messages"]')).toBeVisible();
-  const response = await fetch("http://127.0.0.1:54399/__test/state");
+  const response = await fetch(`${mock}/__test/state`);
   if (!response.ok) throw new Error("Could not read fixture launch receipt");
   const state = await response.json();
   expect(state.launches.at(-1)).toMatchObject({

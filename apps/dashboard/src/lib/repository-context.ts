@@ -35,7 +35,7 @@ export function repositoryChoice(
 }
 
 /** The repository context a sandbox row recorded at launch, or null when it has none (or predates it). */
-export function sandboxRepositoryDir(row: object): string | null {
+export function sandboxRepositoryDir(row: object) {
   const value = (row as { repository_dir?: unknown }).repository_dir;
   return typeof value === "string" && value !== "" ? value : null;
 }
