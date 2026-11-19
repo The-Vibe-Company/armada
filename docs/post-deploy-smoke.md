@@ -408,7 +408,7 @@ This mode adds one tiny model turn and one retained stop/resume physical incarna
 per selected pair, not a new logical sandbox. Expect roughly 1–4 extra minutes
 per pair; provider cold-start/model rates determine cost. Extension requests
 1860 seconds from now (initial logical TTL 1800), within existing Modal physical
-headroom, then cleanup stops compute; no TTL wall-clock wait is added. Shared
+headroom, then cleanup stops compute; no TTL wall-clock wait is added.
 The run reserves 35 minutes for work and five minutes for cleanup.
 Lifecycle polling uses the measured step deadline when available and the
 existing poll limit otherwise.
