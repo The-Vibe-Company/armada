@@ -1,6 +1,3 @@
-/** A header lets upgraded daemons keep using existing poll request bodies on older servers. */
-export const DOCKER_HOST_SNAPSHOT_BASELINE_HEADER = "x-armada-snapshot-baseline";
-
 function numericVersion(value: string | null | undefined): number[] | null {
   const match = value && /^(\d+)\.(\d+)\.(\d+)(?:[-+][0-9A-Za-z.+-]+)?$/.exec(value);
   const parts = match ? match.slice(1, 4).map(Number) : null;
@@ -19,21 +16,9 @@ export function dockerHostMeetsVersion(version: string | null | undefined, minim
 export function dockerHostUpgradeMessage(
   version: string | null | undefined,
   serverVersion: string | undefined,
-  minimumVersion?: string,
-  snapshotBuildSupported?: boolean,
 ): string | null {
-  const belowMinimum = minimumVersion && !dockerHostMeetsVersion(version, minimumVersion);
-  if (
-    snapshotBuildSupported !== false &&
-    !belowMinimum &&
-    (!serverVersion || !numericVersion(serverVersion) || dockerHostMeetsVersion(version, serverVersion))
-  )
-    return null;
+  if (!serverVersion || !numericVersion(serverVersion) || dockerHostMeetsVersion(version, serverVersion)) return null;
   const host = numericVersion(version);
-  const requirement = belowMinimum
-    ? `minimum ${minimumVersion}`
-    : snapshotBuildSupported === false
-      ? "snapshot baseline support required"
-      : `server ${serverVersion}`;
+  const requirement = `server ${serverVersion}`;
   return `Docker host daemon ${version ?? "unknown"} ${host ? "is outdated" : "needs a version check"} (${requirement}). From a signed-in client, run armada host add and run its generated install command on the same Docker machine for the same server. This preserves registration and restarts the user service. Daemons do not upgrade automatically.`;
 }

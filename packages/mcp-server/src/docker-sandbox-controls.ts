@@ -27,7 +27,7 @@ import type { Caller } from "./caller.ts";
 import { createSqlData } from "./data.ts";
 import type { createDockerBootstrapService } from "./docker-bootstrap-service.ts";
 import { createDockerHostStore, DOCKER_JOB_REQUEST_OUTCOME_SQL, DockerHostDenied } from "./docker-host-store.ts";
-import { dockerHostSupportsResume } from "./docker-host-version.ts";
+import { DockerHostUpgradeRequired, supportsDockerHostProtocol } from "./docker-host-version.ts";
 import { createDockerLaunchEnvironment } from "./docker-launch-environment.ts";
 import type { createDockerNormalSend } from "./docker-normal-send.ts";
 import { captureDockerStopOutputs, createDockerOutputReader } from "./docker-outputs.ts";
@@ -656,16 +656,14 @@ export function createDockerSandboxControls(
     if (row.status === "deleted" && reclaimed) throw new DockerRetentionEnded(row.status_reason);
     if (!requestId) throw invalid();
     const host = (
-      await sql.query<{ daemon_version: string | null }>(
-        "select daemon_version from public.docker_hosts where id=$1 and org_id=$2",
+      await sql.query<{ daemon_protocol: number | null }>(
+        "select daemon_protocol from public.docker_hosts where id=$1 and org_id=$2",
         [row.docker_host_id, row.org_id],
       )
     ).rows[0];
-    if (!dockerHostSupportsResume(host?.daemon_version))
-      throw failure(
-        "conflict",
-        "Update this Docker host daemon to Armada 2.28.0 or later before resuming. Keep its existing registration, then retry. No resume job was sent.",
-      );
+    if (!supportsDockerHostProtocol(host?.daemon_protocol)) {
+      throw new DockerHostUpgradeRequired();
+    }
     const actor = { userId: caller.userId, orgId: row.org_id };
     let requested = await options.resume.resume(actor, row.id, requestId);
     const deadline = clock.now() + (options.timeoutMs ?? 45_000);
@@ -906,7 +904,8 @@ export function createDockerSandboxControls(
           : await dispatch();
       } catch (error) {
         // ToolError is Armada request validation (Docker send admission) with public guidance.
-        if (error instanceof ProviderError || error instanceof ToolError) throw error;
+        if (error instanceof ProviderError || error instanceof ToolError || error instanceof DockerHostUpgradeRequired)
+          throw error;
         if (error instanceof DockerRetentionEnded)
           throw new ProviderError({
             provider: "docker",

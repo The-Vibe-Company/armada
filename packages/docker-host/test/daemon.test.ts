@@ -181,7 +181,7 @@ test("rejects changed request identity, generation inputs, and fresh create iden
   expect(f.executed).toHaveLength(1);
 });
 
-test("a failed image fetch is reported with its reason, and an older server still gets the plain outcome", async () => {
+test("a failed image fetch is reported with its reason even when the server refuses the result", async () => {
   const f = fixture();
   f.failExecution(new DockerMachineError("image_unavailable"));
   await tick(f.store, f.api, f.executor);
@@ -191,7 +191,7 @@ test("a failed image fetch is reported with its reason, and an older server stil
   await tick(generic.store, generic.api, generic.executor);
   expect(generic.state().receipts[0]?.reason).toBeUndefined();
 
-  // A transient failure is not an older server: the reason is kept for the next tick, never dropped.
+  // A refused report preserves the durable reason for the next tick.
   const sent: Record<string, unknown>[] = [];
   const transient = httpApi((async (_url: string | URL | Request, init?: RequestInit) => {
     sent.push(JSON.parse(String(init?.body)));
@@ -199,22 +199,6 @@ test("a failed image fetch is reported with its reason, and an older server stil
   }) as typeof fetch);
   await expect(transient.result(f.state(), f.state().receipts[0] ?? fail())).rejects.toThrow("Host request denied");
   expect(sent).toEqual([expect.objectContaining({ reason: "image_unavailable" })]);
-  for (const server of ["current", "older"] as const) {
-    const bodies: Record<string, unknown>[] = [];
-    const api = httpApi((async (_url: string | URL | Request, init?: RequestInit) => {
-      const body = JSON.parse(String(init?.body));
-      bodies.push(body);
-      // An older server refuses any field it does not know.
-      return new Response(null, { status: server === "older" && "reason" in body ? 400 : 204 });
-    }) as typeof fetch);
-    await api.result(f.state(), f.state().receipts[0] ?? fail());
-    const plain = { installationId: f.state().installationId, requestId: f.job.requestId, outcome: "failed" };
-    expect(bodies).toEqual(
-      server === "current"
-        ? [{ ...plain, reason: "image_unavailable" }]
-        : [{ ...plain, reason: "image_unavailable" }, plain],
-    );
-  }
 });
 
 test("uncertain execution fails durably, never replays, and TTL sweep still runs on denied polling", async () => {
@@ -490,10 +474,14 @@ test("HTTP registration is single-use and host credentials remain in authorizati
     expired: true,
   });
   expect(calls.map((c) => c.init.headers)).toEqual([
-    { authorization: `Bearer ${registrationToken}`, "content-type": "application/json" },
-    { authorization: `Bearer ${hostToken}`, "content-type": "application/json", "x-armada-snapshot-baseline": "1" },
-    { authorization: `Bearer ${hostToken}`, "content-type": "application/json" },
-    { authorization: `Bearer ${hostToken}`, "content-type": "application/json" },
+    {
+      authorization: `Bearer ${registrationToken}`,
+      "content-type": "application/json",
+      "x-armada-docker-host-protocol": "1",
+    },
+    { authorization: `Bearer ${hostToken}`, "content-type": "application/json", "x-armada-docker-host-protocol": "1" },
+    { authorization: `Bearer ${hostToken}`, "content-type": "application/json", "x-armada-docker-host-protocol": "1" },
+    { authorization: `Bearer ${hostToken}`, "content-type": "application/json", "x-armada-docker-host-protocol": "1" },
   ]);
   expect(calls.every((c) => c.init.redirect === "error" && !`${c.url}${c.init.body}`.includes(hostToken))).toBe(true);
   expect(JSON.stringify(state)).not.toContain(registrationToken);
@@ -1009,48 +997,6 @@ test("compaction preserves cleanup capacity, TTL facts and stored replay fences"
   expect(effects).toBe(1);
 });
 
-test("native poll retains sampled availability when an older server rejects retention telemetry", async () => {
-  let calls = 0;
-  const f = fixture();
-  const resources = { cpus: 8, memoryBytes: 32 * 1024 ** 3, availableCpus: 3, availableMemoryBytes: 12 * 1024 ** 3 };
-  const api = httpApi(
-    Object.assign(
-      async (_url: string | URL | Request, init?: RequestInit) => {
-        const body = JSON.parse(String(init?.body));
-        calls++;
-        expect(body.resources).toEqual(resources);
-        if ("retentionSeconds" in body) return new Response(null, { status: 400 });
-        expect(JSON.stringify(body)).not.toContain(f.state().hostToken);
-        return Response.json({ job: null });
-      },
-      { preconnect: fetch.preconnect },
-    ),
-    async () => resources,
-  );
-  expect(await api.poll(await f.store.load())).toEqual({ job: null });
-  expect(calls).toBe(3);
-});
-
-test("older policy-capable servers retain the quota handshake when availability fields are refused", async () => {
-  const f = fixture();
-  let calls = 0;
-  const api = httpApi(
-    Object.assign(
-      async (_url: string | URL | Request, init?: RequestInit) => {
-        calls++;
-        const body = JSON.parse(String(init?.body));
-        expect(body.resourcePolicyVersion).toBe(1);
-        if ("availableCpus" in body.resources) return new Response(null, { status: 400 });
-        return Response.json({ job: null, limits: { cpus: 1, memoryBytes: 1024 ** 3, pids: 4096 } });
-      },
-      { preconnect: fetch.preconnect },
-    ),
-    async () => ({ cpus: 8, memoryBytes: 32 * 1024 ** 3, availableCpus: 2, availableMemoryBytes: 10 * 1024 ** 3 }),
-  );
-  expect(await api.poll(await f.store.load())).toMatchObject({ limits: { cpus: 1 } });
-  expect(calls).toBe(4);
-});
-
 test("TTL index deduplicates active receipts, retires terminal history and rotates uncertain failures before mailbox polling", async () => {
   const f = fixture();
   await tick(f.store, f.api, f.executor);
@@ -1333,63 +1279,6 @@ test("server retention override persists and shifts pending deadlines without re
   expect((await f.store.load()).retentionPolicyFromServer).toBe(true);
   expect((await f.store.load()).retention?.[0]?.deadline).toBe(17200000);
 });
-
-test("a pre-disk server keeps retention and availability when refusing only disk telemetry", async () => {
-  const f = fixture();
-  const resources = { cpus: 8, memoryBytes: 32 * 1024 ** 3, availableCpus: 3, availableMemoryBytes: 12 * 1024 ** 3 };
-  let calls = 0;
-  const api = httpApi(
-    Object.assign(
-      async (_url: string | URL | Request, init?: RequestInit) => {
-        calls++;
-        const body = JSON.parse(String(init?.body));
-        expect(body.resources).toEqual(resources);
-        expect(body.retentionSeconds).toBe(86400);
-        if ("diskFreeBytes" in body) {
-          expect(body.diskFreeBytes).toBe(123);
-          return new Response(null, { status: 400 });
-        }
-        return Response.json({ job: null, retentionSeconds: 3600 });
-      },
-      { preconnect: fetch.preconnect },
-    ),
-    async () => resources,
-    async () => 123,
-  );
-  expect(await api.poll(await f.store.load())).toEqual({ job: null, retentionSeconds: 3600 });
-  expect(calls).toBe(3);
-});
-
-test.each(["resumeClaimProtocol", "stoppedSandboxBytes"])(
-  "an older server keeps disk telemetry when refusing %s",
-  async (unsupported) => {
-    const f = fixture();
-    const resources = { cpus: 8, memoryBytes: 32 * 1024 ** 3, availableCpus: 3, availableMemoryBytes: 12 * 1024 ** 3 };
-    let calls = 0;
-    const api = httpApi(
-      Object.assign(
-        async (_url: string | URL | Request, init?: RequestInit) => {
-          calls++;
-          const body = JSON.parse(String(init?.body));
-          expect(body.resources).toEqual(resources);
-          expect(body.retentionSeconds).toBe(86400);
-          expect(body.diskFreeBytes).toBe(123);
-          if (unsupported in body || (unsupported === "resumeClaimProtocol" && "deadlines" in body)) {
-            if (unsupported === "stoppedSandboxBytes") expect(body.stoppedSandboxBytes).toBe(456);
-            return new Response(null, { status: 400 });
-          }
-          return Response.json({ job: null, retentionSeconds: 3600 });
-        },
-        { preconnect: fetch.preconnect },
-      ),
-      async () => resources,
-      async () => 123,
-      async () => 456,
-    );
-    expect(await api.poll(await f.store.load())).toEqual({ job: null, retentionSeconds: 3600 });
-    expect(calls).toBe(unsupported === "resumeClaimProtocol" ? 2 : 3);
-  },
-);
 
 test.each([false, true])(
   "complete allocation loss reconciles durable admission (failed create: %s)",
@@ -2036,7 +1925,7 @@ test("against a server that cannot hold a poll, jobs run serially and none is ad
   expect(f.acknowledgements).toEqual(["completed"]);
 });
 
-test("native held polls report running work and fall back to the previous protocol on older servers", async () => {
+test("native held polls report running work without retrying a refused request", async () => {
   const f = fixture();
   const bodies: Record<string, unknown>[] = [];
   const api = httpApi(
@@ -2052,16 +1941,12 @@ test("native held polls report running work and fall back to the previous protoc
     async () => ({ cpus: 8, memoryBytes: 32 * 1024 ** 3 }),
   );
   const running = crypto.randomUUID();
-  expect(await api.poll(await f.store.load(), { skipSnapshots: true, waitSeconds: 20, running: [running] })).toEqual({
-    job: null,
-  });
+  await expect(
+    api.poll(await f.store.load(), { skipSnapshots: true, waitSeconds: 20, running: [running] }),
+  ).rejects.toThrow();
+  expect(bodies).toHaveLength(1);
   expect(bodies[0]).toMatchObject({ waitSeconds: 20, running: [running], resumeClaimProtocol: 1 });
-  // A held poll leaves snapshot serialization to `running`: the flag would stay stale for the hold.
   expect(bodies[0]).not.toHaveProperty("skipSnapshots");
-  expect(bodies[1]).toMatchObject({ resumeClaimProtocol: 1, skipSnapshots: true });
-  expect(bodies[1]).not.toHaveProperty("waitSeconds");
-  expect(bodies[1]).not.toHaveProperty("running");
-  expect(bodies).toHaveLength(2);
 });
 
 test("a ledger that cannot be saved before a held poll never overwrites a completion saved during it", async () => {

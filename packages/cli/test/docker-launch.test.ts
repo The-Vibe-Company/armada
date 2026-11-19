@@ -211,6 +211,8 @@ test("Docker launch resolves an exact unique non-revoked host name and refuses m
     lastSeenAt: null,
     revokedAt: null,
     version: "2.27.0",
+    protocol: 1,
+    upgradeRequired: false,
     sandboxes: 0,
   };
   for (const mode of ["unique", "missing", "ambiguous"]) {

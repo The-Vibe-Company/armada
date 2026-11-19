@@ -648,6 +648,7 @@ export type Database = {
           disk_free_bytes: number | null;
           stopped_sandbox_bytes: number | null;
           snapshot_baseline_version: number | null;
+          daemon_protocol: number | null;
         };
         Insert: {
           id: string;
@@ -677,6 +678,7 @@ export type Database = {
           disk_free_bytes?: number | null;
           stopped_sandbox_bytes?: number | null;
           snapshot_baseline_version?: number | null;
+          daemon_protocol?: number | null;
         };
         Update: {
           id?: string;
@@ -706,6 +708,7 @@ export type Database = {
           disk_free_bytes?: number | null;
           stopped_sandbox_bytes?: number | null;
           snapshot_baseline_version?: number | null;
+          daemon_protocol?: number | null;
         };
         Relationships: [
           {

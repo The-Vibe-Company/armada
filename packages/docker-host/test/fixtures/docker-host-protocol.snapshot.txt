@@ -1,0 +1,73 @@
+export declare const DOCKER_HOST_PROTOCOL = 1;
+export declare const DOCKER_HOST_PROTOCOL_HEADER = "x-armada-docker-host-protocol";
+
+import type { DockerHostVersionOffer } from "./docker-api.ts";
+import type { DockerHostJob } from "./docker-host-job.ts";
+import type { DockerHostResources, DockerSandboxLimits } from "./docker-resource-policy.ts";
+export interface DockerHostPollRequest {
+    installationId: string;
+    version: string;
+    resumeClaimProtocol: 1;
+    resources: DockerHostResources;
+    resourcePolicyVersion: 1;
+    retentionSeconds: number;
+    nextCleanupAt: string | null;
+    deadlines: {
+        sandboxId: string;
+        generation: string;
+        deadline: string;
+    }[];
+    diskFreeBytes?: number | null;
+    stoppedSandboxBytes?: number | null;
+    skipSnapshots?: true;
+    waitSeconds?: number;
+    running?: string[];
+}
+export interface DockerHostPollResponse extends DockerHostVersionOffer {
+    job: DockerHostJob | null;
+    containerInventory?: 1;
+    containerInventoryDeploymentId?: string;
+    held?: true;
+    limits?: DockerSandboxLimits;
+    retentionSeconds?: number;
+    pendingStarts?: {
+        sandboxId: string;
+        generation: string;
+    }[];
+    resumeClaims?: {
+        requestId: string;
+        sandboxId: string;
+        generation: string;
+    }[];
+}
+
+import { type DockerSnapshotBinding } from "./docker-image.ts";
+import type { DockerMachineRequest } from "./docker-machine.ts";
+import { type GoldenConfig } from "./golden-config.ts";
+export type BootstrapDescriptor = {
+    serverUrl: string;
+    artifact: {
+        sha256: string;
+        bytes: number;
+    };
+    enrolmentToken: string;
+};
+export type DockerSnapshotBuildDescriptor = DockerSnapshotBinding & {
+    config: GoldenConfig;
+    token: string;
+    armadaVersion: string;
+};
+export type DockerHostJob = {
+    requestId: string;
+    request: DockerMachineRequest;
+} & ({
+    operation: "create" | "stop" | "delete";
+} | {
+    operation: "bootstrap" | "resume";
+    bootstrap: BootstrapDescriptor;
+} | {
+    operation: "buildSnapshot";
+    build: DockerSnapshotBuildDescriptor;
+});
+export declare function parseDockerHostJob(value: unknown): DockerHostJob;
+export declare function canonicalDockerHostJob(value: unknown): string;

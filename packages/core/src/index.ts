@@ -126,9 +126,12 @@ export {
   type DockerSnapshotRecord,
 } from "./docker-api.ts";
 export { DOCKER_HOST_DRAINING_MESSAGE } from "./docker-host-drain.ts";
+export {
+  DOCKER_HOST_PROTOCOL,
+  DOCKER_HOST_PROTOCOL_HEADER,
+} from "./docker-host-protocol.ts";
 export { dockerHostResourceDisplay, validDockerHostResources } from "./docker-host-resources-view.ts";
 export {
-  DOCKER_HOST_SNAPSHOT_BASELINE_HEADER,
   dockerHostMeetsVersion,
   dockerHostUpgradeMessage,
 } from "./docker-host-upgrade.ts";
