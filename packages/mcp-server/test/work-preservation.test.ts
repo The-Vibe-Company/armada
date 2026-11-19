@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { decryptSecret, ProviderError } from "@armada/core/server";
+import { decryptSecret, encryptSecret, ProviderError } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
 import { createRuntimeProvider, type RuntimeWorkProvider } from "../src/runtime-provider.ts";
 import { preserveBeforeStop, readWorkRecovery } from "../src/work-preservation.ts";
@@ -57,11 +57,17 @@ test("recovery receipts retain encrypted versions and only current interior owne
       values($1,$2,$3,$4,'boat','bx_recovery','claude','running',array['collector_unsupported'])`,
       [id, goldenId, people.org, people.owner],
     );
+    const historicalId = crypto.randomUUID();
+    const historicalArchive = Buffer.from("older recovery fixture").toString("base64");
+    await db.query(
+      "insert into sandbox_work_recovery(id,sandbox_id,archive_enc,created_at) values($1,$2,$3,'2020-01-01')",
+      [historicalId, id, await encryptSecret(historicalArchive)],
+    );
     const data = (userId: string, orgId = people.org) =>
       createSqlData(sql)({ via: "service", userId, orgs: [{ orgId, role: "admin" }] }).sandboxes;
     const owner = data(people.owner);
     const boat = fakeBoat();
-    let currentArchive = "";
+    const archive = Buffer.from("recovery fixture: private repository material").toString("base64");
     const provider = {
       ...boat.provider,
       async interrupt() {
@@ -71,18 +77,15 @@ test("recovery receipts retain encrypted versions and only current interior owne
       async get() {
         return { id: "bx_recovery", name: "recovery", state: "ready" as const, providerState: "running", labels: {} };
       },
-      exec: encryptedRecoveryExec(() => currentArchive, boat.provider.exec),
+      exec: encryptedRecoveryExec(() => archive, boat.provider.exec),
     };
-    const captured = (archive: string) => {
-      currentArchive = archive;
-      return JSON.stringify({
+    boat.setExecOutput({
+      stdout: JSON.stringify({
         status: "preserved",
         bytes: Buffer.from(archive, "base64").length,
         sha256: createHash("sha256").update(Buffer.from(archive, "base64")).digest("hex"),
-      });
-    };
-    const archive = Buffer.from("recovery fixture one: private repository material").toString("base64");
-    boat.setExecOutput({ stdout: captured(archive) });
+      }),
+    });
     const commands = boat.execs.length;
     const pending = {
       ...provider,
@@ -101,8 +104,8 @@ test("recovery receipts retain encrypted versions and only current interior owne
     await preserveBeforeStop(sql, provider, id, "bx_recovery");
     const first = (
       await db.query<{ id: string; archive_enc: Uint8Array<ArrayBuffer> }>(
-        "select id,archive_enc from sandbox_work_recovery where sandbox_id=$1",
-        [id],
+        "select id,archive_enc from sandbox_work_recovery where sandbox_id=$1 and id<>$2",
+        [id, historicalId],
       )
     ).rows[0];
     if (!first) throw new Error("Missing recovery artifact");
@@ -116,7 +119,7 @@ test("recovery receipts retain encrypted versions and only current interior owne
     // Clean stops do not create archives; historical archives remain retrievable.
     boat.setExecOutput({ stdout: JSON.stringify({ status: "clean" }) });
     await preserveBeforeStop(sql, provider, id, "bx_recovery");
-    expect((await db.query("select id from sandbox_work_recovery where sandbox_id=$1", [id])).rows).toHaveLength(1);
+    expect((await db.query("select id from sandbox_work_recovery where sandbox_id=$1", [id])).rows).toHaveLength(2);
     expect((await owner.get(id))?.preservationNote).toBeNull();
 
     // Retrying after failed capture surfaces a closed reason without losing earlier data.
@@ -124,13 +127,9 @@ test("recovery receipts retain encrypted versions and only current interior owne
     await preserveBeforeStop(sql, provider, id, "bx_recovery");
     expect(await owner.readWorkRecovery?.(id, first.id)).toBe(archive);
 
-    await db.query("update sandbox_work_recovery set created_at='2020-01-01' where id=$1", [first.id]);
-    const newerArchive = Buffer.from("recovery fixture two").toString("base64");
-    boat.setExecOutput({ stdout: captured(newerArchive) });
-    await preserveBeforeStop(sql, provider, id, "bx_recovery");
-    expect(await owner.readWorkRecovery?.(id)).toBe(newerArchive);
-    expect(await owner.readWorkRecovery?.(id, first.id)).toBe(archive);
-    expect(await data(people.admin).readWorkRecovery?.(id)).toBe(newerArchive);
+    expect(await owner.readWorkRecovery?.(id)).toBe(archive);
+    expect(await owner.readWorkRecovery?.(id, historicalId)).toBe(historicalArchive);
+    expect(await data(people.admin).readWorkRecovery?.(id)).toBe(archive);
     // Stale admin claims cannot upgrade an ordinary org member's interior access.
     await expect(data(people.member).readWorkRecovery?.(id, first.id)).rejects.toThrow("No such sandbox");
     await expect(data(people.member, people.otherOrg).readWorkRecovery?.(id)).rejects.toThrow("No such sandbox");
