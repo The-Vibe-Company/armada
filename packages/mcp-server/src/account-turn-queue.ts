@@ -52,6 +52,37 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
   const pending = new Set<Promise<unknown>>();
   let scanAfter = "0";
   let dispatch: DispatchTurn | undefined;
+  function enqueueDispatchJob(
+    entry: Pick<Entry, "sandbox_id" | "request_id" | "org_id" | "queued_generation">,
+    tx?: Sql,
+  ) {
+    return jobs.enqueue(
+      "turn_dispatch",
+      entry.sandbox_id,
+      Number(entry.queued_generation),
+      entry.request_id,
+      { requestId: entry.request_id },
+      { orgId: entry.org_id, maxAttempts: 3 },
+      tx,
+    );
+  }
+  async function backfillDispatchJobs(signal: AbortSignal) {
+    // WARNING: Match the producer's compact key with queued_generation, since the job generation can advance.
+    const { rows } = await sql.query<Pick<Entry, "sandbox_id" | "request_id" | "org_id" | "queued_generation">>(
+      `select q.sandbox_id,q.request_id,q.org_id,q.queued_generation::text
+       from public.account_turn_queue q
+       where q.state in ('queued','dispatching') and not exists (
+         select 1 from public.jobs j where j.idem_key =
+           format('["internal","%s","turn_dispatch","%s",%s,"%s"]',q.org_id,q.sandbox_id,q.queued_generation,q.request_id)
+       )
+       order by q.sequence limit 20`,
+    );
+    for (const entry of rows) {
+      if (signal.aborted) return;
+      await enqueueDispatchJob(entry);
+    }
+  }
+
   async function waitingMessage(accountId: string, sandboxId: string, requestId: string) {
     const row = (
       await sql.query<{
@@ -244,15 +275,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
             ],
           )
         ).rows[0]!;
-        await jobs.enqueue(
-          "turn_dispatch",
-          saved.sandbox_id,
-          Number(saved.queued_generation),
-          saved.request_id,
-          { requestId: saved.request_id },
-          { orgId: saved.org_id, maxAttempts: 3 },
-          tx,
-        );
+        await enqueueDispatchJob(saved, tx);
       }
       return saved;
     });
@@ -354,6 +377,12 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
     async reconcileOne(signal: AbortSignal) {
       if (!dispatch || pending.size >= 32 || signal.aborted) return false;
       if (!sql.transaction) throw new VaultError("unavailable", "Transactional account admission unavailable.");
+      try {
+        await backfillDispatchJobs(signal);
+      } catch {
+        console.error("armada: queued turn job backfill unavailable; existing dispatch continues.");
+      }
+      if (signal.aborted) return false;
       const picked = await (async () => {
         // Older replicas could leave a queued receipt after publishing its request.
         // Never replay it (especially on native providers without idempotency).
