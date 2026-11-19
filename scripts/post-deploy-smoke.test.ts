@@ -1477,7 +1477,6 @@ function lifecycleFixture(fault: LifecycleFault = "none", handler?: (call: Call)
       {
         ...fake.io,
         sleep: async (ms) => {
-          // Let immediate fake responses in other lanes settle before advancing the shared clock.
           await new Promise<void>((resolve) => setImmediate(resolve));
           await fake.io.sleep(ms);
         },
@@ -2393,8 +2392,6 @@ test("Modal smoke refuses a finished turn whose status never reports usage and s
   expect(fake.calls.some((call) => call.path === "sandbox/stop")).toBe(true);
 });
 
-// The staging acceptance check requires measured counters for this resumed prompt,
-// not an unknown receipt or totals belonging to an earlier turn.
 test.each(["unknown", "missing", "old", "partial", "measured", "null-totals", "complete-marker"])(
   "Modal resumed Codex usage contract: %s",
   async (mode) => {
