@@ -234,7 +234,7 @@ describe("provider routing", () => {
     try {
       const fresh = await launch();
       expect(fresh?.status).toBe(200);
-      const response = await fresh?.json();
+      const response = (await fresh?.json()) as { sandbox: { id: string } };
       const replay = await launch();
       expect(replay?.status).toBe(200);
       expect(await replay?.json()).toEqual(response);
