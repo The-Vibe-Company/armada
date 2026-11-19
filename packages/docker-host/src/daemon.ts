@@ -315,6 +315,7 @@ export type TickOptions = {
   /** Snapshot builds still executing in this process; when given, it replaces `skipSnapshots` after the poll. */
   snapshots?: ReadonlySet<string>;
   deferRestores?: ReadonlySet<string>;
+  restoreConflicts?: Map<string, string>;
   /**
    * Receives an admitted machine operation instead of awaiting it, so the next
    * tick can take another sandbox's job. The durable receipt is already saved;
@@ -380,6 +381,7 @@ export async function tick(
 export const DOCKER_HOST_CONCURRENT_JOBS = 4;
 /** How long the daemon asks the server to hold an idle poll open. */
 export const DOCKER_HOST_POLL_WAIT_SECONDS = 20;
+const MAX_POLL_EXCLUSIONS = 16;
 /** Pause after a failed tick, or between polls when the server cannot hold one. */
 export const DOCKER_HOST_IDLE_MS = 20_000;
 
@@ -410,6 +412,7 @@ export async function runJobs(
   // as busy (it is then no longer in `settled()`), the loop polls again at once.
   let finished = 0;
   let deferRestores = new Set<string>();
+  const restoreConflicts = new Map<string, string>();
   const settled = () => Promise.race(running.values());
   try {
     while (!loop.stopping()) {
@@ -427,6 +430,7 @@ export async function runJobs(
           waitSeconds: DOCKER_HOST_POLL_WAIT_SECONDS,
           ...live,
           deferRestores: deferred,
+          restoreConflicts,
           dispatch(job, work) {
             const done = work
               .catch((error) => {
@@ -582,6 +586,20 @@ async function admitLocked(
   // A save error therefore
   // ends this tick before polling: everything computed above is derived again
   // from the durable ledger on the next tick, and physical expiry runs on its own.
+  const exclusions = new Set(options.running);
+  for (const requestId of options.deferRestores ?? []) exclusions.add(requestId);
+  if (options.restoreConflicts?.size) {
+    const pending = new Set(
+      state.receipts
+        .filter((receipt) => receipt.operation === "restore" && !receipt.outcome && restoreStillRecoverable(receipt))
+        .map((receipt) => receipt.requestId),
+    );
+    for (const [requestId, owner] of options.restoreConflicts) {
+      if (pending.has(owner)) exclusions.add(requestId);
+      else options.restoreConflicts.delete(requestId);
+    }
+  }
+  const excludedRequestIds = [...exclusions].slice(0, MAX_POLL_EXCLUSIONS);
   const reload = Boolean(options.running?.size || api.retainedOutputs);
   if (reload) await store.save(state);
   lock.release();
@@ -594,7 +612,7 @@ async function admitLocked(
         ? {}
         : {
             waitSeconds: options.waitSeconds,
-            running: [...(options.running ?? []), ...(options.deferRestores ?? [])],
+            running: excludedRequestIds,
           }),
     });
   } catch (error) {
@@ -1054,7 +1072,11 @@ async function admitLocked(
   if (!job) throw new Error("Invalid host job");
   const machineKey = generationKey(job.request);
   const restoreKey = job.operation === "restore" ? generationKey(job.predecessor.request) : undefined;
-  const heldByOtherRestore = (key: string) => restoreHolds.has(key) && restoreHolds.get(key) !== job?.requestId;
+  const restoreOwner = (key: string) => {
+    const owner = restoreHolds.get(key);
+    return owner === job.requestId ? undefined : owner;
+  };
+  const pendingOwner = restoreOwner(machineKey) ?? (restoreKey === undefined ? undefined : restoreOwner(restoreKey));
   if ((job.operation === "bootstrap" || job.operation === "resume") && job.bootstrap.serverUrl !== state.server)
     throw new Error("Wrong bootstrap origin");
   // A server that cannot exclude running work re-delivers it; never treat
@@ -1065,10 +1087,20 @@ async function admitLocked(
   // job's outcome is recorded, and it records one without the host when it
   // cancels queued work (revocation, owner removal, snapshot build expiry). So
   // this host keeps each sandbox, and snapshot builds, serial itself.
+  if (pendingOwner && polled.held && options.restoreConflicts && !excludedRequestIds.includes(job.requestId)) {
+    const conflicts = options.restoreConflicts;
+    conflicts.delete(job.requestId);
+    if (conflicts.size >= MAX_POLL_EXCLUSIONS - DOCKER_HOST_CONCURRENT_JOBS) {
+      const oldest = conflicts.keys().next();
+      if (!oldest.done) conflicts.delete(oldest.value);
+    }
+    conflicts.set(job.requestId, pendingOwner);
+    await store.save(state);
+    return "held";
+  }
   if (
+    pendingOwner !== undefined ||
     options.deferRestores?.has(job.requestId) ||
-    heldByOtherRestore(machineKey) ||
-    (restoreKey !== undefined && heldByOtherRestore(restoreKey)) ||
     options.running?.has(job.requestId) ||
     (options.running?.size && !polled.held) ||
     options.sandboxes?.has(job.request.sandboxId) ||

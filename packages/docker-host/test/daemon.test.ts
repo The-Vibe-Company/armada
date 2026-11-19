@@ -294,6 +294,59 @@ test("an ambiguous restore defers only its own redelivery while the host takes o
   expect(sleeps).toEqual([]);
 });
 
+test("a pending restore lets unrelated jobs drain and releases conflicting work after replay", async () => {
+  const { job, store, api, executor } = fixture();
+  const restore: Job = {
+    ...job,
+    operation: "restore",
+    request: { ...job.request, generation: crypto.randomUUID(), expiresAt: 200_000 },
+    predecessor: { request: job.request, machineId: "a".repeat(64) },
+  };
+  const { job: stop } = fixture("stop");
+  const conflictingStop: Job = { ...stop, requestId: crypto.randomUUID(), request: job.request };
+  const failed = Promise.withResolvers<void>();
+  let pollCount = 0;
+  const acknowledgements: string[] = [];
+  api.poll = async (_state, options) => {
+    pollCount++;
+    if (pollCount === 1) return { job: restore, held: true };
+    if (pollCount > 5) throw new Error("unexpected poll");
+    await failed.promise;
+    const next = [conflictingStop, stop, restore].find(
+      (item) => !options?.running?.includes(item.requestId) && !acknowledgements.includes(item.requestId),
+    );
+    return { job: next ?? null, held: true };
+  };
+  let attempts = 0;
+  const dispatches: string[] = [];
+  executor.restore = async () => {
+    attempts++;
+    if (attempts === 1) throw new DockerMachineError("docker_failed");
+    dispatches.push("restore");
+  };
+  executor.stop = async (request) => {
+    dispatches.push(request.sandboxId === job.request.sandboxId ? "conflicting stop" : "stop");
+  };
+  api.result = async (_state, receipt) => {
+    acknowledgements.push(receipt.requestId);
+  };
+  const sleeps: number[] = [];
+  await runJobs(store, api, executor, {
+    now: () => 100_000,
+    beforeTick: async () => {
+      if (pollCount === 1) await failed.promise;
+    },
+    stopping: () => acknowledgements.length === 3 || pollCount > 5,
+    failed: () => failed.resolve(),
+    sleep: async (ms) => {
+      sleeps.push(ms);
+    },
+  });
+  expect(dispatches).toEqual(["stop", "restore", "conflicting stop"]);
+  expect(acknowledgements).toHaveLength(3);
+  expect(sleeps).toEqual([]);
+});
+
 test("local retention reclaims an expired pending restore target even while offline", async () => {
   const { job, store, api, executor, state } = fixture();
   const restore: Job = {
