@@ -64,15 +64,7 @@ export function summarizeEvents(events: readonly ChatEvent[], currentConversatio
  * The state column. `kind` orders and colours the row; `label` is what it reads. The structured outcome the agent
  * reported for its latest finished turn (#742) refines that turn into `ready` (to merge) or `blocked`.
  */
-type AttentionStateKind =
-  | "failed"
-  | "blocked"
-  | "ready"
-  | "finished"
-  | "interrupted"
-  | "idle"
-  | "working"
-  | "stopped";
+type AttentionStateKind = "failed" | "blocked" | "ready" | "finished" | "interrupted" | "idle" | "working" | "stopped";
 
 type AttentionState = {
   kind: AttentionStateKind;
