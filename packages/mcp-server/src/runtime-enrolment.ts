@@ -5,6 +5,7 @@ import { createSqlSandboxStore, DelegatedAuthority, decryptSecret, encryptSecret
 import { createDockerHostStore } from "./docker-host-store.ts";
 import type { Route } from "./http.ts";
 import { runtimeHttpFailure } from "./runtime-http-failure.ts";
+import { finishDockerRuntimeEnrolment } from "./sandbox-lifecycle.ts";
 
 const ENROL_PATH = "/api/runtime/enrol";
 const SESSION_PATH = "/api/runtime/session";
@@ -139,8 +140,8 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
       if (!host.rows.length) throw new RuntimeEnrolmentDenied();
     }
     const row = (
-      await tx.query<{ id: string; lifecycle_generation: string; runtime_transport: string | null; failed: boolean }>(
-        `select s.id,s.lifecycle_generation::text,s.runtime_transport,s.status='failed' as failed from public.sandboxes s
+      await tx.query<{ id: string; lifecycle_generation: string; runtime_transport: string | null; status: string }>(
+        `select s.id,s.lifecycle_generation::text,s.runtime_transport,s.status from public.sandboxes s
        where s.id=$1 and (s.provider in ('boat','docker') or (s.provider='modal' and s.runtime_transport='dialout'))
        and (s.status in ('starting','ready','running') or ($7 and s.status='failed'))
        and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>now()
@@ -251,7 +252,14 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
          and lifecycle_generation=$3::bigint-case when $6 then 1 else 0 end and enrolment_expires_at>now()
          and ($6 = (configuration_enc is null))
          and docker_issuer_fence is not distinct from $4::text for update`,
-          [sandbox.id, hash, sandbox.lifecycle_generation, sandbox.docker_issuer_fence, supported, sandbox.failed],
+          [
+            sandbox.id,
+            hash,
+            sandbox.lifecycle_generation,
+            sandbox.docker_issuer_fence,
+            supported,
+            sandbox.status === "failed",
+          ],
         )
       ).rows[0];
       if (!row) throw new RuntimeEnrolmentDenied();
@@ -259,7 +267,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
         const refused =
           sandbox.provider === "docker" &&
           (await createDockerHostStore(tx, encryptionKey).refuseResume(tx, sandbox.id, row.lifecycle_generation));
-        if (sandbox.failed && !refused) throw new RuntimeEnrolmentDenied();
+        if (sandbox.status === "failed" && !refused) throw new RuntimeEnrolmentDenied();
         if (refused) {
           await tx.query(
             `update public.runtime_enrolments set enrolment_hash=null,enrolment_expires_at=null,configuration_enc=null
@@ -280,6 +288,10 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
         )
       ).rows[0];
       if (!updated) throw new RuntimeEnrolmentDenied();
+      if (sandbox.provider === "docker" && sandbox.status === "starting") {
+        const transition = await finishDockerRuntimeEnrolment(tx, sandbox.id, sandbox.lifecycle_generation);
+        if (transition.kind === "conflict") throw new RuntimeEnrolmentDenied();
+      }
       return { sandboxId: sandbox.id, epoch: updated.epoch, runtimeToken, configuration };
     });
     if (result instanceof RuntimeProtocolUnsupported) throw result;

@@ -135,12 +135,12 @@ test("Docker readiness rejects an ACK read against an older lifecycle generation
       [f.sandbox.id],
     )
   ).rows[0]!;
-  await denied(service.ready(f.actor, f.sandbox.id, randomUUID(), true, row.older_generation));
+  await denied(service.ready(f.actor, f.sandbox.id, randomUUID(), row.older_generation));
   expect((await commands.next(session.runtimeToken, session.epoch)).command).toBeNull();
-  expect(await readinessJournal(f.sandbox.id)).toEqual([]);
+  expect((await readinessJournal(f.sandbox.id)).length).toBe(1);
 });
 
-test("ACK is not readiness: current epoch health proof alone publishes ready without revoking itself", async () => {
+test("Docker health independently validates the reply from the enrolled epoch", async () => {
   const f = await fixture(),
     id = randomUUID();
   expect(await service.ready(f.actor, f.sandbox.id, id)).toEqual({ state: "pending" });
@@ -165,7 +165,6 @@ test("ACK is not readiness: current epoch health proof alone publishes ready wit
       },
     });
     await denied(service.ready(f.actor, f.sandbox.id, requestId));
-    expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("starting");
   }
   const healthId = randomUUID();
   await service.ready(f.actor, f.sandbox.id, healthId);
@@ -203,15 +202,14 @@ test("normal launch preparation cannot be bypassed by private readiness or an un
   await service.ready(f.actor, f.sandbox.id, healthId);
   await complete(session, { ready: true, generation: session.epoch });
   await service.ready(f.actor, f.sandbox.id, healthId);
-  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("starting");
+  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("ready");
   await denied(service.prompt(f.actor, f.sandbox.id, input));
-  // Even after trusted preparation publishes ready, the reserved first prompt cannot be replaced.
-  await db.query("update public.sandboxes set status='ready' where id=$1", [f.sandbox.id]);
-  await denied(service.prompt(f.actor, f.sandbox.id, { ...input, requestId: randomUUID() }));
-  expect(await service.prompt(f.actor, f.sandbox.id, input)).toEqual({ state: "pending" });
+  await denied(service.prompt(f.actor, f.sandbox.id, input, String(BigInt(session.epoch) + 1n)));
+  await denied(service.prompt(f.actor, f.sandbox.id, { ...input, requestId: randomUUID() }, session.epoch));
+  expect(await service.prompt(f.actor, f.sandbox.id, input, session.epoch)).toEqual({ state: "pending" });
 });
 
-test("a health reply from before stop or an epoch replacement cannot publish readiness", async () => {
+test("health replies from before stop or an epoch replacement are refused", async () => {
   for (const change of ["stop", "epoch"] as const) {
     const f = await fixture(),
       session = await f.enrol(),
@@ -228,7 +226,7 @@ test("a health reply from before stop or an epoch replacement cannot publish rea
       await authority.enrol(next.enrolmentToken);
     }
     await denied(service.ready(f.actor, f.sandbox.id, requestId));
-    expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe(change === "stop" ? "stopping" : "starting");
+    expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe(change === "stop" ? "stopping" : "ready");
   }
 });
 

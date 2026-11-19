@@ -7,7 +7,6 @@ import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import { runtimeHealthMatches } from "./runtime-agent.ts";
 import { createRuntimeCommands, readDockerPromptReceipt, readRuntimeCommandSuccess } from "./runtime-commands.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
-import { publishDockerRuntimeReady } from "./sandbox-lifecycle.ts";
 
 type Actor = { userId: string; orgId: string };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -116,7 +115,7 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
     });
   }
   return {
-    ready(actor: Actor, sandboxId: string, requestId: string, activate = true, expectedLifecycleGeneration?: string) {
+    ready(actor: Actor, sandboxId: string, requestId: string, expectedLifecycleGeneration?: string) {
       if (!uuid.test(requestId)) return Promise.reject(new DockerRuntimeDenied());
       return admitted(
         actor,
@@ -154,9 +153,8 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
             )
               deny();
           }
-          return authority.withOwner(sandboxId, actor.userId, async (fenced, scope) => {
+          return authority.withOwner(sandboxId, actor.userId, async (_fenced, scope) => {
             if (scope.epoch !== queued.epoch) deny();
-            if (activate && !(await publishDockerRuntimeReady(fenced, sandboxId, "health"))) deny();
             return { state: "ready" as const, epoch: scope.epoch };
           });
         },
@@ -165,7 +163,12 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
         expectedLifecycleGeneration,
       );
     },
-    prompt(actor: Actor, sandboxId: string, input: { requestId: string; text: string; conversationId?: string }) {
+    prompt(
+      actor: Actor,
+      sandboxId: string,
+      input: { requestId: string; text: string; conversationId?: string },
+      preparedLaunchEpoch?: string,
+    ) {
       return admitted(
         actor,
         sandboxId,
@@ -182,6 +185,7 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
             !["ready", "running"].includes(sandbox.status)
           )
             deny();
+          if (preparedLaunchEpoch !== undefined && preparedLaunchEpoch !== epoch) deny();
           const refused = await tx.query(
             "select 1 from public.account_turn_queue where sandbox_id=$1 and request_id=$2 and state='failed'",
             [sandboxId, input.requestId],
@@ -202,7 +206,8 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
             repositoryDir = manifest.request.repos?.[0]?.dir;
             if (
               !launch.result_enc &&
-              (manifest.promptId !== input.requestId ||
+              (preparedLaunchEpoch === undefined ||
+                manifest.promptId !== input.requestId ||
                 manifest.request?.prompt !== input.text ||
                 (input.conversationId !== plannedConversation &&
                   !(manifest.conversationId === undefined && input.conversationId === undefined)))

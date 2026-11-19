@@ -687,7 +687,7 @@ export function createDockerSandboxControls(
             : "Docker resume failed.",
         );
       if (state?.outcome === "completed") {
-        const ready = await runtime.ready(actor, row.id, requestId, true, state.lifecycle_generation);
+        const ready = await runtime.ready(actor, row.id, requestId, state.lifecycle_generation);
         if (ready.state === "ready") {
           await createDockerLaunchEnvironment(sql, key, clock)(caller, row.id);
           await options.github?.prepareTurn(caller, row.id);
