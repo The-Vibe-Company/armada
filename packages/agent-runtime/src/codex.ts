@@ -14,7 +14,7 @@ import type { TurnCompletedNotification } from "./codex-schema/v2/TurnCompletedN
 import type { TurnStartParams } from "./codex-schema/v2/TurnStartParams.ts";
 import type { TurnStartResponse } from "./codex-schema/v2/TurnStartResponse.ts";
 import { codexTurnFailureCode } from "./codex-turn-error.ts";
-import { codexTurnUsage } from "./codex-turn-usage.ts";
+import { codexTurnUsage, settleCodexTurnUsage } from "./codex-turn-usage.ts";
 import { validateHarnessCwd } from "./cwd.ts";
 import { bounded } from "./deadline.ts";
 import { HarnessError, nativeHarnessError, RequestRefused } from "./errors.ts";
@@ -566,32 +566,19 @@ export class CodexDriver implements Driver {
         }
       } finally {
         closed = true;
-        const terminalObserved = terminalTurns.has(turnId);
-        if (resumeUsage.started && !terminalObserved) this.tokenTotals.delete(threadId);
+        const snapshot = settleCodexTurnUsage({
+          tokenTotals: this.tokenTotals,
+          threadId,
+          dispatched: resumeUsage.started,
+          terminalObserved: terminalTurns.has(turnId),
+          latest: usage.latest,
+          model: modelRerouted ? null : reportedModel,
+        });
         lines.close();
         await this.children.release(child);
         this.nativeWriter = false;
         c.signal.removeEventListener("abort", abort);
-        // One final snapshot prevents stale model shares surviving a late reroute in persisted history.
-        // Also retain observed usage on failed/interrupted prompts; no snapshot is invented when absent.
-        if (usage.latest)
-          c.emit({
-            kind: "other",
-            type: "armada/turnUsage",
-            data: {
-              ...usage.latest,
-              ...(!terminalObserved
-                ? {
-                    inputTokens: null,
-                    outputTokens: null,
-                    cachedTokens: null,
-                    cacheWriteTokens: null,
-                    reasoningTokens: null,
-                  }
-                : {}),
-              model: modelRerouted ? null : reportedModel,
-            },
-          });
+        if (snapshot) c.emit({ kind: "other", type: "armada/turnUsage", data: snapshot });
       }
     })();
     return {
