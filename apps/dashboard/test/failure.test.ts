@@ -38,7 +38,5 @@ test("plan limits retain the reset and offer an account action", () => {
     hint: expect.stringContaining("2026-11-17T00:00:00.000Z"),
     fix: { href: "/harness" },
   });
-  expect(describeFailure("Plan limit reached. Resets at 2026-11-17T00:00:00.000Z.")?.hint).toContain(
-    "switch to another account",
-  );
+  expect(describeFailure("Plan limit reached. Resets at 2026-11-17T00:00:00.000Z.")?.hint).not.toContain("switch");
 });

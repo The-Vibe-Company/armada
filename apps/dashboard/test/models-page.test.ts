@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
 import { MODEL_CATALOG } from "@armada/core";
 import { initialLaunchSelection, launchPickerGroups } from "../src/lib/launch-picker";
-import { launchAccounts, type ModelAccount } from "../src/lib/model-accounts";
-import { modelsPageDefault, modelsPageModel, modelsPageStatus } from "../src/lib/models-page";
+import { accountsFromList, launchAccounts, type ModelAccount } from "../src/lib/model-accounts";
+import { modelsPageDefault, modelsPageExhaustion, modelsPageModel, modelsPageStatus } from "../src/lib/models-page";
 
 const account: ModelAccount = {
   id: "account_id",
@@ -24,6 +24,18 @@ test("capacity is distinct from expired authentication, which takes precedence",
     "Sign-in expired",
   );
   expect(modelsPageStatus({ ...account, maxAgents: null }, 1).label).toBe("Connected");
+});
+test("Models shows the API exhaustion deadline until the reset", () => {
+  const exhaustedUntil = "2026-11-19T14:00:00.000Z";
+  const reset = Date.parse(exhaustedUntil);
+  const { accounts } = accountsFromList(
+    { user: [{ ...account, id: "00000000-0000-0000-0000-000000000001", exhaustedUntil }] },
+    "org",
+  );
+  const listed = accounts[0]!;
+  expect(modelsPageExhaustion(listed, reset - 1)).toBe("Exhausted until 2026-11-19 14:00 UTC");
+  expect(modelsPageStatus(listed, reset - 1).label).toBe("At its limit");
+  expect(modelsPageExhaustion(listed, reset)).toBeNull();
 });
 test("custom endpoint models are not mistaken for a saved default", () => {
   expect(modelsPageModel({ ...account, models: [{ model: "deployment", input: null, output: null }] }, "codex")).toBe(

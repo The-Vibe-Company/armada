@@ -38,6 +38,7 @@ export interface VaultIo {
 }
 
 type ListedCredential = CredentialInfo & {
+  exhaustedUntil?: string;
   monthlySpend?: { periodStart: string; usd: string; unpricedTurns: number };
 };
 
@@ -605,17 +606,19 @@ function monthlyApiSpend(row: ListedCredential) {
 
 function section(title: string, rows: ListedCredential[]): string {
   if (rows.length === 0) return `${title}: none`;
-  const lines = rows.map(
-    (row) =>
-      `  ${credentialName(row.kind)}${row.id ? `  ${row.id}  ${row.name}  ${row.status}${row.isDefault ? " (default)" : ""}` : ""}${row.id ? `  ${row.runningAgents ?? 0} working / ${row.waitingAgents ?? 0} waiting-for-slot / ${row.maxAgents ?? "unlimited"} max` : ""}${monthlyApiSpend(row)}${Object.entries(
-        row.modelCounts ?? {},
+  const lines = rows.map((row) => {
+    const exhaustion = row.exhaustedUntil
+      ? `  exhausted until ${row.exhaustedUntil.slice(0, 16).replace("T", " ")} UTC`
+      : "";
+    return `  ${credentialName(row.kind)}${row.id ? `  ${row.id}  ${row.name}  ${row.status}${row.isDefault ? " (default)" : ""}` : ""}${row.id ? `  ${row.runningAgents ?? 0} working / ${row.waitingAgents ?? 0} waiting-for-slot / ${row.maxAgents ?? "unlimited"} max` : ""}${exhaustion}${monthlyApiSpend(row)}${Object.entries(
+      row.modelCounts ?? {},
+    )
+      .map(
+        ([model, counts]) =>
+          `\n    ${model}: ${counts.runningAgents} working / ${counts.waitingAgents} waiting / ${row.modelLimits?.[model] ?? "unlimited"} max`,
       )
-        .map(
-          ([model, counts]) =>
-            `\n    ${model}: ${counts.runningAgents} working / ${counts.waitingAgents} waiting / ${row.modelLimits?.[model] ?? "unlimited"} max`,
-        )
-        .join("")}${row.createdAt ? `  ${row.createdAt.slice(0, 10)}` : ""}`,
-  );
+      .join("")}${row.createdAt ? `  ${row.createdAt.slice(0, 10)}` : ""}`;
+  });
   return `${title}:\n${lines.join("\n")}`;
 }
 

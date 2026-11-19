@@ -11,6 +11,13 @@ export function modelsPageStatus(account: ModelAccount, now: number) {
   return { ...state, label: "Connected" };
 }
 
+export function modelsPageExhaustion(account: ModelAccount, now: number) {
+  const reset = Date.parse(account.exhaustedUntil ?? "");
+  if (!(reset > now)) return null;
+  const time = new Date(reset).toISOString().slice(0, 16).replace("T", " ");
+  return `Exhausted until ${time} UTC`;
+}
+
 /** Custom endpoints declare model IDs, but do not declare a default. Never invent one. */
 export function modelsPageModel(account: ModelAccount, harness: Harness): string {
   if (account.kind === "morph") return account.models?.[0]?.model ?? "Model list unavailable";
