@@ -338,8 +338,6 @@ async function resolveGoldenLaunch(
       "invalid_request",
       "The experimental runtime supports ordinary Boat or Modal Codex/Claude/OpenCode workers only.",
     );
-  // The scoped-access caller pairs visibility narrowing with a native grant bootstrap.
-  // Refuse that combination before allocation until grant delivery can use the enrolled runtime.
   if (runtime && options.privateVisibility && options.beforeStart)
     throw new LaunchError("invalid_request", "Scoped access requires grant delivery over the enrolled runtime.");
   const prompt = checkPrompt(request.prompt);
