@@ -45,7 +45,6 @@ Example: armada token revoke TOKEN_UUID
 `,
   },
   helpWhenBare: true,
-  completionBefore: "github",
   useSelectedOrg: (argv) => argv[0] === "create",
   async run(argv, { auth }) {
     const parsed = parseAuth(argv);

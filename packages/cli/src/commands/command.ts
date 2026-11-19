@@ -14,7 +14,9 @@ export type UsageGroup =
   | "setup"
   | "session"
   | "account"
-  | "automation";
+  | "automation"
+  | "github"
+  | "vault";
 
 export type Command = {
   name: string;

@@ -1,12 +1,14 @@
 import account from "./account.ts";
 import advice from "./advice.ts";
 import api from "./api.ts";
+import { secrets, vars } from "./application-vault.ts";
 import type { Command, UsageGroup } from "./command.ts";
 import completion from "./completion.ts";
 import detail from "./detail.ts";
 import doctor from "./doctor.ts";
 import exec from "./exec.ts";
 import extend from "./extend.ts";
+import github from "./github.ts";
 import host from "./host.ts";
 import interrupt from "./interrupt.ts";
 import launch from "./launch.ts";
@@ -55,6 +57,9 @@ export const commands: readonly Command[] = [
   host,
   routine,
   template,
+  github,
+  vars,
+  secrets,
 ];
 
 const byName = new Map(commands.map((command) => [command.name, command]));

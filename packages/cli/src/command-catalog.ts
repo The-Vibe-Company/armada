@@ -103,9 +103,7 @@ ${sandboxUsage("logs")}
 ${sandboxUsage("session")}
 ${sandboxUsage("org")}
 ${sandboxUsage("account")}
-  armada github status|connect|reconnect|disconnect|install|manage [installation-id]
-  armada github refresh <sandbox>
-                                           Browser authorization waits for real completion; --no-browser prints URL
+${sandboxUsage("github")}
 ${sandboxUsage("invitations")}
   armada creds login codex --name <name> [--org <name>]
                                            Native local device login; up to 16 minutes after the device code.
@@ -132,8 +130,7 @@ ${sandboxUsage("invitations")}
                                            [--price-cached-input USD]; decimal USD per million tokens, omitted = unknown
                                            Replacing a connection replaces its prices too; re-enter all rates to keep them
 ${sandboxUsage("automation")}
-  armada vars --help                       Readable variables: set/list/read; stdin/file writes only
-  armada secrets --help                    Write-only application secrets: set/list/rotate/revoke/delete
+${sandboxUsage("vault")}
                                            Personal or --org scope. JSON includes values only for vars read; no sandbox delivery.
   armada creds test <sandbox-id> --model <deployment-model> [--org <name>] [--json]
                                            One tiny billable check of the bound custom connection in a running Modal sandbox

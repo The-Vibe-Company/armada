@@ -16,8 +16,6 @@ import {
   VaultError,
   VERSION,
 } from "@armada/core";
-import { accountCommand } from "./account-commands.ts";
-import { applicationVaultCommand } from "./application-vault-commands.ts";
 import { acceptedOptions, flag, oneName, parseArgs, providerFlag, single, values } from "./args.ts";
 import { ArmadaApiError, createArmadaApiClient, resolveArmadaOrigin } from "./armada-api.ts";
 import { type AuthIo, loginCommand, productionAuthIo } from "./auth-commands.ts";
@@ -72,10 +70,7 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
             ...(deps.readStdin ? { readStdin: deps.readStdin } : {}),
           }),
       );
-    if (
-      localArgs.length === 1 &&
-      ["snapshot", "golden", "vars", "secrets", "mcp", "creds", "github", "skill"].includes(localArgs[0] ?? "")
-    ) {
+    if (localArgs.length === 1 && ["snapshot", "golden", "mcp", "creds", "skill"].includes(localArgs[0] ?? "")) {
       const family = localArgs[0] === "golden" ? "snapshot" : (localArgs[0] ?? "");
       if (family === "skill") return skillCommand(["--help"], io);
       io.out(onboardingHelp([family, "--help"]) ?? HELP);
@@ -271,11 +266,6 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
               )(),
         () => (deps.readStdin ? deps.readStdin() : process.stdin.isTTY ? Promise.resolve("") : Bun.stdin.text()),
       );
-    case "github":
-      return accountCommand(command, rest, authOf(io, deps));
-    case "vars":
-    case "secrets":
-      return applicationVaultCommand(command, rest, vaultIo(authOf(io, deps), deps, true));
     case "creds":
       return credsCommand(rest, vaultIo(authOf(io, deps), deps));
     default:
