@@ -11,7 +11,7 @@ import {
   VaultError,
 } from "@armada/core";
 import { admitLaunchPlan, isLaunchTtlSeconds } from "@armada/core/server";
-import { admitAccountCapacity } from "./account-capacity.ts";
+import { admitLaunchAccount } from "./account-capacity.ts";
 import {
   admitDockerCapacity,
   admitDockerDisk,
@@ -283,10 +283,7 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
         // already-admitted request replays above: admission is historical, not current.
         if (host.draining) throw new DockerHostDraining();
         await admitLaunchPlan(
-          () =>
-            request.credentialId
-              ? admitAccountCapacity(tx, request.credentialId, request.requestId, request.model)
-              : undefined,
+          () => admitLaunchAccount(tx, request, request.requestId, request.model),
           async () => {
             await admitDockerDisk(tx, request.hostId);
             await admitDockerCapacity(tx, request.hostId);

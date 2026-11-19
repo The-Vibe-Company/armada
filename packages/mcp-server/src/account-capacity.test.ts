@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import type { Sql } from "@armada/core/server";
 import { PGlite } from "@electric-sql/pglite";
-import { admitAccountCapacity } from "./account-capacity.ts";
+import { admitAccountCapacity, admitLaunchAccount } from "./account-capacity.ts";
 
 test("account capacity refuses a full account and admits available or unlimited capacity", async () => {
   for (const [max, running, refused] of [
@@ -39,14 +39,15 @@ const account = "10000000-0000-4000-8000-000000000001";
 const ids = [1, 2, 3].map((id) => `20000000-0000-4000-8000-${String(id).padStart(12, "0")}`);
 const sql = { query: (q: string, values?: unknown[]) => db.query(q, values) } as Sql;
 beforeAll(async () => {
-  await db.exec(`create table credentials(id uuid primary key,name text,max_agents integer);
+  await db.exec(`create table credentials(id uuid primary key,name text,max_agents integer,version integer not null default 2);
+    create table account_exhaustion(account_id uuid primary key,account_version integer,resets_at timestamptz);
     create table sandboxes(id uuid primary key,credential_id uuid,deleted_at timestamptz,stopped_at timestamptz,
       status text,activity_lease_id uuid,task_prompt_id text,lifecycle_generation bigint default 1);
     create table account_turn_queue(sandbox_id uuid,state text,dispatch_generation bigint,account_id uuid,dispatch_until timestamptz);
     create table runtime_commands(sandbox_id uuid,request_id text,result_enc bytea);
     create table runtime_idle_turns(sandbox_id uuid,prompt_id text,settled boolean,primary key(sandbox_id,prompt_id));
     create table account_agent_reservations(sandbox_id uuid primary key,account_id uuid);`);
-  await db.query("insert into credentials values($1,'Shared account',2)", [account]);
+  await db.query("insert into credentials(id,name,max_agents) values($1,'Shared account',2)", [account]);
   await db.exec(
     "alter table credentials add column model_limits jsonb not null default '{}'::jsonb; alter table sandboxes add column model text; alter table account_turn_queue add column model text; alter table account_turn_queue add column sequence bigint; alter table account_agent_reservations add column model text",
   );
@@ -141,4 +142,24 @@ test("model admission shares account locking but enforces each model independent
   await expect(admit("20000000-0000-4000-8000-000000000004", "armada/morph-kimik31")).rejects.toThrow(
     "1/1 agents working",
   );
+});
+
+test("new launch admission refuses an exhausted revision until its reset", async () => {
+  const resetsAt = "2027-01-01T14:00:00.000Z";
+  const reset = Date.parse(resetsAt);
+  const binding = { credentialId: account, credentialVersion: 2 };
+  const admit = (now: number) =>
+    db.transaction((tx) =>
+      admitLaunchAccount({ query: (q, v) => tx.query(q, v) } as Sql, binding, ids[0]!, undefined, () => now),
+    );
+
+  await db.exec("truncate sandboxes,account_agent_reservations");
+  await db.query("insert into account_exhaustion values($1,2,$2)", [account, resetsAt]);
+  await expect(admit(reset - 1)).rejects.toThrow(`Account Shared account is exhausted until ${resetsAt}.`);
+  expect((await db.query("select sandbox_id from account_agent_reservations")).rows).toEqual([]);
+  await admit(reset);
+  expect((await db.query("select sandbox_id from account_agent_reservations")).rows).toEqual([{ sandbox_id: ids[0] }]);
+  await db.query("delete from account_agent_reservations where sandbox_id=$1", [ids[0]]);
+  await db.query("update account_exhaustion set account_version=1 where account_id=$1", [account]);
+  await expect(admit(reset - 1)).resolves.toBeUndefined();
 });
