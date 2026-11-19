@@ -138,7 +138,7 @@ function nextItem(body: Row, id: string) {
 
 function responses(body: Row) {
   const id = crypto.randomUUID();
-  const item = nextItem(body, `msg_${id}`);
+  const item = nextItem(body, `msg_${digest(JSON.stringify(body.input)).toString("hex").slice(0, 32)}`);
   const response = {
     id: `resp_${id}`,
     object: "response",
