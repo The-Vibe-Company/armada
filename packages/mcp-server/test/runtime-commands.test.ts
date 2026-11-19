@@ -1048,7 +1048,9 @@ test("bound model check uses enrolled health and exact epoch, never destinations
 });
 
 function webhookAttempts(sql: Sql, sandboxId: string) {
-  const worker = createOutboundWebhooks(sql, "invalid_key", "https://armada.example");
+  const worker = createOutboundWebhooks(sql, "invalid_key", "https://armada.example", {
+    now: () => Date.UTC(2030, 0, 1),
+  });
   const store = createJobsStore(sql);
   const owner = crypto.randomUUID();
   return async () => {
@@ -1074,7 +1076,6 @@ test("cancelled queued runtime turns defer webhooks until the first durable comm
   const active = await f.enrol();
   // Invalid encryption prevents any network send after a claim, while the
   // attempts counter proves whether admission happened before alias readiness.
-  await f.db.query("delete from jobs where kind='webhook'");
   const tryDeliveries = webhookAttempts(f.sql, f.id);
   await f.db.query(
     "insert into outbound_webhook_endpoints(org_id,url,secret_enc) values($1,'https://receiver.example/events',$2)",
@@ -1134,9 +1135,6 @@ test("cancelled queued runtime turns defer webhooks until the first durable comm
         )
       ).rows,
     ).toEqual([{ attempts: 1 }]);
-    // Isolate each prefix from already-failed delivery retries.
-    await f.db.query("delete from jobs where kind='webhook'");
-    await f.db.query("delete from outbound_webhook_deliveries");
   }
 });
 
@@ -1144,9 +1142,7 @@ test("a superseded unfinished queued command cannot hold stop or later turn webh
   const f = await fixture();
   await f.enrol();
   // Invalid encryption prevents network I/O. A recorded attempt proves dispatch.
-  await f.db.query("delete from jobs where kind='webhook'");
   const tryDeliveries = webhookAttempts(f.sql, f.id);
-  await f.db.query("delete from outbound_webhook_deliveries");
   await f.db.query(
     "insert into outbound_webhook_endpoints(org_id,url,secret_enc) values($1,'https://receiver.example/events',$2)",
     [f.people.org, new Uint8Array([1])],
@@ -1175,6 +1171,7 @@ test("a superseded unfinished queued command cannot hold stop or later turn webh
   await f.db.query("select enqueue_webhook_turn($1,'native_uncertain','finished')", [f.id]);
   // While the reply can still arrive, the alias may still be published.
   await tryDeliveries();
+  expect(await attempts()).toEqual([{ type: "turn.finished", attempts: 0 }]);
   await f.enrol();
   expect(await f.bridge().result(f.people.owner, f.id, `follow_${publicId}`)).toEqual({ state: "superseded" });
   await f.db.query("select enqueue_webhook_turn($1,'native_later','finished')", [f.id]);
@@ -1185,7 +1182,6 @@ test("a superseded unfinished queued command cannot hold stop or later turn webh
     { type: "turn.finished", attempts: 1 },
     { type: "turn.finished", attempts: 1 },
   ]);
-  await f.db.query("delete from outbound_webhook_deliveries");
 });
 
 test.each(["accepted", "rejected"] as const)(

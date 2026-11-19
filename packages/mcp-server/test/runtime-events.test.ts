@@ -897,7 +897,7 @@ test("failed webhook jobs persist the original backoff and stop after five sends
     await f.db.query("insert into outbound_webhook_deliveries(endpoint_id,payload) values($1,'{}')", [endpoint.id]);
     const store = createJobsStore(f.sql);
     const owner = crypto.randomUUID();
-    const now = Date.now() + 1_000;
+    const now = Date.UTC(2030, 0, 1);
     const worker = createOutboundWebhooks(f.sql, ENCRYPTION_KEY, "https://armada.example", {
       now: () => now,
       send: async () => 503,
@@ -941,7 +941,7 @@ test("a lost webhook settlement replays the same signed delivery ID under a new 
     ).rows[0]!;
     const { rows: deliveries } = await f.db.query<{ id: string }>(
       "insert into outbound_webhook_deliveries(endpoint_id,payload) values($1,'{}') returning id",
-      [endpoint],
+      [endpoint.id],
     );
     const id = deliveries[0]!.id;
     const oldClaim = await f.db.query(
@@ -981,6 +981,65 @@ test("a lost webhook settlement replays the same signed delivery ID under a new 
         )
       ).rows,
     ).toEqual([{ attempts: 2, delivered: true }]);
+  } finally {
+    await f.close();
+  }
+});
+
+test("webhook cutover backfills pending deliveries and honors a live legacy receipt", async () => {
+  const f = await fixture();
+  try {
+    const migration = await Bun.file(
+      new URL("../../../supabase/migrations/20261119170137_outbound_webhook_jobs.sql", import.meta.url),
+    ).text();
+    const { rows } = await f.db.transaction(async (tx) => {
+      await tx.exec(`
+        drop trigger outbound_webhook_job_on_delivery on outbound_webhook_deliveries;
+        drop trigger outbound_webhook_legacy_claim_fence on outbound_webhook_deliveries;
+        drop function enqueue_outbound_webhook_job();
+        drop function fence_outbound_webhook_legacy_claim();
+      `);
+      const { rows: endpoints } = await tx.query<{ id: string }>(
+        "insert into outbound_webhook_endpoints(org_id,url,secret_enc) values($1,'https://receiver.example/events',$2) returning id",
+        [f.people.org, new Uint8Array([1])],
+      );
+      const deliveries = await tx.query<{ id: string; lease_until: Date | null; next_attempt_at: Date }>(
+        `insert into outbound_webhook_deliveries(endpoint_id,payload,attempts,lease_until,next_attempt_at)
+         values ($1,'{}',0,null,now()+interval '30 seconds'), ($1,'{}',1,now()+interval '60 seconds',now())
+         returning id,lease_until,next_attempt_at`,
+        [endpoints[0]!.id],
+      );
+      await tx.exec(migration);
+      return deliveries;
+    });
+    const [pending, inFlight] = rows;
+    const jobs = await f.db.query<{ id: string; run_after: Date }>(
+      "select id,run_after from jobs where kind='webhook' order by run_after",
+    );
+    expect(jobs.rows).toEqual([
+      { id: pending!.id, run_after: pending!.next_attempt_at },
+      { id: inFlight!.id, run_after: inFlight!.lease_until },
+    ]);
+    const receipt = await f.db.query(
+      `update outbound_webhook_deliveries set last_status=204,delivered_at=now(),lease_until=null
+       where id=$1 and attempts=1 returning id`,
+      [inFlight!.id],
+    );
+    expect(receipt.rows).toEqual([{ id: inFlight!.id }]);
+    await f.db.query("update jobs set run_after=now() where id=$1", [inFlight!.id]);
+    const owner = crypto.randomUUID();
+    const store = createJobsStore(f.sql);
+    const job = (await store.claim("webhook", owner, 30, 1))!;
+    expect(job.id).toBe(inFlight!.id);
+    const worker = createOutboundWebhooks(f.sql, ENCRYPTION_KEY, "https://armada.example");
+    expect(
+      await worker.run(job, {
+        signal: new AbortController().signal,
+        canDispatch: async () => {
+          throw new Error("Already delivered");
+        },
+      }),
+    ).toEqual({ status: "done" });
   } finally {
     await f.close();
   }

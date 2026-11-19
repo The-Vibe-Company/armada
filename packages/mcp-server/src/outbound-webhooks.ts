@@ -242,8 +242,6 @@ export function createOutboundWebhooks(
       if (due.getTime() > now()) return { status: "retry", after: due };
       if (!row.alias_ready) return { status: "retry", after: new Date(now() + 1_000) };
       if (!(await canDispatch())) return { status: "fail", reason: "dispatch_unavailable" };
-      // Reserve the send under the shared claim. A crash after the request can
-      // replay the delivery ID, but cannot bypass the five-attempt limit.
       const reservation = await sql.query<{ attempts: number }>(
         `with claim as (
            select id from public.jobs where id=$1 and kind='webhook' and state='leased'
@@ -255,7 +253,7 @@ export function createOutboundWebhooks(
       );
       const attempt = reservation.rows[0];
       if (!attempt) return { status: "fail", reason: "dispatch_unavailable" };
-      let status: number | null = null;
+      let status: number | null;
       try {
         const secret = await decryptSecret(row.secret_enc, key);
         const timestamp = String(Math.floor(now() / 1000));
@@ -278,7 +276,7 @@ export function createOutboundWebhooks(
           AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
         );
       } catch {
-        /* Store only status codes; exception text can contain endpoint credentials. */
+        status = null;
       }
       const success = status !== null && status >= 200 && status < 300;
       const { attempts } = attempt;
