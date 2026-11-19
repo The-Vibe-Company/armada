@@ -672,7 +672,7 @@ test("the published Docker launch schema admits a first prompt exactly when laun
     ["", false],
     ["   ", false],
     ["\t\n", false],
-    ["  ﻿", false],
+    ["\u00a0\u2028\ufeff", false],
   ];
   for (const [prompt, admitted] of cases) {
     const body = prompt === undefined ? base : { ...base, prompt };
