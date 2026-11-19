@@ -128,7 +128,7 @@ armada launch web --provider boat --agent claude --model claude-opus-5-5 --reaso
   "Find why the checkout test is flaky and fix it"
 ```
 
-**7. Drive it.** Replace `SANDBOX_ID` with the ID printed by launch. Run `steer` while the turn is active, from another terminal if `logs --follow` is still running.
+**7. Drive it.** Replace `SANDBOX_ID` with the ID printed by launch. Run `steer` while the turn is active, from another terminal if `logs --follow` is still running. Send a follow-up after the turn settles. The effort override below applies to a new turn on native Boat. On runtime-backed Boat, keep the launch effort by omitting the override.
 
 ```sh
 armada logs SANDBOX_ID --follow

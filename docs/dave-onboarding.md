@@ -384,7 +384,7 @@ bearer_token_env_var = "ARMADA_TOKEN"
 
 ## 8. Drive an agent through MCP
 
-The sandbox tools are `launch`, `list`, `status`, `logs`, `send`, `report`, `exec` and `stop`. Find and manage snapshots in the dashboard or through the REST API. For example, POST to `/api/v1/golden/list` to find the snapshot name and org ID. The launch request uses the field `golden` for the snapshot name. Use the returned `sandbox.id` for later calls. Example arguments:
+Common sandbox tools include `launch`, `list`, `status`, `logs`, `send`, `report`, `exec` and `stop`. Find and manage snapshots in the dashboard or through the REST API. For example, POST to `/api/v1/golden/list` to find the snapshot name and org ID. The launch request uses the field `golden` for the snapshot name. Use the returned `sandbox.id` for later calls. Example arguments:
 
 ```jsonc
 // launch: fork a snapshot and start the agent (leave out prompt for an idle, ready sandbox)
@@ -412,7 +412,7 @@ The sandbox tools are `launch`, `list`, `status`, `logs`, `send`, `report`, `exe
 { "id": "<sandbox id>" }
 ```
 
-Runtime follow-up sends require `request_id`. If delivery is uncertain, retry with the same ID and identical input.
+Supply `request_id` when sending a runtime follow-up so you can retry with the same ID and identical input if delivery is uncertain.
 
 A typical coordination loop is `launch` with a prompt, then `status` with `wait: true` until `settled`, then `logs` with `all: true` to collect final output, then `send` for a follow-up or `stop`. A turn that ends on a usage limit or an expired login marks the sandbox `failed`, and `statusReason` says why.
 
