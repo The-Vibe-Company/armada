@@ -31,9 +31,9 @@ import {
   readCollectorProbeResult,
   readCollectorResult,
   runtimeBootstrapScript,
+  SHARED_ARTIFACT_CACHE_PATH,
 } from "@armada/core/server";
 import { type App, type ModalClient, NotFoundError, type Sandbox } from "modal";
-import { SHARED_ARTIFACT_CACHE_PATH } from "../../core/src/shared-artifact-cache.ts";
 import { chooseManagementAuthority, matchesManagementAuthority } from "./authority.ts";
 import { type ModalConnection, modalConnection } from "./client.ts";
 import { lifecycleStep, ModalOperationError, modalBuilderImageError, modalError, refusal } from "./errors.ts";

@@ -121,6 +121,7 @@ export {
   resolvePrice,
   type TokenRates,
 } from "./server-pricing.ts";
+export { SHARED_ARTIFACT_CACHE_PATH } from "./shared-artifact-cache.ts";
 export { createSkillCatalog } from "./skill-catalog.ts";
 export * from "./skill-defaults.ts";
 export { mergeSkillPins } from "./skill-merge.ts";
