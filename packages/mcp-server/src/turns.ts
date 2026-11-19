@@ -118,6 +118,8 @@ export async function readStatus(
   }
 
   const info = await provider.get(sandbox.providerSandboxId);
+  if (provider.id === "boat" && info.state === "stopped" && info.retainedSnapshot !== "usable")
+    return report(sandbox, "stopping", info, null, info.expiresAt ?? null);
   const target = options.promptId
     ? { promptId: options.promptId, conversationId: null }
     : sandbox.taskPromptId
@@ -372,8 +374,8 @@ function report(
     prompt,
     settled:
       !sandbox.stopRequestedAt &&
-      (machineDown ||
-        (prompt ? prompt.state !== "running" : status !== "running" && status !== "starting" && status !== "stopping")),
+      status !== "stopping" &&
+      (machineDown || (prompt ? prompt.state !== "running" : status !== "running" && status !== "starting")),
   };
 }
 

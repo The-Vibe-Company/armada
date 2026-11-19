@@ -22,14 +22,13 @@ so the package has no dependencies.
    release-only contracts and the named sentinel files in parallel with sandbox image preparation.
    Once the image pin is ready, the binary jobs and exact-SHA staging smoke run in parallel while
    `check` can continue. The merge queue runs the ordinary unit suite for the same source tree.
-5. Four native runners compile and smoke-test the binaries. The publisher stages and packs the
-   six npm packages, saves their tarballs and SHA-256 checksums as an Actions artifact, runs the
-   installation smoke test (including an isolated install, Node import and TypeScript check of the SDK),
-   and publishes platform packages before the main package, then the SDK.
-   `scripts/publish-npm.sh` then retrieves each exact platform version from npm before publishing
-   the launcher. Newly uploaded tarballs must match the staged bytes; existing immutable versions
-   are checked for availability without requiring a rebuild to be byte-identical. Registry retries
-   share a five-minute budget (`NPM_PUBLISH_WAIT_SECONDS`, poll interval `NPM_PUBLISH_POLL_SECONDS`).
+5. Four native runners compile the binaries, pack npm tarballs and run the installation smoke
+   test, including the SDK's Node import and TypeScript checks. Each runner uploads its tested
+   platform tarball with a SHA-256 manifest, and linux-x64 also uploads the launcher and SDK
+   tarballs. After production, the npm job verifies the full set against those manifests and
+   publishes the exact tarballs. It retrieves each platform version from npm before publishing the
+   launcher, then publishes the SDK. Newly uploaded platform tarballs must match the tested bytes.
+   Recovery checks already-published versions for availability and skips uploading them.
 
 Production publication supports stable versions only, sent to `latest`. The
 mandatory production chain retains its existing latest-stable-tag guard, so a
@@ -66,7 +65,7 @@ resume the release to publish the main package using OIDC. Subsequent releases n
 
 The SDK package `@the-vibe-company/armada-sdk` is bootstrapped the same way before the first release
 that contains it: publish the exact `the-vibe-company-armada-sdk-<version>.tgz` from that release's
-`npm-tarballs-<version>` artifact with a maintainer session, then run `npm trust github` for it.
+`npm-tarballs-<version>-linux-x64` artifact with a maintainer session, then run `npm trust github` for it.
 Until then that release's npm job fails after the CLI packages are published; rerunning it after the
 bootstrap skips the already-published versions and publishes nothing twice.
 
@@ -94,7 +93,8 @@ missing versions are published. Publication tooling is loaded from the executing
 revision so tags predating the registry guard can still be recovered; all package artifacts remain
 pinned to the selected release tag. A run without an existing version tag cannot publish.
 
-The `npm-tarballs-<version>` Actions artifact contains the exact packed packages and `SHA256SUMS`.
+The `npm-tarballs-<version>-<target>` Actions artifacts contain the exact packed packages and
+per-target `SHA256SUMS-<target>` manifests.
 Do not rebuild or substitute tarballs during a bootstrap or recovery.
 
 ## Installation and migration
@@ -515,3 +515,105 @@ golden work and authorized before/after runtime evidence remain outstanding.
 The current smoke entrypoints launch authenticated existing goldens rather than
 building them; no duplicate build was found to remove. Do not infer a same-commit
 golden cache hit from a golden name or a successful historical smoke alone.
+
+## Tag last
+
+Design for [#2838](https://github.com/The-Vibe-Company/armada/issues/2838).
+[#2839](https://github.com/The-Vibe-Company/armada/issues/2839) implements this
+sequence. Until then, use the current workflow described above.
+
+1. **Prepare the version PR.** Always set `skip-github-release: true`.
+   The [pinned action](https://github.com/googleapis/release-please-action/blob/5c625bfb5d1ff62eadeeb3772007f7f66fdcf071/src/index.ts#L136-L151)
+   leaves PR creation enabled and stops emitting `release_created` and
+   `tag_name`. Publication intent supplies `version`, `sha`,
+   `release_pr_number` and `mode` (prepare, candidate or recover) to
+   `release-metadata`, replacing its Release Please inputs and tag-first guard.
+   Keep workspace-version validation there. Checks, builds and smoke use
+   the validated SHA and retain their parallel ordering. Candidate mode can
+   publish only after checks, binaries and exact-source smoke succeed.
+   Recover mode uses the verified published SHA and digest. Prepare mode
+   may reconcile labels and run Release Please without entering deployment
+   environments. Production requires verified publication and successful
+   smoke for the selected SHA.
+2. **Freeze the candidate SHA at admission.** For an automatic run, use the
+   current main head under the release lock, provided it still carries the
+   triggering version and contains that version PR's merge commit. A same-version
+   fix-forward retry can therefore include fixes merged since the version PR.
+   Checks, binaries, image, smoke and production all use this same source and
+   pin. The version PR's changelog ends at its original cutoff. Generate a
+   compare link and include intervening changes from the version PR merge to
+   the selected SHA in the GitHub release notes. Release Please bases the next
+   changelog on commits after the actual tag. Its
+   [release reader](https://github.com/googleapis/release-please/blob/891bcf6253b390e39df9ff3e1c059a836bd39c98/src/github.ts#L848-L925)
+   supplies the tag's commit SHA to the
+   [commit scan](https://github.com/googleapis/release-please/blob/891bcf6253b390e39df9ff3e1c059a836bd39c98/src/manifest.ts#L541-L675).
+3. **Build and smoke before publishing.** Push the sandbox image as
+   `:<version>-rc.<sha7>`. Carry the full SHA and immutable registry digest
+   in workflow evidence. The binaries embed `<registry>@sha256:<digest>` via
+   `official-sandbox-image.json`, and staging smokes that pin. After the smoke
+   passes, promote from the tested digest with
+   `docker buildx imagetools create --prefer-index=false -t "<registry>:<version>" "<registry>@<digest>"`.
+   Resolve the stable image tag and require the same digest before publishing.
+   Docker [copies an index](https://docs.docker.com/reference/cli/docker/buildx/imagetools/create/)
+   unchanged when given a single index source. The flag also preserves the
+   single-manifest format. Promotion leaves the embedded binary pin intact.
+4. **Publish and reconcile the labels.** Create the GitHub release with
+   `gh release create "v<version>" --target "<sha>" --notes-file "<notes>"`
+   as the final publication step before production. A failed smoke leaves the
+   version and stable image unpublished. A failure between image promotion and
+   release creation can leave a stable image. Until release creation, only a
+   candidate with fresh successful smoke may reconcile it. Once the release
+   exists, verify the peeled tag commit and stable image digest on recovery.
+   `--target` only sets the commit when the tag is missing, so check any
+   existing tag explicitly and reject conflicts.
+   [GitHub CLI release creation](https://cli.github.com/manual/gh_release_create)
+
+   After verifying the release, the publishing job adds `autorelease: tagged`
+   and removes `autorelease: pending` on the original version PR. Do this
+   idempotently in that order. Release Please's
+   [PR builder](https://github.com/googleapis/release-please/blob/891bcf6253b390e39df9ff3e1c059a836bd39c98/src/manifest.ts#L920-L939)
+   blocks while a merged release PR carries the pending label, even when a
+   release exists. With release creation disabled, the publishing job owns
+   [the label change](https://github.com/googleapis/release-please/blob/891bcf6253b390e39df9ff3e1c059a836bd39c98/src/manifest.ts#L1294-L1316).
+   On a published-version main push or recovery, reconcile before invoking
+   Release Please: resolve the original merged version PR from the version
+   change, verify the published tag contains its merge commit, then add and
+   remove the labels with the GitHub issue-label API. Already-correct labels
+   are success. If identity or the update cannot be verified, stop before
+   PR preparation so a later admission can repair it. Keep npm downstream
+   of production.
+
+### Admission and recovery
+
+Every main push can enqueue a Release run. The workflow-level
+[`release-production` group](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)
+with `queue: max` serializes runs and allows up to 100 pending. Each run reads
+release-by-tag **after admission**, so queued pushes do not all act on the
+same 404. A 404 for the current version with a matching merged version PR
+allows a candidate. A 200 allows ordinary PR preparation and verified label
+reconciliation. Other API responses fail closed. After the SHA is frozen, a
+same-version main advance alone does not invalidate a passing candidate.
+Before publication, reject a newer version on main or any newer stable tag
+or release. For a new version, replace the old `Reject superseded releases`
+requirement that the target tag already be latest with this prepublication
+guard. After publication, keep the latest-stable-tag and exact-SHA guards
+for production and recovery.
+
+Dispatch the **Release** workflow from main with `version` and a full commit
+`sha` to retry a release with fixed workflow tooling:
+`gh workflow run release.yml --ref main -f version=<version> -f sha=<full-sha>`.
+[Actions dispatch](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow#running-a-workflow)
+selects the workflow ref independently of its input values. Validate the SHA
+belongs to main, contains the matching version PR merge and has that version
+in source. Use the selected SHA for source and builds. Continue the existing
+[workflow-revision checkout for recovery tooling](../.github/workflows/release.yml#L482-L489)
+so a tooling fix on main can recover an older source SHA. Before publication,
+repeat validation and exact-source smoke for the selected SHA. If a tag
+exists without a release, require that exact SHA and smoke it again before
+creating the release. If the release already exists, both inputs must match
+the latest stable tag and its peeled commit. Reuse its published image digest,
+repair any interrupted label update and retry the protected downstream steps.
+A different SHA after publication requires a new version. This dispatch and
+its recovery guards are proposed for #2839. The scratch run exercised release
+history and labels through a simulated GitHub adapter. It provides no
+execution evidence for workflow dispatch, registry promotion or recovery.

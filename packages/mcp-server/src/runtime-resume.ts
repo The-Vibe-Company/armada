@@ -1,5 +1,6 @@
 import { sha256Hex } from "@armada/auth";
 import { type PromptReceipt, type Sql, sandboxActivity, VaultError } from "@armada/core/server";
+import { BoatRetentionUnconfirmed } from "@armada/provider-boat";
 import type { Caller } from "./caller.ts";
 import { createSqlData, type SandboxView } from "./data.ts";
 import { recordLaunchStageQuietly } from "./launch-stage-record.ts";
@@ -354,7 +355,8 @@ export function createRuntimeResume(
         },
         { initialLeaseId: requestId, deadlineMs: 600_000 },
       );
-    } catch {
+    } catch (error) {
+      const preActivationArchive = error instanceof BoatRetentionUnconfirmed;
       const completed = await read(sql, found.id, requestId).catch(() => undefined);
       if (completed?.receipt && (await store.get(found.id))) return completed.receipt;
       // Preserve recoverable live-epoch uncertainty. Never re-activate or reissue a ticket.
@@ -380,7 +382,8 @@ export function createRuntimeResume(
           if (runtime?.live && runtime.epoch === admitted.op.target_epoch) return;
           const retained = Boolean(
             found.provider === "boat" &&
-              runtime?.activation_confirmed &&
+              runtime &&
+              (runtime.activation_confirmed || preActivationArchive) &&
               !runtime.live &&
               runtime.epoch === admitted.op.source_epoch,
           );
@@ -399,11 +402,13 @@ export function createRuntimeResume(
           return status;
         })
         .catch(() => undefined);
-      if (cleanup === "failed" && placement) await placement.stop().catch(() => {});
+      if (cleanup === "failed" && placement && !preActivationArchive) await placement.stop().catch(() => {});
       if (cleanup === "stopping")
         throw new VaultError(
           "conflict",
-          "Runtime did not enrol. Wait for a confirmed retained stop before resuming with a new request_id.",
+          preActivationArchive
+            ? "Boat retained data has not been verified. Wait for a confirmed retained stop before resuming with a new request_id."
+            : "Runtime did not enrol. Wait for a confirmed retained stop before resuming with a new request_id.",
         );
       throw new VaultError(
         "conflict",

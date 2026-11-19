@@ -10,17 +10,15 @@ const targets = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"];
 const platforms = targets.map((target) => `${main}-${target}`);
 const sdkPackage = "@the-vibe-company/armada-sdk";
 
-function publish(mode: string, publishRelease = true, sdk = false) {
+function publish(mode: string, publishRelease = true) {
   const root = mkdtempSync(join(tmpdir(), "armada-publish-"));
   try {
     mkdirSync(join(root, "bin"));
-    mkdirSync(join(root, "dist/tarballs"), { recursive: true });
-    for (const name of [...platforms, main, ...(sdk ? [sdkPackage] : [])]) {
-      const short = name === sdkPackage ? "sdk" : (name.split("/")[1] as string);
-      mkdirSync(join(root, "dist/npm", short), { recursive: true });
-      writeFileSync(join(root, "dist/npm", short, "package.json"), JSON.stringify({ name, version }));
-      writeFileSync(join(root, "dist/tarballs", `${name.slice(1).replace("/", "-")}-${version}.tgz`), name);
-    }
+    const tarballs = [main, sdkPackage, ...platforms].map((name) => {
+      const filename = `${name.slice(1).replace("/", "-")}-${version}.tgz`;
+      writeFileSync(join(root, filename), name);
+      return filename;
+    });
     if (mode === "overlap") Bun.spawnSync(["mkfifo", join(root, "handshake")]);
     writeFileSync(
       join(root, "bin/npm"),
@@ -65,7 +63,7 @@ case "$1" in
       exit 1
     fi
     # Fixtures contain one package name without a trailing newline.
-    printf '%s' "$(< "$TEST_ROOT/dist/tarballs/$file")" > "$destination/$file"
+    printf '%s' "$(< "$TEST_ROOT/$file")" > "$destination/$file"
     if [ "$MODE" = corrupt ] || [ "$MODE" = already-present ]; then echo original-release >> "$destination/$file"; fi
     echo "$file"
     ;;
@@ -77,7 +75,7 @@ esac
     writeFileSync(join(root, "bin/sleep"), '#!/bin/sh\necho "sleep $*" >> "$TEST_ROOT/events"\n', {
       mode: 0o755,
     });
-    const result = Bun.spawnSync(["bash", script], {
+    const result = Bun.spawnSync(["bash", script, ...tarballs], {
       cwd: root,
       env: {
         ...process.env,
@@ -107,7 +105,7 @@ test.each(["delayed", "independent-delay"])(
     const result = publish(mode);
     expect(result.exitCode).toBe(0);
     const mainPublish = result.events.findIndex((event) =>
-      event.startsWith(`publish dist/tarballs/the-vibe-company-armada-${version}.tgz `),
+      event.startsWith(`publish ./the-vibe-company-armada-${version}.tgz `),
     );
     expect(mainPublish).toBeGreaterThan(-1);
     for (const name of platforms) {
@@ -129,7 +127,7 @@ test("each platform starts its registry check without waiting for the other uplo
   const result = publish("overlap");
   expect(result.exitCode).toBe(0);
   const mainPublish = result.events.findIndex((event) =>
-    event.startsWith(`publish dist/tarballs/the-vibe-company-armada-${version}.tgz `),
+    event.startsWith(`publish ./the-vibe-company-armada-${version}.tgz `),
   );
   expect(mainPublish).toBeGreaterThan(-1);
   for (const name of platforms) {
@@ -144,9 +142,9 @@ for (const mode of ["unavailable", "corrupt"]) {
     const result = publish(mode);
     expect(result.exitCode).not.toBe(0);
     expect(result.stderr).toContain(mode === "corrupt" ? "differs" : "Timed out");
-    expect(
-      result.events.some((event) => event.startsWith(`publish dist/tarballs/the-vibe-company-armada-${version}.tgz `)),
-    ).toBe(false);
+    expect(result.events.some((event) => event.startsWith(`publish ./the-vibe-company-armada-${version}.tgz `))).toBe(
+      false,
+    );
   });
 }
 
@@ -160,18 +158,18 @@ test("recovery retrieves existing artifacts even when the rebuild differs", () =
 test("dry runs publish every staged tarball without querying registry availability", () => {
   const result = publish("unavailable", false);
   expect(result.exitCode).toBe(0);
-  expect(result.events.length).toBe(platforms.length + 1);
+  expect(result.events.length).toBe(platforms.length + 2);
   for (const event of result.events) {
     expect(event).toStartWith("publish ");
     expect(event).toContain("--dry-run");
   }
 });
 
-test("a staged SDK is published after the launcher", () => {
-  const result = publish("delayed", true, true);
+test("the SDK is published after the launcher", () => {
+  const result = publish("delayed");
   expect(result.exitCode).toBe(0);
   expect(result.events.filter((event) => event.startsWith("publish ")).slice(-2)).toEqual([
-    `publish dist/tarballs/the-vibe-company-armada-${version}.tgz --access public --tag latest --provenance`,
-    `publish dist/tarballs/the-vibe-company-armada-sdk-${version}.tgz --access public --tag latest --provenance`,
+    `publish ./the-vibe-company-armada-${version}.tgz --access public --tag latest --provenance`,
+    `publish ./the-vibe-company-armada-sdk-${version}.tgz --access public --tag latest --provenance`,
   ]);
 });

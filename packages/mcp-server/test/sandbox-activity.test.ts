@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { createSqlVaultStore } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
-import { sandbox } from "../../provider-boat/test/support.ts";
+import { retainedSandbox, sandbox } from "../../provider-boat/test/support.ts";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
@@ -51,9 +51,9 @@ test("send completion fences an old stopped SDK observation captured after admis
         capture = false;
         observed.resolve();
         await oldObservation.promise;
-        return Response.json({ ok: true, sandbox: sandbox({ state: "archived" }) });
+        return Response.json({ ok: true, sandbox: retainedSandbox() });
       }
-      return Response.json({ ok: true, sandbox: sandbox({ state: isReady ? "idle" : "archived" }) });
+      return Response.json({ ok: true, sandbox: isReady ? sandbox({ state: "idle" }) : retainedSandbox() });
     }) as typeof fetch,
   });
   try {
