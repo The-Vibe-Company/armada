@@ -80,9 +80,7 @@ export async function readRuntimeTemplateEnvironment(
     const bindings = parseApplicationSecretBindings(m.definition.secrets === undefined ? [] : m.definition.secrets);
     if (
       bindings.length &&
-      (provider !== "modal" ||
-        String(m.actorEpoch) !== row.actor_epoch ||
-        bindings.some(({ key }) => Object.hasOwn(values, key)))
+      (String(m.actorEpoch) !== row.actor_epoch || bindings.some(({ key }) => Object.hasOwn(values, key)))
     )
       throw Error();
     return { harness: row.harness, variables: values, bindings };

@@ -596,10 +596,13 @@ installation, new public flag or mutable-source lookup is used. Resume uses the
 same manifest projection before the retained machine activates; source edits do
 not change the admitted values. Native launches remain unchanged.
 
-Application-secret bindings still refuse before allocation. This slice does not
-enable raw secret delivery, scoped child/helper launches or a
-runtime default switch. Reserved keys, mismatched account/provider/actor metadata
-and corrupted frozen manifests refuse rather than becoming an empty environment.
+Authorized application-secret bindings use the shared encrypted runtime
+configuration command after enrolment and before the first prompt. The runtime
+receives the secret key names for redaction and delivers the values to the
+selected harness. Manifests and bootstrap carry no application-secret values.
+Invalid pins use the same vault conflict as Modal and Docker. Reserved keys,
+mismatched account/provider/actor metadata and corrupted frozen manifests
+also refuse.
 
 Coordinator-only production acceptance after normal release: use the existing
 Boat runtime-default server deployment and an existing Boat Codex or Claude
@@ -608,9 +611,13 @@ template with a non-secret readable binding (no secret bindings). Launch through
 and confirm the exact admitted value. Change the source variable, stop the
 sandbox, and wake it through ordinary send: the admitted value must be preserved.
 Repeat for an existing routine referencing that template. Confirm launch logs
-are `source:armada-runtime`. A secret-bound template must still refuse without
-allocating. Use only existing authorized resources; no worker production access
-or provider call was performed, and Boat is never a staging/release-gate probe.
+are `source:armada-runtime`. For a separate template with an authorized
+disposable secret binding, verify the value in the selected harness by
+comparison without printing it. Check that the raw value is absent from launch
+receipts, logs and events. Revoke the disposable vault secret, then launch the
+same pinned template revision with a new request key and confirm the vault
+conflict before allocation. Use only existing authorized resources.
+Boat stays outside staging and release acceptance.
 
 ### Repeating launch settings on Boat follow-up
 
@@ -706,7 +713,8 @@ configuration. Boat now uses that same runtime machinery: empty fork environment
 encrypted enrolment carrying the key and endpoint descriptor, persisted model and
 immutable runtime selection for subsequent turns. Keys are not put in Boat account
 environment, public arguments or the golden. OpenCode support is described separately
-above; custom endpoint routing does not broaden template application-secret delivery.
+above. Template application-secret delivery follows the same enrolled admission
+and redaction rules described above.
 
 Coordinator-only production acceptance after a normal release: with existing Boat
 golden and Morph accounts, launch Claude and Codex through ordinary launch, verify

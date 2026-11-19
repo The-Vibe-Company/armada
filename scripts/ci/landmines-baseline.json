@@ -675,7 +675,7 @@
     "packages/core/src/launch-variables.ts": 1,
     "packages/core/src/launch-workdir.ts": 3,
     "packages/core/src/launch-workspace.ts": 5,
-    "packages/core/src/launch.ts": 75,
+    "packages/core/src/launch.ts": 74,
     "packages/core/src/machine-size.ts": 5,
     "packages/core/src/mcp-catalog.ts": 1,
     "packages/core/src/mcp-launch-selection.ts": 4,
