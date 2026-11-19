@@ -11,8 +11,10 @@ import {
 } from "@armada/core/server";
 import { admitAccountCapacity } from "./account-capacity.ts";
 import {
+  DISPATCHING_TURN_CANCELLED,
   type DispatchTurn,
   dispatchAccountTurn,
+  QUEUED_TURN_CANCELLED,
   RUNTIME_LANE,
   RUNTIME_REQUEST_EVIDENCE,
 } from "./account-turn-dispatch.ts";
@@ -410,12 +412,10 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         await sql.query(`update public.account_turn_queue q set state='failed',
           failure_reason='Queued prompt cannot start: sandbox stopped, deleted, expired, or stopping.'
           from public.sandboxes s where q.sandbox_id=s.id and q.state='queued'
-          and (s.deleted_at is not null or s.expires_at<=now() or s.stop_requested_at is not null
-            or s.status not in ('ready','running','stopped')
-            or (s.status='stopped' and s.lifecycle_generation<>q.queued_generation))`);
+          and ${QUEUED_TURN_CANCELLED}`);
         await sql.query(`update public.account_turn_queue q set state='failed',failure_reason='Dispatch cancelled by confirmed stop.'
           from public.sandboxes s where q.sandbox_id=s.id and q.state='dispatching'
-          and (s.stop_requested_at is not null or s.deleted_at is not null or s.status in ('deleted','stopping','failed') or (s.status='stopped' and s.lifecycle_generation<>q.queued_generation) or s.expires_at<=now())`);
+          and ${DISPATCHING_TURN_CANCELLED}`);
         // Native admission advances the generation before calling the provider. An expired
         // changed-generation claim is uncertain, never safe to replay or leave dispatching.
         await sql.query(`update public.account_turn_queue q set state='failed',dispatch_until=null,
