@@ -21,15 +21,15 @@ async function fixture() {
   return { db, people, openaiCredentialId, sql, store: createJobsStore(sql, btoa("\0".repeat(32))) };
 }
 
-async function sandbox({ db, people }: Awaited<ReturnType<typeof fixture>>) {
+async function sandbox({ db, people }: Awaited<ReturnType<typeof fixture>>, boatRuntime = false) {
   const {
     rows: [golden],
   } = await db.query<{ id: string }>("select id from goldens where owner_id = $1", [people.owner]);
   const id = crypto.randomUUID();
   await db.query(
-    `insert into sandboxes (id, boat_id, golden_id, org_id, owner_id, harness, status, lifecycle_generation, expires_at)
-     values ($1, 'fixture', $2, $3, $4, 'codex', 'ready', 2, 'infinity')`,
-    [id, golden!.id, people.org, people.owner],
+    `insert into sandboxes (id, boat_id, golden_id, org_id, owner_id, harness, status, lifecycle_generation, expires_at, boat_runtime)
+     values ($1, 'fixture', $2, $3, $4, 'codex', 'ready', 2, 'infinity', $5)`,
+    [id, golden!.id, people.org, people.owner, boatRuntime],
   );
   return id;
 }
@@ -63,7 +63,7 @@ test.each([
 ] as const)("a turn job reconciles a %s receipt at claim", async (scenario) => {
   const f = await fixture();
   const { db, people, store } = f;
-  const sandboxId = await sandbox(f);
+  const sandboxId = await sandbox(f, scenario === "dispatching");
   const requestId = crypto.randomUUID();
   if (scenario !== "missing") await seedTurn(f, sandboxId, requestId);
   const options = { orgId: people.org, maxAttempts: 2 };
@@ -160,6 +160,63 @@ test.each([
 });
 
 test.each([
+  ["native generation changed", 3, null, "-infinity", false, true],
+  ["native request started at the job generation", 2, "request", "-infinity", false, true],
+  ["native legacy window still open", 2, "request", "infinity", false, false],
+  ["runtime request started", 2, "request", "-infinity", true, false],
+  ["native dispatch has no evidence", 2, null, "-infinity", false, false],
+] as const)("shared claim reconciles %s", async (_, generation, activity, until, runtime, uncertain) => {
+  const f = await fixture();
+  const { db, people, store } = f;
+  const sandboxId = await sandbox(f, runtime);
+  const requestId = crypto.randomUUID();
+  await seedTurn(f, sandboxId, requestId);
+  const id = await store.enqueue(
+    "turn_dispatch",
+    sandboxId,
+    2,
+    requestId,
+    { requestId },
+    {
+      orgId: people.org,
+      maxAttempts: 2,
+    },
+  );
+  await db.query(
+    "update account_turn_queue set state='dispatching', dispatch_generation=2, dispatch_until=$2 where request_id=$1",
+    [requestId, until],
+  );
+  await db.query(`update sandboxes set lifecycle_generation=$2, activity_lease_id=$3, activity_until=$4 where id=$1`, [
+    sandboxId,
+    generation,
+    activity ? requestId : null,
+    activity ? "infinity" : null,
+  ]);
+  await db.query("insert into account_agent_reservations (sandbox_id, account_id) values ($1, $2)", [
+    sandboxId,
+    f.openaiCredentialId,
+  ]);
+  await store.claim("turn_dispatch", crypto.randomUUID(), 30, 1);
+  expect(
+    (
+      await db.query(
+        `select j.state as job_state, q.state as receipt_state, q.failure_reason,
+              exists(select 1 from account_agent_reservations r where r.sandbox_id=q.sandbox_id) as reserved
+       from jobs j join account_turn_queue q on q.sandbox_id=j.sandbox_id where j.id=$1`,
+        [id],
+      )
+    ).rows,
+  ).toEqual([
+    {
+      job_state: uncertain ? "failed" : "leased",
+      receipt_state: uncertain ? "failed" : "dispatching",
+      failure_reason: uncertain ? "Dispatch outcome uncertain; inspect sandbox history before resending." : null,
+      reserved: true,
+    },
+  ]);
+});
+
+test.each([
   ["unsupported queued state", "queued", "starting", 2, "infinity", false, false],
   ["stop intent", "queued", "ready", 2, "infinity", true, false],
   ["expiry", "queued", "running", 2, "-infinity", false, false],
@@ -174,7 +231,10 @@ test.each([
     const sandboxId = await sandbox(f);
     const requestId = crypto.randomUUID();
     await seedTurn(f, sandboxId, requestId);
-    await db.query("update account_turn_queue set state=$2 where request_id=$1", [requestId, state]);
+    await db.query(
+      "update account_turn_queue set state=$2, dispatch_generation=case when $2='dispatching' then 2 end where request_id=$1",
+      [requestId, state],
+    );
     const jobId = await store.enqueue(
       "turn_dispatch",
       sandboxId,
@@ -414,7 +474,7 @@ test.each([
 ] as const)("turn admission generation handoff handles %s", async (scenario) => {
   const f = await fixture();
   const { db, people, store } = f;
-  const sandboxId = await sandbox(f);
+  const sandboxId = await sandbox(f, true);
   const request = crypto.randomUUID();
   const options = { orgId: people.org, maxAttempts: 2 };
   await seedTurn(f, sandboxId, request);
