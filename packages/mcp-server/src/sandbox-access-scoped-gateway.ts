@@ -31,8 +31,6 @@ class WaitAuthorityUnavailable extends Error {}
 const fail = (status: number, code: string) =>
   Response.json({ error: { code, message: code } }, { status, headers: { "cache-control": "no-store" } });
 
-/** Separate principal surface. Metadata/init are static and convey NO authenticated identity;
- * every data/effect call reaches the real Authority boundary through children. No Caller exists. */
 export function createSandboxScopedGateway(
   children: ReturnType<typeof createSandboxChildren>,
   authority: Pick<DelegatedAuthority, "catalogGrant">,
