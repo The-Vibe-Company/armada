@@ -62,7 +62,7 @@ interface ServiceIo {
   service(args: string[]): Promise<unknown>;
 }
 
-const localService = (): ServiceIo => ({ home: homedir(), service: command });
+const localService: () => ServiceIo = () => ({ home: homedir(), service: command });
 
 export async function installService(state: State, instance?: string, io = localService()) {
   const p = paths(io.home, instance);
