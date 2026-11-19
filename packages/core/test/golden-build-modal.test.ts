@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
 import { migratedDatabase } from "./support/database.ts";
+import { dispatchGoldenBuild } from "./support/golden-build-dispatch.ts";
 
 const database = migratedDatabase();
 
@@ -208,7 +209,7 @@ test("Modal admission seals pinned context, allocates only after commit, and pub
     expect(Buffer.from(stored.payload_enc).includes(Buffer.from(binding.appId))).toBe(false);
     expect((await f.db.query("select 1 from golden_backend_slots")).rows).toEqual([]);
     f.rotate();
-    expect(await f.jobs.runOne()).toBe(true);
+    expect(await dispatchGoldenBuild(f.db, f.jobs)).toBe(true);
     expect(await f.jobs.status(f.actor.userId, queued.jobId)).toMatchObject({
       state: "succeeded",
       provider: "modal",
@@ -242,7 +243,7 @@ test("Modal admission seals pinned context, allocates only after commit, and pub
       "create function reject_modal_success() returns trigger language plpgsql as $$ begin if new.state='succeeded' then raise exception 'fixture publication failure'; end if; return new; end $$; create trigger reject_modal_success before update on golden_build_jobs for each row execute function reject_modal_success();",
     );
     const failed = await f.jobs.admit(f.provider, f.actor, { ...f.input, name: "rollback" }, crypto.randomUUID());
-    await f.jobs.runOne();
+    await dispatchGoldenBuild(f.db, f.jobs);
     expect((await f.jobs.status(f.actor.userId, failed.jobId)).state).toBe("failed");
     expect((await f.db.query("select 1 from goldens where name='rollback'")).rows).toEqual([]);
     expect((await f.db.query("select 1 from golden_backend_slots")).rows).toEqual([]);
@@ -272,7 +273,7 @@ test("Modal queued authority is rechecked and a lost worker fence cannot publish
       f.actor.orgId,
       f.actor.userId,
     ]);
-    await f.jobs.runOne();
+    await dispatchGoldenBuild(f.db, f.jobs);
     expect((await f.jobs.status(f.actor.userId, revoked.jobId)).state).toBe("failed");
     expect(f.allocations()).toBe(0);
     await f.db.query("update members set role='admin' where org_id=$1 and user_id=$2", [f.actor.orgId, f.actor.userId]);
@@ -288,10 +289,10 @@ test("Modal queued authority is rechecked and a lost worker fence cannot publish
       await blocked;
     });
     const fenced = await f.jobs.admit(f.provider, f.actor, { ...f.input, name: "fenced" }, crypto.randomUUID());
-    worker = f.jobs.runOne();
+    worker = dispatchGoldenBuild(f.db, f.jobs);
     await started;
     await f.db.query("update golden_build_jobs set lease_until=now()-interval '1 second' where id=$1", [fenced.jobId]);
-    expect(await f.jobs.runOne()).toBe(false);
+    expect(await dispatchGoldenBuild(f.db, f.jobs)).toBe(false);
     expect((await f.jobs.status(f.actor.userId, fenced.jobId)).state).toBe("recovery_required");
     release();
     await worker;
@@ -299,7 +300,7 @@ test("Modal queued authority is rechecked and a lost worker fence cannot publish
     f.rotate();
     await f.jobs.reconcileOne();
     expect((await f.jobs.status(f.actor.userId, fenced.jobId)).state).toBe("failed");
-    expect(await f.jobs.runOne()).toBe(false);
+    expect(await dispatchGoldenBuild(f.db, f.jobs)).toBe(false);
     expect(f.allocations()).toBe(1);
     expect(f.deleted.length).toBeGreaterThan(0);
     expect(f.contexts.at(-1)?.modal).toEqual(binding);
@@ -324,7 +325,7 @@ test.each(["unknown", "refusal"])(
       throw new Error("fixture lost remote snapshot response");
     });
     const job = await f.jobs.admit(f.provider, f.actor, f.input, crypto.randomUUID());
-    await f.jobs.runOne();
+    await dispatchGoldenBuild(f.db, f.jobs);
     expect(await f.jobs.status(f.actor.userId, job.jobId)).toMatchObject({
       state: "recovery_required",
       phase: "snapshot",
@@ -335,7 +336,7 @@ test.each(["unknown", "refusal"])(
     expect((await f.jobs.status(f.actor.userId, job.jobId)).state).toBe("recovery_required");
     expect(f.contexts.at(-1)?.modal).toEqual(binding);
     expect(f.deleted).toEqual([]);
-    expect(await f.jobs.runOne()).toBe(false);
+    expect(await dispatchGoldenBuild(f.db, f.jobs)).toBe(false);
     expect(f.allocations()).toBe(1);
     expect((await f.db.query("select 1 from goldens")).rows).toEqual([]);
   },
@@ -393,7 +394,7 @@ test("a repository revoked after admission preserves only its safe diagnostic an
   const f = await fixture();
   const job = await f.jobs.admit(f.provider, f.actor, f.input, crypto.randomUUID());
   f.denyRepository();
-  await f.jobs.runOne();
+  await dispatchGoldenBuild(f.db, f.jobs);
   const status = await f.jobs.status(f.actor.userId, job.jobId);
   expect(status).toMatchObject({ state: "failed", phase: "authorization" });
   expect(status.failureReason).toContain("detail:GitHub cannot read acme/web");
@@ -415,7 +416,7 @@ test("a rolled-back build whose image collection is pending is recovered by the 
     let available = false;
     f.collect(async () => (available ? "collected" : "pending"));
     const job = await f.jobs.admit(f.provider, f.actor, f.input, crypto.randomUUID());
-    await f.jobs.runOne();
+    await dispatchGoldenBuild(f.db, f.jobs);
     const row = async () =>
       (
         await f.db.query<{ state: string; phase: string; snapshot: string | null }>(
@@ -460,12 +461,12 @@ test("a lease that expires during rollback cleanup hands the recorded artifact t
         swept = true;
         // The attempt's lease expires while its collection call is open; another worker tick sweeps it.
         await f.db.query("update golden_build_jobs set lease_until=clock_timestamp()-interval '1 second'");
-        await f.jobs.runOne();
+        await dispatchGoldenBuild(f.db, f.jobs);
       }
       return available ? "collected" : "pending";
     });
     const job = await f.jobs.admit(f.provider, f.actor, f.input, crypto.randomUUID());
-    await f.jobs.runOne();
+    await dispatchGoldenBuild(f.db, f.jobs);
     const row = async () =>
       (
         await f.db.query<{ state: string; phase: string; snapshot: string | null }>(
@@ -503,7 +504,7 @@ test("a rejected candidate record blocks publication and retirement, and the fen
       "create function reject_modal_record() returns trigger language plpgsql as $$ begin if new.state='succeeded' then raise exception 'fixture publication reached'; end if; if new.state='running' and new.snapshot is distinct from old.snapshot then raise exception 'fixture record failure'; end if; return new; end $$; create trigger reject_modal_record before update on golden_build_jobs for each row execute function reject_modal_record();",
     );
     const job = await f.jobs.admit(f.provider, f.actor, f.input, crypto.randomUUID());
-    await f.jobs.runOne();
+    await dispatchGoldenBuild(f.db, f.jobs);
     const row = (
       await f.db.query<{ state: string; snapshot: string | null }>(
         "select state,snapshot from golden_build_jobs where id=$1",
@@ -546,14 +547,14 @@ test("a worker replaced during the image call after a failed first record leaves
       // The worker's lease expires while its image call is open and another tick sweeps it. The
       // call then never returns before recovery: the original worker is gone.
       await f.db.query("update golden_build_jobs set lease_until=clock_timestamp()-interval '1 second'");
-      await f.jobs.runOne();
+      await dispatchGoldenBuild(f.db, f.jobs);
       replaced();
       return new Promise((resolve) => {
         release = resolve;
       });
     });
     const job = await f.jobs.admit(f.provider, f.actor, f.input, crypto.randomUUID());
-    const worker = f.jobs.runOne();
+    const worker = dispatchGoldenBuild(f.db, f.jobs);
     await held;
     const row = async () =>
       (

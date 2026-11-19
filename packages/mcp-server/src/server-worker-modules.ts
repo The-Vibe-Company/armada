@@ -1,5 +1,6 @@
 import { createDockerHostStore } from "./docker-host-store.ts";
 import { captureDockerStopOutputs } from "./docker-outputs.ts";
+import { createGoldenBuildJob } from "./golden-worker.ts";
 import { startInvitationWorker } from "./invitations.ts";
 import { createJobsRunner } from "./jobs/runner.ts";
 import { createMcpSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
@@ -37,6 +38,7 @@ export type LaneFactory = (services: WorkerServices) => ServerLifecycleLane | un
 
 const jobsLane: LaneFactory = ({
   githubApp,
+  goldenBuilds,
   sql,
   jobs,
   store,
@@ -83,6 +85,7 @@ const jobsLane: LaneFactory = ({
   const runner = createJobsRunner(
     jobs,
     {
+      golden_build: createGoldenBuildJob(goldenBuilds),
       langfuse_export: langfuse.exportJob,
       webhook: { concurrency: 1, run: webhooks.run },
       ...(prScan ? { pr_scan: prScan } : {}),

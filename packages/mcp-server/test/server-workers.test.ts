@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { createBoatProvider } from "@armada/provider-boat";
 
 import { retainedSandbox } from "../../provider-boat/test/support.ts";
-import { createGoldenBuildLane } from "../src/golden-worker.ts";
+import { createGoldenRecoveryLane } from "../src/golden-worker.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { startServerWorkers } from "../src/server-workers.ts";
 import { rowOnlyConnection } from "./row-only-database.ts";
@@ -84,10 +84,10 @@ test("server lifecycle drains multiple rows while independent work is pending; s
     undefined,
     [],
     [
-      createGoldenBuildLane({
-        runOne: async () => {
+      createGoldenRecoveryLane({
+        expireRunningReceipts: async () => {
           buildRunning = true;
-          return build.promise;
+          await build.promise;
         },
         reconcileOne: async () => {
           recoveryRuns++;
