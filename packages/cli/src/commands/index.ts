@@ -1,12 +1,14 @@
 import account from "./account.ts";
 import advice from "./advice.ts";
 import api from "./api.ts";
+import bindCredential from "./bind-credential.ts";
 import type { Command, UsageGroup } from "./command.ts";
 import completion from "./completion.ts";
 import detail from "./detail.ts";
 import doctor from "./doctor.ts";
 import exec from "./exec.ts";
 import extend from "./extend.ts";
+import github from "./github.ts";
 import host from "./host.ts";
 import interrupt from "./interrupt.ts";
 import launch from "./launch.ts";
@@ -14,6 +16,7 @@ import list from "./list.ts";
 import login from "./login.ts";
 import logout from "./logout.ts";
 import logs from "./logs.ts";
+import mcp from "./mcp.ts";
 import org from "./org.ts";
 import recovery from "./recovery.ts";
 import report from "./report.ts";
@@ -55,6 +58,9 @@ export const commands: readonly Command[] = [
   host,
   routine,
   template,
+  github,
+  mcp,
+  bindCredential,
 ];
 
 const byName = new Map(commands.map((command) => [command.name, command]));

@@ -83,29 +83,21 @@ ${sandboxUsage("setup")}
                                            Build a new snapshot from saved repos/setup on its original host; keep the old one.
 ${sandboxUsage("launch")}
 ${sandboxUsage("list")}
-  armada mcp sandbox-connections <sandbox-uuid> [--org UUID] [--json]
-                                           Read actual bound connection metadata, never mutate bindings
+${sandboxUsage("bound-mcp")}
 ${sandboxUsage("advice")}
-  armada bind-credential <sandbox-id> --credential-id UUID [--org UUID] [--json]
-                                           Owner-only legacy Modal binding recovery; stop safely first; no restart
+${sandboxUsage("bind-credential")}
 ${sandboxUsage("sandbox")}
   armada snapshot retirement dry-run|reconcile <snapshot-id> [--limit 1-50] [--org UUID]
   armada snapshot remove <name|snapshot-id> [--provider boat|modal] [--org UUID] [--json]
                                            Names must match one visible snapshot; use provider/org or snapshot list --json to disambiguate.
                                            Remove from launch selection; retain children and provider artifacts
   armada snapshot visibility <snapshot-id> --visibility private|org [--org UUID]
-  armada mcp catalog|rename ID NAME|default ID on|off [--org UUID]
-  armada mcp add NAME --service notion|linear [--scope personal|org] [--org UUID]
-  armada mcp add NAME URL [--scope personal|org] [--org UUID]
-                                           Public/OAuth URL shortcut; auto discovery, no secret argv
-  armada mcp list|add|update|connect|status|reconnect|enable|disable|revoke|delete [id] [--org UUID] [--file JSON]
+${sandboxUsage("mcp")}
 ${sandboxUsage("logs")}
 ${sandboxUsage("session")}
 ${sandboxUsage("org")}
 ${sandboxUsage("account")}
-  armada github status|connect|reconnect|disconnect|install|manage [installation-id]
-  armada github refresh <sandbox>
-                                           Browser authorization waits for real completion; --no-browser prints URL
+${sandboxUsage("github")}
 ${sandboxUsage("invitations")}
   armada creds login codex --name <name> [--org <name>]
                                            Native local device login; up to 16 minutes after the device code.

@@ -14,7 +14,11 @@ export type UsageGroup =
   | "setup"
   | "session"
   | "account"
-  | "automation";
+  | "automation"
+  | "bound-mcp"
+  | "bind-credential"
+  | "mcp"
+  | "github";
 
 export type Command = {
   name: string;
