@@ -1,4 +1,4 @@
-import { beforeAll, expect, test } from "bun:test";
+import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createServiceToken, createSqlAuthStore, sha256Hex } from "@armada/auth";
 import { createSqlMcpLeasePort, createSqlSandboxStore } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
@@ -10,14 +10,23 @@ import { createMcpLifecycle } from "../src/mcp-lifecycle.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 
-let db: Awaited<ReturnType<typeof migratedDatabase>>;
+let pendingDatabase: ReturnType<typeof migratedDatabase> | undefined;
 beforeAll(async () => {
-  db = await migratedDatabase();
+  pendingDatabase = migratedDatabase();
+  await pendingDatabase;
+});
+afterAll(async () => {
+  const pending = pendingDatabase;
+  pendingDatabase = undefined;
+  const db = await pending?.catch(() => undefined);
+  await db?.close();
 });
 
 // Boat actually preserves boot_id across archive/restore: authority must be fenced
 // before a possibly ambiguous resume, not inferred only from kernel identity.
 test("same-boot autoarchive fences SQL leases before Boat resume and reinstalls only after readiness", async () => {
+  const db = await pendingDatabase;
+  if (!db) throw new Error("Test database is not open");
   const servers: McpServer[] = [];
   let service: ReturnType<typeof createMcpHttpIntegration> | undefined;
   try {
@@ -343,6 +352,5 @@ test("same-boot autoarchive fences SQL leases before Boat resume and reinstalls 
   } finally {
     await service?.close();
     await Promise.all(servers.map((server) => server.close()));
-    await db.close();
   }
 });
