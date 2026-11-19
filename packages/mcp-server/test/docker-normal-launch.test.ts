@@ -865,6 +865,15 @@ test("prompt-free, image-free launch normalizes UUIDs, uses the default image, h
   const replay = await post("sandbox/launch", { ...base, idempotencyKey, ttlSeconds: 3600 });
   publishedResponse("sandbox/launch").parse(replay);
   expect(replay).toEqual({ ...result, promptId: null, conversationId: null });
+  expect(
+    (
+      await database().query(
+        `select actor,code from public.sandbox_transitions
+         where sandbox_id=$1 and from_status='starting' and to_status='ready'`,
+        [f.body.requestId],
+      )
+    ).rows,
+  ).toEqual([{ actor: "runtime_enrolment", code: "runtime_enrolled" }]);
   expect(await counts(f)).toEqual({ sandboxes: 1, claims: 1, jobs: 2, commands: 3 });
 });
 

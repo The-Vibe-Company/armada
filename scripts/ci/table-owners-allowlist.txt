@@ -38,10 +38,8 @@ packages/mcp-server/src/docker-host-store.ts	sandboxes	update
 packages/mcp-server/src/docker-host-store.ts	sandboxes	update
 packages/mcp-server/src/docker-normal-launch.ts	sandboxes	update
 packages/mcp-server/src/docker-normal-launch.ts	sandboxes	update
-packages/mcp-server/src/docker-normal-launch.ts	sandboxes	update
 packages/mcp-server/src/docker-outputs.ts	runtime_commands	delete
 packages/mcp-server/src/docker-outputs.ts	runtime_commands	update
-packages/mcp-server/src/docker-runtime-lifecycle.ts	sandboxes	update
 packages/mcp-server/src/docker-runtime-lifecycle.ts	sandboxes	update
 packages/mcp-server/src/docker-runtime-lifecycle.ts	sandboxes	update
 packages/mcp-server/src/docker-runtime-lifecycle.ts	sandboxes	update
