@@ -5,7 +5,6 @@ export { openMigratedDatabase as migratedDatabase } from "../../../scripts/test-
 import { afterAll, beforeAll } from "bun:test";
 import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 
-/** Owns both an opening database and the ready connection borrowed by SQL callbacks. */
 export function databaseFixture<T extends { close(): Promise<void> }>(open: () => Promise<T>) {
   let pending: Promise<T> | undefined;
   let ready: T | undefined;
@@ -24,7 +23,6 @@ export function databaseFixture<T extends { close(): Promise<void> }>(open: () =
       const opening = pending;
       pending = undefined;
       ready = undefined;
-      // The setup hook reports an open failure. Teardown owns any engine it produced.
       const database = await opening?.catch(() => undefined);
       await database?.close();
     },
