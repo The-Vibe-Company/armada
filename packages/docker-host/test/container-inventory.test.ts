@@ -10,6 +10,7 @@ const state: State = {
   hostToken: "host_token",
   receipts: [],
 };
+const deploymentId = `https://canonical.example.test/${state.hostId}/${state.installationId}`;
 const owned = "a".repeat(64);
 const foreign = "b".repeat(64);
 const untagged = "c".repeat(64);
@@ -44,12 +45,13 @@ test("lists physical containers for the loaded registration even without local r
       },
     },
     state,
+    deploymentId,
   );
 
   expect(await Array.fromAsync(inventory.listInventory())).toEqual([
     {
       machineId: owned,
-      deploymentId: `https://armada.example.test/${state.hostId}/${state.installationId}`,
+      deploymentId,
       sandboxId,
       generation,
       createdAt: new Date("2026-11-18T15:01:02.123Z"),
@@ -66,18 +68,24 @@ test("a container disappearing before inspection makes the inventory incomplete"
       },
     },
     state,
+    deploymentId,
   );
   await expect(Array.fromAsync(inventory.listInventory())).rejects.toThrow("Incomplete Docker container inspection");
 });
 
-test("posts a complete authenticated inventory only after the server advertises version one", async () => {
+test("posts a complete authenticated inventory with the server identity after a version-one offer", async () => {
   let capability: number | undefined;
   let scans = 0;
   const reports: unknown[] = [];
   const listing = Promise.withResolvers<void>();
   const api = httpApi(
     (async (url, init) => {
-      if (String(url).endsWith("/poll")) return Response.json({ job: null, containerInventory: capability });
+      if (String(url).endsWith("/poll"))
+        return Response.json({
+          job: null,
+          containerInventory: capability,
+          containerInventoryDeploymentId: deploymentId,
+        });
       expect(url).toBe(`${state.server}/api/docker-host/container-inventory`);
       expect(new Headers(init?.headers).get("authorization")).toBe(`Bearer ${state.hostToken}`);
       expect(init?.redirect).toBe("error");
@@ -125,7 +133,7 @@ test("posts a complete authenticated inventory only after the server advertises 
           machineId: owned,
           sandboxId,
           generation,
-          deploymentId: `${state.server}/${state.hostId}/${state.installationId}`,
+          deploymentId,
           containerName: "observed-container",
           createdAt: "2026-11-18T15:01:02.123Z",
         },

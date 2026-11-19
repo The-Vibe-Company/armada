@@ -588,6 +588,17 @@ two minutes per workspace. The stop and configured retention cleanup proceed
 independently. Armada keeps the last successful capture until a complete
 replacement publishes. The server and host binary both need the new code.
 
+### Container inventory
+
+An authenticated `POST /api/docker-host/poll` advertises `containerInventory: 1`
+and supplies `containerInventoryDeploymentId`. The daemon uses that identity
+for entries sent to `POST /api/docker-host/container-inventory` and continues
+sending requests to its registered HTTPS address, which can be an alias.
+A daemon paired with the preceding server release derives the identity from
+its registered origin when the poll omits the new field. Alias reporting
+requires both the server and daemon updates. The receiver counts unknown
+containers in the authenticated host installation and performs no deletions.
+
 ### Fetching the image (#1507)
 
 Before it creates a container, the host checks whether it has the image. If it does

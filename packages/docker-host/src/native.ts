@@ -217,9 +217,11 @@ export function httpApi(
   const inventoryStop = new AbortController();
   let inventoryReport: Promise<void> | undefined;
   let nextInventoryAt = 0;
-  async function reportInventory(cli: DockerMachineCli, state: State) {
+  async function reportInventory(cli: DockerMachineCli, state: State, deploymentId: string) {
     const signal = inventoryStop.signal;
-    const containers = await Array.fromAsync(createDockerContainerInventory(cli, state).listInventory(signal));
+    const containers = await Array.fromAsync(
+      createDockerContainerInventory(cli, state, deploymentId).listInventory(signal),
+    );
     signal.throwIfAborted();
     await post(
       state.server,
@@ -287,7 +289,11 @@ export function httpApi(
           !inventoryReport &&
           performance.now() >= nextInventoryAt
         ) {
-          inventoryReport = reportInventory(inventory.cli, state)
+          // The preceding server release advertises inventory without an identity.
+          const deploymentId =
+            result.containerInventoryDeploymentId ??
+            `${serverOrigin(state.server)}/${state.hostId}/${state.installationId}`;
+          inventoryReport = reportInventory(inventory.cli, state, deploymentId)
             .catch(() => {
               if (!inventoryStop.signal.aborted) inventory.failed();
             })
