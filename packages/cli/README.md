@@ -21,6 +21,34 @@ provider-specific GitHub refresh refusal. Typed commands validate success receip
 before reporting success. Their control routes use JSON objects, including `{}`
 for empty acknowledgements.
 
+## Login and session storage
+
+Armada browser sign-in uses PKCE through the Armada server and keeps provider
+details out of the CLI. Email links carry only a state-bound PKCE code. Sign-in
+prefers email when the CLI remembers an address and email is enabled. Otherwise
+it prefers an enabled browser method. The prompts for the sign-in method
+and email address require an interactive terminal.
+
+The saved Armada API session is local, holds no provider configuration and
+uses file mode `0600`. Its login ID identifies the sign-in across token
+rotations. The SQLite lock serializes session updates across processes and
+releases on process exit, including a crash. It stores no tokens. Keep the
+lock file in place because another CLI process may already have it open.
+
+MCP connection authorization opens only a backend-issued HTTPS URL. After one
+browser handoff, the CLI checks the requested connection's server-side status
+before reporting success.
+
+Native Codex model login runs in the foreground. The CLI withholds native
+output and raw errors because provider responses may contain credentials. The
+16-minute approval budget covers Codex 0.166's 15-minute device approval
+window plus completion and authentication-file flush. The CLI checks the
+initialization and login requests for errors, including connection-level
+parse errors, and requires a matching login ID on completion. An import
+requires a stable account ID for refresh and binding, even though native
+Codex accepts a null ID. Temporary native credentials are removed during
+cleanup.
+
 ## Vault input and output
 
 Application variables and secrets use separate commands from model-account
@@ -51,3 +79,21 @@ the route or evidence is unavailable.
 A closed stdout pipe ends the CLI with status zero, including during a follow
 operation. Check a submitted mutation's outcome before retrying it. The exit
 status in this case only describes the pipe.
+
+## Local skill installation and hints
+
+The installer preflights both agent destinations before writing. Exclusive
+directory creation still refuses a destination created after that check. The
+installer and hint use the same package name for the pinned public Armada skill.
+
+The hint checks discovery roots in the home directory and up to 32 directories
+starting at the working directory. Missing or unreadable installations do not
+suppress the hint. The weekly cooldown also suppresses it when the receipt
+timestamp is in the future after a clock rollback.
+
+The CLI records the cooldown before printing. Unusable state suppresses the
+hint, and errors in the hint leave the command's exit status alone. The receipt
+is opened without following symlinks and in nonblocking mode, and the CLI
+checks that the opened object is a regular file before truncating it. This
+protects against a named pipe or other special file replacing the receipt
+between the initial check and open.

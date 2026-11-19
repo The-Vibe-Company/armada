@@ -1,11 +1,12 @@
 import { createDockerHostStore } from "./docker-host-store.ts";
 import { captureDockerStopOutputs } from "./docker-outputs.ts";
+import { createGoldenBuildJob } from "./golden-worker.ts";
 import { startInvitationWorker } from "./invitations.ts";
 import { createJobsRunner } from "./jobs/runner.ts";
 import { createMcpSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
 import { createNativeWebhookPrompts } from "./native-webhook-prompts.ts";
 import { createProviderReaper } from "./provider-reaper.ts";
-import { pruneServerRetention } from "./retention-maintenance.ts";
+import { retentionMaintenanceJob, seedRetentionMaintenance } from "./retention-maintenance.ts";
 import { startRoutineWorker } from "./routine-worker.ts";
 import { createRuntimeAgent } from "./runtime-agent.ts";
 import { createRuntimeIdle } from "./runtime-idle.ts";
@@ -37,6 +38,7 @@ export type LaneFactory = (services: WorkerServices) => ServerLifecycleLane | un
 
 const jobsLane: LaneFactory = ({
   githubApp,
+  goldenBuilds,
   sql,
   jobs,
   store,
@@ -47,6 +49,7 @@ const jobsLane: LaneFactory = ({
   options,
   outputs,
   langfuse,
+  control,
 }) => {
   const prScan = githubApp
     ? createPullRequestScanJob(
@@ -56,6 +59,14 @@ const jobsLane: LaneFactory = ({
         async (target, request, canDispatch) => {
           if (!target.runtime) {
             const provider = await lifecycleProvider(target.id);
+            if (provider.supportsExecPhysicalGeneration) {
+              const { physicalGeneration } = await provider.get(
+                request.sandboxId,
+                request.signal ? { signal: request.signal } : undefined,
+              );
+              if (!physicalGeneration) throw Error("No physical incarnation for native PR scan.");
+              request = { ...request, expectedPhysicalGeneration: physicalGeneration };
+            }
             if (!(await canDispatch())) throw Error("PR scan generation changed.");
             request.signal?.throwIfAborted();
             return provider.exec(request);
@@ -83,16 +94,27 @@ const jobsLane: LaneFactory = ({
   const runner = createJobsRunner(
     jobs,
     {
+      golden_build: createGoldenBuildJob(goldenBuilds),
       langfuse_export: langfuse.exportJob,
+      maintenance: retentionMaintenanceJob(sql, control.applicationVault, options.logError),
       webhook: { concurrency: 1, run: webhooks.run },
       ...(prScan ? { pr_scan: prScan } : {}),
       ...(config.encryptionKey ? { [OUTPUTS_CAPTURE]: outputs.captureJob } : {}),
     },
     options.logError,
   );
+  let seeded = false;
   return {
     ...runner,
     async reconcileOne(signal) {
+      if (!seeded && !signal.aborted) {
+        try {
+          await seedRetentionMaintenance(jobs);
+          seeded = true;
+        } catch {
+          (options.logError ?? console.error)("armada: retention maintenance scheduling unavailable.");
+        }
+      }
       try {
         await outputs.enqueueCaptures(jobs, signal);
       } catch {
@@ -125,11 +147,6 @@ const idleLane: LaneFactory = ({ sql, config, runtimeCheckpoint, idleDelayMs, do
   });
 
 const dockerCleanupLane: LaneFactory = ({ sql, config }) => createFinishedDockerCleanup(sql, config.encryptionKey);
-export const retentionWorker =
-  ({ sql, control }: ServerServices) =>
-  () =>
-    pruneServerRetention(sql, control.applicationVault, new Date());
-
 const invitationWorker = ({ env, control }: ServerServices) => {
   const invitations = control.invitations;
   return env.ARMADA_INVITATION_MAIL === "supabase" && invitations

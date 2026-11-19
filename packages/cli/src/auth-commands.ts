@@ -19,7 +19,6 @@ export interface AuthIo {
   timeoutMs?: number;
   preferences?: Preferences;
   sleep?: (ms: number) => Promise<void>;
-  /** Reads the code typed from a sign-in email. Tests set it; the terminal prompt is the default. */
   readCode?: (signal: AbortSignal) => Promise<string>;
   readEmail?: (defaultEmail?: string) => Promise<string>;
   interactive?: boolean;
@@ -59,7 +58,6 @@ export function productionAuthIo(
   };
 }
 
-/** Terminal-only prompts never consume piped command input. */
 function promptLine(question: string, initial = ""): Promise<string> {
   if (!process.stdin.isTTY || !process.stderr.isTTY)
     throw new AuthError("Run armada login --email <address> in an interactive terminal.", "usage");
@@ -73,7 +71,6 @@ function promptLine(question: string, initial = ""): Promise<string> {
   });
 }
 
-/** One line from the terminal, so a code can be typed while the link is also waiting. */
 function promptCode(signal: AbortSignal): Promise<string> {
   return new Promise((resolve, reject) => {
     const lines = createInterface({ input: process.stdin, output: process.stderr });
@@ -117,7 +114,6 @@ export async function loginCommand(
         "usage",
       );
     if (!how.provider) {
-      // A remembered email makes code login shortest; otherwise an enabled browser method needs no typing.
       const previous = await io.emailPreferences?.read(origin);
       const defaultMethod =
         previous && methods.includes("email")
@@ -146,7 +142,6 @@ export async function loginCommand(
     );
     return;
   }
-  // Browser login is Armada-hosted: the CLI never contacts a native provider.
   if (how.email === undefined) {
     const provider = how.provider as Provider;
     try {

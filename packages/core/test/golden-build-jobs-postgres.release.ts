@@ -1,3 +1,5 @@
+import { dispatchGoldenBuild } from "./support/golden-build-dispatch.ts";
+
 // This contract must never silently skip in release validation.
 if (!process.env.ARMADA_TEST_POSTGRES_URL) throw new Error("ARMADA_TEST_POSTGRES_URL is required");
 
@@ -93,12 +95,12 @@ test("PostgreSQL serializes durable admission and fences a crashed claim across 
     expect(one.jobId).toBe(replay.jobId);
     expect((await a.unsafe("select 1 from golden_build_jobs where org_id=$1", [org])).length).toBe(1);
     await expect(jobsB.admit(provider, actor, input, crypto.randomUUID())).rejects.toMatchObject({ code: "conflict" });
-    running = jobsA.runOne();
+    running = dispatchGoldenBuild(sqlA, jobsA);
     await started;
-    expect(await jobsB.runOne()).toBe(false);
+    expect(await dispatchGoldenBuild(sqlB, jobsB)).toBe(false);
     expect(resolutions).toBe(1);
     await b.unsafe("update golden_build_jobs set lease_until=now()-interval '1 second' where id=$1", [one.jobId]);
-    expect(await jobsB.runOne()).toBe(false);
+    expect(await dispatchGoldenBuild(sqlB, jobsB)).toBe(false);
     resume();
     await running;
     expect((await jobsB.status(owner, one.jobId)).state).toBe("recovery_required");

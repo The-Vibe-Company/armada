@@ -45,6 +45,7 @@ export interface ToolContext {
   connections?: LaunchStores["connections"];
   /** Where the real cause of an internal or unavailable tool error goes, redacted. Defaults to stderr. */
   logError?: (line: string) => void;
+  onLocalToolError?: (error: unknown) => void;
 }
 
 export const serverInfo = { name: "armada" } as const;

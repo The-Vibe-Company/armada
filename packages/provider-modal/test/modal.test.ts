@@ -15,6 +15,7 @@ import type { Driver } from "../../agent-runtime/src/protocol.ts";
 import { Runner } from "../../agent-runtime/src/runtime.ts";
 import { createMemoryAuthStore } from "../../auth/src/index.ts";
 import { sandboxFailure } from "../../cli/src/sandbox-errors.ts";
+import { dispatchGoldenBuild } from "../../core/test/support/golden-build-dispatch.ts";
 import { type ControlOptions, handleControlRequest } from "../../mcp-server/src/control.ts";
 import { createSandboxLifecycle } from "../../mcp-server/src/sandbox-lifecycle.ts";
 import {
@@ -617,7 +618,7 @@ test("a failed Modal builder image records safe diagnostics and frees capacity w
   const job = await jobs.admit(provider, actor, input, crypto.randomUUID());
   const log = spyOn(console, "error").mockImplementation(() => {});
   try {
-    expect(await jobs.runOne()).toBe(true);
+    expect(await dispatchGoldenBuild(db, jobs)).toBe(true);
     const diagnostic = `Modal builder image failed. ${upstream}`;
     expect(await jobs.status(scope.userId, job.jobId)).toMatchObject({
       phase: "builder",
@@ -4074,4 +4075,28 @@ test("connection probe uses only the active runtime and validates its receipt wi
   ).rejects.toMatchObject({ code: "sandbox_not_ready" });
   expect(f.creates).toBe(creates);
   expect(f.log).toEqual([]);
+});
+
+test("a native scan cannot exec on a newer physical incarnation", async () => {
+  const f = fixture();
+  const worker = await activeWorker(f);
+  const { physicalGeneration } = await f.provider.get(worker.id);
+  if (!physicalGeneration) throw new Error("Expected an observed physical generation");
+  const request = {
+    sandboxId: worker.id,
+    command: "true",
+    onlyIfRunning: true,
+    expectedPhysicalGeneration: physicalGeneration,
+  };
+  await f.provider.stop({ sandboxId: worker.id });
+  await f.provider.exec({ sandboxId: worker.id, command: "pwd" });
+  const replacement = await f.provider.get(worker.id);
+  if (!replacement.physicalGeneration) throw new Error("Expected a replacement physical generation");
+  expect(replacement.physicalGeneration).not.toBe(physicalGeneration);
+  const execs = f.log.filter((call) => call === "exec").length;
+
+  await expect(f.provider.exec(request)).rejects.toMatchObject({ code: "conflict" });
+  expect(f.log.filter((call) => call === "exec")).toHaveLength(execs);
+  await f.provider.exec({ ...request, expectedPhysicalGeneration: replacement.physicalGeneration });
+  expect(f.log.filter((call) => call === "exec")).toHaveLength(execs + 1);
 });

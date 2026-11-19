@@ -13,6 +13,7 @@ import {
 import { beginGoldenOperation, createSqlGoldenStore, type Sql } from "../src/golden-store.ts";
 import { type LaunchStores, launchSandbox } from "../src/launch.ts";
 import { type Provider, ProviderError, type SnapshotInfo } from "../src/provider.ts";
+import { createSqlSandboxStore } from "../src/sandbox.ts";
 import { createSqlVaultStore } from "../src/vault-store.ts";
 import { migratedDatabase } from "./support/database.ts";
 
@@ -301,6 +302,68 @@ test.each([
     await f.retirement.runOne();
     expect(f.deleted).toEqual([f.old]);
   }
+});
+
+test("retirement preserves the exact source snapshot of a registered ordinary launch", async () => {
+  const db = database();
+  const f = await fixture(db);
+  const { provider } = fakeBoat();
+  const child = await launchSandbox(
+    provider,
+    {
+      goldens: f.store,
+      sandboxes: createSqlSandboxStore(db),
+      credentials: { resolve: async () => ({ env: {}, secrets: [], codexAuthJson: false }) },
+    },
+    f.actor,
+    { golden: "retire", harness: "claude" },
+  );
+  await f.publish();
+
+  await f.retirement.runOne();
+  expect(f.deleted).toEqual([]);
+
+  await db.query("update sandboxes set status='deleted',deleted_at=now() where id=$1", [child.sandbox.id]);
+  await f.due();
+  await f.retirement.runOne();
+  expect(f.deleted).toEqual([f.old]);
+});
+
+async function ordinarySnapshotIntent(db: Sql, f: Awaited<ReturnType<typeof fixture>>, snapshot: string) {
+  const sandbox = crypto.randomUUID();
+  await db.query(
+    "insert into ordinary_launch_snapshot_intents (sandbox_id,golden_id,provider,snapshot_id) values($1,$2,$3,$4)",
+    [sandbox, f.golden.id, f.golden.provider, snapshot],
+  );
+  return sandbox;
+}
+
+test("retirement defers for the exact unresolved ordinary snapshot", async () => {
+  const db = database();
+  const f = await fixture(db);
+  const sandbox = await ordinarySnapshotIntent(db, f, f.old);
+  await f.publish();
+  await ordinarySnapshotIntent(db, f, f.next);
+
+  await f.retirement.runOne();
+  expect(f.deleted).toEqual([]);
+
+  await db.query("delete from ordinary_launch_snapshot_intents where sandbox_id=$1", [sandbox]);
+  await f.due();
+  await f.retirement.runOne();
+  expect(f.deleted).toEqual([f.old]);
+});
+
+test("golden removal refuses while an ordinary snapshot allocation is unresolved", async () => {
+  const db = database();
+  const f = await fixture(db);
+  const sandbox = await ordinarySnapshotIntent(db, f, f.old);
+  await db.query("select set_config('request.jwt.claim.sub',$1,false)", [f.actor.userId]);
+
+  await expect(db.query("select remove_golden($1)", [f.golden.id])).rejects.toThrow("unresolved");
+
+  await db.query("delete from ordinary_launch_snapshot_intents where sandbox_id=$1", [sandbox]);
+  await expect(db.query("select remove_golden($1)", [f.golden.id])).resolves.toBeDefined();
 });
 
 async function templateReference(

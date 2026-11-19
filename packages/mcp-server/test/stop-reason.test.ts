@@ -176,3 +176,86 @@ test.each([
       );
   }
 });
+
+test.each(["ready", "running", "stale", "release_failed"] as const)(
+  "a confirmed runtime stop journals only a current observation (%s)",
+  async (scenario) => {
+    const { db, people, sharedGoldenId, openaiCredentialId } = await failureDatabase();
+    const boat = fakeBoat();
+    const machine = await boat.provider.fork({ from: "snapshot" });
+    await boat.provider.stop({ sandboxId: machine.id });
+    const stoppedAt = new Date("2026-01-01T00:00:00Z");
+    boat.sandbox(machine.id).info.stoppedAt = stoppedAt;
+    const id = crypto.randomUUID();
+    const from = scenario === "running" ? "running" : "ready";
+    await db.query(
+      `insert into sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,boat_runtime)
+       values ($1,'boat',$2,$3,$4,$5,'codex',$6,true)`,
+      [id, machine.id, sharedGoldenId, people.org, people.owner, from],
+    );
+    await db.query("insert into account_agent_reservations(sandbox_id,account_id) values ($1,$2)", [
+      id,
+      openaiCredentialId,
+    ]);
+    const store = createSqlData(db)({
+      userId: people.owner,
+      orgs: [{ orgId: people.org, role: "member" }],
+      via: "service",
+    }).sandboxes;
+    const sandbox = (await store.get(id))!;
+    const renewedExpiry = "2026-01-03T00:00:00.000Z";
+    if (scenario === "stale")
+      await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1,expires_at=$2 where id=$1", [
+        id,
+        renewedExpiry,
+      ]);
+    if (scenario === "release_failed")
+      await db.exec(`create function reject_stop_release() returns trigger language plpgsql as $$
+        begin raise exception 'Stop reservation release failed'; end $$;
+        create trigger reject_stop_release before delete on account_agent_reservations
+        for each row execute function reject_stop_release();`);
+    const applied = scenario === "ready" || scenario === "running";
+    try {
+      const observation = readStatus(boat.provider, store, sandbox, { now: new Date("2026-01-02T00:00:00Z") });
+      if (scenario === "release_failed") await expect(observation).rejects.toThrow("Stop reservation release failed");
+      else
+        expect(await observation).toMatchObject({
+          status: applied ? "stopped" : from,
+          statusReason: null,
+          ...(scenario === "stale" ? { expiresAt: renewedExpiry } : {}),
+        });
+      expect(await store.get(id)).toMatchObject({
+        status: applied ? "stopped" : from,
+        statusReason: null,
+        stoppedAt: applied ? stoppedAt.toISOString() : null,
+      });
+      const { rows: journal } = await db.query(
+        "select from_status,to_status,actor,code,generation::int from sandbox_transitions where sandbox_id=$1",
+        [id],
+      );
+      expect(journal).toEqual(
+        applied
+          ? [
+              {
+                from_status: from,
+                to_status: "stopped",
+                actor: "runtime_observation",
+                code: "runtime_provider_stopped",
+                generation: sandbox.lifecycleGeneration,
+              },
+            ]
+          : [],
+      );
+      const { rows: reservations } = await db.query(
+        "select sandbox_id from account_agent_reservations where sandbox_id=$1",
+        [id],
+      );
+      expect(reservations).toEqual(applied ? [] : [{ sandbox_id: id }]);
+    } finally {
+      if (scenario === "release_failed")
+        await db.exec(
+          "drop trigger reject_stop_release on account_agent_reservations; drop function reject_stop_release()",
+        );
+    }
+  },
+);

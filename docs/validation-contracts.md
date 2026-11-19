@@ -256,6 +256,34 @@ regression calls the accounting logic directly. Claude's unsafe-home and
 unsupported-reasoning cases reject during preflight. The native-resume
 serialization and credential lifecycle cases use synthetic drivers.
 
+### Additional Agent Runtime native driver fixture cases
+
+These cases reach real local subprocesses through the harness drivers. The
+times are whole-case measurements from a focused Linux run with Bun 1.4.2
+at `df880d86`, after `bun scripts/prepare-runtime.ts`.
+
+| File under `packages/agent-runtime/test` | Case | Local subprocess boundary | Local |
+| --- | --- | --- | ---: |
+| `opencode.test.ts` | OpenCode refuses stale history and checkpoint after an unacknowledged export | OpenCodeDriver starts the local OpenCode fixture for ACP and session import/export. | 113.51 ms |
+| `opencode.test.ts` | OpenCode meters every new native assistant step once, excludes loaded history and normalizes reasoning output | OpenCodeDriver starts the local OpenCode fixture for ACP and session import/export. | 125.16 ms |
+| `opencode.test.ts` | OpenCode driver publishes only the new MCP receipt from a follow-up native export | OpenCodeDriver starts the local OpenCode fixture for ACP and session import/export. | 126.24 ms |
+| `acp.test.ts` | ACP v1 finish preserves session identity and native usage without replay and sends pinned MCP configuration on load and new | AcpDriver starts Bun running the local ACP fixture over stdio. | 51.60 ms |
+| `acp.test.ts` | ACP v1 steer preserves session identity and native usage without replay | AcpDriver starts Bun running the local ACP fixture over stdio. | 51.96 ms |
+| `acp.test.ts` | ACP v1 interrupt preserves session identity and native usage without replay | AcpDriver starts Bun running the local ACP fixture over stdio. | 53.00 ms |
+| `acp.test.ts` | ACP v1 unknown preserves session identity and native usage without replay | AcpDriver starts Bun running the local ACP fixture over stdio. | 49.49 ms |
+| `acp.test.ts` | ACP names a turn cut by the model output limit instead of a configuration failure | AcpDriver starts Bun running the local ACP fixture over stdio. | 25.13 ms |
+| `acp.test.ts` | ACP refuses another protocol before dispatching a prompt | AcpDriver starts Bun running the local ACP fixture over stdio. | 25.95 ms |
+| `acp.test.ts` | ACP observes native events before prompt and releases the observer when its stream fails | AcpDriver starts Bun running the local ACP fixture over stdio. | 26.35 ms |
+| `acp.test.ts` | ACP refuses a steer after its turn stopped with a replayable refusal | AcpDriver starts Bun running the local ACP fixture over stdio. | 25.64 ms |
+| `cwd.test.ts` | claude native subprocess/thread cwd is turn-local across parallel conversations, steering and resume | The Claude SDK starts the local Claude fixture in the requested directory. | 123.58 ms |
+| `cwd.test.ts` | codex native subprocess/thread cwd is turn-local across parallel conversations, steering and resume | CodexDriver starts the local app-server fixture in the requested directory. | 123.82 ms |
+
+In `opencode.test.ts`, credential translation and proof extraction run in
+process, including the assertions on recorded shell proof. The unsupported
+reasoning effort case in `acp.test.ts` is rejected before the driver spawns a
+child. The private prompt working-directory case in `cwd.test.ts` injects an
+in-process driver. The two native working-directory cases run only on Linux.
+
 ## Process-spawning unit cases in `provider-modal`
 
 The [process-test allowlist](../scripts/ci/process-tests.txt) records matching
@@ -293,6 +321,58 @@ whole case in a focused Linux run using Bun 1.4.2 on main at `67d096dd`.
 
 The missing-database-URL case in `stats-db.test.ts` runs in process. Both
 staging-checker cases use local fixtures and make no calls to deployed services.
+
+## Process-spawning unit cases in CLI
+
+The [process-test allowlist](../scripts/ci/process-tests.txt) identifies four CLI
+files by direct spawn syntax. Two additional cases reach a subprocess through
+`nativeCodexLogin`. The times below measure whole cases in one focused Linux
+run using Bun 1.4.2 on main at `fbcea6e2`.
+
+| File under `packages/cli/test` | Case | Local subprocess boundary | Local |
+| --- | --- | --- | ---: |
+| `npm.test.ts` | the launcher runs the platform binary with the arguments and its exit code | Starts the staged npm launcher, which executes a local shell fixture standing in for the platform binary. | 37.06 ms |
+| `npm.test.ts` | the launcher names the missing platform package | Starts the staged launcher with the platform package absent. | 27.35 ms |
+| `publish.test.ts` | publication waits for each retrievable platform tarball before publishing the launcher (delayed) | Bash runs the publish script against local npm and sleep fixtures. | 26.84 ms |
+| `publish.test.ts` | publication waits for each retrievable platform tarball before publishing the launcher (independent-delay) | Bash runs the publish script with separate retry counts in the local npm fixture. | 35.92 ms |
+| `publish.test.ts` | each platform starts its registry check without waiting for the other uploads | Starts `mkfifo`, then runs the publish script with local npm fixtures coordinated through the FIFO. | 26.18 ms |
+| `publish.test.ts` | publication refuses the launcher when platform tarballs are unavailable | Bash runs the publish script with local npm pack failures and a fake sleep. | 33.14 ms |
+| `publish.test.ts` | publication refuses the launcher when platform tarballs are corrupt | Bash runs the publish script with a local npm fixture that returns different bytes. | 14.15 ms |
+| `publish.test.ts` | recovery retrieves existing artifacts even when the rebuild differs | Bash runs the publish script with a local npm fixture that reports existing artifacts. | 14.95 ms |
+| `publish.test.ts` | dry runs publish every staged tarball without querying registry availability | Bash runs the publish script with a local npm fixture that records dry-run commands. | 15.09 ms |
+| `publish.test.ts` | the SDK is published after the launcher | Bash runs the publish script with a local npm fixture that records order. | 23.93 ms |
+| `skill-hint.test.ts` | terminal-only skill advice is occasional, silenceable and stops after discovery | Starts `mkfifo` to supply a named pipe in place of the cooldown file. | 11.04 ms |
+| `skill-hint.test.ts` | entrypoint prints advice only on a terminal and keeps stdout clean | Python starts the Bun CLI with piped output and a pseudoterminal. | 158.30 ms |
+| `skill-hint.test.ts` | unavailable working directory never breaks a completed command, including quiet paths | Starts Bun to remove its own working directory and exercise the hint code. | 8.82 ms |
+| `skill-install.test.ts` | public CLI reports a missing Git prerequisite without a login or raw subprocess diagnostics | Starts the Bun CLI with an empty executable search directory. | 66.64 ms |
+| `skill-install.test.ts` | CLI fetches one pinned Git source and reports its actual commit and both installed agent roots | Runs Git to set up the fixture and starts the Bun CLI, which fetches the revision from the local repository. | 93.82 ms |
+| `native-model-login.test.ts` | native local login returns private auth material but exposes only the approved device challenge | The native login helper starts the local Codex JSONL fixture. | 34.63 ms |
+| `native-model-login.test.ts` | cancellation at the device challenge prevents local auth publication | The native login helper starts the same local fixture and cancels it on receipt of the device challenge. | 23.71 ms |
+
+The package manifest case in `npm.test.ts` and the five other skill-install
+cases run in process. The browser login tests inject the browser opener, and
+the local host tests inject their command runner. `binary.release.ts` is
+explicit release validation outside unit discovery.
+
+## Process-spawning unit cases in Docker Host
+
+The process-test allowlist identifies `cli.test.ts` and
+`runtime-install.test.ts` by direct spawn syntax. The daemon state test also
+spawns on Linux through `fileStore().lock()`. Whole-case timings below come
+from focused Linux runs with Bun 1.4.2 on main at `2cbf531e`.
+
+| File under `packages/docker-host/test` | Case | Local subprocess boundary | Local |
+| --- | --- | --- | ---: |
+| `cli.test.ts` | Docker host help succeeds without registration, state or Docker access | Starts the Bun CLI for each of eight help invocations, with an unusable home and executable search path. | 183.57 ms |
+| `cli.test.ts` | Docker host status identifies an unregistered installation without Docker access | Starts the Bun CLI with an empty temporary home and an unusable executable search path. | 25.17 ms |
+| `runtime-install.test.ts` | runtime starter delivers only enrolment on private stdin and detaches runtime output | Runs the bootstrap shell with a local executable fixture that reads stdin through `sha256sum`. | 6.00 ms |
+| `daemon.test.ts` | private native state survives reopening, excludes concurrent owners and rejects unsafe existing files | On Linux, the native file store starts `sh` and `flock` for acquisition and contention. The successful lease uses `cat` to hold the lock until stdin closes. | 12.99 ms |
+
+PR #3193 recorded the first three cases in CI at 189.34 ms, 798.25 ms,
+and 16.41 ms respectively. PR #3227 replaced the 2,298.20 ms managed-service
+CLI case with direct service calls using injected systemd operations. The
+other two runtime installer cases use in-process machine and fetch fixtures.
+The daemon archive case replaces `Bun.spawn` with a mock.
 
 ## Evidence owed after merge
 
