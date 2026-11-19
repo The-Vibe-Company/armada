@@ -136,15 +136,12 @@ export function createRuntimeStartup(
               ],
             }),
           );
-        } catch {
-          /* Diagnostics cannot change startup. */
-        }
+        } catch {}
         return { runtime: "armada", epoch: ticket.epoch };
       }
     } catch (error) {
       recordOperatorFailure(`runtime.startup.${diagnosticPhase}`, error, { sandboxId });
       logRuntimeStage({ sandboxId, epoch }, `startup_failed_${phase}`);
-      // Bootstrap/configuration/transport diagnostics may contain credentials.
       throw new ProviderError({
         provider: "boat",
         code: "sandbox_not_ready",

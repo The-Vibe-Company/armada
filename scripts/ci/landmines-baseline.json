@@ -1004,7 +1004,7 @@
     "packages/mcp-server/src/runtime-resume.ts": 9,
     "packages/mcp-server/src/runtime-serving.ts": 5,
     "packages/mcp-server/src/runtime-sockets.ts": 4,
-    "packages/mcp-server/src/runtime-startup.ts": 8,
+    "packages/mcp-server/src/runtime-startup.ts": 7,
     "packages/mcp-server/src/runtime-workspace.ts": 1,
     "packages/mcp-server/src/sandbox-access-bootstrap.ts": 3,
     "packages/mcp-server/src/sandbox-access-child-launch.ts": 7,

@@ -747,10 +747,7 @@ test("runtime startup privately issues configuration, awaits enrolment and fence
   const f = await fixture();
   const root = await mkdtemp(join(tmpdir(), "runtime-startup-"));
   const journal = new Journal(join(root, "journal"), (value) => value);
-  const samples: unknown[] = [];
-  const logger = spyOn(console, "info").mockImplementation((line: string) => {
-    if (line.includes('"event":"armada.runtime.startup_timing"')) samples.push(JSON.parse(line));
-  });
+  const logger = spyOn(console, "info");
   try {
     const previous = await f.enrol();
     const agent = createRuntimeAgent(f.bridge(), {
@@ -854,6 +851,9 @@ test("runtime startup privately issues configuration, awaits enrolment and fence
         configuration,
       }),
     ).toEqual({ runtime: "armada", epoch: "2" });
+    const samples = logger.mock.calls.flatMap(([line]) =>
+      String(line).includes('"event":"armada.runtime.startup_timing"') ? [JSON.parse(String(line))] : [],
+    );
     expect(samples).toEqual([
       {
         event: "armada.runtime.startup_timing",
