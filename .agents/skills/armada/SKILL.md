@@ -57,7 +57,7 @@ any receipt UUID returned. On success, pass `sandbox.id` to subsequent tools.
   is not automatically available on the other. Check
   `armada snapshot capabilities --provider boat --json` (or substitute modal).
 - All launches through `POST /api/v1/sandbox/launch` require an explicit provider
-  and harness. Personal sessions can select the organization by slug or UUID. For a scoped token, omit `org` or send its org UUID.
+  and harness. The server resolves model credentials during launch. Personal sessions can select the organization by slug or UUID. For a scoped token, omit `org` or send its org UUID.
   A malformed request returns HTTP 400 with error code `invalid`.
   For REST golden and Docker launches, read the Armada ID from `sandbox.id`.
   The TypeScript SDK uses the same `LaunchResult` envelope for ordinary launches.

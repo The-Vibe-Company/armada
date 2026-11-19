@@ -89,6 +89,30 @@ export async function transitionSandbox(tx: Sql, input: SandboxTransition) {
   return { kind: "applied", generation: Number(result.generation) } satisfies SandboxTransitionResult;
 }
 
+export async function publishDockerRuntimeReady(tx: Sql, sandboxId: string, source: "health" | "prepared_launch") {
+  const {
+    rows: [starting],
+  } = await tx.query<{ generation: string }>(
+    `select s.lifecycle_generation::text as generation from public.sandboxes s
+     where s.id=$1 and s.provider='docker' and s.status='starting'
+     and ($2::boolean or not exists(
+       select 1 from public.docker_launch_requests d where d.sandbox_id=s.id and d.result_enc is null
+     ))`,
+    [sandboxId, source === "prepared_launch"],
+  );
+  if (!starting) return true;
+  const result = await transitionSandbox(tx, {
+    sandboxId,
+    expectedGeneration: starting.generation,
+    fromStates: ["starting"],
+    toState: "ready",
+    actor: "runtime_enrolment",
+    code: "runtime_enrolled",
+    effects: [],
+  });
+  return result.kind === "applied";
+}
+
 export async function settleRuntimeTurn(tx: Sql, sandboxId: string, generation: number | string, key?: string) {
   const {
     rows: [eligible],
