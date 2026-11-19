@@ -155,7 +155,8 @@ function fixture() {
             return true;
           },
         },
-        async resolveRuntimeTicket({ bindingRef }) {
+        async resolveRuntimeTicket({ bindingRef, machineId }) {
+          if (get(machineId).runtime) return null;
           return {
             serverUrl: "https://armada.invalid",
             artifact: { sha256: "a".repeat(64), bytes: 1 },

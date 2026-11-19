@@ -47,7 +47,7 @@ export interface ModalMachineOptions {
   binding: ModalBinding;
   deploymentId: string;
   journal: ModalMachineJournal;
-  resolveRuntimeTicket(request: Bootstrap): Promise<RuntimeTicket>;
+  resolveRuntimeTicket(request: Bootstrap): Promise<RuntimeTicket | null>;
   prepareCheckpoint(request: Stop, sandbox: Sandbox): Promise<void>;
 }
 
@@ -191,7 +191,7 @@ export function createModalMachine(options: ModalMachineOptions) {
       const sb = await exact(request, request.signal);
       const ticket = await resolveRuntimeTicket(request);
       request.signal?.throwIfAborted();
-      await bootstrapRuntime(sb, request, ticket);
+      if (ticket) await bootstrapRuntime(sb, request, ticket);
     },
     async stop(request) {
       let entry = await current(request);
@@ -323,7 +323,7 @@ shift
 flock -n -E 75 9
 case $? in
   0) exec "$@" ;;
-  75) cat >/dev/null ;;
+  75) cat >/dev/null; exit 75 ;;
   *) exit 1 ;;
 esac`;
   try {
