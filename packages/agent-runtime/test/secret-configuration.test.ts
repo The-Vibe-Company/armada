@@ -237,7 +237,8 @@ test.each([
         status: "failed",
         error: {
           message: "Plan limit reached. Resets at 2042-01-01T00:00:00.000Z.",
-          additionalDetails: { prefixlongfixture: "prefixvalue" },
+          additionalDetails: "prefixvalue",
+          codexErrorInfo: { prefixlongfixture: "prefixvalue" },
         },
       },
     },
@@ -248,7 +249,8 @@ test.each([
         status: "failed",
         error: {
           message: "Plan limit reached. Resets at 20[REDACTED]-01-01T00:00:00.000Z.",
-          additionalDetails: { "prefix[REDACTED]": "prefix[REDACTED]" },
+          additionalDetails: "prefix[REDACTED]",
+          codexErrorInfo: { "prefix[REDACTED]": "prefix[REDACTED]" },
         },
       },
     },
@@ -426,15 +428,15 @@ test.each([
 test("terminal diagnostic keys retain stable redaction across checkpoint sanitation", () => {
   const journal = new Journal(":memory:", (text) => text);
   try {
-    journal.registerApplicationSecrets(["REDACTED"]);
+    journal.registerApplicationSecrets(["httpConnectionFailed", "REDACTED"]);
     journal.append({
       id: "terminal",
       at: 1,
       kind: "other",
       type: "turn/completed",
-      data: { turn: { error: { additionalDetails: { "fixture-REDACTED": true } } } },
+      data: { turn: { error: { codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 503 } } } } },
     });
-    const expected = { turn: { error: { additionalDetails: { "fixture-[REDACTED]": true } } } };
+    const expected = { turn: { error: { codexErrorInfo: { "[REDACTED]": { httpStatusCode: 503 } } } } };
     expect(journal.events()[0]?.event).toMatchObject({ data: expected });
     journal.sanitize();
     journal.sanitize();
