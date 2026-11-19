@@ -1087,10 +1087,12 @@ test.each(refusalOrders)(
         }),
       );
     if (failedRetainedStop) {
-      const failingStore = createDockerHostStore(failWrite("set outcome=$2,completed_at=now()"), key);
-      expect((await reportRetained(stop.requestId, failingStore))?.status).toBe(503);
-      expect((await reservations.get(f.actor, id)).status).toBe("stopping");
-      expect((await hosts.poll(f.hostToken, f.installationId))?.requestId).toBe(stop.requestId);
+      for (const fragment of ["from public.sandbox_transition(", "set outcome=$2,completed_at=now()"]) {
+        const failingStore = createDockerHostStore(failWrite(fragment), key);
+        expect((await reportRetained(stop.requestId, failingStore))?.status).toBe(503);
+        expect((await reservations.get(f.actor, id)).status).toBe("stopping");
+        expect((await hosts.poll(f.hostToken, f.installationId))?.requestId).toBe(stop.requestId);
+      }
       await ack(stop.requestId, "failed");
       expect((await reservations.get(f.actor, id)).status).toBe("stopping");
       const unrelated = await hosts.enqueueSandbox(f.actor, id, { operation: "stop", requestId: randomUUID() });
@@ -1125,6 +1127,14 @@ test.each(refusalOrders)(
       expect((await reportRetained(stop.requestId))?.status).toBe(200);
       expect((await reservations.get(f.actor, id)).status).toBe("starting");
       expect((await service.resume(f.actor, id, resume.requestId)).state).toBe("failed");
+      expect(
+        (
+          await database().query(
+            "select from_status,to_status from public.sandbox_transitions where sandbox_id=$1 and code='docker_resume_retention_confirmed'",
+            [id],
+          )
+        ).rows,
+      ).toEqual([{ from_status: "stopping", to_status: "stopped" }]);
     }
     expect(await authority.enrol(nextJob.bootstrap.enrolmentToken)).toMatchObject({
       epoch: String(Number(source.epoch) + 1),

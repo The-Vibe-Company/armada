@@ -28,7 +28,7 @@ interface SandboxTransitionEffect {
 
 interface SandboxTransition {
   sandboxId: string;
-  expectedGeneration: number;
+  expectedGeneration: number | string;
   fromStates: readonly SandboxStatus[];
   toState: SandboxStatus;
   actor:
@@ -191,10 +191,10 @@ export async function confirmRefusedDockerResumeRetention(
   generation: string | number,
   requestId: string,
 ) {
-  await tx.query(
-    `update public.sandboxes s set status='stopped',stopped_at=now()
+  const retained = await tx.query(
+    `select s.id from public.sandboxes s
      where s.id=$1 and s.lifecycle_generation=$2 and s.provider='docker' and s.status='stopping'
-       and s.stopped_at is null and s.deleted_at is null and s.expires_at>now()
+       and s.status_reason is null and s.stopped_at is null and s.deleted_at is null and s.expires_at>now()
        and not s.application_secret_tainted and cardinality(s.conversation_ids)=1
        and exists (
          select 1 from public.docker_host_jobs stop
@@ -231,6 +231,16 @@ export async function confirmRefusedDockerResumeRetention(
        )`,
     [sandboxId, generation, requestId],
   );
+  if (!retained.rows.length) return;
+  await transitionSandbox(tx, {
+    sandboxId,
+    expectedGeneration: generation,
+    fromStates: ["stopping"],
+    toState: "stopped",
+    actor: "lifecycle_runner",
+    code: "docker_resume_retention_confirmed",
+    effects: [],
+  });
 }
 
 async function recoverInterruptedRuntimeResume(
