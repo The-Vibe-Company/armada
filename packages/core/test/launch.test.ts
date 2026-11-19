@@ -210,7 +210,7 @@ describe("launch", () => {
         expect(world.forks[0]?.env).toEqual({});
       },
     );
-  test.each(["startup", "account", "provider", "scoped bootstrap"] as const)(
+  test.each(["startup", "account", "provider"] as const)(
     "Modal default refuses %s without native fallback",
     async (failure) => {
       const world = setup({
@@ -249,14 +249,6 @@ describe("launch", () => {
           owner,
           { golden: "web", harness: "codex", prompt: "answer" },
           {
-            ...(failure === "scoped bootstrap"
-              ? {
-                  privateVisibility: true,
-                  async beforeStart() {
-                    throw Error("Scoped bootstrap must not run");
-                  },
-                }
-              : {}),
             modalRuntimeDefault: {
               provider: async () => (failure === "provider" ? { ...compute, id: "boat" } : compute),
               credentials: {
@@ -282,7 +274,6 @@ describe("launch", () => {
           ? { code: "credential_binding_required", message: expect.stringContaining("--credential-id") }
           : {
               code: failure === "startup" ? "start_failed" : "invalid_request",
-              ...(failure === "scoped bootstrap" ? { message: expect.stringContaining("Scoped access") } : {}),
             },
       );
       expect(nativeForks).toBe(0);

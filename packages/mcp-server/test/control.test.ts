@@ -3130,10 +3130,14 @@ test.each([
   { harness: "opencode" as const, fromDefaults: true, entry: "explicit" },
   { harness: "codex" as const, fromDefaults: true, entry: "ordinary-api" },
   { harness: "codex" as const, fromDefaults: true, entry: "ordinary-mcp" },
+  { harness: "codex" as const, fromDefaults: true, entry: "ordinary-scoped" },
+  { harness: "codex" as const, fromDefaults: true, entry: "ordinary-scoped-idle" },
 ])(
   "Modal runtime launch prepares explicit/default MCP and skills before its first prompt ($harness defaults=$fromDefaults entry=$entry)",
   async ({ harness, fromDefaults, entry }) => {
     const ordinary = entry.startsWith("ordinary");
+    const scoped = entry.startsWith("ordinary-scoped");
+    const idle = entry === "ordinary-scoped-idle";
     await withServer(async ({ db, options }) => {
       const org = await options.store.createOrg("Modal runtime", STAN);
       options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
@@ -3166,7 +3170,8 @@ test.each([
         provider: "modal",
         harness,
         ...(harness === "opencode" ? { model: "opencode/fixture", reasoningEffort: "default" } : {}),
-        prompt: "reply",
+        ...(idle ? {} : { prompt: "reply" }),
+        ...(scoped ? { armadaAccessVersion: 1, armadaAccess: { maxActiveChildren: 1 } } : {}),
         ...(!ordinary ? { runtimeVersion: 1, runtimeTransport: "dialout" } : {}),
         skipSkillDefaults: true,
         connections: [],
@@ -3178,6 +3183,38 @@ test.each([
         harnesses: [...fake.provider.harnesses, "opencode" as const],
         capabilities: { ...fake.provider.capabilities, opencode: HARNESS_CAPABILITIES.opencode },
       };
+      const sql: Sql = {
+        query: (q, v) => db.query(q, v),
+        transaction: (work) => db.transaction((tx) => work(tx)),
+      };
+      const enrolments = createRuntimeEnrolments(sql, KEY);
+      const { createSandboxArmadaAccess } = await import("../src/sandbox-armada-access.ts");
+      const { DelegatedAuthority } = await import("@armada/core/server");
+      const authority = new DelegatedAuthority(sql, async () => {});
+      let token = "";
+      let referenceInstalled = false;
+      const admit = () => authority.admit(token, { method: "finish" }, async (_tx, principal) => principal.ownerId);
+      if (scoped)
+        options.sandboxArmadaAccess = createSandboxArmadaAccess({
+          sql,
+          encryptionKey: KEY,
+          publicUrl: "https://armada.test",
+          commands: {
+            enqueue: createRuntimeCommands(enrolments, KEY).enqueue,
+            async call(_owner, command, delivery) {
+              expect(referenceInstalled).toBe(true);
+              expect(command.op).toBe("installOrchestratorEpoch");
+              if (command.op !== "installOrchestratorEpoch") throw Error("Unexpected runtime operation");
+              token = command.token;
+              return {
+                status: 200,
+                epoch: delivery?.expectedEpoch ?? "1",
+                requestId: command.requestId,
+                body: { version: 1, requestId: command.requestId, result: { acknowledged: true } },
+              };
+            },
+          },
+        });
       let starts = 0;
       let mcpPrepared = false;
       let skillsInstalled = false;
@@ -3207,6 +3244,7 @@ test.each([
       expect(fake.forks).toHaveLength(0);
       options.modalRuntimeHostFor = async (target) => {
         expect(target.runtimeTransport).toBe("dialout");
+        if (scoped) expect(target).toMatchObject({ visibility: "private", sourceGoldenVisibility: "org" });
         return host;
       };
       const native = {
@@ -3217,12 +3255,24 @@ test.each([
       };
       if (ordinary) options.providers = { resolve: async () => native };
       options.modalRuntimeLaunch = {
+        supportsScopedAccess: true,
         async start(input) {
           starts++;
           expect(input.sandbox.provider).toBe("modal");
           expect(input.sandbox.runtimeTransport).toBe("dialout");
           expect(input.sandbox.boatRuntime).toBeUndefined();
+          if (scoped)
+            await enrolments.enrol(
+              (await enrolments.issue({ sandboxId: input.sandbox.id, ownerId: STAN, configuration: {} }))
+                .enrolmentToken,
+            );
           return {
+            async installScopedReference(request) {
+              expect(mcpPrepared).toBe(true);
+              expect(request.command).toContain("/.agents/skills/armada-tools/SKILL.md");
+              referenceInstalled = true;
+              return { detached: false, exitCode: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
+            },
             async installSkills(references, key) {
               expect(references).toEqual([skill]);
               expect(key).toBeNull();
@@ -3239,6 +3289,8 @@ test.each([
               return { status: "not_connected" as const };
             },
             prompt: async () => {
+              expect(idle).toBe(false);
+              if (scoped) await expect(admit()).resolves.toBe(STAN);
               expect(mcpPrepared).toBe(true);
               expect(skillsInstalled).toBe(true);
               return { promptId: "modal-initial", conversationId: "modal-conversation", status: "running" };
@@ -3338,15 +3390,82 @@ test.each([
       const response = await request(input);
       if (response?.status !== 200) throw Error(JSON.stringify(await response?.json()));
       expect(response?.status).toBe(200);
-      expect(await response?.json()).toMatchObject({
+      const launched = launchEnvelope.parse(await response?.json());
+      expect(launched).toMatchObject({
         runtime: { kind: "armada", epoch: "1" },
         sandbox: { provider: "modal", runtimeTransport: "dialout", skills: [receipt] },
-        promptId: "modal-initial",
+        promptId: idle ? null : "modal-initial",
+        ...(scoped ? { armadaAccess: { enabled: true, maxActiveChildren: 1 } } : {}),
       });
+      if (scoped) await expect(admit()).resolves.toBe(STAN);
       expect(starts).toBe(1);
       expect(fake.forks).toHaveLength(1);
       expect(fake.prompts).toHaveLength(0);
       expect(fake.execs).toHaveLength(0);
+
+      if (scoped && !idle) {
+        const parent = await options.data!({
+          userId: STAN,
+          orgs: [{ orgId: org.id, role: "admin" }],
+          via: "service",
+        }).sandboxes.get(launched.sandbox.id);
+        if (!parent?.credentialId || !parent.credentialVersion || !parent.model)
+          throw Error("Scoped launch must retain its bound account and model");
+        const { createSandboxAccessServices } = await import("../src/sandbox-access-services.ts");
+        const credentials = launchCredentials(options.store, KEY);
+        const children = createSandboxAccessServices({
+          sql,
+          credentials,
+          connections: undefined,
+          providers: {
+            resolve: async () => {
+              throw Error("Child launch must use enrolled placement");
+            },
+          },
+          encryptionKey: KEY,
+          scopedMcpUrl: "https://armada.test",
+          runtimePlacements: {
+            modal: {
+              credentials,
+              connections: { async validate() {}, async bind() {} },
+              provider: async (_actor, target) =>
+                options.modalRuntimeHostFor!(
+                  { ...target, runtimeTransport: "dialout" },
+                  { userId: STAN, orgs: [{ orgId: org.id, role: "admin" }], via: "service" },
+                ),
+              policy: {
+                async start({ sandbox }) {
+                  expect(sandbox).toMatchObject({ visibility: "private", runtimeTransport: "dialout" });
+                  const ticket = await enrolments.issue({ sandboxId: sandbox.id, ownerId: STAN, configuration: {} });
+                  const active = await enrolments.enrol(ticket.enrolmentToken);
+                  return {
+                    epoch: active.epoch,
+                    async prepareWorkspace() {
+                      return { status: "not_connected" };
+                    },
+                    async prompt() {
+                      throw Error("The delegated child has no initial prompt");
+                    },
+                  };
+                },
+              },
+            },
+          },
+        });
+        const child = await children.childWorker.launch(token, "enrolled-child", {
+          goldenId: parent.goldenId,
+          harness: "codex",
+          credentialId: parent.credentialId,
+          credentialVersion: parent.credentialVersion,
+          model: parent.model,
+        });
+        expect(child.state).toBe("succeeded");
+        expect(
+          (await sql.query("select orchestrator_id from orchestrator_children where sandbox_id=$1", [child.sandboxId]))
+            .rows,
+        ).toEqual([{ orchestrator_id: parent.id }]);
+        expect(fake.forks).toHaveLength(2);
+      }
     });
   },
 );

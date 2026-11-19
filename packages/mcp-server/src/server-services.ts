@@ -420,6 +420,7 @@ export async function createServerServices(env: Record<string, string | undefine
       : undefined,
     runtimeMcp.prepare,
     runtimeGitHub?.prepareLaunch,
+    sandboxArmadaAccess.restoreEnrolled,
   );
   const accountTurns = createAccountTurnQueue(sql, config.encryptionKey);
   const runtimeSend = createRuntimeFollowup(
@@ -428,6 +429,7 @@ export async function createServerServices(env: Record<string, string | undefine
     runtimeCommands,
     runtimeMcp.prepare,
     runtimeResume,
+    sandboxArmadaAccess.restoreEnrolled,
   );
   const makeDockerControls = (dispatchQueued: boolean) =>
     createDockerSandboxControls(sql, config.encryptionKey, {
