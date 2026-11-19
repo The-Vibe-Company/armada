@@ -500,7 +500,7 @@ export function AccountRow({
             {info.label} · {account.scope === "user" ? "Only you" : orgName}
           </span>
         </span>
-        <span className={cn("shrink-0 text-xs", STATE_TONE[state.tone])}>
+        <span className={cn("max-w-[50%] shrink-0 text-right text-xs", STATE_TONE[state.tone])}>
           {state.label === "Ready" ? "Connected" : state.label}
         </span>
       </button>

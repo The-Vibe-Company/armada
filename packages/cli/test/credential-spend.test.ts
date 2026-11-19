@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { productionAuthIo } from "../src/auth-commands.ts";
 import { credsCommand } from "../src/vault-commands.ts";
 
-test("creds list shows monthly API spend and flags unknown pricing for personal and org accounts", async () => {
+test("creds list shows account exhaustion, monthly API spend, and unknown pricing", async () => {
   let output = "";
   const auth = productionAuthIo({ out: (text) => (output += text), err: () => {} }, { ARMADA_TOKEN: "test-only" });
   auth.fetch = (async (url) => {
@@ -10,7 +10,13 @@ test("creds list shows monthly API spend and flags unknown pricing for personal 
     return Response.json({
       user: [
         { id: "user-api", name: "Personal API", kind: "openai", status: "active" },
-        { id: "user-sub", name: "Subscription", kind: "codex_auth", status: "active" },
+        {
+          id: "user-sub",
+          name: "Subscription",
+          kind: "codex_auth",
+          status: "active",
+          exhaustedUntil: "2026-11-19T14:00:00.000Z",
+        },
         {
           id: "zero-api",
           name: "Zero spend",
@@ -51,6 +57,8 @@ test("creds list shows monthly API spend and flags unknown pricing for personal 
 
   const lines = output.split("\n");
   expect(lines.find((line) => line.includes("user-api"))).toContain("API: — USD this month");
+  expect(lines.find((line) => line.includes("user-sub"))).toContain("exhausted until 2026-11-19 14:00 UTC");
+  expect(lines.find((line) => line.includes("user-api"))).not.toContain("exhausted until");
   expect(lines.find((line) => line.includes("user-sub"))).not.toContain("USD this month");
   expect(lines.find((line) => line.includes("zero-api"))).toContain("API: 0 USD this month");
   expect(lines.find((line) => line.includes("unpriced-api"))).toContain("API: — USD this month (1 unpriced turn)");

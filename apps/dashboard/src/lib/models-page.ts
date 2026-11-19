@@ -5,6 +5,10 @@ import { accountState, accountsFor, isUsable, launchDefault, type ModelAccount }
 export function modelsPageStatus(account: ModelAccount, now: number) {
   const state = accountState(account, now);
   if (state.needsAction) return { ...state, label: state.label === "Expired" ? "Sign-in expired" : state.label };
+  if (account.exhaustedUntil && Date.parse(account.exhaustedUntil) > now) {
+    const reset = new Date(account.exhaustedUntil).toISOString().slice(0, 16).replace("T", " ");
+    return { label: `Exhausted until ${reset} UTC`, tone: "warn", needsAction: false } as const;
+  }
   if (account.rateLimited) return { label: "Rate limited, retrying", tone: "warn", needsAction: false } as const;
   if (account.maxAgents != null && (account.runningAgents ?? 0) >= account.maxAgents)
     return { label: "At its limit", tone: "warn", needsAction: false } as const;

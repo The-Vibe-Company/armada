@@ -1480,8 +1480,7 @@ describe("prompt outcome", () => {
         }),
       ).toEqual({
         state: "failed",
-        reason:
-          "Plan limit reached. Try again after the limit resets. Wait for the limit to reset, or switch to another account before sending the prompt again.",
+        reason: "Plan limit reached. Try again after the limit resets.",
         limit: { code: "usage_limit_exceeded" },
       });
     }
