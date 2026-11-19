@@ -132,10 +132,6 @@ export {
 } from "./docker-host-protocol.ts";
 export { dockerHostResourceDisplay, validDockerHostResources } from "./docker-host-resources-view.ts";
 export {
-  dockerHostMeetsVersion,
-  dockerHostUpgradeMessage,
-} from "./docker-host-upgrade.ts";
-export {
   DOCKER_LOCAL_IMAGE_LABELS,
   type DockerSnapshotBinding,
   isDockerImageReference,

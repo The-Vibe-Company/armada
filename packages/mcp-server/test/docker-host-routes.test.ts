@@ -545,6 +545,7 @@ test("host lists admit current members and expose only scoped safe heartbeat sum
       "limitsSupported",
       "name",
       "nextCleanupAt",
+      "protocol",
       "resources",
       "retentionOverrideSeconds",
       "retentionSeconds",
@@ -553,6 +554,7 @@ test("host lists admit current members and expose only scoped safe heartbeat sum
       "sandboxes",
       "state",
       "stoppedSandboxBytes",
+      "upgradeRequired",
       "version",
     ]);
     for (const value of [host.createdAt, host.lastSeenAt, host.revokedAt]) {

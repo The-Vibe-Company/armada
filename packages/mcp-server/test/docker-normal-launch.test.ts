@@ -2856,7 +2856,9 @@ test.each(["private", "org"] as const)(
         baselineVersion: visibility === "private" ? 1 : null,
         baselineOutdated: visibility === "org",
         ...(visibility === "org"
-          ? { baselineWarning: expect.stringContaining("Docker host daemon 2.51.0 is outdated") }
+          ? {
+              baselineWarning: expect.stringContaining("This snapshot was built without a reported developer baseline"),
+            }
           : {}),
       },
     });
