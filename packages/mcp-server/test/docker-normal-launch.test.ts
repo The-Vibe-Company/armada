@@ -1440,7 +1440,6 @@ test.each([false, true])(
     const ref = { org: f.actor.orgId, id: f.body.requestId, prompt_id: queued.promptId };
     for (const [route, input] of [
       ["sandbox/status", ref],
-      ["sandbox/status", ref],
       ["sandbox/wait", { ...ref, timeout_seconds: 0 }],
     ] as const) {
       const report = await rest.post(route, input);

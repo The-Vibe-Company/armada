@@ -122,8 +122,9 @@ export async function callSharedTool(
       return result;
     };
   });
-  if (!invoke) throw new ToolApiError("internal", `Unknown sandbox tool ${name}.`);
-  const result = await measure("tool_call", () => boundedToolCall(invoke));
+  const run = invoke;
+  if (!run) throw new ToolApiError("internal", `Unknown sandbox tool ${name}.`);
+  const result = await measure("tool_call", () => boundedToolCall(run));
   if (result.isError) {
     const block = (result.content as { type: string; text?: string }[]).find((item) => item.type === "text");
     const marker = (result.content as { type: string; text?: string }[]).find(

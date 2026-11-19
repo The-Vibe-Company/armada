@@ -331,6 +331,18 @@ function sandboxOperation<Input extends z.ZodRawShape, Output extends z.ZodRawSh
   } satisfies Operation<z.ZodType, z.ZodType> & { toolName: string; tool: typeof tool };
 }
 
+const sandboxControlErrors = [
+  "not_found",
+  "conflict",
+  "invalid_request",
+  "unsupported",
+  "credential_binding_required",
+  "sandbox_terminal",
+  "sandbox_retention_ended",
+  "rate_limited",
+  "outcome_unknown",
+] as const;
+
 export const sandboxOperations = {
   reportSandbox: sandboxOperation("reportSandbox", "/api/v1/sandbox/report", "report", "agent", {
     title: "Report a task outcome",
@@ -341,17 +353,7 @@ export const sandboxOperations = {
   }),
   sendPrompt: sandboxOperation("sendPrompt", "/api/v1/sandbox/send", "send", "agent", {
     title: "Send a prompt",
-    errors: [
-      "not_found",
-      "conflict",
-      "invalid_request",
-      "unsupported",
-      "credential_binding_required",
-      "sandbox_terminal",
-      "sandbox_retention_ended",
-      "rate_limited",
-      "outcome_unknown",
-    ],
+    errors: sandboxControlErrors,
     description:
       "Gives the agent its next instruction as a new turn. The first send of an idle sandbox opens its " +
       "conversation and later sends continue it. Launch another sandbox for a separate conversation. To redirect a turn that is " +
@@ -383,18 +385,7 @@ export const sandboxOperations = {
   }),
   steerSandbox: sandboxOperation("steerSandbox", "/api/v1/sandbox/steer", "steer", "public", {
     title: "Steer the running turn",
-    errors: [
-      "not_found",
-      "conflict",
-      "invalid_request",
-      "unsupported",
-      "credential_binding_required",
-      "sandbox_terminal",
-      "sandbox_retention_ended",
-      "no_running_turn",
-      "rate_limited",
-      "outcome_unknown",
-    ],
+    errors: [...sandboxControlErrors, "no_running_turn"],
     description:
       "Redirects the turn that is running now. delivery says how: native joins the turn (Claude Code); " +
       "restart interrupts it and continues the same conversation with this text (Codex). Refused when no " +
@@ -420,18 +411,7 @@ export const sandboxOperations = {
   }),
   interruptSandbox: sandboxOperation("interruptSandbox", "/api/v1/sandbox/interrupt", "interrupt", "public", {
     title: "Interrupt the running turn",
-    errors: [
-      "not_found",
-      "conflict",
-      "invalid_request",
-      "unsupported",
-      "credential_binding_required",
-      "sandbox_terminal",
-      "sandbox_retention_ended",
-      "no_running_turn",
-      "rate_limited",
-      "outcome_unknown",
-    ],
+    errors: [...sandboxControlErrors, "no_running_turn"],
     description: "Interrupts the sandbox's running turn. The sandbox stays up for the next send.",
     input: {
       id,
@@ -447,17 +427,7 @@ export const sandboxOperations = {
   }),
   execSandbox: sandboxOperation("execSandbox", "/api/v1/sandbox/exec", "exec", "agent", {
     title: "Run a command",
-    errors: [
-      "not_found",
-      "conflict",
-      "invalid_request",
-      "unsupported",
-      "credential_binding_required",
-      "sandbox_terminal",
-      "sandbox_retention_ended",
-      "rate_limited",
-      "outcome_unknown",
-    ],
+    errors: sandboxControlErrors,
     description:
       "Runs a shell command in the sandbox (cwd /home/user by default) and returns its output. Output that " +
       "contains the agent's credentials is redacted. Use it to inspect the repos, not to drive the agent.",
