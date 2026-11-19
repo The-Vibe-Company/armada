@@ -1,10 +1,15 @@
 import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
 import { type Provider, ProviderError, type SandboxPatch, type SandboxRecord, type SandboxStore } from "@armada/core";
+import { createSqlData } from "../src/data.ts";
+import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { extendSandbox } from "../src/sandbox-extend.ts";
+import { rowOnlyDatabase } from "./row-only-database.ts";
+import { ENCRYPTION_KEY } from "./support.ts";
 
 const NOW = "2026-11-13T12:00:00.000Z";
 beforeEach(() => setSystemTime(new Date(NOW)));
 afterEach(() => setSystemTime());
+const database = rowOnlyDatabase();
 
 function fixture() {
   const sandbox: SandboxRecord = {
@@ -102,4 +107,68 @@ test("a definite physical refusal preserves the old logical deadline and release
   await expect(extendSandbox(f.store, f.sandbox, provider, 1200)).rejects.toMatchObject({ code: "extension_maximum" });
   expect(f.patches.at(-1)).toMatchObject({ finishActivity: true });
   expect(f.patches.some((patch) => patch.expiresAt !== undefined)).toBe(false);
+});
+
+test("runtime Modal extension uses live headroom and an enrolled command grant without revoking the session", async () => {
+  const { db, people } = await database();
+  const { now } = (await db.query<{ now: Date }>("select clock_timestamp() as now")).rows[0]!;
+  setSystemTime(now);
+  const sql: import("@armada/core").Sql = {
+    query: (q, v) => db.query(q, v),
+    transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
+  };
+  const id = crypto.randomUUID();
+  const golden = (
+    await db.query<{ id: string }>(
+      `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,
+         modal_workspace,modal_environment,modal_app_id,config)
+       values($1,$2,'extend','org','modal','master','image','workspace','main','app','{"repos":[],"init":[]}') returning id`,
+      [people.org, people.owner],
+    )
+  ).rows[0]!;
+  const initial = new Date(now.getTime() + 300_000);
+  await db.query(
+    `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status,runtime_transport,expires_at)
+     values($1,$2,$3,$4,'modal','physical','codex','ready','dialout',$5)`,
+    [id, golden.id, people.org, people.owner, initial],
+  );
+  const authority = createRuntimeEnrolments(sql, ENCRYPTION_KEY);
+  const store = createSqlData(sql)({
+    via: "service",
+    userId: people.owner,
+    orgs: [{ orgId: people.org, role: "member" }],
+  }).sandboxes;
+  const sandbox = (await store.get(id))!;
+  const hard = new Date(now.getTime() + 1_800_000);
+  const provider = {
+    id: "modal",
+    async get(target: string) {
+      expect(target).toBe("physical");
+      return { state: "ready", providerState: "active", expiresAt: hard };
+    },
+  } as Provider;
+  const issue = (expiresAt?: number) =>
+    authority.issue({
+      sandboxId: id,
+      ownerId: people.owner,
+      configuration: { grant: { expiresAt: expiresAt ?? initial.getTime() } },
+      ...(expiresAt === undefined ? {} : { commandGrantExpiresAt: expiresAt }),
+    });
+  const active = await authority.enrol((await issue(hard.getTime())).enrolmentToken);
+  const extended = new Date(now.getTime() + 1_200_000).toISOString();
+  expect(await extendSandbox(store, sandbox, provider, 1_200)).toEqual({ id, expiresAt: extended, ttlSeconds: 1_200 });
+  await expect(extendSandbox(store, sandbox, provider, 1_600)).rejects.toMatchObject({ code: "extension_maximum" });
+  await expect(extendSandbox(store, sandbox, provider, 1_100)).rejects.toMatchObject({ code: "sandbox_not_ready" });
+  expect(await store.get(id)).toMatchObject({ expiresAt: extended, lifecycleGeneration: sandbox.lifecycleGeneration });
+  expect(await authority.withSession(active.runtimeToken, active.epoch, async (_tx, scope) => scope.epoch)).toBe(
+    active.epoch,
+  );
+  const previousServer = await issue();
+  await db.query(
+    "update runtime_enrolments set command_grant_epoch=$2,command_grant_expires_at=$3 where sandbox_id=$1",
+    [id, active.epoch, hard],
+  );
+  const replacement = await authority.enrol(previousServer.enrolmentToken);
+  expect(replacement.epoch).not.toBe(active.epoch);
+  await expect(extendSandbox(store, sandbox, provider, 1_250)).rejects.toMatchObject({ code: "sandbox_not_ready" });
 });
