@@ -46,6 +46,8 @@ import { configureBoatGitHub } from "./github-boat.ts";
 import { createSqlGoldenList } from "./golden-list.ts";
 import { createHandler, providerRegistry, type Route } from "./http.ts";
 import { idlePauseDelayMs } from "./idle-pause-policy.ts";
+import { inboundTriggerRoute } from "./inbound-trigger-route.ts";
+import { createInboundTriggerStore } from "./inbound-trigger-store.ts";
 import { invitationsFromEnv, startInvitationWorker } from "./invitations.ts";
 import { createJobsRunner } from "./jobs/runner.ts";
 import { createJobsStore } from "./jobs/store.ts";
@@ -135,6 +137,7 @@ export async function startServer(
   );
   await catalogAuthentication("slack"); // Reject invalid deployment ciphertext before serving.
   const sql = bunSql(config.databaseUrl, config.databasePoolMax);
+  const jobs = createJobsStore(sql, config.encryptionKey);
   const webhooks = createOutboundWebhooks(sql, config.encryptionKey, config.dashboardUrl);
   const runtimeEnrolments = createRuntimeEnrolments(sql, config.encryptionKey);
   const runtimeCommands = createRuntimeCommands(runtimeEnrolments, config.encryptionKey);
@@ -624,6 +627,7 @@ export async function startServer(
     storedProviderFor: modal.storedProviderFor,
     modalTokensFor: modal.modalTokensFor,
     routes: [
+      inboundTriggerRoute(createInboundTriggerStore(sql, jobs, config.encryptionKey)),
       outputs.route((request) =>
         authenticateCaller(request.headers.get("authorization"), {
           store: authStore,
@@ -782,7 +786,7 @@ export async function startServer(
             ),
           ]
         : []),
-      createJobsRunner(createJobsStore(sql, config.encryptionKey), {}, options.logError),
+      createJobsRunner(jobs, {}, options.logError),
       outputs,
       webhooks,
       nativePrompts,
