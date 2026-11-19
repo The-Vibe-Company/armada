@@ -108,7 +108,16 @@ export class Journal {
         })),
       });
     }
-    if (!mask || event.kind !== "other" || event.type !== "harness_stderr") return body;
+    if (!mask || event.kind !== "other") return body;
+    if (event.type === "armada/opencodeMcp") {
+      const proof = JSON.parse(body) as typeof event & {
+        data: { input?: unknown; result?: { output: unknown } };
+      };
+      if (proof.data?.input !== undefined) proof.data.input = maskPayload(proof.data.input, mask);
+      if (proof.data?.result) proof.data.result.output = maskPayload(proof.data.result.output, mask);
+      return JSON.stringify(proof);
+    }
+    if (event.type !== "harness_stderr") return body;
     const masked = JSON.parse(body) as { data?: { text?: unknown } | null };
     const original = (event.data as { text?: unknown } | null)?.text;
     if (typeof original === "string" && typeof masked.data?.text === "string")
@@ -122,7 +131,9 @@ export class Journal {
     } catch {
       return this.redact(body);
     }
-    return event?.kind === "message" ? this.eventBody(event, false) : this.redact(body);
+    return event?.kind === "message" || (event?.kind === "other" && event.type === "armada/opencodeMcp")
+      ? this.eventBody(event, false)
+      : this.redact(body);
   }
   transition(prompt: StoredPrompt, status: PromptStatus, reason?: string) {
     this.db.transaction(() => {
