@@ -73,10 +73,11 @@ validate capability and policy before side effects.
 A provider branch can have a strict source union inside it. #2772 preserves
 existing path controls until their owning cutovers. Validate shared fields
 in the contract and keep model/account policy, source resolution and org
-authorization in admission. Replace the overlapping checks in
-`launch-control.ts`, `launch-request-schema.ts`, `docker-launch-request-schema.ts`,
-Docker normalization and MCP launch registration. The pinned Modal branch
-uses the shared org input and resolves it to a UUID before template admission.
+authorization in admission. Docker REST and admission use the shared request
+schema, and the standalone Docker schema has been deleted. The remaining
+cutover replaces overlapping checks in `launch-control.ts`,
+`launch-request-schema.ts` and MCP launch registration. The pinned Modal branch
+will use the shared org input and resolve it to a UUID before template admission.
 The separate `templates/launch` endpoint keeps its `requestKey` and durable
 receipt, and shares applicable field schemas.
 

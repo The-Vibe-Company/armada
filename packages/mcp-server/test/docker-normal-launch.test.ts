@@ -1039,6 +1039,16 @@ test("the normal HTTP route accepts the dashboard body and returns a launched sa
     prompt: f.body.prompt,
   });
   const { options, bearer, post } = restControl(f);
+  const malformed = await handleControlRequest(
+    new Request("https://armada.test/api/v1/sandbox/launch", {
+      method: "POST",
+      headers: { authorization: `Bearer ${bearer}` },
+      body: JSON.stringify({ ...body, harness: undefined }),
+    }),
+    options,
+  );
+  expect(malformed?.status).toBe(400);
+  expect(await malformed?.json()).toMatchObject({ error: { code: "invalid" } });
   // An acknowledged timeout must preserve the dashboard's stable request key.
   f.setDrive(false);
   options.dockerLaunch = f.service(sql, true, 250);

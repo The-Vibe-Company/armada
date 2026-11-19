@@ -12,7 +12,7 @@ Rules only. Procedures live in the documents listed under "Where truth lives".
 ## Layout
 | Path | Holds |
 |---|---|
-| `packages/core` | shared contracts, catalogs, policies, credentials, `packages/core/src/crypto.ts`. `packages/core/src/index.ts` is browser-safe; server-only exports live in `packages/core/src/server.ts`. API operation metadata and shared request schemas belong in the browser-safe `packages/core/src/contract` subpath, exported as @armada/core/contract. Authorization and provider admission stay on the server. |
+| `packages/core` | shared contracts, catalogs, policies, credentials, `packages/core/src/crypto.ts`. `packages/core/src/index.ts` is browser-safe; server-only exports live in `packages/core/src/server.ts`. API operation metadata and shared request schemas belong in the browser-safe `packages/core/src/contract` subpath, exported as @armada/core/contract. Docker REST launch uses the shared launch request schema. Authorization and provider admission stay on the server. |
 | `packages/mcp-server` | `armada-server`: HTTP, control routes, MCP tools, workers, provider adapters. Read `packages/mcp-server/AGENTS.md` before editing it. |
 | `packages/agent-runtime` | the runtime that runs inside a sandbox, and its harness drivers |
 | `packages/provider-boat`, `packages/provider-modal` | provider SDK adapters |
