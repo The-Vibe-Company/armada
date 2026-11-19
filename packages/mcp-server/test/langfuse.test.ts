@@ -502,7 +502,6 @@ test("native history fences every page and exports the receipt after an activity
       ...store,
       async inspect(job, owner) {
         const state = await store.inspect(job, owner);
-        // The lifecycle advances while the worker checks its lease for page two.
         if (reads === 1)
           await db.query(
             "update sandboxes set lifecycle_generation=lifecycle_generation+1 where boat_id='boat_export'",
