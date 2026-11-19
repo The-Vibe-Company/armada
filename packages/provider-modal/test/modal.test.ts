@@ -8,7 +8,7 @@ import {
   isNonMutatingProviderRefusal,
   OUTPUT_COLLECTOR,
 } from "@armada/core/server";
-import type { Image, ModalClient, Sandbox } from "modal";
+import { type Image, type ModalClient, NotFoundError, type Sandbox, Volume } from "modal";
 import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import { Journal } from "../../agent-runtime/src/journal.ts";
 import type { Driver } from "../../agent-runtime/src/protocol.ts";
@@ -116,6 +116,7 @@ function fixture(
   const store = createSqlModalStore(sql, accessScope);
   const log: string[] = [];
   let creates = 0;
+  let artifactVolume: Volume | undefined;
   const requestedRuntimes: (string | undefined)[] = [];
   const resourceRequests: Record<string, unknown>[] = [];
   const sdkCommands: { argv: string[]; params: object; stdin: string[] }[] = [];
@@ -147,6 +148,14 @@ function fixture(
       delete: async (id: string) => {
         await onImageDelete?.(id);
         log.push("delete-image");
+      },
+    },
+    volumes: {
+      fromName: async (name: string, params: object) => {
+        expect(name).toBe("armada-runtime-artifacts");
+        expect(params).toEqual({ environment: "main", createIfMissing: false });
+        if (!artifactVolume) throw new NotFoundError("No cache volume");
+        return artifactVolume;
       },
     },
     sandboxes: {
@@ -372,6 +381,9 @@ function fixture(
     bootstraps,
     requestedRuntimes,
     resourceRequests,
+    setArtifactVolume: (volume: Volume) => {
+      artifactVolume = volume;
+    },
     sdkCommands,
     get provisioned() {
       return provisioned;
@@ -1029,6 +1041,16 @@ test("overlapping forks refuse source contention definitively before allocating"
     await first;
   }
 });
+test("enrolled Modal forks mount the environment artifact cache read-only", async () => {
+  const f = fixture(scope, db, undefined, undefined, true);
+  const volume = new Volume("vo_public_artifacts");
+  f.setArtifactVolume(volume);
+  await runningFork(f);
+  expect(f.resourceRequests.at(-1)?.volumes).toEqual({
+    "/opt/armada/artifact-cache": volume.withMountOptions({ readOnly: true }),
+  });
+});
+
 test("enrolled Modal host forks never start or call the tunnel and stop without a recovery claim", async () => {
   const f = fixture(scope, fixtureSql, undefined, undefined, true);
   const row = await runningFork(f);
