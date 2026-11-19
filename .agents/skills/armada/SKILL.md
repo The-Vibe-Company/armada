@@ -49,8 +49,9 @@ any receipt UUID returned.
 - Choose Boat or Modal explicitly when ambiguous. A golden built on one provider
   is not automatically available on the other. Check
   `armada snapshot capabilities --provider boat --json` (or substitute modal).
-- Docker REST launch requires an explicit harness. Personal sessions can select
-  the organization by slug or UUID. For a scoped token, omit `org` or send its org UUID.
+- Docker and pinned Modal template launches through `POST /api/v1/sandbox/launch`
+  require an explicit harness. Personal sessions can select the organization by
+  slug or UUID. For a scoped token, omit `org` or send its org UUID.
   A malformed request returns HTTP 400 with error code `invalid`.
 - Choose the harness and a model/effort it supports. Launch selections persist
   for later turns. Do not assume provider sizes have equal price or performance.

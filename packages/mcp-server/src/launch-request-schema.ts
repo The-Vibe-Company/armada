@@ -2,12 +2,13 @@ import { MACHINE_SIZES, MAX_LAUNCH_TTL_SECONDS, SANDBOX_PROVIDERS, SKILL_PIN_PAT
 import { launch } from "@armada/core/contract";
 import { z } from "zod";
 
-const dockerLaunchVariants = launch.input.body.options.filter((variant) => variant.shape.provider.value === "docker");
+const sharedLaunchVariants = launch.input.body.options.filter(
+  (variant) => variant.shape.provider.value === "docker" || "id" in variant.shape,
+);
 
 const [boatLaunch] = launch.input.body.options;
 const { credentialId, connections, externalRef, harness, idempotencyKey, skipSkillDefaults, stopWhenWorkMerged } =
   boatLaunch.shape;
-const launchUuid = credentialId.unwrap();
 const sharedRestLaunchFields = {
   harness,
   credentialId,
@@ -69,42 +70,6 @@ const modalRuntimeLaunch = z
   })
   .describe("Explicit Modal runtime launch from a golden.");
 
-const pinnedTemplateFields = {
-  org: launchUuid,
-  id: launchUuid,
-  revision: z.number().int().positive(),
-  requestKey: z
-    .string()
-    .regex(/^[A-Za-z0-9._:-]+$/)
-    .max(128),
-  prompt: z.string().min(1).max(100000).optional(),
-  ttlSeconds: z.number().int().positive().optional(),
-  size: goldenFields.size,
-  repo: z.string().min(1).max(200).optional(),
-  skills: sharedRestLaunchFields.skills.nullable(),
-  skipSkillDefaults: sharedRestLaunchFields.skipSkillDefaults,
-  externalRef,
-  stopWhenWorkMerged: sharedRestLaunchFields.stopWhenWorkMerged,
-};
-
-export const PINNED_MODAL_TEMPLATE_FIELDS = Object.keys(pinnedTemplateFields);
-
-export const PINNED_MODAL_LAUNCH_REQUEST = z
-  .strictObject({
-    ...pinnedTemplateFields,
-    provider: z.literal("modal"),
-    harness,
-    runtimeVersion: z.literal(1),
-    runtimeTransport: z.literal("dialout"),
-  })
-  .describe("Launch a pinned Modal template revision with the template's model account and explicit dial-out.");
-
 export const GOLDEN_LAUNCH_REQUEST = z.union([goldenLaunch, boatRuntimeLaunch, modalRuntimeLaunch]);
 
-export const LAUNCH_REQUEST_VARIANTS = [
-  goldenLaunch,
-  boatRuntimeLaunch,
-  modalRuntimeLaunch,
-  PINNED_MODAL_LAUNCH_REQUEST,
-  ...dockerLaunchVariants,
-] as const;
+export const LAUNCH_REQUEST_VARIANTS = [...GOLDEN_LAUNCH_REQUEST.options, ...sharedLaunchVariants];
