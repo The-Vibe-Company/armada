@@ -6392,37 +6392,66 @@
                   {
                     "type": "object",
                     "properties": {
-                      "golden": {
+                      "org": {
+                        "description": "Organization slug or UUID.",
+                        "type": "string",
+                        "pattern": "\\S"
+                      },
+                      "harness": {
+                        "type": "string",
+                        "enum": [
+                          "claude",
+                          "codex",
+                          "opencode"
+                        ]
+                      },
+                      "skills": {
+                        "maxItems": 20,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "maxLength": 256,
+                          "pattern": "^(?:[a-z0-9][a-z0-9-]*\\/)?[a-z0-9][a-z0-9-]*@[0-9]+\\.[0-9]+\\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$"
+                        }
+                      },
+                      "skipSkillDefaults": {
+                        "type": "boolean"
+                      },
+                      "stopWhenWorkMerged": {
+                        "type": "boolean"
+                      },
+                      "externalRef": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "The name returned by golden/list."
+                        "maxLength": 200,
+                        "pattern": "^[^\\x00-\\x1f\\x7f-\\x9f]+(?![\\s\\S])"
                       },
-                      "org": {
-                        "description": "Organization name or ID. Required for ambiguous golden names.",
-                        "type": [
-                          "string",
-                          "null"
-                        ]
+                      "credentialId": {
+                        "type": "string",
+                        "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$"
                       },
                       "model": {
-                        "type": [
-                          "string",
-                          "null"
-                        ]
+                        "type": "string"
                       },
                       "reasoningEffort": {
-                        "type": [
-                          "string",
-                          "null"
-                        ]
+                        "type": "string"
                       },
-                      "ttlSeconds": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": 2592000
+                      "connections": {
+                        "maxItems": 100,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$"
+                        }
+                      },
+                      "golden": {
+                        "type": "string",
+                        "pattern": "\\S",
+                        "description": "The name returned by golden discovery."
                       },
                       "prompt": {
                         "type": "string",
+                        "pattern": "\\S",
                         "maxLength": 131072
                       },
                       "size": {
@@ -6439,9 +6468,8 @@
                         "const": 1
                       },
                       "repo": {
-                        "description": "Configured directory or owner/repo from the golden.",
                         "type": "string",
-                        "minLength": 1
+                        "pattern": "\\S"
                       },
                       "visibility": {
                         "type": "string",
@@ -6450,50 +6478,19 @@
                           "org"
                         ]
                       },
-                      "harness": {
-                        "type": "string",
-                        "enum": [
-                          "claude",
-                          "codex",
-                          "opencode"
-                        ]
-                      },
-                      "credentialId": {
-                        "type": "string",
-                        "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$"
-                      },
-                      "skills": {
-                        "maxItems": 20,
-                        "type": "array",
-                        "items": {
-                          "type": "string",
-                          "pattern": "^(?:[a-z0-9][a-z0-9-]*\\/)?[a-z0-9][a-z0-9-]*@[0-9]+\\.[0-9]+\\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$"
-                        }
-                      },
-                      "skipSkillDefaults": {
-                        "type": "boolean"
-                      },
-                      "connections": {
-                        "maxItems": 100,
-                        "type": "array",
-                        "items": {
-                          "type": "string",
-                          "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$"
-                        }
-                      },
-                      "stopWhenWorkMerged": {
-                        "type": "boolean"
-                      },
                       "idempotencyKey": {
                         "type": "string",
                         "minLength": 16,
                         "maxLength": 128
                       },
-                      "externalRef": {
+                      "provider": {
                         "type": "string",
-                        "minLength": 1,
-                        "maxLength": 200,
-                        "pattern": "^[^\\x00-\\x1f\\x7f-\\x9f]+(?![\\s\\S])"
+                        "const": "boat"
+                      },
+                      "ttlSeconds": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 2592000
                       },
                       "runtimeVersion": {
                         "type": "number",
@@ -6509,10 +6506,6 @@
                       "armadaAccess": {
                         "type": "boolean",
                         "const": false
-                      },
-                      "provider": {
-                        "type": "string",
-                        "const": "boat"
                       },
                       "boatRuntime": {
                         "type": "boolean",
@@ -6520,48 +6513,77 @@
                       }
                     },
                     "required": [
-                      "golden",
                       "harness",
+                      "golden",
+                      "provider",
                       "runtimeVersion",
                       "boatRuntime"
                     ],
-                    "additionalProperties": false,
-                    "description": "Explicit Boat runtime launch from a golden."
+                    "additionalProperties": false
                   },
                   {
                     "type": "object",
                     "properties": {
-                      "golden": {
+                      "org": {
+                        "description": "Organization slug or UUID.",
+                        "type": "string",
+                        "pattern": "\\S"
+                      },
+                      "harness": {
+                        "type": "string",
+                        "enum": [
+                          "claude",
+                          "codex",
+                          "opencode"
+                        ]
+                      },
+                      "skills": {
+                        "maxItems": 20,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "maxLength": 256,
+                          "pattern": "^(?:[a-z0-9][a-z0-9-]*\\/)?[a-z0-9][a-z0-9-]*@[0-9]+\\.[0-9]+\\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$"
+                        }
+                      },
+                      "skipSkillDefaults": {
+                        "type": "boolean"
+                      },
+                      "stopWhenWorkMerged": {
+                        "type": "boolean"
+                      },
+                      "externalRef": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "The name returned by golden/list."
+                        "maxLength": 200,
+                        "pattern": "^[^\\x00-\\x1f\\x7f-\\x9f]+(?![\\s\\S])"
                       },
-                      "org": {
-                        "description": "Organization name or ID. Required for ambiguous golden names.",
-                        "type": [
-                          "string",
-                          "null"
-                        ]
+                      "credentialId": {
+                        "type": "string",
+                        "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$"
                       },
                       "model": {
-                        "type": [
-                          "string",
-                          "null"
-                        ]
+                        "type": "string"
                       },
                       "reasoningEffort": {
-                        "type": [
-                          "string",
-                          "null"
-                        ]
+                        "type": "string"
                       },
-                      "ttlSeconds": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": 2592000
+                      "connections": {
+                        "maxItems": 100,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$"
+                        }
+                      },
+                      "golden": {
+                        "type": "string",
+                        "pattern": "\\S",
+                        "description": "The name returned by golden discovery."
                       },
                       "prompt": {
                         "type": "string",
+                        "pattern": "\\S",
                         "maxLength": 131072
                       },
                       "size": {
@@ -6578,9 +6600,8 @@
                         "const": 1
                       },
                       "repo": {
-                        "description": "Configured directory or owner/repo from the golden.",
                         "type": "string",
-                        "minLength": 1
+                        "pattern": "\\S"
                       },
                       "visibility": {
                         "type": "string",
@@ -6589,50 +6610,19 @@
                           "org"
                         ]
                       },
-                      "harness": {
-                        "type": "string",
-                        "enum": [
-                          "claude",
-                          "codex",
-                          "opencode"
-                        ]
-                      },
-                      "credentialId": {
-                        "type": "string",
-                        "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$"
-                      },
-                      "skills": {
-                        "maxItems": 20,
-                        "type": "array",
-                        "items": {
-                          "type": "string",
-                          "pattern": "^(?:[a-z0-9][a-z0-9-]*\\/)?[a-z0-9][a-z0-9-]*@[0-9]+\\.[0-9]+\\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$"
-                        }
-                      },
-                      "skipSkillDefaults": {
-                        "type": "boolean"
-                      },
-                      "connections": {
-                        "maxItems": 100,
-                        "type": "array",
-                        "items": {
-                          "type": "string",
-                          "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$"
-                        }
-                      },
-                      "stopWhenWorkMerged": {
-                        "type": "boolean"
-                      },
                       "idempotencyKey": {
                         "type": "string",
                         "minLength": 16,
                         "maxLength": 128
                       },
-                      "externalRef": {
+                      "provider": {
                         "type": "string",
-                        "minLength": 1,
-                        "maxLength": 200,
-                        "pattern": "^[^\\x00-\\x1f\\x7f-\\x9f]+(?![\\s\\S])"
+                        "const": "modal"
+                      },
+                      "ttlSeconds": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 86400
                       },
                       "runtimeVersion": {
                         "type": "number",
@@ -6649,24 +6639,19 @@
                         "type": "boolean",
                         "const": false
                       },
-                      "provider": {
-                        "type": "string",
-                        "const": "modal"
-                      },
                       "runtimeTransport": {
                         "type": "string",
                         "const": "dialout"
                       }
                     },
                     "required": [
-                      "golden",
                       "harness",
-                      "runtimeVersion",
+                      "golden",
                       "provider",
+                      "runtimeVersion",
                       "runtimeTransport"
                     ],
-                    "additionalProperties": false,
-                    "description": "Explicit Modal runtime launch from a golden."
+                    "additionalProperties": false
                   },
                   {
                     "type": "object",

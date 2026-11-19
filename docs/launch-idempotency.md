@@ -148,9 +148,9 @@ providers. The CLI's `golden` field remains a name or null.
 ## Explicit runtime launch
 
 For explicit runtime launches from a golden, send the selectors to `POST /api/v1/sandbox/launch`.
-Use `runtimeVersion: 1` and `boatRuntime: true` for Boat. Use `runtimeVersion: 1`,
+Use `provider: "boat"`, `runtimeVersion: 1` and `boatRuntime: true` for Boat. Use `runtimeVersion: 1`,
 `provider: "modal"` and `runtimeTransport: "dialout"` for Modal. Runtime admission checks
-and server opt-ins apply. For a pinned Modal template, send the same Modal selectors
+and server opt-ins apply. Both golden paths require a harness. For a pinned Modal template, send the same Modal selectors
 with `id`, `revision`, `requestKey` and the template's `harness` to `sandbox/launch`.
 Personal sessions can provide an org slug or UUID. Scoped tokens can omit `org`
 or send their scoped UUID. The shared schema refuses TTLs above 86,400 seconds
