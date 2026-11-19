@@ -37,7 +37,7 @@ export interface VaultIo {
   readStdin: () => Promise<string>;
 }
 
-export function vaultIo(auth: AuthIo, deps: Pick<Deps, "readFile" | "readStdin">, strictUtf8 = false): VaultIo {
+export function vaultIo(auth: AuthIo, deps: Pick<Deps, "readFile" | "readStdin">, strictUtf8 = false) {
   return {
     auth,
     readFile:
@@ -54,7 +54,7 @@ export function vaultIo(auth: AuthIo, deps: Pick<Deps, "readFile" | "readStdin">
           ? new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(await Bun.stdin.arrayBuffer())
           : Bun.stdin.text();
       }),
-  };
+  } satisfies VaultIo;
 }
 
 export async function orgCommand(argv: readonly string[], io: VaultIo): Promise<number> {
