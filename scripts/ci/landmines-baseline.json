@@ -780,7 +780,7 @@
     "packages/core/test/golden-helper.test.ts": 3,
     "packages/core/test/golden-os.probe.ts": 4,
     "packages/core/test/golden-scan.probe.ts": 13,
-    "packages/core/test/golden-script-shell.test.ts": 14,
+    "packages/core/test/golden-script-shell.test.ts": 12,
     "packages/core/test/golden-skillpack.test.ts": 2,
     "packages/core/test/golden-snapshot-retirement.release.ts": 3,
     "packages/core/test/golden-snapshot-retirement.test.ts": 12,
