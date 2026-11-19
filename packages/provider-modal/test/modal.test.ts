@@ -822,19 +822,18 @@ test("durable golden recovery persists an interrupted Modal builder before exact
     reserved.info.id,
     JSON.stringify({ ...originalRecord, snapshotImages: [{ name: "retained-proof", imageId: "im_proof" }] }),
   ]);
-  let concurrentTicks = 0;
+  let competingClaim: boolean | undefined;
   let retainedDiscoveries = 0;
   f.provider.findGoldenBuilder = async (req) => {
     retainedDiscoveries++;
     return discover(req);
   };
   concurrentAfterPersist = async () => {
-    concurrentTicks++;
-    expect(await tick()).toBe(false);
+    competingClaim = await tick();
   };
   await retry();
   await retry();
-  expect(concurrentTicks).toBe(1);
+  expect(competingClaim).toBe(false);
   expect(retainedDiscoveries).toBe(2);
   f.provider.findGoldenBuilder = discover;
   expect(await row()).toMatchObject({ builder_id: reserved.info.id, state: "recovery_required" });
