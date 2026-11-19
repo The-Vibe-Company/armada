@@ -225,6 +225,8 @@ export function createDockerHostRoutes(
           if (request.body) uploadingOutputs = false;
         }
       }
+      const inventoryDeploymentId = (hostId: string, installationId: string) =>
+        `${new URL(options.publicUrl ?? request.url).origin}/${hostId}/${installationId}`;
       if (path === inventoryPath) {
         const body: unknown = JSON.parse(await readBoundedText(request, inventoryMaxBytes));
         if (!object(body)) throw new InvalidInput();
@@ -239,12 +241,11 @@ export function createDockerHostRoutes(
         ]);
         const ownership = new Map(rows.map((row) => [row.id, row]));
 
-        const origin = new URL(options.publicUrl ?? request.url).origin;
         const reaper = createProviderReaper(
           {
             provider: "docker",
             sourceId: hostId,
-            deploymentId: `${origin}/${hostId}/${installationId}`,
+            deploymentId: inventoryDeploymentId(hostId, installationId),
             inventory: {
               async *listInventory() {
                 yield* machines;
@@ -452,6 +453,7 @@ export function createDockerHostRoutes(
             ...(wait === undefined ? {} : { held: true }),
             ...dockerHostVersions,
             containerInventory: 1,
+            containerInventoryDeploymentId: inventoryDeploymentId(hostId, installationId),
             resumeClaims,
             job,
             // Every generation with a queued resume/bootstrap, so the daemon

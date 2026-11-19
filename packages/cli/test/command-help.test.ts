@@ -23,11 +23,22 @@ for (const command of [
   "exec",
   "routine",
   "template",
+  "snapshot",
+  "snapshot create",
+  "snapshot retirement reconcile",
+  "golden retirement dry-run",
+  "creds",
+  "creds import claude",
+  "creds connect",
 ]) {
   test(`armada ${command} help preserves its output`, async () => {
     async function help(flag: string) {
       const argv =
-        command === "--help" ? [flag] : command === "logs" ? [command, flag] : ["--profile", "new-user", command, flag];
+        command === "--help"
+          ? [flag]
+          : command === "logs"
+            ? [command, flag]
+            : ["--profile", "new-user", ...command.split(" "), flag];
       const fail = () => {
         throw new Error("Help must not perform authenticated or secret I/O");
       };
@@ -76,4 +87,35 @@ test("logs help rejects an invalid profile from the environment", async () => {
   );
   expect(code).toBe(2);
   expect(stderr).toContain("Profile names must be 1–64");
+});
+
+test.each(["snapshot", "golden", "creds"])("bare %s prints focused family help", async (command) => {
+  let stdout = "";
+  const fail = () => {
+    throw new Error("Family help must not perform authenticated or secret I/O");
+  };
+  const code = await run(
+    ["--profile", "new-user", command],
+    { out: (text) => (stdout += text), err: fail },
+    { env: {}, fetch: Object.assign(fail, { preconnect: fail }) },
+  );
+  expect(code).toBe(0);
+  expect(stdout).toStartWith(`Usage: armada ${command === "golden" ? "snapshot" : command} `);
+});
+
+test.each([
+  [["golden", "create", "name", "--help"], "armada --help"],
+  [["creds", "set", "--help", "--unknown"], "armada creds set --help"],
+] as const)("%j leaves malformed help requests to the operation parser", async (argv, hint) => {
+  let stderr = "";
+  const fail = () => {
+    throw new Error("The parser must reject this operation before any output or I/O");
+  };
+  const code = await run(
+    argv,
+    { out: fail, err: (text) => (stderr += text) },
+    { env: {}, fetch: Object.assign(fail, { preconnect: fail }), readStdin: fail },
+  );
+  expect(code).toBe(2);
+  expect(stderr).toBe(`armada: Unknown option '--help'.\nNext step: run ${hint}.\n`);
 });

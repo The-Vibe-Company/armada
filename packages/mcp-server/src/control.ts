@@ -699,11 +699,19 @@ export async function dispatchControlCommand(
       }
       return canonicalLaunchResponse(await launchDocker(parsed.data));
     }
-    const pinned = body.id === undefined ? undefined : launchOperation.input.body.safeParse(body);
-    const template = pinned?.success && "id" in pinned.data ? pinned.data : undefined;
-    if (pinned && !template) throw new VaultError("invalid", "Invalid pinned Modal launch request.");
-
-    if (template) {
+    const sharedRequest =
+      "id" in body || "runtimeVersion" in body || "boatRuntime" in body || "runtimeTransport" in body
+        ? launchOperation.input.body.safeParse(body)
+        : undefined;
+    if (sharedRequest && !sharedRequest.success) {
+      throw new VaultError(
+        "invalid",
+        "id" in body ? "Invalid pinned Modal launch request." : "Invalid explicit runtime launch request.",
+      );
+    }
+    const runtime = sharedRequest?.data;
+    if (runtime && "id" in runtime) {
+      const template = runtime;
       const templateOrg = scopedOrg(caller, template.org);
       if (!options.modalRuntimeLaunch || !options.modalRuntimeHostFor)
         throw new VaultError("unavailable", "Modal runtime staging opt-in is disabled.");
@@ -741,22 +749,23 @@ export async function dispatchControlCommand(
         "template_rest",
       );
     }
+    if (runtime && "golden" in runtime && "runtimeVersion" in runtime) {
+      scopedOrg(caller, runtime.org);
+      if ("runtimeTransport" in runtime) {
+        if (!options.modalRuntimeLaunch || !options.modalRuntimeHostFor)
+          throw new VaultError("unavailable", "Modal runtime staging opt-in is disabled.");
+        if (runtime.prompt === undefined && !options.runtimeSend)
+          throw new VaultError("unavailable", "Modal runtime idle first send is unavailable.");
+        return canonicalLaunchResponse(await launchRoute(options, caller, runtime, "modal"));
+      }
+      if (!options.boatRuntimeLaunch || !options.runtimeHostFor)
+        throw new VaultError("unavailable", "Experimental Boat runtime launch is not configured.");
+      return canonicalLaunchResponse(await launchRoute(options, caller, runtime, true));
+    }
     scopedOrg(caller, optional(body, "org"));
     const golden = GOLDEN_LAUNCH_REQUEST.safeParse(body);
     if (!golden.success)
       throw new VaultError("invalid", "Invalid golden launch request. See the sandbox/launch request schema.");
-    if ("runtimeTransport" in golden.data) {
-      if (!options.modalRuntimeLaunch || !options.modalRuntimeHostFor)
-        throw new VaultError("unavailable", "Modal runtime staging opt-in is disabled.");
-      if (golden.data.prompt === undefined && !options.runtimeSend)
-        throw new VaultError("unavailable", "Modal runtime idle first send is unavailable.");
-      return canonicalLaunchResponse(await launchRoute(options, caller, golden.data, "modal"));
-    }
-    if ("boatRuntime" in golden.data) {
-      if (!options.boatRuntimeLaunch || !options.runtimeHostFor)
-        throw new VaultError("unavailable", "Experimental Boat runtime launch is not configured.");
-      return canonicalLaunchResponse(await launchRoute(options, caller, golden.data, true));
-    }
     return canonicalLaunchResponse(await launchRoute(options, caller, golden.data));
   }
   const org = scopedOrg(caller, optional(body, "org"));

@@ -3,7 +3,7 @@ import { launch } from "@armada/core/contract";
 import { z } from "zod";
 
 const sharedLaunchVariants = launch.input.body.options.filter(
-  (variant) => variant.shape.provider.value === "docker" || "id" in variant.shape,
+  (variant) => variant.shape.provider.value === "docker" || "runtimeVersion" in variant.shape,
 );
 
 const [boatLaunch] = launch.input.body.options;
@@ -46,32 +46,11 @@ const goldenLaunch = z
   })
   .describe("Launch from a golden with the server's default runtime selection.");
 
-const explicitRuntimeFields = {
-  ...goldenFields,
-  prompt: z.string().optional(),
-  runtimeVersion: z.literal(1),
-  helperCapabilities: z.array(z.string()).max(0).optional(),
-  armadaAccess: z.literal(false).optional(),
-};
+type SharedLaunchRequest = z.output<typeof launch.input.body>;
+type ExplicitGoldenLaunchRequest = Extract<SharedLaunchRequest, { golden: string; runtimeVersion: 1 }>;
 
-const boatRuntimeLaunch = z
-  .strictObject({
-    ...explicitRuntimeFields,
-    provider: z.literal("boat").optional(),
-    boatRuntime: z.literal(true),
-  })
-  .describe("Explicit Boat runtime launch from a golden.");
+export const GOLDEN_LAUNCH_REQUEST = goldenLaunch;
 
-const modalRuntimeLaunch = z
-  .strictObject({
-    ...explicitRuntimeFields,
-    provider: z.literal("modal"),
-    runtimeTransport: z.literal("dialout"),
-  })
-  .describe("Explicit Modal runtime launch from a golden.");
+export type GoldenLaunchRequest = z.output<typeof goldenLaunch> | ExplicitGoldenLaunchRequest;
 
-export const GOLDEN_LAUNCH_REQUEST = z.union([goldenLaunch, boatRuntimeLaunch, modalRuntimeLaunch]);
-
-export type GoldenLaunchRequest = z.output<typeof GOLDEN_LAUNCH_REQUEST>;
-
-export const LAUNCH_REQUEST_VARIANTS = [...GOLDEN_LAUNCH_REQUEST.options, ...sharedLaunchVariants];
+export const LAUNCH_REQUEST_VARIANTS = [goldenLaunch, ...sharedLaunchVariants];
