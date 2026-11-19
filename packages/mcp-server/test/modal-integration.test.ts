@@ -413,9 +413,16 @@ test("the Modal reaper only terminates unreferenced VMs and retries a failed ter
       expect(target).toEqual(binding);
       const base = { deploymentId, generation: "1", createdAt: new Date(0) };
       return {
-        async terminate(machineId) {
-          terminated.push(machineId);
-          if (!retry) throw new Error("provider timeout");
+        async openSandbox(machineId) {
+          return {
+            async terminate() {
+              terminated.push(machineId);
+              if (retry) throw Object.assign(new Error("gone"), { name: "ClientError", code: 5 });
+            },
+            async waitForTermination() {
+              throw new Error("termination observation timed out");
+            },
+          };
         },
         async *listInventory() {
           if (!retry) yield { ...base, sandboxId: "late-admission", machineId: "physical-late" };
@@ -434,6 +441,13 @@ test("the Modal reaper only terminates unreferenced VMs and retries a failed ter
   await lane.reconcileOne(signal);
   expect(terminated).toEqual(["physical-orphan"]);
   expect(logs).toContainEqual(expect.objectContaining({ event: "provider_reaper_retry", errors: 1 }));
+  expect(logs).toContainEqual(
+    expect.objectContaining({
+      event: "provider_reaper_delete",
+      outcome: "submitted",
+      machineId: "physical-orphan",
+    }),
+  );
   retry = true;
   now += 60_000;
   await lane.reconcileOne(signal);

@@ -104,7 +104,14 @@ test("the live Modal reaper excludes conflicting logical ownership from the over
     { query: (statement, params) => db.query(statement, params) },
     "https://armada.test",
     async (_registration, _binding, deploymentId) => ({
-      async terminate() {},
+      async openSandbox() {
+        return {
+          async terminate() {},
+          async waitForTermination() {
+            return 137;
+          },
+        };
+      },
       async *listInventory() {
         yield { ...machine, deploymentId, sandboxId: "modal_wrong_app", machineId: "sb-unmapped" };
         yield { ...machine, deploymentId, sandboxId: "modal_orphan", machineId: "sb-orphan" };

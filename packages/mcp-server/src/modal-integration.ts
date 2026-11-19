@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { hkdfSync } from "node:crypto";
 import {
   type CredentialReader,
@@ -25,7 +26,7 @@ import {
   scopeKey,
 } from "@armada/provider-modal";
 import { loadEmbeddedRunnerArtifact } from "@armada/provider-modal/embedded";
-import { ModalClient, NotFoundError } from "modal";
+import { ModalClient } from "modal";
 import type { HandlerOptions } from "./http.ts";
 import type { GitHubLaunchOptions } from "./launch-credentials.ts";
 import { observeNativeFirstToken } from "./launch-stage-record.ts";
@@ -289,6 +290,7 @@ export async function createModalIntegration(options: {
     const sql = modalReaperSql(options.sql);
     const vault = createSqlVaultStore(sql);
     const clients = new Map<string, ModalClient>();
+    const terminationDeadline = new AsyncLocalStorage<AbortSignal>();
     const lane = createModalReaper(
       sql,
       options.publicUrl,
@@ -318,7 +320,14 @@ export async function createModalIntegration(options: {
             grpcMiddleware: [
               async function* (call, options) {
                 const deadline = AbortSignal.timeout(10_000);
-                const signal = AbortSignal.any([shutdown, deadline, ...(options.signal ? [options.signal] : [])]);
+                const signal = AbortSignal.any([
+                  shutdown,
+                  deadline,
+                  ...[options.signal, terminationDeadline.getStore()].filter(
+                    (signal): signal is AbortSignal => signal !== undefined,
+                  ),
+                ]);
+                signal.throwIfAborted();
                 return yield* call.next(call.request, { ...options, signal });
               },
             ],
@@ -328,20 +337,13 @@ export async function createModalIntegration(options: {
         const inventoryClient = client;
         return {
           ...createModalInventory(inventoryClient, registration.app_name, binding, deploymentId),
-          async terminate(machineId, signal) {
+          async openSandbox(machineId) {
             const sandbox = await inventoryClient.sandboxes.fromId(machineId);
-            signal.throwIfAborted();
-            try {
-              await sandbox.terminate();
-              signal.throwIfAborted();
-              if ((await sandbox.poll()) === null) throw new Error("Modal termination is not yet confirmed.");
-            } catch (error) {
-              if (
-                !(error instanceof NotFoundError) &&
-                !(error instanceof Error && error.name === "ClientError" && Reflect.get(error, "code") === 5)
-              )
-                throw error;
-            }
+            return {
+              terminate: () => sandbox.terminate(),
+              waitForTermination: (signal) =>
+                terminationDeadline.run(AbortSignal.any([signal, AbortSignal.timeout(10_000)]), () => sandbox.wait()),
+            };
           },
         };
       },

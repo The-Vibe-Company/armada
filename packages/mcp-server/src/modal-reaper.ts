@@ -1,5 +1,6 @@
 import type { ModalBinding, Sql } from "@armada/core";
 import { modalDeploymentId } from "@armada/provider-modal";
+import { NotFoundError } from "modal";
 import { createModalReaperOwnership } from "./modal-reaper-ownership.ts";
 import { createProviderReaperLane, decideInventoryMachine, type ProviderReaperSource } from "./provider-reaper.ts";
 
@@ -12,7 +13,10 @@ interface ModalInventoryRegistration {
 }
 
 type ModalReaperConnection = ProviderReaperSource["inventory"] & {
-  terminate(machineId: string, signal: AbortSignal): Promise<void>;
+  openSandbox(machineId: string): Promise<{
+    terminate(): Promise<unknown>;
+    waitForTermination(signal: AbortSignal): Promise<number | null>;
+  }>;
 };
 
 type OpenInventory = (
@@ -90,10 +94,21 @@ export function createModalReaper(
             };
             log(JSON.stringify({ ...event, outcome: "attempt" }));
             try {
-              await connection.terminate(machine.machineId, signal);
+              const sandbox = await connection.openSandbox(machine.machineId);
+              signal.throwIfAborted();
+              await sandbox.terminate();
+              log(JSON.stringify({ ...event, outcome: "submitted" }));
+              signal.throwIfAborted();
+              if ((await sandbox.waitForTermination(signal)) === null)
+                throw new Error("Modal termination is not yet confirmed.");
             } catch (error) {
-              log(JSON.stringify({ ...event, outcome: "retry" }));
-              throw error;
+              const notFound =
+                error instanceof NotFoundError ||
+                (error instanceof Error && error.name === "ClientError" && Reflect.get(error, "code") === 5);
+              if (!notFound) {
+                log(JSON.stringify({ ...event, outcome: "retry" }));
+                throw error;
+              }
             }
             log(JSON.stringify({ ...event, outcome: "confirmed" }));
             return true;
