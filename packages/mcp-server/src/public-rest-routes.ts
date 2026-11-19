@@ -5,7 +5,6 @@
  */
 export const UNPUBLISHED_REST_ROUTES: Readonly<Record<string, string>> = {
   "account/": "Signed-in account session management.",
-  "token/": "Service token administration.",
   "org/": "Organization administration.",
   "members/": "Organization membership administration.",
   "creds/": "Model credential administration.",
