@@ -25,7 +25,10 @@ function fail(): never {
 }
 
 function fixture(
-  operation: Exclude<Job["operation"], "bootstrap" | "resume" | "buildSnapshot" | "deletePhysical"> = "create",
+  operation: Exclude<
+    Job["operation"],
+    "bootstrap" | "resume" | "buildSnapshot" | "deletePhysical" | "restore"
+  > = "create",
   bootstrap?: BootstrapDescriptor,
 ) {
   const job: Job = {
@@ -160,6 +163,244 @@ test("physical-only mailbox delete replays an uncommitted result for the same im
     { scope: "physical-only", machineId },
   ]);
   expect(acknowledgements).toEqual(["completed", "completed"]);
+});
+
+test("restore replays its frozen predecessor after a lost completion without authorizing retention cleanup", async () => {
+  const { job, store, api, executor, acknowledgements, state } = fixture();
+  const restore: Job = {
+    ...job,
+    operation: "restore",
+    request: { ...job.request, generation: crypto.randomUUID(), expiresAt: 200_000 },
+    predecessor: { request: job.request, machineId: "a".repeat(64) },
+  };
+  await store.save({
+    ...state(),
+    retention: [{ request: job.request, requestId: job.requestId, deadline: 1 }],
+  });
+  const save = store.save;
+  let loseCompletion = true;
+  store.save = async (next) => {
+    if (loseCompletion && next.receipts.some((receipt) => receipt.outcome === "completed"))
+      throw new Error("completion write lost");
+    await save(next);
+  };
+  const cleanup: string[] = [];
+  executor.deleteStopped = async (request) => {
+    cleanup.push(request.generation);
+  };
+  const copies: string[] = [];
+  executor.restore = async (target, predecessor) => {
+    expect(state().receipts.find((receipt) => receipt.requestId === restore.requestId)?.outcome).toBeUndefined();
+    expect(target).toEqual(restore.request);
+    expect(predecessor.request).toEqual(job.request);
+    copies.push(predecessor.machineId);
+  };
+  executor.startRuntime = async () => {
+    throw new Error("Restore must not install the runtime");
+  };
+  const run = () => tick(store, api, executor, false, () => 100_000);
+  api.poll = async () => ({ job: restore });
+  await expect(run()).rejects.toThrow("completion write lost");
+  expect(cleanup).toEqual([]);
+
+  api.poll = async () => {
+    throw new Error("offline");
+  };
+  await expect(run()).rejects.toThrow("offline");
+  expect(cleanup).toEqual([]);
+  api.poll = async () => ({ job: { ...restore, predecessor: { ...restore.predecessor, machineId: "b".repeat(64) } } });
+  await expect(run()).rejects.toThrow("Changed host job");
+
+  api.poll = async () => ({ job: restore });
+  loseCompletion = false;
+  await run();
+  await run();
+  expect(copies).toEqual([restore.predecessor.machineId, restore.predecessor.machineId]);
+  expect(acknowledgements).toEqual(["completed", "completed"]);
+  api.poll = async () => ({ job: null });
+  await run();
+  expect(cleanup).toEqual([job.request.generation]);
+});
+
+test("an ambiguous Docker restore failure replays the same pending job", async () => {
+  const { job, store, api, executor, acknowledgements } = fixture();
+  const restore: Job = {
+    ...job,
+    operation: "restore",
+    request: { ...job.request, generation: crypto.randomUUID(), expiresAt: 200_000 },
+    predecessor: { request: job.request, machineId: "a".repeat(64) },
+  };
+  api.poll = async () => ({ job: restore });
+  executor.restore = async () => {
+    throw new DockerMachineError("docker_failed");
+  };
+  const run = () => tick(store, api, executor, false, () => 100_000);
+  await expect(run()).rejects.toThrow("docker_failed");
+  expect(acknowledgements).toEqual([]);
+  executor.restore = async () => {};
+  await run();
+  expect(acknowledgements).toEqual(["completed"]);
+});
+
+test("an ambiguous restore defers only its own redelivery while the host takes other jobs", async () => {
+  const { job, store, api, executor } = fixture();
+  const restore: Job = {
+    ...job,
+    operation: "restore",
+    request: { ...job.request, generation: crypto.randomUUID(), expiresAt: 200_000 },
+    predecessor: { request: job.request, machineId: "a".repeat(64) },
+  };
+  const { job: stop } = fixture("stop");
+  const failed = Promise.withResolvers<void>();
+  let pollCount = 0;
+  const acknowledgements: string[] = [];
+  api.poll = async (_state, options) => {
+    pollCount++;
+    if (pollCount === 1) return { job: restore, held: true };
+    if (pollCount > 3) throw new Error("unexpected poll");
+    await failed.promise;
+    const next = [restore, stop].find(
+      (item) => !options?.running?.includes(item.requestId) && !acknowledgements.includes(item.requestId),
+    );
+    return { job: next ?? null, held: true };
+  };
+  let attempts = 0;
+  const dispatches: string[] = [];
+  executor.restore = async () => {
+    attempts++;
+    if (attempts === 1) throw new DockerMachineError("docker_failed");
+    dispatches.push("restore");
+  };
+  executor.stop = async () => {
+    dispatches.push("stop");
+  };
+  api.result = async (_state, receipt) => {
+    acknowledgements.push(receipt.requestId);
+  };
+  const sleeps: number[] = [];
+  await runJobs(store, api, executor, {
+    now: () => 100_000,
+    beforeTick: async () => {
+      if (pollCount === 1) await failed.promise;
+    },
+    stopping: () => acknowledgements.length === 2 || pollCount > 3,
+    failed: () => failed.resolve(),
+    sleep: async (ms) => {
+      sleeps.push(ms);
+    },
+  });
+  expect(dispatches).toEqual(["stop", "restore"]);
+  expect(acknowledgements).toHaveLength(2);
+  expect(sleeps).toEqual([]);
+});
+
+test("a pending restore lets unrelated jobs drain while a priority stop is fenced", async () => {
+  const { job, store, api, executor } = fixture();
+  const restore: Job = {
+    ...job,
+    operation: "restore",
+    request: { ...job.request, generation: crypto.randomUUID(), expiresAt: 200_000 },
+    predecessor: { request: job.request, machineId: "a".repeat(64) },
+  };
+  const { job: stop } = fixture("stop");
+  const conflictingStop: Job = { ...stop, requestId: crypto.randomUUID(), request: job.request };
+  const failed = Promise.withResolvers<void>();
+  const unrelatedCompleted = Promise.withResolvers<void>();
+  let pollCount = 0;
+  let now = 100_000;
+  const acknowledgements: string[] = [];
+  api.poll = async (_state, options) => {
+    pollCount++;
+    if (pollCount === 1) return { job: restore, held: true };
+    if (pollCount > 4) throw new Error("unexpected poll");
+    await failed.promise;
+    const jobs = [conflictingStop, stop, restore];
+    const blockedSandboxes = new Set(
+      jobs.filter((item) => options?.running?.includes(item.requestId)).map((item) => item.request.sandboxId),
+    );
+    const next = jobs.find(
+      (item) => !blockedSandboxes.has(item.request.sandboxId) && !acknowledgements.includes(item.requestId),
+    );
+    return { job: next ?? null, held: true };
+  };
+  const dispatches: string[] = [];
+  executor.restore = async () => {
+    throw new DockerMachineError("docker_failed");
+  };
+  executor.stop = async (request) => {
+    dispatches.push(request.sandboxId === job.request.sandboxId ? "conflicting stop" : "stop");
+  };
+  api.result = async (_state, receipt) => {
+    acknowledgements.push(receipt.requestId);
+    if (receipt.requestId === stop.requestId) unrelatedCompleted.resolve();
+  };
+  const sleeps: number[] = [];
+  await runJobs(store, api, executor, {
+    now: () => now,
+    beforeTick: async () => {
+      if (pollCount === 1) await failed.promise;
+      if (pollCount === 3 && dispatches.includes("stop")) {
+        await unrelatedCompleted.promise;
+        now = 200_000;
+      }
+    },
+    stopping: () => acknowledgements.length === 2 || pollCount > 4,
+    failed: () => failed.resolve(),
+    sleep: async (ms) => {
+      sleeps.push(ms);
+    },
+  });
+  expect(dispatches).toEqual(["stop", "conflicting stop"]);
+  expect(acknowledgements).toHaveLength(2);
+  expect(sleeps).toEqual([]);
+});
+
+test("local retention reclaims an expired pending restore target even while offline", async () => {
+  const { job, store, api, executor, state } = fixture();
+  const restore: Job = {
+    ...job,
+    operation: "restore",
+    request: { ...job.request, generation: crypto.randomUUID(), expiresAt: 200_000 },
+    predecessor: { request: job.request, machineId: "a".repeat(64) },
+  };
+  const save = store.save;
+  let loseCompletion = true;
+  store.save = async (next) => {
+    if (loseCompletion && next.receipts.some((receipt) => receipt.outcome === "completed"))
+      throw new Error("completion write lost");
+    await save(next);
+  };
+  let stoppedTarget: string | undefined;
+  executor.restore = async (target) => {
+    stoppedTarget = target.generation;
+  };
+  executor.isStopped = async (target) => target.generation === stoppedTarget;
+  const cleanup: string[] = [];
+  executor.deleteStopped = async (target) => {
+    cleanup.push(target.generation);
+  };
+  api.poll = async () => ({ job: restore });
+  await expect(tick(store, api, executor, false, () => 100_000)).rejects.toThrow("completion write lost");
+
+  api.poll = async () => {
+    throw new Error("offline");
+  };
+  loseCompletion = false;
+  await expect(tick(store, api, executor, false, () => 199_999)).rejects.toThrow("offline");
+  expect(cleanup).toEqual([]);
+  const expiryChecks: string[] = [];
+  executor.stopIfExpired = async (target) => {
+    expiryChecks.push(target.generation);
+    return true;
+  };
+  await expect(
+    tick(store, api, executor, false, () => 200_000, { running: new Set([restore.requestId]) }),
+  ).rejects.toThrow("offline");
+  expect(expiryChecks).toEqual([]);
+  expect(cleanup).toEqual([]);
+  await expect(tick(store, api, executor, false, () => 200_000)).rejects.toThrow("offline");
+  expect(cleanup).toEqual([restore.request.generation]);
+  expect(state().receipts[0]?.outcome).toBeUndefined();
 });
 
 test("a refused physical-only delete leaves the retained generation eligible for resume", async () => {
@@ -544,6 +785,7 @@ test("HTTP registration is single-use and host credentials remain in authorizati
       "content-type": "application/json",
       "x-armada-docker-host-protocol": "1",
       "x-armada-docker-host-delete-physical": "1",
+      "x-armada-docker-host-restore": "1",
     },
     { authorization: `Bearer ${hostToken}`, "content-type": "application/json", "x-armada-docker-host-protocol": "1" },
     { authorization: `Bearer ${hostToken}`, "content-type": "application/json", "x-armada-docker-host-protocol": "1" },
