@@ -184,6 +184,7 @@ async function fixture(
   };
   let now = 0,
     drive = true,
+    pollResumeClaims = false,
     failCreate: false | "plain" | "image" | "disk" = false,
     malformedSkills = false;
   let session: Awaited<ReturnType<typeof authority.enrol>> | undefined;
@@ -209,9 +210,11 @@ async function fixture(
   };
   async function step() {
     let job: Awaited<ReturnType<typeof hosts.poll>> = null;
-    if (await hosts.mayHaveWork(host.hostToken, installationId, false, [], true)) {
-      for (const claim of await hosts.resumeClaimsForHost(host.hostToken, installationId))
-        await hosts.claimResume(host.hostToken, installationId, claim.requestId, true);
+    if (await hosts.mayHaveWork(host.hostToken, installationId, false, [], pollResumeClaims)) {
+      if (pollResumeClaims) {
+        for (const claim of await hosts.resumeClaimsForHost(host.hostToken, installationId))
+          await hosts.claimResume(host.hostToken, installationId, claim.requestId, true);
+      }
       job = await hosts.poll(host.hostToken, installationId, options.daemonVersion ?? "2.28.0");
     }
     if (job) {
@@ -427,6 +430,14 @@ async function fixture(
     github,
     service,
     mcp,
+    async resume(controls: ReturnType<typeof createDockerSandboxControls>) {
+      pollResumeClaims = true;
+      try {
+        return await controls.invoke(caller, "resume", { id: body.requestId, request_id: randomUUID() });
+      } finally {
+        pollResumeClaims = false;
+      }
+    },
     setDrive(value: boolean) {
       drive = value;
     },
@@ -2125,7 +2136,7 @@ test("Docker GitHub capabilities rotate on resume and expire on host revocation"
   const initialCapability = configuredGitHubCapability(f);
   expect((await acquireGitHub(f, initialCapability, "example/project"))?.status).toBe(200);
   await controls.invoke(f.caller, "stop", { id: f.body.requestId });
-  await controls.invoke(f.caller, "resume", { id: f.body.requestId, request_id: randomUUID() });
+  await f.resume(controls);
   expect((await f.github.status(f.caller, f.body.requestId)).configured).toBe(true);
   expect((await acquireGitHub(f, initialCapability, "example/project"))?.status).toBe(403);
   const resumedCapability = configuredGitHubCapability(f);
@@ -2166,7 +2177,7 @@ test("Docker freezes versioned readable bindings and re-delivers them before the
   expect(await f.service().launch(f.caller, body)).toMatchObject({ promptId: launched.promptId });
   const controls = createDockerSandboxControls(sql, key, { clock: f.clock, resume: bootstrap });
   await controls.invoke(f.caller, "stop", { id: f.body.requestId });
-  await controls.invoke(f.caller, "resume", { id: f.body.requestId, request_id: randomUUID() });
+  await f.resume(controls);
   const configurations = (f.native as { op: string; variables: Record<string, string> }[]).filter(
     (command) => command.op === "configureReadableVariables",
   );
@@ -2250,7 +2261,7 @@ test("Docker delivers value-free secret references through native environment an
   expect(JSON.stringify(manifest)).not.toContain(canary);
   const controls = createDockerSandboxControls(sql, key, { clock: f.clock, resume: bootstrap });
   await controls.invoke(f.caller, "stop", { id: f.body.requestId });
-  await controls.invoke(f.caller, "resume", { id: f.body.requestId, request_id: randomUUID() });
+  await f.resume(controls);
   expect((f.native as { op: string }[]).filter((command) => command.op === "configureReadableVariables")).toHaveLength(
     2,
   );
@@ -2434,7 +2445,7 @@ test("Docker re-prepares bound MCP grants before follow-up and after same-host r
     prepareMcp: f.mcp().prepare,
   });
   await controls.invoke(f.caller, "stop", { id: f.body.requestId, request_id: randomUUID() });
-  const resumed = await controls.invoke(f.caller, "resume", { id: f.body.requestId, request_id: randomUUID() });
+  const resumed = await f.resume(controls);
   expect(resumed).toEqual({ handled: true, result: { id: f.body.requestId, status: "ready" } });
   expect(configured()).toHaveLength(3);
   expect(await createSqlMcpLeasePort(sql).validate(second, "tools")).toBeNull();
@@ -2966,7 +2977,7 @@ test.each(["private", "org"] as const)(
     });
     const firstEpoch = f.session()?.epoch;
     await controls.invoke(f.caller, "stop", { id: f.body.requestId });
-    await controls.invoke(f.caller, "resume", { id: f.body.requestId, request_id: randomUUID() });
+    await f.resume(controls);
     expect(f.session()?.epoch).not.toBe(firstEpoch);
     expect(await f.github.status(f.caller, f.body.requestId)).toMatchObject({
       configured: true,
@@ -3434,9 +3445,7 @@ test("old or unreported Docker daemons get an actionable resume refusal before a
   const before = await counts(f);
   for (const protocol of [null, DOCKER_HOST_PROTOCOL + 1]) {
     await db.query("update docker_hosts set daemon_protocol=$2 where id=$1", [f.hostId, protocol]);
-    await expect(
-      controls.invoke(f.caller, "resume", { id: f.body.requestId, request_id: randomUUID() }),
-    ).rejects.toMatchObject({
+    await expect(f.resume(controls)).rejects.toMatchObject({
       code: "docker_host_upgrade_required",
       message: expect.stringContaining("Upgrade the Docker host daemon"),
     });
