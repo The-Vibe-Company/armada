@@ -1,11 +1,14 @@
 import { MAX_SANDBOX_EXTENSION_TTL_SECONDS, providerRateLimitDetails } from "@armada/core";
-import { GoldenError, isNonMutatingProviderRefusal, ProviderError } from "@armada/core/server";
+import { GoldenError, isNonMutatingProviderRefusal, ProviderError, VaultError } from "@armada/core/server";
 import { z } from "zod";
 import { validateProviderResourceObservation } from "../../core/src/resource-validation.ts";
 import type { Caller } from "./caller.ts";
 import type { ControlOptions } from "./control.ts";
+import { selectedCaller } from "./control-caller.ts";
+import { optional } from "./control-input.ts";
 import { measureRequestPhase } from "./request-timing.ts";
 import { summarizeResourceHistory } from "./resource-advice.ts";
+import { type ControlRouteContext, defineRoutes } from "./routes.ts";
 import { sandboxActivity } from "./sandbox-activity.ts";
 import { refuseConversationSelector } from "./sandbox-conversation.ts";
 import { extendSandbox } from "./sandbox-extend.ts";
@@ -258,4 +261,33 @@ export async function dispatchSandboxRestControl(
       }
     }
   }
+}
+
+export const sandboxRestRoutes = defineRoutes(
+  "sandbox REST",
+  Object.fromEntries(
+    Object.keys(SANDBOX_REST_CONTRACTS)
+      .filter(isSandboxRestControl)
+      .map((route) => [route, (context: ControlRouteContext) => sandboxRestRoute(route, context)]),
+  ),
+);
+
+async function sandboxRestRoute(route: SandboxRestRoute, { caller, body, options }: ControlRouteContext) {
+  if (route === "sandbox/extend") {
+    if (Object.hasOwn(body, "ttlSeconds") && Object.hasOwn(body, "ttl_seconds"))
+      throw new VaultError("invalid", "Send one lifetime field: ttlSeconds.");
+    const ttl = Object.hasOwn(body, "ttlSeconds") ? body.ttlSeconds : body.ttl_seconds;
+    if (Number.isSafeInteger(ttl) && Number(ttl) > MAX_SANDBOX_EXTENSION_TTL_SECONDS)
+      throw new ToolApiError("extension_maximum", "Requested lifetime exceeds the server maximum.");
+    if (!Number.isSafeInteger(ttl) || Number(ttl) < 1)
+      throw new VaultError(
+        "invalid",
+        "ttlSeconds must be a positive whole number of seconds within the server maximum.",
+      );
+    body = { ...body, ttlSeconds: ttl };
+  }
+  const { data, providers } = options;
+  if (!data || !providers) throw new VaultError("unavailable", "Sandbox control is not configured.");
+  const scopedCaller = await selectedCaller(options, caller, optional(body, "org"));
+  return dispatchSandboxRestControl(route, scopedCaller, body, { ...options, data, providers });
 }
