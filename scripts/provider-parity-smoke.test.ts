@@ -140,6 +140,8 @@ for (const mode of [
   "quota",
   "resume_quota",
   "server_failure",
+  "modal_launch_recovers",
+  "modal_launch_unresolved",
   "delete_retry",
   "journal_failure",
   "stop_response_lost",
@@ -188,6 +190,13 @@ for (const mode of [
     const controlled = new Set<string>();
     const journaled: string[] = [];
     const journalClaims: string[] = [];
+    const modalLaunchScenario = mode === "modal_launch_recovers" || mode === "modal_launch_unresolved";
+    const recoveredSandbox = "30000000-0000-4000-8000-000000000005";
+    const launchRequestId = "30000000-0000-4000-8000-000000000006";
+    let modalLaunchKey: string | undefined;
+    const modalJournalKeys: string[] = [];
+    let modalInventoryReads = 0;
+
     const routines = new Map<string, Record<string, unknown>>();
     const dueDates = new Map<string, number>();
     const routineSandbox = (p: string) => `30000000-0000-4000-8000-00000000000${p === "modal" ? "1" : "2"}`;
@@ -316,48 +325,52 @@ for (const mode of [
           { provider: "boat", harness: "invalid" },
         ]),
       },
-      mode.startsWith("subscription_probe") && mode !== "subscription_probe_full"
-        ? ["--parity", "--feature", "subscription-account"]
-        : mode === "readable_full"
-          ? ["--parity"]
-          : mode.startsWith("readable_")
-            ? ["--parity", "--feature", "readable-variables"]
-            : mode.startsWith("idle_")
-              ? ["--parity", "--feature", mode === "idle_pause" ? "idle-pause" : "wake-on-send"]
-              : mode.startsWith("snapshot_")
-                ? ["--parity", "--feature", "launch-snapshot"]
-                : mode === "routine_full"
-                  ? ["--parity"]
-                  : mode.startsWith("routine_")
-                    ? ["--parity", "--feature", "routines"]
-                    : mode === "template_full"
-                      ? ["--parity"]
-                      : mode.startsWith("template_")
-                        ? ["--parity", "--feature", "templates"]
-                        : mode.startsWith("h_")
-                          ? ["--parity", "--feature", requestedHarness]
-                          : ["control_api_unsupported", "control_full"].includes(mode)
-                            ? ["--parity"]
-                            : mode.startsWith("control_")
-                              ? ["--parity", "--feature", controlFeature]
-                              : mode.startsWith("github")
-                                ? ["--parity", "--feature", "github"]
-                                : mode.startsWith("accounts")
-                                  ? ["--parity", "--accounts"]
-                                  : mode === "usage_filter"
-                                    ? ["--parity", "--only", "docker", "--feature", "exact-cost"]
-                                    : mode === "filtered"
-                                      ? ["--parity", "--only", "docker", "--feature", "exec"]
-                                      : debtFeature
-                                        ? ["--parity", "--feature", debtFeature]
-                                        : mode === "invalid_filter"
-                                          ? ["--parity", "--feature", "typo"]
-                                          : ["--parity"],
+      modalLaunchScenario
+        ? ["--parity", "--only", "modal", "--feature", "codex"]
+        : mode.startsWith("subscription_probe") && mode !== "subscription_probe_full"
+          ? ["--parity", "--feature", "subscription-account"]
+          : mode === "readable_full"
+            ? ["--parity"]
+            : mode.startsWith("readable_")
+              ? ["--parity", "--feature", "readable-variables"]
+              : mode.startsWith("idle_")
+                ? ["--parity", "--feature", mode === "idle_pause" ? "idle-pause" : "wake-on-send"]
+                : mode.startsWith("snapshot_")
+                  ? ["--parity", "--feature", "launch-snapshot"]
+                  : mode === "routine_full"
+                    ? ["--parity"]
+                    : mode.startsWith("routine_")
+                      ? ["--parity", "--feature", "routines"]
+                      : mode === "template_full"
+                        ? ["--parity"]
+                        : mode.startsWith("template_")
+                          ? ["--parity", "--feature", "templates"]
+                          : mode.startsWith("h_")
+                            ? ["--parity", "--feature", requestedHarness]
+                            : ["control_api_unsupported", "control_full"].includes(mode)
+                              ? ["--parity"]
+                              : mode.startsWith("control_")
+                                ? ["--parity", "--feature", controlFeature]
+                                : mode.startsWith("github")
+                                  ? ["--parity", "--feature", "github"]
+                                  : mode.startsWith("accounts")
+                                    ? ["--parity", "--accounts"]
+                                    : mode === "usage_filter"
+                                      ? ["--parity", "--only", "docker", "--feature", "exact-cost"]
+                                      : mode === "filtered"
+                                        ? ["--parity", "--only", "docker", "--feature", "exec"]
+                                        : debtFeature
+                                          ? ["--parity", "--feature", debtFeature]
+                                          : mode === "invalid_filter"
+                                            ? ["--parity", "--feature", "typo"]
+                                            : ["--parity"],
       {
         now: () => clock,
+        ...(modalLaunchScenario ? { deadline: 3_000 } : {}),
         sleep: advance,
         out: (line) => lines.push(line),
         recordSandbox: async (org, _id, requestKey, provider) => {
+          if (modalLaunchScenario) modalJournalKeys.push(requestKey);
           journaled.push(org);
           journalClaims.push(_id);
           // Exercise the real journal validator, not a permissive callback.
@@ -661,7 +674,29 @@ for (const mode of [
               };
               break;
             }
+            case "sandbox/list":
+              expect(modalLaunchScenario).toBe(true);
+              expect(body).toEqual({ org: "modal", owner: "me", externalRef: modalLaunchKey });
+              modalInventoryReads++;
+              result = {
+                sandboxes:
+                  mode === "modal_launch_recovers" && modalInventoryReads > 1
+                    ? [{ id: recoveredSandbox, provider: "modal", externalRef: modalLaunchKey, status: "ready" }]
+                    : [],
+              };
+              break;
             case "sandbox/launch":
+              if (modalLaunchScenario) {
+                modalLaunchKey = String(body.idempotencyKey);
+                if (mode === "modal_launch_recovers") {
+                  states.set(p, "ready");
+                  throw new DOMException("Timed out", "TimeoutError");
+                }
+                return Response.json(
+                  { error: { code: "outcome_unknown", message: "The launch may still be in flight." } },
+                  { status: 504, headers: { "x-request-id": launchRequestId } },
+                );
+              }
               if (mode.startsWith("snapshot_")) {
                 if (p === "docker") {
                   expect(body.snapshotId).toBe(snapshotId);
@@ -1062,7 +1097,10 @@ for (const mode of [
                 );
               if (mode === "subscription_probe_budget") clock += 110_001;
               result = {
-                id: mode === "template_identity" || mode.startsWith("routine_") || deepFull ? body.id : p,
+                id:
+                  mode === "template_identity" || mode.startsWith("routine_") || deepFull || modalLaunchScenario
+                    ? body.id
+                    : p,
                 settled: true,
                 prompt: null,
                 status: states.get(p),
@@ -1188,7 +1226,7 @@ for (const mode of [
                 id:
                   mode === "wrong_delete_id"
                     ? "another-sandbox"
-                    : mode === "template_identity" || mode.startsWith("routine_") || deepFull
+                    : mode === "template_identity" || mode.startsWith("routine_") || deepFull || modalLaunchScenario
                       ? body.id
                       : p,
                 status: mode === "delete_failure" && p === "docker" ? "pending" : "deleted",
@@ -1286,6 +1324,40 @@ for (const mode of [
       return;
     }
     const report = JSON.parse(lines.find((line) => line.startsWith('{"step":"provider_parity"'))!);
+    if (modalLaunchScenario) {
+      expect(calls.filter((call) => call === "modal:sandbox/launch")).toHaveLength(1);
+      expect(modalLaunchKey).toMatch(/^post-deploy-smoke:[0-9a-f-]{36}$/);
+      if (mode === "modal_launch_recovers") {
+        expect(passed).toBe(true);
+        expect(report.features["prerequisite:launch"].modal.status).toBe("pass");
+        expect(report.features.cleanup.modal.status).toBe("pass");
+        expect(journalClaims).toEqual([recoveredSandbox]);
+        expect(modalJournalKeys).toEqual([modalLaunchKey]);
+        expect(lines.map((line) => (line.startsWith("{") ? JSON.parse(line) : null))).toContainEqual({
+          step: "parity_modal_launch",
+          provider: "modal",
+          pass: true,
+          elapsedMs: 1_000,
+        });
+      } else {
+        expect(passed).toBe(false);
+        expect(report.features["prerequisite:launch"].modal).toMatchObject({
+          status: "fail",
+          diagnostic: {
+            code: "outcome_unknown",
+            message: "The launch may still be in flight.",
+            requestId: launchRequestId,
+            requestKey: modalLaunchKey,
+            elapsedMs: 3_000,
+          },
+        });
+        expect(modalInventoryReads).toBe(3);
+        expect(report.features.cleanup.modal.reason).toBe("allocation_unconfirmed");
+        expect(journalClaims).toEqual([]);
+        expect(calls).not.toContain("modal:sandbox/delete");
+      }
+      return;
+    }
     for (const cells of Object.values(report.features) as Record<string, unknown>[])
       expect(cells.boat).toEqual(boatNotRun);
     if (mode === "github_unbound") {

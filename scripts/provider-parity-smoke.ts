@@ -21,6 +21,8 @@ import {
   SecretProbeError,
 } from "./provider-parity-secret.ts";
 import { isSkillsProbeBinding, prepareSkillsProbe, type SkillsProbeBinding } from "./provider-parity-skills.ts";
+import deadlines from "./smoke-deadlines.json";
+import { observeSmokeLaunch } from "./smoke-launch.ts";
 import { STAGING_ORIGIN } from "./smoke-sandbox-cleanup.ts";
 import { BOAT_STAGING_NOTICE, smokeReceiptProvider, stagingSmokeCases } from "./staging-smoke-policy.ts";
 
@@ -34,10 +36,14 @@ type Diagnostic = {
   elapsedMs?: number;
   polls?: number;
   serverElapsedMs?: number | null;
+  requestKey?: string;
+  requestId?: string;
 };
 // Match the server wait tool's maximum observation window (tools.ts MAX_WAIT_SECONDS).
 // This is a bound, not an assertion about any provider's expected latency.
 const OBSERVATION_MS = 600_000;
+const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
+const MODAL_LAUNCH_TIMEOUT_MS = (deadlines as Record<string, number>).parity_modal_launch ?? 600_000;
 type Cell = { status: "pass" | "fail" | "unsupported" | "not-run"; reason: string | null; diagnostic?: Diagnostic };
 
 class ParityError extends Error {
@@ -357,17 +363,19 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
   }
 
   let requestDeadline: number | undefined;
-  async function request<T>(path: string, body: object): Promise<T> {
+  async function request<T>(path: string, body: object, timeoutMs = 600_000): Promise<T> {
     // Never serialize the response envelope, details, or arbitrary caught errors.
     const remaining = (requestDeadline ?? Number.POSITIVE_INFINITY) - io.now();
     if (remaining <= 0) throw new Error("poll_limit_exceeded");
     const response = await io.fetch(`${origin}/api/v1/${path}`, {
       method: "POST",
       redirect: "error",
-      signal: AbortSignal.timeout(Math.max(1, Math.min(600_000, remaining))),
+      signal: AbortSignal.timeout(Math.max(1, Math.min(timeoutMs, remaining))),
       headers: { authorization: `Bearer ${env.ARMADA_TOKEN}`, "content-type": "application/json" },
       body: JSON.stringify(body),
     });
+    const requestId = path === "sandbox/launch" ? response.headers.get("x-request-id") : null;
+    const correlation = requestId && UUID.test(requestId) ? { requestId } : {};
     if (!response.ok) {
       const body = (await response.json().catch(() => null)) as {
         error?: { code?: unknown; message?: unknown };
@@ -391,13 +399,29 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       throw new ParityError({
         code,
         httpStatus: response.status,
+        ...correlation,
         message,
         quota: response.status === 429 || ["quota_exceeded", "rate_limited", "start_limit_exceeded"].includes(code),
       });
     }
-    const result = (await response.json()) as { sandbox?: { provider?: unknown } } | null;
+    const result = (await response.json().catch((error: unknown) => {
+      if (path !== "sandbox/launch") throw error;
+      throw new ParityError({
+        code: "launch_response_unreadable",
+        httpStatus: response.status,
+        message: "Launch response could not be read.",
+        ...correlation,
+      });
+    })) as { sandbox?: { id?: unknown; provider?: unknown } } | null;
     if (path === "sandbox/launch") {
       const expected = (body as { provider?: unknown }).provider;
+      if (expected === "modal" && !result?.sandbox?.id)
+        throw new ParityError({
+          code: "launch_response_unreadable",
+          httpStatus: response.status,
+          message: "Launch response had no sandbox ID.",
+          ...correlation,
+        });
       if (smokeReceiptProvider(result) !== expected)
         throw new ParityError({ code: "invalid_launch_receipt", message: "Unexpected launch provider" });
     }
@@ -596,6 +620,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     let id: string | undefined;
     const templateClaims = new Set<string>();
     let templateIntentUnknown = false;
+    let modalLaunchUnconfirmed = false;
     let stopped = false;
     let deleted = false;
     let stopRequested = false;
@@ -607,6 +632,83 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     let blockedDiagnostic: Diagnostic | undefined;
     let clientStopEligible = false;
     const api = <T>(path: string, body: object = {}) => request<T>(path, { org: c.org, ...body });
+    async function launchModal() {
+      const started = io.now();
+      const requestKey = `post-deploy-smoke:${crypto.randomUUID()}`;
+      const budget = Math.min(deadline, requestDeadline ?? deadline);
+      const remaining = budget - started;
+      if (remaining <= 0) throw new Error("poll_limit_exceeded");
+
+      async function claim(sandboxId: string) {
+        id = sandboxId;
+        await io.recordSandbox?.(c.org, sandboxId, requestKey, "modal");
+      }
+
+      let result: { sandbox: { id: string; provider: string } };
+      try {
+        result = await request<typeof result>(
+          "sandbox/launch",
+          {
+            org: c.org,
+            provider: "modal",
+            harness: c.harness,
+            model: c.model,
+            credentialId: c.modelAccountId,
+            visibility: "private",
+            ttlSeconds: 1800,
+            golden: c.golden,
+            connections: [],
+            idempotencyKey: requestKey,
+            externalRef: requestKey,
+          },
+          Math.min(MODAL_LAUNCH_TIMEOUT_MS, remaining),
+        );
+      } catch (error) {
+        const detail = diagnostic(error);
+        if (
+          !(error instanceof ParityError) ||
+          ["outcome_unknown", "launch_response_unreadable"].includes(detail.code) ||
+          (detail.httpStatus ?? 0) >= 500
+        ) {
+          const sandbox = await observeSmokeLaunch(
+            Math.min(budget, io.now() + MODAL_LAUNCH_TIMEOUT_MS),
+            io,
+            async (remainingMs) => {
+              const inventory = await request<{
+                sandboxes?: { id: string; provider: string; externalRef: string; status: string }[];
+              }>(
+                "sandbox/list",
+                { org: c.org, owner: "me", externalRef: requestKey },
+                Math.min(5_000, remainingMs),
+              ).catch(() => undefined);
+              const rows = inventory?.sandboxes;
+              const row = Array.isArray(rows) && rows.length === 1 ? rows[0] : undefined;
+              if (
+                row?.provider !== "modal" ||
+                row.externalRef !== requestKey ||
+                typeof row.id !== "string" ||
+                !UUID.test(row.id)
+              )
+                return;
+              if (!id) await claim(row.id);
+              if (row.id === id && row.status === "ready") return row;
+            },
+          );
+          if (sandbox) result = { sandbox };
+          else {
+            modalLaunchUnconfirmed = id === undefined;
+            throw new ParityError({ ...detail, requestKey });
+          }
+        } else throw new ParityError({ ...detail, requestKey });
+      }
+      if (typeof result.sandbox?.id !== "string" || !result.sandbox.id)
+        throw new ParityError({ code: "invalid_launch_receipt", message: "Invalid launch sandbox ID.", requestKey });
+      if (!id) await claim(result.sandbox.id);
+      io.out(
+        JSON.stringify({ step: "parity_modal_launch", provider: "modal", pass: true, elapsedMs: io.now() - started }),
+      );
+      return result;
+    }
     const readableUntil = Math.min(deadline, io.now() + 110_000);
     let mcp: Awaited<ReturnType<typeof prepareMcpProbe>> | undefined;
     let mcpRuntimeEpoch: string | undefined;
@@ -1965,48 +2067,50 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
                     mcp?.verifyManifest(manifest);
                     return { sandbox: { id, provider: receipt.provider } };
                   })()
-                : await api<{
-                    sandbox: {
-                      id: string;
-                      provider: string;
-                      snapshotId?: string;
-                      hostId?: string;
-                      image?: string;
-                      orgId?: string;
-                      ownerId?: string;
-                      visibility?: string;
-                    };
-                  }>("sandbox/launch", {
-                    provider: c.provider,
-                    harness: c.harness,
-                    model: c.model,
-                    credentialId: c.modelAccountId,
-                    visibility: "private",
-                    ttlSeconds: 1800,
-                    ...(c.provider === "docker"
-                      ? {
-                          hostId: c.hostId,
-                          requestId: crypto.randomUUID(),
-                          ...(dockerSnapshot ? { snapshotId: dockerSnapshot.id } : {}),
-                          ...(c.githubRepository && (!feature || feature === "github")
-                            ? {
-                                repos: [
-                                  {
-                                    url: `https://github.com/${c.githubRepository}.git`,
-                                    branch: "main",
-                                    dir: "armada-parity-github",
-                                  },
-                                ],
-                              }
-                            : {}),
-                        }
-                      : { golden: c.golden, connections: [] }),
-                  });
+                : c.provider === "modal"
+                  ? await launchModal()
+                  : await api<{
+                      sandbox: {
+                        id: string;
+                        provider: string;
+                        snapshotId?: string;
+                        hostId?: string;
+                        image?: string;
+                        orgId?: string;
+                        ownerId?: string;
+                        visibility?: string;
+                      };
+                    }>("sandbox/launch", {
+                      provider: c.provider,
+                      harness: c.harness,
+                      model: c.model,
+                      credentialId: c.modelAccountId,
+                      visibility: "private",
+                      ttlSeconds: 1800,
+                      ...(c.provider === "docker"
+                        ? {
+                            hostId: c.hostId,
+                            requestId: crypto.randomUUID(),
+                            ...(dockerSnapshot ? { snapshotId: dockerSnapshot.id } : {}),
+                            ...(c.githubRepository && (!feature || feature === "github")
+                              ? {
+                                  repos: [
+                                    {
+                                      url: `https://github.com/${c.githubRepository}.git`,
+                                      branch: "main",
+                                      dir: "armada-parity-github",
+                                    },
+                                  ],
+                                }
+                              : {}),
+                          }
+                        : { golden: c.golden, connections: [] }),
+                    });
           if (typeof result.sandbox?.id !== "string" || !result.sandbox.id || result.sandbox.provider !== c.provider)
             throw new Error("invalid_launch_receipt");
           id = result.sandbox.id;
           if (
-            c.provider !== "boat" &&
+            c.provider === "docker" &&
             feature !== "templates" &&
             feature !== "routines" &&
             feature !== "readable-variables" &&
@@ -2376,7 +2480,8 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       }
       io.out(JSON.stringify({ step: "parity_cleanup", provider: c.provider, id, deleted }));
     }
-    if (templateIntentUnknown) record("cleanup", c.provider, "fail", "allocation_unconfirmed");
+    if (templateIntentUnknown || modalLaunchUnconfirmed)
+      record("cleanup", c.provider, "fail", "allocation_unconfirmed");
   }
   // A separate launch path needs its own allocation; never relabel an ordinary launch as template proof.
   if (!feature)
@@ -2476,7 +2581,7 @@ async function publishParityReport(
             const cell = providers[p];
             return cell
               ? escapeCell(
-                  `${cell.status}${cell.diagnostic ? `: ${cell.reason}; HTTP ${cell.diagnostic.httpStatus ?? "n/a"}; ${cell.diagnostic.code}; ${cell.diagnostic.message}; elapsedMs=${cell.diagnostic.elapsedMs ?? "n/a"}; polls=${cell.diagnostic.polls ?? 0}; serverElapsedMs=${cell.diagnostic.serverElapsedMs ?? "unknown"}` : cell.reason ? `: ${cell.reason}` : ""}`,
+                  `${cell.status}${cell.diagnostic ? `: ${cell.reason}; HTTP ${cell.diagnostic.httpStatus ?? "n/a"}; ${cell.diagnostic.code}; ${cell.diagnostic.message}; elapsedMs=${cell.diagnostic.elapsedMs ?? "n/a"}; polls=${cell.diagnostic.polls ?? 0}; serverElapsedMs=${cell.diagnostic.serverElapsedMs ?? "unknown"}${cell.diagnostic.requestKey ? `; requestKey=${cell.diagnostic.requestKey}` : ""}${cell.diagnostic.requestId ? `; requestId=${cell.diagnostic.requestId}` : ""}` : cell.reason ? `: ${cell.reason}` : ""}`,
                 )
               : "—";
           })
