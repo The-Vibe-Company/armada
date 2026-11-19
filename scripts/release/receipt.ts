@@ -116,7 +116,12 @@ function previousProductionHistory(ref: string, tag: string) {
     "-",
   ]);
   if (result.exitCode !== 0) return null;
-  const receipt = object(JSON.parse(result.stdout.toString()));
+  let receipt: Record<string, unknown>;
+  try {
+    receipt = object(JSON.parse(result.stdout.toString()));
+  } catch {
+    return null;
+  }
   const history: unknown = receipt.productionMigrationHistory;
   if (
     receipt.version !== tag.slice(1) ||
