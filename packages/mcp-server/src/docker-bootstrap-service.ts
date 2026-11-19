@@ -45,7 +45,8 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
   async function phase(tx: Sql, sandboxId: string, requestId?: string) {
     return (
       await tx.query<Stored>(
-        `select request_id,input_enc,outcome from public.docker_host_jobs
+        `select request_id,input_enc,case when refused_resume_generation is not null then 'failed' else outcome end as outcome
+         from public.docker_host_jobs
          where bound_sandbox_id=$1 and (bound_operation='bootstrap' and $2::uuid is null or bound_operation='resume' and request_id=$2)`,
         [sandboxId, requestId ?? null],
       )

@@ -826,3 +826,63 @@ test("a failed Docker resume ACK only fails the activation admitted for that req
   await fail(current.requestId);
   expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("failed");
 });
+
+test.each(["refusal first", "ACK first", "previous server ACK", "failed host ACK"] as const)(
+  "a refused Docker resume returns to a retained stop after claim settlement (%s)",
+  async (order) => {
+    const f = await fixture();
+    const { id } = f.sandbox;
+    const previousStop = await hosts.enqueueSandbox(f.actor, id, { operation: "stop", requestId: randomUUID() });
+    const ack = (requestId: string, outcome: "completed" | "failed" = "completed") =>
+      hosts.complete(f.hostToken, f.installationId, { requestId, outcome });
+    await ack(previousStop.requestId);
+    const resume = await admittedResume(f, randomUUID());
+    const job = await hosts.poll(f.hostToken, f.installationId);
+    if (job?.operation !== "resume") throw Error("missing resume");
+    const authority = createRuntimeEnrolments(sql, key);
+    const refuse = () =>
+      authority.route(
+        new Request("https://armada.example/api/runtime/enrol", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${job.bootstrap.enrolmentToken}`,
+            "x-armada-runtime-protocol": "0",
+          },
+        }),
+      );
+
+    if (order === "ACK first") await ack(job.requestId);
+    const response = await refuse();
+    expect(response?.status).toBe(409);
+    expect(await response?.json()).toEqual({ error: "runtime_protocol_unsupported" });
+    if (order !== "ACK first") {
+      expect((await reservations.get(f.actor, id)).status).toBe("starting");
+      expect((await hosts.poll(f.hostToken, f.installationId))?.requestId).toBe(job.requestId);
+      if (order === "previous server ACK") {
+        await database().query(
+          "update public.docker_host_jobs set outcome='completed',completed_at=now() where request_id=$1",
+          [job.requestId],
+        );
+        await hosts.poll(f.hostToken, f.installationId);
+      } else {
+        await ack(job.requestId, order === "failed host ACK" ? "failed" : "completed");
+      }
+    }
+    expect((await reservations.get(f.actor, id)).status).toBe("stopping");
+    await expect(authority.enrol(job.bootstrap.enrolmentToken)).rejects.toThrow("runtime_enrolment_denied");
+    expect((await service.resume(f.actor, id, resume.requestId)).state).toBe("failed");
+    await ack(previousStop.requestId);
+    expect((await reservations.get(f.actor, id)).status).toBe("stopping");
+
+    const stop = await hosts.poll(f.hostToken, f.installationId);
+    if (stop?.operation !== "stop") throw Error("missing refusal stop");
+    expect(stop.request).toEqual(job.request);
+    await ack(stop.requestId);
+    expect((await reservations.get(f.actor, id)).status).toBe("stopped");
+    const next = await admittedResume(f, randomUUID());
+    expect(next.state).toBe("pending");
+    const nextJob = await hosts.poll(f.hostToken, f.installationId);
+    if (nextJob?.operation !== "resume") throw Error("missing replacement resume");
+    expect((await authority.enrol(nextJob.bootstrap.enrolmentToken)).epoch).toBe("1");
+  },
+);
