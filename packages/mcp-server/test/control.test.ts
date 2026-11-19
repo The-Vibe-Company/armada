@@ -1300,22 +1300,42 @@ describe("control API", () => {
     });
   });
 
-  test("sandbox/launch refuses a malformed externalRef before any allocation", async () => {
+  test("REST and MCP refuse the same malformed launch with code invalid", async () => {
     await withServer(async ({ options }) => {
       const org = (await options.store.createOrg("Ref", STAN)).id;
       options.authStore.addMembership(STAN, { orgId: org, name: "Ref", role: "admin" });
       const boat = fakeBoat();
+      const caller = { userId: STAN, orgs: [{ orgId: org, role: "admin" as const }], via: "supabase" as const };
+      const input = { provider: "boat", org, golden: "web", harness: "claude", externalRef: "bad\nref" };
       const response = await handleControlRequest(
         new Request("https://armada.test/api/v1/sandbox/launch", {
           method: "POST",
           headers: {
             authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`,
           },
-          body: JSON.stringify({ org, golden: "web", harness: "claude", externalRef: "bad\nref" }),
+          body: JSON.stringify(input),
         }),
         { ...options, providerFor: () => boat.provider },
       );
       expect(response?.status).toBe(400);
+      expect(await response?.json()).toMatchObject({ error: { code: "invalid" } });
+      await expect(
+        callSharedTool(
+          {
+            caller,
+            data: options.data!(caller),
+            provider: async () => boat.provider,
+            launchCredentials: launchCredentials(options.store, KEY),
+            exposedSecrets: async () => [],
+            now: () => new Date(),
+            sleep: async () => {
+              throw Error("No waits");
+            },
+          },
+          "launch",
+          input,
+        ),
+      ).rejects.toMatchObject({ code: "invalid" });
       expect(boat.forks).toHaveLength(0);
     });
   });

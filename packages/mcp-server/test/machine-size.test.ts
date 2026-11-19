@@ -38,6 +38,7 @@ test("size policies use live org admin/private owner authority, persist without 
     expect(await read?.json()).toMatchObject({ policy });
     const member = await server.client(await server.token(people.member));
     const launched = await call(member, "launch", {
+      provider: "boat",
       golden: "shared",
       org: people.org,
       harness: "claude",
@@ -138,11 +139,7 @@ test("canonical HTTP launch validates sizes and applies overrides or golden defa
       },
     });
     const client = await server.client(token);
-    const mcp = await call(client, "launch", {
-      golden: "shared",
-      harness: "claude",
-      size: "medium",
-    });
+    const mcp = await call(client, "launch", { provider: "boat", golden: "shared", harness: "claude", size: "medium" });
     expect(mcp.isError).not.toBe(true);
     expect(server.boat.forks.at(-1)?.size).toBe("medium");
   } finally {
