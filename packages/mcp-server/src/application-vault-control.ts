@@ -1,7 +1,7 @@
 import { type ApplicationVault, VaultError } from "@armada/core/server";
 import { type ControlRouteContext, defineRoutes } from "./routes.ts";
 
-export function rejectUnknownVaultRoute(route: string, options: ControlRouteContext["options"]): void {
+export function rejectUnknownVaultRoute(route: string, options: ControlRouteContext["options"]) {
   if (!route.startsWith("variables/") && !route.startsWith("secrets/")) return;
   if (!options.applicationVault) throw new VaultError("unavailable", "Application vault unavailable.");
   throw new VaultError("invalid", "Invalid application vault request.");
