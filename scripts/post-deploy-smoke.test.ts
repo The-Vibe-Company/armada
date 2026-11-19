@@ -1547,6 +1547,7 @@ test("a resumed send admitted after its measured deadline fails without replay a
   const fake = lifecycleFixture("none", (call) => {
     if (call.path !== "sandbox/send" || !fake.calls.some((entry) => entry.path === "sandbox/stop")) return;
     fake.advance(deadlines.resume_send + 1);
+    return undefined;
   });
   expect(await fake.run()).toBe(false);
   expect(fake.receipts()).toContainEqual({ case: 0, step: "resume_send", pass: false, code: "poll_limit_exceeded" });
