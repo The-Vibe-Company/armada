@@ -83,16 +83,22 @@ ${sandboxUsage("setup")}
                                            Build a new snapshot from saved repos/setup on its original host; keep the old one.
 ${sandboxUsage("launch")}
 ${sandboxUsage("list")}
-${sandboxUsage("bound-mcp")}
+  armada mcp sandbox-connections <sandbox-uuid> [--org UUID] [--json]
+                                           Read actual bound connection metadata, never mutate bindings
 ${sandboxUsage("advice")}
-${sandboxUsage("bind-credential")}
+  armada bind-credential <sandbox-id> --credential-id UUID [--org UUID] [--json]
+                                           Owner-only legacy Modal binding recovery; stop safely first; no restart
 ${sandboxUsage("sandbox")}
   armada snapshot retirement dry-run|reconcile <snapshot-id> [--limit 1-50] [--org UUID]
   armada snapshot remove <name|snapshot-id> [--provider boat|modal] [--org UUID] [--json]
                                            Names must match one visible snapshot; use provider/org or snapshot list --json to disambiguate.
                                            Remove from launch selection; retain children and provider artifacts
   armada snapshot visibility <snapshot-id> --visibility private|org [--org UUID]
-${sandboxUsage("mcp")}
+  armada mcp catalog|rename ID NAME|default ID on|off [--org UUID]
+  armada mcp add NAME --service notion|linear [--scope personal|org] [--org UUID]
+  armada mcp add NAME URL [--scope personal|org] [--org UUID]
+                                           Public/OAuth URL shortcut; auto discovery, no secret argv
+  armada mcp list|add|update|connect|status|reconnect|enable|disable|revoke|delete [id] [--org UUID] [--file JSON]
 ${sandboxUsage("logs")}
 ${sandboxUsage("session")}
 ${sandboxUsage("org")}
@@ -124,8 +130,7 @@ ${sandboxUsage("invitations")}
                                            [--price-cached-input USD]; decimal USD per million tokens, omitted = unknown
                                            Replacing a connection replaces its prices too; re-enter all rates to keep them
 ${sandboxUsage("automation")}
-  armada vars --help                       Readable variables: set/list/read; stdin/file writes only
-  armada secrets --help                    Write-only application secrets: set/list/rotate/revoke/delete
+${sandboxUsage("vault")}
                                            Personal or --org scope. JSON includes values only for vars read; no sandbox delivery.
   armada creds test <sandbox-id> --model <deployment-model> [--org <name>] [--json]
                                            One tiny billable check of the bound custom connection in a running Modal sandbox

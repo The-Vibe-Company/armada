@@ -16,6 +16,7 @@ This is not a full provider lifecycle test or proof that a model request will wo
 Exits 1 if any check is failed, otherwise 0; warnings and unknowns are not passes.
 Example: armada doctor --org ORG_UUID --json
 `,
+  completionBefore: "bind-credential",
   async run(argv, { io, auth }) {
     return doctor(argv, { ...auth, ...io });
   },

@@ -14,6 +14,7 @@ This does not revoke service tokens or remove ARMADA_TOKEN from your environment
 To sign out a personal session remotely first, use armada account logout.
 Example: armada logout
 `,
+  completionBefore: "mcp",
   useSelectedOrg: false,
   async run(argv, { auth }) {
     const parsed = parseAuth(argv);

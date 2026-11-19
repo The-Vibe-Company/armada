@@ -3,32 +3,120 @@ import { commands, findCommand } from "./commands/index.ts";
 
 // Exact command boundaries only: never interpret payload or remote arguments as help.
 const HELP: Record<string, string> = {
-  "vars list": `Usage: armada vars list [--org NAME|UUID] [--json]
-List readable application-variable metadata, not values or model credentials.
-Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada org use.
-Includes your personal entries and visible organization entries. Use IDs from this list
-with vars read; names are not accepted as read selectors.
-Human output is compact metadata; --json emits {items:[...]} with safe scalar metadata only.
-Readable variables are not secrets. Use secrets for sensitive application values.
-Example: armada vars list --org ORG_UUID --json
+  mcp: `Usage: armada mcp <command> [arguments]
+Manage MCP registry connections and inspect sandbox bindings.
+Use leaf --help/-h for exact flags. Operations require Armada login, server
+authorization and organization selection with org use or --org UUID.
+Registry:
+  catalog  Read service metadata.
+  list     List visible connections and IDs.
+  add      Create by service, public URL or JSON definition.
+  update   Update from a JSON definition; scope cannot change.
+  rename   Rename a connection by ID.
+  default  Set launch-default selection with positional on|off.
+  enable   Enable the registry entry; check status for authorization state.
+  disable  Disable without deleting the registry entry.
+  delete   Delete the registry entry.
+Authorization:
+  status     Read a connection's status.
+  connect    Authorize an existing connection.
+  reconnect  Revoke first, then start authorization again.
+  revoke     Revoke authorization, not registry deletion.
+Sandbox:
+  sandbox-connections  Read actual bound metadata using a sandbox UUID.
+Registry IDs and sandbox UUIDs are different selectors. Help does not call MCP.
+Keep authentication values in private files/stdin, never command arguments.
+Example: armada mcp list --org ORG_UUID --json
+Example: armada mcp add --help
 `,
-  "vars read": `Usage: armada vars read ID [--org NAME|UUID] [--json]
-Read an application-variable value by ID from vars list, not by name.
-Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada org use.
-Your personal entries and authorized organization entries are readable; variables are not secrets.
-Default stdout is the value exactly, without adding a newline. --json emits
-{item: metadata, value: string} followed by a newline. Take care when sharing or piping values.
-This does not read an application secret, export model credentials or deliver values to a sandbox.
-Example: armada vars read VARIABLE_UUID --org ORG_UUID --json
+  "mcp list": `Usage: armada mcp list [--org UUID] [--json]
+List visible MCP registry connections after Armada login and server authorization.
+Select an organization with armada org use or --org UUID.
+Output is JSON even without --json. This is not a sandbox's bound-connection list.
+Example: armada mcp list --org ORG_UUID --json
 `,
-  "secrets list": `Usage: armada secrets list [--org NAME|UUID] [--json]
-List application-secret metadata, never secret values or model credentials.
-Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada org use.
-Includes your personal entries and visible organization entries. IDs and versions are used
-by guarded rotate/revoke/delete operations; list itself makes no changes.
-Human output is compact metadata; --json emits {items:[...]} with safe scalar metadata only.
-Secrets have no read, reveal or export operation. Use vars read only for readable variables.
-Example: armada secrets list --org ORG_UUID --json
+  "mcp catalog": `Usage: armada mcp catalog [--org UUID] [--json]
+Read the MCP service catalog after Armada login and server authorization.
+Select an organization with armada org use or --org UUID.
+Output is JSON even without --json; this command does not add a connection.
+Example: armada mcp catalog --org ORG_UUID --json
+`,
+  "mcp status": `Usage: armada mcp status <connection-id> [--org UUID] [--json]
+Read an MCP connection's status after Armada login and server authorization.
+Use a connection ID from mcp list, not a sandbox ID.
+Select an organization with armada org use or --org UUID. Output is always JSON.
+Example: armada mcp status CONNECTION_UUID --org ORG_UUID --json
+`,
+  "mcp sandbox-connections": `Usage: armada mcp sandbox-connections <sandbox-UUID> [--org UUID] [--json]
+Read actual bound MCP connection metadata for a sandbox after Armada login.
+Requires server authorization and an organization selected with org use or --org UUID.
+Use a sandbox UUID, not a registry connection ID. Output is always JSON.
+This command does not mutate bindings.
+Example: armada mcp sandbox-connections SANDBOX_UUID --org ORG_UUID --json
+`,
+  "mcp revoke": `Usage: armada mcp revoke <connection-id> [--org UUID] [--json]
+Revoke an MCP connection's authorization after Armada login and server authorization.
+Select an organization with org use or --org UUID; use an ID from mcp list.
+Output is JSON even without --json. This is not mcp delete.
+Example: armada mcp revoke CONNECTION_UUID --org ORG_UUID
+`,
+  "mcp rename": `Usage: armada mcp rename <connection-id> <name> [--org UUID] [--json]
+Rename an MCP registry connection after Armada login and server authorization.
+Use an ID from mcp list; select an organization with org use or --org UUID.
+Output is JSON even without --json.
+Example: armada mcp rename CONNECTION_UUID work-tools --org ORG_UUID
+`,
+  "mcp default": `Usage: armada mcp default <connection-id> on|off [--org UUID] [--json]
+Set whether an MCP connection is a launch default after Armada login and server authorization.
+Use an ID from mcp list; select an organization with org use or --org UUID.
+The on/off choice is positional. This is not connection authorization.
+Output is JSON even without --json.
+Example: armada mcp default CONNECTION_UUID on --org ORG_UUID
+`,
+  "mcp enable": `Usage: armada mcp enable <connection-id> [--org UUID] [--json]
+Enable an MCP registry connection after Armada login and server authorization.
+Use an ID from mcp list; select an organization with org use or --org UUID.
+Output is JSON even without --json. Check mcp status for authorization state.
+Example: armada mcp enable CONNECTION_UUID --org ORG_UUID
+`,
+  "mcp disable": `Usage: armada mcp disable <connection-id> [--org UUID] [--json]
+Disable an MCP registry connection after Armada login and server authorization.
+Use an ID from mcp list; select an organization with org use or --org UUID.
+Output is JSON even without --json. This is not registry deletion.
+Example: armada mcp disable CONNECTION_UUID --org ORG_UUID
+`,
+  "mcp delete": `Usage: armada mcp delete <connection-id> [--org UUID] [--json]
+Delete an MCP registry connection after Armada login and server authorization.
+Use an ID from mcp list; select an organization with org use or --org UUID.
+Output is JSON even without --json. For authorization revocation, see mcp revoke.
+Example: armada mcp delete CONNECTION_UUID --org ORG_UUID
+`,
+  "mcp add": `Usage: armada mcp add <name> <URL> [--scope personal|org] [--org UUID] [--json]
+   or: armada mcp add <name> --service <service-id> [--scope personal|org] [--org UUID] [--json]
+   or: armada mcp add [--file <path>] [--org UUID] [--json]
+Create a registry connection after Armada login and server authorization.
+Select an organization with org use or --org UUID.
+URL shortcuts require a public/OAuth HTTP URL without credentials; keep stdin empty.
+Do not combine NAME URL with --file or stdin JSON. Shortcut scope defaults to personal.
+Use mcp catalog for service IDs. Full definitions are JSON objects from stdin or --file;
+put scope in the definition, not --scope. Secrets belong in private files/stdin, never arguments.
+Output is always JSON. This does not run mcp connect.
+Example: armada mcp add work-tools --service notion --org ORG_UUID
+Example: armada mcp add --file /private/connection.json --org ORG_UUID
+`,
+  "mcp update": `Usage: armada mcp update <connection-id> [--file <path>] [--org UUID] [--json]
+Update a registry connection from a JSON object after Armada login and server authorization.
+Select an organization with org use or --org UUID; use an ID from mcp list.
+Read the object from stdin or --file. Keep authentication values out of command arguments.
+Updates cannot change scope; --scope is not accepted. Output is always JSON.
+Example: armada mcp update CONNECTION_UUID --file /private/connection.json --org ORG_UUID
+`,
+  "bind-credential": `Usage: armada bind-credential <sandbox-id> --credential-id UUID [--org UUID] [--json]
+Owner-only legacy Modal credential-binding recovery after Armada login.
+Stop the sandbox safely before rebinding; this command does not restart it.
+Use a sandbox ID from armada list and a credential-account UUID from creds list.
+Do not pass secret credential values. Output is JSON even without --json.
+Example: armada bind-credential SANDBOX_UUID --credential-id ACCOUNT_UUID --org ORG_UUID
 `,
   "snapshot retirement": `Usage: armada snapshot retirement dry-run|reconcile <snapshot-UUID> [options]
 Review historical candidates with dry-run; apply reviewed receipts with reconcile.
@@ -287,66 +375,16 @@ Example: armada creds import ${harness ?? "claude"} --name personal --file /priv
 `;
 }
 
-function vaultSetHelp(resource: "vars" | "secrets"): string {
-  return `Usage: armada ${resource} set NAME [--file PATH] [--scope personal|org] [--org NAME|UUID] [--json]
-Create a new ${resource === "vars" ? "readable application variable" : "write-only application secret"}, not a model/provider credential.
-Set creates an entry, not an update; duplicate names conflict.
-Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada org use.
---scope personal|org selects visibility. Explicit --org requires explicit --scope;
-without --org, scope defaults to personal in the selected organization.
-Only administrators can create organization-scoped entries.
-
-Values come only from piped stdin or --file PATH, never command arguments.
-Provide UTF-8 input; content is preserved without trimming and is not echoed or cached.
-Do not embed sensitive values in shell commands or shared logs. Protect local input files.
-${resource === "vars" ? "Variables are readable, not secrets: vars read can print their values and launch manifests\nmay contain them. Use secrets set for sensitive application values." : "Secret values are write-only: there is no read, reveal or export operation.\nUse secrets rotate with an ID and expected version to replace an existing active value."}
-Human output shows metadata only; --json emits {item: metadata}, never the submitted value.
-Use ${resource} list for IDs and versions. This command does not deliver values to a sandbox.
-Example: armada ${resource} set ${resource === "vars" ? "APP_REGION" : "APP_PASSWORD"} --file /private/input.txt --scope personal --org ORG_UUID --json
-`;
-}
-
-function secretLifecycleHelp(action: "rotate" | "revoke" | "delete"): string {
-  const effect = {
-    rotate:
-      "Replace the stored value of an active application secret, not a model/provider credential.\nProvide replacement UTF-8 content only through piped stdin or --file PATH, never argv.\nInput is preserved without trimming, not echoed or cached. Protect local input files.",
-    revoke:
-      "Revoke an application secret and clear its stored value. Revocation is terminal;\na revoked secret cannot be rotated back to active. Delete it before reusing its name.",
-    delete:
-      "Mark an application secret deleted and clear its stored value, allowing name reuse.\nThis is not sandbox deletion or upstream credential revocation.",
-  }[action];
-  return `Usage: armada secrets ${action} ID --expected-version N ${action === "rotate" ? "[--file PATH] " : ""}[--org NAME|UUID] [--json]
-${effect}
-Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada org use.
-Use an ID and current version from secrets list, not a secret name.
---expected-version is required and must be a positive safe integer. A stale version is
-refused, not retried automatically; inspect metadata before deciding to try again.
-Only administrators can mutate organization-scoped secrets; the ID determines scope.
-Human output shows metadata only; --json emits {item: metadata}, never secret values.
-Secrets have no read, reveal or export operation. No sandbox delivery or upstream
-credential rotation is performed by this command.
-Example: armada secrets ${action} SECRET_UUID --expected-version 2 ${action === "rotate" ? "--file /private/replacement.txt " : ""}--org ORG_UUID --json
-`;
-}
-
-function vaultFamilyHelp(resource: "vars" | "secrets"): string {
-  return `Usage: armada ${resource} <command> [arguments]
-Manage ${resource === "vars" ? "readable application variables" : "write-only application secrets"}, not model/provider credentials.
-
-${resource === "vars" ? "  set   Create a new variable from stdin or file, not an update.\n  list  Inspect visible metadata and IDs without values.\n  read  Print a value by ID, exactly without adding a newline; --json includes value." : "  set     Create a new secret from stdin or file, not an update.\n  list    Inspect visible metadata, IDs and versions, never values.\n  rotate  Replace an active secret value, guarded by --expected-version.\n  revoke  Terminally revoke and clear the stored value; no reactivation.\n  delete  Mark deleted and clear the value, allowing name reuse."}
-
-Actions require Armada login or ARMADA_TOKEN. Select an organization with --org
-NAME|UUID or armada org use. Explicit --org on set requires --scope personal|org;
-otherwise set defaults to personal in the selected organization.
-Lists include your personal entries and visible organization entries.
-Only administrators can mutate organization-scoped entries; IDs determine scope.
-Values come from piped stdin or --file, never arguments; protect local input files.
-${resource === "vars" ? "Variables are readable, not secrets, and values may appear in launch manifests.\nUse secrets for sensitive application values." : "Secrets have no read, reveal or export operation. Guarded changes use IDs and current\nversions from secrets list. On version conflicts inspect before deciding to retry."}
-Lists and writes emit metadata only, including with --json.
-These management commands do not deliver values to sandboxes or rotate upstream credentials.
-Inspect a command's options with armada ${resource} <command> --help.
-Example: armada ${resource} list --org ORG_UUID --json
-Example: armada ${resource} set ${resource === "vars" ? "APP_REGION" : "APP_PASSWORD"} --file /private/input.txt --scope personal --org ORG_UUID --json
+function mcpAuthorizationHelp(action: "connect" | "reconnect"): string {
+  return `Usage: armada mcp ${action} <connection-id> [--org UUID] [--no-browser] [--timeout <seconds>] [--json]
+${action === "reconnect" ? "Revoke existing authorization first, then start a new connection authorization." : "Start authorization for an existing MCP registry connection."}
+Requires Armada login and server authorization. Select an organization with armada org use or --org UUID.
+Use a connection ID from mcp list, not a sandbox ID.
+Opens a server-issued authorization URL when supplied; --no-browser prints it to stderr.
+--timeout is an integer from 0 to 600 seconds (default 300).
+Zero still starts authorization and checks status; a URL alone is not success.
+On timeout, inspect mcp status before retrying. Successful output is always JSON.
+Example: armada mcp ${action} CONNECTION_UUID --org ORG_UUID --no-browser --timeout 300
 `;
 }
 
@@ -387,13 +425,8 @@ export function onboardingHelp(argv: readonly string[]): string | undefined {
 }
 
 const GENERATED_HELP: Record<string, string> = {
-  "vars set": vaultSetHelp("vars"),
-  "secrets set": vaultSetHelp("secrets"),
-  "secrets rotate": secretLifecycleHelp("rotate"),
-  "secrets revoke": secretLifecycleHelp("revoke"),
-  "secrets delete": secretLifecycleHelp("delete"),
-  vars: vaultFamilyHelp("vars"),
-  secrets: vaultFamilyHelp("secrets"),
+  "mcp connect": mcpAuthorizationHelp("connect"),
+  "mcp reconnect": mcpAuthorizationHelp("reconnect"),
   "creds import": importHelp(),
   "creds import claude": importHelp("claude"),
   "creds import codex": importHelp("codex"),

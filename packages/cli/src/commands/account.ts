@@ -33,6 +33,7 @@ Example: armada account logout
 `,
   },
   helpWhenBare: true,
+  completionBefore: "mcp",
   useSelectedOrg: false,
   async run(argv, { auth }) {
     return accountCommand("account", argv, auth);
