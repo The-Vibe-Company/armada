@@ -2936,7 +2936,7 @@ function inboundTriggers(request: Request, url: URL, path: RegExpMatchArray) {
     const summary = {
       id: trigger,
       templateId: id(90),
-      poolHarness: "codex",
+      poolHarness: "claude",
       enabled: state.inboundTriggerEnabled,
       ratePerMinute: 25,
       concurrency: 2,
