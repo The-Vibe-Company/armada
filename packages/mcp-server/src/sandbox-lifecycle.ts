@@ -1,3 +1,4 @@
+import type { SandboxStatus } from "@armada/core";
 import {
   HOST_CAPABILITIES,
   isFinalPromptStatus,
@@ -16,6 +17,59 @@ import { preserveBeforeStop, recordStopDispatch } from "./work-preservation.ts";
 
 export const UNENROLLED_RESUME_STOP = "runtime_resume_unenrolled";
 const OPERATOR_CLEANUP_PREFIX = "Operator cleanup required:";
+
+interface SandboxTransitionEffect {
+  kind: "resume" | "turn_dispatch" | "stop" | "output_publication" | "webhook" | "metadata_retirement";
+  idem_key: string;
+  max_attempts: number;
+  deadline_at: string;
+  payload_enc?: string;
+}
+
+interface SandboxTransition {
+  sandboxId: string;
+  expectedGeneration: number;
+  fromStates: readonly SandboxStatus[];
+  toState: SandboxStatus;
+  actor:
+    | "resume_admission"
+    | "runtime_enrolment"
+    | "owner"
+    | "finish"
+    | "expiry"
+    | "idle"
+    | "lifecycle_runner"
+    | "delete_job"
+    | "retention_job";
+  code: string;
+  effects: readonly SandboxTransitionEffect[];
+}
+
+type SandboxTransitionResult = { kind: "applied"; generation: number } | { kind: "conflict" };
+
+export async function transitionSandbox(tx: Sql, input: SandboxTransition) {
+  const {
+    rows: [result],
+  } = await tx.query<{ applied: boolean; generation: string | null }>(
+    `select applied, generation::text from public.sandbox_transition(
+      $1::uuid, $2::bigint, array(select jsonb_array_elements_text($3::jsonb)::public.sandbox_status),
+      $4::public.sandbox_status, $5::text, $6::text, $7::jsonb
+    )`,
+    [
+      input.sandboxId,
+      input.expectedGeneration,
+      JSON.stringify(input.fromStates),
+      input.toState,
+      input.actor,
+      input.code,
+      JSON.stringify(input.effects),
+    ],
+  );
+  if (!result) throw new Error("Sandbox transition did not return a result.");
+  if (!result.applied) return { kind: "conflict" } satisfies SandboxTransitionResult;
+  if (result.generation === null) throw new Error("Applied sandbox transition did not return a generation.");
+  return { kind: "applied", generation: Number(result.generation) } satisfies SandboxTransitionResult;
+}
 
 export async function deferAmbiguousBoatResume(
   tx: Sql,

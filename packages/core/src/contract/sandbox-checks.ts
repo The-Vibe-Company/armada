@@ -78,6 +78,7 @@ export const sandboxCheckOperations = {
   },
   postSandboxMcpPreflightV1: {
     name: "postSandboxMcpPreflightV1",
+    directServer: true,
     route: { method: "POST", path: "/api/v1/sandbox/mcp-preflight-v1" },
     readOnly: false,
     destructive: false,
@@ -98,6 +99,7 @@ export const sandboxCheckOperations = {
   },
   postSandboxGithubPreflightV1: {
     name: "postSandboxGithubPreflightV1",
+    directServer: true,
     route: { method: "POST", path: "/api/v1/sandbox/github-preflight-v1" },
     readOnly: false,
     destructive: false,
