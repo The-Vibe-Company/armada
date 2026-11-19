@@ -66,6 +66,6 @@ test("account logout revokes the authenticated Supabase session", async () => {
   ]);
   expect(response?.status).toBe(200);
   const { output, successHeaders } = accountOperations.logoutAccount;
-  successHeaders["Cache-Control"].parse(response?.headers.get("cache-control"));
-  output.parse(await response?.json());
+  expect(successHeaders["Cache-Control"].parse(response?.headers.get("cache-control"))).toBe("no-store");
+  expect(output.parse(await response?.json())).toEqual({ ok: true });
 });
