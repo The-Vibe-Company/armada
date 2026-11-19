@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import type { AgentEvent, PromptStatus, ToolCall } from "@armada/core";
+import type { AgentEvent, PromptStatus } from "@armada/core";
 import { HARNESSES, isFinalPromptStatus } from "@armada/core";
 import { HarnessError } from "./errors.ts";
 import { checkpointIdentity, checkpointIdentityKey } from "./identity.ts";
@@ -12,6 +12,25 @@ function boundedPreview(text: string, limit: number): string {
   const end = limit > 0 && /[\uD800-\uDBFF]/.test(text[limit - 1] ?? "") ? limit - 1 : limit;
   return text.slice(0, end);
 }
+function maskText(original: string, scrubbed: string, mask: (text: string) => string) {
+  const short = mask(original);
+  if (short === original || short === scrubbed) return scrubbed;
+  return original === scrubbed ? short : "[REDACTED]";
+}
+
+const maskPayload: (value: unknown, mask: (text: string) => string) => unknown = (value, mask) => {
+  if (typeof value === "string") return mask(value);
+  if (typeof value === "number" || typeof value === "boolean") {
+    const text = String(value);
+    const masked = mask(text);
+    return text === masked ? value : "[REDACTED]";
+  }
+  if (Array.isArray(value)) return value.map((item) => maskPayload(item, mask));
+  if (value && typeof value === "object")
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [mask(key), maskPayload(item, mask)]));
+  return value;
+};
+
 export class Journal {
   readonly db: Database;
   readonly redact: (text: string) => string;
@@ -49,48 +68,7 @@ export class Journal {
       Buffer.byteLength(this.redact(JSON.stringify(event))) > 262144
     )
       control = { ...event, text: `${boundedPreview(this.redact(event.text), 16000)}… [truncated]` };
-    let body = this.redact(JSON.stringify(control));
-    const redactShort = this.redactShortApplicationText;
-    if (
-      redactShort &&
-      (event.kind === "message" ||
-        (event.kind === "other" && ["harness_stderr", "armada/opencodeMcp"].includes(event.type)))
-    ) {
-      type ToolPayload = Pick<ToolCall, "input" | "result">;
-      const masked = JSON.parse(body) as {
-        text?: string;
-        tools?: ToolCall[];
-        data?: (ToolPayload & { text?: unknown }) | null;
-      };
-      const redactPayload = (original: unknown, scrubbed: unknown) => {
-        const serialized = JSON.stringify(original);
-        return serialized !== undefined && redactShort(serialized) !== serialized ? "[REDACTED]" : scrubbed;
-      };
-      const redactTool = (original: ToolPayload | null | undefined, scrubbed: ToolPayload) => {
-        if (scrubbed.input !== undefined) scrubbed.input = redactPayload(original?.input, scrubbed.input);
-        if (scrubbed.result && original?.result)
-          scrubbed.result.output = redactPayload(original.result.output, scrubbed.result.output);
-      };
-      const redactText = (original: string, scrubbed: string) => {
-        const short = redactShort(original);
-        if (short === original || short === scrubbed) return scrubbed;
-        return original === scrubbed ? short : "[REDACTED]";
-      };
-      if (event.kind === "message") {
-        if (typeof masked.text === "string") masked.text = redactText(event.text, masked.text);
-        masked.tools?.forEach((tool, index) => {
-          redactTool(event.tools[index], tool);
-        });
-      } else if (masked.data) {
-        if (event.type === "armada/opencodeMcp") redactTool(event.data as ToolPayload | null, masked.data);
-        else {
-          const original = (event.data as { text?: unknown } | null)?.text;
-          if (typeof original === "string" && typeof masked.data.text === "string")
-            masked.data.text = redactText(original, masked.data.text);
-        }
-      }
-      body = JSON.stringify(masked);
-    }
+    let body = this.eventBody(control, true);
     const oversized = Buffer.byteLength(body) > 262144;
     if (oversized)
       body = JSON.stringify({
@@ -108,6 +86,54 @@ export class Journal {
     // was replaced by a truncation marker (including size growth caused by secret redaction).
     if (oversized && terminalSnapshot) throw new HarnessError("invalid_harness_protocol");
     return sequence;
+  }
+  private eventBody(event: AgentEvent, appending: boolean) {
+    const mask = this.redactShortApplicationText;
+    const body = this.redact(JSON.stringify(event));
+    if (event.kind === "message") {
+      const scrubbed = JSON.parse(body) as typeof event;
+      scrubbed.kind = event.kind;
+      if (event.textMode !== undefined) scrubbed.textMode = event.textMode;
+      if (event.responseKind !== undefined) scrubbed.responseKind = event.responseKind;
+      if (!mask) return JSON.stringify(scrubbed);
+      return JSON.stringify({
+        ...scrubbed,
+        text: appending && event.textMode === "delta" ? "" : maskText(event.text, scrubbed.text, mask),
+        tools: scrubbed.tools.map((tool, index) => ({
+          ...tool,
+          name: maskText(event.tools[index]!.name, tool.name, mask),
+          ...(tool.server !== undefined ? { server: maskText(event.tools[index]!.server!, tool.server, mask) } : {}),
+          ...(tool.input !== undefined ? { input: maskPayload(tool.input, mask) } : {}),
+          ...(tool.result ? { result: { ...tool.result, output: maskPayload(tool.result.output, mask) } } : {}),
+        })),
+      });
+    }
+    if (!mask || event.kind !== "other") return body;
+    if (event.type === "armada/opencodeMcp") {
+      const proof = JSON.parse(body) as typeof event & {
+        data: { input?: unknown; result?: { output: unknown } };
+      };
+      if (proof.data?.input !== undefined) proof.data.input = maskPayload(proof.data.input, mask);
+      if (proof.data?.result) proof.data.result.output = maskPayload(proof.data.result.output, mask);
+      return JSON.stringify(proof);
+    }
+    if (event.type !== "harness_stderr") return body;
+    const masked = JSON.parse(body) as { data?: { text?: unknown } | null };
+    const original = (event.data as { text?: unknown } | null)?.text;
+    if (typeof original === "string" && typeof masked.data?.text === "string")
+      masked.data.text = maskText(original, masked.data.text, mask);
+    return JSON.stringify(masked);
+  }
+  private sanitizeEvent(body: string) {
+    let event: AgentEvent;
+    try {
+      event = JSON.parse(body);
+    } catch {
+      return this.redact(body);
+    }
+    return event?.kind === "message" || (event?.kind === "other" && event.type === "armada/opencodeMcp")
+      ? this.eventBody(event, false)
+      : this.redact(body);
   }
   transition(prompt: StoredPrompt, status: PromptStatus, reason?: string) {
     this.db.transaction(() => {
@@ -278,7 +304,7 @@ export class Journal {
             body: string;
           } | null;
           if (!row) break;
-          update.run(this.redact(row.body), row.recordId);
+          update.run(table === "events" ? this.sanitizeEvent(row.body) : this.redact(row.body), row.recordId);
           cursor = row.recordId;
         }
       }

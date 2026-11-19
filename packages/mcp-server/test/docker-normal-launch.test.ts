@@ -1990,10 +1990,18 @@ for (const checkoutExitCode of [0, 1])
     expect(f.native).toHaveLength(before);
     const controls = createDockerSandboxControls(sql, key, { clock: f.clock, resume: bootstrap, github: f.github });
     const oldCapability = (f.native[1] as { configuration: { capability: string } }).configuration.capability;
-    const refreshed = await controls.invoke(f.caller, "github_refresh", { id: f.body.requestId });
-    expect(refreshed).toMatchObject({
-      handled: true,
-      result: { status: "connected", login: "owner", runtime: { epoch: f.session()?.epoch } },
+    const rest = restControl(f, { dockerControls: controls, runtimeGitHub: f.github });
+    const gitHubRef = { id: f.body.requestId, org: f.actor.orgId };
+    const refreshed = await rest.post("github/refresh", gitHubRef);
+    expect(publishedResponse("github/refresh").parse(refreshed)).toMatchObject({
+      status: "connected",
+      login: "owner",
+      runtime: { epoch: f.session()?.epoch },
+    });
+    const runtimeStatus = await rest.post("github/runtime-status", gitHubRef);
+    expect(publishedResponse("github/runtime-status").parse(runtimeStatus)).toMatchObject({
+      configured: true,
+      runtime: { epoch: f.session()?.epoch },
     });
     await expect(f.github.status({ ...f.caller, orgs: [] }, f.body.requestId)).rejects.toThrow();
     const row = (

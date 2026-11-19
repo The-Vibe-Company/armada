@@ -844,6 +844,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
                 "type": "object",
                 "properties": {
                   "id": {
@@ -856,8 +857,7 @@
                 },
                 "required": [
                   "id"
-                ],
-                "$schema": "http://json-schema.org/draft-07/schema#"
+                ]
               }
             }
           }
@@ -868,6 +868,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
                   "type": "object",
                   "properties": {
                     "id": {
@@ -906,7 +907,6 @@
                     "login",
                     "status"
                   ],
-                  "$schema": "http://json-schema.org/draft-07/schema#",
                   "additionalProperties": false
                 }
               }
@@ -978,6 +978,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
                 "type": "object",
                 "properties": {
                   "id": {
@@ -990,8 +991,7 @@
                 },
                 "required": [
                   "id"
-                ],
-                "$schema": "http://json-schema.org/draft-07/schema#"
+                ]
               }
             }
           }
@@ -1002,6 +1002,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
                   "type": "object",
                   "properties": {
                     "id": {
@@ -1052,7 +1053,6 @@
                     "credentialRequests",
                     "lastAccessedAt"
                   ],
-                  "$schema": "http://json-schema.org/draft-07/schema#",
                   "additionalProperties": false
                 }
               }

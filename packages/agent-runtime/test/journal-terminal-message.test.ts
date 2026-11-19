@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { createRedactor, Journal } from "../src/index.ts";
 
 test("a terminal snapshot cannot silently disappear at the post-redaction journal limit", () => {
-  const journal = new Journal(":memory:", createRedactor(["tiny"]));
+  const journal = new Journal(":memory:", createRedactor(["tiny", "snapshot"]));
   try {
     const message = {
       id: "final",
@@ -15,7 +15,13 @@ test("a terminal snapshot cannot silently disappear at the post-redaction journa
       text: "DOCKER_OK",
     };
     journal.append(message);
-    expect(journal.events()[0]?.event).toMatchObject({ kind: "message", partial: false, text: "DOCKER_OK" });
+    journal.sanitize();
+    expect(journal.events()[0]?.event).toMatchObject({
+      kind: "message",
+      partial: false,
+      textMode: "snapshot",
+      text: "DOCKER_OK",
+    });
     // Raw JSON fits; redaction expands 4-character tokens to the longer marker.
     expect(() => journal.append({ ...message, id: "too-large", text: "tiny ".repeat(25000) })).toThrow(
       "invalid_harness_protocol",
@@ -61,6 +67,61 @@ test("large prompt and steer previews preserve control metadata after escaping a
         expect(event.text).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
       }
     }
+  } finally {
+    journal.close();
+  }
+});
+
+test("short application values stay out of streamed message text while snapshots keep their type", () => {
+  const journal = new Journal(":memory:", createRedactor([]));
+  try {
+    const message = {
+      id: "event",
+      at: 1,
+      kind: "message" as const,
+      messageId: "answer",
+      tools: [],
+    };
+    journal.append({ ...message, textMode: "delta", partial: true, text: "before registration" });
+    journal.registerApplicationSecrets(["delta", "message", "42"]);
+    for (const text of ["prefix-de", "lta-suffix"])
+      journal.append({ ...message, textMode: "delta", partial: true, text });
+    journal.append({
+      ...message,
+      textMode: "snapshot",
+      partial: false,
+      text: "prefix-delta-suffix",
+      tools: [
+        {
+          id: "tool",
+          name: "read-message",
+          server: "delta-proxy",
+          input: { "message-key": "prefix-delta", count: 42 },
+          result: { output: ["prefix-message"], isError: false },
+        },
+      ],
+    });
+    journal.sanitize();
+    const events = journal.events().map(({ event }) => event);
+    expect(events[0]).toMatchObject({ text: "before registration", textMode: "delta" });
+    expect(events.slice(1, 3)).toEqual(
+      Array.from({ length: 2 }, () => ({ ...message, textMode: "delta", partial: true, text: "" })),
+    );
+    expect(events[3]).toMatchObject({
+      kind: "message",
+      textMode: "snapshot",
+      messageId: "answer",
+      text: "prefix-[REDACTED]-suffix",
+      tools: [
+        {
+          id: "tool",
+          name: "read-[REDACTED]",
+          server: "[REDACTED]-proxy",
+          input: { "[REDACTED]-key": "prefix-[REDACTED]", count: "[REDACTED]" },
+          result: { output: ["prefix-[REDACTED]"], isError: false },
+        },
+      ],
+    });
   } finally {
     journal.close();
   }

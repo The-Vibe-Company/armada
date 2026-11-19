@@ -762,9 +762,8 @@ describe("armada org and armada creds against the control API", () => {
 });
 
 describe("control API", () => {
-  // The HTTP route invokes github_refresh through the real MCP transport and launch credential
-  // resolver. A private hydration refusal must keep its closed phase all the way to the owner.
-  test("GitHub refresh preserves the closed hydration failure across MCP and HTTP", async () => {
+  // A private hydration refusal from the launch credential resolver must keep its closed phase.
+  test("GitHub refresh preserves the closed hydration failure over HTTP", async () => {
     await withServer(async ({ db, options }) => {
       const org = await options.store.createOrg("GitHub repair", STAN);
       options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });

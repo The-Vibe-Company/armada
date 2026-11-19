@@ -593,7 +593,6 @@ export async function startServer(
     ...(dockerControls ? { dockerControls } : {}),
     runtimeSend,
     accountTurns,
-    ...(runtimeGitHub ? { runtimeGitHub } : {}),
     ...(control.sandboxBillingAccount ? { sandboxBillingAccount: control.sandboxBillingAccount } : {}),
     ready: createDatabaseReadiness(sql),
     launchStageSql: sql,

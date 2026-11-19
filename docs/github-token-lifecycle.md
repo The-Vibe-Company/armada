@@ -51,7 +51,7 @@ Run as the sandbox's owner:
 armada github refresh <sandbox>
 ```
 
-The HTTP operation and MCP `github_refresh` tool use the same owner-only policy.
+The HTTP operation is owner-only.
 This repairs **running legacy Boat sandboxes** even with
 `ARMADA_GITHUB_RUNTIME_ENABLED` disabled. It reuses the owner's current validated
 token, renewing only after expiry or explicit rejection. Repair and next-prompt

@@ -1,5 +1,4 @@
 import {
-  GITHUB_REFRESH_MODAL_NATIVE,
   GitHubHydrationError,
   idlePauseMessage,
   isExternalRef,
@@ -55,7 +54,6 @@ import type { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts
 import { recordOperatorFailure } from "./request-observability.ts";
 import { observeGoldenLaunch } from "./request-timing.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
-import type { RuntimeGitHub } from "./runtime-github.ts";
 import { appendConversation, sandboxActivity } from "./sandbox-activity.ts";
 import { sandboxControlRefusal } from "./sandbox-control-refusal.ts";
 import {
@@ -74,7 +72,6 @@ export interface ToolContext {
   accountTurns?: import("./account-turn-queue.ts").AccountTurnQueue;
   sandboxBillingAccount?: (id: string) => Promise<import("./sandbox-billing-account.ts").SandboxBillingAccount | null>;
   dockerControls?: import("./docker-sandbox-controls.ts").DockerSandboxControls;
-  runtimeGitHub?: RuntimeGitHub;
   runtimeSend?: RuntimeFollowup;
   measure?: import("./request-timing.ts").RequestTiming["measure"];
   storedProviders?: Partial<Record<SandboxProviderId, ToolContext["provider"]>>;
@@ -682,48 +679,6 @@ export function createArmadaServer(context: ToolContext, version: string, option
   };
 
   tool(
-    "github_refresh",
-    {
-      title: "Repair sandbox GitHub access",
-      description:
-        "Configure or refresh the owner's GitHub access in a running sandbox without relaunching. Enrolled Armada runtimes use current-epoch private RPC; native Boat keeps its existing setup. Reuses a validated unexpired token; rejection/expiry can require renewal. Only the sandbox owner may request this.",
-      input: { id },
-      output: {
-        id: z.string(),
-        login: z.string(),
-        status: z.literal("connected"),
-        runtime: z.object({ kind: z.literal("armada"), epoch: z.string() }).optional(),
-        revision: z.string().optional(),
-      },
-    },
-    async (args) => {
-      const selected = await visible(args.id);
-      if (selected.boatRuntime || selected.runtimeTransport === "dialout") {
-        if (!context.runtimeGitHub) throw new ToolError("unsupported", "Runtime GitHub is unavailable.");
-        return context.runtimeGitHub.prepare(caller, args.id);
-      }
-      const { sandbox: found, provider } = await live(args.id, false, selected);
-      if (found.ownerId !== caller.userId)
-        throw new ToolError("forbidden", "Only the sandbox owner may repair GitHub access.");
-      if (provider.id === "modal") throw new ToolError("unsupported", GITHUB_REFRESH_MODAL_NATIVE);
-      if (provider.id !== "boat")
-        throw new ToolError("unsupported", "Use the next prompt to reconcile this provider's managed GitHub runtime.");
-      const machine = await provider.get(found.providerSandboxId);
-      if (!["ready", "running"].includes(machine.state))
-        throw new ToolError("conflict", "GitHub repair requires a running sandbox.");
-      if (!context.launchCredentials.refreshGitHub)
-        throw new ToolError("unavailable", "GitHub repair is not configured.");
-      // Deliberately not the caller's role: only the verified owner identity is used for GitHub resolution.
-      const result = await context.launchCredentials.refreshGitHub(
-        { userId: found.ownerId, orgId: found.orgId, role: "member" },
-        provider,
-        found.providerSandboxId,
-      );
-      return { id: found.id, status: "connected" as const, login: result.login };
-    },
-  );
-
-  tool(
     "launch",
     {
       title: "Launch an agent",
@@ -1093,29 +1048,6 @@ export function createArmadaServer(context: ToolContext, version: string, option
       if (!data.sandboxes.reportTaskOutcome) throw new ToolError("conflict", "Task reporting is unavailable.");
       await data.sandboxes.reportTaskOutcome(args.id, found.taskPromptId!, args.outcome, found.lifecycleGeneration);
       return { id: args.id, taskOutcome: args.outcome };
-    },
-  );
-
-  tool(
-    "runtime_github_status",
-    {
-      title: "Read runtime GitHub broker status",
-      description:
-        "Owner-only non-secret current-epoch configuration and credential-request count. Does not return credentials or probe GitHub.",
-      input: { id },
-      output: {
-        id: z.string(),
-        configured: z.boolean(),
-        revision: z.string().nullable(),
-        credentialRequests: z.number().int().nonnegative(),
-        lastAccessedAt: z.string().nullable(),
-        runtime: z.object({ kind: z.literal("armada"), epoch: z.string() }).optional(),
-      },
-      readOnly: true,
-    },
-    async (args) => {
-      if (!context.runtimeGitHub) throw new ToolError("unsupported", "Runtime GitHub is unavailable.");
-      return context.runtimeGitHub.status(caller, args.id);
     },
   );
 
@@ -1725,21 +1657,7 @@ async function readLogs(
 
 function errorResult(error: unknown, tool: string, logError: (line: string) => void): CallToolResult {
   const { code, message } = describeToolFailure(error);
-  if (
-    [
-      "internal",
-      "unavailable",
-      "provider_unavailable",
-      "dependency_unavailable",
-      "outcome_unknown",
-      "start_failed",
-    ].includes(code)
-  ) {
-    recordOperatorFailure(`tool.${tool}`, error, {
-      sandboxId: error instanceof LaunchError ? error.sandboxId : undefined,
-      log: logError,
-    });
-  }
+  logToolFailure(error, tool, code, logError);
   return {
     isError: true,
     ...(error instanceof LaunchError && error.reason
@@ -1773,6 +1691,24 @@ function errorResult(error: unknown, tool: string, logError: (line: string) => v
         : []),
     ],
   };
+}
+
+export function logToolFailure(error: unknown, tool: string, code: string, logError?: (line: string) => void) {
+  if (
+    [
+      "internal",
+      "unavailable",
+      "provider_unavailable",
+      "dependency_unavailable",
+      "outcome_unknown",
+      "start_failed",
+    ].includes(code)
+  ) {
+    recordOperatorFailure(`tool.${tool}`, error, {
+      sandboxId: error instanceof LaunchError ? error.sandboxId : undefined,
+      ...(logError ? { log: logError } : {}),
+    });
+  }
 }
 
 export function describeToolFailure(error: unknown): { code: string; message: string } {
