@@ -13,6 +13,7 @@ import {
 import { beginGoldenOperation, createSqlGoldenStore, type Sql } from "../src/golden-store.ts";
 import { type LaunchStores, launchSandbox } from "../src/launch.ts";
 import { type Provider, ProviderError, type SnapshotInfo } from "../src/provider.ts";
+import { createSqlSandboxStore } from "../src/sandbox.ts";
 import { createSqlVaultStore } from "../src/vault-store.ts";
 import { migratedDatabase } from "./support/database.ts";
 
@@ -301,6 +302,31 @@ test.each([
     await f.retirement.runOne();
     expect(f.deleted).toEqual([f.old]);
   }
+});
+
+test("retirement preserves the exact source snapshot of a registered ordinary launch", async () => {
+  const db = database();
+  const f = await fixture(db);
+  const { provider } = fakeBoat();
+  const child = await launchSandbox(
+    provider,
+    {
+      goldens: f.store,
+      sandboxes: createSqlSandboxStore(db),
+      credentials: { resolve: async () => ({ env: {}, secrets: [], codexAuthJson: false }) },
+    },
+    f.actor,
+    { golden: "retire", harness: "claude" },
+  );
+  await f.publish();
+
+  await f.retirement.runOne();
+  expect(f.deleted).toEqual([]);
+
+  await db.query("update sandboxes set status='deleted',deleted_at=now() where id=$1", [child.sandbox.id]);
+  await f.due();
+  await f.retirement.runOne();
+  expect(f.deleted).toEqual([f.old]);
 });
 
 async function templateReference(

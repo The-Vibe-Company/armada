@@ -602,6 +602,7 @@ export async function launchSandbox(
         provider: golden.provider,
         providerSandboxId: forked.id,
         goldenId: golden.id,
+        ...(templateAdmission ? {} : { sourceSnapshotId: plan.snapshot }),
         orgId: golden.orgId,
         ownerId: actor.userId,
         harness,

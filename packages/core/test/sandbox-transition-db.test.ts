@@ -53,6 +53,87 @@ function history(db: PGlite) {
   return db.query("select from_status, to_status, actor, code, generation from sandbox_transitions order by id");
 }
 
+function feed(db: PGlite) {
+  return db.query<{ id: string; kind: string; ref: string; sequence: string | null }>(
+    "select id::text, kind, ref::text, sequence::text from event_log order by event_log.id",
+  );
+}
+
+function ingest(db: Pick<PGlite, "query">) {
+  return db.query(
+    `insert into runtime_events (sandbox_id, sequence, epoch, event_enc)
+     values ($1, 1, 1, decode('01','hex')), ($1, 2, 1, decode('02','hex'))
+     on conflict (sandbox_id, sequence) do nothing`,
+    [sandbox],
+  );
+}
+
+test("committed transition and runtime references share one increasing org cursor", async () => {
+  const db = database();
+  await seedSandbox(db, "starting");
+
+  await transition(db, ["starting"], "running", "runtime_enrolment", []);
+  await db.transaction(async (tx) => {
+    await ingest(tx);
+    expect((await tx.query("select id from event_log where kind = 'runtime_event'")).rows).toEqual([]);
+  });
+  await ingest(db);
+
+  const journal = await db.query<{ id: string }>("select id::text from sandbox_transitions");
+  const rows = (await feed(db)).rows;
+  expect(rows.map(({ kind, ref, sequence }) => ({ kind, ref, sequence }))).toEqual([
+    { kind: "transition", ref: journal.rows[0]!.id, sequence: null },
+    { kind: "runtime_event", ref: "1", sequence: "1" },
+    { kind: "runtime_event", ref: "2", sequence: "2" },
+  ]);
+  expect(BigInt(rows[0]!.id)).toBeLessThan(BigInt(rows[1]!.id));
+  expect(BigInt(rows[1]!.id)).toBeLessThan(BigInt(rows[2]!.id));
+  expect((await db.query("select distinct org_id, sandbox_id from event_log")).rows).toEqual([
+    { org_id: org, sandbox_id: sandbox },
+  ]);
+});
+
+test("rolling back an ingest removes the archive and its feed references", async () => {
+  const db = database();
+  await seedSandbox(db, "running");
+  await expect(
+    db.transaction(async (tx) => {
+      await tx.query(
+        "insert into runtime_events (sandbox_id, sequence, epoch, event_enc) values ($1, 1, 1, decode('01','hex'))",
+        [sandbox],
+      );
+      throw new Error("projection failed");
+    }),
+  ).rejects.toThrow("projection failed");
+  expect((await db.query("select sequence from runtime_events")).rows).toEqual([]);
+  expect((await feed(db)).rows).toEqual([]);
+});
+
+test("physical sandbox deletion expires the feed with the runtime archive", async () => {
+  const db = database();
+  await seedSandbox(db, "running");
+  await ingest(db);
+  expect((await feed(db)).rows).toHaveLength(2);
+  await db.exec("reset role");
+  await db.transaction(async (tx) => {
+    await tx.query(
+      "insert into runtime_events (sandbox_id, sequence, epoch, event_enc) values ($1, 3, 1, decode('03','hex'))",
+      [sandbox],
+    );
+    await tx.query("delete from sandboxes where id = $1", [sandbox]);
+  });
+  expect((await db.query("select sequence from runtime_events")).rows).toEqual([]);
+  expect((await feed(db)).rows).toEqual([]);
+});
+
+test.each(["anon", "authenticated"])("%s cannot read the event feed", async (role) => {
+  const db = database();
+  await seedSandbox(db, "running");
+  await ingest(db);
+  await db.exec(`set role ${role}`);
+  await expect(feed(db)).rejects.toThrow("permission denied for table event_log");
+});
+
 test("resume journals one edge and enqueues against the new generation", async () => {
   const db = database();
   await seedSandbox(db, "stopped", "idle_paused");
@@ -114,6 +195,7 @@ test("a bad second effect rolls back the status, journal, and first job", async 
     { status: "stopping", stopped_at: null },
   ]);
   expect((await history(db)).rows).toEqual([]);
+  expect((await feed(db)).rows).toEqual([]);
   expect((await db.query("select id from jobs")).rows).toEqual([]);
 });
 

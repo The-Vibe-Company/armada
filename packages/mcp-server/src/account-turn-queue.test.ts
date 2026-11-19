@@ -976,6 +976,22 @@ test.each([
   expect(await queue.status(caller, input.id, input.request_id)).toMatchObject({ message: expected });
 });
 
+test("a ready runtime with an unsettled prompt holds the next queued turn", async () => {
+  const input = { id: ids[1]!, request_id: requests[0]!, prompt: "next turn" };
+  await database().query(
+    "update sandboxes set provider='boat',boat_runtime=true,task_prompt_id='active_turn' where id=$1",
+    [input.id],
+  );
+  const waiting = "Prompt accepted; waiting for the current sandbox turn or dispatch to finish.";
+  expect(await queue.accept(caller, input)).toMatchObject({ statusMessage: waiting });
+  queue.setDispatch(async () => ({ promptId: "next_prompt", status: "running" }));
+  expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
+  await database().query("insert into runtime_idle_turns values($1,'active_turn',true)", [input.id]);
+  expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
+  await queue.drain();
+  expect(await queue.status(caller, input.id, input.request_id)).toEqual({ nativePromptId: "next_prompt" });
+});
+
 test("a full model queues its override without blocking another model and reports the real limit", async () => {
   await database().exec(
     `update credentials set max_agents=4,model_limits='{"kimi":1,"deepseek":2}'; update sandboxes set model='deepseek';`,

@@ -60,6 +60,7 @@ export interface ServerSandboxPatch extends SandboxPatch {
   retainedRuntimeStop?: string;
   modalRuntimeExtensionTarget?: string;
   runtimeFailureFrom?: "ready" | "running";
+  turnActivity?: "claim" | "finish";
 }
 
 export interface ServerSandboxStore extends SandboxStore {
@@ -435,13 +436,18 @@ export function createSqlData(
           throw new DataError("A sandbox is recorded for its caller only.");
         }
         const result = await sql.query<SandboxViewRow>(
-          `with visible as (select g.id,g.visibility from public.goldens g where ${GOLDEN_VISIBLE} and g.id = $3 and g.org_id = $8::uuid)
+          `with visible as (select g.id,g.visibility from public.goldens g where ${GOLDEN_VISIBLE} and g.id = $3 and g.org_id = $8::uuid), inserted as (
            insert into public.sandboxes (id, provider_sandbox_id, golden_id, org_id, owner_id, harness, status, model,
              reasoning_effort, provider, visibility, access_owner_id, repository_dir, requested_ttl_seconds, effective_ttl_seconds, expires_at, activity_lease_id, activity_until, credential_id, credential_version, machine_size, resource_project, boat_runtime, runtime_transport, external_ref, stop_when_work_merged, pull_request_source)
            select $4::uuid, $5::text, visible.id, $8::uuid, $2::uuid, $6::public.harness, $7::public.sandbox_status,
              $9::text, $10::text, $11::public.sandbox_provider,case when $21::text='private' then 'private'::public.visibility else visible.visibility end,$2::uuid,$12::text,$13::integer,$14::integer,coalesce($20::timestamptz,now()+$14 * interval '1 second'),$15::uuid,case when $15::uuid is not null then now()+interval '2 minutes' else null end,$16::uuid,$17::integer,$18::text::jsonb,$19::text::jsonb, $22::boolean,$23::text,$24::text,$25::boolean,$26::text::jsonb from visible
            returning runtime_transport,boat_runtime, credential_id, credential_version, id, provider::text as provider, provider_sandbox_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
-             conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort,machine_size,resource_project,repository_dir,expires_at,effective_ttl_seconds,requested_ttl_seconds,last_observed_at,lifecycle_error,lifecycle_generation,visibility::text as visibility,access_owner_id,source_golden_visibility::text as source_golden_visibility,external_ref`,
+             conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort,machine_size,resource_project,repository_dir,expires_at,effective_ttl_seconds,requested_ttl_seconds,last_observed_at,lifecycle_error,lifecycle_generation,visibility::text as visibility,access_owner_id,source_golden_visibility::text as source_golden_visibility,external_ref
+           ), snapshot_reference as (
+             insert into public.sandbox_source_snapshots (sandbox_id,snapshot_id)
+             select id,$27::text from inserted where $27::text is not null
+           )
+           select * from inserted`,
           [
             ...scope,
             input.goldenId,
@@ -468,6 +474,7 @@ export function createSqlData(
             input.externalRef ?? null,
             input.stopWhenWorkMerged ?? true,
             JSON.stringify(input.pullRequestSource ?? null),
+            input.sourceSnapshotId ?? null,
           ],
         );
         const row = result.rows[0];
@@ -761,7 +768,7 @@ export function createSqlData(
           params.push(value);
           sets.push(`${column} = $${params.length}${cast}`);
         };
-        if (patch.advanceGeneration && patch.activityToken) {
+        if ((patch.advanceGeneration || patch.turnActivity === "claim") && patch.activityToken) {
           set("activity_lease_id", patch.activityToken, "::uuid");
           sets.push("activity_until = now() + interval '2 minutes'");
         }
@@ -780,12 +787,14 @@ export function createSqlData(
             );
         }
         if (patch.renewActivity) sets.push("activity_until = now() + interval '2 minutes'");
-        if (patch.finishActivity && patch.expectedGeneration !== undefined && patch.activityToken)
-          sets.push(
-            "activity_lease_id = null",
-            "activity_until = null",
-            "lifecycle_generation = s.lifecycle_generation + 1",
-          );
+        if (
+          (patch.finishActivity || patch.turnActivity === "finish") &&
+          patch.expectedGeneration !== undefined &&
+          patch.activityToken
+        ) {
+          sets.push("activity_lease_id = null", "activity_until = null");
+          if (patch.finishActivity) sets.push("lifecycle_generation = s.lifecycle_generation + 1");
+        }
         if (patch.advanceGeneration && !patch.renewLifecycle)
           sets.push("lifecycle_generation = s.lifecycle_generation + 1");
         if (patch.renewLifecycle) {
@@ -819,6 +828,9 @@ export function createSqlData(
         if (reason !== undefined) set("status_reason", reason, "::text");
         if (sets.length === 0) return;
         let fence = "";
+        if (patch.turnActivity !== undefined)
+          fence += " and s.status in ('ready','running') and s.stop_requested_at is null and s.deleted_at is null";
+        if (patch.turnActivity === "claim") fence += " and s.activity_lease_id is null";
         if (patch.modalRuntimeExtensionTarget !== undefined) {
           if (extensionDeadlineParam === undefined || patch.expectedGeneration === undefined)
             throw new DataError("Modal runtime extension requires a verified deadline and lifecycle generation.");
@@ -874,7 +886,8 @@ export function createSqlData(
           ? "(s.reconcile_lease_until is null or s.reconcile_lease_until < now() or (s.status in ('ready','running') and s.stop_requested_at is null and s.expires_at > clock_timestamp()))"
           : "(s.reconcile_lease_until is null or s.reconcile_lease_until < now())";
         if (supersedeObservation) sets.push("reconcile_lease = null", "reconcile_lease_until = null");
-        const ownsActivity = !!patch.activityToken && (patch.finishActivity || patch.renewActivity);
+        const ownsActivity =
+          !!patch.activityToken && (patch.finishActivity || patch.renewActivity || patch.turnActivity === "finish");
         if (ownsActivity) {
           params.push(patch.activityToken);
           fence += ` and s.activity_lease_id = $${params.length}::uuid`;
@@ -956,7 +969,7 @@ export function createSqlData(
         }
         // Names the writer behind any later refusal's activityLeaseId. Lease IDs are random
         // fences, not credentials.
-        if (admission)
+        if (admission || patch.turnActivity === "claim")
           console.info(
             JSON.stringify({
               event: "sandbox_activity_admitted",
