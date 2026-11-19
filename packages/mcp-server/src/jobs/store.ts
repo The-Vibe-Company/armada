@@ -1,5 +1,10 @@
 import { decryptSecret, encryptSecret, type Sql, toBytea } from "@armada/core/server";
-import { failStoppedTurn, RUNTIME_REQUEST_EVIDENCE } from "../account-turn-dispatch.ts";
+import {
+  DISPATCHING_TURN_CANCELLED,
+  failCancelledTurn,
+  QUEUED_TURN_CANCELLED,
+  RUNTIME_REQUEST_EVIDENCE,
+} from "../account-turn-dispatch.ts";
 import { deferTransactionWake, runtimeWakes } from "../wake-bus.ts";
 import type { Job, JobStore } from "./runner.ts";
 
@@ -58,8 +63,8 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
       return await sql.transaction(async (tx) => {
         const {
           rows: [receipt],
-        } = await tx.query<{ state: string; queued_generation: string }>(
-          `select state, queued_generation::text from public.account_turn_queue
+        } = await tx.query<{ state: string }>(
+          `select state from public.account_turn_queue
            where sandbox_id = $1 and request_id = $2 for update nowait`,
           [sandboxId, requestId],
         );
@@ -74,13 +79,17 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
         // WARNING: Owner stop can hold the sandbox lock while waiting for the receipt.
         const {
           rows: [sandbox],
-        } = await tx.query<{ generation: string; status: string }>(
-          "select lifecycle_generation::text as generation, status from public.sandboxes where id = $1 for update nowait",
-          [sandboxId],
+        } = await tx.query<{ generation: string; cancelled: boolean }>(
+          `select s.lifecycle_generation::text as generation,
+                  case when q.state = 'queued' then ${QUEUED_TURN_CANCELLED}
+                       else ${DISPATCHING_TURN_CANCELLED} end as cancelled
+           from public.sandboxes s join public.account_turn_queue q on q.sandbox_id = s.id
+           where s.id = $1 and q.request_id = $2 for update of s nowait`,
+          [sandboxId, requestId],
         );
-        if (sandbox?.status === "stopped" && sandbox.generation !== receipt.queued_generation) {
-          if (await retireClaim(tx, job, owner, sandbox.generation, "stopped_receipt"))
-            await failStoppedTurn(tx, sandboxId, requestId);
+        if (sandbox?.cancelled) {
+          if (await retireClaim(tx, job, owner, sandbox.generation, "cancelled_receipt"))
+            await failCancelledTurn(tx, sandboxId, requestId);
           return job;
         }
         if (receipt.state === "queued") {
@@ -125,13 +134,13 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
     job: Job,
     owner: string,
     generation: string | null,
-    reason: "stale_generation" | "stopped_receipt" = "stale_generation",
+    reason: "stale_generation" | "cancelled_receipt" = "stale_generation",
   ) {
     const { rows } = await tx.query(
       `update public.jobs j set state = 'failed', lease_owner = null, lease_until = null,
          outcome = coalesce(outcome, '{}'::jsonb) || jsonb_build_object('reason', $6::text)
        where ${fence} and (j.kind = 'turn_dispatch' or j.generation = $4)
-         and (j.generation is distinct from $5 or $6 = 'stopped_receipt') returning j.id`,
+         and (j.generation is distinct from $5 or $6 = 'cancelled_receipt') returning j.id`,
       [...claimKey(job, owner), generation, reason],
     );
     return rows.length > 0;
