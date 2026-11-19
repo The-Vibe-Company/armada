@@ -9,16 +9,17 @@ const { readAccountStatus: status, logoutAccount: logout } = accountOperations;
 export const accountRoutes = defineRoutes("account-control", {
   [controlRouteKey(status.route)]: {
     methods: [status.route.method],
-    handler: ({ caller }): z.output<typeof status.output> => ({
-      userId: caller.userId,
-      orgs: caller.orgs,
-      authentication: caller.via,
-      version: VERSION,
-    }),
+    handler: ({ caller }) =>
+      ({
+        userId: caller.userId,
+        orgs: caller.orgs,
+        authentication: caller.via,
+        version: VERSION,
+      }) satisfies z.output<typeof status.output>,
   },
   [controlRouteKey(logout.route)]: {
     methods: [logout.route.method],
-    handler: async ({ caller, options, request }): Promise<z.output<typeof logout.output> | undefined> => {
+    handler: async ({ caller, options, request }) => {
       if (!request) return undefined;
       if (caller.via !== "supabase")
         throw new VaultError("forbidden", "Use a personal login session to sign out remotely.");
@@ -32,7 +33,7 @@ export const accountRoutes = defineRoutes("account-control", {
         },
       );
       if (!response.ok) throw new VaultError("unavailable", "The account session could not be signed out.");
-      return { ok: true };
+      return { ok: true } satisfies z.output<typeof logout.output>;
     },
   },
 });
