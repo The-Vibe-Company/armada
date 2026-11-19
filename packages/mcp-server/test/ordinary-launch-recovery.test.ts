@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
+import { launchEnvelope } from "@armada/core/contract";
 import { createSqlData } from "../src/data.ts";
 import { createOrdinaryLaunchReceipts } from "../src/ordinary-launch-receipts.ts";
 import { callSharedTool } from "../src/tool-api.ts";
@@ -58,7 +59,16 @@ test("MCP allocation before failed registration returns a receipt ID and fences 
     return fork(request);
   };
   const successInput = { ...input, idempotencyKey: "mcp-lost-success-key" };
-  const first = await callSharedTool(context, "launch", successInput);
+  const first = launchEnvelope.parse(await callSharedTool(context, "launch", successInput));
   expect(await callSharedTool(context, "launch", successInput)).toEqual(first);
+
+  // A completion written before the envelope cutover still owns the replay key.
+  await db.query("update ordinary_launch_receipts set response=$1::jsonb where request_key=$2", [
+    JSON.stringify({ id: first.sandbox.id, provider: "boat", golden: "shared" }),
+    successInput.idempotencyKey,
+  ]);
+  await expect(callSharedTool(context, "launch", successInput)).rejects.toMatchObject({
+    code: "outcome_unknown",
+  });
   expect(allocations).toBe(2);
 });

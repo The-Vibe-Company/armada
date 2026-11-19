@@ -84,8 +84,8 @@ The separate `templates/launch` endpoint keeps its `requestKey` and durable
 receipt, and shares applicable field schemas.
 
 #2773 standardizes `{ sandbox, golden, promptId, conversationId, ttlSeconds,
-expiresAt, github, helper, runtime }` across REST, SDK, CLI JSON and the MCP
-projection when it moves in #2776. The sandbox has an Armada `id`, `provider`,
+expiresAt, github, helper, runtime }` across ordinary REST launches, SDK, CLI JSON and the operator MCP
+`launch` tool. The sandbox has an Armada `id`, `provider`,
 `status` and optional `externalRef`; provider identifiers and runtime metadata
 are present only when available and safe to expose. `golden` is null for
 Docker. Null prompt/conversation IDs cover an idle or still-admitting launch;
