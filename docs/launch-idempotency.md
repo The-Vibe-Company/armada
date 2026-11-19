@@ -148,8 +148,8 @@ with `id`, `revision`, `requestKey` and the template's `harness` to `sandbox/lau
 Personal sessions can provide an org slug or UUID. Scoped tokens can omit `org`
 or send their scoped UUID. The shared schema refuses TTLs above 86,400 seconds
 before template admission or replay lookup. When admission records a request,
-it returns a durable template
-launch receipt, including the frozen manifest on success. Replay the same body
+it returns a durable template launch receipt, including the frozen manifest on
+success. Replay the same body
 and request key to recover that receipt, and use its top-level `id` for sandbox
 operations. A pre-admission refusal has no request ID or sandbox ID. Ordinary
 template launches continue to use `templates/launch`.

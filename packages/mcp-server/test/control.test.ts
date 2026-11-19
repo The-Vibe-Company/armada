@@ -42,7 +42,7 @@ import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import { createRuntimeHistory } from "../src/runtime-history.ts";
 import { createRuntimeStartup } from "../src/runtime-startup.ts";
 import { callSharedTool } from "../src/tool-api.ts";
-import { publishedRequest, publishedResponse } from "./published-response.ts";
+import { publishedFailure, publishedRequest, publishedResponse } from "./published-response.ts";
 import { rowOnlyConnection } from "./row-only-database.ts";
 import { fakeBoat } from "./support.ts";
 
@@ -3493,7 +3493,7 @@ test("pinned Modal launch resolves personal org references and respects scoped t
     for (const malformed of [{ golden: "mixed-source" }, { ttlSeconds: PROVIDER_LIMITS.modal.maxTtlSeconds + 1 }]) {
       const refused = await launch(personal, { org: org.name, ...malformed });
       expect(refused?.status).toBe(400);
-      expect(await refused?.json()).toMatchObject({ error: { code: "invalid" } });
+      expect(publishedFailure().parse(await refused?.json())).toMatchObject({ error: { code: "invalid" } });
     }
   });
 });
