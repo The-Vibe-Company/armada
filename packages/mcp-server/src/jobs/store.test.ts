@@ -165,8 +165,12 @@ test.each([
   ["native request started without a legacy window", 2, "request", null, false, true],
   ["native legacy window still open", 2, "request", "infinity", false, false],
   ["runtime request started", 2, "request", "-infinity", true, false],
+  ["native receipt has a prompt ID", 2, "prompt", "-infinity", false, true],
   ["native dispatch has no evidence", 2, null, "-infinity", false, false],
-] as const)("shared claim reconciles %s", async (_, generation, activity, until, runtime, uncertain) => {
+  ["older job for abandoned native dispatch", 3, null, "-infinity", false, false],
+  ["native dispatch window is missing", 2, null, null, false, false],
+  ["native reset interrupted before commit", 2, null, "-infinity", false, false],
+] as const)("shared claim reconciles %s", async (scenario, generation, activity, until, runtime, uncertain) => {
   const f = await fixture();
   const { db, people, store } = f;
   const sandboxId = await sandbox(f, runtime);
@@ -184,37 +188,70 @@ test.each([
     },
   );
   await db.query(
-    "update account_turn_queue set state='dispatching', dispatch_generation=2, dispatch_until=$2 where request_id=$1",
-    [requestId, until],
+    `update account_turn_queue set state='dispatching', dispatch_generation=$4, dispatch_until=$2,
+       native_prompt_id=$3 where request_id=$1`,
+    [requestId, until, activity === "prompt" ? "prior-prompt" : null, scenario.startsWith("older job") ? 3 : 2],
   );
   await db.query(`update sandboxes set lifecycle_generation=$2, activity_lease_id=$3, activity_until=$4 where id=$1`, [
     sandboxId,
     generation,
-    activity ? requestId : null,
-    activity ? "infinity" : null,
+    activity === "request" ? requestId : null,
+    activity === "request" ? "infinity" : null,
   ]);
   await db.query("insert into account_agent_reservations (sandbox_id, account_id) values ($1, $2)", [
     sandboxId,
     f.openaiCredentialId,
   ]);
-  await store.claim("turn_dispatch", crypto.randomUUID(), 30, 1);
-  expect(
+  const outcome = async () =>
     (
       await db.query(
         `select j.state as job_state, q.state as receipt_state, q.failure_reason,
+              (q.dispatch_generation is not null or q.dispatch_until is not null) as dispatch_recorded,
               exists(select 1 from account_agent_reservations r where r.sandbox_id=q.sandbox_id) as reserved
        from jobs j join account_turn_queue q on q.sandbox_id=j.sandbox_id where j.id=$1`,
         [id],
       )
-    ).rows,
-  ).toEqual([
+    ).rows;
+  const interrupted = scenario === "native reset interrupted before commit";
+  if (interrupted) {
+    const faultySql = sqlOver({
+      unsafe: async (query, params) => (await db.query(query, params)).rows,
+      begin: (work) =>
+        db.transaction(async (tx) => {
+          await work({ unsafe: async (query, params) => (await tx.query(query, params)).rows });
+          throw new Error("Interrupted before reset commit.");
+        }),
+    });
+    await expect(
+      createJobsStore(faultySql, btoa("\0".repeat(32))).claim("turn_dispatch", crypto.randomUUID(), 30, 1),
+    ).rejects.toThrow("Interrupted before reset commit.");
+    expect(await outcome()).toEqual([
+      {
+        job_state: "leased",
+        receipt_state: "dispatching",
+        failure_reason: null,
+        dispatch_recorded: true,
+        reserved: true,
+      },
+    ]);
+    await db.query("update jobs set lease_until='-infinity' where id=$1", [id]);
+  }
+  const owner = crypto.randomUUID();
+  const claim = await store.claim("turn_dispatch", owner, 30, 1);
+  const reset = interrupted || scenario === "native dispatch has no evidence" || scenario.startsWith("older job");
+  expect(await outcome()).toEqual([
     {
       job_state: uncertain ? "failed" : "leased",
-      receipt_state: uncertain ? "failed" : "dispatching",
+      receipt_state: uncertain ? "failed" : reset ? "queued" : "dispatching",
       failure_reason: uncertain ? "Dispatch outcome uncertain; inspect sandbox history before resending." : null,
-      reserved: true,
+      dispatch_recorded: !reset,
+      reserved: !reset,
     },
   ]);
+  if (reset) {
+    expect(claim).toMatchObject({ id, generation: String(generation), payload: { requestId } });
+    expect(await store.inspect(claim!, owner)).toBe("dispatch");
+  }
 });
 
 test.each([
