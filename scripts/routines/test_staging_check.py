@@ -234,7 +234,8 @@ class CoordinatorTests(unittest.TestCase):
         origin, token = "https://staging.example", "fixture-routine"
         api = check.Api(origin, ORG, token)
         scenario = check.Scenario(api)
-        with patch.object(api.opener, "open", return_value=io.BytesIO(b'{"status":"deleted"}')) as opened:
+        with patch.object(api.opener, "open", return_value=io.BytesIO(b'{"status":"deleted"}')) as opened, \
+                patch.object(scenario, "sleep", side_effect=AssertionError("unexpected cleanup retry")):
             scenario.stop_delete(SANDBOX, api.deadline)
         opened.assert_called_once()
         request = opened.call_args.args[0]
