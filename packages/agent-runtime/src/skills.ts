@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { HARNESS_CATALOG, type Harness, type SkillReceipt, validateSkillPins } from "@armada/core";
+import { PRIVATE_SKILL_FAILURES } from "../../core/src/private-skill-error.ts";
 import { shellQuote as q } from "../../core/src/shell-quote.ts";
 import {
   parsePrivateSkillReceipt,
@@ -121,69 +122,95 @@ export async function installRuntimeSkills(
             .run(child.pid, JSON.stringify({ pid: child.pid, status: "exited", identity }));
       }
     };
-    let workspace: string | undefined;
-    if (privatePins) {
-      const auth = await run("skillpack auth status --api-url https://skillpack.app/v1 --json", input.key);
-      if (auth.code !== 0)
-        throw Error(
-          [3, 7].includes(auth.code ?? -1)
-            ? "skillpack_credential_refused"
-            : [2, 126, 127].includes(auth.code ?? -1)
-              ? "skillpack_cli_unavailable"
-              : "skillpack_auth_unavailable",
-        );
-      try {
-        const parsed = JSON.parse(auth.stdout);
-        workspace = parsed?.workspace?.id;
-      } catch {}
-      if (typeof workspace !== "string" || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(workspace))
-        throw Error("skillpack_protocol_invalid");
-    }
-    const receipts: SkillReceipt[] = [];
-    for (const reference of input.references) {
-      bounded.throwIfAborted();
-      const isPrivate = !reference.includes("/");
-      const [slug, version] = reference.split("@");
-      const command = isPrivate
-        ? `skillpack install ${q(slug!)} --version ${q(version!)} --scope project --project ${q(input.cwd)} --tools ${HARNESS_CATALOG[input.harness].skillpackTool} --pin --yes --api-url https://skillpack.app/v1 --json`
-        : skillInstallCommand(reference, input.cwd, input.harness);
-      const result = await run(`${command} >/dev/null`, isPrivate ? input.key : undefined);
-      if (result.code !== 0)
-        throw Error(
-          result.code === 3
-            ? isPrivate
-              ? "skillpack_credential_refused"
-              : "skillpack_skill_unavailable"
-            : [4, 7].includes(result.code ?? -1)
-              ? "skillpack_skill_unavailable"
-              : result.code === 2 || result.code === 5
-                ? "skillpack_request_rejected"
-                : result.code === 6
-                  ? "skillpack_install_conflict"
-                  : result.code === 8
-                    ? "skillpack_registry_unavailable"
-                    : [126, 127].includes(result.code ?? -1)
-                      ? "skillpack_cli_unavailable"
-                      : "skillpack_install_nonzero",
-        );
-      try {
-        const path = join(input.cwd, ".companion/skills.lock.json");
-        if ((await stat(path)).size > 1048576) throw Error();
-        const lock = await readFile(path, "utf8");
-        receipts.push(
-          isPrivate
-            ? parsePrivateSkillReceipt(lock, reference, input.harness, workspace!)
-            : parseSkillReceipt(lock, reference, input.harness),
-        );
-      } catch {
-        throw Error("skillpack_receipt_invalid");
-      }
-    }
-    const exclusions = await run(skillExclusionCommand(input.references, input.harness));
-    // /home/user can be a non-repository golden; native launch only excludes in repos.
-    if (exclusions.code !== 0 && input.cwd !== "/home/user") throw Error("skillpack_install_state_invalid");
-    return receipts;
+    return await installPinnedSkills(input, bounded, run);
   } finally {
     await prepared.dispose();
+  }
+}
+
+export async function installPinnedSkills(
+  input: SkillInstallInput,
+  signal: AbortSignal,
+  run: (command: string, key?: string) => Promise<{ code: number | null; stdout: string }>,
+) {
+  let workspace: string | undefined;
+  if (input.references.some((reference) => !reference.includes("/"))) {
+    const auth = await run("skillpack auth status --api-url https://skillpack.app/v1 --json", input.key);
+    if (auth.code !== 0)
+      throw Error(
+        [3, 7].includes(auth.code ?? -1)
+          ? "skillpack_credential_refused"
+          : [2, 126, 127].includes(auth.code ?? -1)
+            ? "skillpack_cli_unavailable"
+            : "skillpack_auth_unavailable",
+      );
+    try {
+      const parsed = JSON.parse(auth.stdout);
+      workspace = parsed?.workspace?.id;
+    } catch {}
+    if (typeof workspace !== "string" || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(workspace))
+      throw Error("skillpack_protocol_invalid");
+  }
+  const receipts: SkillReceipt[] = [];
+  for (const reference of input.references) {
+    signal.throwIfAborted();
+    const isPrivate = !reference.includes("/");
+    const [slug, version] = reference.split("@");
+    const command = isPrivate
+      ? `skillpack install ${q(slug!)} --version ${q(version!)} --scope project --project ${q(input.cwd)} --tools ${HARNESS_CATALOG[input.harness].skillpackTool} --pin --yes --api-url https://skillpack.app/v1 --json`
+      : skillInstallCommand(reference, input.cwd, input.harness);
+    const result = await run(`${command} >/dev/null`, isPrivate ? input.key : undefined);
+    if (result.code !== 0)
+      throw Error(
+        result.code === 3
+          ? isPrivate
+            ? "skillpack_credential_refused"
+            : "skillpack_skill_unavailable"
+          : [4, 7].includes(result.code ?? -1)
+            ? "skillpack_skill_unavailable"
+            : result.code === 2 || result.code === 5
+              ? "skillpack_request_rejected"
+              : result.code === 6
+                ? "skillpack_install_conflict"
+                : result.code === 8
+                  ? "skillpack_registry_unavailable"
+                  : [126, 127].includes(result.code ?? -1)
+                    ? "skillpack_cli_unavailable"
+                    : "skillpack_install_nonzero",
+      );
+    try {
+      const path = join(input.cwd, ".companion/skills.lock.json");
+      if ((await stat(path)).size > 1048576) throw Error();
+      const lock = await readFile(path, "utf8");
+      receipts.push(
+        isPrivate
+          ? parsePrivateSkillReceipt(lock, reference, input.harness, workspace!)
+          : parseSkillReceipt(lock, reference, input.harness),
+      );
+    } catch {
+      throw Error("skillpack_receipt_invalid");
+    }
+  }
+  const exclusions = await run(skillExclusionCommand(input.references, input.harness));
+  // /home/user can be a non-repository golden; native launch only excludes in repos.
+  if (exclusions.code !== 0 && input.cwd !== "/home/user") throw Error("skillpack_install_state_invalid");
+  return receipts;
+}
+
+export async function skillInstallResult(work: Promise<SkillReceipt[]>) {
+  try {
+    return { receipts: await work };
+  } catch (error) {
+    const reason =
+      error instanceof Error &&
+      [
+        ...PRIVATE_SKILL_FAILURES,
+        "skillpack_credential_missing",
+        "skillpack_credential_refused",
+        "skillpack_skill_unavailable",
+      ].includes(error.message as never)
+        ? error.message
+        : "skillpack_install_state_invalid";
+    return { failure: { reason } };
   }
 }
