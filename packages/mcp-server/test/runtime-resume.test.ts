@@ -328,7 +328,7 @@ test("an unenrolled Boat resume returns to a confirmed retained stop before anot
   }
 });
 
-test.each(["activation receipt", "pending ticket", "observed archive"])(
+test.each(["activation receipt", "pending ticket", "observed archive", "observed running"])(
   "the worker recovers an interrupted Boat resume with %s evidence",
   async (proof) => {
     const f = await stopped();
@@ -355,15 +355,18 @@ test.each(["activation receipt", "pending ticket", "observed archive"])(
       await expect(resume(f.caller, first)).rejects.toMatchObject({ code: "conflict" });
       const store = createSqlData(f.sql)(f.caller).sandboxes;
       expect((await store.get(f.row.id))?.status).toBe("starting");
-      const { provider } = fakeBoat(
+      const running = { body: { sandbox: sdkSandbox({ id: f.row.providerSandboxId, state: "running" }) } };
+      const { provider, requests } = fakeBoat(
         ...(proof === "observed archive"
           ? [{ body: { sandbox: retainedSandbox({ id: f.row.providerSandboxId, snapshotAvailable: false }) } }]
           : []),
+        ...(proof === "observed running" ? [running, running, {}] : []),
         { body: { sandbox: retainedSandbox({ id: f.row.providerSandboxId }) } },
       );
       const worker = createSandboxLifecycle(f.sql, async () => provider);
       expect(await worker.reconcileOne()).toBe(true);
       expect((await store.get(f.row.id))?.status).toBe("stopping");
+      if (proof === "observed running") expect(requests.map(({ method }) => method)).toEqual(["GET"]);
       if (ticket) await expect(f.authority.enrol(ticket)).rejects.toThrow("runtime_enrolment_denied");
       expect(await worker.reconcileOne()).toBe(true);
       expect((await store.get(f.row.id))?.status).toBe("stopped");
