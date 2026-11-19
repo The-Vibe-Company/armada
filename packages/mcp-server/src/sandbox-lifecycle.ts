@@ -39,6 +39,7 @@ interface SandboxTransition {
     | "expiry"
     | "idle"
     | "lifecycle_runner"
+    | "docker_host"
     | "delete_job"
     | "retention_job";
   code: string;
@@ -175,10 +176,8 @@ export async function failDockerResumeActivation(
   requestId: string,
   reason: string,
 ) {
-  const failed = await tx.query(
-    `update public.sandboxes s set status='failed',status_reason=$4,
-       transition_context='{"actor":"docker_host","code":"resume_ack_failed"}'::jsonb,
-       lifecycle_generation=s.lifecycle_generation+1
+  const fenced = await tx.query<{ status: "starting" | "ready" | "running"; generation: string }>(
+    `update public.sandboxes s set lifecycle_generation=s.lifecycle_generation+1
      from public.docker_host_jobs resumed
      where s.id=$1 and s.lifecycle_generation=$2 and s.provider='docker'
        and s.status in ('starting','ready','running') and s.stop_requested_at is null and s.deleted_at is null
@@ -187,10 +186,24 @@ export async function failDockerResumeActivation(
        and not exists (
          select 1 from public.docker_host_jobs later where later.bound_sandbox_id=s.id
            and later.host_id=resumed.host_id and later.bound_operation='resume' and later.position>resumed.position
-       ) returning s.id`,
-    [sandboxId, generation, requestId, reason],
+       ) returning s.status, s.lifecycle_generation::text as generation`,
+    [sandboxId, generation, requestId],
   );
-  return failed.rows.length > 0;
+  const activation = fenced.rows[0];
+  if (!activation) return false;
+
+  const result = await transitionSandbox(tx, {
+    sandboxId,
+    expectedGeneration: activation.generation,
+    fromStates: [activation.status],
+    toState: "failed",
+    actor: "docker_host",
+    code: "resume_ack_failed",
+    effects: [],
+  });
+  if (result.kind === "conflict") throw new Error("Docker resume activation changed while settling its failure.");
+  await tx.query("update public.sandboxes set status_reason=$2 where id=$1", [sandboxId, reason]);
+  return true;
 }
 
 export async function requestRefusedDockerResumeStop(tx: Sql, sandboxId: string, generation: string) {
