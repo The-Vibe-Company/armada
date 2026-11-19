@@ -431,8 +431,6 @@
     "packages/agent-runtime/test/unknown-owner.test.ts": 1,
     "packages/agent-runtime/test/workspace.test.ts": 2,
     "packages/cli/npm/armada.cjs": 4,
-    "packages/cli/src/preferences.ts": 1,
-    "packages/cli/src/snapshot-text.ts": 1,
     "packages/cli/test/binary.release.ts": 2,
     "packages/cli/test/extend-api.test.ts": 3,
     "packages/cli/test/fixtures/native-codex-login.ts": 1,
