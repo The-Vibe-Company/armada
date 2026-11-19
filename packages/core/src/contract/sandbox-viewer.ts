@@ -43,7 +43,7 @@ export const sandboxViewerOperations = {
     name: "readViewerLogs",
     directServer: true,
     route: { method: "POST", path: "/api/v1/viewer/logs" },
-    input: { body: pageInput },
+    input: { body: pageInput, maxBodyBytes: 512 * 1024 },
     output: readLogsOperation.output,
     readOnly: true,
     destructive: false,

@@ -168,8 +168,10 @@ export function generateOpenApi(table: readonly OpenApiOperation[] = Object.valu
     const input = operation.input.body instanceof z.ZodUndefined ? undefined : requestJsonSchema(operation.input.body);
     let description = operation.description;
     let request = input;
-    const maxBodyBytes = controlBodyMaxBytes(route);
-    const oversizedStatus = vaultControlRoute(route) ? 400 : 413;
+    const viewer = route.startsWith("viewer/");
+    const viewerControl = viewer || route === "sandbox/viewer-token";
+    const maxBodyBytes = operation.input.maxBodyBytes ?? controlBodyMaxBytes(route);
+    const oversizedStatus = viewerControl ? 503 : vaultControlRoute(route) ? 400 : 413;
     if (route === "sandbox/launch" && operation.input.body instanceof z.ZodUnion) {
       request = {
         oneOf: operation.input.body.options.map((variant) => {
@@ -205,8 +207,6 @@ export function generateOpenApi(table: readonly OpenApiOperation[] = Object.valu
       description +=
         " A Docker sandbox admits only the Docker sandbox send variant: model and reasoning_effort are refused because they remain pinned to launch. Supply request_id (a lowercase UUID) to replay uncertain delivery; when it is omitted the server generates one.";
     }
-    const viewer = route.startsWith("viewer/");
-    const viewerControl = viewer || route === "sandbox/viewer-token";
     const query = operation.input.query;
     const parameters = [
       ...Object.entries(operation.input.path ?? {}).map(([name, schema]) => ({
@@ -245,13 +245,14 @@ export function generateOpenApi(table: readonly OpenApiOperation[] = Object.valu
         requestBody: {
           required: route !== "viewer/logs" && route !== "viewer/status",
           description: viewerControl
-            ? "Send a JSON object."
+            ? `Send a JSON object of at most ${maxBodyBytes} bytes. A larger body returns HTTP 503 with viewer_access_denied before dispatch. Reduce the body before retrying.`
             : operation.directServer
               ? `Send at most ${maxBodyBytes} bytes of serialized JSON.`
               : vaultControlRoute(route)
                 ? `Send at most ${maxBodyBytes} bytes of serialized JSON. The server reads this route with the vault body reader and refuses a larger body with HTTP 400 (code invalid); the dashboard endpoint refuses a body over ${CONTROL_BODY_MAX_BYTES} bytes with HTTP 413. Nothing is dispatched in either case.`
                 : `Send at most ${maxBodyBytes} bytes of serialized JSON. The dashboard endpoint refuses a larger body with HTTP 413 without forwarding it, and the server refuses a body over its own limit, which is never lower, with HTTP 413 before any handler runs.`,
-          ...(!viewerControl && { "x-max-body-bytes": maxBodyBytes, "x-oversized-body-status": oversizedStatus }),
+          "x-max-body-bytes": maxBodyBytes,
+          "x-oversized-body-status": oversizedStatus,
           content: { "application/json": { schema: request } },
         },
       }),
@@ -281,6 +282,9 @@ export function generateOpenApi(table: readonly OpenApiOperation[] = Object.valu
           }),
         "503": {
           description:
+            (request && viewerControl
+              ? "A request body exceeding the viewer limit returns viewer_access_denied. "
+              : "") +
             "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
           headers: {
             "Retry-After": {

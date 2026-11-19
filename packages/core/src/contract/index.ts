@@ -40,6 +40,7 @@ export interface Operation<Input extends z.ZodType, Output extends z.ZodType | u
   readonly route: { readonly method: string; readonly path: `/api/v1/${string}` };
   readonly input: {
     readonly body: Input;
+    readonly maxBodyBytes?: number;
     readonly query?: z.ZodType;
     readonly path?: Readonly<Record<string, z.ZodType>>;
     readonly headers?: Readonly<Record<string, z.ZodType>>;

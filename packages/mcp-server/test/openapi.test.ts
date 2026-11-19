@@ -53,11 +53,16 @@ test("published OpenAPI matches current server contracts and preserves REST fiel
 });
 
 test("every published operation states the body limit both public boundaries enforce", () => {
-  type Operation = { post?: { requestBody: { "x-max-body-bytes": number }; responses: Record<string, unknown> } };
+  type Operation = {
+    post?: {
+      requestBody: { "x-max-body-bytes": number; "x-oversized-body-status": number };
+      responses: Record<string, unknown>;
+    };
+  };
   const limits = Object.fromEntries(
     Object.entries(published.paths as unknown as Record<string, Operation>).flatMap(([path, { post }]) => {
       if (!post?.requestBody?.["x-max-body-bytes"]) return [];
-      expect(post.responses["413"]).toBeDefined();
+      expect(post.responses[post.requestBody["x-oversized-body-status"]]).toBeDefined();
       return [[path, post.requestBody["x-max-body-bytes"]]];
     }),
   );
