@@ -56,6 +56,7 @@ export interface SandboxView extends SandboxRecord {
 
 export interface ServerSandboxPatch extends SandboxPatch {
   onlyIfIdle?: boolean;
+  modalRuntimeExtensionTarget?: string;
 }
 
 export interface ServerSandboxStore extends SandboxStore {
@@ -785,12 +786,25 @@ export function createSqlData(
         if (patch.deletedAt !== undefined) set("deleted_at", patch.deletedAt, "::timestamptz");
         if (patch.status === "deleted") sets.push("preservation_note = null");
         if (patch.expiresAt !== undefined) set("expires_at", patch.expiresAt, "::timestamptz");
+        const extensionDeadlineParam = patch.expiresAt === undefined ? undefined : params.length;
         if (patch.effectiveTtlSeconds !== undefined)
           set("effective_ttl_seconds", patch.effectiveTtlSeconds, "::integer");
         const reason = statusReasonOf(patch);
         if (reason !== undefined) set("status_reason", reason, "::text");
         if (sets.length === 0) return;
         let fence = "";
+        if (patch.modalRuntimeExtensionTarget !== undefined) {
+          if (extensionDeadlineParam === undefined || patch.expectedGeneration === undefined)
+            throw new DataError("Modal runtime extension requires a verified deadline and lifecycle generation.");
+          params.push(patch.modalRuntimeExtensionTarget);
+          fence += ` and s.provider='modal' and s.runtime_transport='dialout'
+            and s.provider_sandbox_id=$${params.length}::text and s.status in ('ready','running')
+            and s.stop_requested_at is null and s.deleted_at is null
+            and s.expires_at>clock_timestamp() and s.expires_at<$${extensionDeadlineParam}::timestamptz
+            and exists(select 1 from public.runtime_enrolments r where r.sandbox_id=s.id
+              and r.lifecycle_generation=s.lifecycle_generation and r.runtime_hash is not null
+              and r.epoch=r.command_grant_epoch and r.command_grant_expires_at>=$${extensionDeadlineParam}::timestamptz)`;
+        }
         // Only an explicit send/resume may cancel an in-flight stop. Other
         // workspace operations must not mutate data covered by its receipt.
         if (
@@ -871,8 +885,8 @@ export function createSqlData(
             params,
           );
         let result: Awaited<ReturnType<typeof applyUpdate>>;
-        if (idleAdmission) {
-          if (!sql.transaction) throw new Error("Idle-only stop requires transactional sandbox admission.");
+        if (idleAdmission || patch.modalRuntimeExtensionTarget !== undefined) {
+          if (!sql.transaction) throw new Error("Fenced sandbox admission requires a transaction.");
           result = await sql.transaction(async (tx) => {
             // WARNING: The queue check needs a fresh statement snapshot after acquiring the sandbox lock.
             const locked = await tx.query<{ id: string }>(
