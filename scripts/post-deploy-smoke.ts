@@ -82,6 +82,7 @@ class SmokeFailure extends Error {
     readonly status?: number,
     readonly waitResponse?: Record<string, string | boolean | number>,
     readonly launchResponse?: { httpStatus?: number; timeoutMs: number; requestId?: string; requestKey?: string },
+    readonly transportTimeoutMs?: number,
   ) {
     super(code);
   }
@@ -558,6 +559,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     if (remaining <= 0) fail("poll_limit_exceeded");
     const requestTimeoutMs = Math.min(timeoutMs, remaining);
     const sandboxLaunch = path === "sandbox/launch";
+    const signal = AbortSignal.timeout(requestTimeoutMs);
     try {
       const response = await io.fetch(`${origin}/api/v1/${path}`, {
         method: body === undefined ? "GET" : "POST",
@@ -569,7 +571,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         redirect: "error",
-        signal: AbortSignal.timeout(requestTimeoutMs),
+        signal,
       });
       const requestId = sandboxLaunch ? response.headers.get("x-request-id") : null;
       const launchResponse = sandboxLaunch
@@ -637,6 +639,8 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
       return result as T;
     } catch (error) {
       if (error instanceof SmokeFailure || error instanceof VaultSmokeFailure) throw error;
+      if (signal.aborted || (error instanceof DOMException && error.name === "TimeoutError"))
+        throw new SmokeFailure("request_failed", undefined, undefined, undefined, requestTimeoutMs);
       fail("request_failed");
     }
   }
@@ -651,7 +655,16 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     for (let i = 0; i < limit; i++) {
       const remaining = until === undefined ? undefined : until - io.now();
       if (remaining !== undefined && remaining <= 0) break;
-      const value = await read(remaining);
+      const value = await read(remaining).catch((error: unknown) => {
+        if (
+          error instanceof SmokeFailure &&
+          error.transportTimeoutMs !== undefined &&
+          until !== undefined &&
+          io.now() >= until
+        )
+          throw new SmokeFailure("poll_limit_exceeded", undefined, undefined, undefined, error.transportTimeoutMs);
+        throw error;
+      });
       const after = until === undefined ? Number.POSITIVE_INFINITY : until - io.now();
       if (after >= 0 && done(value)) return value;
       if (after <= 0) break;
@@ -1410,10 +1423,24 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
                 typeof row.outputTokens === "number" &&
                 typeof result.usage?.tokenTotals?.inputTokens === "number" &&
                 typeof result.usage?.tokenTotals?.outputTokens === "number"
+              .catch((error: unknown) => {
+            if (
+              error instanceof SmokeFailure &&
+              (error.code === "request_failed" || error.transportTimeoutMs !== undefined)
+            ) {
+              io.out(
+                JSON.stringify({
+                  step: "usage_request_diagnostic",
+                  usageStep,
+                  provider: item.provider,
+                  route: "sandbox/status",
+                  timeoutMs: error.transportTimeoutMs ?? null,
+                  code: error.code,
+                }),
               );
-            },
-            { step: usageStep },
-          ),
+            }
+            throw error;
+          }),
         );
         if (github)
           await step(second ? "native_git_second" : "native_git_first", async () => {

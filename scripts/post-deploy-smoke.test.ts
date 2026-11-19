@@ -2527,3 +2527,31 @@ test.each(["unknown", "missing", "old", "partial", "measured", "null-totals", "c
     );
   },
 );
+
+test("a resumed usage request that exhausts the poll deadline reports its timeout", async () => {
+  let resumed = false;
+  const fake = lifecycleFixture("none", (call) => {
+    if (call.path === "sandbox/wait" && call.body.prompt_id === "turn-2") resumed = true;
+    if (call.path === "sandbox/stop") resumed = false;
+    if (call.path !== "sandbox/status" || !resumed) return;
+    fake.advance(deadlines.resume_usage + 1);
+    throw new DOMException("private transport detail", "TimeoutError");
+  });
+  expect(await fake.run([{ ...selected, provider: "modal" }])).toBe(false);
+  expect(fake.receipts()).toContainEqual({
+    case: 0,
+    step: "resume_usage",
+    pass: false,
+    code: "poll_limit_exceeded",
+  });
+  expect(fake.receipts()).toContainEqual({
+    case: 0,
+    step: "usage_request_diagnostic",
+    usageStep: "resume_usage",
+    provider: "modal",
+    route: "sandbox/status",
+    timeoutMs: deadlines.resume_usage,
+    code: "poll_limit_exceeded",
+  });
+  expect(fake.lines.join("\n")).not.toContain("private transport detail");
+});
