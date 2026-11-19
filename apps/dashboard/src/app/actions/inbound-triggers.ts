@@ -4,6 +4,26 @@ import { revalidatePath } from "next/cache";
 import { isUuid } from "@/lib/action";
 import { ControlError } from "@/lib/control";
 import { viewerInboundTriggers } from "@/lib/data/inbound-triggers";
+import { parseTriggerCreateForm } from "@/lib/inbound-triggers";
+
+export async function createTrigger(org: string, form: FormData) {
+  const control = await viewerInboundTriggers(org);
+  if (!control) return { error: "Select the organization where you are an admin." };
+  const input = parseTriggerCreateForm(form);
+  if (!input.success) return { error: "Choose a template and harness and enter positive whole-number limits." };
+  try {
+    const { signingSecret } = await control.create(input.data);
+    return { signingSecret };
+  } catch (error) {
+    if (!(error instanceof ControlError)) throw error;
+    if (error.status === 409) {
+      return {
+        error: "Check that the template is available and your default account matches its harness and account binding.",
+      };
+    }
+    return { outcomeUnknown: true };
+  }
+}
 
 export async function triggerDeliveries(org: string, id: string) {
   const control = isUuid(id) ? await viewerInboundTriggers(org) : null;

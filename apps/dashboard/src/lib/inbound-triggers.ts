@@ -1,4 +1,5 @@
 import { isHarness } from "@armada/core";
+import { createInboundTrigger } from "@armada/core/contract";
 import { isUuid } from "./action.ts";
 import { type ArmadaApiOptions, ControlError, controlResource } from "./control.ts";
 
@@ -55,11 +56,30 @@ function array(value: unknown) {
   return value as unknown[];
 }
 
+export function parseTriggerCreateForm(form: FormData) {
+  return createInboundTrigger.input.body.safeParse({
+    templateId: form.get("templateId"),
+    poolHarness: form.get("poolHarness"),
+    ratePerMinute: Number(form.get("ratePerMinute")),
+    concurrency: Number(form.get("concurrency")),
+  });
+}
+
 export function createInboundTriggerControl(options: ArmadaApiOptions, org: string) {
-  function request(method: "GET" | "POST", suffix = "") {
-    return controlResource(options, `/api/v1/triggers${suffix}?org=${encodeURIComponent(org)}`, method);
+  function request(method: "GET" | "POST", suffix = "", body?: object) {
+    return controlResource(
+      options,
+      `${createInboundTrigger.route.path}${suffix}?org=${encodeURIComponent(org)}`,
+      method,
+      body,
+    );
   }
   return {
+    async create(body: NonNullable<ReturnType<typeof parseTriggerCreateForm>["data"]>) {
+      const result = createInboundTrigger.output.safeParse(await request("POST", "", body));
+      if (!result.success) throw unexpected();
+      return result.data;
+    },
     async list() {
       return array(record(await request("GET")).triggers).map(parseTrigger);
     },

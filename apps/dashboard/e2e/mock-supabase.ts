@@ -9,6 +9,7 @@ import {
   ROUTINE_REASON_HELP,
   resolveMachineSize,
 } from "@armada/core";
+import { createInboundTrigger } from "@armada/core/contract";
 import { largeSandboxExpiry } from "./fixture-expiry";
 
 /**
@@ -21,6 +22,16 @@ import { largeSandboxExpiry } from "./fixture-expiry";
  */
 
 type Row = Record<string, unknown>;
+type TriggerSummary = {
+  id: string;
+  templateId: string;
+  poolHarness: Harness;
+  enabled: boolean;
+  ratePerMinute: number;
+  concurrency: number;
+  rateRefusals: number;
+};
+
 type Fail = { status: number; code: string; message: string };
 
 const PORT = Number(process.env.MOCK_PORT ?? 54399);
@@ -80,7 +91,7 @@ type State = {
   templateRequests: Map<string, Row>;
   routines: Row[];
   routineHistory: Row[];
-  inboundTriggerEnabled: boolean;
+  inboundTriggers: Map<string, { org: string; summary: TriggerSummary }>;
 };
 
 function seed(): State {
@@ -216,7 +227,23 @@ function seed(): State {
       routineRow(id(2201), "personal", ALICE, "Release notes", "paused", id(91), 1),
       routineRow(id(2202), "personal", BOB, "Bob private check", "paused", id(90), 2),
     ],
-    inboundTriggerEnabled: true,
+    inboundTriggers: new Map([
+      [
+        id(2220),
+        {
+          org: ACME,
+          summary: {
+            id: id(2220),
+            templateId: id(90),
+            poolHarness: "claude",
+            enabled: true,
+            ratePerMinute: 25,
+            concurrency: 2,
+            rateRefusals: 1,
+          },
+        },
+      ],
+    ]),
     routineHistory: [
       {
         id: id(2210),
@@ -2923,38 +2950,58 @@ function langfuseControl(request: Request, match: RegExpMatchArray, body: Row): 
   return json({ enabled: candidate.enabled, contentMode: candidate.contentMode });
 }
 
-function inboundTriggers(request: Request, url: URL, path: RegExpMatchArray) {
+async function inboundTriggers(request: Request, url: URL, path: RegExpMatchArray) {
   const caller = viewer(request);
   const org = url.searchParams.get("org");
   if (!caller) return controlFail(401, "unauthorized", "Sign in again.");
   if (!isAdmin(org, caller)) return controlFail(403, "forbidden", "Only organization admins can manage triggers.");
 
-  const trigger = id(2220);
   const [, triggerId, operation] = path;
   const headers = { "cache-control": "no-store" };
   if (request.method === "GET" && !triggerId) {
-    const summary = {
-      id: trigger,
-      templateId: id(90),
-      poolHarness: "claude",
-      enabled: state.inboundTriggerEnabled,
-      ratePerMinute: 25,
-      concurrency: 2,
-      rateRefusals: 1,
-    };
-    return json({ triggers: org === ACME ? [summary] : [] }, 200, headers);
+    const triggers = Array.from(state.inboundTriggers.values())
+      .filter((entry) => entry.org === org)
+      .map((entry) => entry.summary);
+    return json({ triggers }, 200, headers);
   }
-  if (org !== ACME || triggerId !== trigger) return controlFail(404, "not_found", "Trigger not found.");
+  if (request.method === "POST" && !triggerId) {
+    const scope = createInboundTrigger.input.query.safeParse({ org });
+    const input = createInboundTrigger.input.body.safeParse(await request.json().catch(() => null));
+    if (!scope.success || !input.success) return controlFail(400, "invalid_request", "Invalid trigger configuration.");
+    const { templateId, poolHarness } = input.data;
+    const template = state.templates.find(
+      (row) =>
+        row.id === templateId &&
+        row.orgId === org &&
+        row.status === "active" &&
+        (row.scope === "org" || row.ownerId === caller),
+    );
+    const revision = state.templateRevisions.find(
+      (row) => row.templateId === template?.id && row.revision === template?.currentRevision,
+    );
+    if ((revision?.definition as Row | undefined)?.harness !== poolHarness)
+      return controlFail(409, "conflict", "The template or account pool is unavailable.");
+
+    const newId = id(++sequence);
+    state.inboundTriggers.set(newId, {
+      org: scope.data.org,
+      summary: { id: newId, ...input.data, enabled: true, rateRefusals: 0 },
+    });
+    const signingSecret = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64");
+    return json({ triggerId: newId, signingSecret }, createInboundTrigger.successStatus, headers);
+  }
+  const entry = triggerId ? state.inboundTriggers.get(triggerId) : undefined;
+  if (!entry || entry.org !== org) return controlFail(404, "not_found", "Trigger not found.");
   if (request.method === "GET" && operation === "deliveries") {
     const delivery = { deliveryId: "fixture_delivery", receivedAt: "2026-11-19T10:00:00Z", jobState: "done" };
-    return json({ deliveries: [delivery] }, 200, headers);
+    return json({ deliveries: triggerId === id(2220) ? [delivery] : [] }, 200, headers);
   }
   if (request.method === "POST" && operation === "disable") {
-    state.inboundTriggerEnabled = false;
+    entry.summary.enabled = false;
     return new Response(null, { status: 204, headers });
   }
   if (request.method === "POST" && operation === "rotate") {
-    if (!state.inboundTriggerEnabled) return controlFail(404, "not_found", "Active trigger not found.");
+    if (!entry.summary.enabled) return controlFail(404, "not_found", "Active trigger not found.");
     const signingSecret = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64");
     return json({ signingSecret }, 200, headers);
   }
