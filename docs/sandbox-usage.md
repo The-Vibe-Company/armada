@@ -81,14 +81,17 @@ migration with the normal release process before running this server version.
 
 ## Coordinator staging check: Codex model attribution (#1163)
 
-After the normal runtime deployment, launch on an existing Modal golden without
+After the normal runtime deployment, launch on an existing Modal snapshot without
 `--model`, then with an explicit model (or configured Codex endpoint model):
 
+Replace `MODAL_SNAPSHOT` with the snapshot name or ID, and `SANDBOX_UUID`
+with the sandbox ID from the launch receipt.
+
 ```sh
-armada launch <modal-golden> --provider modal --agent codex "Reply OK"
-armada wait <id>
-armada status <id> --json
-armada logs <id>
+armada launch MODAL_SNAPSHOT --provider modal --agent codex "Reply OK"
+armada wait SANDBOX_UUID
+armada status SANDBOX_UUID --json
+armada logs SANDBOX_UUID
 ```
 
 Compare the normalized `armada/turnUsage` event in logs with `usage.turns` in
@@ -106,16 +109,16 @@ provider transport change; storage/price integration remains a following slice.
 
 ## Coordinator staging check: Claude resumed accounting (#1163)
 
-After normal runtime rollout, run on a Modal golden:
+After normal runtime rollout, run on a Modal snapshot:
 
 ```sh
-armada launch <modal-golden> --provider modal --agent claude "Reply OK"
-armada wait <id>
-armada status <id> --json
-armada send <id> "Reply OK again"
-armada wait <id>
-armada logs <id>
-armada status <id> --json
+armada launch MODAL_SNAPSHOT --provider modal --agent claude "Reply OK"
+armada wait SANDBOX_UUID
+armada status SANDBOX_UUID --json
+armada send SANDBOX_UUID "Reply OK again"
+armada wait SANDBOX_UUID
+armada logs SANDBOX_UUID
+armada status SANDBOX_UUID --json
 ```
 
 Expect fresh and resumed prompts to report their own per-model counters and
@@ -140,13 +143,13 @@ resume_usage plus exact-turn counters, complete totals and computed cost.
 
 ## Coordinator staging check: Claude cache lifetimes (#1163)
 
-After normal server deployment, launch a Claude session on a Modal golden:
+After normal server deployment, launch a Claude session on a Modal snapshot:
 
 ```sh
-armada launch <modal-golden> --provider modal --agent claude "Reply OK"
-armada wait <id>
-armada logs <id>
-armada status <id> --json
+armada launch MODAL_SNAPSHOT --provider modal --agent claude "Reply OK"
+armada wait SANDBOX_UUID
+armada logs SANDBOX_UUID
+armada status SANDBOX_UUID --json
 ```
 
 Compare each model's result `cacheCreationEphemeral5mInputTokens` and

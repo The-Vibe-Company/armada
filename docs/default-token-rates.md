@@ -69,10 +69,13 @@ using only its stored witness/source and verifies an exact two-turn sum.
 After normal server rollout, the coordinator launches a new plain Modal Codex
 session (OpenAI API-key account, `gpt-6.1-sol`), waits and reads:
 
+Replace `MODAL_SNAPSHOT` with the snapshot name or ID, and `SANDBOX_UUID`
+with the sandbox ID from the launch receipt.
+
 ```sh
-armada launch <modal-golden> --provider modal --agent codex --model gpt-6.1-sol "Reply OK"
-armada wait <id> --json
-armada status <id> --json | jq '{cost:.usage.cost, turns:.usage.turns}'
+armada launch MODAL_SNAPSHOT --provider modal --agent codex --model gpt-6.1-sol "Reply OK"
+armada wait SANDBOX_UUID --json
+armada status SANDBOX_UUID --json | jq '{cost:.usage.cost, turns:.usage.turns}'
 ```
 
 Hand-price its actual counters from the returned frozen rates using the formula

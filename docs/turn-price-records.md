@@ -66,12 +66,15 @@ actual-model snapshots (and configured overrides). No context is manufactured fo
 legacy sessions. This is a storage/calculation prerequisite, not full session-cost
 or cross-UI acceptance; no automatic backfill/current-price lookup is performed.
 
-After normal server rollout, on a Modal golden:
+After normal server rollout, on a Modal snapshot:
+
+Replace `MODAL_SNAPSHOT` with the snapshot name or ID, and `SANDBOX_UUID`
+with the sandbox ID from the launch receipt.
 
 ```sh
-armada launch <modal-golden> --provider modal --agent claude "Reply OK"
-armada wait <id>
-armada status <id> --json
+armada launch MODAL_SNAPSHOT --provider modal --agent claude "Reply OK"
+armada wait SANDBOX_UUID
+armada status SANDBOX_UUID --json
 armada list --json
 ```
 
