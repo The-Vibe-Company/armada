@@ -1795,6 +1795,7 @@ test("an ambiguous expiry launch reports bounded HTTP correlation without replay
   const requestId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
   for (const header of [requestId, "secret-header"]) {
     const fake = lifecycleFixture("none", (call) => {
+      if (call.path === "sandbox/list" && call.body.externalRef) return Response.json({ sandboxes: [] });
       if (call.path !== "sandbox/launch" || call.body.ttlSeconds !== 180) return undefined;
       fake.advance(112_848);
       return Response.json(
@@ -1803,15 +1804,21 @@ test("an ambiguous expiry launch reports bounded HTTP correlation without replay
       );
     });
     expect(await fake.run([selected], ["--expiry"])).toBe(false);
-    expect(fake.calls.filter((call) => call.path === "sandbox/launch" && call.body.ttlSeconds === 180)).toHaveLength(1);
+    const launches = fake.calls.filter((call) => call.path === "sandbox/launch" && call.body.ttlSeconds === 180);
+    expect(launches).toHaveLength(1);
     expect(fake.lines.filter((line) => line !== boatNotice).map((line) => JSON.parse(line))).toContainEqual({
       case: 0,
       lane: "expiry",
       step: "expiry_launch",
       pass: false,
       code: "outcome_unknown",
-      elapsedMs: 112_848,
-      launchResponse: { httpStatus: 503, timeoutMs: 120_000, ...(header === requestId ? { requestId } : {}) },
+      elapsedMs: 232_848,
+      launchResponse: {
+        httpStatus: 503,
+        timeoutMs: 120_000,
+        requestKey: launches[0]?.body.idempotencyKey,
+        ...(header === requestId ? { requestId } : {}),
+      },
     });
     expect(fake.lines.join("")).not.toMatch(/secret-(header|body|timing)/);
   }
