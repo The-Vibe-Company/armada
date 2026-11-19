@@ -636,13 +636,25 @@ try {
     ttlSeconds: 900,
     ...(!idleMode ? { prompt: initialPrompt } : {}),
   });
-  if (
-    templateSource &&
-    !ordinaryTemplate &&
-    (raw.sandbox?.provider !== "modal" || raw.sandbox.externalRef !== templateRequestKey)
-  )
+  const launched: Reply =
+    ordinaryTemplate && templateSource
+      ? {
+          ...raw,
+          sandbox: {
+            ...(raw.id ? { id: raw.id } : {}),
+            goldenId: templateSource.goldenId,
+            provider: "modal",
+            ...(raw.runtimeTransport ? { runtimeTransport: raw.runtimeTransport } : {}),
+            ...(raw.status ? { status: raw.status } : {}),
+            skills: raw.manifest?.skillReceipts,
+          },
+        }
+      : raw;
+  if (launched.sandbox?.provider !== "modal")
+    throw Error("Missing Modal enrolled launch acknowledgement; reconcile existing allocation, never launch again.");
+  if (templateSource && !ordinaryTemplate && launched.sandbox.externalRef !== templateRequestKey)
     throw Error("Pinned Modal launch response does not match its reference; inspect the original allocation.");
-  id = ordinaryTemplate ? raw.id : raw.sandbox?.id;
+  id = launched.sandbox.id;
   shouldStop = Boolean(id);
   if (templateSource) {
     const m = ordinaryTemplate ? raw.manifest : raw.sandbox?.templateManifest;
@@ -677,26 +689,11 @@ try {
       .update(JSON.stringify(Object.fromEntries(variableKeys.map((key) => [key, values[key]]))))
       .digest("hex");
   }
-  const launched: Reply =
-    ordinaryTemplate && templateSource
-      ? {
-          ...raw,
-          sandbox: {
-            ...(id ? { id } : {}),
-            goldenId: templateSource.goldenId,
-            provider: "modal",
-            ...(raw.runtimeTransport ? { runtimeTransport: raw.runtimeTransport } : {}),
-            ...(raw.status ? { status: raw.status } : {}),
-            skills: raw.manifest?.skillReceipts,
-          },
-        }
-      : raw;
   conversationId = launched.conversationId ?? undefined;
   epoch = launched.runtime?.epoch;
   promptId = launched.promptId ?? undefined;
   if (
     !id ||
-    launched.sandbox?.provider !== "modal" ||
     launched.sandbox.runtimeTransport !== "dialout" ||
     launched.runtime?.kind !== "armada" ||
     !/^[1-9][0-9]{0,18}$/.test(epoch ?? "") ||
