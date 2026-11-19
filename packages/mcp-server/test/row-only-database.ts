@@ -19,24 +19,24 @@ export function rowOnlyDatabase() {
  * no-overlapping-fixture restriction applies.
  */
 export function rowOnlyConnection() {
-  let db: Awaited<ReturnType<typeof openMigratedDatabase>> | undefined;
-  let reset: string;
+  let pending: ReturnType<typeof prepareConnection> | undefined;
   beforeAll(async () => {
-    db = await openMigratedDatabase();
-    const tables = await db.query<{ name: string }>(
-      "select format('%I.%I', schemaname, tablename) as name from pg_tables where schemaname in ('public', 'auth')",
-    );
-    reset = `truncate table ${tables.rows.map((row) => row.name).join(", ")} restart identity cascade`;
+    pending = prepareConnection();
+    await pending;
   });
   afterAll(async () => {
     // Bun retains hook closures across files. Closing PGlite does not release
     // its WASM heap while the instance is still reachable from this closure.
-    const connection = db;
-    db = undefined;
-    await connection?.close();
+    const setup = pending;
+    pending = undefined;
+    const connection = await setup?.catch(() => undefined);
+    await connection?.db.close();
   });
   return async () => {
-    if (!db) throw new Error("Row-only database is not open");
+    const setup = pending;
+    if (!setup) throw new Error("Row-only database is not open");
+    const { db, reset } = await setup;
+    if (pending !== setup) throw new Error("Row-only database teardown has started");
     // Tests may exercise JWT grants, but each fixture starts with service identity
     // and default session settings before resetting rows. PGlite defaults its search
     // path to pg_catalog, so restore the fixture's public schema explicitly.
@@ -44,4 +44,18 @@ export function rowOnlyConnection() {
     await resetMigratedDatabaseRows(db, reset);
     return db;
   };
+}
+
+async function prepareConnection() {
+  const db = await openMigratedDatabase();
+  try {
+    const tables = await db.query<{ name: string }>(
+      "select format('%I.%I', schemaname, tablename) as name from pg_tables where schemaname in ('public', 'auth')",
+    );
+    const reset = `truncate table ${tables.rows.map((row) => row.name).join(", ")} restart identity cascade`;
+    return { db, reset };
+  } catch (error) {
+    await db.close();
+    throw error;
+  }
 }

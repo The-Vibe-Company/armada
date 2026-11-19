@@ -5,19 +5,23 @@ import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { call, ENCRYPTION_KEY, harness, launchSandboxId, PUBLIC_URL } from "./support.ts";
 
-let fixture: Awaited<ReturnType<typeof harness>> | undefined;
+let fixture: ReturnType<typeof harness> | undefined;
 beforeAll(async () => {
-  fixture = await harness();
+  fixture = harness();
+  await fixture;
 });
 afterAll(async () => {
-  const server = fixture;
+  const setup = fixture;
   fixture = undefined;
+  const server = await setup?.catch(() => undefined);
   await server?.close();
 });
 
 test("The advice API collects bounded samples, pins project identity and abstains without complete workload evidence", async () => {
-  const server = fixture;
-  if (!server) throw new Error("Missing resource advice harness fixture");
+  const setup = fixture;
+  if (!setup) throw new Error("Missing resource advice harness fixture");
+  const server = await setup;
+  if (fixture !== setup) throw new Error("Resource advice fixture teardown has started");
   const token = await server.token(server.people.owner);
   const client = await server.client(token);
   const launched = await call(client, "launch", {
