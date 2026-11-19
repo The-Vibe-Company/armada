@@ -111,6 +111,8 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
     }
     const focusedHelp = onboardingHelp(localArgs);
     if (focusedHelp) {
+      const registered = localArgs.length === 2 ? findCommand(localArgs[0] ?? "") : undefined;
+      if (registered?.validateProfileForHelp) selectProfile(argv, deps.env ?? deps.auth?.env ?? process.env);
       io.out(focusedHelp);
       return 0;
     }

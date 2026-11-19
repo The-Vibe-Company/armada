@@ -123,5 +123,6 @@ Examples:
 
 For other commands and authentication settings: armada --help.
 `,
+  validateProfileForHelp: true,
   run: logs,
 } satisfies Command;

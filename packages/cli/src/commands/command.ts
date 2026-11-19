@@ -8,6 +8,7 @@ export type Command = {
   summary: string;
   usage: string | Partial<Record<UsageGroup, string>>;
   help: string;
+  validateProfileForHelp?: boolean;
   completionBefore?: string;
   useSelectedOrg?: boolean;
   run: (argv: readonly string[], context: { io: Io; deps: Deps; auth: AuthIo }) => Promise<number>;
