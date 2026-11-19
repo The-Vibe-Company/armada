@@ -12,13 +12,13 @@ const database = rowOnlyDatabase();
 const signal = new AbortController().signal;
 
 async function fixture() {
-  const { db, people } = await database();
+  const { db, people, openaiCredentialId } = await database();
   const sql = sqlOver({
     unsafe: async (query, params) => (await db.query(query, params)).rows,
     begin: (work) =>
       db.transaction((tx) => work({ unsafe: async (query, params) => (await tx.query(query, params)).rows })),
   });
-  return { db, people, sql, store: createJobsStore(sql, btoa("\0".repeat(32))) };
+  return { db, people, openaiCredentialId, sql, store: createJobsStore(sql, btoa("\0".repeat(32))) };
 }
 
 async function sandbox({ db, people }: Awaited<ReturnType<typeof fixture>>) {
@@ -27,12 +27,88 @@ async function sandbox({ db, people }: Awaited<ReturnType<typeof fixture>>) {
   } = await db.query<{ id: string }>("select id from goldens where owner_id = $1", [people.owner]);
   const id = crypto.randomUUID();
   await db.query(
-    `insert into sandboxes (id, boat_id, golden_id, org_id, owner_id, harness, status, lifecycle_generation)
-     values ($1, 'fixture', $2, $3, $4, 'codex', 'ready', 2)`,
+    `insert into sandboxes (id, boat_id, golden_id, org_id, owner_id, harness, status, lifecycle_generation, expires_at)
+     values ($1, 'fixture', $2, $3, $4, 'codex', 'ready', 2, 'infinity')`,
     [id, golden!.id, people.org, people.owner],
   );
   return id;
 }
+
+async function seedTurn(f: Awaited<ReturnType<typeof fixture>>, sandboxId: string, requestId: string) {
+  await f.db.query(
+    `insert into account_turn_queue
+       (sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,
+        input_hash,input_enc,conversation_id,queued_generation)
+     values ($1,$2,$3,$4,$5,1,1,'fixture',''::bytea,'fixture',2)`,
+    [sandboxId, requestId, f.openaiCredentialId, f.people.owner, f.people.org],
+  );
+}
+
+test.each([
+  "queued",
+  "native evidence",
+  "runtime evidence",
+  "dispatching",
+  "stopped",
+  "failed",
+  "admitted",
+  "missing",
+] as const)("a turn job reconciles a %s receipt at claim", async (scenario) => {
+  const f = await fixture();
+  const { db, people, store } = f;
+  const sandboxId = await sandbox(f);
+  const requestId = crypto.randomUUID();
+  if (scenario !== "missing") await seedTurn(f, sandboxId, requestId);
+  const options = { orgId: people.org, maxAttempts: 2 };
+  const enqueue = () => store.enqueue("turn_dispatch", sandboxId, 2, requestId, { requestId }, options);
+  const id = await enqueue();
+  const state = ["failed", "admitted", "dispatching"].includes(scenario) ? scenario : "queued";
+  await db.query("update account_turn_queue set state=$1, native_prompt_id=$2 where sandbox_id=$3", [
+    state,
+    scenario === "native evidence" ? "prior-prompt" : null,
+    sandboxId,
+  ]);
+  if (scenario !== "failed")
+    await db.query(
+        `update sandboxes set lifecycle_generation=3, status=$2, stopped_at=$3,
+           activity_lease_id=$4, activity_until=$5 where id=$1`,
+        [
+          sandboxId,
+          scenario === "stopped" ? "stopped" : "ready",
+          scenario === "stopped" ? "2026-01-01" : null,
+          scenario === "runtime evidence" ? requestId : null,
+          scenario === "runtime evidence" ? "infinity" : null,
+        ],
+    );
+  const delivered: Job[] = [];
+  const runner = createJobsRunner(
+    store,
+    {
+      turn_dispatch: {
+        concurrency: 1,
+        async run(job) {
+          delivered.push(job);
+          return { status: "done" };
+        },
+      },
+    },
+    () => {},
+    () => () => {},
+  );
+  expect(await runner.reconcileOne(signal)).toBe(true);
+  await runner.drain();
+  const retargeted = scenario === "queued";
+  expect(delivered).toHaveLength(retargeted ? 1 : 0);
+  if (retargeted) expect(delivered[0]).toMatchObject({ id, generation: "3", payload: { requestId } });
+  expect((await db.query("select state, generation::text from jobs where id=$1", [id])).rows).toEqual([
+    {
+      state:
+        retargeted || scenario === "failed" || scenario === "admitted" || scenario === "missing" ? "done" : "failed",
+      generation: retargeted ? "3" : "2",
+    },
+  ]);
+  expect(await enqueue()).toBe(id);
+});
 
 test("transactional enqueue wakes after commit and replays the encrypted job by key", async () => {
   const { sql, people, store } = await fixture();
@@ -108,7 +184,9 @@ test.each([
   const sandboxId = await sandbox(f);
   const request = crypto.randomUUID();
   const options = { orgId: people.org, maxAttempts: 2 };
-  const id = await store.enqueue("turn_dispatch", sandboxId, 2, request, null, options);
+  await seedTurn(f, sandboxId, request);
+  const payload = { requestId: request };
+  const id = await store.enqueue("turn_dispatch", sandboxId, 2, request, payload, options);
   const advance = "update sandboxes set lifecycle_generation = lifecycle_generation + 1 where id = $1";
   let firstOwner: string | undefined;
   let handled: Job | undefined;
@@ -170,7 +248,7 @@ test.each([
     expect(successor).toMatchObject({ id, generation: "3", lease_epoch: "2" });
     expect(await store.complete(handled!, firstOwner!, { status: "done" })).toBe(false);
     expect(await store.complete(successor, owner, { status: "done" })).toBe(true);
-    expect(await store.enqueue("turn_dispatch", sandboxId, 2, request, null, options)).toBe(id);
+    expect(await store.enqueue("turn_dispatch", sandboxId, 2, request, payload, options)).toBe(id);
   }
   const rolledBack = scenario !== "complete" && scenario !== "takeover" && scenario !== "stale";
   expect(
