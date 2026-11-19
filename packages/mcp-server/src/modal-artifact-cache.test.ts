@@ -48,3 +48,26 @@ test("first use leaves the launch free to proceed and shutdown cancels the pendi
   expect(starts).toBe(1);
   expect(cancellations).toBe(1);
 });
+
+test("a first use queues one seed when all four upload slots are busy", async () => {
+  const binding = { appId: "app", appName: "name", environment: "main", tokenId: "id", tokenSecret: "secret" };
+  const runtime = { sha256: "a".repeat(64), bytes: 1 };
+  const first = Promise.withResolvers<void>();
+  const startedLast = Promise.withResolvers<void>();
+  const started: string[] = [];
+  const cache = createModalArtifactCache({ runtime, harnesses: {} }, "/public", async (request) => {
+    started.push(request.appId);
+    if (request.appId === "last") {
+      startedLast.resolve();
+      return;
+    }
+    await first.promise;
+  });
+  for (const appId of ["one", "two", "three", "four", "last", "last"])
+    cache.beginWarming({ ...binding, appId }, () => {});
+  expect(started).toEqual(["one", "two", "three", "four"]);
+  first.resolve();
+  await startedLast.promise;
+  await cache.drain();
+  expect(started).toEqual(["one", "two", "three", "four", "last"]);
+});

@@ -38,10 +38,13 @@ export function createModalArtifactCache(
   const warmed = new Set<string>();
   const inFlight = new Map<string, Promise<void>>();
   const shutdown = new AbortController();
-  function warm(binding: ModalArtifactBinding, startupBudget?: AbortSignal) {
-    const key = createHash("sha256")
+  const queued = new Map<string, { binding: ModalArtifactBinding; logError: (line: string) => void }>();
+  const bindingKey = (binding: ModalArtifactBinding) =>
+    createHash("sha256")
       .update(JSON.stringify([binding.appId, binding.environment, binding.tokenId, binding.tokenSecret]))
       .digest("hex");
+  function warm(binding: ModalArtifactBinding, startupBudget?: AbortSignal) {
+    const key = bindingKey(binding);
     if (warmed.has(key) || shutdown.signal.aborted) return Promise.resolve();
     const current = inFlight.get(key);
     if (current) return current;
@@ -56,16 +59,31 @@ export function createModalArtifactCache(
     inFlight.set(key, pending);
     return pending;
   }
+  function startQueued() {
+    while (!shutdown.signal.aborted && inFlight.size < 4) {
+      const next = queued.entries().next().value;
+      if (!next) return;
+      const [key, { binding, logError }] = next;
+      queued.delete(key);
+      void warm(binding)
+        .catch(() => {
+          logError("Modal artifact warming failed for an enrolled App.");
+        })
+        .finally(startQueued);
+    }
+  }
   return {
     warm,
     beginWarming(binding: ModalArtifactBinding, logError: (line: string) => void) {
-      if (inFlight.size >= 4) return;
-      void warm(binding).catch(() => {
-        logError("Modal artifact warming failed for an enrolled App.");
-      });
+      if (shutdown.signal.aborted) return;
+      const key = bindingKey(binding);
+      if (warmed.has(key) || inFlight.has(key) || queued.has(key)) return;
+      queued.set(key, { binding, logError });
+      startQueued();
     },
     async drain() {
       shutdown.abort();
+      queued.clear();
       await Promise.allSettled(inFlight.values());
     },
   };

@@ -351,7 +351,10 @@ export async function createServerServices(env: Record<string, string | undefine
     });
   }
   if (warmModalArtifacts) {
-    await modal.warmRegisteredArtifactCaches(warmModalArtifacts, options.logError ?? console.error);
+    const logError = options.logError ?? console.error;
+    await modal.warmRegisteredArtifactCaches(warmModalArtifacts, logError).catch(() => {
+      logError("Could not list registered Modal Apps for startup warming.");
+    });
   }
   const modalRuntimeHostFor = async (
     target: import("@armada/core").ProviderTarget,
