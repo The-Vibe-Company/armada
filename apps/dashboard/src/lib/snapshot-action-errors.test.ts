@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { ControlError } from "./control";
+import { ControlError, controlPost } from "./control";
 import { snapshotActionFailure } from "./snapshot-action-errors";
 
 const diagnostic = "HTTP 503: provider_snapshot_id digest sha256:example";
@@ -13,10 +13,23 @@ test("snapshot action errors suppress diagnostics and give permission or observa
   expect(snapshotActionFailure(new ControlError(diagnostic, 401), "find")).toContain("Sign in again");
 });
 
-test("only definite missing routes imply unsupported snapshot features", () => {
-  expect(snapshotActionFailure(new ControlError("Unknown route.", 404, "unknown_route"), "size")).toContain(
-    "does not offer machine size defaults",
-  );
+test("only definite missing routes imply unsupported snapshot features", async () => {
+  const error = await controlPost(
+    {
+      serverUrl: "https://armada.test",
+      token: "session",
+      fetch: Object.assign(
+        async () => Response.json({ error: { code: "unknown_route", message: "Unknown route." } }, { status: 404 }),
+        { preconnect: fetch.preconnect },
+      ),
+    },
+    "/api/v1/docker/snapshots/create",
+    {},
+    "building a host snapshot",
+  ).catch((caught: unknown) => caught);
+  expect(error).toBeInstanceOf(ControlError);
+  if (!(error instanceof ControlError)) throw error;
+  expect(snapshotActionFailure(error, "build")).toContain("does not offer secure snapshot builds");
   expect(snapshotActionFailure(new ControlError(diagnostic, 404), "size")).not.toContain("does not offer");
   expect(snapshotActionFailure(new ControlError(diagnostic, 504), "build")).toContain("may still finish");
   expect(

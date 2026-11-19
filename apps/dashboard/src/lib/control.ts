@@ -379,9 +379,8 @@ function failure(status: number, payload: Record<string, unknown> | null, featur
     (status === 404 && code === "unknown_route") ||
     ((status === 404 || status === 405) && !message && !code && !detail.reason)
   ) {
-    return make(`This Armada server does not offer ${feature} yet.`, false);
+    return make(`This Armada server does not offer ${feature} yet.`);
   }
-  if (status >= 500) return make(message ?? controlFallback(status));
   return make(message ?? controlFallback(status));
 }
 

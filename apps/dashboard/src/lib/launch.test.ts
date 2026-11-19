@@ -87,7 +87,7 @@ test("a 404 for a sized launch fails once", async () => {
   const unknown = { error: { code: "unknown_route", message: "Unknown route." } };
   const error = await launchSandbox(answeringAt(routes, unknown, 404), { ...args, size: "large" }).catch((e) => e);
   expect(error).toBeInstanceOf(ControlError);
-  expect(error.message).toBe("This Armada server does not offer launching with machine sizes yet.");
+  expect(launchFailureMessage(error)).toContain("does not offer launching with machine sizes yet");
   expect(routes).toHaveLength(1);
 });
 
