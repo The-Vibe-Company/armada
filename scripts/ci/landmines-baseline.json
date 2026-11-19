@@ -1974,8 +1974,6 @@
     "scripts/local-ports.ts": 1,
     "scripts/mcp/managed-boat-probe.ts": 2,
     "scripts/mcp/managed-inspection.ts": 2,
-    "scripts/metrics/architecture-counters.ts": 2,
-    "scripts/metrics/architecture-rules.ts": 1,
     "scripts/npm.ts": 5,
     "scripts/post-deploy-smoke.test.ts": 1,
     "scripts/post-deploy-smoke.ts": 16,
