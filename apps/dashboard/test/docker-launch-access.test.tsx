@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { mcpFact, useLaunchAccess } from "../src/components/launch-dialog";
+import { useLaunchAccess } from "../src/components/launch-dialog";
 import { CONNECTION_CHOICE_FIELD, launchSelection, type McpConnection } from "../src/lib/connections";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -20,8 +20,10 @@ function Form() {
   return (
     <form>
       <input name={CONNECTION_CHOICE_FIELD} value={access.explicit ? "explicit" : "defaults"} readOnly />
-      <span>{mcpFact(access)}</span>
-      {access.fields("launch")}
+      <button type="button" onClick={() => access.toggle(connection.id, false)}>
+        Remove tool
+      </button>
+      {access.inputs}
     </form>
   );
 }
@@ -30,21 +32,15 @@ test("Docker launch tools show the default and removing it produces an explicit 
   await act(async () => {
     renderer = create(createElement(Form));
   });
-  const checkbox = () =>
-    renderer.root.findAll(
-      (node) => node.props.name === "connections" && typeof node.props.onCheckedChange === "function",
-    )[0]!;
-  expect(checkbox().props.checked).toBe(true);
-  expect(JSON.stringify(renderer.toJSON())).toContain("Example tool connected");
+  expect(renderer.root.findByProps({ name: "connections" }).props.value).toBe(connection.id);
   await act(async () => {
-    checkbox().props.onCheckedChange(false);
+    renderer.root.findByType("button").props.onClick();
   });
-  expect(checkbox().props.checked).toBe(false);
   expect(renderer.root.findByProps({ name: CONNECTION_CHOICE_FIELD }).props.value).toBe("explicit");
   expect(
     launchSelection({
       connections: renderer.root
-        .findAll((node) => node.type === "input" && node.props.name === "connections" && node.props.checked)
+        .findAll((node) => node.type === "input" && node.props.name === "connections")
         .map((node) => node.props.value),
       available: [connection],
     }),
@@ -52,7 +48,6 @@ test("Docker launch tools show the default and removing it produces an explicit 
     ok: true,
     value: { connections: [] },
   });
-  expect(JSON.stringify(renderer.toJSON())).toContain("No tools");
   await act(async () => {
     renderer.unmount();
   });
@@ -79,7 +74,7 @@ test("Docker snapshot launch summarizes authorized default tools", async () => {
       }),
     ),
   );
-  expect(markup).toContain("Example tool connected");
+  expect(markup).toContain("Example tool");
   expect(markup).toContain('name="connections"');
 });
 
@@ -105,6 +100,6 @@ test("empty Docker machine launch exposes the same authorized tools", async () =
       }),
     ),
   );
-  expect(markup).toContain("Example tool connected");
+  expect(markup).toContain("Example tool");
   expect(markup).toContain('name="connections"');
 });

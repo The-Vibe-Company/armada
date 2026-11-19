@@ -93,4 +93,6 @@ function SheetDescription({ className, ...props }: React.ComponentProps<typeof S
   );
 }
 
-export { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle };
+const SheetTrigger = SheetPrimitive.Trigger;
+
+export { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger };

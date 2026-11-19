@@ -7,7 +7,7 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { useFormStatus } from "react-dom";
 import { launchOnDockerHost } from "@/app/actions/docker-hosts";
 import { ActionForm, SubmitButton } from "@/components/action-form";
-import { type LaunchConnections, LaunchStart, mcpFact, useLaunchAccess } from "@/components/launch-dialog";
+import { type LaunchConnections, LaunchStart, useLaunchAccess } from "@/components/launch-dialog";
 import { LaunchAccountNotice, LaunchSentence } from "@/components/launch-sentence";
 import {
   LaunchAdvanced,
@@ -17,6 +17,7 @@ import {
   LaunchTaskField,
   useLaunchSurface,
 } from "@/components/launch-surface";
+import { LaunchTools } from "@/components/launch-tools";
 import { SubmitShortcut } from "@/components/mod-key";
 import { SkillPicker } from "@/components/skill-picker";
 import { Button } from "@/components/ui/button";
@@ -215,8 +216,10 @@ export function DockerLaunchForm({
         <input type="hidden" name="org" value={orgId} />
         <input type="hidden" name="hostId" value={hostId} />
         <input type="hidden" name={CONNECTION_CHOICE_FIELD} value={access.explicit ? "explicit" : "defaults"} />
+        {access.inputs}
         <LaunchFields>
           <LaunchTaskField idPrefix={id} value={task} onChange={onTask} />
+          <LaunchTools access={access} idPrefix={id} />
           <LaunchSentence
             idPrefix={id}
             harness={harness}
@@ -241,17 +244,12 @@ export function DockerLaunchForm({
             onStart={onStart}
             idleDelaySeconds={idleDelaySeconds}
           />
-          <LaunchAdvanced
-            summary={
-              <span className="text-xs text-muted-foreground">Armada official environment · {mcpFact(access)}</span>
-            }
-          >
+          <LaunchAdvanced summary={<span className="text-xs text-muted-foreground">Armada official environment</span>}>
             <p className="text-sm">
               <span className="text-muted-foreground">Environment:</span> Armada official (fetched by your host the
               first time)
             </p>
             <SkillPicker orgId={orgId} value={skills} onChange={setSkills} />
-            {access.fields(id)}
             {unavailable.length > 0 && (
               <div data-docker-unavailable>
                 <p className="font-medium">Not available on Docker hosts yet</p>

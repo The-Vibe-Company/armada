@@ -242,14 +242,7 @@ export function LaunchChoice({
   tone?: "warning" | "destructive" | undefined;
 }) {
   const [open, setOpen] = useState(false);
-  const [phone, setPhone] = useState(false);
-  useEffect(() => {
-    const media = matchMedia("(max-width: 639px)");
-    const update = () => setPhone(media.matches);
-    update();
-    media.addEventListener("change", update);
-    return () => media.removeEventListener("change", update);
-  }, []);
+  const phone = useLaunchPhone();
   const selected = options.find((option) => option.value === value);
   const trigger = (
     <button
@@ -442,4 +435,16 @@ export function LaunchLocation({
       )}
     </div>
   );
+}
+
+export function useLaunchPhone() {
+  const [phone, setPhone] = useState(false);
+  useEffect(() => {
+    const media = matchMedia("(max-width: 639px)");
+    const update = () => setPhone(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+  return phone;
 }
