@@ -1,165 +1,37 @@
-import type { AuthStore } from "@armada/auth";
-import { vaultControlRoute } from "@armada/core";
-import {
-  type ApplicationVault,
-  type createSkillCatalog,
-  type GitHubApp,
-  type GoldenBuildJobs,
-  type GoldenRecord,
-  LaunchError,
-  type LaunchOptions,
-  type LaunchStores,
-  type mutateCredentialAccount,
-  type Provider,
-  type ProviderRegistry,
-  type ProviderTarget,
-  type RoutineService,
-  type SkillDefaultsService,
-  type TemplateService,
-  VaultError,
-  type VaultStore,
-} from "@armada/core/server";
+import { LaunchError } from "@armada/core/server";
 import { rejectUnknownVaultRoute } from "./application-vault-control.ts";
-import type { Caller, SupabaseProject } from "./caller.ts";
-import { readBody, readVaultBody } from "./control-body.ts";
+import type { Caller } from "./caller.ts";
+import { readControlBody } from "./control-body.ts";
 import { authenticatedCaller, scopedOrg } from "./control-caller.ts";
 import { controlFailureResponse } from "./control-errors.ts";
 import { optional } from "./control-input.ts";
+import type { ControlOptions } from "./control-options.ts";
 import { fail } from "./control-response.ts";
-import type { CredentialBindingRecovery } from "./credential-binding-recovery.ts";
-import type { createSqlCredentialList } from "./credential-list-sql.ts";
-import type { DataSource, ScopedData } from "./data.ts";
-import type { GitHubAccountApi } from "./github-account.ts";
-import type { Invitations } from "./invitations.ts";
-import type { McpControlOptions } from "./mcp-control.ts";
-import type { ModelAuthOwnership } from "./model-auth.ts";
-import type { ModelUsageApi } from "./model-usage.ts";
 import { controlRoutes } from "./modules.ts";
-import type { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
-import type { ProviderValidator } from "./org-provider.ts";
-import type { ProviderMetadataFor } from "./provider-metadata.ts";
 import { recordOperatorFailure } from "./request-observability.ts";
 import { RequestTiming, withRequestTiming } from "./request-timing.ts";
-import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
-import type { RuntimeFollowup } from "./runtime-followup.ts";
-import type { RuntimeGitHub } from "./runtime-github.ts";
-import type { RuntimeMcp } from "./runtime-mcp.ts";
-import type { RuntimeResume } from "./runtime-resume.ts";
-import type { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
-
-import { viewerControl } from "./viewer-control.ts";
+import { matchControlRoute } from "./routes.ts";
+import { rejectUnroutedViewerRequest } from "./viewer-control.ts";
 
 export const CONTROL_PREFIX = "/api/v1/";
-
-export interface ControlOptions {
-  /** Authenticated own-user metadata and current org membership in one snapshot. */
-  listCredentialMetadata?: ReturnType<typeof createSqlCredentialList>;
-  /** SQL list data must enforce fresh selection authority inside its page/count statement. */
-  scopedSandboxData?: (caller: Caller, ref: string) => ScopedData;
-  /** Optional read model combining fresh org resolution with visibility-filtered rows. */
-  listGoldenRecords?: (caller: Caller, ref: string | undefined) => Promise<GoldenRecord[]>;
-  sandboxBillingAccount?: (
-    caller: Caller,
-    id: string,
-  ) => Promise<import("./sandbox-billing-account.ts").SandboxBillingAccount | null>;
-  dockerLaunch?: import("./docker-normal-launch.ts").DockerNormalLaunch;
-  /** Listener-local keepalive for the bounded synchronous Docker launch pipeline. */
-  configureDockerLaunchRequest?: (request: Request) => void;
-  dockerControls?: import("./docker-sandbox-controls.ts").DockerSandboxControls;
-  /** Trusted installed-route discovery, never taken from request JSON. */
-  docker?: {
-    hosts?: boolean;
-    placement?: boolean;
-    normalApi?: boolean;
-    normalLaunch?: boolean;
-    normalSend?: boolean;
-    normalResume?: boolean;
-  };
-  runtimeMcp?: RuntimeMcp;
-  runtimeGitHub?: RuntimeGitHub;
-  runtimeResume?: RuntimeResume;
-  runtimeCheckpoint?: RuntimeCheckpoint;
-  runtimeSend?: RuntimeFollowup;
-  accountTurns?: import("./account-turn-queue.ts").AccountTurnQueue;
-  modalRuntimeHostFor?: (target: import("@armada/core").ProviderTarget, caller: Caller) => Promise<Provider>;
-  modalRuntimeLaunch?: NonNullable<LaunchOptions["runtime"]>;
-  boatRuntimeLaunch?: NonNullable<LaunchOptions["boatRuntime"]>;
-  runtimeHostFor?: (apiKey: string) => Provider;
-  skillCatalog?: ReturnType<typeof createSkillCatalog>;
-  /** Per-request diagnostics; supplied by the HTTP handler, never request JSON. */
-  timing?: RequestTiming;
-  storedProviderFor?: (target: ProviderTarget, caller: { userId: string }) => Promise<Provider>;
-  sandboxArmadaAccess?: ReturnType<typeof createSandboxArmadaAccess>;
-  templates?: TemplateService;
-  skillDefaults?: SkillDefaultsService;
-  routines?: RoutineService;
-  applicationVault?: ApplicationVault;
-  /** Trusted dashboard origin, from ARMADA_PUBLIC_URL; never request Host headers. */
-  publicUrl?: string;
-  modelAuth?: ModelAuthOwnership;
-  credentialBindingRecovery?: CredentialBindingRecovery;
-  modelUsage?: ModelUsageApi;
-  invitations?: Invitations;
-  providerValidator?: ProviderValidator;
-  /** Server-owned account admission; never selected or disabled by request JSON. */
-  modelAccountValidator?: NonNullable<Parameters<typeof mutateCredentialAccount>[4]>;
-  githubAccount?: GitHubAccountApi;
-  goldenRetirements?: import("@armada/core/server").GoldenSnapshotRetirements;
-  mcp?: NonNullable<McpControlOptions["mcp"]>;
-  connections?: LaunchStores["connections"];
-  /** Same verified bearer dependencies as MCP: Armada service/OAuth tokens and Supabase sessions. */
-  authStore: AuthStore;
-  supabase: SupabaseProject;
-  now?: () => Date;
-  /** Scoped golden/sandbox queries shared with MCP. */
-  data?: DataSource;
-  vault?: VaultStore;
-  launch?: LaunchOptions;
-  /** Durable launch receipts shared with MCP `launch`: `idempotencyKey` on REST launch routes. Absent: a keyed launch is refused. */
-  ordinaryLaunchReceipts?: ReturnType<typeof createOrdinaryLaunchReceipts>;
-  /** Service-role access: orgs, members and ciphertext. See `createSqlVaultStore`. */
-  store: VaultStore;
-  /**
-   * `ARMADA_ENCRYPTION_KEY`. Writes encrypt with it. `launch/resolve` also decrypts, and returns the
-   * plaintext to the signed-in user's own machine, which is where the launch runs. Nothing is logged.
-   */
-  encryptionKey: string | undefined;
-  /** The GitHub App, for `launch/resolve`. Null or absent: GitHub is reported as not set up. */
-  github?: { app: GitHubApp | null; fetch?: typeof fetch; now?: () => Date };
-  /** Resolves a visible Armada sandbox to its provider. The Boat key stays on the server. */
-  logs?: (caller: Caller, sandboxId: string) => Promise<{ provider: Provider; providerSandboxId: string }>;
-  /** Secure, server-orchestrated multi-repo golden creation (`armada golden create --name`). Absent: the route refuses. */
-  goldenBuilds?: GoldenBuildJobs;
-  goldenAdoption?: import("@armada/core/server").GoldenAdoption;
-  /** A provider for one boat.dev key, for `golden/create`. The key is used in this process only. */
-  providers?: ProviderRegistry;
-  providerMetadata?: ProviderMetadataFor;
-  goldenTarget?: (target: Omit<ProviderTarget, "modal">, caller: { userId: string }) => Promise<ProviderTarget>;
-  providerFor?: (apiKey: string, caller?: { userId: string; orgId: string }) => Provider;
-  /** Server-side native-session refresh; never exposed to the CLI. */
-  refreshNative?: (refreshToken: string) => Promise<{ accessToken: string; refreshToken: string; expiresAt: string }>;
-  exchangeNative?: (
-    code: string,
-    verifier: string,
-  ) => Promise<{ accessToken: string; refreshToken: string; expiresAt: string }>;
-}
-
-export type ConfiguredControlOptions = ControlOptions & { credentialBindingRecovery: CredentialBindingRecovery };
+export type { ConfiguredControlOptions, ControlOptions } from "./control-options.ts";
 
 /**
- * The CLI's way to the things that need the server: org creation and email lookup (service role)
- * and credential encryption (the encryption key). Every call is a POST with the person's Supabase
- * bearer accepted by MCP (Armada service/OAuth token or verified Supabase session); the answer is JSON. Returns null for any other path, so #464 mounts
- * this next to the OAuth routes. No request body, token or credential value is logged.
+ * Dispatches the control API using the registered HTTP methods and authentication policies.
+ * Returns null for paths outside the control API. No request body, token or credential value is logged.
  */
 export async function handleControlRequest(request: Request, options: ControlOptions): Promise<Response | null> {
   const url = new URL(request.url);
   if (!url.pathname.startsWith(CONTROL_PREFIX)) return null;
-  const viewer = await viewerControl(request, options, (next) => handleControlRequest(next, options));
-  if (viewer) return viewer;
+  const route = url.pathname.slice(CONTROL_PREFIX.length);
+  const registered = matchControlRoute(controlRoutes, route);
+  const dispatch = (next: Request) => handleControlRequest(next, options);
+  if (registered && "earlyRespond" in registered) return registered.earlyRespond(request, options, dispatch);
+  const refusal = await rejectUnroutedViewerRequest(request, options, dispatch);
+  if (refusal) return refusal;
   const timing = new RequestTiming();
   const response = await withRequestTiming(timing, () =>
-    timing.measure("total", () => timedControlRequest(request, { ...options, timing })),
+    timing.measure("total", () => timedControlRequest(request, { ...options, timing }, route, registered)),
   );
   const headers = new Headers(response.headers);
   headers.set("server-timing", timing.header());
@@ -169,43 +41,24 @@ export async function handleControlRequest(request: Request, options: ControlOpt
 async function timedControlRequest(
   request: Request,
   options: ControlOptions & { timing: RequestTiming },
+  route: string,
+  registered: ReturnType<typeof controlRoutes.get>,
 ): Promise<Response> {
-  const url = new URL(request.url);
   const timing = options.timing;
-  const route = url.pathname.slice(CONTROL_PREFIX.length);
-  const registered = controlRoutes.get(route);
-  const deletion = /^sandboxes\/([0-9a-f-]+)$/i.exec(route);
-  const methods: readonly string[] = deletion ? ["DELETE"] : (registered?.methods ?? ["POST"]);
+  const methods: readonly string[] = registered?.methods ?? ["POST"];
   if (!methods.includes(request.method)) return fail(405, "invalid", `Use ${methods.join(" or ")}.`);
   if (registered && "respond" in registered) return registered.respond(request, options);
   try {
     const caller = await timing.measure("auth", () => authenticatedCaller(request, options));
-    if (vaultControlRoute(route) && url.search)
-      throw new VaultError("invalid", "Parameters must be in the request body.");
-    const body = deletion
-      ? { id: deletion[1], org: url.searchParams.get("org") ?? undefined }
-      : vaultControlRoute(route)
-        ? await readVaultBody(request)
-        : await readBody(request, route === "logs/read" ? 512 * 1024 : undefined);
-    if (
-      ((route === "sandbox/launch" && body.provider === "docker") || route === "templates/launch") &&
-      options.dockerLaunch
-    )
-      options.configureDockerLaunchRequest?.(request);
-    const result = await timing.measure("dispatch", () =>
-      withRequestTiming(timing, () =>
-        dispatchControlCommand(deletion ? "sandbox/delete" : route, caller, body, options, request),
-      ),
-    );
+    const command = registered && "handler" in registered ? registered : undefined;
+    const body = await (command?.readBody?.(request) ?? readControlBody(request, route));
+    const result = await timing.measure("dispatch", async () => {
+      const context = { route, caller, body, options, request };
+      return command ? command.handler(context) : unknownControlCommand(route, caller, body, options);
+    });
     if (result === undefined) return fail(404, "unknown_route", "Unknown route.");
     return Response.json(result, {
-      status:
-        (route === "golden/create" || route === "golden/update" || route === "golden/update-add-repos") &&
-        typeof result === "object" &&
-        result !== null &&
-        "jobId" in result
-          ? 202
-          : 200,
+      status: command?.responseStatus?.(result) ?? 200,
       headers: { "cache-control": "no-store", "server-timing": timing.header() },
     });
   } catch (error) {
@@ -226,7 +79,12 @@ export async function dispatchControlCommand(
   request?: Request,
 ): Promise<unknown> {
   const registered = controlRoutes.get(route);
-  if (registered && "handler" in registered) return registered.handler({ route, caller, body, options, request });
+  if (registered && !registered.pattern && "handler" in registered)
+    return registered.handler({ route, caller, body, options, request });
+  return unknownControlCommand(route, caller, body, options);
+}
+
+function unknownControlCommand(route: string, caller: Caller, body: Record<string, unknown>, options: ControlOptions) {
   rejectUnknownVaultRoute(route, options);
   scopedOrg(caller, optional(body, "org"));
   return undefined;

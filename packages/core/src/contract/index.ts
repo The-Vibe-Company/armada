@@ -2,10 +2,22 @@ import type { z } from "zod";
 import { createdInboundTrigger, createInboundTriggerBody, createInboundTriggerQuery } from "./inbound-trigger.ts";
 import { launchInput } from "./launch.ts";
 import { launchOutput } from "./launch-response.ts";
+import { sandboxOperations } from "./sandbox.ts";
+import { sandboxRestOperations } from "./sandbox-rest.ts";
 
 export type { CreatedInboundTrigger } from "./inbound-trigger.ts";
 export type { LaunchInput } from "./launch.ts";
 export { type LaunchEnvelope, launchEnvelope, templateLaunchResponse } from "./launch-response.ts";
+export {
+  DEFAULT_WAIT_SECONDS,
+  LOGS_OUTPUT,
+  MAX_WAIT_SECONDS,
+  SANDBOX_STATUSES,
+  sandboxIdInput,
+  sandboxOperations,
+} from "./sandbox.ts";
+
+export { sandboxExtensionLifetime, sandboxRestOperations } from "./sandbox-rest.ts";
 
 export interface Operation<Input extends z.ZodType, Output extends z.ZodType | undefined = undefined> {
   readonly name: string;
@@ -45,4 +57,4 @@ export const createInboundTrigger = {
   errors: ["invalid_request", "unauthorized", "forbidden", "conflict", "dependency_unavailable"],
 } as const satisfies Operation<typeof createInboundTriggerBody, typeof createdInboundTrigger>;
 
-export const operations = { launch, createInboundTrigger } as const;
+export const operations = { launch, createInboundTrigger, ...sandboxOperations, ...sandboxRestOperations } as const;

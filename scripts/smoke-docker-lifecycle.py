@@ -71,7 +71,7 @@ def placement_smoke(api, args, host_id, harness):
         cursor, answer, finished = None, False, False
         deadline = time.monotonic() + args.timeout
         while time.monotonic() < deadline:
-            summary = api("sandbox/detail", {"id": sandbox}, normal=True)
+            summary = api("sandbox/status", {"id": sandbox}, normal=True)
             if summary.get("provider") != "docker" or summary.get("hostId") != host_id:
                 raise RuntimeError("Placement did not use the selected Docker host")
             prompt_id = prompt_id or (summary.get("prompt") or {}).get("promptId")
@@ -591,7 +591,7 @@ def main():
             github_proven = not prove_github
             while True:
                 page = api("logs/read", {"id": sandbox_id, **({"cursor": cursor} if cursor else {})}, normal=True)
-                summary = api("sandbox/detail", {"id": sandbox_id}, normal=True)
+                summary = api("sandbox/status", {"id": sandbox_id}, normal=True)
                 if summary.get("provider") != "docker" or summary.get("golden") is not None:
                     raise RuntimeError("Normal Docker status did not match its contract")
                 page["usage"] = summary.get("usage")
@@ -740,7 +740,7 @@ def main():
                     raise RuntimeError("Interrupt was not acknowledged")
                 deadline = time.monotonic() + args.timeout
                 while True:
-                    summary = api("sandbox/detail", {"id": sandbox_id, "prompt_id": receipt["promptId"]}, normal=True)
+                    summary = api("sandbox/status", {"id": sandbox_id, "prompt_id": receipt["promptId"]}, normal=True)
                     if summary.get("prompt", {}).get("state") == "interrupted":
                         break
                     if time.monotonic() >= deadline:
@@ -754,7 +754,7 @@ def main():
             resumed = api("sandbox/resume", {"id": sandbox_id, "request_id": str(uuid.uuid4())}, normal=True)
             if resumed.get("status") != "ready":
                 raise RuntimeError("Normal resume readiness was not confirmed")
-            summary = api("sandbox/detail", {"id": sandbox_id}, normal=True)
+            summary = api("sandbox/status", {"id": sandbox_id}, normal=True)
             if summary.get("hostId") != host_id or conversation not in summary.get("conversationIds", []):
                 raise RuntimeError("Resume changed host or conversation identity")
             turn(secret_task + variable_task + github_task + "Reply with exactly the marker I asked you to remember.", marker, conversation, prove_github=args.github)

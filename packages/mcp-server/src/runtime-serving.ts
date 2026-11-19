@@ -138,7 +138,7 @@ export function createRuntimeServing(sql: Sql, key: string) {
                 const value = Reflect.get(instance, property, instance);
                 return typeof value === "function" ? value.bind(instance) : value;
               }
-              return async (request: { sandboxId: string }) => {
+              return async (request: Parameters<Provider["stop"]>[0]) => {
                 if (request.sandboxId !== sandbox.providerSandboxId)
                   throw new VaultError("not_found", "No runtime stop target.");
                 const proof = (
@@ -153,9 +153,13 @@ export function createRuntimeServing(sql: Sql, key: string) {
                     [sandbox.id, sandbox.ownerId, sandbox.providerSandboxId],
                   )
                 ).rows[0];
-                if (!proof) return instance.stop(request); // No checkpoint: compute-only cleanup, no disk claim.
+                if (!proof) {
+                  if (request.requireRetention)
+                    throw new VaultError("conflict", "Retained stop requires a verified runtime checkpoint.");
+                  return instance.stop(request); // No checkpoint: compute-only cleanup, no disk claim.
+                }
                 const current = await instance.get(request.sandboxId);
-                if (current.state === "stopped") return;
+                if (current.state === "stopped" && !request.requireRetention) return;
                 const watermark = Number(proof.watermark);
                 if (
                   !Number.isSafeInteger(watermark) ||

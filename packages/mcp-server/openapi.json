@@ -1124,6 +1124,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
                 "type": "object",
                 "properties": {
                   "harness": {
@@ -1187,10 +1188,12 @@
                     "type": "string"
                   },
                   "org": {
-                    "type": "string"
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   }
-                },
-                "$schema": "http://json-schema.org/draft-07/schema#"
+                }
               }
             }
           }
@@ -1201,6 +1204,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
                   "type": "object",
                   "properties": {
                     "sandboxes": {
@@ -1772,945 +1776,6 @@
                     "hasMore",
                     "nextPage"
                   ],
-                  "$schema": "http://json-schema.org/draft-07/schema#",
-                  "additionalProperties": false
-                }
-              }
-            }
-          },
-          "413": {
-            "description": "The serialized request body exceeds 131072 bytes. Nothing was dispatched.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Failure"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
-            "headers": {
-              "Retry-After": {
-                "description": "Seconds to wait before retrying.",
-                "schema": {
-                  "type": "integer",
-                  "minimum": 0
-                }
-              }
-            },
-            "content": {
-              "application/json": {
-                "schema": {
-                  "anyOf": [
-                    {
-                      "$ref": "#/components/schemas/Failure"
-                    },
-                    {
-                      "$ref": "#/components/schemas/DrainRefusal"
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Public API failure",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Failure"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/sandbox/detail": {
-      "post": {
-        "operationId": "sandbox_detail",
-        "description": "Where a sandbox and its latest turn are. Modal uses authorized stored observations; physical state is refreshed by the lifecycle worker. Boat is read live. prompt.state is queued (accepted by a starting Docker sandbox, not yet admitted by its runtime), running, finished, interrupted or failed; failed includes a usage limit or an expired login, with the reason. settled is true when the agent is not working.",
-        "security": [
-          {
-            "serviceToken": []
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "description": "Send at most 131072 bytes of serialized JSON. The dashboard endpoint refuses a larger body with HTTP 413 without forwarding it, and the server refuses a body over its own limit, which is never lower, with HTTP 413 before any handler runs.",
-          "x-max-body-bytes": 131072,
-          "x-oversized-body-status": 413,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "id": {
-                    "type": "string",
-                    "description": "Armada's sandbox id (a uuid, as returned by launch and list)."
-                  },
-                  "prompt_id": {
-                    "description": "A specific turn. Default: the latest.",
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "recorded": {
-                    "description": "True: database-only state. False: live provider probe. Omitted: provider-specific detail read. CLI defaults to true; --live sets false.",
-                    "type": "boolean"
-                  },
-                  "org": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "id"
-                ],
-                "$schema": "http://json-schema.org/draft-07/schema#"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "timeLeftSeconds": {
-                      "anyOf": [
-                        {
-                          "type": "integer",
-                          "minimum": 0,
-                          "maximum": 9007199254740991
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ],
-                      "description": "Seconds until persisted Armada logical expiry, rounded up and clamped to zero; null if unknown."
-                    },
-                    "expiringSoon": {
-                      "type": "boolean",
-                      "description": "True when known logical time left is at most five minutes, including expired resources."
-                    },
-                    "launch": {
-                      "description": "Launch time per stage for the latest launch or resume; null before any stage is recorded.",
-                      "anyOf": [
-                        {
-                          "type": "object",
-                          "properties": {
-                            "activation": {
-                              "type": "string",
-                              "description": "\"1\" is the launch; a higher activation is a resume."
-                            },
-                            "stages": {
-                              "type": "array",
-                              "items": {
-                                "type": "object",
-                                "properties": {
-                                  "stage": {
-                                    "type": "string",
-                                    "enum": [
-                                      "accepted",
-                                      "provider_claimed",
-                                      "machine_started",
-                                      "checkout_done",
-                                      "bootstrap_started",
-                                      "enrolled",
-                                      "harness_ready",
-                                      "first_token"
-                                    ]
-                                  },
-                                  "at": {
-                                    "type": "string"
-                                  },
-                                  "ms": {
-                                    "type": [
-                                      "number",
-                                      "null"
-                                    ]
-                                  }
-                                },
-                                "required": [
-                                  "stage",
-                                  "at",
-                                  "ms"
-                                ],
-                                "additionalProperties": false
-                              }
-                            },
-                            "ready": {
-                              "type": "boolean",
-                              "description": "Harness ready was recorded."
-                            },
-                            "totalMs": {
-                              "description": "First stage to harness ready (or the last stage so far); first_token waits for a prompt and is excluded.",
-                              "type": [
-                                "number",
-                                "null"
-                              ]
-                            },
-                            "slowest": {
-                              "anyOf": [
-                                {
-                                  "type": "object",
-                                  "properties": {
-                                    "stage": {
-                                      "type": "string",
-                                      "enum": [
-                                        "accepted",
-                                        "provider_claimed",
-                                        "machine_started",
-                                        "checkout_done",
-                                        "bootstrap_started",
-                                        "enrolled",
-                                        "harness_ready",
-                                        "first_token"
-                                      ]
-                                    },
-                                    "ms": {
-                                      "type": "number"
-                                    }
-                                  },
-                                  "required": [
-                                    "stage",
-                                    "ms"
-                                  ],
-                                  "additionalProperties": false
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ]
-                            }
-                          },
-                          "required": [
-                            "activation",
-                            "stages",
-                            "ready",
-                            "totalMs",
-                            "slowest"
-                          ],
-                          "additionalProperties": false
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "providerExpiresAt": {
-                      "description": "Provider physical deadline, when observed; distinct from Armada logical expiry.",
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "billingAccount": {
-                      "anyOf": [
-                        {
-                          "type": "object",
-                          "properties": {
-                            "id": {
-                              "type": "string"
-                            },
-                            "name": {
-                              "type": "string"
-                            },
-                            "kind": {
-                              "type": "string"
-                            },
-                            "billing": {
-                              "type": "string",
-                              "enum": [
-                                "subscription",
-                                "api-key"
-                              ]
-                            },
-                            "version": {
-                              "type": "integer",
-                              "minimum": -9007199254740991,
-                              "maximum": 9007199254740991
-                            }
-                          },
-                          "required": [
-                            "id",
-                            "name",
-                            "kind",
-                            "billing",
-                            "version"
-                          ],
-                          "additionalProperties": false
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "skills": {
-                      "type": "array",
-                      "items": {
-                        "type": "object",
-                        "properties": {
-                          "reference": {
-                            "type": "string"
-                          },
-                          "version": {
-                            "type": "string"
-                          },
-                          "skillId": {
-                            "type": "string"
-                          },
-                          "checksum": {
-                            "type": "string"
-                          },
-                          "origin": {
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "reference",
-                          "version",
-                          "skillId",
-                          "checksum",
-                          "origin"
-                        ],
-                        "additionalProperties": false
-                      }
-                    },
-                    "usage": {
-                      "anyOf": [
-                        {
-                          "type": "object",
-                          "properties": {
-                            "computeSeconds": {
-                              "type": [
-                                "number",
-                                "null"
-                              ]
-                            },
-                            "turnCount": {
-                              "type": [
-                                "number",
-                                "null"
-                              ]
-                            },
-                            "cost": {
-                              "type": "object",
-                              "properties": {
-                                "classification": {
-                                  "type": "string",
-                                  "enum": [
-                                    "priced",
-                                    "included_in_subscription",
-                                    "unknown"
-                                  ]
-                                },
-                                "currency": {
-                                  "type": "string",
-                                  "const": "USD"
-                                },
-                                "usd": {
-                                  "type": [
-                                    "string",
-                                    "null"
-                                  ]
-                                },
-                                "basis": {
-                                  "anyOf": [
-                                    {
-                                      "type": "string",
-                                      "enum": [
-                                        "estimated",
-                                        "api_equivalent"
-                                      ]
-                                    },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
-                                },
-                                "unknown": {
-                                  "anyOf": [
-                                    {
-                                      "type": "string",
-                                      "enum": [
-                                        "admission",
-                                        "coverage",
-                                        "price",
-                                        "tokens",
-                                        "pricing_dimensions"
-                                      ]
-                                    },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
-                                },
-                                "unpricedTurns": {
-                                  "anyOf": [
-                                    {
-                                      "type": "integer",
-                                      "minimum": 0,
-                                      "maximum": 9007199254740991
-                                    },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "classification",
-                                "currency",
-                                "usd",
-                                "basis",
-                                "unknown",
-                                "unpricedTurns"
-                              ],
-                              "additionalProperties": false
-                            },
-                            "tokenTotals": {
-                              "type": "object",
-                              "properties": {
-                                "incomplete": {
-                                  "type": "boolean"
-                                },
-                                "inputTokens": {
-                                  "type": [
-                                    "number",
-                                    "null"
-                                  ]
-                                },
-                                "outputTokens": {
-                                  "type": [
-                                    "number",
-                                    "null"
-                                  ]
-                                },
-                                "cachedTokens": {
-                                  "type": [
-                                    "number",
-                                    "null"
-                                  ]
-                                },
-                                "cacheWriteTokens": {
-                                  "type": [
-                                    "number",
-                                    "null"
-                                  ]
-                                },
-                                "reasoningTokens": {
-                                  "type": [
-                                    "number",
-                                    "null"
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "inputTokens",
-                                "outputTokens",
-                                "cachedTokens",
-                                "cacheWriteTokens",
-                                "reasoningTokens"
-                              ],
-                              "additionalProperties": false
-                            },
-                            "turns": {
-                              "type": "array",
-                              "items": {
-                                "type": "object",
-                                "properties": {
-                                  "promptId": {
-                                    "type": "string"
-                                  },
-                                  "model": {
-                                    "type": [
-                                      "string",
-                                      "null"
-                                    ]
-                                  },
-                                  "inputTokens": {
-                                    "type": [
-                                      "number",
-                                      "null"
-                                    ]
-                                  },
-                                  "outputTokens": {
-                                    "type": [
-                                      "number",
-                                      "null"
-                                    ]
-                                  },
-                                  "cachedTokens": {
-                                    "type": [
-                                      "number",
-                                      "null"
-                                    ]
-                                  },
-                                  "cacheWriteTokens": {
-                                    "type": [
-                                      "number",
-                                      "null"
-                                    ]
-                                  },
-                                  "reasoningTokens": {
-                                    "type": [
-                                      "number",
-                                      "null"
-                                    ]
-                                  },
-                                  "pricing": {
-                                    "description": "Versioned server USD quote from a frozen snapshot; null means unpriced, never zero.",
-                                    "anyOf": [
-                                      {},
-                                      {
-                                        "type": "null"
-                                      }
-                                    ]
-                                  },
-                                  "unavailableReason": {
-                                    "type": "object",
-                                    "properties": {
-                                      "code": {
-                                        "type": "string",
-                                        "enum": [
-                                          "admission_missing",
-                                          "admission_expired",
-                                          "admission_superseded",
-                                          "legacy_disabled",
-                                          "native_start_unobserved",
-                                          "native_input_unmatched",
-                                          "native_turn_unobserved",
-                                          "native_terminal_unobserved",
-                                          "native_history_unavailable",
-                                          "native_boundary_unverified",
-                                          "unsafe_reader_state",
-                                          "reader_unavailable",
-                                          "compute_inactive",
-                                          "unsupported_harness"
-                                        ]
-                                      },
-                                      "message": {
-                                        "type": "string",
-                                        "maxLength": 600
-                                      }
-                                    },
-                                    "required": [
-                                      "code",
-                                      "message"
-                                    ],
-                                    "additionalProperties": false
-                                  }
-                                },
-                                "required": [
-                                  "promptId",
-                                  "model",
-                                  "inputTokens",
-                                  "outputTokens",
-                                  "cachedTokens"
-                                ],
-                                "additionalProperties": false
-                              }
-                            }
-                          },
-                          "required": [
-                            "computeSeconds",
-                            "turnCount",
-                            "turns"
-                          ],
-                          "additionalProperties": false
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "preservationNote": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "externalRef": {
-                      "description": "Opaque reference given at launch; absent when none.",
-                      "type": "string"
-                    },
-                    "id": {
-                      "type": "string"
-                    },
-                    "golden": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "provider": {
-                      "type": "string",
-                      "enum": [
-                        "boat",
-                        "modal",
-                        "docker"
-                      ]
-                    },
-                    "hostId": {
-                      "type": "string"
-                    },
-                    "image": {
-                      "type": "string"
-                    },
-                    "visibility": {
-                      "type": "string",
-                      "enum": [
-                        "org",
-                        "private"
-                      ]
-                    },
-                    "harness": {
-                      "type": "string",
-                      "enum": [
-                        "claude",
-                        "codex",
-                        "opencode"
-                      ]
-                    },
-                    "repositoryDir": {
-                      "description": "Configured directory used to prepare native agent cwd; not confinement.",
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "credentialId": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "credentialVersion": {
-                      "anyOf": [
-                        {
-                          "type": "integer",
-                          "minimum": -9007199254740991,
-                          "maximum": 9007199254740991
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "model": {
-                      "description": "The requested next-send default, not proof of the observed model.",
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "reasoningEffort": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "machineSize": {
-                      "anyOf": [
-                        {},
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "status": {
-                      "type": "string",
-                      "enum": [
-                        "starting",
-                        "ready",
-                        "running",
-                        "stopping",
-                        "stopped",
-                        "failed",
-                        "deleted"
-                      ]
-                    },
-                    "statusReason": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "statusMessage": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "taskOutcome": {
-                      "anyOf": [
-                        {
-                          "oneOf": [
-                            {
-                              "type": "object",
-                              "properties": {
-                                "state": {
-                                  "type": "string",
-                                  "const": "ready"
-                                },
-                                "prNumber": {
-                                  "type": "integer",
-                                  "exclusiveMinimum": 0,
-                                  "maximum": 9007199254740991
-                                },
-                                "prUrl": {
-                                  "type": "string",
-                                  "maxLength": 2048,
-                                  "format": "uri"
-                                },
-                                "headSha": {
-                                  "type": "string",
-                                  "pattern": "^[A-Fa-f0-9]{40}$"
-                                }
-                              },
-                              "required": [
-                                "state"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "state": {
-                                  "type": "string",
-                                  "const": "blocked"
-                                },
-                                "reason": {
-                                  "type": "string",
-                                  "minLength": 1,
-                                  "maxLength": 1000
-                                }
-                              },
-                              "required": [
-                                "state",
-                                "reason"
-                              ],
-                              "additionalProperties": false
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "pullRequests": {
-                      "anyOf": [
-                        {
-                          "type": "array",
-                          "items": {
-                            "type": "object",
-                            "properties": {
-                              "repository": {
-                                "type": "string"
-                              },
-                              "number": {
-                                "type": "integer",
-                                "exclusiveMinimum": 0,
-                                "maximum": 9007199254740991
-                              },
-                              "url": {
-                                "type": "string",
-                                "format": "uri"
-                              },
-                              "headBranch": {
-                                "type": "string"
-                              },
-                              "state": {
-                                "type": "string",
-                                "enum": [
-                                  "open",
-                                  "merged",
-                                  "closed"
-                                ]
-                              },
-                              "checkedAt": {
-                                "type": "string"
-                              }
-                            },
-                            "required": [
-                              "repository",
-                              "number",
-                              "url",
-                              "headBranch",
-                              "state",
-                              "checkedAt"
-                            ],
-                            "additionalProperties": false
-                          }
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "providerState": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "conversationIds": {
-                      "type": "array",
-                      "items": {
-                        "type": "string"
-                      }
-                    },
-                    "expiresAt": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "prompt": {
-                      "anyOf": [
-                        {
-                          "type": "object",
-                          "properties": {
-                            "rateLimit": {
-                              "anyOf": [
-                                {
-                                  "type": "object",
-                                  "properties": {
-                                    "retryCount": {
-                                      "type": "number"
-                                    },
-                                    "delayMs": {
-                                      "type": "number"
-                                    },
-                                    "totalWaitMs": {
-                                      "type": "number"
-                                    },
-                                    "retryAt": {
-                                      "type": "number"
-                                    },
-                                    "waiting": {
-                                      "type": "boolean"
-                                    },
-                                    "message": {
-                                      "type": "string"
-                                    }
-                                  },
-                                  "required": [
-                                    "retryCount",
-                                    "delayMs",
-                                    "totalWaitMs",
-                                    "retryAt",
-                                    "waiting",
-                                    "message"
-                                  ],
-                                  "additionalProperties": false
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ]
-                            },
-                            "promptId": {
-                              "type": "string"
-                            },
-                            "conversationId": {
-                              "type": [
-                                "string",
-                                "null"
-                              ]
-                            },
-                            "state": {
-                              "type": "string",
-                              "enum": [
-                                "queued",
-                                "running",
-                                "finished",
-                                "interrupted",
-                                "failed"
-                              ]
-                            },
-                            "reason": {
-                              "type": [
-                                "string",
-                                "null"
-                              ]
-                            },
-                            "requestedModel": {
-                              "type": [
-                                "string",
-                                "null"
-                              ]
-                            },
-                            "observedModel": {
-                              "type": [
-                                "string",
-                                "null"
-                              ]
-                            },
-                            "modelSelectionReason": {
-                              "anyOf": [
-                                {
-                                  "type": "string",
-                                  "enum": [
-                                    "model_selection_mismatch",
-                                    "model_selection_unverified"
-                                  ]
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ]
-                            },
-                            "modelSelectionMessage": {
-                              "type": [
-                                "string",
-                                "null"
-                              ]
-                            }
-                          },
-                          "required": [
-                            "promptId",
-                            "conversationId",
-                            "state",
-                            "reason"
-                          ],
-                          "additionalProperties": false
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "settled": {
-                      "type": "boolean"
-                    }
-                  },
-                  "required": [
-                    "timeLeftSeconds",
-                    "expiringSoon",
-                    "providerExpiresAt",
-                    "id",
-                    "golden",
-                    "visibility",
-                    "harness",
-                    "repositoryDir",
-                    "model",
-                    "reasoningEffort",
-                    "machineSize",
-                    "status",
-                    "statusReason",
-                    "providerState",
-                    "conversationIds",
-                    "expiresAt",
-                    "prompt",
-                    "settled"
-                  ],
-                  "$schema": "http://json-schema.org/draft-07/schema#",
                   "additionalProperties": false
                 }
               }
@@ -2782,6 +1847,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
                 "type": "object",
                 "properties": {
                   "id": {
@@ -2798,13 +1864,15 @@
                     "type": "boolean"
                   },
                   "org": {
-                    "type": "string"
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   }
                 },
                 "required": [
                   "id"
-                ],
-                "$schema": "http://json-schema.org/draft-07/schema#"
+                ]
               }
             }
           }
@@ -2815,6 +1883,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
                   "type": "object",
                   "properties": {
                     "timeLeftSeconds": {
@@ -3648,7 +2717,6 @@
                     "prompt",
                     "settled"
                   ],
-                  "$schema": "http://json-schema.org/draft-07/schema#",
                   "additionalProperties": false
                 }
               }
@@ -3733,7 +2801,10 @@
                     "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
                   },
                   "org": {
-                    "type": "string"
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   }
                 },
                 "required": [
@@ -3841,7 +2912,10 @@
                     "description": "Armada's sandbox id (a uuid, as returned by launch and list)."
                   },
                   "org": {
-                    "type": "string"
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   }
                 },
                 "required": [
@@ -3968,7 +3042,10 @@
                         "minLength": 1
                       },
                       "org": {
-                        "type": "string"
+                        "type": [
+                          "string",
+                          "null"
+                        ]
                       }
                     },
                     "required": [
@@ -4009,7 +3086,10 @@
                             "minLength": 1
                           },
                           "org": {
-                            "type": "string"
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           }
                         },
                         "required": [
@@ -4058,6 +3138,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
                   "type": "object",
                   "properties": {
                     "id": {
@@ -4109,7 +3190,6 @@
                     "conversationId",
                     "status"
                   ],
-                  "$schema": "http://json-schema.org/draft-07/schema#",
                   "additionalProperties": false
                 }
               }
@@ -4194,7 +3274,10 @@
                     "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
                   },
                   "org": {
-                    "type": "string"
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   }
                 },
                 "required": [
@@ -4283,7 +3366,7 @@
     "/api/v1/sandbox/report": {
       "post": {
         "operationId": "sandbox_report",
-        "description": "Explicit result for the latest finished turn. Call after wait; never inferred from message text. A new send clears it. Only the sandbox owner or current org admin may report or read it.",
+        "description": "Explicit result for the latest finished turn. Call after status confirms settlement; never inferred from message text. A new send clears it. Only the sandbox owner or current org admin may report or read it.",
         "security": [
           {
             "serviceToken": []
@@ -4297,6 +3380,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
                 "type": "object",
                 "properties": {
                   "id": {
@@ -4358,15 +3442,17 @@
                     ]
                   },
                   "org": {
-                    "type": "string"
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   }
                 },
                 "required": [
                   "id",
                   "prompt_id",
                   "outcome"
-                ],
-                "$schema": "http://json-schema.org/draft-07/schema#"
+                ]
               }
             }
           }
@@ -4377,6 +3463,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
                   "type": "object",
                   "properties": {
                     "id": {
@@ -4437,7 +3524,6 @@
                     "id",
                     "taskOutcome"
                   ],
-                  "$schema": "http://json-schema.org/draft-07/schema#",
                   "additionalProperties": false
                 }
               }
@@ -4509,6 +3595,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
                 "type": "object",
                 "properties": {
                   "id": {
@@ -4524,13 +3611,15 @@
                     "type": "boolean"
                   },
                   "org": {
-                    "type": "string"
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   }
                 },
                 "required": [
                   "id"
-                ],
-                "$schema": "http://json-schema.org/draft-07/schema#"
+                ]
               }
             }
           }
@@ -4541,6 +3630,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
                   "type": "object",
                   "properties": {
                     "id": {
@@ -4566,7 +3656,6 @@
                     "id",
                     "status"
                   ],
-                  "$schema": "http://json-schema.org/draft-07/schema#",
                   "additionalProperties": false
                 }
               }
@@ -4639,24 +3728,61 @@
             "application/json": {
               "schema": {
                 "$schema": "http://json-schema.org/draft-07/schema#",
-                "type": "object",
-                "properties": {
-                  "id": {
-                    "type": "string",
-                    "description": "Armada's sandbox id (a uuid, as returned by launch and list)."
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "description": "Armada's sandbox id (a uuid, as returned by launch and list)."
+                      },
+                      "ttlSeconds": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 2591700
+                      },
+                      "ttl_seconds": {
+                        "not": {}
+                      },
+                      "org": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "ttlSeconds"
+                    ]
                   },
-                  "ttlSeconds": {
-                    "type": "integer",
-                    "exclusiveMinimum": 0,
-                    "maximum": 2591700
-                  },
-                  "org": {
-                    "type": "string"
+                  {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "description": "Armada's sandbox id (a uuid, as returned by launch and list)."
+                      },
+                      "ttl_seconds": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 2591700
+                      },
+                      "ttlSeconds": {
+                        "not": {}
+                      },
+                      "org": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "ttl_seconds"
+                    ]
                   }
-                },
-                "required": [
-                  "id",
-                  "ttlSeconds"
                 ]
               }
             }
@@ -4874,6 +4000,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
                 "type": "object",
                 "properties": {
                   "id": {
@@ -4891,13 +4018,15 @@
                     "minLength": 1
                   },
                   "org": {
-                    "type": "string"
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   }
                 },
                 "required": [
                   "id"
-                ],
-                "$schema": "http://json-schema.org/draft-07/schema#"
+                ]
               }
             }
           }
@@ -4908,6 +4037,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
                   "type": "object",
                   "properties": {
                     "timeLeftSeconds": {
@@ -5745,7 +4875,6 @@
                     "settled",
                     "timedOut"
                   ],
-                  "$schema": "http://json-schema.org/draft-07/schema#",
                   "additionalProperties": false
                 }
               }
@@ -5817,6 +4946,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
                 "type": "object",
                 "properties": {
                   "id": {
@@ -5844,14 +4974,16 @@
                     "maximum": 600
                   },
                   "org": {
-                    "type": "string"
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   }
                 },
                 "required": [
                   "id",
                   "command"
-                ],
-                "$schema": "http://json-schema.org/draft-07/schema#"
+                ]
               }
             }
           }
@@ -5862,6 +4994,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
                   "type": "object",
                   "properties": {
                     "id": {
@@ -5900,7 +5033,6 @@
                     "timedOut",
                     "truncated"
                   ],
-                  "$schema": "http://json-schema.org/draft-07/schema#",
                   "additionalProperties": false
                 }
               }
@@ -5972,6 +5104,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
                 "type": "object",
                 "properties": {
                   "id": {
@@ -5989,14 +5122,16 @@
                     "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
                   },
                   "org": {
-                    "type": "string"
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   }
                 },
                 "required": [
                   "id",
                   "text"
-                ],
-                "$schema": "http://json-schema.org/draft-07/schema#"
+                ]
               }
             }
           }
@@ -6007,6 +5142,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
                   "type": "object",
                   "properties": {
                     "id": {
@@ -6039,7 +5175,6 @@
                     "delivery",
                     "mode"
                   ],
-                  "$schema": "http://json-schema.org/draft-07/schema#",
                   "additionalProperties": false
                 }
               }
@@ -6111,6 +5246,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
                 "type": "object",
                 "properties": {
                   "id": {
@@ -6124,13 +5260,15 @@
                     "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
                   },
                   "org": {
-                    "type": "string"
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   }
                 },
                 "required": [
                   "id"
-                ],
-                "$schema": "http://json-schema.org/draft-07/schema#"
+                ]
               }
             }
           }
@@ -6141,6 +5279,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
                   "type": "object",
                   "properties": {
                     "id": {
@@ -6154,7 +5293,6 @@
                     "id",
                     "interrupted"
                   ],
-                  "$schema": "http://json-schema.org/draft-07/schema#",
                   "additionalProperties": false
                 }
               }

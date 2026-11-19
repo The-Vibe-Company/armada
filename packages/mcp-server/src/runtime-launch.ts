@@ -35,6 +35,7 @@ export function createRuntimeLaunch(options: RuntimeLaunchOptions, provider: "bo
     input: LaunchInput;
     configure(): Promise<LaunchPlan>;
     bootstrap(): Bootstrap;
+    commandGrantDeadline?(logicalExpiresAt: number): Promise<number>;
   }): Promise<Started> => {
     const { input } = request;
     const { actor, sandbox, signal, activate, restoreCheckpoint } = input;
@@ -47,6 +48,9 @@ export function createRuntimeLaunch(options: RuntimeLaunchOptions, provider: "bo
     signal.throwIfAborted();
     await activate?.(signal);
     signal.throwIfAborted();
+    const commandGrantExpiresAt = await request.commandGrantDeadline?.(plan.configuration.grant.expiresAt);
+    signal.throwIfAborted();
+    if (commandGrantExpiresAt !== undefined) plan.configuration.grant.expiresAt = commandGrantExpiresAt;
     const agent = runtimeAgentFor(commands, actor.userId, sandbox, defaults, plan.configuration.cwd);
     const ready = await createRuntimeStartup(authority, {
       bootstrap: request.bootstrap(),
@@ -57,6 +61,7 @@ export function createRuntimeLaunch(options: RuntimeLaunchOptions, provider: "bo
       providerSandboxId: sandbox.providerSandboxId,
       serverUrl: server.origin,
       ...plan,
+      ...(commandGrantExpiresAt !== undefined ? { commandGrantExpiresAt } : {}),
       signal,
     });
     await environment.deliver(provider, actor, sandbox.id, ready.epoch, signal);

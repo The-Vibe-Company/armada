@@ -37,6 +37,7 @@ export interface RuntimeSessionScope {
 /** Owner scopes also name the locked sandbox's provider for request-correlated command records. */
 export interface RuntimeOwnerScope extends RuntimeSessionScope {
   provider?: "boat" | "modal" | "docker";
+  commandGrantExpiresAt?: Date;
 }
 
 /** Reenter an owner-held transaction without opening another connection or changing the callback's SQL object. */
@@ -114,8 +115,8 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
       if (!host.rows.length) throw new RuntimeEnrolmentDenied();
     }
     const row = (
-      await tx.query<{ id: string; lifecycle_generation: string }>(
-        `select s.id,s.lifecycle_generation::text from public.sandboxes s
+      await tx.query<{ id: string; lifecycle_generation: string; runtime_transport: string | null }>(
+        `select s.id,s.lifecycle_generation::text,s.runtime_transport from public.sandboxes s
        where s.id=$1 and (s.provider in ('boat','docker') or (s.provider='modal' and s.runtime_transport='dialout')) and s.status in ('starting','ready','running')
        and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>now()
        and s.org_id=$2 and s.owner_id=$3 and s.provider=$4
@@ -134,7 +135,12 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
     if (!row) throw new RuntimeEnrolmentDenied();
     return { ...row, provider: candidate.provider, docker_issuer_fence: candidate.docker_issuer_fence };
   }
-  async function issue(input: { sandboxId: string; ownerId: string; configuration: Record<string, unknown> }) {
+  async function issue(input: {
+    sandboxId: string;
+    ownerId: string;
+    configuration: Record<string, unknown>;
+    commandGrantExpiresAt?: number;
+  }) {
     const serialized = JSON.stringify(input.configuration);
     if (Buffer.byteLength(serialized) > 1048576) throw new RuntimeEnrolmentDenied();
     const sealed = await encryptSecret(serialized, encryptionKey);
@@ -143,17 +149,23 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
     const receipt = await transaction(async (tx) => {
       const sandbox = await lockSandbox(tx, input.sandboxId, input.ownerId);
       if (sandbox.provider === "docker" && options.allowDockerIssue !== true) throw new RuntimeEnrolmentDenied();
+      const commandDeadline =
+        sandbox.runtime_transport === "dialout" && input.commandGrantExpiresAt !== undefined
+          ? new Date(input.commandGrantExpiresAt)
+          : null;
       const pricing = await createSqlSandboxStore(tx, { turnModels: true }).captureUsagePricingContext!(
         input.sandboxId,
       );
       const row = (
         await tx.query<{ epoch: string }>(
-          `insert into public.runtime_enrolments(sandbox_id,lifecycle_generation,enrolment_hash,enrolment_expires_at,configuration_enc,docker_issuer_fence,pricing_context,correlation_id)
-         values($1,$2,$3,now()+interval '5 minutes',$4,$5,$6::jsonb,$7)
+          `insert into public.runtime_enrolments as r(sandbox_id,lifecycle_generation,enrolment_hash,enrolment_expires_at,configuration_enc,docker_issuer_fence,pricing_context,correlation_id,command_grant_epoch,command_grant_expires_at)
+         values($1,$2,$3,now()+interval '5 minutes',$4,$5,$6::jsonb,$7,case when $8::timestamptz is not null then 1 end,$8)
          on conflict(sandbox_id) do update set lifecycle_generation=excluded.lifecycle_generation,
          enrolment_hash=excluded.enrolment_hash,enrolment_expires_at=excluded.enrolment_expires_at,
          configuration_enc=excluded.configuration_enc,docker_issuer_fence=excluded.docker_issuer_fence,
-         pricing_context=excluded.pricing_context,correlation_id=excluded.correlation_id,runtime_hash=null returning epoch::text`,
+         pricing_context=excluded.pricing_context,correlation_id=excluded.correlation_id,runtime_hash=null,
+         command_grant_epoch=case when excluded.command_grant_expires_at is not null then r.epoch+1 end,
+         command_grant_expires_at=excluded.command_grant_expires_at returning epoch::text`,
           [
             sandbox.id,
             sandbox.lifecycle_generation,
@@ -162,6 +174,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
             sandbox.docker_issuer_fence,
             JSON.stringify(pricing),
             currentRequestId() ?? null,
+            commandDeadline,
           ],
         )
       ).rows[0];
@@ -294,8 +307,10 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
       if (expectedLifecycleGeneration !== undefined && sandbox.lifecycle_generation !== expectedLifecycleGeneration)
         throw new RuntimeEnrolmentDenied();
       const row = (
-        await tx.query<LiveRuntime>(
-          `select epoch::text,runtime_protocol_version from public.runtime_enrolments where sandbox_id=$1
+        await tx.query<LiveRuntime & { command_grant_expires_at: Date | null }>(
+          `select epoch::text,runtime_protocol_version,
+         case when command_grant_epoch=epoch then command_grant_expires_at end as command_grant_expires_at
+         from public.runtime_enrolments where sandbox_id=$1
          and lifecycle_generation=$2 and runtime_hash is not null
          and docker_issuer_fence is not distinct from $3::text for update`,
           [sandbox.id, sandbox.lifecycle_generation, sandbox.docker_issuer_fence],
@@ -306,6 +321,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
         sandboxId: sandbox.id,
         epoch: row.epoch,
         provider: sandbox.provider as NonNullable<RuntimeOwnerScope["provider"]>,
+        ...(row.command_grant_expires_at ? { commandGrantExpiresAt: row.command_grant_expires_at } : {}),
       });
     });
   }

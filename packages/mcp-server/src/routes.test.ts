@@ -1,6 +1,10 @@
 import { expect, test } from "bun:test";
+import { MAX_SANDBOX_EXTENSION_TTL_SECONDS } from "@armada/core";
+import { type ControlOptions, dispatchControlCommand } from "./control.ts";
+import { controlFailureResponse } from "./control-errors.ts";
 import { controlRoutes } from "./modules.ts";
 import { defineRoutes, registerRoutes } from "./routes.ts";
+import { ToolApiError } from "./tool-api.ts";
 
 test("registered command routes preserve their HTTP methods and names", () => {
   const routes = Array.from(controlRoutes, ([route, { methods }]) => methods.map((method) => `${method} /${route}`))
@@ -8,9 +12,11 @@ test("registered command routes preserve their HTTP methods and names", () => {
     .sort();
   expect(routes).toMatchInlineSnapshot(`
     [
+      "DELETE /sandboxes/{id}",
       "GET /auth/authorize",
       "GET /auth/methods",
       "GET /github/oauth/callback",
+      "GET /viewer/events",
       "POST /account/logout",
       "POST /account/status",
       "POST /auth/email/start",
@@ -96,7 +102,6 @@ test("registered command routes preserve their HTTP methods and names", () => {
       "POST /sandbox/bind-credential",
       "POST /sandbox/checkpoint-runtime-v1",
       "POST /sandbox/delete",
-      "POST /sandbox/detail",
       "POST /sandbox/exec",
       "POST /sandbox/extend",
       "POST /sandbox/github-preflight-v1",
@@ -113,6 +118,7 @@ test("registered command routes preserve their HTTP methods and names", () => {
       "POST /sandbox/steer",
       "POST /sandbox/stop",
       "POST /sandbox/test-model-connection",
+      "POST /sandbox/viewer-token",
       "POST /sandbox/wait",
       "POST /secrets/commit",
       "POST /secrets/delete",
@@ -141,6 +147,9 @@ test("registered command routes preserve their HTTP methods and names", () => {
       "POST /variables/revoke",
       "POST /variables/set",
       "POST /variables/update",
+      "POST /viewer/logs",
+      "POST /viewer/send",
+      "POST /viewer/status",
     ]
   `);
 });
@@ -151,4 +160,63 @@ test("registry construction rejects duplicate routes with both module names", ()
   expect(() => registerRoutes([first, second])).toThrow(
     'Duplicate control route "sandbox/list" in modules "first" and "second".',
   );
+});
+
+const caller = { via: "supabase" as const, userId: "owner", orgs: [] };
+const options = {
+  data: () => ({
+    sandboxes: {
+      get: async () => {
+        throw new Error("Validation must run before sandbox reads.");
+      },
+      list: async () => {
+        throw new Error("Validation must run before sandbox reads.");
+      },
+    },
+  }),
+  providers: {},
+} as unknown as ControlOptions;
+
+test.each([
+  ["sandbox/list", { limit: 0 }],
+  ["sandbox/status", { id: 42 }],
+  ["sandbox/send", { id: "sandbox", prompt: "" }],
+  ["sandbox/stop", { id: "sandbox", only_if_idle: "true" }],
+  ["sandbox/report", { id: "sandbox", prompt_id: "turn", outcome: { state: "ready", prNumber: 0 } }],
+  ["sandbox/wait", { id: "sandbox", timeout_seconds: 601 }],
+  ["sandbox/steer", { id: "sandbox", text: "" }],
+  ["sandbox/interrupt", { id: "sandbox", request_id: "invalid" }],
+  ["sandbox/exec", { id: "sandbox", command: "", timeout_seconds: 0 }],
+  ["sandbox/resume", { id: "sandbox", request_id: "invalid" }],
+  ["sandbox/extend", { id: 42, ttlSeconds: 60 }],
+  ["sandbox/advice", { id: 42 }],
+  ["sandbox/recovery", { id: "sandbox", recovery_id: "invalid" }],
+  [
+    "sandbox/checkpoint-runtime-v1",
+    { id: "sandbox", request_id: "42ec79bb-0baa-452e-a5c8-0a788e16e880", runtimeVersion: 2 },
+  ],
+  [
+    "sandbox/resume-runtime-v1",
+    { id: "sandbox", request_id: "42ec79bb-0baa-452e-a5c8-0a788e16e880", runtimeVersion: 1, prompt: "" },
+  ],
+] as const)("%s keeps its REST validation code and refuses before touching sandbox data", async (route, body) => {
+  const error = await dispatchControlCommand(route, caller, body, options).catch((reason) => reason);
+  if (!(error instanceof ToolApiError)) throw new Error("Expected a REST validation refusal.", { cause: error });
+  expect(error.message).toContain("Input validation error");
+  const response = controlFailureResponse(error);
+  expect(response.status).toBe(503);
+  expect(await response.json()).toMatchObject({ error: { code: "internal" } });
+});
+
+test.each([
+  [{ ttlSeconds: 1.5 }, "invalid"],
+  [{ ttlSeconds: Number.MAX_SAFE_INTEGER + 1 }, "invalid"],
+  [{ ttlSeconds: MAX_SANDBOX_EXTENSION_TTL_SECONDS + 1 }, "extension_maximum"],
+] as const)("sandbox extension keeps the lifetime refusal for %j", async (body, code) => {
+  const error = await dispatchControlCommand("sandbox/extend", caller, { id: "sandbox", ...body }, options).catch(
+    (reason) => reason,
+  );
+  const response = controlFailureResponse(error);
+  expect(response.status).toBe(400);
+  expect(await response.json()).toMatchObject({ error: { code } });
 });

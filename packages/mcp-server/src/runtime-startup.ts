@@ -1,6 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { isHarness, ProviderError } from "@armada/core";
-import { recordOperatorFailure } from "./request-observability.ts";
+import { currentRequestId, recordOperatorFailure } from "./request-observability.ts";
 import { type createRuntimeEnrolments, RuntimeEnrolmentDenied } from "./runtime-enrolment.ts";
 import { logRuntimeStage } from "./runtime-progress.ts";
 
@@ -42,6 +42,7 @@ export function createRuntimeStartup(
     cacheDir: string;
     artifact: { sha256: string; bytes: number };
     configuration: Record<string, unknown>;
+    commandGrantExpiresAt?: number;
     signal?: AbortSignal;
     /** Readiness budget AFTER the bounded host bootstrap returns. */
     readinessTimeoutMs?: number;
@@ -65,13 +66,35 @@ export function createRuntimeStartup(
     let diagnosticPhase: "ticket" | "bootstrap" | "enrolment" | "readiness" = "ticket";
     let epoch = "0";
     const startedAt = time.now();
+    const requestId = currentRequestId();
+    const entering = (phase: typeof diagnosticPhase | "readiness_fence", at: number) => {
+      try {
+        console.info(
+          JSON.stringify({
+            event: "armada.runtime.startup_phase",
+            requestId,
+            sandboxId,
+            epoch,
+            phase,
+            elapsedMs: at - startedAt,
+          }),
+        );
+      } catch {}
+    };
     try {
       signal?.throwIfAborted();
-      const ticket = await authority.issue({ ownerId, sandboxId, configuration: input.configuration });
+      entering("ticket", startedAt);
+      const ticket = await authority.issue({
+        ownerId,
+        sandboxId,
+        configuration: input.configuration,
+        ...(input.commandGrantExpiresAt !== undefined ? { commandGrantExpiresAt: input.commandGrantExpiresAt } : {}),
+      });
       epoch = ticket.epoch;
       signal?.throwIfAborted();
       diagnosticPhase = "bootstrap";
       const bootstrapAt = time.now();
+      entering("bootstrap", bootstrapAt);
       await ports.bootstrap({
         sandboxId: providerSandboxId,
         serverUrl,
@@ -82,6 +105,7 @@ export function createRuntimeStartup(
       signal?.throwIfAborted();
       diagnosticPhase = phase = "enrolment";
       const bootstrapDoneAt = time.now();
+      entering("enrolment", bootstrapDoneAt);
       const deadline = bootstrapDoneAt + timeout;
       const budget = AbortSignal.timeout(timeout);
       const admission = signal ? AbortSignal.any([signal, budget]) : budget;
@@ -106,10 +130,12 @@ export function createRuntimeStartup(
         if (epoch !== ticket.epoch) throw Error("runtime_startup_replaced");
         diagnosticPhase = phase = "readiness";
         const enrolledAt = time.now();
+        entering("readiness", enrolledAt);
         const ready = await ports.health(admission);
         admission.throwIfAborted();
         if (time.now() >= deadline || ready.runtime !== "armada" || ready.epoch !== ticket.epoch)
           throw Error("runtime_startup_wrong_health");
+        entering("readiness_fence", time.now());
         // Do not publish a health response after stop/replacement while in flight.
         await authority.withOwner(
           sandboxId,

@@ -26,7 +26,7 @@ and ignores the golden field in detail; it does not reject this new row value.
 
 With ARMADA_DOCKER_HOSTS=1, current owner/admin interior authorization:
 
-- POST /api/v1/sandbox/status or /sandbox/detail {id,org?,prompt_id?}; MCP status.
+- POST /api/v1/sandbox/status {id,org?,prompt_id?}; MCP status.
   The normal envelope adds provider=docker, hostId, image and golden=null. Status
   remains the persisted logical machine state; prompt/settled describe acknowledged
   native turn evidence. No live host/model request is made. A newer unknown or

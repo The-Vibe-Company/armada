@@ -328,14 +328,26 @@ test("an unenrolled Boat resume returns to a confirmed retained stop before anot
   }
 });
 
+const observationErrors = new Map([
+  ["transient observation failure", 503],
+  ["unavailable observation without retry marker", 502],
+  ["non-retryable observation conflict", 409],
+]);
+
+const inconclusiveObservationStates = new Map([
+  ["unrecognized state", "unrecognized"],
+  ["archive in progress", "archiving"],
+  ["failed machine state without confirmed exit", "error"],
+]);
+
 const interruptedResumeProofs = [
   "activation receipt",
   "pending ticket",
   "observed archive",
   "observed running",
-  "transient observation failure",
+  ...observationErrors.keys(),
   "cancelled observation",
-  "unrecognized state",
+  ...inconclusiveObservationStates.keys(),
 ];
 
 test.each(interruptedResumeProofs)(
@@ -368,15 +380,17 @@ test.each(interruptedResumeProofs)(
       const running = { body: { sandbox: sdkSandbox({ id: f.row.providerSandboxId, state: "running" }) } };
       const cancelled = proof === "cancelled observation" ? new AbortController() : undefined;
       const interruption = Error("Lifecycle lane cancelled");
+      const observationError = observationErrors.get(proof);
+      const inconclusiveState = inconclusiveObservationStates.get(proof);
       const { provider, requests } = fakeBoat(
-        ...(proof === "transient observation failure" ? [{ status: 503 }] : []),
-        ...(proof === "observed archive" || proof === "transient observation failure" || cancelled
+        ...(observationError ? [{ status: observationError }] : []),
+        ...(inconclusiveState
+          ? [{ body: { sandbox: sdkSandbox({ id: f.row.providerSandboxId, state: inconclusiveState }) } }]
+          : []),
+        ...(proof === "observed archive" || observationError || cancelled || inconclusiveState
           ? [{ body: { sandbox: retainedSandbox({ id: f.row.providerSandboxId, snapshotAvailable: false }) } }]
           : []),
         ...(proof === "observed running" ? [running, running, {}] : []),
-        ...(proof === "unrecognized state"
-          ? [{ body: { sandbox: sdkSandbox({ id: f.row.providerSandboxId, state: "unrecognized" }) } }, {}]
-          : []),
         { body: { sandbox: retainedSandbox({ id: f.row.providerSandboxId }) } },
       );
       const worker = createSandboxLifecycle(f.sql, async () => ({
@@ -394,18 +408,17 @@ test.each(interruptedResumeProofs)(
         expect((await store.get(f.row.id))?.status).toBe("starting");
         expect(outcome).toBe(interruption);
         expect(await worker.reconcileOne()).toBe(false);
-        await f.db.query("update sandboxes set reconcile_lease_until=now() where id=$1", [f.row.id]);
+        await f.db.query("update sandboxes set reconcile_lease_until=now()-interval '1 second' where id=$1", [
+          f.row.id,
+        ]);
       }
       expect(await worker.reconcileOne()).toBe(true);
-      if (proof === "transient observation failure") {
+      if (observationError || inconclusiveState) {
+        expect(requests.map(({ method }) => method)).toEqual(["GET"]);
         expect((await store.get(f.row.id))?.status).toBe("starting");
         expect(await worker.reconcileOne()).toBe(false);
         await f.db.query("update sandboxes set reconcile_after=now() where id=$1", [f.row.id]);
         expect(await worker.reconcileOne()).toBe(true);
-      }
-      if (proof === "unrecognized state") {
-        expect((await store.get(f.row.id))?.status).toBe("failed");
-        return;
       }
       expect((await store.get(f.row.id))?.status).toBe("stopping");
       if (proof === "observed running") expect(requests.map(({ method }) => method)).toEqual(["GET"]);
@@ -480,9 +493,11 @@ test("retained Modal resume enrols through bootstrap using the current deploymen
     let artifact = retainedArtifact;
     let activated = false;
     let enrolled: Awaited<ReturnType<typeof f.authority.enrol>> | undefined;
+    const physicalDeadline = new Date(Date.now() + 86_400_000);
     const host = {
       id: "modal",
-      get: async () => ({ state: "stopped" }),
+      get: async () =>
+        activated ? { state: "ready", providerState: "active", expiresAt: physicalDeadline } : { state: "stopped" },
       async resumeRuntime() {
         activated = true;
       },
@@ -518,6 +533,7 @@ test("retained Modal resume enrols through bootstrap using the current deploymen
     expect(artifact).toEqual(currentArtifact);
     expect(enrolled?.epoch).toBe("2");
     const configuration = enrolled?.configuration as Record<string, unknown> | undefined;
+    expect(configuration?.grant).toEqual({ expiresAt: physicalDeadline.getTime() });
     expect(configuration?.artifactManifest).toMatchObject({ runtime: currentArtifact });
     expect(configuration?.restoreCheckpoint).toMatchObject({
       epoch: f.cp.runtime.epoch,

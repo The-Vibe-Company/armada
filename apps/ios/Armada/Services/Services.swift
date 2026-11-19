@@ -4,7 +4,7 @@ import Foundation
 protocol SandboxService: Sendable {
     /// `POST /api/v1/sandbox/list`: allowlisted metadata for every current member.
     func list(orgID: String, page: Int) async throws(ServiceFailure) -> SandboxPage
-    /// `POST /api/v1/sandbox/detail`: interior state for the owner or a current admin. The server
+    /// `POST /api/v1/sandbox/status`: interior state for the owner or a current admin. The server
     /// reauthorizes every call and may refuse (`.noAccess`).
     func sandboxState(id: String, orgID: String) async throws(ServiceFailure) -> SandboxState
     /// `POST /api/v1/logs/read`: one page of the conversation after an opaque cursor; `backward`

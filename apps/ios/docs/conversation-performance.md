@@ -1,7 +1,7 @@
 # Conversation opening: evidence and profiling
 
 Refs #971. Server-only latency is not app opening latency. The owner measured
-sandbox/detail at 430 ms and logs/read at 375 ms; these are supplied observations,
+sandbox/status at 430 ms and logs/read at 375 ms; these are supplied observations,
 not measurements reproduced in this Linux sandbox.
 
 ## Opening-path audit

@@ -1,4 +1,4 @@
-import type { CredentialBinding, GoldenActor, Provider, Sql } from "@armada/core/server";
+import type { CredentialBinding, GoldenActor, Harness, Provider, Sql } from "@armada/core/server";
 import {
   createSqlVaultStore,
   ProviderError,
@@ -10,6 +10,7 @@ import {
 import type { IngestGrantClaims, Scope } from "@armada/provider-modal";
 import { scopeKey } from "@armada/provider-modal";
 import { admitAccountCapacity, admitLaunchAccount } from "./account-capacity.ts";
+import { chooseLaunchPoolAccount, type LaunchAccountDefault, readLaunchAccountDefault } from "./launch-account-pool.ts";
 import { exposedSecrets } from "./launch-credentials.ts";
 import { createNativeStateStore } from "./model-auth-state.ts";
 import { createSubscriptionBroker } from "./subscription-broker.ts";
@@ -69,6 +70,9 @@ export function createModelAuthOwnership(
   return {
     state,
     broker,
+    launchAccountDefault: (userId: string, harness: Harness) => readLaunchAccountDefault(sql, userId, harness),
+    chooseLaunchPoolAccount: (userId: string, harness: Harness, preference: LaunchAccountDefault) =>
+      chooseLaunchPoolAccount(sql, userId, harness, preference, now),
     async admitCapacity(accountId: string, sandboxId: string, model?: string) {
       await sql.transaction!((tx) => admitAccountCapacity(tx, accountId, sandboxId, model));
     },

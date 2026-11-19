@@ -35,7 +35,6 @@ import { modalLaunchEnvironment } from "../src/modal-launch-environment.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
 import { createOrdinaryLaunchReceipts } from "../src/ordinary-launch-receipts.ts";
 import { createProviderMetadata } from "../src/provider-metadata.ts";
-import { PUBLISHED_REST_ROUTES } from "../src/public-rest-routes.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
@@ -629,7 +628,7 @@ describe("armada org and armada creds against the control API", () => {
       };
       const read = (user: string) =>
         handleControlRequest(
-          new Request("https://armada.test/api/v1/sandbox/detail", {
+          new Request("https://armada.test/api/v1/sandbox/status", {
             method: "POST",
             headers: {
               authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: user })).replace(/=+$/, "")}.sig`,
@@ -642,8 +641,7 @@ describe("armada org and armada creds against the control API", () => {
       expect(response?.status).toBe(200);
       expect(await response?.json()).toMatchObject({ id, status: "ready" });
       expect(response?.headers.get("server-timing")).toContain("stored_provider;dur=");
-      for (const phase of ["tool_register", "tool_connect", "tool_call", "tool_close"])
-        expect(response?.headers.get("server-timing")).toContain(`${phase};dur=`);
+      expect(response?.headers.get("server-timing")).toContain("tool_call;dur=");
       expect(storedReads).toBe(1);
       expect((await read(ADA))?.status).toBe(404);
       expect(storedReads).toBe(1);
@@ -889,33 +887,6 @@ describe("control API", () => {
       expect(dispatched).toBe(1);
       expect(send?.status).toBe(503);
       expect(await send?.json()).toMatchObject({ error: { code: "outcome_unknown" } });
-    });
-  });
-
-  test("every published route refuses a body over its published limit with its published status", async () => {
-    await withServer(async ({ options }) => {
-      const published = (await import("../openapi.json")).default as unknown as {
-        paths: Record<
-          string,
-          { post: { requestBody: { "x-max-body-bytes": number; "x-oversized-body-status": number } } }
-        >;
-      };
-      const authorization = `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`;
-      // The server reads logs/read with a 512 KiB limit; the dashboard endpoint's lower bound is
-      // covered in apps/dashboard/test/control-proxy.test.ts.
-      for (const route of PUBLISHED_REST_ROUTES.filter((route) => route !== "logs/read")) {
-        const { requestBody } = published.paths[`/api/v1/${route}`]!.post;
-        const limit = requestBody["x-max-body-bytes"];
-        const response = await handleControlRequest(
-          new Request(`https://armada.test/api/v1/${route}`, {
-            method: "POST",
-            headers: { authorization },
-            body: JSON.stringify({ pad: "x".repeat(limit) }),
-          }),
-          options,
-        );
-        expect({ route, status: response?.status }).toEqual({ route, status: requestBody["x-oversized-body-status"] });
-      }
     });
   });
 

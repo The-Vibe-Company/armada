@@ -3,7 +3,7 @@ import { sandboxControlRefusal } from "@armada/core";
 /** Sandbox command failures may contain guest secrets; only closed reasons leave the client. */
 export function sandboxFailure(path: string, status: number, serverCode: unknown, serverMessage: unknown) {
   if (
-    !/^\/api\/v1\/sandbox\/(?:list|detail|status|recovery|advice|report|bind-credential|send|steer|interrupt|exec|stop|extend|wait)$/.test(
+    !/^\/api\/v1\/sandbox\/(?:list|status|recovery|advice|report|bind-credential|send|steer|interrupt|exec|stop|extend|wait)$/.test(
       path,
     ) &&
     !/^\/api\/v1\/sandboxes\/[0-9a-f-]+(?:\?.*)?$/i.test(path) &&
@@ -53,7 +53,7 @@ export function sandboxFailure(path: string, status: number, serverCode: unknown
                 : "unavailable";
   // Alias the JSON code emitted before this quality pass; never alias arbitrary server text.
   const wasInterior =
-    /^\/api\/v1\/sandbox\/(?:detail|status|send|steer|interrupt|exec|stop|extend|wait)$/.test(path) ||
+    /^\/api\/v1\/sandbox\/(?:status|send|steer|interrupt|exec|stop|extend|wait)$/.test(path) ||
     path === "/api/v1/logs/read" ||
     path.startsWith("/api/v1/sandboxes/");
   const legacyCode = status === 403 || (wasInterior && status === 404) ? "conflict" : "unavailable";

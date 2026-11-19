@@ -14,7 +14,7 @@ import type { Caller } from "./caller.ts";
 import { createSqlData } from "./data.ts";
 import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
-import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
+import { createRuntimeEnrolments, type RuntimeOwnerScope, scopedRuntimeSql } from "./runtime-enrolment.ts";
 import { selfFinishToken } from "./sandbox-finish.ts";
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -325,7 +325,7 @@ export function createRuntimeMcp(options: {
     );
     const features = health.body.result as { stdioMcpEnv?: unknown };
     const prepareConfiguration = () => authority.withOwner(s.id, s.ownerId, configure);
-    async function configure(tx: Sql, live: { epoch: string }) {
+    async function configure(tx: Sql, live: RuntimeOwnerScope) {
       if (live.epoch !== initial.epoch) return deny();
       const p = await plan(tx, caller, s, live.epoch, initial.selection);
       if (
@@ -342,7 +342,7 @@ export function createRuntimeMcp(options: {
             connectionId,
             tokenHash,
             operations: ["tools", "resources", "prompts"],
-            expiresAt: p.expiresAt,
+            expiresAt: live.commandGrantExpiresAt ?? p.expiresAt,
           });
         const stored = (
           await tx.query<{ generation: number; runtime_epoch: string }>(

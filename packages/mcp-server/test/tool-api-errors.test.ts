@@ -1,6 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
 import { LaunchError, ProviderError } from "@armada/core";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { callSharedTool, ToolApiError } from "../src/tool-api.ts";
 import type { ToolContext } from "../src/tools.ts";
 
@@ -29,7 +28,6 @@ function context(error: Error, conversationIds: readonly string[] = []): ToolCon
   } as unknown as ToolContext;
 }
 
-// Real MCP serialization and shared operation dispatch, not a mocked decoder result.
 test.each([
   {
     error: new LaunchError("start_failed", "Private skill installation failed.", {
@@ -68,57 +66,6 @@ test.each([
   }
 });
 
-// Hostile wire input tests the trust boundary separately from the real round trip.
-test.each([
-  {
-    details: { reason: "helper_missing", action: "rebuild_golden", secret: "private" },
-    expected: { reason: "helper_missing", action: "rebuild_golden" },
-  },
-  { details: { reason: "arbitrary-private-text", stage: "install" }, expected: undefined },
-  { details: { reason: "helper_missing", action: "arbitrary-private-text" }, expected: undefined },
-  { details: { reason: "helper_missing", stage: "arbitrary-private-text" }, expected: undefined },
-])("bridge only copies closed launch detail fields: $details", async ({ details, expected }) => {
-  const wire = spyOn(Client.prototype, "callTool").mockResolvedValue({
-    isError: true,
-    structuredContent: { error: { code: "outcome_unknown", message: "Check status before retrying.", details } },
-    content: [
-      { type: "text", text: "legacy message" },
-      { type: "text", text: "error code: internal" },
-    ],
-  });
-  try {
-    await expect(callSharedTool(context(new Error()), "list", {})).rejects.toMatchObject({
-      code: "outcome_unknown",
-      message: "Check status before retrying.",
-      status: 503,
-      details: expected,
-    });
-  } finally {
-    wire.mockRestore();
-  }
-});
-
-test("bridge falls back to legacy text when structured code/message is invalid", async () => {
-  const wire = spyOn(Client.prototype, "callTool").mockResolvedValue({
-    isError: true,
-    structuredContent: { error: { code: {}, message: 42, details: { reason: "helper_missing" } } },
-    content: [
-      { type: "text", text: "Legacy refusal." },
-      { type: "text", text: "error code: forbidden" },
-    ],
-  });
-  try {
-    await expect(callSharedTool(context(new Error()), "list", {})).rejects.toMatchObject({
-      code: "forbidden",
-      message: "Legacy refusal.",
-      status: 403,
-      details: undefined,
-    });
-  } finally {
-    wire.mockRestore();
-  }
-});
-
 test("start failures log missing-relation causes without changing the public error", async () => {
   const logs: string[] = [];
   const error = new LaunchError("start_failed", "The sandbox could not be started.", {
@@ -152,7 +99,7 @@ test("start failures log missing-relation causes without changing the public err
   expect(logs[0]).not.toContain("hunter");
 });
 
-test("provider start-limit reset survives the real MCP to HTTP bridge", async () => {
+test("direct REST dispatch retains the provider start-limit reset and drops private diagnostics", async () => {
   const error = new ProviderError({
     provider: "boat",
     code: "rate_limited",

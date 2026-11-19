@@ -44,8 +44,10 @@ reports the base and head totals and the locations of new matches.
   `public-rest-routes.ts` and `control*.ts` under the server source directory.
 - `deprecation-header` counts `Deprecation` and `Sunset` header names in non-test
   server TypeScript.
-- `native-path` and `append-point` are reserved for #2859 and #2860.
+- `append-point` counts central control routes, server workers and mounts, core
+  barrel exports, and CLI command table entries.
+- `native-path` is reserved for #2859.
 
 Run `bun scripts/ci/ratchets.ts [base]` locally. Without a base argument or
-`origin/main`, it prints working-tree totals. These regex counters are trend
+`origin/main`, it prints working-tree totals. These counters are trend
 alarms. Import boundaries and table owners enforce their respective contracts.

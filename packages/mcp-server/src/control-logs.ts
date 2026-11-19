@@ -1,6 +1,7 @@
 import { type Provider, VaultError } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import type { ControlOptions } from "./control.ts";
+import { readBody } from "./control-body.ts";
 import { scopedOrg, selectedCaller } from "./control-caller.ts";
 import { optional, required } from "./control-input.ts";
 import { readEventPages, validateLogPagination } from "./event-pagination.ts";
@@ -111,9 +112,13 @@ export async function readLogs(
 }
 
 export const logRoutes = defineRoutes("logs", {
-  "logs/read": async ({ caller, body, options }) => {
-    const org = optional(body, "org");
-    scopedOrg(caller, org);
-    return readLogs(options, await selectedCaller(options, caller, org), required(body, "id"), body);
+  "logs/read": {
+    methods: ["POST"],
+    readBody: (request) => readBody(request, 512 * 1024),
+    handler: async ({ caller, body, options }) => {
+      const org = optional(body, "org");
+      scopedOrg(caller, org);
+      return readLogs(options, await selectedCaller(options, caller, org), required(body, "id"), body);
+    },
   },
 });
