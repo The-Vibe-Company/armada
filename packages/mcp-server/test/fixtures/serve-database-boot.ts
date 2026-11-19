@@ -78,6 +78,7 @@ const reservation = Bun.serve({ port: 0, fetch: () => new Response() });
 const port = reservation.port;
 await reservation.stop(true);
 const env = {
+  ARMADA_MODAL_AGENT_PATH: "native",
   ARMADA_DATABASE_URL: "postgres://fixture",
   ARMADA_DATABASE_POOL_MAX: "5",
   ARMADA_RUNTIME_IDLE_MINUTES: "2.5",

@@ -104,11 +104,11 @@ export function configFromEnv(env: Record<string, string | undefined>): ServerCo
   const boatAgentPath = env.ARMADA_BOAT_AGENT_PATH ?? "native";
   if (boatAgentPath !== "native" && boatAgentPath !== "runtime")
     throw Error("ARMADA_BOAT_AGENT_PATH must be native or runtime.");
-  const modalAgentPath = env.ARMADA_MODAL_AGENT_PATH ?? "native";
+  const modalAgentPath = env.ARMADA_MODAL_AGENT_PATH ?? "runtime";
   if (modalAgentPath !== "native" && modalAgentPath !== "runtime")
     throw Error("ARMADA_MODAL_AGENT_PATH must be native or runtime.");
-  if (modalAgentPath === "runtime" && (env.ARMADA_MODAL_DIALOUT !== "1" || !env.ARMADA_MODAL_RUNTIME_MANIFEST))
-    throw Error("ARMADA_MODAL_AGENT_PATH=runtime requires ARMADA_MODAL_DIALOUT=1 and its runtime manifest.");
+  if (modalAgentPath === "runtime" && (env.ARMADA_MODAL_DIALOUT !== "1" || !env.ARMADA_MODAL_RUNTIME_MANIFEST?.trim()))
+    throw Error("ARMADA_MODAL_AGENT_PATH=runtime requires ARMADA_MODAL_DIALOUT=1 and ARMADA_MODAL_RUNTIME_MANIFEST.");
   const development = env.NODE_ENV === "development";
 
   return {

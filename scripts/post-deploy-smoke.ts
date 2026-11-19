@@ -1,4 +1,5 @@
 import { type Harness, isHarness } from "../packages/core/src/harnesses.ts";
+import { describeNativeFailure, promptFailureReason } from "../packages/core/src/native-failure.ts";
 import { shellQuote as quote } from "../packages/core/src/shell-quote.ts";
 import { providerParitySmoke } from "./provider-parity-smoke.ts";
 import {
@@ -48,6 +49,8 @@ type Code =
   | "unavailable"
   | "unsupported"
   | "poll_limit_exceeded"
+  | "model_authentication_refused"
+  | "model_timeout"
   | "turn_failed"
   | "exec_failed"
   | "invalid_receipt"
@@ -107,6 +110,17 @@ interface SmokeCase {
   publicSkill?: string;
   privateSkill?: string;
 }
+type DockerModelCase = Pick<SmokeCase, "org" | "model" | "modelAccountId"> & {
+  provider: "docker";
+  harness: "codex";
+  hostId: string;
+};
+type RealModelCase = SmokeCase | DockerModelCase;
+type RealModelLaunchSource = { golden: string; connections: [] } | { hostId: string };
+const smokeLaunch = {
+  modal: { keyField: "idempotencyKey", ready: ["ready"] },
+  docker: { keyField: "requestId", ready: ["ready", "running"] },
+};
 interface SmokeIo {
   fetch: (url: string, init: RequestInit) => Promise<Response>;
   sleep: (ms: number) => Promise<void>;
@@ -133,7 +147,7 @@ const TEMPLATE_LAUNCH_TIMEOUT_MS = 600_000;
 const SIBLING_ATTRIBUTION_WAIT_MS = TEMPLATE_LAUNCH_TIMEOUT_MS;
 const SANDBOX_ID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 const LAUNCH_PATH = /^(?:sandbox\/launch|templates\/launch)$/;
-type Lane = "templates" | "expiry" | "lifecycle" | "scoped";
+type Lane = "templates" | "expiry" | "lifecycle" | "scoped" | "real-model";
 
 /** Wait for every concurrent unit, so all cleanups finish before the journal sweep; a thrown unit still throws. */
 async function settled(units: Promise<boolean>[]): Promise<boolean> {
@@ -341,9 +355,12 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
   const lifecycle = args.includes("--lifecycle");
   const githubRefresh = args.includes("--github-refresh");
   const expiry = args.includes("--expiry");
+  const realModel = args.includes("--real-model");
+  let realModelCases: { item: RealModelCase; source: RealModelLaunchSource }[] = [];
   try {
     if (env.ARMADA_SMOKE !== "create_real_compute") fail("compute_opt_in_required");
     if (
+      (realModel && args.length > 1 && !lifecycle) ||
       ((defaultSkills || scopedAccess) && !preservation) ||
       (githubRefresh && !lifecycle) ||
       (expiry && !lifecycle && args.length > 1) ||
@@ -369,7 +386,8 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           arg !== "--lifecycle" &&
           arg !== "--github-refresh" &&
           arg !== "--expiry" &&
-          arg !== "--vault",
+          arg !== "--vault" &&
+          arg !== "--real-model",
       ) ||
       !env.ARMADA_URL ||
       !env.ARMADA_TOKEN ||
@@ -388,13 +406,47 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         goldenRuntime ||
         expiry ||
         lifecycle ||
-        vault) &&
+        vault ||
+        realModel) &&
       origin !== "https://armada-mcp-staging.up.railway.app"
     )
       fail("invalid_configuration");
     const parsed: unknown = JSON.parse(env.ARMADA_SMOKE_CASES);
     if (!Array.isArray(parsed) || parsed.length === 0 || parsed.length > 8) fail("invalid_configuration");
+    const modalCases = [];
+    const dockerCases = [];
     for (const item of parsed) {
+      if (item?.provider === "docker") dockerCases.push(item);
+      else modalCases.push(item);
+    }
+    if (!modalCases.length) fail("invalid_configuration");
+    if (realModel) {
+      const modal = modalCases.filter((item) => item?.harness === "codex");
+      const host = dockerCases[0];
+      if (
+        modal.length !== 1 ||
+        dockerCases.length !== 1 ||
+        host.harness !== "codex" ||
+        [host.org, host.hostId, host.modelAccountId].some(
+          (value) => typeof value !== "string" || !SANDBOX_ID.test(value),
+        ) ||
+        typeof host.model !== "string" ||
+        !host.model.trim() ||
+        [modal[0].org, modal[0].modelAccountId].some((value) => typeof value !== "string" || !SANDBOX_ID.test(value)) ||
+        [modal[0].modelAccountId, host.modelAccountId].some(
+          (account) => account.toLowerCase() === modal[0].scriptedModelAccountId?.toLowerCase(),
+        ) ||
+        [host.model, modal[0].model].some(
+          (model) => typeof model !== "string" || model.trim().toLowerCase() === "scripted",
+        )
+      )
+        fail("invalid_configuration");
+      realModelCases = [
+        { item: modal[0], source: { golden: modal[0].golden, connections: [] } },
+        { item: host, source: { hostId: host.hostId } },
+      ];
+    }
+    for (const item of modalCases) {
       if (
         !item ||
         typeof item !== "object" ||
@@ -422,7 +474,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         fail("invalid_configuration");
     }
     if (templatesSkills) {
-      for (const item of parsed) {
+      for (const item of modalCases) {
         if (
           typeof item.goldenId !== "string" ||
           !item.goldenId.trim() ||
@@ -444,9 +496,9 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         !/^[a-f0-9]{40}$/.test(env.ARMADA_SMOKE_RUNTIME_REVISION ?? "")
       )
         fail("invalid_configuration");
-      const pairs = new Set(parsed.map((item) => `${item.provider}/${item.harness}`));
-      if (parsed.length !== 2 || pairs.size !== 2) fail("invalid_configuration");
-      for (const item of parsed) {
+      const pairs = new Set(modalCases.map((item) => `${item.provider}/${item.harness}`));
+      if (modalCases.length !== 2 || pairs.size !== 2) fail("invalid_configuration");
+      for (const item of modalCases) {
         if (
           typeof item.disposableRepository !== "string" ||
           !/^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\.git$/.test(item.disposableRepository)
@@ -454,7 +506,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           fail("invalid_configuration");
       }
     }
-    cases = parsed.map((item) =>
+    cases = modalCases.map((item) =>
       defaultSkills || (scopedAccess && item.harness === "codex")
         ? {
             ...item,
@@ -563,10 +615,14 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
       record(result);
       if (sandboxLaunch) {
         const provider = smokeReceiptProvider(result);
-        if (provider !== undefined && provider !== "modal") fail("invalid_response");
+        const input = body as { provider?: string; requestId?: string };
+        if (!input.requestId && provider === "boat") fail("invalid_response");
+        if (provider !== input.provider)
+          throw new SmokeFailure("invalid_response", response.status, undefined, launchResponse);
         if (typeof result?.sandbox?.id !== "string" || !result.sandbox.id)
           throw new SmokeFailure("invalid_response", response.status, undefined, launchResponse);
-        if (provider !== "modal") fail("invalid_response");
+        if (input.requestId && (id !== input.requestId || result.sandbox.provider !== input.provider))
+          throw new SmokeFailure("invalid_response", response.status, undefined, launchResponse);
       }
       if (
         path === "templates/launch" &&
@@ -583,11 +639,11 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
   async function poll<T>(
     read: (timeoutMs?: number) => Promise<T>,
     done: (value: T) => boolean,
-    options: { limit?: number; step?: string } = {},
+    options: { limit?: number; step?: string; until?: number } = {},
   ): Promise<T> {
     const timeoutMs = options.step === undefined ? undefined : (deadlines as Record<string, number>)[options.step];
-    const limit = options.limit ?? (timeoutMs === undefined ? POLLS : Number.POSITIVE_INFINITY);
-    const until = timeoutMs === undefined ? undefined : Math.min(deadline, io.now() + timeoutMs);
+    const until = options.until ?? (timeoutMs === undefined ? undefined : Math.min(deadline, io.now() + timeoutMs));
+    const limit = options.limit ?? (until === undefined ? POLLS : Number.POSITIVE_INFINITY);
     for (let i = 0; i < limit; i++) {
       const remaining = until === undefined ? undefined : until - io.now();
       if (remaining !== undefined && remaining <= 0) break;
@@ -695,7 +751,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     );
   }
   function launchWithObservation<T>(
-    item: SmokeCase,
+    item: RealModelCase,
     body: object,
     timeoutMs: number,
     request: ReturnType<typeof createLane>["request"],
@@ -703,9 +759,17 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     requiresLaunchReceipt = false,
   ) {
     const path = "sandbox/launch";
-    const requestKey = `post-deploy-smoke:${crypto.randomUUID()}`;
+    const requestId = crypto.randomUUID();
+    const requestKey = `post-deploy-smoke:${requestId}`;
+    const launch = smokeLaunch[item.provider];
+    const expectedId = launch.keyField === "requestId" ? requestId : undefined;
     return launches.track(path, async (record) => {
-      const launchBody = { ...body, org: item.org, idempotencyKey: requestKey, externalRef: requestKey };
+      const launchBody = {
+        ...body,
+        org: item.org,
+        [launch.keyField]: expectedId ?? requestKey,
+        externalRef: requestKey,
+      };
       try {
         return await transport<T>(false, path, launchBody, undefined, timeoutMs, record, true);
       } catch (error) {
@@ -732,6 +796,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
               typeof row?.id === "string" &&
               SANDBOX_ID.test(row.id) &&
               row.provider === item.provider &&
+              (!expectedId || row.id === expectedId) &&
               row.externalRef === requestKey
             ) {
               if (observedId === undefined) {
@@ -740,7 +805,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
                 record({ sandbox: row });
                 await io.recordSandbox?.(launchBody.org, row.id, requestKey, item.provider);
               }
-              if (row.id === observedId && row.status === "ready") return row;
+              if (row.id === observedId && launch.ready.includes(row.status)) return row;
             }
           });
           if (sandbox && !requiresLaunchReceipt) return { sandbox } as T;
@@ -758,7 +823,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     const timeoutMs = (deadlines as Record<string, number>).expiry_launch ?? 120_000;
     // A ready sandbox with no task no longer counts against its model account, so the expiry
     // lane gives the account back before its TTL wait, which then overlaps the other lanes.
-    return accountSlot(item.modelAccountId, (release) =>
+    return accountSlot(item.modelAccountId.toLowerCase(), (release) =>
       runExpiryCase(item, {
         launch: (body, keepHandle) => launchWithObservation(item, body, timeoutMs, request, keepHandle),
         request: (path, body, remaining = 120_000) => request(path, body, undefined, Math.min(120_000, remaining)),
@@ -787,8 +852,12 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
   // before the lifecycle runs makes its TTL wait overlap them. Queued ahead of a template probe
   // (up to a 10-minute launch), the sandbox could expire before any lifecycle work started.
   const accountSlot = createKeyedQueue();
+  const modelUnits = realModelCases.map(({ item, source }, index) =>
+    accountSlot(item.modelAccountId.toLowerCase(), () => realModelUnit(index, item, source)),
+  );
+  if (realModel && args.length === 1) return settled(modelUnits);
   const templateUnits = templatesSkills
-    ? cases.map((item, index) => accountSlot(item.modelAccountId, () => templateUnit(index, item)))
+    ? cases.map((item, index) => accountSlot(item.modelAccountId.toLowerCase(), () => templateUnit(index, item)))
     : [];
   const expiryUnits = expiry ? cases.map((item, index) => expiryUnit(index, item)) : [];
   if (expiry && args.length === 1) return settled(expiryUnits);
@@ -829,11 +898,150 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     const lane = unit(index, "lifecycle");
     let passed = true;
     for (const dirty of preservation ? [false, true] : [false]) {
-      if (!(await accountSlot(item.modelAccountId, () => lifecycleUnit(index, item, dirty, lane)))) passed = false;
+      if (!(await accountSlot(item.modelAccountId.toLowerCase(), () => lifecycleUnit(index, item, dirty, lane))))
+        passed = false;
     }
     return passed;
   });
-  return (await settled([...templateUnits, ...expiryUnits, ...scopedUnits, ...lifecycleUnits])) && vaultPassed;
+  return (
+    (await settled([...modelUnits, ...templateUnits, ...expiryUnits, ...scopedUnits, ...lifecycleUnits])) && vaultPassed
+  );
+  async function realModelUnit(index: number, item: RealModelCase, source: RealModelLaunchSource) {
+    const { request, withCleanup, step, out } = unit(index, "real-model");
+    const isAuthRefusal = (reason?: string) =>
+      typeof reason === "string" &&
+      (reason.startsWith("Authentication failed. ") ||
+        promptFailureReason(reason) === promptFailureReason("authentication_failed") ||
+        describeNativeFailure(reason)?.title === "Authentication failed");
+    let id: string | undefined;
+    let passed = false;
+    const sandbox = <T>(action: string, body: object = {}, timeoutMs?: number) =>
+      request<T>(`sandbox/${action}`, { org: item.org, id, ...body }, undefined, timeoutMs);
+    const status = (timeoutMs?: number) =>
+      sandbox<{ status: string; providerState?: string; statusReason?: string }>("status", {}, timeoutMs);
+    out(JSON.stringify({ step: "real_model", model: "real", provider: item.provider }));
+    try {
+      await step("real_model_launch", async () => {
+        const result = await launchWithObservation<{ sandbox: { id: string } }>(
+          item,
+          {
+            provider: item.provider,
+            harness: "codex",
+            model: item.model,
+            credentialId: item.modelAccountId,
+            visibility: "private",
+            ttlSeconds: 1800,
+            ...source,
+          },
+          (deadlines as Record<string, number>)[`parity_${item.provider}_launch`] ?? TEMPLATE_LAUNCH_TIMEOUT_MS,
+          request,
+          (handle) => {
+            id = handle;
+          },
+        ).catch(refuseModelCredentials);
+        id = result.sandbox.id;
+      });
+      await step("real_model_ready", () =>
+        poll(status, (result) => {
+          if (isAuthRefusal(result.statusReason)) fail("model_authentication_refused");
+          if (["failed", "stopped", "deleted"].includes(result.status)) fail("sandbox_not_ready");
+          return smokeLaunch[item.provider].ready.includes(result.status);
+        }),
+      );
+      const turn = await step("real_model_send", async () => {
+        const result = await sandbox<{ promptId: string }>("send", {
+          prompt: "Say hello in a short sentence. Do not use tools.",
+          request_id: crypto.randomUUID(),
+        }).catch(refuseModelCredentials);
+        if (typeof result?.promptId !== "string" || !result.promptId) fail("invalid_response");
+        return result;
+      });
+      await step("real_model_wait", async () => {
+        const until = Math.min(deadline, io.now() + deadlines.wait);
+        let finished = false;
+        await poll(
+          async (timeoutMs) => {
+            const started = io.now();
+            if (!finished) {
+              const { prompt } = await sandbox<{ prompt?: { promptId: string; state: string; reason?: string } }>(
+                "wait",
+                { prompt_id: turn.promptId, timeout_seconds: 0 },
+                timeoutMs,
+              ).catch(refuseModelCredentials);
+              if (prompt?.promptId !== turn.promptId) return false;
+              if (prompt.state === "failed" && isAuthRefusal(prompt.reason)) fail("model_authentication_refused");
+              if (["failed", "interrupted"].includes(prompt.state)) fail("turn_failed");
+              finished = prompt.state === "finished";
+              if (!finished) return false;
+            }
+            const remaining = timeoutMs === undefined ? undefined : timeoutMs - (io.now() - started);
+            if (remaining !== undefined && remaining <= 0) return false;
+            const page = await request<{
+              events: {
+                kind: string;
+                promptId?: string;
+                partial?: boolean;
+                text?: string;
+                parentToolUseId?: string;
+                responseKind?: string;
+                retracted?: boolean;
+              }[];
+            }>("logs/read", { org: item.org, id, all: true, coalesce: true }, undefined, remaining);
+            return page.events.some(
+              (event) =>
+                event.kind === "message" &&
+                event.promptId === turn.promptId &&
+                event.partial === false &&
+                !event.parentToolUseId &&
+                event.responseKind !== "tool_result" &&
+                !event.retracted &&
+                typeof event.text === "string" &&
+                event.text.trim().length > 0,
+            );
+          },
+          Boolean,
+          { until },
+        ).catch((error: unknown) => {
+          if (
+            error instanceof SmokeFailure &&
+            (error.code === "poll_limit_exceeded" || (error.code === "request_failed" && io.now() >= until))
+          )
+            fail(finished ? "invalid_receipt" : "model_timeout");
+          throw error;
+        });
+      });
+      passed = true;
+    } catch {
+      passed = false;
+    } finally {
+      if (id) {
+        try {
+          await withCleanup(() =>
+            step("real_model_stop", async () => {
+              try {
+                await sandbox("stop", { request_id: crypto.randomUUID() });
+              } catch (error) {
+                if (!(error instanceof SmokeFailure) || error.code !== "outcome_unknown") throw error;
+              }
+              await poll(status, (result) => {
+                if (!["stopped", "failed"].includes(result.status)) return false;
+                if (result.providerState !== "stopped") fail("provider_not_stopped");
+                return true;
+              });
+            }),
+          );
+        } catch {
+          passed = false;
+        }
+      }
+    }
+    return passed;
+  }
+  function refuseModelCredentials(error: unknown): never {
+    if (error instanceof SmokeFailure && error.code === "credential_refused") fail("model_authentication_refused");
+    throw error;
+  }
+
   async function lifecycleUnit(
     index: number,
     item: SmokeCase,
@@ -1579,8 +1787,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
       if (!launch) return io.fetch(url, init);
       const body = JSON.parse(String(init.body));
       const key = body.externalRef;
-      const keyedDockerParity =
-        args[0] === "--parity" &&
+      const keyedDockerLaunch =
         url.endsWith("/sandbox/launch") &&
         body.provider === "docker" &&
         typeof body.requestId === "string" &&
@@ -1591,7 +1798,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         /^post-deploy-smoke:[0-9a-f-]{36}$/.test(key) &&
         (key === body.idempotencyKey ||
           (url.endsWith("/templates/launch") && key === body.requestKey) ||
-          keyedDockerParity)
+          keyedDockerLaunch)
           ? key
           : `post-deploy-smoke:${crypto.randomUUID()}`;
       const org = body.org;
@@ -1612,14 +1819,17 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         state?: unknown;
         id?: unknown;
       } | null;
-      const keyedModalParity = args[0] === "--parity" && requestKey === key && body.provider === "modal";
-      const id = keyedModalParity || keyedDockerParity ? result?.sandbox?.id : (result?.sandbox?.id ?? result?.id);
+      const keyedModalLaunch = args[0] === "--parity" && requestKey === key && body.provider === "modal";
+      const keyedLaunch = keyedModalLaunch || keyedDockerLaunch;
+      const id = keyedLaunch ? result?.sandbox?.id : (result?.sandbox?.id ?? result?.id);
       const provider = smokeReceiptProvider(result);
-      const unverifiedParityLaunch =
-        (keyedModalParity && (!response.ok || provider !== "modal" || result?.sandbox?.provider !== "modal")) ||
-        (keyedDockerParity &&
-          (!response.ok || id !== body.requestId || provider !== "docker" || result?.sandbox?.provider !== "docker"));
-      if (!unverifiedParityLaunch && typeof id === "string" && SANDBOX_ID.test(id) && typeof org === "string") {
+      const unverifiedLaunch =
+        keyedLaunch &&
+        (!response.ok ||
+          provider !== body.provider ||
+          result?.sandbox?.provider !== body.provider ||
+          (keyedDockerLaunch && id !== body.requestId));
+      if (!unverifiedLaunch && typeof id === "string" && SANDBOX_ID.test(id) && typeof org === "string") {
         const row: SmokeSandboxReceipt = {
           requestKey,
           org,

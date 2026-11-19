@@ -41,6 +41,60 @@ bypass. The initial migration commit uses a
 Version changes stay in the release PR; do not edit package versions or push release tags by hand
 for the normal flow. All root and workspace versions must match the CLI's version.
 
+## Production approval
+
+Before merging the workflow change, a repository admin must create the
+`production-deploy` environment under **Settings → Environments**. Set the
+coordinator's GitHub user as the sole required reviewer, leave **Prevent
+self-review** off, disable administrator bypass, and add no secrets. The
+`release-configuration` job, the standalone migrations workflow, and the
+production deployment job still use the existing `production` environment.
+
+When a publishing run needs a production deployment, `production-approval`
+waits for release finalization. Finalization requires checks, binaries and
+exact-SHA staging smoke, including authenticated receipts for skipped stages.
+A recovery with an authenticated production success receipt proceeds to npm
+without another production approval. The release holds the
+`release-production` lock while approval is pending, so ordinary staging deploys
+queue during the E2E window. Plan for at most 40 minutes from the approval
+request to the decision.
+
+The coordinator runs the [fixture E2E journeys](e2e-retirement.md) against the
+candidate SHA from release metadata. After the report is green, approve only
+`production-deploy` through the
+[pending deployments API](https://docs.github.com/en/rest/actions/workflow-runs#review-pending-deployments-for-a-workflow-run).
+Use the coordinator's authenticated GitHub CLI session with Actions read and
+Deployments write access. Set `run_id` to the numeric ID of the release run
+and `release_sha` to the SHA from the green report. The command checks the
+candidate in the release metadata job logs because the workflow trigger SHA can
+differ from the tested candidate.
+
+```bash
+repo="The-Vibe-Company/armada"
+run="repos/$repo/actions/runs/$run_id"
+pending="$run/pending_deployments"
+metadata_job=$(gh api --paginate "$run/jobs" --jq \
+  '.jobs[] | select(.name == "Validate the release version and source SHA" and .conclusion == "success") | .id')
+candidate_sha=$(gh api "repos/$repo/actions/jobs/$metadata_job/logs" |
+  sed -nE 's/^.*Release candidate SHA: ([0-9a-f]{40})[[:space:]]*$/\1/p')
+environment_id=$(gh api "$pending" --jq \
+  '.[] | select(.environment.name == "production-deploy" and .current_user_can_approve) | .environment.id')
+if [[ "$environment_id" =~ ^[0-9]+$ && "$candidate_sha" =~ ^[0-9a-f]{40}$ &&
+      "$candidate_sha" == "$release_sha" ]]; then
+  printf '{"environment_ids":[%s],"state":"approved","comment":"E2E journeys green for %s"}\n' \
+    "$environment_id" "$release_sha" | gh api --method POST "$pending" --input -
+else
+  echo "Approval requires a pending production-deploy and a matching tested SHA." >&2
+fi
+```
+
+Record the report and approval with the release run. If the journeys fail or
+the coordinator cannot approve within the window, cancel the run to release
+the lock and use the recovery procedure once the cause is resolved.
+For the first five releases using the gate, record the time from version PR
+merge to successful npm publication, including the approval window. The median
+target is at most 60 minutes.
+
 ## npm authentication and the first v2 release
 
 Publishing uses npm Trusted Publishing (GitHub OIDC), not a persistent `NPM_TOKEN`.
@@ -65,7 +119,7 @@ resume the release to publish the main package using OIDC. Subsequent releases n
 
 The SDK package `@the-vibe-company/armada-sdk` is bootstrapped the same way before the first release
 that contains it: publish the exact `the-vibe-company-armada-sdk-<version>.tgz` from that release's
-`npm-tarballs-<version>-linux-x64` artifact with a maintainer session, then run `npm trust github` for it.
+`npm-tarballs-<version>-<sha>-linux-x64` artifact with a maintainer session, then run `npm trust github` for it.
 Until then that release's npm job fails after the CLI packages are published; rerunning it after the
 bootstrap skips the already-published versions and publishes nothing twice.
 
@@ -90,15 +144,27 @@ If production Armada cannot launch a repair worker, use the
 `Actions → Release → Run workflow` defaults to a dry run from the selected ref. It builds,
 packs and smoke-tests every platform, then runs `npm publish --dry-run`.
 
-To recover a release, dispatch from `main` with the **version** and full **sha**.
-The workflow validates the source on main and reruns the release gates. For
-published versions, both inputs must match the latest stable tag and its commit.
-Recovery uses the executing workflow's tooling and the selected SHA's source.
-It skips npm versions already published. See [Tag last](#tag-last).
+Use **Re-run failed jobs** to resume the same workflow revision. If the workflow
+or its tooling needs a fix, dispatch from `main` with the **version** and full
+**sha** of the original release. Recovery uses the selected SHA's source and
+the dispatch revision's tooling. A tooling-only recovery of the same SHA
+reuses the version. Once a version is published, releasing changed source
+requires a new version. See [Tag last](#tag-last).
 
-The `npm-tarballs-<version>-<target>` Actions artifacts contain the exact packed packages and
-per-target `SHA256SUMS-<target>` manifests.
-Do not rebuild or substitute tarballs during a bootstrap or recovery.
+Each successful stage records its run URL as a commit status on the release SHA:
+`release/check`, `release/binaries`, `release/staging-smoke`,
+`release/production` and `release/npm`. Recovery logs the receipts it finds.
+A matching staging receipt also proves the immutable image digest. When the
+binary artifacts are still available, recovery downloads the original image
+pin and the smoke-tested npm tarballs and verifies the checksum manifests.
+If those artifacts are unavailable or a newer attempt could have replaced them,
+recovery rebuilds and smoke-tests packages from the selected SHA before
+publishing them.
+
+When staging or production stopped mid-deploy, recovery keeps the exact-source
+migration checks. It reuses the server if the latest Railway deployment
+succeeded with the selected image pin and live health reports the selected version and SHA. It reuses the
+dashboard if Vercel's ready production target reports the selected SHA.
 
 ## Installation and migration
 
@@ -300,8 +366,8 @@ SHA after the triggering Release finished and staging health still identifies
 it as live. This protects recovery when a newer completion supersedes the
 wakeup from a failed or cancelled Release. This includes existing push runs
 during the transition. Coalescing reports a neutral summary. Unavailable or
-ambiguous evidence falls back to deployment. Pinned release calls always require
-fresh exact-schema acceptance and never use this optimization.
+ambiguous evidence falls back to deployment. Pinned releases use their own
+exact-source, exact-image staging receipt.
 Manual workflow_dispatch uses the same lock and proceeds too. Waiting admission
 is visibly queued in Actions, never a green deployment with every mutation skipped.
 There is no manual merge pause. API or main-resolution failure
@@ -431,11 +497,10 @@ must keep independent database/provider writers disabled.
 
 ### Exact-commit staging evidence
 
-Pinned release calls always deploy and smoke directly under the reservation.
-Historical ordinary staging evidence cannot authorize the new exact-inventory
-policy: a successful old run may have accepted newer SQL under the former
-forward-history exception. Official-image releases also require the generated pin
-from their calling release. No historical smoke success bypasses this check.
+A pinned release requires smoke under the reservation or an authenticated
+`release/staging-smoke` receipt for the same SHA and image digest. Only pinned
+release smoke records that receipt after exact-schema acceptance. Official-image
+releases use the generated pin from their calling release.
 
 ### Docker normal-launch production prerequisite check
 
@@ -543,7 +608,7 @@ The release sequence follows the design in [#2838](https://github.com/The-Vibe-C
    supplies the tag's commit SHA to the
    [commit scan](https://github.com/googleapis/release-please/blob/891bcf6253b390e39df9ff3e1c059a836bd39c98/src/manifest.ts#L541-L675).
 3. **Build and smoke before publishing.** Push the sandbox image as
-   `:<version>-rc.<sha7>`. Carry the full SHA and immutable registry digest
+   `:<version>-rc.<full-sha>` if it does not already exist. Carry the full SHA and immutable registry digest
    in workflow evidence. The binaries embed `<registry>@sha256:<digest>` via
    `official-sandbox-image.json`, and staging smokes that pin. After the smoke
    passes, promote from the tested digest with
@@ -557,8 +622,9 @@ The release sequence follows the design in [#2838](https://github.com/The-Vibe-C
    as the final publication step before production. A failed smoke leaves the
    version and stable image unpublished. A failure between image promotion and
    release creation can leave a stable image. Until release creation, only a
-   candidate with fresh successful smoke may reconcile it. Once the release
-   exists, verify the peeled tag commit and stable image digest on recovery.
+   candidate with successful smoke for the selected SHA and image may reconcile
+   it. Once the release exists, verify the peeled tag commit and stable image
+   digest on recovery.
    `--target` only sets the commit when the tag is missing, so check any
    existing tag explicitly and reject conflicts.
    [GitHub CLI release creation](https://cli.github.com/manual/gh_release_create)
@@ -598,14 +664,13 @@ Dispatch the **Release** workflow from main with `version` and a full commit
 [Actions dispatch](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow#running-a-workflow)
 selects the workflow ref independently of its input values. Validate the SHA
 belongs to main, contains the matching version PR merge and has that version
-in source. Use the selected SHA for source and builds. Continue the existing
-[workflow-revision checkout for recovery tooling](../.github/workflows/release.yml#L541-L546)
-so a tooling fix on main can recover an older source SHA. Before publication,
-repeat validation and exact-source smoke for the selected SHA. If a tag
-exists without a release, require that exact SHA and smoke it again before
-creating the release. If the release already exists, both inputs must match
-the latest stable tag and its peeled commit. Reuse its published image digest,
-repair any interrupted label update and retry the protected downstream steps.
+in source. Use the selected SHA for source and builds. The workflow reuses
+completed stages using the [release stage receipts](#dry-runs-and-recovery).
+If a tag exists without a release, require its exact SHA and ensure staging
+has passed for that SHA and image before creating the release. If the release
+already exists, both inputs must match the latest stable tag and its peeled
+commit. Verify its published image digest, repair any interrupted label
+update and resume the protected downstream steps.
 A different SHA after publication requires a new version.
 
 ### Tag-last acceptance ledger (#2839)

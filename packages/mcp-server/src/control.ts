@@ -1,7 +1,6 @@
 import type { AuthStore } from "@armada/auth";
 import {
   goldenForSettings,
-  PUBLIC_CONTROL_ROUTES,
   parseMachineSizePolicy,
   providerRateLimitDetails,
   VERSION,
@@ -9,10 +8,8 @@ import {
 } from "@armada/core";
 import {
   type ApplicationVault,
-  addMember,
   assertGoldenMutation,
-  createOrg,
-  createSkillCatalog,
+  type createSkillCatalog,
   type GitHubApp,
   type GoldenBuildJobs,
   GoldenError,
@@ -21,42 +18,28 @@ import {
   LaunchError,
   type LaunchOptions,
   type LaunchStores,
-  listConnectionModels,
-  listCredentials,
-  listMembers,
-  listOrgs,
-  mutateCredentialAccount,
+  type mutateCredentialAccount,
   type Provider,
   ProviderError,
   type ProviderRegistry,
   type ProviderTarget,
-  parseCredentialKind,
-  parseRole,
   type RoutineService,
-  removeCredential,
-  removeMember,
-  resolveModelChoice,
   resolveOrg,
-  resolveSkillpackCredential,
   retainFailureDiagnostic,
   type SkillDefaultsService,
-  setCredential,
-  setMemberRole,
   type TemplateService,
   VaultError,
   type VaultStore,
 } from "@armada/core/server";
-import { validateAzureModelAccount } from "./azure-model-account.ts";
 import type { Caller, SupabaseProject } from "./caller.ts";
 import { readBody, readVaultBody } from "./control-body.ts";
 import { authenticatedCaller, scopedOrg, selectedCaller } from "./control-caller.ts";
 import { controlFailureResponse } from "./control-errors.ts";
-import { optional, required, requiredNumber, UUID } from "./control-input.ts";
+import { optional, required, UUID } from "./control-input.ts";
 import { readLogs } from "./control-logs.ts";
 import { fail } from "./control-response.ts";
 import { sandboxToolContext } from "./control-tool-routes.ts";
 import type { CredentialBindingRecovery } from "./credential-binding-recovery.ts";
-import { listControlCredentials } from "./credential-list.ts";
 import type { createSqlCredentialList } from "./credential-list-sql.ts";
 import type { DataSource, ScopedData } from "./data.ts";
 import type { GitHubAccountApi } from "./github-account.ts";
@@ -73,26 +56,12 @@ import { GOLDEN_ADOPTION_REQUEST } from "./golden-rest-schemas.ts";
 import type { Invitations } from "./invitations.ts";
 import { launchActor, templateRuntime } from "./launch-control.ts";
 import { dispatchMcp, type McpControlOptions } from "./mcp-control.ts";
-import { type ModelAuthOwnership, modelAuthCapabilities } from "./model-auth.ts";
+import type { ModelAuthOwnership } from "./model-auth.ts";
 import type { ModelUsageApi } from "./model-usage.ts";
 import { controlRoutes } from "./modules.ts";
 import type { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
-import {
-  connectOrgProvider,
-  disconnectOrgProvider,
-  orgProviderStatus,
-  type ProviderValidator,
-  validateOrgProvider,
-} from "./org-provider.ts";
+import type { ProviderValidator } from "./org-provider.ts";
 import type { ProviderMetadataFor } from "./provider-metadata.ts";
-import {
-  authMethodsRoute,
-  authorizeRoute,
-  emailStartRoute,
-  emailVerifyRoute,
-  exchangeRoute,
-  refreshRoute,
-} from "./public-auth-control.ts";
 import { recordOperatorFailure } from "./request-observability.ts";
 import { measureRequestPhase, RequestTiming, withRequestTiming } from "./request-timing.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
@@ -101,7 +70,6 @@ import type { RuntimeGitHub } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
 import type { RuntimeResume } from "./runtime-resume.ts";
 import type { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
-import { tokenCreateRoute, tokenListRoute, tokenRevokeRoute } from "./token-control.ts";
 import { ToolApiError } from "./tool-api.ts";
 import { describeToolFailure } from "./tool-failure.ts";
 
@@ -231,30 +199,11 @@ async function timedControlRequest(
   const url = new URL(request.url);
   const timing = options.timing;
   const route = url.pathname.slice(CONTROL_PREFIX.length);
-  const publicHandlers: Record<keyof typeof PUBLIC_CONTROL_ROUTES, () => Response | Promise<Response>> = {
-    "auth/methods": () => authMethodsRoute(request, options),
-    "auth/authorize": () => authorizeRoute(request, options),
-    "auth/exchange": () => exchangeRoute(request, options),
-    "auth/email/start": () => emailStartRoute(request, options),
-    "auth/email/verify": () => emailVerifyRoute(request, options),
-    "auth/refresh": () => refreshRoute(request, options),
-    "github/oauth/callback": () =>
-      options.githubAccount
-        ? options.githubAccount.callback(request)
-        : fail(503, "dependency_unavailable", "GitHub account authorization is not configured."),
-  };
-  if (Object.hasOwn(PUBLIC_CONTROL_ROUTES, route)) {
-    const publicRoute = route as keyof typeof PUBLIC_CONTROL_ROUTES;
-    const methods: readonly string[] = PUBLIC_CONTROL_ROUTES[publicRoute];
-    if (!methods.includes(request.method)) return fail(405, "invalid", `Use ${methods.join(" or ")}.`);
-    return publicHandlers[publicRoute]();
-  }
-  if (route === "token/list") return tokenListRoute(request, options);
-  if (route === "token/create") return tokenCreateRoute(request, options);
-  if (route === "token/revoke") return tokenRevokeRoute(request, options);
+  const registered = controlRoutes.get(route);
   const deletion = /^sandboxes\/([0-9a-f-]+)$/i.exec(route);
-  const method = deletion ? "DELETE" : (controlRoutes.get(route)?.method ?? "POST");
-  if (request.method !== method) return fail(405, "invalid", `Use ${method}.`);
+  const methods: readonly string[] = deletion ? ["DELETE"] : (registered?.methods ?? ["POST"]);
+  if (!methods.includes(request.method)) return fail(405, "invalid", `Use ${methods.join(" or ")}.`);
+  if (registered && "respond" in registered) return registered.respond(request, options);
   try {
     const caller = await timing.measure("auth", () => authenticatedCaller(request, options));
     if (vaultControlRoute(route) && url.search)
@@ -328,7 +277,7 @@ export async function dispatchControlCommand(
   options: ControlOptions,
 ): Promise<unknown> {
   const registered = controlRoutes.get(route);
-  if (registered) return registered.handler({ route, caller, body, options });
+  if (registered && "handler" in registered) return registered.handler({ route, caller, body, options });
   if (route.startsWith("skills/defaults/")) {
     if (!options.skillDefaults) throw new VaultError("unavailable", "Skill defaults unavailable.");
     return options.skillDefaults.command(caller, route.slice("skills/defaults/".length), body);
@@ -354,17 +303,6 @@ export async function dispatchControlCommand(
       operation as Parameters<ApplicationVault["command"]>[2],
       body,
     );
-  }
-  if (route === "creds/accounts/auth-capabilities")
-    return { ...modelAuthCapabilities, nativeSubscriptionParallelSandboxes: Boolean(options.modelAuth?.broker) };
-  if (route === "creds/accounts/usage") {
-    if (!options.modelUsage || !options.logs) throw new VaultError("unavailable", "Model usage is not configured.");
-    const id = required(body, "id"),
-      sandboxId = optional(body, "sandboxId");
-    if (!UUID.test(id) || (sandboxId !== undefined && !UUID.test(sandboxId)))
-      throw new VaultError("invalid", "Account and sandbox IDs must be UUIDs.");
-    const logs = options.logs;
-    return options.modelUsage.read(caller, id, sandboxId, (boundSandbox) => logs(caller, boundSandbox));
   }
   if (route === "account/status")
     return { userId: caller.userId, orgs: caller.orgs, authentication: caller.via, version: VERSION };
@@ -442,170 +380,9 @@ export async function dispatchControlCommand(
       body,
     );
   }
-  const { store, encryptionKey } = options;
-  const userId = caller.userId;
-  if (route === "org/provider/status") return orgProviderStatus(store, caller, optional(body, "org"));
-  if (route === "org/provider/connect")
-    return connectOrgProvider(
-      store,
-      encryptionKey,
-      caller,
-      optional(body, "org"),
-      required(body, "provider"),
-      required(body, "value"),
-      options.providerValidator ?? validateOrgProvider,
-    );
-  if (route === "org/provider/disconnect")
-    return disconnectOrgProvider(store, caller, optional(body, "org"), required(body, "provider"));
-  const org = scopedOrg(caller, optional(body, "org"));
+  const { store } = options;
+  scopedOrg(caller, optional(body, "org"));
   switch (route) {
-    case "skillpack/catalog":
-    case "skillpack/versions": {
-      const versions = route === "skillpack/versions";
-      const allowed = versions ? ["org", "source", "reference"] : ["org", "source", "offset"];
-      if (Object.keys(body).some((key) => !allowed.includes(key)))
-        throw new VaultError("invalid", "Invalid skill catalog request.");
-      if (body.source !== "public" && body.source !== "private")
-        throw new VaultError("invalid", "Choose the public catalog or private workspace.");
-      if (
-        body.offset !== undefined &&
-        (typeof body.offset !== "number" || !Number.isInteger(body.offset) || body.offset < 0 || body.offset > 10000)
-      )
-        throw new VaultError("invalid", "Invalid catalog offset.");
-      const member = await resolveOrg(store, userId, org);
-      // Resolve exactly the launching user's credential policy; never expose the
-      // PAT or let a caller select an alternate registry or workspace header.
-      const credential =
-        body.source === "private"
-          ? await resolveSkillpackCredential(store, encryptionKey, { userId, orgId: member.id })
-          : null;
-      const catalog = options.skillCatalog ?? createSkillCatalog();
-      const result = versions
-        ? await catalog.versions({ source: body.source, reference: required(body, "reference") }, credential?.key)
-        : await catalog.list(
-            { source: body.source, ...(body.offset === undefined ? {} : { offset: body.offset as number }) },
-            credential?.key,
-          );
-      // Membership may have changed during the bounded upstream request.
-      await resolveOrg(store, userId, member.id);
-      return result;
-    }
-    case "skillpack/connection": {
-      // Reuse vault visibility, including live membership and token org scoping.
-      const credentials = await listCredentials(store, userId, org);
-      return {
-        authorization: { available: false, reason: "delegated_key_flow_unavailable" },
-        user: credentials.user.filter((credential) => credential.kind === "skillpack"),
-        orgs: credentials.orgs.map((entry) => ({
-          ...entry,
-          credentials: entry.credentials.filter((credential) => credential.kind === "skillpack"),
-        })),
-      };
-    }
-    case "org/create":
-      return { org: await createOrg(store, userId, required(body, "name")) };
-    case "org/list":
-      return {
-        orgs: (await listOrgs(store, userId)).filter(
-          (item) => caller.via === "supabase" || caller.orgs.some((scope) => scope.orgId === item.id),
-        ),
-      };
-    case "members/list":
-      return listMembers(store, userId, org);
-    case "members/add":
-      return {
-        member: await addMember(store, userId, {
-          org,
-          email: required(body, "email"),
-          role: parseRole(optional(body, "role") ?? "member"),
-        }),
-      };
-    case "members/role":
-      await setMemberRole(store, userId, {
-        org,
-        email: required(body, "email"),
-        role: parseRole(required(body, "role")),
-      });
-      return { ok: true };
-    case "members/remove":
-      await removeMember(store, userId, { org, email: required(body, "email") });
-      return { ok: true };
-    case "creds/defaults/set": {
-      const harness = required(body, "harness");
-      if (harness !== "claude" && harness !== "codex" && harness !== "opencode")
-        throw new VaultError("invalid", "Unknown agent.");
-      const credentialId = body.credentialId === null ? null : required(body, "credentialId");
-      const model = body.model === null ? null : required(body, "model");
-      if (
-        (credentialId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(credentialId)) ||
-        (model && (!model.trim() || model.length > 256 || /\s/.test(model)))
-      )
-        throw new VaultError("invalid", "Invalid agent default.");
-      if (model) resolveModelChoice(harness, { model });
-      if (!store.setAgentDefault) throw new VaultError("unavailable", "Agent defaults unavailable.");
-      const member = org ? await resolveOrg(store, userId, org) : undefined;
-      await store.setAgentDefault(userId, { harness, credentialId, model }, member?.id);
-      return { ok: true };
-    }
-    case "creds/accounts/limits":
-    case "creds/accounts/set":
-    case "creds/accounts/rename":
-    case "creds/accounts/default":
-    case "creds/accounts/remove": {
-      const action = route.split("/").at(-1) as "set" | "rename" | "default" | "remove" | "limits";
-      const account = await mutateCredentialAccount(
-        store,
-        encryptionKey,
-        userId,
-        {
-          action,
-          ...(body.model !== undefined ? { model: required(body, "model") } : {}),
-          ...(body.maxAgents === undefined
-            ? {}
-            : { maxAgents: body.maxAgents === null ? null : requiredNumber(body, "maxAgents") }),
-          ...(body.expectedVersion === undefined ? {} : { expectedVersion: requiredNumber(body, "expectedVersion") }),
-          ...(optional(body, "expiresAt") ? { expiresAt: required(body, "expiresAt") } : {}),
-          scope: scope(body),
-          ...(org ? { org } : {}),
-          ...(body.id !== undefined ? { id: required(body, "id") } : {}),
-          ...(body.name !== undefined ? { name: required(body, "name") } : {}),
-          ...(optional(body, "kind") ? { kind: parseCredentialKind(required(body, "kind")) } : {}),
-          ...(optional(body, "value") ? { value: required(body, "value") } : {}),
-        },
-        options.modelAccountValidator ?? validateAzureModelAccount,
-      );
-      return { account };
-    }
-    case "creds/set":
-      await setCredential(
-        store,
-        encryptionKey,
-        userId,
-        {
-          scope: scope(body),
-          org,
-          kind: parseCredentialKind(required(body, "kind")),
-          value: required(body, "value"),
-        },
-        options.modelAccountValidator ?? validateAzureModelAccount,
-      );
-      return { ok: true };
-    case "creds/list":
-      return options.listCredentialMetadata
-        ? options.listCredentialMetadata(userId, org)
-        : listControlCredentials(store, userId, org);
-    case "creds/accounts/models": {
-      // The declared models of visible custom connections (#1483): decrypted here, never the key or the address.
-      const member = await resolveOrg(store, userId, org);
-      return { connections: await listConnectionModels(store, encryptionKey, { userId, orgId: member.id }) };
-    }
-    case "creds/rm":
-      await removeCredential(store, userId, {
-        scope: scope(body),
-        org,
-        kind: parseCredentialKind(required(body, "kind")),
-      });
-      return { ok: true };
     case "golden/size-policy": {
       if (!options.data) throw new VaultError("unavailable", "Golden policies are not configured.");
       const data = options.data(caller);
@@ -719,12 +496,6 @@ export async function dispatchControlCommand(
     default:
       return undefined;
   }
-}
-
-function scope(body: Record<string, unknown>): "user" | "org" {
-  const value = required(body, "scope");
-  if (value === "user" || value === "org") return value;
-  throw new VaultError("invalid", "scope is user or org.");
 }
 
 export { authenticatedControlCaller } from "./control-caller.ts";

@@ -82,7 +82,7 @@ async function recoverInterruptedBoatResume(
   sandboxId: string,
   lease: string,
   generation: number,
-  archivedProviderId: string | null,
+  observedProviderId: string | null,
 ) {
   const result = await tx.query(
     `with handoff as (
@@ -110,7 +110,7 @@ async function recoverInterruptedBoatResume(
     )
     update public.runtime_resumes r set phase='abandoned' from handoff
     where r.sandbox_id=handoff.id and r.request_id=handoff.request_id returning r.request_id`,
-    [sandboxId, lease, generation, UNENROLLED_RESUME_STOP, archivedProviderId],
+    [sandboxId, lease, generation, UNENROLLED_RESUME_STOP, observedProviderId],
   );
   return result.rows.length > 0;
 }
@@ -208,7 +208,7 @@ export function createSandboxLifecycle(
         )
       ).rows[0];
       if (!row) return false;
-      const recoverInterruptedResume = async (archivedProviderId: string | null) => {
+      const recoverInterruptedResume = async (observedProviderId: string | null) => {
         if (!row.interrupted_resume) return false;
         if (!sql.transaction) throw Error("Boat resume recovery requires a SQL transaction.");
         return sql.transaction(async (tx) => {
@@ -219,7 +219,7 @@ export function createSandboxLifecycle(
           );
           return (
             owned.rows.length > 0 &&
-            (await recoverInterruptedBoatResume(tx, row.id, token, row.lifecycle_generation, archivedProviderId))
+            (await recoverInterruptedBoatResume(tx, row.id, token, row.lifecycle_generation, observedProviderId))
           );
         });
       };
@@ -265,7 +265,7 @@ export function createSandboxLifecycle(
       let error: string | null = null;
       let resolved = false;
       let observing = false;
-      let handingOffArchivedResume = false;
+      let handingOffObservedResume = false;
       let waitingForRetention = false;
       let stoppedAt: Date | undefined;
       const expired = new Date(row.expires_at).getTime() <= now();
@@ -290,10 +290,14 @@ export function createSandboxLifecycle(
           return info;
         };
         let info = await observe();
-        if (info.state === "stopped" && row.interrupted_resume) {
-          handingOffArchivedResume = true;
+        if (
+          row.interrupted_resume &&
+          (info.state === "stopped" ||
+            ((info.state === "ready" || info.state === "running") && !info.physicalExitConfirmed))
+        ) {
+          handingOffObservedResume = true;
           if (await recoverInterruptedResume(info.id)) return true;
-          handingOffArchivedResume = false;
+          handingOffObservedResume = false;
         }
         // Name the persisted selection and provider observation before any capture.
         // No secret values or provider error bodies enter this diagnostic.
@@ -490,7 +494,7 @@ export function createSandboxLifecycle(
         else if (!terminal && (expired || row.status === "stopping" || row.stop_requested_at !== null))
           error = "Provider stop is not yet confirmed. Retrying without deleting retained data.";
       } catch (caught) {
-        if (handingOffArchivedResume) throw caught;
+        if (handingOffObservedResume) throw caught;
         const authorityLost =
           (caught instanceof VaultError &&
             ["missing_credential", "forbidden", "not_found", "credential_refused"].includes(caught.code)) ||

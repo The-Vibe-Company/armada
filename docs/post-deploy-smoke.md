@@ -1969,3 +1969,34 @@ leave the query scope before 15 minutes have elapsed.
 
 The ordinary journal cleanup submits a bounded delete request per receipt and
 retains IDs with unresolved outcomes for the next run or manual sweep.
+
+### Real Codex authentication
+
+Pinned staging runs `--real-model` alongside the existing smoke. The flag can
+also run by itself against the pinned staging origin. It requires exactly one
+Modal Codex case and one Docker Codex case in `ARMADA_SMOKE_CASES`. Keep the
+existing Modal Codex case and add a Docker entry with `provider: "docker"`,
+`harness: "codex"`, the staging organization UUID in `org`, the registered
+staging host UUID in `hostId`, and an authorized real Codex
+`modelAccountId` and `model`. The host must have a working default runtime
+image. Use the named scripted account only in `scriptedModelAccountId` on
+the Modal case.
+
+| Lane | Model | Coverage |
+| --- | --- | --- |
+| Modal Codex authentication | real | Launch, one plain prompt, completed turn with non-empty completed assistant message, stop |
+| Docker Codex authentication | real | Same check on the registered host |
+| Modal scoped child, enabled and no-option control | scripted | Scoped gateway and child receipts |
+| Modal baseline lifecycle and preservation, including default-skill and GitHub refresh checks | real | Existing usage, resume and retained-work evidence |
+| Public/private template-skill probes when enabled | real | A turn using the installed skill |
+| Manual GitHub runtime and manual provider/account parity when invoked | real | Harness/tool execution, continuity and account evidence |
+
+Expiry, vault and dashboard reads send no model turns. The authentication
+lanes print `model: "real"` and report `model_authentication_refused` for a
+credential refusal or `model_timeout` when the turn fails to finish before the
+wait deadline. A terminal turn without a completed assistant message fails separately. Smoke
+does not print the answer or raw model diagnostics.
+
+After provisioning, compare the median total smoke step duration of 20
+ordinary green staging runs with the median of 20 ordinary green runs from
+before the change. Record the sample runs and both medians in #2844.

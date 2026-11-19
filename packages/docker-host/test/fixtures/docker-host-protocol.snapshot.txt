@@ -82,6 +82,9 @@ export type DockerHostJob = {
 } & ({
     operation: "create" | "stop" | "delete";
 } | {
+    operation: "deletePhysical";
+    machineId: string;
+} | {
     operation: "bootstrap" | "resume";
     bootstrap: BootstrapDescriptor;
 } | {

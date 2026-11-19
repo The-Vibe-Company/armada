@@ -4,16 +4,16 @@ This is the Step 1 design note for [#2733](https://github.com/The-Vibe-Company/a
 
 ## What runs today
 
-Code baseline `4c78a45da09efd9810e1f2a22b817d6ce1bf4a83`. [Server config](../packages/mcp-server/src/config.ts) defaults both `ARMADA_BOAT_AGENT_PATH` and `ARMADA_MODAL_AGENT_PATH` to `native`. [Server assembly](../packages/mcp-server/src/serve.ts) requires installed Boat runtime artifacts for its runtime default. Modal's runtime default requires `ARMADA_MODAL_DIALOUT=1` and a matching manifest. [Placement](../packages/core/src/launch-placement.ts) and [launch admission](../packages/core/src/launch.ts) route before allocation. A refusal or runtime failure never retries on native.
+[Server config](../packages/mcp-server/src/config.ts) defaults `ARMADA_BOAT_AGENT_PATH` to `native` and `ARMADA_MODAL_AGENT_PATH` to `runtime`. [Server assembly](../packages/mcp-server/src/serve.ts) requires installed Boat runtime artifacts for its runtime default. Modal's runtime default requires `ARMADA_MODAL_DIALOUT=1` and a matching manifest. [Placement](../packages/core/src/launch-placement.ts) and [launch admission](../packages/core/src/launch.ts) route before allocation. A refusal or runtime failure never retries on native.
 
 | Provider | Harness | With repository defaults | Enrolled replacement and harness-specific evidence still required |
 | --- | --- | --- | --- |
 | Boat | Claude Code | Native Boat API for ordinary launches. Eligible custom endpoints can select enrolled runtime when installed. | Prove API key, subscription and supported custom endpoints under enrolled Claude, including in-turn steer, MCP tool provenance, usage across resume and restored session continuity. Apply the Boat/Modal gaps below. |
 | Boat | Codex | Native Boat API for ordinary launches. Eligible custom endpoints can select enrolled runtime when installed. | Prove API key and imported subscription, refresh, account-capacity settlement, reasoning/model selection, restart-style steer, usage and session continuity across a retained stop. Apply the Boat/Modal gaps below. |
 | Boat | OpenCode | No native support. Ordinary launch selects enrolled runtime with artifacts, otherwise refuses. Explicit versioned runtime is also available when configured. Dashboard discovery has its own readiness checks. | Prove ordinary and explicit launch with supported accounts, ACP follow-up, resume and dashboard discoverability. Preserve it during Boat cutover. |
-| Modal | Claude Code | Native Modal runner and authenticated tunnel. | Prove enrolled dial-out for supported API-key and subscription accounts, in-turn steer, tool provenance, usage and remembered context after wake. Apply the Boat/Modal gaps below. |
-| Modal | Codex | Native Modal runner and authenticated tunnel. | Prove enrolled dial-out for API key, custom endpoint where offered and imported subscription, refresh, capacity settlement, model/reasoning controls, restart-style steer, usage and retained session continuity. Apply the Boat/Modal gaps below. |
-| Modal | OpenCode | Native Modal runner and authenticated tunnel. | Prove ACP launch for supported accounts, model mapping, prompt/follow-up, controls, event/archive shape, usage and resumed context with dial-out. Apply the Boat/Modal gaps below. |
+| Modal | Claude Code | Enrolled runtime over dial-out. | Prove enrolled dial-out for supported API-key and subscription accounts, in-turn steer, tool provenance, usage and remembered context after wake. Apply the Boat/Modal gaps below. |
+| Modal | Codex | Enrolled runtime over dial-out. | Prove enrolled dial-out for API key, custom endpoint where offered and imported subscription, refresh, capacity settlement, model/reasoning controls, restart-style steer, usage and retained session continuity. Apply the Boat/Modal gaps below. |
+| Modal | OpenCode | Enrolled runtime over dial-out. | Prove ACP launch for supported accounts, model mapping, prompt/follow-up, controls, event/archive shape, usage and resumed context with dial-out. Apply the Boat/Modal gaps below. |
 | Docker host | Claude Code | Enrolled runtime | Regression control for launch, steer, retention and resume on the owner-enabled host. |
 | Docker host | Codex | Enrolled runtime | Regression control for reasoning, usage, stop/wake and resumed context on the owner-enabled host. |
 | Docker host | OpenCode | Enrolled runtime | Regression control for ACP launch, send and remembered context on the owner-enabled host. |
@@ -74,9 +74,15 @@ The coordinator owns the drain run. Existing turn, stop/resume, retention and de
 
 | Environment | Boat effective default | Modal effective default | Runtime artifact / dial-out | SHA / UTC / evidence |
 | --- | --- | --- | --- | --- |
-| Repository baseline | Native | Native | See server config and assembly above | Code-derived |
+| Repository defaults | Native | Runtime | See server config and assembly above | Code-derived |
 | Staging | Unverified | Unverified | Unverified | Pending coordinator record |
 | Production | Unverified | Unverified | Unverified | Pending coordinator record |
+
+Modal default-on release (#2740), to be completed by the coordinator after deployment:
+
+| Release | UTC date | Production checklist result |
+| --- | --- | --- |
+| Pending rollout | Pending | Pending coordinator verification |
 
 For #2737, the coordinator ran a read-only count from CLI source on main (`9773b5fad`). The inventory covered the single real user's personal credentials and every organization returned by `armada org list --json` for that owner. The coordinator used `armada creds list --json` for personal credentials and `armada creds list --org <id> --json` for each organization, then counted model-kind rows missing an ID or version. Credential identifiers, names and values were omitted from the record.
 
@@ -99,7 +105,7 @@ Before #2742, capture a read-only aggregate grouped by provider and status for r
 
 ## Deletion inventory
 
-Counts are physical lines, including comments and blanks, at the baseline above. Whole-file counts apply to probable deletion units. Inclusive ranges in mixed files include surrounding code for review. Remove only the native-specific statements after tracing their callers. Historical migrations remain append-only.
+Counts are physical lines, including comments and blanks, at baseline commit `4c78a45da09efd9810e1f2a22b817d6ce1bf4a83`. Whole-file counts apply to probable deletion units. Inclusive ranges in mixed files include surrounding code for review. Remove only the native-specific statements after tracing their callers. Historical migrations remain append-only.
 
 ### Whole-file candidates
 

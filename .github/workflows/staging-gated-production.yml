@@ -18,6 +18,11 @@ on:
         type: boolean
         default: false
 
+      image_digest:
+        description: Immutable image digest covered by the pinned release smoke
+        type: string
+        default: ""
+
 permissions:
   contents: read
   actions: read
@@ -75,6 +80,7 @@ jobs:
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
       ARMADA_SERVER_URL: ${{ secrets.ARMADA_SERVER_URL }}
       RELEASE_SHA: ${{ inputs.source_sha || github.sha }}
+      RELEASE_RESUME: ${{ inputs.source_sha != '' && 'true' || 'false' }}
       STAGING_FORWARD_HISTORY: 'true'
       STAGING_EXACT_HISTORY: ${{ inputs.source_sha != '' && 'true' || 'false' }}
       STAGING_LATEST_ONLY: ${{ inputs.source_sha == '' && 'true' || 'false' }}
@@ -120,7 +126,7 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         if: (steps.evidence.outputs.reused != 'true' && inputs.official_image == true)
         with:
-          name: official-sandbox-image
+          name: official-sandbox-image-${{ inputs.source_sha }}
           path: packages/core/src
       - name: Validate configuration before any mutation
         if: (steps.evidence.outputs.reused != 'true')
@@ -241,7 +247,7 @@ jobs:
           status=0
           env -i PATH="$PATH" HOME="$HOME" ARMADA_URL="$ARMADA_URL" ARMADA_TOKEN="$ARMADA_TOKEN" \
             ARMADA_SMOKE_CASES="$ARMADA_SMOKE_CASES" ARMADA_SMOKE="$ARMADA_SMOKE" ARMADA_SMOKE_JOURNAL="$ARMADA_SMOKE_JOURNAL" \
-            bun scripts/post-deploy-smoke.ts --work-preservation --templates-skills --lifecycle --vault --default-skills --scoped-access --github-refresh --golden-runtime --expiry | tee "$RUNNER_TEMP/armada-smoke.jsonl" || status=$?
+            bun scripts/post-deploy-smoke.ts --work-preservation --templates-skills --lifecycle --vault --default-skills --scoped-access --github-refresh --golden-runtime --expiry --real-model | tee "$RUNNER_TEMP/armada-smoke.jsonl" || status=$?
           wait "$dashboard_pid" || status=1
           exit "$status"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -253,6 +259,7 @@ jobs:
             .smoke/release-trigger.json
           include-hidden-files: true
           retention-days: 30
+          overwrite: ${{ inputs.source_sha != '' }}
       - name: Report blocked production
         if: (steps.evidence.outputs.reused != 'true' && failure())
         run: echo "::error::Staging deployment or smoke failed; production migrations and deployments are blocked."
@@ -270,3 +277,13 @@ jobs:
           fi
           bun .release-tools/scripts/release/staging-status.ts \
             "$RUNNER_TEMP/armada-smoke.jsonl" "$RUNNER_TEMP/dashboard-smoke.jsonl"
+
+      - name: Record release/staging-smoke success (${{ inputs.source_sha }}, ${{ inputs.image_digest || 'none' }})
+        if: inputs.source_sha != '' && steps.smoke.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_DIGEST: ${{ inputs.image_digest }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$RELEASE_SHA" -f state=success \
+            -f context=release/staging-smoke -f description="${IMAGE_DIGEST:-none}" \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
