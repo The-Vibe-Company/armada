@@ -2166,11 +2166,10 @@ export function createModalInventory(
 export async function* listModalInventory(
   client: Pick<ModalClient, "cpClient">,
   bound: () => Promise<App>,
-  deploymentId: string | undefined,
+  deploymentId: string | undefined | null,
   signal?: AbortSignal,
-  allDeployments = false,
 ): AsyncGenerator<ProviderInventoryMachine> {
-  if (!deploymentId && !allDeployments)
+  if (deploymentId === undefined || deploymentId === "")
     throw refusal("provider_routing_unavailable", "Modal inventory requires a deployment identity.");
   signal?.throwIfAborted();
   try {

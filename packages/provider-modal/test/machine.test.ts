@@ -21,7 +21,7 @@ function fixture() {
       created: number;
       exited: boolean;
       workspace: string;
-      runtime: Set<string>;
+      runtime: string | undefined;
     }
   >();
   const get = (id: string) => {
@@ -41,11 +41,10 @@ function fixture() {
           async poll() {
             return machine.exited ? 0 : null;
           },
-          async snapshotFilesystem() {
-            fault("snapshot dispatch");
+          async snapshotFilesystem({ ttlMs }: { ttlMs: null }) {
+            if (ttlMs !== null) throw new Error("Retained image must not expire");
             const imageId = `snapshot-${images.size}`;
             images.set(imageId, machine.workspace);
-            fault("snapshot response");
             return { imageId };
           },
           async terminate() {
@@ -55,16 +54,16 @@ function fixture() {
           async exec(argv: string[]) {
             fault("bootstrap dispatch");
             if (machine.exited) throw new Error("Machine exited");
-            let received = false;
+            let binding: string | undefined;
             return {
               stdin: {
                 async writeText(text: string) {
-                  received = Boolean(JSON.parse(text).enrolmentToken);
+                  binding = JSON.parse(text).enrolmentToken;
                 },
                 async close() {
-                  const binding = /, binding="([a-f0-9]+)";/.exec(argv.at(-1) ?? "")?.[1];
-                  if (!received || !binding) throw new Error("Missing stdin ticket or binding guard");
-                  machine.runtime.add(binding);
+                  if (!binding || !argv.at(-1)?.includes("stdio:['pipe','ignore','ignore',9]"))
+                    throw new Error("Missing stdin ticket or inherited lock");
+                  machine.runtime ??= binding;
                 },
               },
               async wait() {
@@ -101,7 +100,7 @@ function fixture() {
               created,
               exited: false,
               workspace: images.get(image.imageId) ?? "",
-              runtime: new Set<string>(),
+              runtime: undefined as string | undefined,
             };
             allocations.set(machine.id, machine);
             fault(
@@ -156,15 +155,17 @@ function fixture() {
             return true;
           },
         },
-        async resolveRuntimeTicket() {
+        async resolveRuntimeTicket({ bindingRef }) {
           return {
             serverUrl: "https://armada.invalid",
             artifact: { sha256: "a".repeat(64), bytes: 1 },
             cacheDir: "/home/user/runtime-cache",
-            enrolmentToken: `armada_enrol_${"b".repeat(64)}`,
+            enrolmentToken: `armada_enrol_${(bindingRef === "replacement-binding" ? "c" : "b").repeat(64)}`,
           };
         },
-        async prepareCheckpoint() {},
+        async prepareCheckpoint() {
+          fault("before snapshot intent");
+        },
       });
     },
     liveMachines() {
@@ -198,10 +199,8 @@ function fixture() {
         : undefined;
     },
     runtimeBindings(machine: MachineIdentity) {
-      const binding = new Bun.CryptoHasher("sha256").update(JSON.stringify("replacement-binding")).digest("hex");
-      return Array.from(get(machine.machineId).runtime, (key) =>
-        key === binding ? "replacement-binding" : "runtime-binding",
-      );
+      const token = get(machine.machineId).runtime;
+      return token ? [token.endsWith("c") ? "replacement-binding" : "runtime-binding"] : [];
     },
     writeWorkspace(machine, content) {
       get(machine.machineId).workspace = content;
@@ -220,7 +219,7 @@ testMachineConformance("Modal machine", {
   faultSteps: {
     create: ["create response"],
     bootstrap: ["bootstrap dispatch", "bootstrap response"],
-    stop: ["snapshot dispatch", "snapshot response", "retention receipt", "termination response"],
+    stop: ["before snapshot intent", "retention receipt", "termination response"],
     resume: ["restore response"],
     delete: ["termination response", "delete receipt"],
   },

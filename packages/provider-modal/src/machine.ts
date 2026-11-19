@@ -31,6 +31,8 @@ type RecordEntry = {
   machineId?: string;
   retain?: boolean;
   recoveryImageId?: string;
+  snapshotDispatched?: true;
+  runtimeBinding?: string;
   deleteScope?: Delete["scope"];
 };
 
@@ -74,7 +76,7 @@ async function optional<T>(operation: () => Promise<T>) {
 }
 
 export function createModalMachine(options: ModalMachineOptions) {
-  const { client, journal, binding, appName, deploymentId } = options;
+  const { client, journal, binding, appName, deploymentId, prepareCheckpoint, resolveRuntimeTicket } = options;
   const bound = () => boundModalApp(client, appName, binding);
   const key = (id: MachineIncarnation) => digest([binding.appId, deploymentId, id.sandboxId, id.generation]);
   const name = (id: MachineIncarnation) => `armada-${key(id).slice(0, 48)}`;
@@ -120,7 +122,7 @@ export function createModalMachine(options: ModalMachineOptions) {
     return entry;
   }
 
-  async function allocate(request: Create, operation: "create" | "resume") {
+  async function allocate(request: Create, operation: "create" | "resume", validateSource?: () => Promise<void>) {
     const { signal, size, computeTtlSeconds, source } = request;
     signal?.throwIfAborted();
     if (
@@ -143,6 +145,7 @@ export function createModalMachine(options: ModalMachineOptions) {
       sandbox = await named(request);
       if (!sandbox) throw refusal("unavailable", "Modal create outcome is uncertain.");
     } else {
+      await validateSource?.();
       const image = await client.images.fromId(source.ref);
       const capacity = size ? machineCapacity("modal", size) : null;
       signal?.throwIfAborted();
@@ -169,18 +172,24 @@ export function createModalMachine(options: ModalMachineOptions) {
   async function terminate(sandbox: Sandbox, signal?: AbortSignal) {
     if ((await sandbox.poll()) === null) {
       signal?.throwIfAborted();
-      await sandbox.terminate({ wait: true });
+      await sandbox.terminate({ wait: false });
+      signal?.throwIfAborted();
       if ((await sandbox.poll()) === null) throw refusal("unavailable", "Modal termination has not completed.");
     }
   }
 
-  const machine: Machine = {
+  return {
     create: (request) => allocate(request, "create"),
     async bootstrap(request) {
-      if ((await current(request)).phase !== "allocated") throw conflict("Modal machine is not bootstrappable.");
+      request.signal?.throwIfAborted();
+      const entry = await current(request);
+      const runtimeBinding = digest(request.bindingRef);
+      if (entry.phase !== "allocated" || (entry.runtimeBinding && entry.runtimeBinding !== runtimeBinding))
+        throw conflict("Modal machine conflicts with the runtime binding.");
+      if (!entry.runtimeBinding) await save(request, entry, { ...entry, runtimeBinding });
       await bound();
       const sb = await exact(request, request.signal);
-      const ticket = await options.resolveRuntimeTicket(request);
+      const ticket = await resolveRuntimeTicket(request);
       request.signal?.throwIfAborted();
       await bootstrapRuntime(sb, request, ticket);
     },
@@ -194,10 +203,13 @@ export function createModalMachine(options: ModalMachineOptions) {
         await bound();
         const sb = await exact(request, request.signal);
         if (request.retain && !entry.recoveryImageId) {
+          if (entry.snapshotDispatched) throw refusal("unavailable", "Modal snapshot outcome is uncertain.");
           if ((await sb.poll()) !== null) throw conflict("Modal checkpoint source already exited.");
-          await options.prepareCheckpoint(request, sb);
+          await prepareCheckpoint(request, sb);
           request.signal?.throwIfAborted();
-          const image = await sb.snapshotFilesystem();
+          entry = await save(request, entry, { ...entry, snapshotDispatched: true });
+          request.signal?.throwIfAborted();
+          const image = await sb.snapshotFilesystem({ ttlMs: null });
           if (!image.imageId) throw refusal("unavailable", "Modal checkpoint returned no image.");
           entry = await save(request, entry, { ...entry, recoveryImageId: image.imageId });
         }
@@ -214,14 +226,15 @@ export function createModalMachine(options: ModalMachineOptions) {
         predecessor.generation !== request.generation - 1
       )
         throw conflict("Modal resume requires the preceding incarnation's recovery image.");
-      const prior = await journal.read(key(predecessor));
-      if (
-        !prior ||
-        (prior.phase !== "stopped" && !(prior.phase === "deleted" && prior.deleteScope === "physical-only")) ||
-        prior.recoveryImageId !== predecessor.ref
-      )
-        throw conflict("Modal recovery image does not match a completed stop.");
-      return allocate({ ...request, source: { kind: "snapshot", ref: predecessor.ref } }, "resume");
+      return allocate({ ...request, source: { kind: "snapshot", ref: predecessor.ref } }, "resume", async () => {
+        const prior = await journal.read(key(predecessor));
+        if (
+          !prior ||
+          (prior.phase !== "stopped" && !(prior.phase === "deleted" && prior.deleteScope === "physical-only")) ||
+          prior.recoveryImageId !== predecessor.ref
+        )
+          throw conflict("Modal recovery image does not match a completed stop.");
+      });
     },
     async delete(request) {
       request.signal?.throwIfAborted();
@@ -255,27 +268,19 @@ export function createModalMachine(options: ModalMachineOptions) {
           : await named(request);
         if (!sb) return { kind: entry || request.machineId ? "unknown" : "absent" };
         if (request.machineId && request.machineId !== sb.sandboxId) return { kind: "unknown" };
-        const found = identity(request, sb.sandboxId);
+        const machine = identity(request, sb.sandboxId);
         const running = (await sb.poll()) === null;
-        if (!running && entry?.phase === "deleting") return { kind: "unknown" };
         if (!running && entry?.phase === "stopped") {
-          const image = entry.recoveryImageId;
-          return {
-            kind: "present",
-            machine: found,
-            phase: "stopped",
-            receipt: { operation: "stop", retained: image ? retained(request, image) : null },
-          };
+          const recovery = entry.recoveryImageId ? retained(request, entry.recoveryImageId) : null;
+          return { kind: "present", machine, phase: "stopped", receipt: { operation: "stop", retained: recovery } };
         }
+        const stopping = entry?.phase === "stopping" || entry?.phase === "deleting";
+        const phase = running ? (stopping ? "stopping" : "running") : "stopped";
         return {
           kind: "present",
-          machine: found,
-          phase: running
-            ? entry?.phase === "stopping" || entry?.phase === "deleting"
-              ? "stopping"
-              : "running"
-            : "stopped",
-          ...(entry && { receipt: { operation: entry.operation, machine: found } }),
+          machine,
+          phase,
+          ...(entry && { receipt: { operation: entry.operation, machine } }),
         };
       } catch {
         request.signal?.throwIfAborted();
@@ -283,14 +288,13 @@ export function createModalMachine(options: ModalMachineOptions) {
       }
     },
     async *listInventory(signal) {
-      for await (const entry of listModalInventory(client, bound, undefined, signal, true)) {
+      for await (const entry of listModalInventory(client, bound, null, signal)) {
         const generation = Number(entry.generation);
         if (entry.sandboxId && Number.isSafeInteger(generation) && generation > 0)
           yield { ...entry, sandboxId: entry.sandboxId, generation };
       }
     },
-  };
-  return machine;
+  } satisfies Machine;
 }
 
 async function bootstrapRuntime(sb: Sandbox, request: Bootstrap, ticket: RuntimeTicket) {
@@ -309,34 +313,36 @@ async function bootstrapRuntime(sb: Sandbox, request: Bootstrap, ticket: Runtime
   )
     throw refusal("invalid_request", "Invalid enrolled Modal bootstrap.");
 
-  const marker = `/run/armada-runtime-${digest(request.machineId)}`;
-  const binding = digest(request.bindingRef);
+  const lock = `/run/armada-runtime-${digest(request.machineId)}.lock`;
   const baseScript = runtimeBootstrapScript(server.origin, ticket.artifact, ticket.cacheDir);
-  const spawn = " const child=cp.spawn";
-  const handoff = " child.unref();";
-  if (!baseScript.includes(spawn) || !baseScript.includes(handoff))
-    throw refusal("unavailable", "Modal bootstrap could not install its replay guard.");
-  const script = baseScript
-    .replace(
-      spawn,
-      ` const guard=${JSON.stringify(marker)}, binding=${JSON.stringify(binding)};
- if(require('node:fs').existsSync(guard)){
-   if(readFileSync(guard,'utf8')===binding)return;
-   throw Error();
- }
- await fs.writeFile(guard,'pending',{flag:'wx',mode:0o600});
- const child=cp.spawn`,
-    )
-    .replace(handoff, " await fs.writeFile(guard,binding);\n child.unref();");
+  const stdio = "stdio:['pipe','ignore','ignore']";
+  if (!baseScript.includes(stdio)) throw refusal("unavailable", "Modal bootstrap could not pass its runtime lock.");
+  const script = baseScript.replace(stdio, "stdio:['pipe','ignore','ignore',9]");
+  const lockAndExec = `exec 9>"$1" || exit 1
+shift
+flock -n -E 75 9
+case $? in
+  0) exec "$@" ;;
+  75) cat >/dev/null ;;
+  *) exit 1 ;;
+esac`;
   try {
-    const child = await sb.exec(["/usr/bin/env", "-i", "PATH=/usr/local/bin:/usr/bin:/bin", "node", "-e", script], {
-      env: {},
-      secrets: [],
-      timeoutMs: 150_000,
-      workdir: "/home/user",
-      stdout: "ignore",
-      stderr: "ignore",
-    });
+    const child = await sb.exec(
+      [
+        "/usr/bin/env",
+        "-i",
+        "PATH=/usr/local/bin:/usr/bin:/bin",
+        "sh",
+        "-c",
+        lockAndExec,
+        "sh",
+        lock,
+        "node",
+        "-e",
+        script,
+      ],
+      { env: {}, secrets: [], timeoutMs: 150_000, workdir: "/home/user", stdout: "ignore", stderr: "ignore" },
+    );
     await child.stdin.writeText(JSON.stringify({ serverUrl: server.origin, enrolmentToken: ticket.enrolmentToken }));
     await child.stdin.close();
     if ((await child.wait()) !== 0) throw Error();
