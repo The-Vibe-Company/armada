@@ -248,17 +248,14 @@ revision and requires:
   empty when `--mcp` is absent.
 - If `ARMADA_RUNTIME_MODEL` is supplied, it matches the published model.
 
-It pins the returned immutable revision and calls the **existing** experimental
-Modal route with standard template `id`, `revision`, `requestKey`, organization
-and prompt/TTL fields. It omits direct-golden/account/model/connection overrides.
-This reuses the standard template source; it is not another runtime or a new API
-route. The non-secret request key is printed before dispatch for reconciliation.
-The standard template receipt must be succeeded and match template/revision,
-request key, golden, account and definition identity. Its frozen readable values
-must have exactly the published keys and pass `validateReadableVariables`.
-The script locally normalizes this ordinary template receipt for its existing
-checks; it does not change the server's template response shape or infer an epoch
-from mutable metadata.
+It pins the returned immutable revision. The explicit Modal path calls
+`sandbox/launch` with `id`, `revision`, `idempotencyKey`, `externalRef`, organization
+and prompt/TTL fields. It checks the returned reference and reads the frozen
+manifest from `sandbox.templateManifest`. With `--ordinary`, it calls
+`templates/launch` with `requestKey` and checks the recorded key in the template
+receipt. Both paths verify the template revision, golden, account and definition,
+and validate the frozen readable values against the expected keyset. The script
+prints the replay key before dispatch and uses the returned runtime epoch.
 
 For each tested prompt, the model must run one fixed `node -e` program that reads
 only the sorted known readable keys, builds their JSON map, and writes SHA256.

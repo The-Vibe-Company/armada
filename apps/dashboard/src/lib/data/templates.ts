@@ -54,7 +54,8 @@ export async function listSelectedTemplates(): Promise<TemplateList> {
     return { state: "ready", userId: viewer.id, items };
   } catch (error) {
     if (!(error instanceof ControlError)) throw error;
-    if (error.status === 404 && error.code === undefined) return { state: "unsupported", message: error.message };
+    if (error.status === 404 && (error.code === "unknown_route" || error.code === undefined))
+      return { state: "unsupported", message: error.message };
     return { state: "error", message: error.message };
   }
 }

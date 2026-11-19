@@ -19,6 +19,9 @@ for source in FILES:
             raise RuntimeError(f"Release contract must execute without skips: {source}")
         print(f"{source}: {len(cases)} executed, zero skipped", flush=True)
 
-source = "packages/mcp-server/test/mcp-codex-bridge.release.probe.ts"
-subprocess.run(["bun", "./" + source], cwd=ROOT, check=True)
-print(f"{source}: probe passed", flush=True)
+for source in (
+    "packages/mcp-server/test/mcp-codex-bridge.release.probe.ts",
+    "packages/provider-modal/test/artifact.release.probe.ts",
+):
+    subprocess.run(["bun", "./" + source], cwd=ROOT, check=True)
+    print(f"{source}: probe passed", flush=True)

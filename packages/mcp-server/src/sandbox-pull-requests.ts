@@ -13,6 +13,8 @@ import {
   type Sql,
 } from "@armada/core/server";
 import { z } from "zod";
+import type { Job, JobKind, JobResult } from "./jobs/runner.ts";
+import { type createJobsStore, rescheduleRecurringJob, withJobLease } from "./jobs/store.ts";
 
 const repoName = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const repoUrl =
@@ -57,6 +59,7 @@ type Target = {
   provider_sandbox_id: string;
   harness: "codex" | "claude" | "opencode";
   runtime: boolean;
+  runtime_epoch: string | null;
   active: boolean;
   launch_authorized: boolean;
   // The current turn had settled before this scan read any push evidence.
@@ -171,21 +174,7 @@ case "$remote" in
 esac
 ${readPushEvidence}`;
 
-export function createSandboxPullRequests(
-  sql: Sql,
-  github: GitHubResolveDeps,
-  exec: (target: Target, request: ExecRequest) => Promise<ExecResult>,
-) {
-  let next = 0;
-  let running: Promise<void> | undefined;
-  async function check(signal: AbortSignal) {
-    // Claim with a durable failure backoff. Reconciliation cannot stop from the
-    // previous proof while a new check is unresolved.
-    const row = (
-      await sql.query<Target>(
-        `with due as (
-          select s.id,c.connection_epoch,c.github_id,e.epoch as membership_epoch,grant_row.repositories,grant_row.priority>0 as launch_authorized
-          from public.sandboxes s
+const eligible = `from public.sandboxes s
           join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
           join public.mcp_actor_epochs e on e.org_id=m.org_id and e.user_id=m.user_id
           join public.github_connections c on c.user_id=s.owner_id and c.revoked_at is null
@@ -211,23 +200,70 @@ export function createSandboxPullRequests(
           where ((s.status in ('ready','running') and s.stop_requested_at is null)
               or (s.status='stopped' and (s.pull_request_scan is not null or s.pull_request_reports<>'{}'::jsonb)))
             and s.activity_lease_id is null and not s.application_secret_tainted
-            and s.expires_at>now() and s.pull_request_check_after<=now()
-          order by s.pull_request_check_after,s.id limit 1 for update of s skip locked
+            and s.expires_at>now()`;
+
+const scanKind = "pr_scan";
+const scanKey = "periodic";
+const maxAttempts = 3;
+
+export function createPullRequestScanJob(
+  sql: Sql,
+  jobs: Pick<ReturnType<typeof createJobsStore>, "enqueue">,
+  github: GitHubResolveDeps,
+  exec: (target: Target, request: ExecRequest, canDispatch: () => Promise<boolean>) => Promise<ExecResult>,
+  now = Date.now,
+) {
+  const retryAfter = (minutes: number) => new Date(now() + minutes * 60_000);
+  let nextSeed = 0;
+  let nextScan = 0;
+  async function prepare() {
+    if (now() >= nextSeed) {
+      const { rows } = await sql.query<{ id: string; org_id: string; generation: string }>(
+        `select s.id,s.org_id,s.lifecycle_generation::text as generation ${eligible}
+         and not exists(select 1 from public.jobs j where j.kind=$1
+           and j.sandbox_id=s.id and j.generation=s.lifecycle_generation)
+         order by s.id limit 32`,
+        [scanKind],
+      );
+      for (const row of rows)
+        await jobs.enqueue(scanKind, row.id, Number(row.generation), scanKey, null, { orgId: row.org_id, maxAttempts });
+      nextSeed = now() + 15_000;
+    }
+    return now() >= nextScan;
+  }
+
+  async function check(job: Job, signal: AbortSignal, canDispatch: () => Promise<boolean>) {
+    // Invalidate proof before observing remote state. A later holder can safely repeat the read.
+    const row = await withJobLease(
+      sql,
+      job,
+      async (tx) =>
+        (
+          await tx.query<Target>(
+            `with target as (
+          select s.id,c.connection_epoch,c.github_id,e.epoch as membership_epoch,
+            grant_row.repositories,grant_row.priority>0 as launch_authorized
+          ${eligible} and s.id=$1 and s.lifecycle_generation=$2
         )
-        update public.sandboxes s set pull_request_check_after=now()+interval '15 minutes',
-          pull_request_merge_proof=null from due where s.id=due.id
+        update public.sandboxes s set pull_request_merge_proof=null from target where s.id=target.id
         returning s.id,s.owner_id,s.provider::text,s.provider_sandbox_id,s.harness::text,
           s.status in ('ready','running') as active,
           (s.boat_runtime or s.runtime_transport is not distinct from 'dialout' or s.provider='docker') as runtime,
+          (select r.epoch::text from public.runtime_enrolments r
+            where r.sandbox_id=s.id and r.lifecycle_generation=s.lifecycle_generation and r.runtime_hash is not null)
+            as runtime_epoch,
           s.created_at::text,s.lifecycle_generation::text,s.task_prompt_id,
           (s.task_prompt_id is not null
             and exists(select 1 from public.runtime_idle_turns t where t.sandbox_id=s.id and t.prompt_id=s.task_prompt_id and t.settled)
             and not exists(select 1 from public.runtime_idle_turns t where t.sandbox_id=s.id and not t.settled)) as settled,
-          due.connection_epoch::text,
-          due.github_id::text,due.membership_epoch::text,due.repositories,due.launch_authorized,s.repository_dir,s.pull_request_scan,s.pull_request_reports`,
-      )
-    ).rows[0];
-    if (!row) return;
+          target.connection_epoch::text,target.github_id::text,target.membership_epoch::text,
+          target.repositories,target.launch_authorized,s.repository_dir,s.pull_request_scan,s.pull_request_reports`,
+            [job.sandbox_id, job.generation],
+          )
+        ).rows[0],
+    );
+    if (!row) return null;
+    nextScan = now() + 15_000;
     try {
       const configured = repos.parse(row.repositories);
       const scan = row.pull_request_scan ?? { pushes: {}, discovered: [] };
@@ -262,16 +298,21 @@ export function createSandboxPullRequests(
         branches.set(repository, names);
         owners.set(repository, remote.slice(0, remote.indexOf("/")));
         if (!row.active) continue;
-        const result = await exec(row, {
-          sandboxId: row.provider_sandbox_id,
-          // The launch branch counts as integrated work; without a usable name
-          // the reader falls back to origin/HEAD.
-          command: `set -- '${since}' '${remote}' '${repo.branch && launchBranch.test(repo.branch) ? repo.branch : ""}'; ${readPushes}`,
-          cwd: `/home/user/${repo.dir}`,
-          onlyIfRunning: true,
-          timeoutSeconds: 5,
-          signal,
-        });
+        if (!(await canDispatch())) return;
+        const result = await exec(
+          row,
+          {
+            sandboxId: row.provider_sandbox_id,
+            // The launch branch counts as integrated work; without a usable name
+            // the reader falls back to origin/HEAD.
+            command: `set -- '${since}' '${remote}' '${repo.branch && launchBranch.test(repo.branch) ? repo.branch : ""}'; ${readPushes}`,
+            cwd: `/home/user/${repo.dir}`,
+            onlyIfRunning: true,
+            timeoutSeconds: 5,
+            signal,
+          },
+          canDispatch,
+        );
         if (result.detached || result.exitCode !== 0 || result.truncated || result.timedOut) return;
         const lines = result.stdout.trimEnd() ? result.stdout.trimEnd().split("\n") : [];
         // Reinstalling a missing hook restores future evidence, but a push
@@ -280,12 +321,15 @@ export function createSandboxPullRequests(
         // next read no longer reports it.
         if (lines.some((line) => line === "!untracked" || line === "!unproven")) {
           scan.untracked = true;
-          await sql.query(
-            `update public.sandboxes set pull_request_merge_proof=null,
+          const sticky = await withJobLease(sql, job, (tx) =>
+            tx.query(
+              `update public.sandboxes set pull_request_merge_proof=null,
               pull_request_scan=jsonb_set(coalesce(pull_request_scan,'{"pushes":{},"discovered":[]}'::jsonb),'{untracked}','true'::jsonb)
-             where id=$1`,
-            [row.id],
+             where id=$1 returning id`,
+              [row.id],
+            ),
           );
+          if (!sticky?.rows.length) return;
         }
         const pushed = new Map<string, string[]>();
         for (const line of lines) {
@@ -336,13 +380,15 @@ export function createSandboxPullRequests(
       }
       // Retain push evidence when Git prunes a tracking ref or expires its reflog.
       scan.pushes = Object.fromEntries([...branches].map(([repo, names]) => [repo, [...names]]));
-      const claim = await sql.query(
-        `update public.sandboxes set pull_request_scan=$2::text::jsonb
+      const retained = await withJobLease(sql, job, (tx) =>
+        tx.query(
+          `update public.sandboxes set pull_request_scan=$2::text::jsonb
          where id=$1 and lifecycle_generation=$3 and (status='stopped' or stop_requested_at is null)
            and activity_lease_id is null returning id`,
-        [row.id, JSON.stringify(scan), row.lifecycle_generation],
+          [row.id, JSON.stringify(scan), row.lifecycle_generation],
+        ),
       );
-      if (!claim.rows.length) return;
+      if (!retained?.rows.length) return;
       const numbers = new Map<string, Identity>();
       const discovered = new Map<string, Identity>();
       const urlFor = ({ repository, number }: Identity) => `https://github.com/${repository}/pull/${number}`;
@@ -406,22 +452,13 @@ export function createSandboxPullRequests(
             entry.attempts = entry.attempts.slice(0, maxPushesPerBranch);
           }
       const found = new Map<string, SandboxPullRequest>();
-      const checkedAt = new Date().toISOString();
+      const checkedAt = new Date(now()).toISOString();
       const launchedAt = Date.parse(row.created_at);
       if (numbers.size || branchCount) {
+        if (!(await canDispatch())) return;
+        signal.throwIfAborted();
         const request = github.fetch ?? fetch;
-        const access = await resolveGitHubAccess(
-          {
-            ...github,
-            caller: "managed_runtime",
-            fetch: Object.assign(
-              (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) =>
-                request(input, { ...init, signal }),
-              { preconnect: request.preconnect },
-            ),
-          },
-          row.owner_id,
-        );
+        const access = await resolveGitHubAccess({ ...github, caller: "managed_runtime" }, row.owner_id);
         if (
           access.status !== "connected" ||
           String(access.identity.id) !== row.github_id ||
@@ -436,7 +473,10 @@ export function createSandboxPullRequests(
           if (!repoName.test(repository) || !branches.has(repository))
             throw Error("Repository is outside the sandbox grant.");
           // A large scan costs capacity from subsequent scans, even on failure.
-          next = Math.max(next, Date.now() + ++requests * 1000);
+          nextScan = Math.max(nextScan, now() + ++requests * 1000);
+          signal.throwIfAborted();
+          if (!(await canDispatch())) throw Error("PR scan dispatch no longer authorized.");
+          signal.throwIfAborted();
           const response = await request(`https://api.github.com/repos/${repository}${path}`, {
             signal,
             redirect: "error",
@@ -603,9 +643,13 @@ export function createSandboxPullRequests(
               promptId: row.task_prompt_id,
             }
           : null;
-      await sql.query(
-        `update public.sandboxes s set pull_requests=$2::text::jsonb,pull_request_merge_proof=$3::text::jsonb,
-          pull_request_check_after=now()+case when s.status='stopped' then interval '30 minutes' else interval '5 minutes' end,
+      return {
+        status: "retry",
+        after: retryAfter(15),
+        async commit(tx) {
+          signal.throwIfAborted();
+          const { rows } = await tx.query<{ stopped: boolean }>(
+            `update public.sandboxes s set pull_requests=$2::text::jsonb,pull_request_merge_proof=$3::text::jsonb,
           pull_request_scan=$9::text::jsonb
           where s.id=$1 and s.lifecycle_generation=$4 and s.task_prompt_id is not distinct from $5
             and s.pull_request_reports=$6::text::jsonb and s.activity_lease_id is null
@@ -614,37 +658,57 @@ export function createSandboxPullRequests(
               and c.revoked_at is null and c.connection_epoch=$7)
             and exists(select 1 from public.mcp_actor_epochs e join public.members m
               on m.org_id=e.org_id and m.user_id=e.user_id
-              where e.org_id=s.org_id and e.user_id=s.owner_id and e.epoch=$8)`,
-        [
-          row.id,
-          JSON.stringify(list),
-          JSON.stringify(proof),
-          row.lifecycle_generation,
-          row.task_prompt_id,
-          JSON.stringify(row.pull_request_reports),
-          row.connection_epoch,
-          row.membership_epoch,
-          JSON.stringify({ ...scan, discovered: [...discovered.values()] }),
-        ],
-      );
+              where e.org_id=s.org_id and e.user_id=s.owner_id and e.epoch=$8)
+          returning s.status='stopped' as stopped`,
+            [
+              row.id,
+              JSON.stringify(list),
+              JSON.stringify(proof),
+              row.lifecycle_generation,
+              row.task_prompt_id,
+              JSON.stringify(row.pull_request_reports),
+              row.connection_epoch,
+              row.membership_epoch,
+              JSON.stringify({ ...scan, discovered: [...discovered.values()] }),
+            ],
+          );
+          signal.throwIfAborted();
+          await rescheduleRecurringJob(tx, job, retryAfter(rows[0] ? (rows[0].stopped ? 30 : 5) : 15));
+        },
+      } satisfies JobResult;
     } catch {
-      // A timeout, denied grant or partial result preserves the last complete list.
+      // A partial observation preserves the last complete list.
     }
   }
+
   return {
-    async drain() {
-      await running;
+    concurrency: 1,
+    prepare,
+    async run(job, context) {
+      if (job.sandbox_id === null || job.generation === null) return { status: "fail", reason: "missing_scan_target" };
+      const signal = AbortSignal.any([context.signal, AbortSignal.timeout(45_000)]);
+      let after = retryAfter(15);
+      try {
+        if (await context.canDispatch()) {
+          const result = await check(job, signal, context.canDispatch);
+          if (result) return result;
+          if (result === null) after = new Date(now() + 15_000);
+        }
+      } catch {
+        // A timeout, denied grant or partial result preserves the last complete list.
+      }
+      const { rows } = await sql.query(
+        `select 1 from public.sandboxes where id=$1 and status <> 'deleted'
+         and not application_secret_tainted and (status <> 'stopped' or expires_at > now())`,
+        [job.sandbox_id],
+      );
+      return rows.length
+        ? {
+            status: "retry",
+            after,
+            commit: (tx) => rescheduleRecurringJob(tx, job, after),
+          }
+        : { status: "done" };
     },
-    async reconcileOne(signal: AbortSignal) {
-      if (running || Date.now() < next) return false;
-      next = Date.now() + 15_000;
-      const deadline = AbortSignal.any([signal, AbortSignal.timeout(45_000)]);
-      running = check(deadline)
-        .catch(() => {})
-        .finally(() => {
-          running = undefined;
-        });
-      return false;
-    },
-  };
+  } satisfies JobKind;
 }

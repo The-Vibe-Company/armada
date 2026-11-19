@@ -153,7 +153,9 @@ describe("MCP control client", () => {
   });
 
   test("a server without the catalog says so instead of offering nothing", async () => {
-    const { control } = server(() => Response.json({ error: { message: "Unknown route." } }, { status: 404 }));
+    const { control } = server(() =>
+      Response.json({ error: { code: "unknown_route", message: "Unknown route." } }, { status: 404 }),
+    );
     await expect(control.catalog(ORG)).rejects.toThrow("does not offer the service catalog yet");
   });
 
@@ -168,8 +170,7 @@ describe("MCP control client", () => {
   test.each([
     [401, { error: { code: "unauthorized", message: "token expired" } }, "Sign in again."],
     [403, { error: { code: "forbidden", message: "Only an org admin changes org connections." } }, "Only an org admin"],
-    [405, { error: { message: "Unknown route." } }, "does not offer MCP connections yet"],
-    [404, { error: { code: "not_found", message: "Unknown route." } }, "does not offer MCP connections yet"],
+    [405, { error: { code: "invalid", message: "Use POST." } }, "Use POST."],
     [409, { error: { code: "conflict", message: "A connection with that name exists." } }, "name exists"],
     [
       500,
@@ -214,14 +215,14 @@ test("controlPost retains object validation and structured domain failure detail
   reply = new Response("not JSON");
   await expect(controlPost(options, "/api/v1/test", {})).rejects.toThrow("unreadable");
   reply = Response.json(
-    { error: { code: "not_found", message: "Unknown route.", reason: "expired", retryAfterSeconds: 30 } },
+    { error: { code: "not_found", message: "The invitation expired.", reason: "expired", retryAfterSeconds: 30 } },
     { status: 404 },
   );
   const error = await controlPost(options, "/api/v1/test", {}, "invitations").catch((error: unknown) => error);
   expect(error).toMatchObject({
     status: 404,
     code: "not_found",
-    message: "Unknown route.",
+    message: "The invitation expired.",
     reason: "expired",
     retryAfterSeconds: 30,
   });

@@ -169,11 +169,14 @@ export function expiryCountdown(expiresAt: string, now: number): string | null {
 }
 
 /**
- * A route the server does not mount answers 404 (or 405) without an error code, which `controlPost` reports with no
- * `code`: for the host list, that means Docker hosts are not enabled on this server. Any other refusal is an error.
+ * The router reports an unmounted route as `unknown_route`. The host list also treats uncoded 404 or 405 replies
+ * as a server with Docker hosts disabled.
  */
 export function isRouteAbsent(error: { status: number | undefined; code: string | undefined }): boolean {
-  return (error.status === 404 || error.status === 405) && error.code === undefined;
+  return (
+    (error.status === 404 && error.code === "unknown_route") ||
+    ((error.status === 404 || error.status === 405) && error.code === undefined)
+  );
 }
 
 /** How long a registration token works (the server's `registration_expires_at`). */

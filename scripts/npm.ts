@@ -38,8 +38,9 @@ const COMMON = {
   publishConfig: { access: "public" },
 };
 
-export function platformPackage(target: Target): string {
-  return `${NPM_PACKAGE}-${target}`;
+export function platformPackage(target: Target) {
+  const name: string = `${NPM_PACKAGE}-${target}`;
+  return name;
 }
 
 export interface StagedPackage {
@@ -55,7 +56,7 @@ export interface StageOptions {
   version?: string;
 }
 
-export function stageNpm(options: StageOptions): StagedPackage[] {
+export function stageNpm(options: StageOptions) {
   const version = options.version ?? VERSION;
   const targets = options.targets ?? TARGETS;
   rmSync(options.out, { recursive: true, force: true });
@@ -110,11 +111,7 @@ export function stageNpm(options: StageOptions): StagedPackage[] {
 }
 
 /** Bundles the SDK into `<out>/sdk`, which must contain no reference to a workspace package. */
-export async function stageSdk(options: {
-  out: string;
-  version?: string;
-  declarations?: string;
-}): Promise<StagedPackage> {
+export async function stageSdk(options: { out: string; version?: string; declarations?: string }) {
   const version = options.version ?? VERSION;
   const entry = join(ROOT, "packages/sdk/src/index.ts");
   const dir = join(options.out, "sdk");
@@ -155,11 +152,12 @@ export async function stageSdk(options: {
     sideEffects: false,
     engines: { node: ">=20.3" },
   });
-  return { name: SDK_PACKAGE, dir };
+  const staged: StagedPackage = { name: SDK_PACKAGE, dir };
+  return staged;
 }
 
 /** Emits the SDK declarations, inlining the imported core type aliases. */
-export async function sdkDeclarations(entry: string): Promise<string> {
+export async function sdkDeclarations(entry: string) {
   const ts = (await import("typescript")).default;
   const program = ts.createProgram([entry], {
     target: ts.ScriptTarget.ES2022,
@@ -220,7 +218,7 @@ export async function sdkDeclarations(entry: string): Promise<string> {
   return result;
 }
 
-function writeJson(path: string, value: unknown): void {
+function writeJson(path: string, value: unknown) {
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
 }
 

@@ -38,6 +38,7 @@ export const HEALTH_PATH = "/healthz";
 export type Route = (request: Request) => Promise<Response | null>;
 
 export interface HandlerOptions {
+  readOutputSnapshot?: ToolContext["readOutputSnapshot"];
   sandboxBillingAccount?: (
     caller: import("./caller.ts").Caller,
     id: string,
@@ -183,6 +184,8 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
     const server = createArmadaServer(
       {
         caller,
+        ...(options.readOutputSnapshot ? { readOutputSnapshot: options.readOutputSnapshot } : {}),
+        outputSignal: request.signal,
         ...(options.sandboxBillingAccount
           ? { sandboxBillingAccount: (id: string) => options.sandboxBillingAccount!(caller, id) }
           : {}),

@@ -580,6 +580,7 @@ export async function createServerServices(env: Record<string, string | undefine
   );
   const handlerOptions: Omit<HandlerOptions, "routes"> = {
     launchDiscovery: control,
+    readOutputSnapshot: outputs.readSnapshot,
     ...(dockerControls ? { dockerControls } : {}),
     runtimeSend,
     runtimeStopCheckpoint,
