@@ -5,6 +5,7 @@ import { run } from "../src/run.ts";
 for (const command of [
   "--help",
   "launch",
+  "logs",
   "list",
   "advice",
   "rm",
@@ -32,6 +33,16 @@ for (const command of [
         { out: (text) => (stdout += text), err: fail },
         {
           env: {},
+          auth: {
+            env: {},
+            out: fail,
+            err: fail,
+            now: fail,
+            open: fail,
+            fetch: fail,
+            session: { read: fail, write: fail, clear: fail },
+            preferences: { read: fail, write: fail },
+          },
           fetch: Object.assign(fail, { preconnect: fail }),
           readFile: fail,
           readStdin: fail,

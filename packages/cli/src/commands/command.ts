@@ -1,7 +1,7 @@
 import type { AuthIo } from "../auth-commands.ts";
 import type { Deps, Io } from "../run.ts";
 
-export type UsageGroup = "docker-launch" | "launch" | "list" | "advice" | "sandbox";
+export type UsageGroup = "docker-launch" | "launch" | "list" | "advice" | "sandbox" | "logs";
 
 export type Command = {
   name: string;

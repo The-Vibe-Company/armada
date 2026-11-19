@@ -9,7 +9,6 @@ import {
   goldenResponse,
   isSandboxProvider,
   LaunchError,
-  type Provider,
   ProviderError,
   ProviderRoutingError,
   parseSnapshotConfig,
@@ -19,7 +18,7 @@ import {
 } from "@armada/core";
 import { accountCommand } from "./account-commands.ts";
 import { applicationVaultCommand } from "./application-vault-commands.ts";
-import { acceptedOptions, flag, parseArgs, providerFlag, single, values } from "./args.ts";
+import { acceptedOptions, flag, oneName, parseArgs, providerFlag, single, values } from "./args.ts";
 import { ArmadaApiError, createArmadaApiClient, resolveArmadaOrigin } from "./armada-api.ts";
 import {
   type AuthIo,
@@ -30,7 +29,7 @@ import {
   tokenList,
   tokenRevoke,
 } from "./auth-commands.ts";
-import { commandWords, completion, HELP, LOGS_HELP } from "./command-catalog.ts";
+import { commandWords, completion, HELP } from "./command-catalog.ts";
 import { findCommand } from "./commands/index.ts";
 import { doctor } from "./devx.ts";
 import { dockerSnapshotCommand } from "./docker-snapshots.ts";
@@ -239,14 +238,14 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
     original.length === 1 &&
     ["--help", "-h"].includes(original[0] ?? "")
   ) {
-    io.out(command === "logs" ? LOGS_HELP : HELP);
+    io.out(HELP);
     return 0;
   }
   const registered = command ? findCommand(command) : undefined;
   let rest = original;
   const terminator = rest.indexOf("--");
   const optionArgs = terminator < 0 ? rest : rest.slice(0, terminator);
-  const scoped = ["doctor", "host", "golden", "bind-credential", "logs", "mcp"];
+  const scoped = ["doctor", "host", "golden", "bind-credential", "mcp"];
   if (
     command &&
     ((registered && registered.useSelectedOrg !== false) ||
@@ -299,8 +298,6 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
               )(),
         () => (deps.readStdin ? deps.readStdin() : process.stdin.isTTY ? Promise.resolve("") : Bun.stdin.text()),
       );
-    case "logs":
-      return logs(rest, io, deps);
     case "github":
     case "account":
       return accountCommand(command, rest, authOf(io, deps));
@@ -803,94 +800,6 @@ async function list(args: ReturnType<typeof parseArgs>, io: Io, deps: Deps): Pro
   return 0;
 }
 
-const FOLLOW_DELAY_MS = 1_000;
-
-type LogsWireResult = {
-  events: Awaited<ReturnType<Provider["events"]>>["events"];
-  cursor: string | null;
-  hasMore: boolean;
-  settled: boolean;
-};
-
-async function logs(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
-  const normalized: string[] = [];
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i]!;
-    if (arg === "--tail") {
-      normalized.push("--tail", /^\d+$/.test(argv[i + 1] ?? "") ? argv[++i]! : "100");
-    } else normalized.push(arg);
-  }
-  const args = parseArgs(normalized, ["--tail"]);
-  const tail = single(args, "--tail");
-  const limit = tail === undefined ? undefined : Number(tail);
-  if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 1000))
-    throw new GoldenError("invalid_config", "--tail must be between 1 and 1000.");
-  if (tail !== undefined && (flag(args, "--all") || single(args, "--since")))
-    throw new GoldenError("invalid_config", "--tail cannot be combined with --all or --since.");
-  const org = single(args, "--org");
-  let firstTail = tail !== undefined;
-  const id = oneName(args.positionals);
-  const all = flag(args, "--all");
-  const follow = flag(args, "--follow");
-  const auth = authOf(io, deps);
-  const client = await createArmadaApiClient({
-    env: auth.env,
-    fetch: deps.fetch ?? auth.fetch,
-    session: auth.session,
-    ...(auth.timeoutMs === undefined ? {} : { timeoutMs: auth.timeoutMs }),
-  });
-  let settled = false;
-  let cursor: string | null = single(args, "--since") ?? null;
-
-  while (!settled) {
-    const result = await client.sandboxes.logs<LogsWireResult>(
-      {
-        id,
-        all,
-        follow,
-        ...(org === undefined ? {} : { org }),
-        ...(firstTail ? { direction: "backward", limit } : {}),
-        ...(cursor === null ? {} : { cursor }),
-      },
-      // A server-side follow/read may wait for provider events; keep a bounded, endpoint-specific limit.
-      { signal: AbortSignal.timeout(10 * 60_000) },
-    );
-    if (flag(args, "--json")) io.out(`${JSON.stringify(result, null, 2)}\n`);
-    else for (const event of result.events) io.out(`${eventText(event)}\n`);
-    if (firstTail) {
-      firstTail = false;
-      result.hasMore = false;
-    }
-    const nextCursor: string | null = result.cursor ?? cursor;
-    const progressed = nextCursor !== cursor;
-    if ((all || follow) && result.hasMore && !progressed) {
-      throw new GoldenError("invalid_config", "Armada logs response has more events but did not advance its cursor.");
-    }
-    cursor = nextCursor;
-    const drain = all || follow;
-    settled = !drain || (!result.hasMore && (!follow || result.settled));
-    // Pace only live polling, not pages the server already has available.
-    if (!settled && !result.hasMore)
-      await (deps.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms))))(FOLLOW_DELAY_MS);
-  }
-  return 0;
-}
-
-function eventText(event: Awaited<ReturnType<Provider["events"]>>["events"][number]): string {
-  if (event.kind === "message" || event.kind === "prompt" || event.kind === "steer") return event.text;
-  if (
-    event.kind === "other" &&
-    event.type === "armada/modelRateLimit" &&
-    event.data &&
-    typeof event.data === "object"
-  ) {
-    const data = event.data as Record<string, unknown>;
-    if (typeof data.message === "string")
-      return `${data.message} (retry ${data.retryCount}, total wait ${Number(data.totalWaitMs) / 1000} s)`;
-  }
-  return JSON.stringify(event);
-}
-
 function line(row: GoldenRecord): string {
   const snapshot = row.providerSnapshotId ? "snapshot" : "no snapshot";
   const repos = row.config.repos.length === 1 ? "1 repo" : `${row.config.repos.length} repos`;
@@ -927,14 +836,6 @@ async function readConfig(args: ReturnType<typeof parseArgs>, deps: Deps): Promi
     return parseSnapshotConfig(parsed);
   }
   return configFromFlags(repos, init, "snapshot");
-}
-
-function oneName(positionals: string[]): string {
-  const name = positionals[0];
-  if (name === undefined || positionals.length !== 1) {
-    throw new GoldenError("invalid_config", "Give exactly one snapshot name.");
-  }
-  return name;
 }
 
 async function login(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
