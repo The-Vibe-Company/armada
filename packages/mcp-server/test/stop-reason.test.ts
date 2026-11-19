@@ -203,8 +203,12 @@ test.each(["ready", "running", "stale", "release_failed"] as const)(
       via: "service",
     }).sandboxes;
     const sandbox = (await store.get(id))!;
+    const renewedExpiry = "2026-01-03T00:00:00.000Z";
     if (scenario === "stale")
-      await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [id]);
+      await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1,expires_at=$2 where id=$1", [
+        id,
+        renewedExpiry,
+      ]);
     if (scenario === "release_failed")
       await db.exec(`create function reject_stop_release() returns trigger language plpgsql as $$
         begin raise exception 'Stop reservation release failed'; end $$;
@@ -214,7 +218,12 @@ test.each(["ready", "running", "stale", "release_failed"] as const)(
     try {
       const observation = readStatus(boat.provider, store, sandbox, { now: new Date("2026-01-02T00:00:00Z") });
       if (scenario === "release_failed") await expect(observation).rejects.toThrow("Stop reservation release failed");
-      else expect(await observation).toMatchObject({ status: applied ? "stopped" : from, statusReason: null });
+      else
+        expect(await observation).toMatchObject({
+          status: applied ? "stopped" : from,
+          statusReason: null,
+          ...(scenario === "stale" ? { expiresAt: renewedExpiry } : {}),
+        });
       expect(await store.get(id)).toMatchObject({
         status: applied ? "stopped" : from,
         statusReason: null,
