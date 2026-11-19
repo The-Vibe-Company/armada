@@ -15,7 +15,7 @@ import { listControlCredentials } from "./credential-list.ts";
 import { modelAuthCapabilities } from "./model-auth.ts";
 import { type ControlRouteContext, defineRoutes } from "./routes.ts";
 
-function scope(body: Record<string, unknown>): "user" | "org" {
+function scope(body: Record<string, unknown>) {
   const value = required(body, "scope");
   if (value === "user" || value === "org") return value;
   throw new VaultError("invalid", "scope is user or org.");
@@ -106,7 +106,6 @@ export const credentialRoutes = defineRoutes("credential-control", {
     const { store, encryptionKey } = options;
     const { userId } = caller;
     const org = scopedOrg(caller, optional(body, "org"));
-    // The declared models of visible custom connections (#1483): decrypted here, never the key or the address.
     const member = await resolveOrg(store, userId, org);
     return { connections: await listConnectionModels(store, encryptionKey, { userId, orgId: member.id }) };
   },

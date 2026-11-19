@@ -25,8 +25,6 @@ async function readCatalog({ route, caller, body, options }: ControlRouteContext
   )
     throw new VaultError("invalid", "Invalid catalog offset.");
   const member = await resolveOrg(store, userId, org);
-  // Resolve exactly the launching user's credential policy; never expose the
-  // PAT or let a caller select an alternate registry or workspace header.
   const credential =
     body.source === "private"
       ? await resolveSkillpackCredential(store, encryptionKey, { userId, orgId: member.id })
@@ -38,7 +36,6 @@ async function readCatalog({ route, caller, body, options }: ControlRouteContext
         { source: body.source, ...(body.offset === undefined ? {} : { offset: body.offset as number }) },
         credential?.key,
       );
-  // Membership may have changed during the bounded upstream request.
   await resolveOrg(store, userId, member.id);
   return result;
 }
@@ -50,7 +47,6 @@ export const skillpackRoutes = defineRoutes("skillpack-control", {
     const { store } = options;
     const { userId } = caller;
     const org = scopedOrg(caller, optional(body, "org"));
-    // Reuse vault visibility, including live membership and token org scoping.
     const credentials = await listCredentials(store, userId, org);
     return {
       authorization: { available: false, reason: "delegated_key_flow_unavailable" },

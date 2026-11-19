@@ -10,6 +10,7 @@ import {
 import {
   type ApplicationVault,
   assertGoldenMutation,
+  type createSkillCatalog,
   type GitHubApp,
   type GoldenBuildJobs,
   GoldenError,
@@ -18,6 +19,7 @@ import {
   LaunchError,
   type LaunchOptions,
   type LaunchStores,
+  type mutateCredentialAccount,
   type Provider,
   ProviderError,
   type ProviderRegistry,
