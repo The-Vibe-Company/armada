@@ -105,7 +105,7 @@ Before #2742, capture a read-only aggregate grouped by provider and status for r
 
 ## Deletion inventory
 
-Counts are physical lines, including comments and blanks, at the baseline above. Whole-file counts apply to probable deletion units. Inclusive ranges in mixed files include surrounding code for review. Remove only the native-specific statements after tracing their callers. Historical migrations remain append-only.
+Counts are physical lines, including comments and blanks, at baseline commit `4c78a45da09efd9810e1f2a22b817d6ce1bf4a83`. Whole-file counts apply to probable deletion units. Inclusive ranges in mixed files include surrounding code for review. Remove only the native-specific statements after tracing their callers. Historical migrations remain append-only.
 
 ### Whole-file candidates
 

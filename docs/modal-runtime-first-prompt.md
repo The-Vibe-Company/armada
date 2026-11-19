@@ -439,9 +439,9 @@ Codex or Claude provenance.
 
 Normal matching schema/server/runtime deployment must include
 `20261114020500_modal_runtime_opencode.sql`. Boat does not gain OpenCode admission;
-native Modal behavior and the default-off flag are unchanged. No provider
-allocation, forced account migration, new secrets, default cutover or tunnel
-deletion is authorized. Real OpenCode acceptance awaits coordinator receipts.
+this OpenCode slice preserved native Modal behavior. The current selector and
+rollout requirements are described under [Ordinary launch default](#ordinary-launch-default).
+Live OpenCode acceptance requires coordinator receipts.
 
 
 ## OpenCode native shell proof
