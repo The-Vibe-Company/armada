@@ -20,14 +20,8 @@ import { ENCRYPTION_KEY, GITHUB_APP, harness, PUBLIC_URL, type TestServer } from
 
 const sharedDatabase = rowOnlyDatabase();
 
-async function fixture({
-  isolated = false,
-  repositoryFetch,
-}: {
-  isolated?: boolean;
-  repositoryFetch?: typeof fetch;
-} = {}) {
-  const server = await harness({}, isolated ? undefined : await sharedDatabase());
+async function fixture({ repositoryFetch }: { repositoryFetch?: typeof fetch } = {}) {
+  const server = await harness({}, await sharedDatabase());
   const { boat, people } = server;
   const exec = boat.provider.exec;
   boat.provider.exec = async (request) => {
@@ -172,7 +166,7 @@ test("REST durable admission, idempotent acknowledgement recovery and status out
 });
 
 test("an active receipt still prevents shared dispatch after its shared lease expires", async () => {
-  const s = await fixture({ isolated: true });
+  const s = await fixture();
   try {
     const token = await s.token(s.people.admin);
     const response = await s.http(token, "golden/create", {
@@ -216,7 +210,7 @@ test("an active receipt still prevents shared dispatch after its shared lease ex
 });
 
 test("REST admission and rebuild failure retain last-good config/pointer and release only the build reservation", async () => {
-  const s = await fixture({ isolated: true });
+  const s = await fixture();
   const logs = spyOn(console, "error").mockImplementation(() => {});
   try {
     const token = await s.token(s.people.admin);
@@ -369,7 +363,20 @@ test("REST admission and rebuild failure retain last-good config/pointer and rel
     ).rejects.toMatchObject({ code: "23514" });
   } finally {
     logs.mockRestore();
-    await s.close();
+    try {
+      // Row resets do not restore schema changes if any assertion above fails.
+      await s.db.exec(`
+        drop trigger if exists fail_snapshot_pointer on goldens;
+        drop trigger if exists fail_job_success on golden_build_jobs;
+        drop trigger if exists expire_job_lease on goldens;
+        drop function if exists fail_snapshot_pointer();
+        drop function if exists fail_job_success();
+        drop function if exists expire_job_lease();
+        alter table goldens enable trigger goldens_provider_guard;
+      `);
+    } finally {
+      await s.close();
+    }
   }
 });
 
