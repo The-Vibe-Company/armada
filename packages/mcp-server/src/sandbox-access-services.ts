@@ -263,7 +263,7 @@ export function createSandboxAccessServices(input: {
               token,
               generation: saved.lifecycleGeneration === undefined ? undefined : saved.lifecycleGeneration + 1,
               signal,
-            }).catch(() => {})) === "pending"
+            }).catch(() => "pending" as const)) === "pending"
           )
             return { result: undefined, patch: { status: "stopping", stopRequested: true, statusReason } };
           signal.throwIfAborted();

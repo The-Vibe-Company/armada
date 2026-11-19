@@ -492,7 +492,7 @@ export function createSandboxLifecycle(
               token,
               generation: row.lifecycle_generation,
               signal,
-            }).catch(() => {})) === "pending"
+            }).catch(() => "pending" as const)) === "pending"
           )
             throw new ProviderError({
               provider: provider.id,

@@ -763,7 +763,7 @@ test("runtime lifecycle stops compute with explicit no-checkpoint note, without 
   await lifecycle.drain();
 });
 
-test("expired Modal dial-out commits its Git receipt before compute stop", async () => {
+test.each(["active", "terminate", "booting"] as const)("expired Modal stop from %s", async (phase) => {
   const { db, people } = await sharedDatabase();
   const sql = bunLikeSql(db);
   const golden = (
@@ -782,16 +782,25 @@ test("expired Modal dial-out commits its Git receipt before compute stop", async
   let stopped = false;
   const provider = {
     id: "modal",
-    get: async () => ({ id: "compute", state: stopped ? "stopped" : "running", physicalGeneration: "3" }),
-    captureRuntimeWork: async () => ({ status: "clean" }),
+    get: async () => ({
+      id: "compute",
+      state: stopped ? "stopped" : "running",
+      providerState: phase,
+      physicalGeneration: "3",
+    }),
+    captureRuntimeWork: async () => {
+      if (phase !== "active") throw Error("Only active compute can preserve work");
+      return { status: "clean" };
+    },
     stop: async () => {
       expect(
         (
-          await db.query("select preservation_stop_generation=stop_generation as captured from sandboxes where id=$1", [
-            id,
-          ])
+          await db.query(
+            "select coalesce(preservation_stop_generation=stop_generation,false) as captured from sandboxes where id=$1",
+            [id],
+          )
         ).rows,
-      ).toEqual([{ captured: true }]);
+      ).toEqual([{ captured: phase === "active" }]);
       stopped = true;
     },
     quiesce: async () => {

@@ -1,6 +1,7 @@
 import {
   decryptSecret,
   encryptSecret,
+  HOST_CAPABILITIES,
   type Provider,
   ProviderError,
   preserveWork,
@@ -52,10 +53,11 @@ const RUNTIME_STOP_OWNER = `stop_requested_at is not null and deleted_at is null
   and exists(select 1 from public.members m where m.org_id=sandboxes.org_id and m.user_id=sandboxes.owner_id)`;
 
 // A completed receipt wins over late failure or timeout in the same stop.
-const NOTE_FENCE = `id=$1::uuid
+const STOP_EPOCH = `id=$1::uuid
   and (case when stop_requested_at is null then null else stop_generation end) is not distinct from $6::bigint
-  and ($6::bigint is null or preservation_stop_generation is distinct from $6::bigint)
   and ($2::text is null or (${RUNTIME_STOP_OWNER}))`;
+const NOTE_FENCE = `${STOP_EPOCH}
+  and ($6::bigint is null or preservation_stop_generation is distinct from $6::bigint)`;
 
 function writeNote(sql: Sql, id: string, note: string | null, stopToken: string | null, fence: StopFence) {
   return sql.query(`update public.sandboxes set preservation_note=$7 where ${NOTE_FENCE}`, [
@@ -123,16 +125,35 @@ export async function preserveBeforeStop(
   authority?: StopAuthority,
 ): Promise<"pending" | void> {
   const started = Date.now();
+  const progress: CaptureProgress = {
+    stage: "observe",
+    workAtRisk: false,
+    checkedClean: false,
+    stopToken: null,
+    fence: NO_EXTRA_FENCE,
+  };
   let outcome: "pending" | void;
   try {
-    outcome = await preserveGitWork(sql, provider, id, providerId, source, authority);
+    outcome = await preserveGitWork(sql, provider, id, providerId, progress, source, authority);
   } catch (error) {
     if (!authority?.signal?.aborted) await finalOutputs(sql, provider, id, started);
     throw error;
   }
   // A pending stop retries later; its final capture runs on that pass.
-  if (outcome !== "pending" && !authority?.signal?.aborted) await finalOutputs(sql, provider, id, started);
-  return outcome;
+  if (outcome === "pending" || authority?.signal?.aborted) return "pending";
+  await finalOutputs(sql, provider, id, started);
+  if (progress.fence[0] !== null) {
+    try {
+      const owned = await sql.query(`select id from public.sandboxes where ${STOP_EPOCH}`, [
+        id,
+        ...progress.fence,
+        progress.stopToken,
+      ]);
+      if (!owned.rows.length) return "pending";
+    } catch {
+      return "pending";
+    }
+  }
 }
 
 /** Git preservation and final output capture share one pre-stop budget so callers'
@@ -160,6 +181,7 @@ async function preserveGitWork(
   provider: Provider,
   id: string,
   providerId: string,
+  progress: CaptureProgress,
   source: StopSource = "unspecified",
   authority?: StopAuthority,
 ): Promise<"pending" | void> {
@@ -167,13 +189,6 @@ async function preserveGitWork(
   let expired = false;
   const controller = new AbortController();
   const signal = authority?.signal ? AbortSignal.any([controller.signal, authority.signal]) : controller.signal;
-  const progress: CaptureProgress = {
-    stage: "observe",
-    workAtRisk: false,
-    checkedClean: false,
-    stopToken: null,
-    fence: NO_EXTRA_FENCE,
-  };
   try {
     return await Promise.race([
       captureAndStore(
@@ -195,9 +210,7 @@ async function preserveGitWork(
           const diagnostic = { errorClass: "timeout", providerStatus: null };
           const reason = closedFailure(progress.stage, "timeout", diagnostic);
           const pending =
-            progress.checkedClean ||
-            ["observe", "quiesce"].includes(progress.stage) ||
-            (progress.fence[0] !== null && progress.stage === "storage");
+            progress.checkedClean || ["observe", "quiesce"].includes(progress.stage) || progress.fence[0] !== null;
           console.warn(
             JSON.stringify({
               event: pending ? "work_preservation_deferred" : "work_preservation_failed",
@@ -257,6 +270,7 @@ async function captureAndStore(
   let diagnostic: ReturnType<typeof workPreservationError> | undefined;
   let note: string | null;
   let stopLoaded = false;
+  let defer = false;
   const observed = (phase: string, state?: string) => {
     try {
       console.info(
@@ -327,6 +341,11 @@ async function captureAndStore(
     observed("observed", current.state);
     if (["stopped", "deleted"].includes(current.state) || current.physicalExitConfirmed) return;
     if (stop.modal_runtime) {
+      if (
+        HOST_CAPABILITIES.modal.fencedStopPhases.includes(current.providerState) ||
+        ["reserved", "restoring", "creating", "booting"].includes(current.providerState)
+      )
+        return;
       const ownsCapture = await sql.query(
         `select id from public.sandboxes where ${NOTE_FENCE} and not application_secret_tainted`,
         [id, ...progress.fence, progress.stopToken],
@@ -340,7 +359,7 @@ async function captureAndStore(
       if (expired()) return;
       observed("quiesce_finished");
     }
-    stage = progress.stage = "capture";
+    stage = progress.stage = stop.modal_runtime ? "quiesce" : "capture";
     observed("capture_started");
     const context = { source, captureId: crypto.randomUUID() };
     const onWorkAtRisk = () => {
@@ -366,6 +385,7 @@ async function captureAndStore(
       result = await preserveWork(provider, providerId, signal, onWorkAtRisk, context);
     }
     if (expired()) return;
+    stage = progress.stage = "capture";
     observed(`capture_${result.status}`);
     if (result.status === "preserved") {
       progress.workAtRisk = true;
@@ -437,6 +457,7 @@ async function captureAndStore(
       if (expired()) return "pending";
       return "pending";
     }
+    defer = progress.fence[0] !== null;
     diagnostic = workPreservationError(error);
     note = progress.workAtRisk
       ? failureNote(`${stage}_failed`)
@@ -449,7 +470,7 @@ async function captureAndStore(
   if (!note?.startsWith("unpushed work preserved"))
     console.warn(
       JSON.stringify({
-        event: "work_preservation_failed",
+        event: defer ? "work_preservation_deferred" : "work_preservation_failed",
         sandboxId: id,
         stage,
         reason,
@@ -460,6 +481,7 @@ async function captureAndStore(
   try {
     await writeNote(sql, id, note, progress.stopToken, progress.fence);
   } catch (error) {
+    defer ||= progress.fence[0] !== null;
     if (!expired() && note?.startsWith("unpushed work preserved"))
       console.warn(
         JSON.stringify({
@@ -471,7 +493,7 @@ async function captureAndStore(
         }),
       );
   }
-  if (progress.checkedClean || (progress.fence[0] !== null && stage === "storage")) return "pending";
+  if (progress.checkedClean || defer) return "pending";
 }
 
 export async function readWorkRecovery(sql: Sql, id: string, recoveryId?: string): Promise<string | null> {

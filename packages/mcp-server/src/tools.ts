@@ -577,7 +577,7 @@ function configureTools(
               generation: found.lifecycleGeneration === undefined ? undefined : found.lifecycleGeneration + 1,
               signal,
             })
-            .catch(() => {});
+            .catch(() => "pending" as const);
           signal.throwIfAborted();
           if (preservation === "pending")
             return {
