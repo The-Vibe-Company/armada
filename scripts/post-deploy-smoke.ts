@@ -1558,9 +1558,12 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         state?: unknown;
         id?: unknown;
       } | null;
-      const id = result?.sandbox?.id ?? result?.id;
+      const keyedModalParity = args[0] === "--parity" && requestKey === key && body.provider === "modal";
+      const id = keyedModalParity ? result?.sandbox?.id : (result?.sandbox?.id ?? result?.id);
       const provider = smokeReceiptProvider(result);
-      if (typeof id === "string" && SANDBOX_ID.test(id) && typeof org === "string") {
+      const unverifiedParityLaunch =
+        keyedModalParity && (!response.ok || provider !== "modal" || result?.sandbox?.provider !== "modal");
+      if (!unverifiedParityLaunch && typeof id === "string" && SANDBOX_ID.test(id) && typeof org === "string") {
         const row: SmokeSandboxReceipt = {
           requestKey,
           org,

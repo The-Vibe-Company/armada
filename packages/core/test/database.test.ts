@@ -224,6 +224,7 @@ describe("database", () => {
         "github_connections.refresh_token_enc",
         "github_runtime_issued.token_enc",
         "golden_build_jobs.payload_enc",
+        "jobs.payload_enc",
         "mcp_grants.value_enc",
         "mcp_pending_oauth.payload_enc",
         "model_auth_state.state_enc",
