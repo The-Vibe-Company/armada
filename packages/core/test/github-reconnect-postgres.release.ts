@@ -2,12 +2,12 @@
 if (!process.env.ARMADA_TEST_POSTGRES_URL) throw new Error("ARMADA_TEST_POSTGRES_URL is required");
 
 import { describe, expect, test } from "bun:test";
-import { readdirSync } from "node:fs";
 import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
 import { sqlOver } from "../../mcp-server/src/sql.ts";
 import { encryptSecret } from "../src/crypto.ts";
 import { resolveGitHubAccess } from "../src/github.ts";
 import { createSqlVaultStore } from "../src/vault-store.ts";
+import { applyPostgresFixtureMigrations } from "./support/postgres-migrations.ts";
 
 // This URL must allow CREATE DATABASE. Each case owns a disposable database.
 describe("GitHub reconnect (PostgreSQL)", () => {
@@ -37,11 +37,7 @@ describe("GitHub reconnect (PostgreSQL)", () => {
         if (!(await admin.unsafe("select 1 from pg_roles where rolname = $1", [role])).length)
           await admin.unsafe(`create role ${role} nologin${role === "service_role" ? " bypassrls" : ""}`);
       }
-      await one.unsafe(prereq.replace(/^create role .*;$/gm, ""));
-      for (const file of readdirSync("supabase/migrations")
-        .filter((f) => f.endsWith(".sql"))
-        .sort())
-        await one.unsafe(await Bun.file(`supabase/migrations/${file}`).text());
+      await applyPostgresFixtureMigrations(one, prereq.replace(/^create role .*;$/gm, ""));
       const userId = crypto.randomUUID();
       const key = Buffer.alloc(32, 9).toString("base64");
       await one.unsafe("insert into auth.users (id) values ($1)", [userId]);
