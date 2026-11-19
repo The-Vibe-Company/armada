@@ -24,7 +24,7 @@ async function seedSandbox(db: PGlite, status: string, reason: string | null = n
   );
   await db.query(
     `insert into sandboxes (id, boat_id, golden_id, org_id, owner_id, harness, status, status_reason, stopped_at)
-     values ($1, 'machine', $2, $3, $4, 'codex', $5, $6, case when $5 = 'stopped' then now() end)`,
+     values ($1, 'machine', $2, $3, $4, 'codex', $5::sandbox_status, $6, case when $5::sandbox_status = 'stopped' then now() end)`,
     [sandbox, golden, org, owner, status, reason],
   );
   await db.exec("set role service_role");
