@@ -388,21 +388,10 @@ export function createRuntimeResume(
             )
           ).rows[0];
           if (runtime?.live && runtime.epoch === admitted.op.target_epoch) return;
-          const retained = Boolean(
-            found.provider === "boat" &&
-              runtime &&
-              (runtime.activation_confirmed || preActivationArchive) &&
-              !runtime.live &&
-              runtime.epoch === admitted.op.source_epoch,
-          );
-          if (
-            !retained &&
-            error instanceof BoatResumeActivationUncertain &&
-            found.provider === "boat" &&
-            runtime &&
-            !runtime.live &&
-            runtime.epoch === admitted.op.source_epoch
-          ) {
+          const boatSourceEpoch =
+            found.provider === "boat" && runtime && !runtime.live && runtime.epoch === admitted.op.source_epoch;
+          const retained = Boolean(boatSourceEpoch && (runtime.activation_confirmed || preActivationArchive));
+          if (boatSourceEpoch && !retained && error instanceof BoatResumeActivationUncertain) {
             await deferAmbiguousBoatResume(tx, found.id, requestId, admitted.current.lifecycleGeneration);
             return;
           }
