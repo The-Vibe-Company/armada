@@ -986,7 +986,7 @@ describe("control API", () => {
       const retiredLaunchPaths = ["sized", "access", "runtime", "modal-runtime"].map(
         (variant) => `/api/v1/sandbox/${["launch", variant, "v1"].join("-")}`,
       );
-      for (const path of ["/api/v1/nope", ...retiredLaunchPaths]) {
+      for (const path of ["/api/v1/nope", "/api/v1/launch/resolve", ...retiredLaunchPaths]) {
         const unknown = await call(path, { method: "POST", headers, body: "{}" });
         expect(unknown?.status).toBe(404);
         expect(await unknown?.json()).toEqual({ error: { code: "unknown_route", message: "Unknown route." } });
