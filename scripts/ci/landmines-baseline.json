@@ -1270,7 +1270,6 @@
     "scripts/verify-changed.ts": 2
   },
   "landmines-testing/no-test-doubles": {
-    "apps/dashboard/test/control.test.ts": 1,
     "packages/agent-runtime/test/harness-cache.test.ts": 1,
     "packages/agent-runtime/test/runtime.test.ts": 2,
     "packages/cli/test/email-login.test.ts": 6,
