@@ -1,6 +1,11 @@
 import { expect, spyOn, test } from "bun:test";
 import { hkdfSync } from "node:crypto";
-import { createSqlVaultStore, encryptSecret, type ProviderTarget } from "@armada/core/server";
+import {
+  createSqlVaultStore,
+  createUsagePricingContext,
+  encryptSecret,
+  type ProviderTarget,
+} from "@armada/core/server";
 import {
   createGenerationGrants,
   createSqlModalStore,
@@ -113,6 +118,21 @@ test.each(["claude", "codex"] as const)(
     expect((await first.route(request()))?.status).toBe(403);
     expect((await sql.query("select * from modal_events")).rows).toHaveLength(0);
     await registerSession();
+    const account = crypto.randomUUID();
+    await createSqlData(sql)({
+      userId: people.owner,
+      orgs: [{ orgId: people.org, role: "member" }],
+      via: "service",
+    }).sandboxes.recordUsagePricingContext!(
+      sessionId,
+      createUsagePricingContext({
+        harness,
+        credentialKind: harness === "claude" ? "claude_oauth" : "openai",
+        credentialId: account,
+        credentialVersion: 1,
+        customEndpoint: true,
+      }),
+    );
     expect((await first.route(request()))?.status).toBe(200);
     expect((await readUsage())?.tokenTotals).toMatchObject({ inputTokens: 42, outputTokens: 7, cachedTokens: 3 });
     expect((await readUsage())?.turns).toMatchObject([{ model, inputTokens: 42 }]);
@@ -120,6 +140,13 @@ test.each(["claude", "codex"] as const)(
     const replay = await restarted.route(request());
     expect(await replay?.json()).toEqual({ acknowledgedSequence: 3 });
     expect((await readUsage())?.tokenTotals?.inputTokens).toBe(42);
+    expect(
+      (
+        await sql.query("select trim_scale(usd)::text as usd, unpriced_turns from account_spend where account_id=$1", [
+          account,
+        ])
+      ).rows,
+    ).toEqual(harness === "claude" ? [] : [{ usd: "0", unpriced_turns: 1 }]);
     expect((await sql.query("select * from modal_events")).rows).toHaveLength(3);
     await sql.query("update modal_machines set record=jsonb_set(record,'{generation}','2') where id='logical'");
     expect((await restarted.route(request()))?.status).toBe(403);

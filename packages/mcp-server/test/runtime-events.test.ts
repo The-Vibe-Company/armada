@@ -915,3 +915,66 @@ test("delivery failures release the lease, back off durably, and stop at five at
     await f.close();
   }
 });
+
+test("completed API turns publish exact monthly spend once and count unknown turns in UTC", async () => {
+  const f = await fixture();
+  const account = crypto.randomUUID();
+  const store = createSqlData(f.sql)({
+    userId: f.people.owner,
+    via: "service",
+    orgs: [{ orgId: f.people.org, role: "member" }],
+  }).sandboxes;
+  await store.recordUsagePricingContext!(
+    f.id,
+    createUsagePricingContext({
+      harness: "codex",
+      credentialKind: "openai",
+      credentialId: account,
+      credentialVersion: 1,
+      customEndpoint: true,
+      modelPrices: { "gpt-6.1-sol": { input: "2", output: "5", cacheRead: "1", cacheWrite: null, reasoning: null } },
+    }),
+  );
+  await f.db.exec("set time zone 'America/Los_Angeles'");
+  const active = await f.enrol();
+  const measured = (promptId: string, inputTokens: number) => ({
+    ...f.usage(`usage-${promptId}`),
+    promptId,
+    data: { ...(f.usage("shape").data as object), inputTokens, cacheWriteTokens: 0 },
+  });
+  const complete = (promptId: string, at: string) =>
+    ({
+      kind: "prompt",
+      id: `complete-${promptId}`,
+      promptId,
+      at: Date.parse(at),
+      status: "finished",
+      text: "",
+    }) satisfies AgentEvent;
+  const spend = async () =>
+    (
+      await f.db.query(
+        `select period_start::text, trim_scale(usd)::text as usd, unpriced_turns
+         from account_spend where account_id=$1 order by period_start`,
+        [account],
+      )
+    ).rows;
+  const events = [
+    measured("first", 100),
+    complete("first", "2026-10-31T23:59:58Z"),
+    complete("second", "2026-10-31T23:59:59Z"),
+    measured("second", 200),
+    complete("unknown", "2026-11-01T00:00:00Z"),
+  ].map((event, index) => ({ event, sequence: index + 1 }));
+
+  expect((await f.publish(active, events.slice(0, 1))).status).toBe(200);
+  expect(await spend()).toEqual([]);
+  expect((await f.publish(active, events.slice(1, 3))).status).toBe(200);
+  expect(await spend()).toEqual([{ period_start: "2026-10-01", usd: "0.00029", unpriced_turns: 1 }]);
+  expect((await f.publish(active, events.slice(3))).status).toBe(200);
+  expect((await f.publish(active, events)).status).toBe(200);
+  expect(await spend()).toEqual([
+    { period_start: "2026-10-01", usd: "0.00078", unpriced_turns: 0 },
+    { period_start: "2026-11-01", usd: "0", unpriced_turns: 1 },
+  ]);
+});

@@ -40,9 +40,14 @@ const ROW_ALIASES: Record<string, string> = {
   agent_defaults: "AgentDefaultsRow",
   account_turn_queue: "AccountTurnQueueRow",
   account_agent_reservations: "AccountAgentReservationRow",
+  account_spend: "AccountSpendRow",
+  account_spend_turns: "AccountSpendTurnRow",
   ordinary_launch_receipts: "OrdinaryLaunchReceiptRow",
   provider_launch_requests: "ProviderLaunchRequestRow",
   jobs: "JobRow",
+  trigger_admin_audit: "TriggerAdminAuditRow",
+  trigger_deliveries: "TriggerDeliveryRow",
+  triggers: "TriggerRow",
   sandbox_account_usage_pricing: "SandboxAccountUsagePricingRow",
   runtime_github_capabilities: "RuntimeGitHubCapabilityRow",
   runtime_resumes: "RuntimeResumeRow",
@@ -297,6 +302,7 @@ function scalarType(name: string, kind: string): string {
   switch (name) {
     case "uuid":
     case "text":
+    case "date":
     case "timestamptz":
     case "bytea":
     case "varchar":

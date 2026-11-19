@@ -36,6 +36,62 @@ export type Database = {
           },
         ];
       };
+      account_spend: {
+        Row: {
+          account_id: string;
+          period_start: string;
+          usd: number;
+          unpriced_turns: number;
+        };
+        Insert: {
+          account_id: string;
+          period_start: string;
+          usd: number;
+          unpriced_turns: number;
+        };
+        Update: {
+          account_id?: string;
+          period_start?: string;
+          usd?: number;
+          unpriced_turns?: number;
+        };
+        Relationships: [];
+      };
+      account_spend_turns: {
+        Row: {
+          sandbox_id: string;
+          prompt_id: string;
+          period_start: string;
+          account_id: string | null;
+          usd: number;
+          unpriced: boolean;
+        };
+        Insert: {
+          sandbox_id: string;
+          prompt_id: string;
+          period_start: string;
+          account_id?: string | null;
+          usd: number;
+          unpriced: boolean;
+        };
+        Update: {
+          sandbox_id?: string;
+          prompt_id?: string;
+          period_start?: string;
+          account_id?: string | null;
+          usd?: number;
+          unpriced?: boolean;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "account_spend_turns_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: false;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       account_turn_queue: {
         Row: {
           sandbox_id: string;
@@ -5246,6 +5302,133 @@ export type Database = {
           },
         ];
       };
+      trigger_admin_audit: {
+        Row: {
+          id: string;
+          org_id: string;
+          trigger_id: string;
+          actor_id: string;
+          action: string;
+          occurred_at: string;
+        };
+        Insert: {
+          id?: string;
+          org_id: string;
+          trigger_id: string;
+          actor_id: string;
+          action: string;
+          occurred_at?: string;
+        };
+        Update: {
+          id?: string;
+          org_id?: string;
+          trigger_id?: string;
+          actor_id?: string;
+          action?: string;
+          occurred_at?: string;
+        };
+        Relationships: [];
+      };
+      trigger_deliveries: {
+        Row: {
+          trigger_id: string;
+          delivery_id: string;
+          job_id: string;
+          received_at: string;
+        };
+        Insert: {
+          trigger_id: string;
+          delivery_id: string;
+          job_id: string;
+          received_at: string;
+        };
+        Update: {
+          trigger_id?: string;
+          delivery_id?: string;
+          job_id?: string;
+          received_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "trigger_deliveries_job_id_fkey";
+            columns: ["job_id"];
+            isOneToOne: true;
+            referencedRelation: "jobs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "trigger_deliveries_trigger_id_fkey";
+            columns: ["trigger_id"];
+            isOneToOne: false;
+            referencedRelation: "triggers";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      triggers: {
+        Row: {
+          id: string;
+          org_id: string;
+          template_id: string;
+          launch_owner_id: string;
+          pool_harness: string;
+          secret_enc: string;
+          key_revision: number;
+          rate_per_minute: number;
+          concurrency: number;
+          enabled: boolean;
+          rate_refusals: number;
+        };
+        Insert: {
+          id?: string;
+          org_id: string;
+          template_id: string;
+          launch_owner_id: string;
+          pool_harness: string;
+          secret_enc: string;
+          key_revision?: number;
+          rate_per_minute: number;
+          concurrency: number;
+          enabled?: boolean;
+          rate_refusals?: number;
+        };
+        Update: {
+          id?: string;
+          org_id?: string;
+          template_id?: string;
+          launch_owner_id?: string;
+          pool_harness?: string;
+          secret_enc?: string;
+          key_revision?: number;
+          rate_per_minute?: number;
+          concurrency?: number;
+          enabled?: boolean;
+          rate_refusals?: number;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "triggers_launch_owner_id_fkey";
+            columns: ["launch_owner_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "triggers_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "triggers_template_id_fkey";
+            columns: ["template_id"];
+            isOneToOne: false;
+            referencedRelation: "launch_templates";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
     };
     Views: {
       [_ in never]: never;
@@ -5281,6 +5464,8 @@ export type Database = {
 };
 
 export type AccountAgentReservationRow = Database["public"]["Tables"]["account_agent_reservations"]["Row"];
+export type AccountSpendRow = Database["public"]["Tables"]["account_spend"]["Row"];
+export type AccountSpendTurnRow = Database["public"]["Tables"]["account_spend_turns"]["Row"];
 export type AccountTurnQueueRow = Database["public"]["Tables"]["account_turn_queue"]["Row"];
 export type AgentDefaultsRow = Database["public"]["Tables"]["agent_defaults"]["Row"];
 export type ApplicationSecretUploadRow = Database["public"]["Tables"]["application_secret_uploads"]["Row"];
@@ -5382,6 +5567,9 @@ export type SandboxWorkRecovery = Database["public"]["Tables"]["sandbox_work_rec
 export type Sandbox = Database["public"]["Tables"]["sandboxes"]["Row"];
 export type ServiceToken = Database["public"]["Tables"]["service_tokens"]["Row"];
 export type TemplateLaunchRequestRow = Database["public"]["Tables"]["template_launch_requests"]["Row"];
+export type TriggerAdminAuditRow = Database["public"]["Tables"]["trigger_admin_audit"]["Row"];
+export type TriggerDeliveryRow = Database["public"]["Tables"]["trigger_deliveries"]["Row"];
+export type TriggerRow = Database["public"]["Tables"]["triggers"]["Row"];
 export type CredentialKind = Database["public"]["Enums"]["credential_kind"];
 export type CredentialScope = Database["public"]["Enums"]["credential_scope"];
 export type MemberRole = Database["public"]["Enums"]["member_role"];
