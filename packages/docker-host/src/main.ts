@@ -2,6 +2,7 @@
 
 import { createHash } from "node:crypto";
 import { join } from "node:path";
+import { requireDockerDiskSpace } from "../../core/src/docker-disk-policy.ts";
 import { createDockerMachineExecutor } from "../../core/src/docker-machine.ts";
 import {
   type DockerSandboxLimits,
@@ -220,6 +221,9 @@ async function main(args: string[]) {
       readArchive: readDockerOutputArchive,
       now: Date.now,
       limits: () => limits,
+      async beforeRestoreAllocation() {
+        requireDockerDiskSpace(await sampleDisk());
+      },
       ...(sharedArtifacts ? { sharedArtifacts } : {}),
     });
     const runtime = withDiskFloor(

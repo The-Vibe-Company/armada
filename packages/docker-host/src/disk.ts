@@ -41,14 +41,6 @@ export function withDiskFloor(executor: Executor, sample: () => Promise<number |
           },
         }
       : {}),
-    ...(executor.restore
-      ? {
-          async restore(...args: Parameters<NonNullable<Executor["restore"]>>) {
-            requireDockerDiskSpace(await sample());
-            return executor.restore!(...args);
-          },
-        }
-      : {}),
     async create(request) {
       requireDockerDiskSpace(await sample());
       return executor.create(request);

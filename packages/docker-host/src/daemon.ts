@@ -405,9 +405,15 @@ export async function runJobs(
   // Counts finished operations. If work finished after the tick refused a job
   // as busy (it is then no longer in `settled()`), the loop polls again at once.
   let finished = 0;
+  let restoreRetry = false;
   const settled = () => Promise.race(running.values());
   try {
     while (!loop.stopping()) {
+      if (restoreRetry) {
+        restoreRetry = false;
+        await loop.sleep(DOCKER_HOST_IDLE_MS);
+        continue;
+      }
       await loop.beforeTick?.();
       if (running.size >= DOCKER_HOST_CONCURRENT_JOBS) {
         await settled();
@@ -421,7 +427,10 @@ export async function runJobs(
           ...live,
           dispatch(job, work) {
             const done = work
-              .catch(() => loop.failed?.("job"))
+              .catch(() => {
+                if (job.operation === "restore") restoreRetry = true;
+                loop.failed?.("job");
+              })
               .finally(() => {
                 running.delete(job.requestId);
                 live.running.delete(job.requestId);
@@ -493,6 +502,10 @@ async function admitLocked(
   // Claims cannot outlive the allocation's immutable physical expiry. A
   // server cannot admit a resume beyond this same frozen expiry, so releasing
   // the hold here is safe even while offline. Retain its historical ACK.
+  const restoreStillRecoverable = (receipt: Receipt) =>
+    options.running?.has(receipt.requestId) || (receipt.request.expiresAt ?? 0) > now();
+  const readyForRetention = (receipt: Receipt) =>
+    receipt.outcome !== undefined || (receipt.operation === "restore" && !restoreStillRecoverable(receipt));
   const expired = (ledger: State) =>
     new Set(
       [...ledger.receipts, ...(ledger.retention ?? [])]
@@ -523,7 +536,7 @@ async function admitLocked(
     }
     // An admitted but unfinished operation may still be recovered below. Absence
     // before its first execution is not loss of a completed allocation.
-    const values = [...candidates.values()].filter((receipt) => receipt.outcome);
+    const values = [...candidates.values()].filter(readyForRetention);
     const after = values.findIndex((receipt) => receipt.requestId === state.retentionScanAfter);
     const receipt = values[(after + 1) % values.length];
     if (receipt) {
@@ -591,11 +604,7 @@ async function admitLocked(
   }
   const restoreHolds = new Map<string, string>();
   for (const receipt of state.receipts) {
-    if (
-      receipt.operation === "restore" &&
-      !receipt.outcome &&
-      (options.running?.has(receipt.requestId) || (receipt.request.expiresAt ?? 0) > now())
-    ) {
+    if (receipt.operation === "restore" && !receipt.outcome && restoreStillRecoverable(receipt)) {
       restoreHolds.set(receipt.predecessorKey, receipt.requestId);
       restoreHolds.set(generationKey(receipt.request), receipt.requestId);
     }
@@ -695,9 +704,8 @@ async function admitLocked(
     }
     state.lastPollAt = new Date().toISOString();
   }
-  // Pressure cleanup shares the same durable authorization as retention. Discovery
-  // stays restricted to known completed operations; physical ownership is checked
-  // by isStopped and again by deleteStopped. Claims survive disconnected polls.
+  // Pressure cleanup shares the same durable authorization as retention.
+  // Physical ownership is checked by isStopped and again by deleteStopped.
   const pressure = async () => {
     const bytes = await executor.diskFreeBytes?.();
     return typeof bytes === "number" && Number.isSafeInteger(bytes) && bytes >= 0 && bytes < DOCKER_DISK_FLOOR_BYTES;
@@ -708,7 +716,7 @@ async function admitLocked(
       if (receipt.operation !== "deletePhysical") latest.set(generationKey(receipt.request), receipt);
     for (const [key, receipt] of latest) {
       if (
-        !receipt.outcome ||
+        !readyForRetention(receipt) ||
         receipt.cleaned ||
         receipt.operation === "delete" ||
         receipt.operation === "buildSnapshot" ||
@@ -834,7 +842,7 @@ async function admitLocked(
       // Disk failure must not disable local physical expiry.
     }
     const receipt = state.receipts.find((r) => r.requestId === id);
-    if (receipt) {
+    if (receipt && !(receipt.operation === "restore" && options.running?.has(receipt.requestId))) {
       try {
         if ((await executor.stopIfExpired(receipt.request)) === true) {
           receipt.expired = true;
@@ -957,6 +965,8 @@ async function admitLocked(
       }
       receipt.outcome = "completed";
     } catch (error) {
+      if (receipt.operation === "restore" && error instanceof DockerMachineError && error.code === "docker_failed")
+        throw error;
       receipt.outcome = "failed";
       if (error instanceof DockerDiskFloorError) receipt.reason = "disk_full";
       else if (receipt.operation === "buildSnapshot") {

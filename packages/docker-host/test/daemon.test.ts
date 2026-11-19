@@ -222,6 +222,74 @@ test("restore replays its frozen predecessor after a lost completion without aut
   expect(cleanup).toEqual([job.request.generation]);
 });
 
+test("an ambiguous Docker restore failure replays the same pending job", async () => {
+  const { job, store, api, executor, acknowledgements } = fixture();
+  const restore: Job = {
+    ...job,
+    operation: "restore",
+    request: { ...job.request, generation: crypto.randomUUID(), expiresAt: 200_000 },
+    predecessor: { request: job.request, machineId: "a".repeat(64) },
+  };
+  api.poll = async () => ({ job: restore });
+  executor.restore = async () => {
+    throw new DockerMachineError("docker_failed");
+  };
+  const run = () => tick(store, api, executor, false, () => 100_000);
+  await expect(run()).rejects.toThrow("docker_failed");
+  expect(acknowledgements).toEqual([]);
+  executor.restore = async () => {};
+  await run();
+  expect(acknowledgements).toEqual(["completed"]);
+});
+
+test("local retention reclaims an expired pending restore target even while offline", async () => {
+  const { job, store, api, executor, state } = fixture();
+  const restore: Job = {
+    ...job,
+    operation: "restore",
+    request: { ...job.request, generation: crypto.randomUUID(), expiresAt: 200_000 },
+    predecessor: { request: job.request, machineId: "a".repeat(64) },
+  };
+  const save = store.save;
+  let loseCompletion = true;
+  store.save = async (next) => {
+    if (loseCompletion && next.receipts.some((receipt) => receipt.outcome === "completed"))
+      throw new Error("completion write lost");
+    await save(next);
+  };
+  let stoppedTarget: string | undefined;
+  executor.restore = async (target) => {
+    stoppedTarget = target.generation;
+  };
+  executor.isStopped = async (target) => target.generation === stoppedTarget;
+  const cleanup: string[] = [];
+  executor.deleteStopped = async (target) => {
+    cleanup.push(target.generation);
+  };
+  api.poll = async () => ({ job: restore });
+  await expect(tick(store, api, executor, false, () => 100_000)).rejects.toThrow("completion write lost");
+
+  api.poll = async () => {
+    throw new Error("offline");
+  };
+  loseCompletion = false;
+  await expect(tick(store, api, executor, false, () => 199_999)).rejects.toThrow("offline");
+  expect(cleanup).toEqual([]);
+  const expiryChecks: string[] = [];
+  executor.stopIfExpired = async (target) => {
+    expiryChecks.push(target.generation);
+    return true;
+  };
+  await expect(
+    tick(store, api, executor, false, () => 200_000, { running: new Set([restore.requestId]) }),
+  ).rejects.toThrow("offline");
+  expect(expiryChecks).toEqual([]);
+  expect(cleanup).toEqual([]);
+  await expect(tick(store, api, executor, false, () => 200_000)).rejects.toThrow("offline");
+  expect(cleanup).toEqual([restore.request.generation]);
+  expect(state().receipts[0]?.outcome).toBeUndefined();
+});
+
 test("a refused physical-only delete leaves the retained generation eligible for resume", async () => {
   const { job, store, api, executor, acknowledgements } = fixture();
   api.poll = async () => ({ job: { ...job, operation: "deletePhysical", machineId: "a".repeat(64) } });
