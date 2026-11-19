@@ -1199,7 +1199,7 @@
   "landmines-testing/no-test-doubles": {
     "packages/agent-runtime/test/harness-cache.test.ts": 1,
     "packages/agent-runtime/test/runtime.test.ts": 2,
-    "packages/cli/test/email-login.test.ts": 6,
+    "packages/cli/test/email-login.test.ts": 5,
     "packages/cli/test/skill-hint.test.ts": 1,
     "packages/core/test/golden-create.test.ts": 4,
     "packages/core/test/golden-scan.probe.ts": 1,
