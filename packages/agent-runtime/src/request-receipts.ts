@@ -1,9 +1,15 @@
-import type { EventPage } from "@armada/core";
+import { type AgentEvent, truncateEvent } from "@armada/core";
 import { commandOutputLimit } from "./command-output.ts";
 import { RequestRefused } from "./errors.ts";
 import type { Journal } from "./journal.ts";
-import type { RunnerRequest } from "./protocol.ts";
+import { MAX_COMMAND_RESPONSE_BYTES, type RunnerRequest } from "./protocol.ts";
 import type { executeWorkspace } from "./workspace-exec.ts";
+
+export interface EventSelection {
+  after: number;
+  rows: ReturnType<Journal["events"]>;
+  hasMore: boolean;
+}
 
 const READ_ONLY_OPERATIONS = new Set(["events", "health", "getPrompt", "getExec", "checkpoint", "observeOrchestrator"]);
 
@@ -55,19 +61,39 @@ export async function executeWithReceipt(
     if (mutating) journal.db.query("INSERT OR REPLACE INTO requests VALUES(?,?)").run(request.requestId, body);
     return new Response(body, { status: 409, headers: { "content-type": "application/json" } });
   }
-  if (request.op === "events") {
-    const envelope = JSON.parse(journal.redact(JSON.stringify({ version: 1, requestId: request.requestId })));
-    const page = result as EventPage;
-    return Response.json({
-      ...envelope,
-      result: { ...page, events: page.events.map((event) => journal.redactEvent(event)) },
-    });
-  }
+  if (request.op === "events") return eventsResponse(journal, request.requestId, result as EventSelection);
   const body =
     request.op === "workspaceExec"
       ? workspaceReceipt(journal, request.requestId, result as Awaited<ReturnType<typeof executeWorkspace>>)
       : journal.redact(JSON.stringify({ version: 1, requestId: request.requestId, result }));
   if (mutating) journal.db.query("INSERT OR REPLACE INTO requests VALUES(?,?)").run(request.requestId, body);
+  return new Response(body, { headers: { "content-type": "application/json" } });
+}
+
+function eventsResponse(journal: Journal, requestId: string, selection: EventSelection): Response {
+  const envelope = { version: 1, requestId: journal.redactLiteralText(requestId) };
+  const page = { events: [] as AgentEvent[], cursor: String(selection.after), hasMore: selection.hasMore };
+  let eventsBytes = 0;
+  for (const [index, row] of selection.rows.entries()) {
+    const cursor = String(row.sequence);
+    // Reserve the longer boolean spelling, since the next row may exceed the budget.
+    const envelopeBytes = Buffer.byteLength(
+      JSON.stringify({ ...envelope, result: { events: [], cursor, hasMore: false } }),
+    );
+    let event = journal.redactEvent(row.event);
+    let bytes = Buffer.byteLength(JSON.stringify(event));
+    if (envelopeBytes + eventsBytes + bytes + page.events.length > MAX_COMMAND_RESPONSE_BYTES) {
+      if (page.events.length) break;
+      event = truncateEvent(event, bytes);
+      bytes = Buffer.byteLength(JSON.stringify(event));
+    }
+    page.events.push(event);
+    eventsBytes += bytes;
+    page.cursor = cursor;
+    page.hasMore = selection.hasMore || index + 1 < selection.rows.length;
+  }
+  const body = JSON.stringify({ ...envelope, result: page });
+  if (Buffer.byteLength(body) > MAX_COMMAND_RESPONSE_BYTES) throw Error("invalid_request");
   return new Response(body, { headers: { "content-type": "application/json" } });
 }
 
