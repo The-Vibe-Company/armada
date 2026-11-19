@@ -2579,7 +2579,7 @@ test("access launch resolves an omitted account and grants only its persisted bi
     const beforeAccepted = fake.forks.length;
     const accepted = await stagingLaunch("web");
     expect(accepted?.status).toBe(200);
-    expect(await accepted?.json()).toMatchObject({
+    expect(launchEnvelope.parse(await accepted?.json())).toMatchObject({
       sandbox: { credentialId: account.id, repositoryDir: "web" },
       armadaAccess: { enabled: true, maxActiveChildren: 1 },
     });

@@ -23,6 +23,7 @@ export const launchEnvelope = z.strictObject({
   github: z.object({ status: z.string() }).passthrough(),
   helper: z.object({ status: z.string() }).passthrough().nullable(),
   runtime: z.object({ kind: z.literal("armada"), epoch: z.string() }).nullable(),
+  armadaAccess: z.object({ enabled: z.literal(true), maxActiveChildren: z.number().int() }).optional(),
 });
 
 const TEMPLATE_LAUNCH_STATES = ["claimed", "allocating", "succeeded", "failed", "reconciling"] as const;
