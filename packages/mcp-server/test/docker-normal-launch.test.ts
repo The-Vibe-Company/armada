@@ -1930,6 +1930,24 @@ async function repositoryFixture(checkoutExitCode = 0) {
   return { f, body: { ...f.body, repos } };
 }
 
+function configuredGitHubCapability(f: Fixture) {
+  const configured = (f.native as { op: string; configuration: { capability: string } }[]).findLast(
+    (command) => command.op === "configureGitHub",
+  );
+  if (!configured) throw Error("missing GitHub configuration");
+  return configured.configuration.capability;
+}
+
+function acquireGitHub(f: Fixture, capability: string, repository: string, operation: "git" | "gh" = "git") {
+  return f.github.route(
+    new Request("https://armada.example/api/runtime/github/credentials", {
+      method: "POST",
+      headers: { authorization: `Bearer ${capability}` },
+      body: JSON.stringify({ version: 1, repository, operation }),
+    }),
+  );
+}
+
 for (const checkoutExitCode of [0, 1])
   test(`Docker checkout exit ${checkoutExitCode} gates its first prompt`, async () => {
     const { f, body: repository } = await repositoryFixture(checkoutExitCode);
@@ -2018,10 +2036,7 @@ test("Docker GitHub refresh and follow-up send configure the runtime and replay 
   const db = database();
   await f.service().launch(f.caller, body);
   const controls = createDockerSandboxControls(sql, key, { clock: f.clock, github: f.github });
-  const initial = (f.native as { op: string; configuration: { capability: string } }[]).find(
-    (command) => command.op === "configureGitHub",
-  );
-  if (!initial) throw Error("missing initial GitHub configuration");
+  const initialCapability = configuredGitHubCapability(f);
   const rest = restControl(f, { dockerControls: controls, runtimeGitHub: f.github });
   const gitHubRef = { id: f.body.requestId, org: f.actor.orgId };
   const refreshed = await rest.post("github/refresh", gitHubRef);
@@ -2065,47 +2080,26 @@ test("Docker GitHub refresh and follow-up send configure the runtime and replay 
     "configureGitHub",
     "prompt",
   ]);
-  const stale = await f.github.route(
-    new Request("https://armada.example/api/runtime/github/credentials", {
-      method: "POST",
-      headers: { authorization: `Bearer ${initial.configuration.capability}` },
-      body: JSON.stringify({ version: 1, repository: "example/project", operation: "gh" }),
-    }),
-  );
-  expect(stale?.status).toBe(403);
+  const followUpCapability = configuredGitHubCapability(f);
+  expect((await acquireGitHub(f, followUpCapability, "example/project"))?.status).toBe(200);
+  expect((await acquireGitHub(f, followUpCapability, "example/other"))?.status).toBe(403);
+  expect((await acquireGitHub(f, initialCapability, "example/project", "gh"))?.status).toBe(403);
 });
 
-test("Docker GitHub capabilities are repository-scoped and rotate on resume", async () => {
+test("Docker GitHub capabilities rotate on resume and expire on host revocation", async () => {
   const { f, body } = await repositoryFixture();
   await f.service().launch(f.caller, { ...body, prompt: undefined });
   const controls = createDockerSandboxControls(sql, key, { clock: f.clock, resume: bootstrap, github: f.github });
-  const configured = (f.native as { op: string; configuration: { capability: string } }[]).findLast(
-    (command) => command.op === "configureGitHub",
-  );
-  if (!configured) throw Error("missing GitHub configuration");
-  let capability = configured.configuration.capability;
-  const acquire = async (repository: string) =>
-    f.github.route(
-      new Request("https://armada.example/api/runtime/github/credentials", {
-        method: "POST",
-        headers: { authorization: `Bearer ${capability}` },
-        body: JSON.stringify({ version: 1, repository, operation: "git" }),
-      }),
-    );
-  expect((await acquire("example/project"))?.status).toBe(200);
-  expect((await acquire("example/other"))?.status).toBe(403);
+  const initialCapability = configuredGitHubCapability(f);
+  expect((await acquireGitHub(f, initialCapability, "example/project"))?.status).toBe(200);
   await controls.invoke(f.caller, "stop", { id: f.body.requestId });
   await controls.invoke(f.caller, "resume", { id: f.body.requestId, request_id: randomUUID() });
   expect((await f.github.status(f.caller, f.body.requestId)).configured).toBe(true);
-  expect((await acquire("example/project"))?.status).toBe(403);
-  const resumed = (f.native as { op: string; configuration: { capability: string } }[]).findLast(
-    (command) => command.op === "configureGitHub",
-  );
-  if (!resumed) throw Error("missing resumed GitHub configuration");
-  capability = resumed.configuration.capability;
-  expect((await acquire("example/project"))?.status).toBe(200);
+  expect((await acquireGitHub(f, initialCapability, "example/project"))?.status).toBe(403);
+  const resumedCapability = configuredGitHubCapability(f);
+  expect((await acquireGitHub(f, resumedCapability, "example/project"))?.status).toBe(200);
   await hosts.revoke(f.admin, f.hostId);
-  expect((await acquire("example/project"))?.status).toBe(403);
+  expect((await acquireGitHub(f, resumedCapability, "example/project"))?.status).toBe(403);
 });
 
 test("Docker freezes versioned readable bindings and re-delivers them before the first resumed prompt", async () => {
