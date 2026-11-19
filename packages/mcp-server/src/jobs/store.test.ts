@@ -70,15 +70,15 @@ test.each([
   ]);
   if (scenario !== "failed")
     await db.query(
-        `update sandboxes set lifecycle_generation=3, status=$2, stopped_at=$3,
+      `update sandboxes set lifecycle_generation=3, status=$2, stopped_at=$3,
            activity_lease_id=$4, activity_until=$5 where id=$1`,
-        [
-          sandboxId,
-          scenario === "stopped" ? "stopped" : "ready",
-          scenario === "stopped" ? "2026-01-01" : null,
-          scenario === "runtime evidence" ? requestId : null,
-          scenario === "runtime evidence" ? "infinity" : null,
-        ],
+      [
+        sandboxId,
+        scenario === "stopped" ? "stopped" : "ready",
+        scenario === "stopped" ? "2026-01-01" : null,
+        scenario === "runtime evidence" ? requestId : null,
+        scenario === "runtime evidence" ? "infinity" : null,
+      ],
     );
   const delivered: Job[] = [];
   const runner = createJobsRunner(
