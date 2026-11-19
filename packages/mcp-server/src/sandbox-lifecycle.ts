@@ -41,7 +41,6 @@ export async function requestFailedRuntimeResumeStop(
   return changed.rows[0]?.status;
 }
 
-/** Called under the sandbox lock acquired by the worker claim. */
 async function recoverInterruptedBoatResume(tx: Sql, sandboxId: string, lease: string, generation: number) {
   const result = await tx.query(
     `with handoff as (
@@ -110,29 +109,28 @@ export function createSandboxLifecycle(
     }
     try {
       const token = crypto.randomUUID();
-      const row = await sql.transaction(async (tx) => {
-        const claimed = (
-          await tx.query<{
-            id: string;
-            provider_sandbox_id: string;
-            boat_runtime: boolean;
-            runtime_transport: string | null;
-            lifecycle_generation: number;
-            expires_at: Date | string;
-            status: string;
-            status_reason: string | null;
-            task_prompt_id: string | null;
-            activity_lease_id: string | null;
-            application_secret_tainted: boolean;
-            credential_id: string | null;
-            credential_version: number | null;
-            owner_is_member: boolean;
-            retained_resume: boolean;
-            work_merged: boolean | null;
-            preservation_note: string | null;
-            stop_requested_at: Date | string | null;
-          }>(
-            `update public.sandboxes s set reconcile_lease=$1::uuid,
+      const row = (
+        await sql.query<{
+          id: string;
+          provider_sandbox_id: string;
+          boat_runtime: boolean;
+          runtime_transport: string | null;
+          lifecycle_generation: number;
+          expires_at: Date | string;
+          status: string;
+          status_reason: string | null;
+          task_prompt_id: string | null;
+          activity_lease_id: string | null;
+          application_secret_tainted: boolean;
+          credential_id: string | null;
+          credential_version: number | null;
+          owner_is_member: boolean;
+          retained_resume: boolean;
+          work_merged: boolean | null;
+          preservation_note: string | null;
+          stop_requested_at: Date | string | null;
+        }>(
+          `update public.sandboxes s set reconcile_lease=$1::uuid,
           reconcile_lease_until=now()+interval '2 minutes'
         from (
           select candidate.id,recovery.retained_resume from public.sandboxes candidate
@@ -158,20 +156,24 @@ export function createSandboxLifecycle(
         returning s.id,s.provider_sandbox_id,s.runtime_transport,s.boat_runtime,s.lifecycle_generation,s.expires_at,s.status::text as status,s.status_reason,s.task_prompt_id,s.activity_lease_id,s.application_secret_tainted,s.credential_id,s.credential_version,s.stop_requested_at,s.preservation_note,
           ${mergedWorkProof("s")} as work_merged,due.retained_resume,
           exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id) as owner_is_member`,
-            [token, providerId, UNENROLLED_RESUME_STOP, `${OPERATOR_CLEANUP_PREFIX}%`],
-          )
-        ).rows[0];
-        if (
-          providerId === "boat" &&
-          claimed?.status === "starting" &&
-          claimed.activity_lease_id &&
-          (await recoverInterruptedBoatResume(tx, claimed.id, token, claimed.lifecycle_generation))
+          [token, providerId, UNENROLLED_RESUME_STOP, `${OPERATOR_CLEANUP_PREFIX}%`],
         )
-          return "handed_off";
-        return claimed;
-      });
-      if (row === "handed_off") return true;
+      ).rows[0];
       if (!row) return false;
+      if (providerId === "boat" && row.boat_runtime && row.status === "starting" && row.activity_lease_id) {
+        if (!sql.transaction) throw Error("Boat resume recovery requires a SQL transaction.");
+        const handedOff = await sql.transaction(async (tx) => {
+          const owned = await tx.query(
+            `select id from public.sandboxes where id=$1 and reconcile_lease=$2 and lifecycle_generation=$3
+               and reconcile_lease_until>clock_timestamp() for update`,
+            [row.id, token, row.lifecycle_generation],
+          );
+          return (
+            owned.rows.length > 0 && (await recoverInterruptedBoatResume(tx, row.id, token, row.lifecycle_generation))
+          );
+        });
+        if (handedOff) return true;
+      }
       // Only an already-requested stop may enter operator custody. This is not
       // provider authority: the worker never substitutes credentials or allocates.
       const operatorStop = row.status === "stopping" && row.stop_requested_at !== null;
