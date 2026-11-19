@@ -20,8 +20,12 @@ import { recordOperatorFailure } from "./request-observability.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
 import { ChildLaunchNotAllocated, launchSandboxChild } from "./sandbox-access-child-launch.ts";
-import type { SandboxChildExecutor } from "./sandbox-access-children.ts";
-import { createSandboxChildren } from "./sandbox-access-children.ts";
+import {
+  type ChildOperation,
+  createSandboxChildren,
+  type SandboxChildExecutor,
+  type StopRecoveryAdmission,
+} from "./sandbox-access-children.ts";
 import { createSandboxScopedGateway } from "./sandbox-access-scoped-gateway.ts";
 import { extendSandbox } from "./sandbox-extend.ts";
 import { createRuntimeSelfFinish, requestSandboxFinish } from "./sandbox-finish.ts";
@@ -92,6 +96,100 @@ export function createSandboxAccessServices(input: {
         );
       },
     };
+  }
+  async function stopChild(operation: ChildOperation, admitRecovery?: StopRecoveryAdmission) {
+    const { saved, resolveProvider } = await child(operation.sandboxId, operation.ownerId, operation.orgId);
+    const retained = saved.runtimeTransport === "dialout";
+    if (admitRecovery && (!retained || !["ready", "running"].includes(saved.status) || saved.stopRequestedAt))
+      throw new DelegatedAccessError("conflict");
+    if (retained && saved.status === "stopped") return;
+    const provider = await resolveProvider();
+    const caller = {
+      via: "service" as const,
+      userId: operation.ownerId,
+      orgs: [{ orgId: operation.orgId, role: "member" as const }],
+    };
+    let checkpoint: Awaited<ReturnType<RuntimeCheckpoint>> | undefined;
+    if (retained) {
+      if (!input.runtimeCheckpoint) throw new DelegatedAccessError("unavailable");
+      const prior = (
+        await sql.query<{ request_id: string; epoch: string }>(
+          `select p.request_id,p.epoch::text from public.runtime_checkpoints p join public.runtime_enrolments r
+           on r.sandbox_id=p.sandbox_id and r.epoch=p.epoch where p.sandbox_id=$1`,
+          [saved.id],
+        )
+      ).rows[0];
+      if (admitRecovery && prior?.request_id !== operation.id) throw new DelegatedAccessError("conflict");
+      checkpoint = await input.runtimeCheckpoint(caller, {
+        id: saved.id,
+        request_id: prior?.request_id ?? operation.id,
+        runtimeVersion: 1,
+      });
+      if (admitRecovery && (checkpoint.requestId !== operation.id || checkpoint.runtime.epoch !== prior?.epoch))
+        throw new DelegatedAccessError("conflict");
+    }
+    const scoped = createSqlData(sql)(caller).sandboxes;
+    const statusReason = retained ? "idle_paused" : null;
+    const epoch = checkpoint?.runtime.epoch;
+    const stopStore = admitRecovery
+      ? {
+          ...scoped,
+          async update(id: string, patch: Parameters<typeof scoped.update>[1]) {
+            if (!patch.advanceGeneration) return scoped.update(id, patch);
+            await admitRecovery(async (tx) => {
+              const proof = await tx.query(
+                `select p.request_id from public.runtime_checkpoints p
+                 join public.runtime_enrolments r on r.sandbox_id=p.sandbox_id and r.epoch=p.epoch
+                 join public.sandboxes s on s.id=p.sandbox_id
+                 where s.id=$1 and p.request_id=$2 and p.epoch=$3 and p.watermark is not null
+                 and p.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=s.id)
+                 and r.runtime_hash is not null and r.lifecycle_generation=s.lifecycle_generation
+                 and s.status in ('ready','running') and s.stop_requested_at is null and s.deleted_at is null
+                 and s.expires_at>clock_timestamp() and not s.application_secret_tainted`,
+                [id, operation.id, epoch],
+              );
+              if (!proof.rows.length) throw new DelegatedAccessError("conflict");
+              await createSqlData(tx)(caller).sandboxes.update(id, patch);
+            });
+          },
+        }
+      : scoped;
+    await sandboxActivity(
+      stopStore,
+      saved,
+      { status: "stopping", stopRequested: true, statusReason },
+      async (signal, token) => {
+        if (
+          (await preserveBeforeStop(input.sql, provider, saved.id, saved.providerSandboxId, "managed_child_stop", {
+            kind: "activity",
+            token,
+            generation: saved.lifecycleGeneration === undefined ? undefined : saved.lifecycleGeneration + 1,
+            signal,
+          }).catch(() => "pending" as const)) === "pending"
+        )
+          return { result: undefined, patch: { status: "stopping", stopRequested: true, statusReason } };
+        signal.throwIfAborted();
+        const observed = await stopAndObserve(
+          provider,
+          saved.id,
+          saved.providerSandboxId,
+          "managed_child_stop",
+          signal,
+          retained,
+        );
+        const terminal =
+          observed.state === "stopped" && (provider.id !== "boat" || observed.retainedSnapshot === "usable");
+        return {
+          result: undefined,
+          patch: {
+            status: terminal ? "stopped" : "stopping",
+            statusReason,
+            stopRequested: !terminal,
+            stoppedAt: terminal ? (observed.stoppedAt ?? new Date()).toISOString() : null,
+          },
+        };
+      },
+    );
   }
   const executor: SandboxChildExecutor = {
     async launch(operation, chosen) {
@@ -225,70 +323,8 @@ export function createSandboxAccessServices(input: {
         () => input.connections?.renewLifetime?.(provider, saved.id) ?? Promise.resolve(),
       );
     },
-    async stop(operation) {
-      const { saved, resolveProvider } = await child(operation.sandboxId, operation.ownerId, operation.orgId);
-      const retained = saved.runtimeTransport === "dialout";
-      if (retained && saved.status === "stopped") return;
-      const provider = await resolveProvider();
-      const caller = {
-        via: "service" as const,
-        userId: operation.ownerId,
-        orgs: [{ orgId: operation.orgId, role: "member" as const }],
-      };
-      if (retained) {
-        if (!input.runtimeCheckpoint) throw new DelegatedAccessError("unavailable");
-        const prior = (
-          await sql.query<{ request_id: string }>(
-            `select p.request_id from public.runtime_checkpoints p join public.runtime_enrolments r
-             on r.sandbox_id=p.sandbox_id and r.epoch=p.epoch where p.sandbox_id=$1`,
-            [saved.id],
-          )
-        ).rows[0];
-        await input.runtimeCheckpoint(caller, {
-          id: saved.id,
-          request_id: prior?.request_id ?? operation.id,
-          runtimeVersion: 1,
-        });
-      }
-      const scoped = createSqlData(sql)(caller).sandboxes;
-      const statusReason = retained ? "idle_paused" : null;
-      await sandboxActivity(
-        scoped,
-        saved,
-        { status: "stopping", stopRequested: true, statusReason },
-        async (signal, token) => {
-          if (
-            (await preserveBeforeStop(input.sql, provider, saved.id, saved.providerSandboxId, "managed_child_stop", {
-              kind: "activity",
-              token,
-              generation: saved.lifecycleGeneration === undefined ? undefined : saved.lifecycleGeneration + 1,
-              signal,
-            }).catch(() => "pending" as const)) === "pending"
-          )
-            return { result: undefined, patch: { status: "stopping", stopRequested: true, statusReason } };
-          signal.throwIfAborted();
-          const observed = await stopAndObserve(
-            provider,
-            saved.id,
-            saved.providerSandboxId,
-            "managed_child_stop",
-            signal,
-            retained,
-          );
-          const terminal =
-            observed.state === "stopped" && (provider.id !== "boat" || observed.retainedSnapshot === "usable");
-          return {
-            result: undefined,
-            patch: {
-              status: terminal ? "stopped" : "stopping",
-              statusReason,
-              stopRequested: !terminal,
-              stoppedAt: terminal ? (observed.stoppedAt ?? new Date()).toISOString() : null,
-            },
-          };
-        },
-      );
-    },
+    stop: stopChild,
+    recoverStop: stopChild,
     async reconcile(operation, signal) {
       signal?.throwIfAborted();
       const { saved, resolveProvider } = await child(operation.sandboxId, operation.ownerId, operation.orgId);
