@@ -1,7 +1,7 @@
 import type { GoldenBuildStatus } from "@armada/core";
 
 /** Where a failure can be followed up: a same-origin dashboard path and its link text. */
-export type ActionLink = { href: string; label: string };
+type ActionLink = { href: string; label: string };
 
 export type ActionResult =
   | { ok: true; message: string; build?: GoldenBuildStatus }
