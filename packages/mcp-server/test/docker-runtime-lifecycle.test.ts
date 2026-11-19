@@ -222,6 +222,16 @@ test("one durable conversation survives lost responses and admits only exact ret
   const f = await fixture(),
     session = await ready(f),
     input = { requestId: randomUUID(), text: "Report the current directory" };
+  await db.exec(
+    "alter table sandbox_transitions add constraint test_reject_enqueue check (code <> 'docker_prompt_enqueued') not valid",
+  );
+  try {
+    await denied(service.prompt(f.actor, f.sandbox.id, input));
+    expect((await commands.next(session.runtimeToken, session.epoch)).command).toBeNull();
+    expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("ready");
+  } finally {
+    await db.exec("alter table sandbox_transitions drop constraint test_reject_enqueue");
+  }
   let lost = true;
   const lostSql: Sql = {
     ...sql,
