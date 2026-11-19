@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { ProviderError, type ProviderInventoryMachine } from "@armada/core";
-import type { ModalClient } from "modal";
+import { type ModalClient, NotFoundError } from "modal";
 import { observeProvider } from "../../mcp-server/src/request-observability.ts";
 import { createModalProvider, type Machine, type ModalProviderOptions, type ModalStore } from "../src/index.ts";
 
@@ -141,6 +141,11 @@ test("Modal attaches deployment ownership to the allocation request for a runtim
     { store, commonRuntime: true },
     {
       images: { fromId: async () => ({ imageId: snapshot.imageId }) } as unknown as ModalClient["images"],
+      volumes: {
+        async fromName() {
+          throw new NotFoundError("No artifact cache volume in this environment");
+        },
+      } as unknown as ModalClient["volumes"],
       sandboxes: {
         async create(_app: unknown, _image: unknown, params: { tags: Record<string, string> }) {
           creationTags = params.tags;
