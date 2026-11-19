@@ -221,11 +221,11 @@ test("an enrolled scoped parent loses its grant before checkpoint dispatch and s
     f.dropReplyOnce("scrubOrchestratorEpoch");
     await expect(checkpoint(f.caller, input)).rejects.toMatchObject({ code: "conflict" });
     const pending = (await f.bridge.next(f.active.runtimeToken, f.active.epoch)).command;
-    expect(pending?.op).toBe("scrubOrchestratorEpoch");
+    if (pending?.op !== "scrubOrchestratorEpoch") throw Error("Expected the pending scoped scrub command");
     const lostScrubReply = {
       ...f.bridge,
       async call(...params: Parameters<typeof f.bridge.call>) {
-        expect(params[1].requestId).toBe(pending?.requestId);
+        expect(params[1].requestId).toBe(pending.requestId);
         const reply = await f.bridge.call(...params);
         if (params[1].op === "scrubOrchestratorEpoch" && reply.status === 200) throw Error("lost scrub reply");
         return reply;
