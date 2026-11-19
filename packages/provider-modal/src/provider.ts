@@ -8,7 +8,6 @@ import type {
   Provider,
   ResumeStageObserver,
   SandboxInfo,
-  SnapshotInfo,
 } from "@armada/core";
 import {
   HARNESSES,
@@ -48,6 +47,7 @@ import type {
 } from "./ports.ts";
 import { createRuntimeLifecycle } from "./runtime-lifecycle.ts";
 import { createSandboxInspection } from "./sandbox-inspection.ts";
+import { createSnapshotLifecycle } from "./snapshot-lifecycle.ts";
 import { createSnapshotTombstones } from "./snapshot-tombstones.ts";
 import { createSshPreparation } from "./ssh.ts";
 import { createStopDeleteLifecycle } from "./stop-delete-lifecycle.ts";
@@ -1052,84 +1052,19 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       r.signal?.throwIfAborted();
       return page;
     },
-    async snapshot(r) {
-      await bound();
-      let observed: Machine | undefined;
-      try {
-        return await store.lease(r.sandboxId, async (row, save) => {
-          observed = row;
-          assertMachineSource(row);
-          if (!row.golden || row.phase !== "active")
-            throw refusal("conflict", "Only active credential-free builders can become golden snapshots.");
-          try {
-            await store.image(r.name);
-            throw refusal("conflict", "Snapshot name is immutable.");
-          } catch (e) {
-            if (!(e instanceof Error && "code" in e && e.code === "not_found")) throw e;
-          }
-          const info: SnapshotInfo = {
-            name: r.name,
-            status: "saving",
-            sourceSandboxId: r.sandboxId,
-            managementAuthority: {
-              scope: managementAuthority.credentialScope,
-              ownerId: managementAuthority.credentialOwnerId,
-            },
-            createdAt: new Date(),
-          };
-          await store.saveImage({ info, sourceId: r.sandboxId, managementAuthority: { ...managementAuthority } });
-          const sb = await physical(row);
-          row.phase = "checkpoint";
-          row.info.state = "stopping";
-          await save(row);
-          await checkpoint(row, save);
-          await distribution.prepareSnapshot(sb, row);
-          row.quiesced = true;
-          row.phase = "snapshot";
-          await save(row);
-          const image = await sb.snapshotFilesystem({ ttlMs: null });
-          row.snapshotImages = [...(row.snapshotImages ?? []), { name: r.name, imageId: image.imageId }];
-          await save(row);
-          info.status = "ready";
-          info.artifactId = image.imageId;
-          await store.saveImage({
-            info,
-            sourceId: r.sandboxId,
-            imageId: image.imageId,
-            goldenClean: true,
-            managementAuthority: { ...managementAuthority },
-          });
-          row.phase = "checkpoint";
-          row.info.state = "stopping";
-          await save(row);
-          return info;
-        });
-      } catch (error) {
-        if (observed) throw new ModalOperationError(error, await resourceReceipt(observed));
-        throw error;
-      }
-    },
-    async getSnapshot(name) {
-      await snapshotBackend();
-      const image = await source.store.image(name);
-      assertAuthority(image);
-      // Only canonical saved-image fields are provenance; cached optional info is not
-      // a substitute when an older/partial receipt lacks its artifact or authority.
-      const { artifactId: _artifact, managementAuthority: _authority, sourceSandboxId: _source, ...info } = image.info;
-      return {
-        ...info,
-        sourceSandboxId: image.sourceId,
-        ...(image.imageId ? { artifactId: image.imageId } : {}),
-        ...(image.managementAuthority
-          ? {
-              managementAuthority: {
-                scope: image.managementAuthority.credentialScope,
-                ownerId: image.managementAuthority.credentialOwnerId,
-              },
-            }
-          : {}),
-      };
-    },
+    ...createSnapshotLifecycle({
+      store,
+      sourceStore: source.store,
+      managementAuthority,
+      bound,
+      snapshotBackend,
+      assertAuthority,
+      assertMachineSource,
+      physical,
+      checkpoint,
+      distribution,
+      resourceReceipt,
+    }),
     ...snapshotTombstones,
     quiesce: (r) => call(r.sandboxId, "interrupt", r),
     async extendLifetime({ sandboxId, ttlSeconds }) {
