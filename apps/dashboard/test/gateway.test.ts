@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createControlClient } from "../src/lib/control.ts";
+import { ControlError, createControlClient } from "../src/lib/control.ts";
 import { createGateway, GatewayError, sandboxGateway } from "../src/lib/gateway.ts";
 
 type Call = { method: string; headers: Record<string, string>; body: Record<string, unknown> };
@@ -43,7 +43,11 @@ describe("gateway", () => {
         token: "user-jwt",
         fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
           seen.push(new Request(input, init));
-          return Response.json({ id: "sandbox-1" });
+          return Response.json(
+            operation === "delete"
+              ? { id: "sandbox-1", status: "deleted" }
+              : { id: "sandbox-1", expiresAt: "2026-11-19T08:00:00Z", ttlSeconds: 7200 },
+          );
         }) as typeof fetch,
       });
       const sandbox = sandboxGateway(gateway, control);
@@ -59,6 +63,23 @@ describe("gateway", () => {
       expect(await seen[0]?.json()).toEqual(operation === "delete" ? { id } : { id, ttlSeconds });
     });
   }
+
+  test("an unreadable REST success cannot confirm sandbox deletion or extension", async () => {
+    const { gateway } = server(() => {
+      throw new Error("Unexpected MCP request");
+    });
+    const control = createControlClient({
+      serverUrl: "https://mcp.example/mcp",
+      token: "user-jwt",
+      fetch: (async () => new Response("unreadable")) as unknown as typeof fetch,
+    });
+    const sandbox = sandboxGateway(gateway, control);
+    for (const call of [() => sandbox.delete("sandbox-1"), () => sandbox.extend("sandbox-1", 7200)]) {
+      const error = await call().catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(ControlError);
+      expect(error).toMatchObject({ outcomeUnknown: true });
+    }
+  });
 
   test("a tool call initializes the session, carries the user's token and returns the tool's JSON", async () => {
     const { calls, gateway } = server(

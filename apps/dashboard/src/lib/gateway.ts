@@ -1,5 +1,5 @@
 import { isRecord, VERSION } from "@armada/core";
-import { type ControlClient, controlFallback } from "./control.ts";
+import { type ControlClient, ControlError, controlFallback } from "./control.ts";
 import { describeFailure } from "./failure.ts";
 import type { SendArgs } from "./model-choice.ts";
 
@@ -163,8 +163,31 @@ export function sandboxGateway(gateway: Gateway, control: ControlClient) {
     status: (sandboxId: string) => gateway.call("status", { id: sandboxId }),
     stop: (sandboxId: string) => gateway.call("stop", { id: sandboxId }),
     /** Permanent; the server refuses it unless the sandbox is stopped or failed. */
-    delete: (sandboxId: string) => control.post("sandbox/delete", { id: sandboxId }),
-    extend: (sandboxId: string, ttlSeconds: number) => control.post("sandbox/extend", { id: sandboxId, ttlSeconds }),
+    async delete(sandboxId: string) {
+      const receipt = await control.post("sandbox/delete", { id: sandboxId });
+      if (!isRecord(receipt) || receipt.id !== sandboxId.toLowerCase() || receipt.status !== "deleted") {
+        throw new ControlError("The delete request could not be confirmed.", undefined, undefined, {
+          outcomeUnknown: true,
+        });
+      }
+    },
+    async extend(sandboxId: string, ttlSeconds: number) {
+      const receipt = await control.post("sandbox/extend", { id: sandboxId, ttlSeconds });
+      if (
+        !isRecord(receipt) ||
+        receipt.id !== sandboxId.toLowerCase() ||
+        typeof receipt.expiresAt !== "string" ||
+        !Number.isFinite(Date.parse(receipt.expiresAt)) ||
+        receipt.ttlSeconds !== ttlSeconds
+      ) {
+        throw new ControlError(
+          "The extension could not be confirmed. Reload the sandbox to check its deadline before trying again.",
+          undefined,
+          undefined,
+          { outcomeUnknown: true },
+        );
+      }
+    },
     /** Runtime-backed sends require a stable requestId. Native accepts the field for compatibility only, without deduplication. */
     send: (sandboxId: string, prompt: string, override: SendArgs = {}, requestId?: string) =>
       gateway.call("send", {
