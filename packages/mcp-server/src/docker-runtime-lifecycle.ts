@@ -1,13 +1,13 @@
 import type { AgentEvent, Sql } from "@armada/core";
-import { HARNESS_KINDS, isRecord as object, PROMPT_STATUSES } from "@armada/core";
+import { HARNESS_KINDS, isRecord as object } from "@armada/core";
 import { decryptSecret } from "@armada/core/server";
 import { admitAccountCapacity } from "./account-capacity.ts";
 import { createSqlData } from "./data.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import { runtimeHealthMatches } from "./runtime-agent.ts";
-import { createRuntimeCommands } from "./runtime-commands.ts";
+import { createRuntimeCommands, readDockerPromptReceipt, readRuntimeCommandSuccess } from "./runtime-commands.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
-import { publishDockerRuntimeReady, transitionSandbox } from "./sandbox-lifecycle.ts";
+import { publishDockerRuntimeReady } from "./sandbox-lifecycle.ts";
 
 type Actor = { userId: string; orgId: string };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -29,23 +29,6 @@ function identity(actor: Actor, sandboxId: string) {
     !uuid.test(sandboxId)
   )
     deny();
-}
-function result(
-  reply: { epoch: string; requestId: string; status: number; body: Record<string, unknown> },
-  epoch: string,
-  requestId: string,
-) {
-  if (
-    reply.epoch !== epoch ||
-    reply.requestId !== requestId ||
-    reply.status !== 200 ||
-    reply.body.version !== 1 ||
-    reply.body.requestId !== requestId ||
-    !object(reply.body.result) ||
-    Object.hasOwn(reply.body, "error")
-  )
-    deny();
-  return reply.body.result;
 }
 /** One native conversation per allocation. No provider projection or network/waiting in this service. */
 export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { enabled?: boolean } = {}) {
@@ -145,8 +128,8 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
           const response = await commands.result(actor.userId, sandboxId, id, queued.epoch);
           if (response.state === "pending") return { state: "pending" as const };
           if (response.state !== "finished") deny();
-          const health = result(response.reply, queued.epoch, id);
-          if (!runtimeHealthMatches(health, queued.epoch)) deny();
+          const health = readRuntimeCommandSuccess(response.reply, queued.epoch, id);
+          if (!health || !runtimeHealthMatches(health, queued.epoch)) deny();
           const checkpoint = (
             await tx.query<{ epoch: string; watermark: string }>(
               "select epoch::text,watermark::text from public.runtime_checkpoints where sandbox_id=$1 and epoch=$2::bigint-1 and watermark is not null",
@@ -309,33 +292,12 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
               cwd: previous.rows.length ? previousCwd : repositoryDir ? `/home/user/${repositoryDir}` : "/home/user",
             },
           });
-          if (queued.fresh) {
-            const ready = await tx.query<{ generation: string }>(
-              "select lifecycle_generation::text as generation from public.sandboxes where id=$1 and status='ready'",
-              [sandboxId],
-            );
-            const generation = ready.rows[0]?.generation;
-            if (generation !== undefined)
-              await transitionSandbox(tx, {
-                sandboxId,
-                expectedGeneration: generation,
-                fromStates: ["ready"],
-                toState: "running",
-                actor: "docker_host",
-                code: "docker_prompt_enqueued",
-                effects: [],
-              });
-          }
           const response = await commands.result(actor.userId, sandboxId, id, queued.epoch);
           if (response.state === "pending") return { state: "pending" as const };
           if (response.state !== "finished") deny();
-          const receipt = result(response.reply, queued.epoch, id);
+          const receipt = readDockerPromptReceipt(response.reply, queued.epoch, id);
           if (
-            typeof receipt.promptId !== "string" ||
-            !uuid.test(receipt.promptId) ||
-            typeof receipt.conversationId !== "string" ||
-            !uuid.test(receipt.conversationId) ||
-            !PROMPT_STATUSES.some((status) => status === receipt.status) ||
+            !receipt ||
             (input.conversationId !== undefined && receipt.conversationId !== input.conversationId) ||
             saved.length > 1 ||
             (saved.length === 1 && receipt.conversationId !== saved[0])
@@ -374,11 +336,7 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
           return {
             state: "admitted" as const,
             epoch: queued.epoch,
-            receipt: {
-              promptId: receipt.promptId,
-              conversationId: receipt.conversationId,
-              status: receipt.status as (typeof PROMPT_STATUSES)[number],
-            },
+            receipt,
           };
         },
         false,
