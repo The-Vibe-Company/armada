@@ -70,9 +70,16 @@ staging_armada logs "$sandbox_id" --org "$staging_org" --follow
 
 ### Coordinator rehearsal record
 
-Pending. The release coordinator runs path 1 once and replaces this line with
-the UTC date, CLI version, placement and outcome. Confirm the worker answered
-and was stopped. Keep tokens and account details out of the record.
+On 2026-11-18 (23:36–23:41 UTC), the release coordinator rehearsed path 1
+with `@the-vibe-company/armada@2.57.2` against staging server 3.0.0
+(`e84ad1b7`). The CLI ran from a temporary install with a separate
+`XDG_CONFIG_HOME` and reported version `2.57.2`. The coordinator launched
+Codex on Modal from the staging `smoke-modal` snapshot with a 30-minute TTL
+and an explicit `--credential-id`. The coordinator authenticated using an
+existing staging bearer via `ARMADA_TOKEN` in place of browser sign-in.
+The worker answered the rehearsal prompt in one turn, visible in `armada logs`.
+The coordinator ran `armada stop` and confirmed `stopped` with `armada status`.
+[Coordinator's rehearsal record](https://github.com/The-Vibe-Company/armada/issues/2731#issuecomment-6994948597).
 
 ## 2. Launch on the owner's Docker host through staging
 
