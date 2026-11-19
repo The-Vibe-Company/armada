@@ -50,8 +50,6 @@ export class Journal {
     if (mask && capture.truncated) return { text: "[REDACTED]", truncated: true };
     const scrubbed = this.redact(capture.text);
     const text = mask ? maskText(capture.text, scrubbed, mask) : scrubbed;
-    // Redaction can grow the output. Keep the whole marker and bound the reply
-    // before writing either the process record or the command receipt.
     if (text.length > limit) return { text: "[REDACTED]", truncated: true };
     return { text, truncated: capture.truncated };
   }
