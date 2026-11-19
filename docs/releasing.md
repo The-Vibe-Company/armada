@@ -412,6 +412,15 @@ breaks. Migration evidence combines production history with the prior receipt an
 records SQL applied during an earlier attempt. Missing prior production history,
 protocol or API evidence prevents a reliable rollback comparison. Host rollback
 requires schema-compatible known-good deployments and recorded approval.
+On main, run **Rollback preflight → Run workflow** with `to_version` set to
+the previous stable tag (including the `v` prefix). The dispatch uses the
+production environment for the server URL and shares the release lock. It checks
+the current server's exact SHA and validates both receipts against their tags.
+It fails with a reason if it cannot establish eligibility. A recorded migration
+reports `rollback: refused (migrations)`. A successful preflight is a read-only
+result for that run. Host restoration still requires the provider procedure to
+be validated. npm `latest` stays under owner control.
+
 Production history/confirmed repair and dry-run remain explicit manual operator
 tools, not a release authorization or application SQL apply path.
 
