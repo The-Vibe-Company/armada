@@ -2,6 +2,9 @@ import type { AuthIo } from "../auth-commands.ts";
 import type { Deps, Io } from "../run.ts";
 
 export type UsageGroup =
+  | "invitations"
+  | "org"
+  | "host"
   | "docker-launch"
   | "launch"
   | "list"

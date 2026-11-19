@@ -7,12 +7,14 @@ import detail from "./detail.ts";
 import doctor from "./doctor.ts";
 import exec from "./exec.ts";
 import extend from "./extend.ts";
+import host from "./host.ts";
 import interrupt from "./interrupt.ts";
 import launch from "./launch.ts";
 import list from "./list.ts";
 import login from "./login.ts";
 import logout from "./logout.ts";
 import logs from "./logs.ts";
+import org from "./org.ts";
 import recovery from "./recovery.ts";
 import report from "./report.ts";
 import rm from "./rm.ts";
@@ -47,6 +49,8 @@ export const commands: readonly Command[] = [
   token,
   account,
   api,
+  org,
+  host,
 ];
 
 const byName = new Map(commands.map((command) => [command.name, command]));

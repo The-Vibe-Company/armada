@@ -161,139 +161,6 @@ Definitions contain references to variables and secrets, not raw secret values.
 This reads a template; it does not publish, launch or resolve a frozen launch manifest.
 Example: armada template get TEMPLATE_UUID --revision 1 --org ORG_UUID --json
 `,
-  host: `Usage: armada host <command> [arguments]
-Manage Docker machines registered with Armada, not individual sandboxes.
-
-Account commands (Armada login or ARMADA_TOKEN required):
-  add      Register a machine and obtain a one-use installer command.
-  list     Inspect host IDs, names, state and resources; supports --json.
-  show     Inspect one host by UUID or exact name; supports --json.
-  limits   Update host resource limits by UUID or exact name.
-  revoke   Revoke a host registration by UUID.
-Select an organization with armada org use or --org UUID.
-Use UUIDs from host list when names are ambiguous.
-
-Local machine commands (run on the Docker machine; no Armada login):
-  install    Install/register the local host daemon using --server HTTPS_ORIGIN.
-  status     Inspect the local host daemon.
-  uninstall  Remove the local host installation.
-For CLI install, supply the one-use registration token on stdin, never in argv.
-Treat installer output as sensitive; do not paste it into shared logs.
-
-Inspect a command's options with armada host <command> --help.
-To launch on a registered host, use armada launch --provider docker.
-Example: armada host list --org ORG_UUID --json
-Example: armada host show workstation --org ORG_UUID
-`,
-  org: `Usage: armada org <command> [arguments]
-Manage organization selection, provider setup and membership.
-Use a leaf command with --help or -h for flags and authorization requirements.
-  list         List your organizations, roles and IDs.
-  use          Save a local default by name/UUID, or clear it with none.
-  current      Read the saved selection; not a current-membership check.
-  create       Create an organization and become its admin.
-  setup        Inspect provider configuration, not lifecycle readiness.
-  connect      Connect Boat/Modal as an organization admin.
-  members      List/add/change roles/remove members.
-  invitations  Create/list/resend/revoke/accept invitations.
-Explicit --org overrides a saved default on commands that consume it.
-Help does not sign in, change selection, read credentials or call the server.
-Example: armada org list --json
-Example: armada org invitations --help
-`,
-  "org members": `Usage: armada org members <command> [arguments]
-  list    List members and roles.
-  add     Add by email; --role defaults to member.
-  role    Change role using positional email and admin|member.
-  remove  Remove by email.
-Membership changes require an organization admin; server authorization still applies.
-Use leaf --help/-h for organization selection and exact flags.
-Example: armada org members list --org my-team --json
-`,
-  "org invitations": `Usage: armada org invitations <command> [arguments]
-  create  Invite by email with optional role (default member).
-  list    Read invitation metadata and IDs, never acceptance tokens.
-  resend  Resend by invitation ID.
-  revoke  Revoke by invitation ID.
-  accept  Read a token from stdin/private file, never command arguments.
-Management requires an organization admin and selected organization.
-Accept uses the signed-in identity, not --org. See leaf --help/-h for flags.
-Sent means email-provider acceptance, not confirmed inbox delivery.
-Example: armada org invitations list --org my-team --json
-`,
-  "org list": `Usage: armada org list [--json]
-List your organizations after Armada login, including their IDs and your roles.
-Use an exact organization name or UUID with armada org use.
-Example: armada org list --json
-`,
-  "org use": `Usage: armada org use <name|UUID|none>
-Save a default organization for this Armada server in local preferences.
-Selecting a name or UUID requires login and an exact, unambiguous organization match.
-Use none to clear the saved selection locally; this does not delete an organization.
-For commands that use the saved default, an explicit --org overrides it.
-Example: armada org use my-team
-Example: armada org use none
-`,
-  "org current": `Usage: armada org current
-Read the saved local organization selection for this Armada server, without a server request.
-Output is JSON: org is the saved UUID, or null when no selection is saved.
-This does not check current membership or access.
-Example: armada org current
-`,
-  "org create": `Usage: armada org create <name> [--json]
-Create an organization after Armada login; you become its admin.
-Next, configure its provider with armada org connect boat|modal --org <id>.
-Supply provider credentials through stdin/hidden input or a private file, never arguments.
-Example: armada org create my-team --json
-`,
-  "org members list": `Usage: armada org members list [--org <name>] [--json]
-List organization members and roles after Armada login and server authorization.
-Use --org to override a saved organization selection.
-Example: armada org members list --org my-team --json
-`,
-  "org members add": `Usage: armada org members add <email> [--role admin|member] [--org <name>] [--json]
-Add a member as an organization admin after Armada login; the default role is member.
-Use --org to override a saved organization selection.
-Example: armada org members add teammate@example.com --role member --org my-team
-`,
-  "org members role": `Usage: armada org members role <email> <admin|member> [--org <name>] [--json]
-Change a member's role as an organization admin after Armada login.
-The new role is positional, not a --role flag. Use --org to override a saved selection.
-Example: armada org members role teammate@example.com admin --org my-team
-`,
-  "org members remove": `Usage: armada org members remove <email> [--org <name>] [--json]
-Remove a member as an organization admin after Armada login.
-Use --org to override a saved organization selection.
-Example: armada org members remove teammate@example.com --org my-team
-`,
-  "org invitations create": `Usage: armada org invitations create <email> [--role admin|member] [--org <name|UUID>] [--json]
-Invite someone as an organization admin after Armada login; the default role is member.
-Select an organization with --org or armada org use.
-Sent means the email provider accepted delivery, not confirmed inbox receipt.
-Example: armada org invitations create teammate@example.com --org my-team
-`,
-  "org invitations list": `Usage: armada org invitations list [--org <name|UUID>] [--json]
-List invitation metadata as an organization admin after Armada login.
-Select an organization with --org or armada org use; output includes IDs, not tokens.
-Example: armada org invitations list --org my-team --json
-`,
-  "org invitations resend": `Usage: armada org invitations resend <id> [--org <name|UUID>] [--json]
-Resend an invitation as an organization admin after Armada login.
-Use an invitation ID from org invitations list, and select --org or armada org use.
-Sent means email-provider acceptance, not confirmed inbox receipt.
-Example: armada org invitations resend INVITATION_UUID --org my-team
-`,
-  "org invitations revoke": `Usage: armada org invitations revoke <id> [--org <name|UUID>] [--json]
-Revoke an invitation as an organization admin after Armada login.
-Use an invitation ID from org invitations list, and select --org or armada org use.
-Example: armada org invitations revoke INVITATION_UUID --org my-team
-`,
-  "org invitations accept": `Usage: armada org invitations accept [--file <path>] [--json]
-Accept an invitation after Armada login using a token from stdin or a private file.
-Never put the token in command arguments. --org is not accepted by this command.
-The server validates the invitation and signed-in identity; the token is not printed.
-Example: armada org invitations accept --file /private/invitation-token
-`,
   github: `Usage: armada github <command> [arguments]
 Manage your GitHub connection after Armada login.
 Use leaf --help/-h for exact flags, timeouts and server authorization requirements.
@@ -493,31 +360,6 @@ The legacy golden spelling is accepted; guidance uses snapshot.
 Example: armada snapshot list --provider modal --json
 Example: armada snapshot create --help
 `,
-  "org setup": `Usage: armada org setup [--org <name>] [--json]
-Show organization provider setup status. Sign in before running the operation.
-Use --org to override a saved selection. This reports configuration, not a live lifecycle test.
-Example: armada org setup --org my-team
-`,
-  "org connect": `Usage: armada org connect boat|modal [--org <name>] [--file <path>] [--json]
-Connect a provider as an organization admin after Armada login.
-Boat takes an API key; Modal takes a token pair. See org connect boat|modal --help.
-Read credentials from stdin/hidden input or a private file, never command arguments.
-Use --org to override a saved organization selection.
-Example: armada org connect modal --org my-team --file /private/modal.json
-`,
-  "org connect boat": `Usage: armada org connect boat [--org <name>] [--file <path>] [--json]
-Connect Boat as an organization admin after Armada login.
-Input: the Boat API key from stdin/hidden input or a private file, never command arguments.
-Use --org to override a saved organization selection.
-Example: armada org connect boat --org my-team --file /private/boat-key
-`,
-  "org connect modal": `Usage: armada org connect modal [--org <name>] [--file <path>] [--json]
-Connect a Modal workspace as an organization admin after armada login.
-Input: JSON with token_id and token_secret (from Modal), or a Modal token pair separated by whitespace.
-Keep real credentials in a private file or stdin/hidden input, never command arguments.
-Use --org to override a saved organization selection.
-Example: armada org connect modal --org my-team --file /private/modal.json
-`,
   creds: `Usage: armada creds <command> [arguments]
 Manage encrypted model/provider credentials, not application variables/secrets.
 Use a leaf command with --help or -h for its flags and secure input instructions.
@@ -715,47 +557,6 @@ Replacement is complete, not a patch: include every default you want to keep.
 Output is JSON, including the version and configured repository selectors.
 Example: armada snapshot size-policy starter --provider modal --org my-team
 Example: armada snapshot size-policy starter --provider modal --file policy.json
-`,
-  "host list": `Usage: armada host list [--org UUID] [--json]
-List registered Docker hosts after Armada login and server authorization.
-Select an organization first or pass --org UUID. Use IDs/names with host show.
-Example: armada host list --org ORG_UUID --json
-`,
-  "host show": `Usage: armada host show <UUID|name> [--org UUID] [--json]
-Inspect one Docker host after Armada login and server authorization.
-Select an organization first or pass --org UUID. Names must match exactly and be unambiguous.
-A UUID can identify a revoked host; name lookup excludes revoked hosts.
-Example: armada host show workstation --org ORG_UUID --json
-`,
-  "host retention": `Usage: armada host retention <UUID|name> --retention <duration> [--org UUID] [--json]
-Only the member who added the Docker host can change retention.
-Use 0 for next-sweep removal, or seconds/minutes/hours/days (24h, 30m, 7d), maximum 365d.
-Applies at next check-in, including existing stopped sandbox deadlines.
---json returns {hostId, retentionSeconds}.
-Example: armada host retention workstation --retention 24h
-`,
-  "host limits": `Usage: armada host limits <UUID|name> [--org UUID] [--json]
-  [--cpus <N>] [--memory <size>] [--max-sandboxes <N>] [--auto]
-Update Docker host policy after Armada login and server authorization.
-Select an organization first or pass --org UUID. Supply at least one override or --auto.
-Combine overrides as needed:
---cpus must be at least 0.01; --max-sandboxes must be a positive integer.
---auto resets all limits and cannot be combined with overrides.
-Container changes apply on the next start or resume. Inspect with host show.
---json returns {hostId, ...requestedPolicy}.
-Example: armada host limits workstation --org ORG_UUID --cpus 2 --memory 4GiB
-`,
-  "host revoke": `Usage: armada host revoke <UUID> [--org UUID] [--json]
-Revoke a Docker host after Armada login and server authorization.
-Select an organization first or pass --org UUID. Use a host UUID from host list, not a name.
---json returns {hostId, revoked:true}.
-Example: armada host revoke HOST_UUID --org ORG_UUID
-`,
-  "host add": `Usage: armada host add [--name <name>] [--org <UUID>] [--json]
-Register your Docker machine after Armada login. Select an organization first or pass --org.
-Run the returned installer only on your intended host; its registration token is short-lived.
---json returns the registration receipt without waiting; protect its short-lived installer token.
-Example: armada host add --name workstation
 `,
 };
 
@@ -1012,7 +813,9 @@ export const helpOptionWords = [
         help,
       ]),
       ...Object.values(GENERATED_HELP),
-      ...commands.filter((command) => command.completionBefore === undefined).flatMap(commandHelp),
+      ...commands
+        .filter((command) => command.completionBefore === undefined || !Object.hasOwn(HELP, command.completionBefore))
+        .flatMap(commandHelp),
     ].flatMap((help) => [...help.matchAll(/--[a-z][a-z-]*/g)].map((match) => match[0])),
   ),
 ];
