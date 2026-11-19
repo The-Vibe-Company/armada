@@ -31,7 +31,7 @@ including waiting, coordinating other agents and deciding when to launch more wo
 | Providers | `packages/core/src/sandbox-provider.ts`, `packages/provider-boat`, `packages/provider-modal` |
 | Docker host | `packages/docker-host/src/daemon.ts`, `packages/docker-host/src/service.ts`, `packages/docker-host/src/container-inventory.ts` |
 | Contract and surface | `packages/core/src/contract/index.ts`, `packages/mcp-server/src/control.ts`, `packages/mcp-server/src/tools.ts`, `packages/mcp-server/src/openapi.ts`, `packages/sdk`, `packages/cli`, `apps/dashboard`, `apps/ios` |
-| Accounts | `packages/core/src/credentials.ts`, `packages/core/src/models.ts`, `packages/core/src/account-binding-policy.ts`, `packages/mcp-server/src/runtime-account-admission.ts`, `packages/mcp-server/src/model-usage.ts` |
+| Accounts | `packages/core/src/credentials.ts`, `packages/core/src/models.ts`, `packages/core/src/pricing/model-catalog.json`, `packages/core/src/account-binding-policy.ts`, `packages/mcp-server/src/runtime-account-admission.ts`, `packages/mcp-server/src/model-usage.ts` |
 
 The server assembles HTTP, MCP, provider adapters and workers in
 `packages/mcp-server/src/serve.ts`. The runtime owns sandbox-local agent
@@ -55,5 +55,5 @@ the [migration checklist](database-migrations.md).
 | 2a · Machines and jobs | Provider lifecycle and launch paths still use provider-specific adapters and separate worker lanes. |
 | 2b · Public contract | Core defines a launch operation and schema. REST and MCP still use their own launch request definitions. |
 | 3 · State and events | Server modules persist lifecycle and turn data. Consumers still use cursor reads and polling. |
-| 4 · Accounts | Explicit bindings, admission checks, usage records and model catalogs exist. Ordered pools and USD budgets are target work. |
+| 4 · Accounts | Explicit bindings, admission checks, usage records and a generated model catalog exist. Ordered pools and USD budgets are target work. |
 | 5 · Triggers and routines | Scheduled routines have a dedicated worker. Goldens use provider snapshots; Docker also supports plain images. |
