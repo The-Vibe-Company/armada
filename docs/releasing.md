@@ -521,9 +521,15 @@ sequence. Until then, use the current workflow described above.
 
 1. **Prepare the version PR.** Always set `skip-github-release: true`.
    The [pinned action](https://github.com/googleapis/release-please-action/blob/5c625bfb5d1ff62eadeeb3772007f7f66fdcf071/src/index.ts#L136-L151)
-   leaves PR creation enabled. The release job takes its version and source
-   from publication intent. Release Please currently supplies the tag and
-   publication signal to the check job. Both dependencies must move together.
+   leaves PR creation enabled and stops emitting `release_created` and
+   `tag_name`. Replace both consumers with publication intent outputs
+   `version`, `sha`, `release_pr_number` and `mode` (prepare, candidate or
+   recover). Check out that SHA for checks and builds. Candidate mode can
+   publish only after checks, binaries and exact-source smoke succeed.
+   Recover mode uses the verified published SHA and digest. Prepare mode
+   may reconcile labels and run Release Please without entering deployment
+   environments. Production requires verified publication and successful
+   smoke for the selected SHA.
 2. **Freeze the candidate SHA at admission.** For an automatic run, use the
    current main head under the release lock, provided it still carries the
    triggering version and contains that version PR's merge commit. A same-version
@@ -564,9 +570,13 @@ sequence. Until then, use the current workflow described above.
    blocks while a merged release PR carries the pending label, even when a
    release exists. With release creation disabled, the publishing job owns
    [the label change](https://github.com/googleapis/release-please/blob/891bcf6253b390e39df9ff3e1c059a836bd39c98/src/manifest.ts#L1294-L1316).
-   A restart repairs the labels before the next PR preparation. Run preparation
-   after reconciliation or on the next eligible main push. Keep production
-   downstream of smoke and publication, and npm downstream of production.
+   On a published-version main push or recovery, reconcile before invoking
+   Release Please: resolve the original merged version PR from the version
+   change, verify the published tag contains its merge commit, then add and
+   remove the labels with the GitHub issue-label API. Already-correct labels
+   are success. If identity or the update cannot be verified, stop before
+   PR preparation so a later admission can repair it. Keep npm downstream
+   of production.
 
 ### Admission and recovery
 
@@ -594,4 +604,7 @@ exists without a release, require that exact SHA and smoke it again before
 creating the release. If the release already exists, both inputs must match
 the latest stable tag and its peeled commit. Reuse its published image digest,
 repair any interrupted label update and retry the protected downstream steps.
-A different SHA after publication requires a new version.
+A different SHA after publication requires a new version. This dispatch and
+its recovery guards are proposed for #2839. The scratch run exercised release
+history and labels through a simulated GitHub adapter. It provides no
+execution evidence for workflow dispatch, registry promotion or recovery.
