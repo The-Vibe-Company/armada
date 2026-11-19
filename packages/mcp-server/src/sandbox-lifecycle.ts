@@ -71,7 +71,6 @@ export async function transitionSandbox(tx: Sql, input: SandboxTransition) {
   return { kind: "applied", generation: Number(result.generation) } satisfies SandboxTransitionResult;
 }
 
-// The caller locks and authenticates the bound sandbox before accepting a daemon receipt.
 export async function recordDockerCleanupReceipt(
   tx: Sql,
   sandboxId: string,

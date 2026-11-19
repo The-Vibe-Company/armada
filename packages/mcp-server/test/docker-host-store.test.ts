@@ -1111,6 +1111,28 @@ test("uninstall drains bound machines through stop/delete ACKs before idempotent
   await denied(store.unregister(a.hostToken, randomUUID()));
 });
 
+test("a completed Docker delete proves exit and journals deletion of a failed sandbox", async () => {
+  const a = await boundFixture();
+  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+  await store.complete(a.hostToken, a.installationId, { requestId: a.create.requestId, outcome: "failed" });
+  const failed = await lifecycle(a.sandboxId);
+  expect(failed).toMatchObject({ status: "failed", stopped_at: null });
+
+  const remove = { requestId: randomUUID(), operation: "delete" as const };
+  await store.enqueueSandbox(a.owner, a.sandboxId, remove);
+  await store.complete(a.hostToken, a.installationId, { requestId: remove.requestId, outcome: "completed" });
+
+  expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "deleted", stopped_at: expect.anything() });
+  expect(
+    (
+      await database().query(
+        `select from_status, to_status, generation::text from public.sandbox_transitions where sandbox_id=$1`,
+        [a.sandboxId],
+      )
+    ).rows,
+  ).toEqual([{ from_status: "failed", to_status: "deleted", generation: String(failed?.lifecycle_generation) }]);
+});
+
 test("a completed uninstall ends the drain, so its snapshots report the revoked host instead of a retry", async () => {
   const db = database();
   const a = await boundFixture(),
