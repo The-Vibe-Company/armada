@@ -341,12 +341,18 @@ for (const outcome of [
         });
       }) as typeof fetch,
     });
+    const readStopIntent = async () =>
+      (
+        await db.query(
+          `select status,stop_requested_at,stop_generation,lifecycle_generation,provider_sandbox_id
+             from sandboxes where id=$1`,
+          [id],
+        )
+      ).rows[0];
+    const before = waitingForRetention ? await readStopIntent() : undefined;
     const worker = createSandboxLifecycle(sql, async () => provider);
     if (outcome === "snapshot-pending") {
       const fault = new Error("injected pending-retention settlement failure");
-      const before = (
-        await db.query("select status, stop_requested_at, stop_generation from sandboxes where id=$1", [id])
-      ).rows;
       for (const boundary of ["transition", "retry update", "commit"]) {
         const faultingSql: Sql = {
           query: sql.query,
@@ -367,9 +373,7 @@ for (const outcome of [
             }),
         };
         await expect(createSandboxLifecycle(faultingSql, async () => provider).reconcileOne()).rejects.toBe(fault);
-        expect(
-          (await db.query("select status, stop_requested_at, stop_generation from sandboxes where id=$1", [id])).rows,
-        ).toEqual(before);
+        expect(await readStopIntent()).toEqual(before);
         expect((await db.query("select id from sandbox_transitions where sandbox_id=$1", [id])).rows).toEqual([]);
         await db.query("update sandboxes set reconcile_lease_until=now()-interval '1 second' where id=$1", [id]);
       }
@@ -412,17 +416,35 @@ for (const outcome of [
       expect((await db.query("select id from sandbox_transitions where sandbox_id=$1", [id])).rows).toEqual([]);
     if (waitingForRetention) {
       expect(row.stop_time_finite).toBeNull();
+      const intent = await readStopIntent();
+      expect(intent).toEqual({
+        ...before,
+        status: "stopping",
+        stop_requested_at: expect.any(Date),
+        stop_generation: 1,
+      });
+      expect(await worker.reconcileOne()).toBe(false);
+      if (outcome === "snapshot-pending") {
+        await db.query("update sandboxes set reconcile_after=now()-interval '1 second' where id=$1", [id]);
+        expect(await worker.reconcileOne()).toBe(true);
+        expect(await readStopIntent()).toEqual(intent);
+      }
       expect(
         (
           await db.query(
-            `select t.actor,t.code,t.generation=s.lifecycle_generation as same_generation,
-                    s.stop_requested_at is not null and s.stop_generation=1 as requested_once
-               from sandbox_transitions t join sandboxes s on s.id=t.sandbox_id
-              where t.sandbox_id=$1 and t.from_status='running' and t.to_status='stopping'`,
+            `select actor,code,generation,from_status,to_status from sandbox_transitions where sandbox_id=$1`,
             [id],
           )
         ).rows,
-      ).toEqual([{ actor: "reconciler", code: "stop_requested", same_generation: true, requested_once: true }]);
+      ).toEqual([
+        {
+          actor: "reconciler",
+          code: "stop_requested",
+          generation: before?.lifecycle_generation,
+          from_status: "running",
+          to_status: "stopping",
+        },
+      ]);
       expect(row.lifecycle_error).toContain(
         outcome === "snapshot-pending" ? "snapshot is pending" : "no verified retained snapshot",
       );
