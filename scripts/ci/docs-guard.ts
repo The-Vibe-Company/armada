@@ -17,7 +17,7 @@ type DocsFile = {
   read: (() => Buffer) | undefined;
 };
 
-export function checkDocsFiles(files: Iterable<DocsFile>, allowlist: ReadonlyMap<string, string>): string[] {
+export function checkDocsFiles(files: Iterable<DocsFile>, allowlist: ReadonlyMap<string, string>) {
   const errors: string[] = [];
   const unused = new Set(allowlist.keys());
   for (const { path, size, read } of files) {
@@ -45,24 +45,21 @@ export function checkDocsFiles(files: Iterable<DocsFile>, allowlist: ReadonlyMap
   return errors.sort();
 }
 
-export function checkDocsAllowlist(
-  current: ReadonlyMap<string, string>,
-  baseline: ReadonlyMap<string, string>,
-): string[] {
+export function checkDocsAllowlist(current: ReadonlyMap<string, string>, baseline: ReadonlyMap<string, string>) {
   return [...current]
     .filter(([path, hash]) => baseline.get(path) !== hash)
     .map(([path]) => `${path}: docs allowlist entries can only be removed`)
     .sort();
 }
 
-function baseAllowlist(ref: string): Map<string, string> | undefined {
+function baseAllowlist(ref: string) {
   const git = (...args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8" });
   // The first commit installing the guard has no allowlist on its base.
   if (!git("ls-tree", ref, "--", allowlistPath)) return undefined;
   return new Map(Object.entries(JSON.parse(git("show", `${ref}:${allowlistPath}`)) as Record<string, string>));
 }
 
-function* docsFiles(relative = "docs"): Generator<DocsFile> {
+const docsFiles: (relative?: string) => Generator<DocsFile> = function* (relative = "docs") {
   const directory = join(root, relative);
   for (const name of readdirSync(directory)) {
     const path = `${relative}/${name}`;
@@ -71,7 +68,7 @@ function* docsFiles(relative = "docs"): Generator<DocsFile> {
     if (stat.isDirectory()) yield* docsFiles(path);
     else yield { path, size: stat.size, read: stat.isFile() ? () => readFileSync(absolute) : undefined };
   }
-}
+};
 
 if (import.meta.main) {
   const allowlist = new Map(Object.entries(legacyFiles));
