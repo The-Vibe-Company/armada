@@ -19,6 +19,7 @@ import {
   VaultError,
   type VaultStore,
 } from "@armada/core/server";
+import { rejectUnknownVaultRoute } from "./application-vault-control.ts";
 import type { Caller, SupabaseProject } from "./caller.ts";
 import { readBody, readVaultBody } from "./control-body.ts";
 import { authenticatedCaller, scopedOrg } from "./control-caller.ts";
@@ -226,6 +227,7 @@ export async function dispatchControlCommand(
 ): Promise<unknown> {
   const registered = controlRoutes.get(route);
   if (registered && "handler" in registered) return registered.handler({ route, caller, body, options, request });
+  rejectUnknownVaultRoute(route, options);
   scopedOrg(caller, optional(body, "org"));
   return undefined;
 }
