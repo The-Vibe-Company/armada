@@ -1,10 +1,8 @@
-/** Enough of `fetch` for these clients. Bun's `fetch` has extra methods a test double does not. */
 export type AuthFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
 export type TokenTable = "service" | "mcp";
 export type MemberRole = "admin" | "member";
 
-/** A token row. The hash is not on this type: callers already have it, and it should not be logged. */
 export interface TokenRecord {
   id: string;
   userId: string;
@@ -44,26 +42,15 @@ export interface OAuthCodeRecord {
   expiresAt: string;
 }
 
-/**
- * Persistence for tokens, clients and codes.
- *
- * The MCP server uses a service-role store (it can look a token up by hash).
- * The CLI uses a user-JWT store, so row level security still hides everyone else's tokens.
- * Timestamps are passed in: the caller owns the clock, and tests never sleep.
- */
 export interface AuthStore {
-  /** Fresh session existence/user status and memberships. Null means revoked or expired. */
   sessionMemberships?(userId: string, sessionId: string, now: string): Promise<Membership[] | null>;
-  /** Fresh token and membership in one database snapshot; never cached. */
   findTokenWithMembership?(kind: TokenTable, hash: string): Promise<{ token: TokenRecord; role: MemberRole } | null>;
   findTokenByHash(kind: TokenTable, hash: string): Promise<TokenRecord | null>;
   insertToken(
     kind: TokenTable,
     input: { userId: string; orgId: string; hash: string; label: string; createdAt: string },
   ): Promise<TokenRecord>;
-  /** Sets `revoked_at` when this user still has an active token with that id. */
   revokeToken(kind: TokenTable, input: { id: string; userId: string; revokedAt: string }): Promise<TokenRecord | null>;
-  /** Sets `revoked_at` when the presented secret matches an active token. */
   revokeTokenByHash(kind: TokenTable, hash: string, revokedAt: string): Promise<boolean>;
   listServiceTokens(userId: string): Promise<ListedToken[]>;
   membership(userId: string, orgId: string): Promise<Membership | null>;
@@ -71,8 +58,6 @@ export interface AuthStore {
   insertClient(input: { id: string; name: string; redirectUris: string[] }): Promise<void>;
   findClient(id: string): Promise<OAuthClientRecord | null>;
   insertCode(input: OAuthCodeRecord & { createdAt: string }): Promise<void>;
-  /** An unused, unexpired code. Does not mark it used. */
   findCode(hash: string, now: string): Promise<OAuthCodeRecord | null>;
-  /** Returns the code and marks it used, once. Null when it is missing, expired, or already used. */
   consumeCode(hash: string, now: string): Promise<OAuthCodeRecord | null>;
 }

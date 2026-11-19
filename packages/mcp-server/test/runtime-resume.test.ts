@@ -485,64 +485,150 @@ test("rollback of an observed Boat archive handoff remains recoverable", async (
   }
 });
 
-test("retained Modal resume enrols through bootstrap using the current deployment artifact", async () => {
-  const f = await stopped("codex", "modal");
-  try {
-    const retainedArtifact = { sha256: "a".repeat(64), bytes: 3 };
-    const currentArtifact = { sha256: "b".repeat(64), bytes: 5 };
-    let artifact = retainedArtifact;
-    let activated = false;
-    let enrolled: Awaited<ReturnType<typeof f.authority.enrol>> | undefined;
-    const physicalDeadline = new Date(Date.now() + 86_400_000);
-    const host = {
-      id: "modal",
-      get: async () =>
-        activated ? { state: "ready", providerState: "active", expiresAt: physicalDeadline } : { state: "stopped" },
-      async resumeRuntime() {
-        activated = true;
-      },
-      async startRuntime(request: { artifact: typeof artifact; enrolmentToken: string }) {
-        expect(activated).toBe(true);
-        artifact = request.artifact;
-        enrolled = await f.authority.enrol(request.enrolmentToken);
-        throw Error("Fixture ends after enrolment, before health");
-      },
-    } as unknown as import("@armada/provider-modal").ModalProvider;
-    const prepare = modalRuntimeResume({
-      sql: f.sql,
-      vault: createSqlVaultStore(f.sql),
-      key: ENCRYPTION_KEY,
-      hostFor: async () => host,
-      policy: modalRuntimeLaunch({
-        sql: f.sql,
-        encryptionKey: ENCRYPTION_KEY,
-        serverUrl: "https://armada.example",
-        architecture: "x64",
-        manifest: {
-          protocol: 1,
-          platform: "linux",
-          architecture: "x64",
-          libc: "glibc",
-          runtime: currentArtifact,
-          harnesses: { codex: { files: [{ path: "bin/codex" }] } },
+test.each(["request catch", "expired activity lease", "activation before ticket"])(
+  "an unenrolled Modal replacement recovers through %s and can enrol the current artifact",
+  async (handoff) => {
+    const f = await stopped("codex", "modal");
+    try {
+      const retainedArtifact = { sha256: "a".repeat(64), bytes: 3 };
+      const currentArtifact = { sha256: "b".repeat(64), bytes: 5 };
+      let artifact = retainedArtifact;
+      let activated = false;
+      let loseSettlement = false;
+      let rollbacks = 0;
+      const settlementFailure = Error("Lost logical settlement");
+      const expireActivity = () =>
+        f.db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [f.row.id]);
+      let activations = 0,
+        generation: number,
+        refused: string | undefined;
+      let enrolled: Awaited<ReturnType<typeof f.authority.enrol>> | undefined;
+      let refusedGeneration: number | undefined;
+      const physicalDeadline = new Date(Date.now() + 86_400_000);
+      const host = {
+        id: "modal",
+        async get() {
+          if (!activated) return { state: "stopped" };
+          if (activations === 1 && handoff === "activation before ticket") {
+            await expireActivity();
+            throw Error("Lost read after confirming activation");
+          }
+          return { state: "ready", providerState: "active", expiresAt: physicalDeadline };
         },
-      }),
-    });
-    const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, prepare);
-    await expect(resume(f.caller, input(f.row.id))).rejects.toMatchObject({ code: "conflict" });
-    expect(artifact).toEqual(currentArtifact);
-    expect(enrolled?.epoch).toBe("2");
-    const configuration = enrolled?.configuration as Record<string, unknown> | undefined;
-    expect(configuration?.grant).toEqual({ expiresAt: physicalDeadline.getTime() });
-    expect(configuration?.artifactManifest).toMatchObject({ runtime: currentArtifact });
-    expect(configuration?.restoreCheckpoint).toMatchObject({
-      epoch: f.cp.runtime.epoch,
-      watermark: f.cp.checkpoint.watermark,
-    });
-  } finally {
-    await f.close();
-  }
-});
+        async resumeRuntime(request: { generation: number }) {
+          generation = request.generation;
+          activations++;
+          if (activations === 1) refusedGeneration = generation;
+          activated = true;
+        },
+        async rollbackRuntimeResume(request: { sandboxId: string; generation: number }) {
+          expect(request).toEqual({ sandboxId: f.row.providerSandboxId, generation });
+          activated = false;
+          rollbacks++;
+          if (handoff === "request catch" && rollbacks === 1) loseSettlement = true;
+        },
+        async startRuntime(request: { artifact: typeof artifact; enrolmentToken: string; resumeGeneration: number }) {
+          expect(activated).toBe(true);
+          expect(request.resumeGeneration).toBe(generation);
+          artifact = request.artifact;
+          if (activations === 1) {
+            refused = request.enrolmentToken;
+            await expect(f.authority.enrol(refused, "999")).rejects.toThrow("runtime_protocol_unsupported");
+            if (handoff === "expired activity lease") await expireActivity();
+            throw Error("Replacement did not enrol");
+          }
+          await expect(
+            f.authority.issue({
+              sandboxId: f.row.id,
+              ownerId: f.caller.userId,
+              configuration: {},
+              expectedGeneration: refusedGeneration!,
+            }),
+          ).rejects.toThrow("runtime_enrolment_denied");
+          enrolled = await f.authority.enrol(request.enrolmentToken);
+          throw Error("Fixture ends after enrolment, before health");
+        },
+      } as unknown as import("@armada/provider-modal").ModalProvider;
+      const prepare = modalRuntimeResume({
+        sql: f.sql,
+        vault: createSqlVaultStore(f.sql),
+        key: ENCRYPTION_KEY,
+        hostFor: async () => host,
+        policy: modalRuntimeLaunch({
+          sql: f.sql,
+          encryptionKey: ENCRYPTION_KEY,
+          serverUrl: "https://armada.example",
+          architecture: "x64",
+          manifest: {
+            protocol: 1,
+            platform: "linux",
+            architecture: "x64",
+            libc: "glibc",
+            runtime: currentArtifact,
+            harnesses: { codex: { files: [{ path: "bin/codex" }] } },
+          },
+        }),
+      });
+      const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, prepare);
+      const first = input(f.row.id);
+      await expect(resume(f.caller, first)).rejects.toMatchObject({ code: "conflict" });
+      const store = createSqlData(f.sql)(f.caller).sandboxes;
+      const worker = createSandboxLifecycle(
+        {
+          ...f.sql,
+          async query(query, params) {
+            if (loseSettlement) {
+              loseSettlement = false;
+              throw settlementFailure;
+            }
+            return f.sql.query(query, params);
+          },
+        },
+        async () => host,
+      );
+      if (handoff !== "request catch") {
+        expect((await store.get(f.row.id))?.status).toBe("starting");
+        expect(
+          (
+            await f.db.query<{ parked: boolean }>(
+              "select reconcile_after='infinity'::timestamptz as parked from sandboxes where id=$1",
+              [f.row.id],
+            )
+          ).rows[0]?.parked,
+        ).toBe(true);
+        expect(await worker.reconcileOne()).toBe(true);
+      }
+      expect((await store.get(f.row.id))?.status).toBe("stopping");
+      if (handoff === "request catch") {
+        await expect(worker.reconcileOne()).rejects.toBe(settlementFailure);
+        expect((await store.get(f.row.id))?.status).toBe("stopping");
+        await f.db.query("update sandboxes set reconcile_lease_until=now()-interval '1 second' where id=$1", [
+          f.row.id,
+        ]);
+      }
+      expect(await worker.reconcileOne()).toBe(true);
+      expect(rollbacks).toBe(handoff === "request catch" ? 2 : 1);
+      expect((await store.get(f.row.id))?.status).toBe("stopped");
+      expect(Boolean(refused)).toBe(handoff !== "activation before ticket");
+      if (refused) await expect(f.authority.enrol(refused)).rejects.toThrow("runtime_enrolment_denied");
+      await expect(resume(f.caller, first)).rejects.toMatchObject({ code: "conflict" });
+      expect(activations).toBe(1);
+      await expect(resume(f.caller, input(f.row.id))).rejects.toMatchObject({ code: "conflict" });
+      expect(activations).toBe(2);
+      expect(artifact).toEqual(currentArtifact);
+      expect(enrolled?.epoch).toBe("2");
+      const configuration = enrolled?.configuration as Record<string, unknown> | undefined;
+      expect(configuration?.grant).toEqual({ expiresAt: physicalDeadline.getTime() });
+      expect(configuration?.artifactManifest).toMatchObject({ runtime: currentArtifact });
+      expect(configuration?.restoreCheckpoint).toMatchObject({
+        epoch: f.cp.runtime.epoch,
+        watermark: f.cp.checkpoint.watermark,
+      });
+    } finally {
+      await f.close();
+    }
+  },
+);
 
 test("failed GitHub reauthorization prevents resumed inference and can reconcile without reactivation", async () => {
   const f = await stopped();
@@ -786,6 +872,7 @@ test.each([false, true])(
           : [
               {
                 sandboxId: "physical",
+                generation: expect.any(Number),
                 ttlSeconds: expect.any(Number),
                 checkpoint: { epoch: "1", watermark: f.cp.checkpoint.watermark },
               },

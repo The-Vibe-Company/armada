@@ -17,16 +17,19 @@ export function modalRuntimeResume(
     admissionError: "modal_resume_admission_changed",
     binding: ["modal", "dialout"],
     maxTtlSeconds: PROVIDER_LIMITS.modal.maxTtlSeconds,
-    restore: (host, sandbox, ttlSeconds, signal, checkpoint, observe) =>
-      host.resumeRuntime(
+    restore: (host, sandbox, ttlSeconds, signal, checkpoint, observe) => {
+      if (sandbox.lifecycleGeneration === undefined) throw Error("modal_resume_generation_required");
+      return host.resumeRuntime(
         {
           sandboxId: sandbox.providerSandboxId,
           ttlSeconds,
+          generation: sandbox.lifecycleGeneration,
           checkpoint: { epoch: checkpoint.epoch, watermark: checkpoint.watermark },
         },
         signal,
         observe,
-      ),
+      );
+    },
     stop: (host, sandbox) => host.stop({ sandboxId: sandbox.providerSandboxId }),
   });
 }

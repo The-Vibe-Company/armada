@@ -2,12 +2,14 @@ import { expect, spyOn, test } from "bun:test";
 import type { RunnerRequest } from "@armada/agent-runtime";
 import type { Sql } from "@armada/core/server";
 import { encryptSecret } from "@armada/core/server";
+import { runtimeOperatorDiagnostic } from "../../core/src/runtime-operator-diagnostic.ts";
 import { controlFailureResponse } from "../src/control-errors.ts";
 import { createOutboundWebhooks } from "../src/outbound-webhooks.ts";
-import { continueRequest } from "../src/request-observability.ts";
+import { continueRequest, observeRequest } from "../src/request-observability.ts";
 import { createRuntimeAgent } from "../src/runtime-agent.ts";
 import { createRuntimeCommands, RuntimeCommandRefused } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
+import { createRuntimeProgress } from "../src/runtime-progress.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
@@ -1165,7 +1167,6 @@ test.each(["accepted", "rejected"] as const)(
   "a %s well-formed runtime reply is recorded under the request ID with the caller's own validation",
   async (kind) => {
     const { createRuntimeAgent } = await import("../src/runtime-agent.ts");
-    const { observeRequest } = await import("../src/request-observability.ts");
     const f = await fixture();
     const session = await f.enrol();
     const runtime = f.bridge();
@@ -1251,7 +1252,6 @@ test.each(["accepted", "rejected"] as const)(
 );
 
 test("a retried runtime command answered by its stored reply records no second provider call", async () => {
-  const { observeRequest } = await import("../src/request-observability.ts");
   const f = await fixture();
   const active = await f.enrol();
   const command = f.command("retried-reply");
@@ -1283,7 +1283,6 @@ test("a retried runtime command answered by its stored reply records no second p
 });
 
 test("a command answered before its first result read still records the fenced admission, unlike a later replay", async () => {
-  const { observeRequest } = await import("../src/request-observability.ts");
   const f = await fixture();
   const active = await f.enrol();
   const command = f.command("fast-reply");
@@ -1332,4 +1331,80 @@ test("a command answered before its first result read still records the fenced a
   );
   expect(replay.reply).toEqual(first.reply);
   expect(replay.records).toEqual([]);
+});
+
+test("authenticated boot and turn diagnostics retain their initiating request IDs and sanitized stack", async () => {
+  const f = await fixture();
+  const records: Record<string, unknown>[] = [];
+  const log = (line: string) => records.push(JSON.parse(line));
+  let grant: Awaited<ReturnType<typeof f.enrol>> | undefined;
+  const launch = await observeRequest(async () => {
+    grant = await f.enrol();
+    return new Response(null, { status: 204 });
+  }, log);
+  if (!grant) throw Error("Missing runtime grant");
+  const { runtimeToken, epoch } = grant;
+  const commandId = "follow_progress_fixture";
+  const command = {
+    version: 1 as const,
+    sandboxId: f.id,
+    requestId: commandId,
+    op: "prompt" as const,
+    input: { sandboxId: f.id, harness: "codex" as const, text: "fixture prompt" },
+  };
+  const accept = () =>
+    observeRequest(async () => {
+      await f.bridge().enqueue(f.people.owner, command);
+      return new Response(null, { status: 204 });
+    }, log);
+  const send = await accept();
+  const replay = await accept();
+  expect(replay?.headers.get("x-request-id")).not.toBe(send?.headers.get("x-request-id"));
+  const route = createRuntimeProgress(f.authority);
+  const report = (body: unknown) =>
+    observeRequest(
+      async () =>
+        (await route(
+          new Request("https://armada.test/api/runtime/progress", {
+            method: "POST",
+            headers: { authorization: `Bearer ${runtimeToken}`, "x-armada-runtime-epoch": epoch },
+            body: JSON.stringify(body),
+          }),
+        )) ?? undefined,
+      log,
+    );
+  const error = new Error("private_config_canary");
+  error.stack +=
+    "\n    at main (/private_config_canary/runtime/main.js:701:12)\n    at /$bunfs/root/armada-runtime:801:19";
+  const diagnostic = runtimeOperatorDiagnostic(error, "session_start_failed");
+  const unrelated = await report({ stage: "harness_turn_failed", commandId: "foreign_command", diagnostic });
+  expect(unrelated?.status).toBe(400);
+  const harness = await report({ stage: "harness_turn_failed", commandId, diagnostic });
+  expect(harness?.status).toBe(200);
+  const boot = await report({ stage: "runtime_failed", reason: "artifact_preparation" });
+  expect(boot?.status).toBe(200);
+  expect(records.filter((record) => record.event === "operator_failure")).toMatchObject([
+    {
+      phase: "runtime.harness_turn_failed",
+      errorClass: "HarnessError",
+      message: "session_start_failed",
+      stack: ["main.js:701:12", "armada-runtime:801:19"],
+      requestId: send?.headers.get("x-request-id"),
+      sandboxId: f.id,
+    },
+    {
+      phase: "runtime.boot",
+      message: "artifact_preparation",
+      requestId: launch?.headers.get("x-request-id"),
+      sandboxId: f.id,
+    },
+  ]);
+  expect(JSON.stringify(records)).not.toContain("private_config_canary");
+  expect((await f.db.query("select status,status_reason from sandboxes where id=$1", [f.id])).rows).toEqual([
+    {
+      status: "failed",
+      status_reason:
+        "Runtime artifact preparation failed. Ask the server operator to check published harness artifacts and container filesystem access before launching again.",
+    },
+  ]);
 });

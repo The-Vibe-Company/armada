@@ -13,18 +13,18 @@ export { ModalOperationError, modalFailureReceipt } from "./errors.ts";
 export { projectGitHubExecEnvironment, withTrustedHarnessPath } from "./exec-env.ts";
 export { executeGoldenCommand } from "./golden-exec.ts";
 export { createGenerationGrants } from "./grants.ts";
+export { settleDetachedModalCollections } from "./image-collection.ts";
 export { MODAL_CONFORMANCE_APP, MODAL_IMAGE_LOCK } from "./image-lock.ts";
 export { createModalIngestHandler } from "./ingest.ts";
+export { createModalInventory, modalDeploymentId } from "./inventory.ts";
+export { createModalMachine, type ModalMachineJournal, type ModalMachineOptions } from "./machine.ts";
 export type * from "./ports.ts";
 export { captureProcessBaseline, quiesceSandboxProcesses } from "./process-scope.ts";
 export {
-  createModalInventory,
   createModalProvider,
   type ModalPromptPhase,
   type ModalProvider,
   type ModalProviderOptions,
-  modalDeploymentId,
-  settleDetachedModalCollections,
 } from "./provider.ts";
 export { mergeModalResourceReceipts } from "./receipts.ts";
 export { prepareFilesystemSnapshot, prepareFreshFilesystem } from "./snapshot.ts";

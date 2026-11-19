@@ -4,8 +4,10 @@ import { launchInput } from "./launch.ts";
 import { launchOutput } from "./launch-response.ts";
 import { sandboxOperations } from "./sandbox.ts";
 import { sandboxCheckOperations } from "./sandbox-checks.ts";
+import { sandboxOutputOperations } from "./sandbox-outputs.ts";
 import { launchOptionsOperation, readLogsOperation } from "./sandbox-reads.ts";
 import { sandboxRestOperations } from "./sandbox-rest.ts";
+import { sandboxViewerOperations } from "./sandbox-viewer.ts";
 
 export type { CreatedInboundTrigger } from "./inbound-trigger.ts";
 export type { LaunchInput } from "./launch.ts";
@@ -20,14 +22,23 @@ export {
 } from "./sandbox.ts";
 
 export { sandboxCheckOperations } from "./sandbox-checks.ts";
+export { sandboxOutputOperations } from "./sandbox-outputs.ts";
 export { launchOptionsOperation, MAX_LOG_PAGES, readLogsOperation } from "./sandbox-reads.ts";
 export { sandboxExtensionLifetime, sandboxRestOperations } from "./sandbox-rest.ts";
+export { sandboxViewerOperations, VIEWER_ACCESS_DENIED } from "./sandbox-viewer.ts";
 
 export interface Operation<Input extends z.ZodType, Output extends z.ZodType | undefined = undefined> {
   readonly name: string;
   readonly route: { readonly method: string; readonly path: `/api/v1/${string}` };
-  readonly input: { readonly body: Input; readonly query?: z.ZodType };
+  readonly input: {
+    readonly body: Input;
+    readonly query?: z.ZodType;
+    readonly path?: Readonly<Record<string, z.ZodType>>;
+    readonly headers?: Readonly<Record<string, z.ZodType>>;
+  };
   readonly output: Output;
+  readonly outputMediaType?: string;
+  readonly errorOutput?: z.ZodType;
   readonly successStatus?: number;
   readonly readOnly: boolean;
   readonly destructive: boolean;
@@ -67,6 +78,12 @@ export const operations = {
   ...sandboxOperations,
   ...sandboxRestOperations,
   ...sandboxCheckOperations,
+  ...sandboxOutputOperations,
   launchOptions: launchOptionsOperation,
   readLogs: readLogsOperation,
+  createSandboxViewerToken: sandboxViewerOperations.mint,
+  readViewerLogs: sandboxViewerOperations.logs,
+  readViewerStatus: sandboxViewerOperations.status,
+  sendViewerPrompt: sandboxViewerOperations.send,
+  streamViewerEvents: sandboxViewerOperations.events,
 } as const;

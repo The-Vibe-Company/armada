@@ -10,9 +10,13 @@ import {
   VaultError,
 } from "@armada/core/server";
 import { createBoatOrchestratorProvider } from "./boat-delegated-access-provider.ts";
+import type { createRuntimeCommands } from "./runtime-commands.ts";
+import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import { bootstrapSandboxAccess } from "./sandbox-access-bootstrap.ts";
 import { orchestratorScopedMcpUrl } from "./sandbox-access-scoped-gateway.ts";
-import { createDelegatedTransport } from "./sandbox-access-transport.ts";
+import { createDelegatedTransport, createEnrolledDelegatedTransport } from "./sandbox-access-transport.ts";
+
+const workerScopes = ["worker:launch", "worker:read", "worker:message", "worker:stop", "worker:extend"] as const;
 
 export interface SandboxArmadaAccessOptions {
   maxActiveChildren?: number;
@@ -20,8 +24,14 @@ export interface SandboxArmadaAccessOptions {
 
 /** Ordinary sandbox authority. There is deliberately no orchestrator identity,
  * orchestration policy, owner token or ambient access for unselected sandboxes. */
-export function createSandboxArmadaAccess(input: { sql: Sql; encryptionKey: string; publicUrl: string }) {
+export function createSandboxArmadaAccess(input: {
+  sql: Sql;
+  encryptionKey: string;
+  publicUrl: string;
+  commands?: Pick<ReturnType<typeof createRuntimeCommands>, "call">;
+}) {
   const { sql } = input;
+  const enrolments = createRuntimeEnrolments(sql, input.encryptionKey);
   const authority = new DelegatedAuthority(sql, async (tx, account) => {
     await resolveCredentials(createSqlVaultStore(tx), input.encryptionKey, account);
   });
@@ -93,11 +103,76 @@ export function createSandboxArmadaAccess(input: { sql: Sql; encryptionKey: stri
         mcpUrl: orchestratorScopedMcpUrl(input.publicUrl),
       }),
       {
-        scopes: ["worker:launch", "worker:read", "worker:message", "worker:stop", "worker:extend"],
+        scopes: [...workerScopes],
         goldenIds: parent.golden_ids,
         credentialIds: parent.credential_ids,
       },
     );
+  }
+  async function prepare(
+    provider: Provider,
+    sandbox: SandboxRecord,
+    actor: GoldenActor,
+    options: SandboxArmadaAccessOptions,
+  ) {
+    const credentialId = sandbox.credentialId;
+    if (
+      !credentialId ||
+      sandbox.visibility !== "private" ||
+      sandbox.ownerId !== actor.userId ||
+      sandbox.orgId !== actor.orgId
+    )
+      throw new VaultError("invalid", "Delegated access requires a private sandbox and a bound model account.");
+    const consent = { scopes: [...workerScopes], goldenIds: [sandbox.goldenId], credentialIds: [credentialId] };
+    async function register(tx: Sql) {
+      await tx.query(
+        `insert into public.armada_access_parents(id,kind,org_id,owner_id,sandbox_id,state,golden_ids,credential_ids)
+        values($1,'sandbox',$2,$3,$1,'ready',$4::uuid[],$5::uuid[])`,
+        [sandbox.id, actor.orgId, actor.userId, consent.goldenIds, consent.credentialIds],
+      );
+      await tx.query(`insert into public.orchestrator_lifecycle(orchestrator_id,max_active_children) values($1,$2)`, [
+        sandbox.id,
+        options.maxActiveChildren ?? 3,
+      ]);
+    }
+    const bootstrap = {
+      sandboxId: sandbox.providerSandboxId,
+      projectDir: sandbox.repositoryDir ? `${GOLDEN_ROOT}/${sandbox.repositoryDir}` : GOLDEN_ROOT,
+      harness: sandbox.harness,
+      skillRevision: "0".repeat(40),
+    };
+    if (sandbox.runtimeTransport === "dialout") {
+      if (!input.commands) throw new VaultError("unavailable", "Scoped runtime delivery is unavailable.");
+      const binding = await enrolments.withOwner(sandbox.id, actor.userId, async (tx, scope) => {
+        const row = (
+          await tx.query<{ generation: string }>(
+            `select lifecycle_generation::text as generation from public.sandboxes
+             where id=$1 and org_id=$2 and provider=$3 and provider_sandbox_id=$4 and runtime_transport='dialout'
+             and visibility='private' and golden_id=$5 and credential_id=$6`,
+            [sandbox.id, actor.orgId, provider.id, sandbox.providerSandboxId, sandbox.goldenId, credentialId],
+          )
+        ).rows[0];
+        if (!row) throw new VaultError("conflict", "The scoped runtime placement changed.");
+        await register(tx);
+        return { epoch: scope.epoch, lifecycleGeneration: row.generation };
+      });
+      const transport = createEnrolledDelegatedTransport(input.commands, {
+        ownerId: actor.userId,
+        sandboxId: sandbox.id,
+        epoch: binding.epoch,
+        lifecycleGeneration: binding.lifecycleGeneration,
+        mcpUrl: orchestratorScopedMcpUrl(input.publicUrl),
+      });
+      await authority.installEpoch(sandbox.id, transport, consent);
+      return;
+    }
+    if (sandbox.boatRuntime) throw new VaultError("invalid", "Scoped access requires supported runtime placement.");
+    if (!sql.transaction) throw new VaultError("unavailable", "Scoped access requires a transaction.");
+    await sql.transaction(register);
+    await bootstrapSandboxAccess(native(provider), {
+      ...bootstrap,
+      configureAuthority: () => install(provider, sandbox.providerSandboxId),
+    });
   }
   async function scrub(provider: Provider, id: string, cleanup?: "stop" | "delete") {
     const parent = await scope(provider, id);
@@ -127,31 +202,7 @@ export function createSandboxArmadaAccess(input: { sql: Sql; encryptionKey: stri
   return {
     beforePrompt: (provider: Provider, id: string) => install(provider, id, true),
     beforeSnapshot: scrub,
-    async prepare(provider: Provider, sandbox: SandboxRecord, actor: GoldenActor, options: SandboxArmadaAccessOptions) {
-      if (
-        !sandbox.credentialId ||
-        sandbox.visibility !== "private" ||
-        sandbox.ownerId !== actor.userId ||
-        sandbox.orgId !== actor.orgId
-      )
-        throw new VaultError("invalid", "Delegated access requires a private sandbox and a bound model account.");
-      await sql.query(
-        `insert into public.armada_access_parents(id,kind,org_id,owner_id,sandbox_id,state,golden_ids,credential_ids)
-        values($1,'sandbox',$2,$3,$1,'ready',$4::uuid[],$5::uuid[])`,
-        [sandbox.id, actor.orgId, actor.userId, [sandbox.goldenId], [sandbox.credentialId]],
-      );
-      await sql.query(`insert into public.orchestrator_lifecycle(orchestrator_id,max_active_children) values($1,$2)`, [
-        sandbox.id,
-        options.maxActiveChildren ?? 3,
-      ]);
-      await bootstrapSandboxAccess(native(provider), {
-        sandboxId: sandbox.providerSandboxId,
-        projectDir: sandbox.repositoryDir ? `${GOLDEN_ROOT}/${sandbox.repositoryDir}` : GOLDEN_ROOT,
-        harness: sandbox.harness,
-        skillRevision: "0".repeat(40),
-        configureAuthority: () => install(provider, sandbox.providerSandboxId),
-      });
-    },
+    prepare,
     wrap(provider: Provider): Provider {
       return new Proxy(provider, {
         get(target, key) {

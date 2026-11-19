@@ -1,6 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
 import { createAccountControl } from "../src/lib/account-control";
-import { controlPost } from "../src/lib/control";
 import { connectionTestOutcome, matchesConnectionTestSandbox } from "../src/lib/model-connection-check";
 
 const expected = { id: "sandbox", ownerId: "owner", orgId: "org", accountId: "account", version: 3 };
@@ -64,32 +63,19 @@ test("account check client sends no secret/config and closes untrusted result fi
 });
 
 test("dashboard check's deadline includes the runtime's 15-second response", async () => {
-  const timers: { ms: number; controller: AbortController }[] = [];
-  const timer = spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
-    const controller = new AbortController();
-    timers.push({ ms, controller });
-    return controller.signal;
-  });
-  const options = {
-    serverUrl: "https://armada.example/mcp",
-    token: "synthetic-session",
-    fetch: async (_input: string | URL | Request, init?: RequestInit) => {
-      for (const entry of timers) if (entry.ms <= 15000) entry.controller.abort();
-      init?.signal?.throwIfAborted();
-      return Response.json({ test: { ok: false, status: null, error: "connection_failed", code: null } });
-    },
-  };
+  const deadline = spyOn(AbortSignal, "timeout");
   try {
-    // The old generic-budget call cannot carry a response arriving at fifteen seconds.
-    await expect(controlPost(options, "/api/v1/sandbox/test-model-connection", {}, "checks")).rejects.toThrow();
-    const result = await createAccountControl(options).testConnection({
-      id: "sandbox",
-      model: "deployment",
-      org: "org",
+    const control = createAccountControl({
+      serverUrl: "https://armada.example/mcp",
+      token: "synthetic-session",
+      fetch: async () => Response.json({ test: { ok: false, status: null, error: "connection_failed", code: null } }),
     });
+    const result = await control.testConnection({ id: "sandbox", model: "deployment", org: "org" });
     expect(result).toEqual({ ok: false, status: null, error: "connection_failed", code: null });
+    expect(deadline).toHaveBeenCalledTimes(1);
+    expect(deadline.mock.calls[0]?.[0]).toBeGreaterThan(15000);
   } finally {
-    timer.mockRestore();
+    deadline.mockRestore();
   }
 });
 

@@ -1,73 +1,123 @@
 "use client";
 
-import { ChevronDownIcon, CircleAlertIcon } from "lucide-react";
+import { CircleAlertIcon } from "lucide-react";
 import Link from "next/link";
 import { useRef, useState } from "react";
 import { ConnectionStatusBadge } from "@/components/connections";
-import type { useLaunchAccess } from "@/components/launch-dialog";
-import { useLaunchPhone } from "@/components/launch-surface";
+import { LaunchChip } from "@/components/launch-composer";
+import type { LaunchConnections } from "@/components/launch-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
-import { connectAction, launchBlocker, type McpConnection } from "@/lib/connections";
+import { connectAction, launchBlocker, launchDefaults, type McpConnection, unreadyDefaults } from "@/lib/connections";
+import { launchToolsSummary } from "@/lib/launch-composer";
 import { launchToolGroups, rememberLaunchToolSelection, toolInitials } from "@/lib/launch-tools";
 
-export function LaunchTools({ access, idPrefix }: { access: ReturnType<typeof useLaunchAccess>; idPrefix: string }) {
-  const phone = useLaunchPhone();
-  const warning = access.held || access.unavailable;
-  const summary = access.unavailable
-    ? "Unavailable"
-    : access.selectedTools.map((tool) => tool.name).join(", ") || "None";
-  const trigger = (
-    <Button type="button" variant="outline" size="sm" className="max-w-full pointer-coarse:min-h-11">
-      Tools
-      {warning && <CircleAlertIcon aria-hidden="true" className="text-warning" />}
-      {access.held && <span className="sr-only">Needs attention</span>}
-      {access.selectedTools.slice(0, 3).map((tool) => (
-        <span
-          key={tool.id}
-          aria-hidden="true"
-          className="grid size-5 shrink-0 place-items-center rounded bg-muted text-[10px]"
-        >
-          {toolInitials(tool.name)}
-        </span>
-      ))}
-      <span className="truncate font-normal text-muted-foreground">{summary}</span>
-      <ChevronDownIcon aria-hidden="true" />
-    </Button>
+export function useLaunchAccess(connections: LaunchConnections) {
+  const [picked, setPicked] = useState<string[] | null>(null);
+  const [waived, setWaived] = useState<readonly string[]>([]);
+  const list = "connections" in connections ? connections.connections : [];
+  const blocked = unreadyDefaults(list);
+  const chosen = picked ?? launchDefaults(list).filter((item) => !blocked.some((connection) => connection.id === item));
+  const unready = blocked.filter((connection) => !waived.includes(connection.id));
+
+  function toggle(connectionId: string, on: boolean) {
+    setPicked(on ? [...chosen, connectionId] : chosen.filter((item) => item !== connectionId));
+  }
+
+  const alerts = (onContinue: () => void, idPrefix: string) => (
+    <>
+      {unready.length > 0 && (
+        <div data-unready-defaults className="contents">
+          <p
+            id={`${idPrefix}-held`}
+            role="alert"
+            tabIndex={-1}
+            className="flex basis-full items-center gap-2 text-xs text-warning"
+          >
+            <CircleAlertIcon className="size-4 shrink-0" />
+            {unready.map((connection) => connection.name).join(", ")}{" "}
+            {unready.length === 1
+              ? "is on by default but is not connected."
+              : "are on by default but are not connected."}
+          </p>
+          <Button asChild type="button" variant="outline" size="sm">
+            <Link href="/tools">Reconnect</Link>
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setWaived([...waived, ...unready.map((connection) => connection.id)]);
+              setPicked(chosen);
+              onContinue();
+            }}
+          >
+            Launch without {unready.length === 1 ? "it" : "them"}
+          </Button>
+        </div>
+      )}
+      {"unavailable" in connections && (
+        <p role="alert" className="rounded-md border border-destructive/40 p-3 text-sm text-destructive">
+          Connections could not be loaded: {connections.unavailable} A launch uses your default connections, and is
+          refused if one of them is not connected.
+        </p>
+      )}
+    </>
   );
-  const menu = (
+
+  const fields = (idPrefix: string) => (
     <ToolMenu
       idPrefix={idPrefix}
-      tools={access.list}
-      unavailable={access.unavailable}
-      chosen={access.chosen}
-      changed={access.changed}
-      onChange={access.toggle}
-      onReset={access.reset}
+      tools={list}
+      unavailable={"unavailable" in connections}
+      chosen={chosen}
+      onChange={toggle}
+      changed={picked !== null}
+      onReset={() => {
+        setPicked(null);
+        setWaived([]);
+      }}
     />
   );
-  return phone ? (
-    <Sheet>
-      <SheetTrigger asChild>{trigger}</SheetTrigger>
-      <SheetContent side="bottom" aria-describedby={undefined} className="max-h-[85dvh] overflow-y-auto p-4">
-        <SheetTitle>Tools</SheetTitle>
-        {menu}
-      </SheetContent>
-    </Sheet>
-  ) : (
-    <Popover modal>
-      <PopoverTrigger asChild>{trigger}</PopoverTrigger>
-      <PopoverContent
-        align="start"
-        aria-label="Tools"
-        className="max-h-[var(--radix-popover-content-available-height)] w-80 overflow-y-auto p-3"
-      >
-        {menu}
-      </PopoverContent>
-    </Popover>
+  const selectedTools = list.filter((connection) => chosen.includes(connection.id) && !launchBlocker(connection));
+
+  return {
+    explicit: picked !== null && "connections" in connections,
+    selected: selectedTools.length,
+    selectedTools,
+    inputs: selectedTools.map((connection) => (
+      <input key={connection.id} type="hidden" name="connections" value={connection.id} />
+    )),
+    selectedName: selectedTools[0]?.name,
+    held: unready.length > 0,
+    unavailable: "unavailable" in connections,
+    alerts,
+    fields,
+  };
+}
+
+export function LaunchTools({ access, idPrefix }: { access: ReturnType<typeof useLaunchAccess>; idPrefix: string }) {
+  const names = access.selectedTools.map((tool) => tool.name);
+  const summary = names.length > 1 ? names.join(", ") : launchToolsSummary(access);
+  return (
+    <LaunchChip
+      title="Tools"
+      label={`Tools · ${summary}`}
+      warning={access.held || access.unavailable}
+      prefix={
+        access.selectedTools.length
+          ? access.selectedTools.slice(0, 3).map((tool) => (
+              <span key={tool.id} className="grid size-5 place-items-center rounded bg-muted text-[10px] font-medium">
+                {toolInitials(tool.name)}
+              </span>
+            ))
+          : undefined
+      }
+    >
+      {access.fields(idPrefix)}
+    </LaunchChip>
   );
 }
 

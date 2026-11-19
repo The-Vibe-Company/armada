@@ -7546,6 +7546,7 @@
             "required": true,
             "description": "The sandbox id, a lowercase UUID.",
             "schema": {
+              "$schema": "http://json-schema.org/draft-07/schema#",
               "type": "string",
               "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
             }
@@ -7565,13 +7566,8 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
                   "type": "object",
-                  "required": [
-                    "directory",
-                    "files",
-                    "limits"
-                  ],
-                  "additionalProperties": false,
                   "properties": {
                     "directory": {
                       "type": "string",
@@ -7579,48 +7575,41 @@
                     },
                     "limits": {
                       "type": "object",
+                      "properties": {
+                        "maxFiles": {
+                          "type": "number",
+                          "const": 32
+                        },
+                        "maxFileBytes": {
+                          "type": "number",
+                          "const": 33554432
+                        },
+                        "maxSandboxBytes": {
+                          "type": "number",
+                          "const": 67108864
+                        },
+                        "maxOrgBytes": {
+                          "type": "number",
+                          "const": 1073741824
+                        }
+                      },
                       "required": [
                         "maxFiles",
                         "maxFileBytes",
                         "maxSandboxBytes",
                         "maxOrgBytes"
                       ],
-                      "additionalProperties": false,
-                      "properties": {
-                        "maxFiles": {
-                          "type": "integer",
-                          "const": 32
-                        },
-                        "maxFileBytes": {
-                          "type": "integer",
-                          "const": 33554432
-                        },
-                        "maxSandboxBytes": {
-                          "type": "integer",
-                          "const": 67108864
-                        },
-                        "maxOrgBytes": {
-                          "type": "integer",
-                          "const": 1073741824
-                        }
-                      }
+                      "additionalProperties": false
                     },
                     "unavailable": {
                       "type": "string",
                       "const": "collector_unsupported"
                     },
                     "files": {
-                      "type": "array",
                       "maxItems": 32,
+                      "type": "array",
                       "items": {
                         "type": "object",
-                        "required": [
-                          "name",
-                          "size",
-                          "sha256",
-                          "updatedAt"
-                        ],
-                        "additionalProperties": false,
                         "properties": {
                           "name": {
                             "type": "string",
@@ -7633,11 +7622,11 @@
                             "maximum": 9007199254740991
                           },
                           "sha256": {
+                            "description": "Hex SHA-256 digest of the file bytes. Null for skipped files.",
                             "type": [
                               "string",
                               "null"
-                            ],
-                            "description": "Hex SHA-256 digest of the file bytes. Null for skipped files."
+                            ]
                           },
                           "skipped": {
                             "type": "string",
@@ -7649,12 +7638,26 @@
                           },
                           "updatedAt": {
                             "type": "string",
-                            "format": "date-time"
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
                           }
-                        }
+                        },
+                        "required": [
+                          "name",
+                          "size",
+                          "sha256",
+                          "updatedAt"
+                        ],
+                        "additionalProperties": false
                       }
                     }
-                  }
+                  },
+                  "required": [
+                    "directory",
+                    "limits",
+                    "files"
+                  ],
+                  "additionalProperties": false
                 }
               }
             }
@@ -7666,10 +7669,39 @@
                 "schema": {
                   "anyOf": [
                     {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "string",
+                          "enum": [
+                            "unauthorized",
+                            "not_found",
+                            "Use GET"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "error"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
                       "$ref": "#/components/schemas/Failure"
                     },
                     {
-                      "$ref": "#/components/schemas/OutputFailure"
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "error"
+                      ],
+                      "properties": {
+                        "error": {
+                          "const": "internal"
+                        }
+                      }
                     }
                   ]
                 }
@@ -7683,10 +7715,39 @@
                 "schema": {
                   "anyOf": [
                     {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "string",
+                          "enum": [
+                            "unauthorized",
+                            "not_found",
+                            "Use GET"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "error"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
                       "$ref": "#/components/schemas/Failure"
                     },
                     {
-                      "$ref": "#/components/schemas/OutputFailure"
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "error"
+                      ],
+                      "properties": {
+                        "error": {
+                          "const": "internal"
+                        }
+                      }
                     }
                   ]
                 }
@@ -7700,10 +7761,39 @@
                 "schema": {
                   "anyOf": [
                     {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "string",
+                          "enum": [
+                            "unauthorized",
+                            "not_found",
+                            "Use GET"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "error"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
                       "$ref": "#/components/schemas/Failure"
                     },
                     {
-                      "$ref": "#/components/schemas/OutputFailure"
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "error"
+                      ],
+                      "properties": {
+                        "error": {
+                          "const": "internal"
+                        }
+                      }
                     }
                   ]
                 }
@@ -7729,6 +7819,7 @@
             "required": true,
             "description": "The sandbox id, a lowercase UUID.",
             "schema": {
+              "$schema": "http://json-schema.org/draft-07/schema#",
               "type": "string",
               "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
             }
@@ -7738,7 +7829,9 @@
             "in": "header",
             "description": "One byte range, for example bytes=0-1023.",
             "schema": {
-              "type": "string"
+              "$schema": "http://json-schema.org/draft-07/schema#",
+              "type": "string",
+              "pattern": "^bytes=(?:\\d+-\\d*|-\\d+)$"
             }
           },
           {
@@ -7746,6 +7839,7 @@
             "in": "header",
             "description": "Apply the Range only when the file's ETag matches.",
             "schema": {
+              "$schema": "http://json-schema.org/draft-07/schema#",
               "type": "string"
             }
           },
@@ -7755,6 +7849,7 @@
             "required": true,
             "description": "The file name from the outputs list, percent-encoded as one path segment.",
             "schema": {
+              "$schema": "http://json-schema.org/draft-07/schema#",
               "type": "string",
               "minLength": 1
             }
@@ -7840,10 +7935,41 @@
                 "schema": {
                   "anyOf": [
                     {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "string",
+                          "enum": [
+                            "unauthorized",
+                            "not_found",
+                            "Use GET",
+                            "invalid_name",
+                            "unavailable"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "error"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
                       "$ref": "#/components/schemas/Failure"
                     },
                     {
-                      "$ref": "#/components/schemas/OutputFailure"
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "error"
+                      ],
+                      "properties": {
+                        "error": {
+                          "const": "internal"
+                        }
+                      }
                     }
                   ]
                 }
@@ -7857,10 +7983,41 @@
                 "schema": {
                   "anyOf": [
                     {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "string",
+                          "enum": [
+                            "unauthorized",
+                            "not_found",
+                            "Use GET",
+                            "invalid_name",
+                            "unavailable"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "error"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
                       "$ref": "#/components/schemas/Failure"
                     },
                     {
-                      "$ref": "#/components/schemas/OutputFailure"
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "error"
+                      ],
+                      "properties": {
+                        "error": {
+                          "const": "internal"
+                        }
+                      }
                     }
                   ]
                 }
@@ -7874,10 +8031,41 @@
                 "schema": {
                   "anyOf": [
                     {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "string",
+                          "enum": [
+                            "unauthorized",
+                            "not_found",
+                            "Use GET",
+                            "invalid_name",
+                            "unavailable"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "error"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
                       "$ref": "#/components/schemas/Failure"
                     },
                     {
-                      "$ref": "#/components/schemas/OutputFailure"
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "error"
+                      ],
+                      "properties": {
+                        "error": {
+                          "const": "internal"
+                        }
+                      }
                     }
                   ]
                 }
@@ -7901,10 +8089,41 @@
                 "schema": {
                   "anyOf": [
                     {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "string",
+                          "enum": [
+                            "unauthorized",
+                            "not_found",
+                            "Use GET",
+                            "invalid_name",
+                            "unavailable"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "error"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
                       "$ref": "#/components/schemas/Failure"
                     },
                     {
-                      "$ref": "#/components/schemas/OutputFailure"
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "error"
+                      ],
+                      "properties": {
+                        "error": {
+                          "const": "internal"
+                        }
+                      }
                     }
                   ]
                 }
@@ -7918,10 +8137,41 @@
                 "schema": {
                   "anyOf": [
                     {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "string",
+                          "enum": [
+                            "unauthorized",
+                            "not_found",
+                            "Use GET",
+                            "invalid_name",
+                            "unavailable"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "error"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
                       "$ref": "#/components/schemas/Failure"
                     },
                     {
-                      "$ref": "#/components/schemas/OutputFailure"
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "error"
+                      ],
+                      "properties": {
+                        "error": {
+                          "const": "internal"
+                        }
+                      }
                     }
                   ]
                 }
@@ -7940,18 +8190,6 @@
       }
     },
     "schemas": {
-      "OutputFailure": {
-        "type": "object",
-        "required": [
-          "error"
-        ],
-        "properties": {
-          "error": {
-            "type": "string",
-            "description": "Bare failure code answered by the outputs routes, for example not_found or invalid_name."
-          }
-        }
-      },
       "DrainRefusal": {
         "type": "object",
         "required": [

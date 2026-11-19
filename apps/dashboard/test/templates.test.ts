@@ -361,7 +361,7 @@ describe("template launch", () => {
         return Response.json({ state: "succeeded", id: REGION, manifest: { variables: { APP_REGION: "eu" } } });
       }) as typeof fetch,
     });
-    const deadline = spyOn(AbortSignal, "timeout").mockReturnValue(new AbortController().signal);
+    const deadline = spyOn(AbortSignal, "timeout");
     let outcome: Awaited<ReturnType<typeof control.launch>>;
     try {
       outcome = await control.launch({ org: ORG, id: TEMPLATE, revision: 2, requestKey: "dashboard:k" });

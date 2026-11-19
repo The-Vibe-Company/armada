@@ -22,7 +22,6 @@ interface StoredMember extends Membership {
   userId: string;
 }
 
-/** In-memory store for tests. `debugSnapshot` is the JSON that must never contain a raw token. */
 export interface MemoryAuthStore extends AuthStore {
   addMembership(userId: string, membership: Membership): void;
   debugSnapshot(): string;

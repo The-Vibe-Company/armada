@@ -3,15 +3,10 @@ import {
   CONTROL_BODY_MAX_BYTES,
   controlBodyMaxBytes,
   MACHINE_SIZES,
-  OUTPUT_DIRECTORY,
-  OUTPUT_MAX_FILE_BYTES,
-  OUTPUT_MAX_FILES,
-  OUTPUT_MAX_ORG_BYTES,
-  OUTPUT_MAX_SANDBOX_BYTES,
   VERSION,
   vaultControlRoute,
 } from "@armada/core";
-import { launch, operations, templateLaunchResponse } from "@armada/core/contract";
+import { launch, operations, sandboxOutputOperations, templateLaunchResponse } from "@armada/core/contract";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { z } from "zod";
@@ -24,7 +19,7 @@ import {
   GOLDEN_CAPABILITIES_RESPONSE,
 } from "./golden-rest-schemas.ts";
 import { GOLDEN_LIST_RESPONSE, requestJsonSchema, responseJsonSchema } from "./launch-response-schemas.ts";
-import { PUBLISHED_REST_GET_ROUTES, PUBLISHED_REST_ROUTES } from "./public-rest-routes.ts";
+import { PUBLISHED_REST_ROUTES } from "./public-rest-routes.ts";
 import { deleteSandboxAliasContract } from "./sandbox-rest-controls.ts";
 import { DRAIN_REFUSAL } from "./server-request-drain.ts";
 import { createRestToolServer, type ToolContext } from "./tools.ts";
@@ -117,36 +112,47 @@ function boundByBody(schema: Record<string, unknown>, field: string, maxBytes: n
   property.maxLength = Math.min(typeof property.maxLength === "number" ? property.maxLength : maxBytes, maxBytes);
   if (description) property.description = description;
 }
-/** Failures of the outputs routes: the server's bare code, or the dashboard endpoint's typed failure. */
-const OUTPUT_FAILURE = {
-  "application/json": {
-    schema: { anyOf: [{ $ref: "#/components/schemas/Failure" }, { $ref: "#/components/schemas/OutputFailure" }] },
-  },
-};
+/** The mounted route, dashboard proxy, and ingress each have their own failure body. */
+function outputFailure(errorOutput: z.ZodType) {
+  return {
+    "application/json": {
+      schema: {
+        anyOf: [
+          responseJsonSchema(errorOutput),
+          { $ref: "#/components/schemas/Failure" },
+          { $ref: "#/components/schemas/DrainRefusal" },
+          { type: "object", required: ["error"], properties: { error: { const: "internal" } } },
+        ],
+      },
+    },
+  };
+}
+const { listSandboxOutputs, readSandboxOutput } = sandboxOutputOperations;
 const SANDBOX_ID_PARAMETER = {
   name: "id",
   in: "path",
   required: true,
   description: "The sandbox id, a lowercase UUID.",
-  schema: { type: "string", pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
+  schema: requestJsonSchema(listSandboxOutputs.input.path.id),
 };
-const OUTPUT_ACCESS =
-  " Only the sandbox owner or an org admin can read it, the sandbox must not be deleted or application-secret tainted, and stopped compute is never read: the last snapshot taken while compute was live is served. See docs/sandbox-outputs.md.";
-const OUTPUT_COMMON_RESPONSES = {
-  "401": { description: "Missing or invalid bearer.", content: OUTPUT_FAILURE },
-  "404": {
-    description:
-      "No such sandbox or file, or the caller is neither its owner nor an org admin, or the sandbox is deleted or application-secret tainted.",
-    content: OUTPUT_FAILURE,
-  },
-  default: { description: "Public API failure", content: OUTPUT_FAILURE },
-};
+const downloadFailure = outputFailure(readSandboxOutput.errorOutput);
+function outputCommonResponses(content: ReturnType<typeof outputFailure>) {
+  return {
+    "401": { description: "Missing or invalid bearer.", content },
+    "404": {
+      description:
+        "No such sandbox or file, or the caller is neither its owner nor an org admin, or the sandbox is deleted or application-secret tainted.",
+      content,
+    },
+    default: { description: "Public API failure", content },
+  };
+}
 /** Declared output snapshots (`sandbox-outputs.ts`): GET, path parameters, no request body. */
-const OUTPUT_OPERATIONS: Record<(typeof PUBLISHED_REST_GET_ROUTES)[number], object> = {
-  "sandboxes/{id}/outputs": {
-    get: {
+const OUTPUT_OPERATIONS = {
+  [listSandboxOutputs.route.path]: {
+    [listSandboxOutputs.route.method.toLowerCase()]: {
       operationId: "sandbox_outputs_list",
-      description: `The files of the sandbox's last output snapshot, from its declared outputs directory (${OUTPUT_DIRECTORY} on every provider), in name order.${OUTPUT_ACCESS} A sandbox.output.available webhook names a new or changed file.`,
+      description: listSandboxOutputs.description,
       security: [{ serviceToken: [] }],
       parameters: [SANDBOX_ID_PARAMETER],
       responses: {
@@ -155,56 +161,18 @@ const OUTPUT_OPERATIONS: Record<(typeof PUBLISHED_REST_GET_ROUTES)[number], obje
           headers: { "Cache-Control": { schema: { type: "string", const: "private, no-store" } } },
           content: {
             "application/json": {
-              schema: {
-                type: "object",
-                required: ["directory", "files", "limits"],
-                additionalProperties: false,
-                properties: {
-                  directory: { type: "string", description: "The declared outputs directory in the sandbox." },
-                  limits: {
-                    type: "object",
-                    required: ["maxFiles", "maxFileBytes", "maxSandboxBytes", "maxOrgBytes"],
-                    additionalProperties: false,
-                    properties: {
-                      maxFiles: { type: "integer", const: OUTPUT_MAX_FILES },
-                      maxFileBytes: { type: "integer", const: OUTPUT_MAX_FILE_BYTES },
-                      maxSandboxBytes: { type: "integer", const: OUTPUT_MAX_SANDBOX_BYTES },
-                      maxOrgBytes: { type: "integer", const: OUTPUT_MAX_ORG_BYTES },
-                    },
-                  },
-                  unavailable: { type: "string", const: "collector_unsupported" },
-                  files: {
-                    type: "array",
-                    maxItems: OUTPUT_MAX_FILES,
-                    items: {
-                      type: "object",
-                      required: ["name", "size", "sha256", "updatedAt"],
-                      additionalProperties: false,
-                      properties: {
-                        name: { type: "string", minLength: 1, maxLength: 255 },
-                        size: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
-                        sha256: {
-                          type: ["string", "null"],
-                          description: "Hex SHA-256 digest of the file bytes. Null for skipped files.",
-                        },
-                        skipped: { type: "string", enum: ["too_large", "sandbox_limit", "org_limit"] },
-                        updatedAt: { type: "string", format: "date-time" },
-                      },
-                    },
-                  },
-                },
-              },
+              schema: responseJsonSchema(listSandboxOutputs.output),
             },
           },
         },
-        ...OUTPUT_COMMON_RESPONSES,
+        ...outputCommonResponses(outputFailure(listSandboxOutputs.errorOutput)),
       },
     },
   },
-  "sandboxes/{id}/outputs/{name}": {
-    get: {
+  [readSandboxOutput.route.path]: {
+    [readSandboxOutput.route.method.toLowerCase()]: {
       operationId: "sandbox_outputs_download",
-      description: `Download one file of the sandbox's last output snapshot as an attachment.${OUTPUT_ACCESS}`,
+      description: readSandboxOutput.description,
       security: [{ serviceToken: [] }],
       parameters: [
         SANDBOX_ID_PARAMETER,
@@ -212,20 +180,20 @@ const OUTPUT_OPERATIONS: Record<(typeof PUBLISHED_REST_GET_ROUTES)[number], obje
           name: "Range",
           in: "header",
           description: "One byte range, for example bytes=0-1023.",
-          schema: { type: "string" },
+          schema: requestJsonSchema(readSandboxOutput.input.headers.Range),
         },
         {
           name: "If-Range",
           in: "header",
           description: "Apply the Range only when the file's ETag matches.",
-          schema: { type: "string" },
+          schema: requestJsonSchema(readSandboxOutput.input.headers["If-Range"]),
         },
         {
           name: "name",
           in: "path",
           required: true,
           description: "The file name from the outputs list, percent-encoded as one path segment.",
-          schema: { type: "string", minLength: 1 },
+          schema: requestJsonSchema(readSandboxOutput.input.path.name),
         },
       ],
       responses: {
@@ -242,7 +210,7 @@ const OUTPUT_OPERATIONS: Record<(typeof PUBLISHED_REST_GET_ROUTES)[number], obje
             "X-Content-Type-Options": { schema: { type: "string", const: "nosniff" } },
             "Cache-Control": { schema: { type: "string", const: "private, no-store" } },
           },
-          content: { "*/*": { schema: { type: "string", contentMediaType: "application/octet-stream" } } },
+          content: { "*/*": { schema: { type: "string", contentMediaType: readSandboxOutput.outputMediaType } } },
         },
         "206": {
           description: "The requested byte range.",
@@ -250,18 +218,18 @@ const OUTPUT_OPERATIONS: Record<(typeof PUBLISHED_REST_GET_ROUTES)[number], obje
             "Content-Range": { schema: { type: "string" } },
             "Content-Length": { schema: { type: "integer", minimum: 1 } },
           },
-          content: { "*/*": { schema: { type: "string", contentMediaType: "application/octet-stream" } } },
+          content: { "*/*": { schema: { type: "string", contentMediaType: readSandboxOutput.outputMediaType } } },
         },
         "416": {
           description: "The byte range is invalid or unsatisfiable.",
           headers: { "Content-Range": { schema: { type: "string" } } },
         },
-        "400": { description: "The file name is invalid.", content: OUTPUT_FAILURE },
+        "400": { description: "The file name is invalid.", content: downloadFailure },
         "503": {
           description: "Stored outputs cannot be decrypted on this server, or the API is temporarily unavailable.",
-          content: OUTPUT_FAILURE,
+          content: downloadFailure,
         },
-        ...OUTPUT_COMMON_RESPONSES,
+        ...outputCommonResponses(downloadFailure),
       },
     },
   },
@@ -401,7 +369,7 @@ export async function generateOpenApi() {
         },
       };
     }
-    for (const route of PUBLISHED_REST_GET_ROUTES) paths[`/api/v1/${route}`] = OUTPUT_OPERATIONS[route];
+    Object.assign(paths, OUTPUT_OPERATIONS);
     return {
       openapi: "3.1.0",
       info: {
@@ -414,16 +382,6 @@ export async function generateOpenApi() {
       components: {
         securitySchemes: { serviceToken: { type: "http", scheme: "bearer" } },
         schemas: {
-          OutputFailure: {
-            type: "object",
-            required: ["error"],
-            properties: {
-              error: {
-                type: "string",
-                description: "Bare failure code answered by the outputs routes, for example not_found or invalid_name.",
-              },
-            },
-          },
           DrainRefusal: {
             type: "object",
             required: ["error"],

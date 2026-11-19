@@ -30,6 +30,14 @@ so the package has no dependencies.
    launcher, then publishes the SDK. Newly uploaded platform tarballs must match the tested bytes.
    Recovery checks already-published versions for availability and skips uploading them.
 
+For the next release, record the elapsed time of the **Publish to npm** job in
+[#2834](https://github.com/The-Vibe-Company/armada/issues/2834) and check it against
+the three-minute target. Use the four `npm-tarballs-<version>-<sha>-<target>` artifacts
+from the binary run used by that job. For each of the six packages, retrieve the
+exact version with `npm pack "<package>@<version>" --ignore-scripts --prefer-online`
+in a separate directory. Compare its `shasum -a 256` output with the matching
+artifact manifest entry and record all six comparisons with the release run URL.
+
 Production publication supports stable versions only, sent to `latest`. The
 mandatory production chain retains its existing latest-stable-tag guard, so a
 prerelease tag cannot publish through this workflow; it fails closed before

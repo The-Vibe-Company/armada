@@ -31,6 +31,10 @@ export type FailureCode =
   | "busy"
   | "denied"
   | "upstream";
+/**
+ * An Armada request failure. When `retryAfterSeconds` is set from the `Retry-After`
+ * header or the failure body, wait at least that many seconds before retrying.
+ */
 export class ArmadaError extends Error {
   override readonly name = "ArmadaError";
   constructor(
@@ -38,7 +42,6 @@ export class ArmadaError extends Error {
     readonly status: number,
     readonly serverCode: string | undefined,
     readonly outcomeUnknown: boolean,
-    /** Server-requested delay before retrying, from `Retry-After` or the failure body; schedule retries no sooner. */
     readonly retryAfterSeconds?: number,
   ) {
     super(
@@ -128,6 +131,7 @@ export type DockerLaunchInput = DockerHostLaunchInput | DockerSnapshotLaunchInpu
 export type LaunchInput = GoldenLaunchInput | DockerLaunchInput;
 /** The ordinary launch envelope for Boat, Modal and Docker. */
 export type LaunchResult = LaunchEnvelope;
+type LaunchResponse = Promise<LaunchResult>;
 export interface TemplateLaunchInput {
   org: string;
   id: string;
@@ -248,8 +252,7 @@ interface ExecResult {
   timedOut: boolean;
   truncated: boolean;
 }
-/** Loopback hosts never leave this machine: localhost, 127.0.0.0/8 and ::1. Other names depend on the resolver. */
-function loopbackHost(hostname: string): boolean {
+function loopbackHost(hostname: string) {
   const host = hostname.toLowerCase();
   return host === "localhost" || host === "[::1]" || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
 }
@@ -260,7 +263,6 @@ export class Armada {
   private readonly fetcher: Fetch;
   private readonly retries: number;
   private readonly timeoutMs: number | undefined;
-  // An ECMAScript private field: JSON.stringify, util.inspect and Object.keys never expose the bearer token.
   readonly #token: string;
   constructor(options: ArmadaOptions) {
     const url = new URL(options.url ?? "https://armada.thevibecompany.co");
@@ -273,15 +275,12 @@ export class Armada {
       url.hash
     )
       throw new TypeError("Use an HTTP(S) Armada origin.");
-    // The bearer token rides on the first request, so cleartext HTTP is only safe on this machine.
     if (url.protocol === "http:" && !loopbackHost(url.hostname))
       throw new TypeError("Use an HTTPS Armada origin; plain HTTP is only accepted for loopback hosts.");
     if (!options.token || /[\r\n]/.test(options.token)) throw new TypeError("A service token is required.");
     this.#token = options.token;
     this.timeoutMs = options.timeoutMs;
     this.origin = url.origin;
-    // Never call fetch as a method of this client: browsers' native fetch throws
-    // "Illegal invocation" for any receiver other than the global object or undefined.
     const fetcher = options.fetch;
     this.fetcher = fetcher ? (input, init) => fetcher(input, init) : (input, init) => globalThis.fetch(input, init);
     this.retries = options.readRetries ?? 0;
@@ -290,35 +289,36 @@ export class Armada {
   }
   readonly #sandboxes = sandboxClient(this.request.bind(this));
 
-  launch(input: LaunchInput, options?: RequestOptions): Promise<LaunchResult> {
-    return this.#sandboxes.launch(input, options);
+  launch(input: LaunchInput, options?: RequestOptions) {
+    const result: LaunchResponse = this.#sandboxes.launch(input, options);
+    return result;
   }
-  launchFromTemplate(input: TemplateLaunchInput, options?: RequestOptions): Promise<TemplateLaunchResult> {
-    return this.request(TEMPLATE_LAUNCH_ROUTE, input, false, options);
+  launchFromTemplate(input: TemplateLaunchInput, options?: RequestOptions) {
+    return this.request<TemplateLaunchResult>(TEMPLATE_LAUNCH_ROUTE, input, false, options);
   }
-  send(input: SendInput | DockerSendInput, options?: RequestOptions): Promise<SendResult> {
-    return this.#sandboxes.send(input, options);
+  send(input: SendInput | DockerSendInput, options?: RequestOptions) {
+    return this.#sandboxes.send<SendResult>(input, options);
   }
-  status(input: StatusInput, options?: RequestOptions): Promise<SandboxStatus> {
-    return this.#sandboxes.status(input, options);
+  status(input: StatusInput, options?: RequestOptions) {
+    return this.#sandboxes.status<SandboxStatus>(input, options);
   }
-  wait(input: WaitInput, options?: RequestOptions): Promise<SandboxStatus & { timedOut: boolean }> {
-    // Precedence: per-call timeout, then the client timeout, then the server wait plus a margin.
-    return this.#sandboxes.wait(input, options, ((input.timeout_seconds ?? 60) + 30) * 1000);
+  wait(input: WaitInput, options?: RequestOptions) {
+    return this.#sandboxes.wait<SandboxStatus & { timedOut: boolean }>(
+      input,
+      options,
+      ((input.timeout_seconds ?? 60) + 30) * 1000,
+    );
   }
-  logs(input: LogsInput, options?: RequestOptions): Promise<LogsResult> {
-    return this.#sandboxes.logs(input, options);
+  logs(input: LogsInput, options?: RequestOptions) {
+    return this.#sandboxes.logs<LogsResult>(input, options);
   }
-  stop(
-    input: SandboxRef & { request_id?: string; only_if_idle?: boolean },
-    options?: RequestOptions,
-  ): Promise<{ id: string; status: string; preservationNote?: string }> {
-    return this.#sandboxes.stop(input, options);
+  stop(input: SandboxRef & { request_id?: string; only_if_idle?: boolean }, options?: RequestOptions) {
+    return this.#sandboxes.stop<{ id: string; status: string; preservationNote?: string }>(input, options);
   }
 
   /** UTF-8 file helpers over authorized exec. Requires guest `base64`; not a binary transfer API. */
   readonly files = {
-    read: async (input: SandboxRef & { path: string }, options?: RequestOptions): Promise<string> => {
+    read: async (input: SandboxRef & { path: string }, options?: RequestOptions) => {
       const result = await this.#sandboxes.exec<ExecResult>(
         { id: input.id, ...(input.org ? { org: input.org } : {}), command: `cat < ${shellPath(input.path)}` },
         options,
@@ -326,7 +326,7 @@ export class Armada {
       checkExec(result);
       return result.stdout;
     },
-    write: async (input: SandboxRef & { path: string; content: string }, options?: RequestOptions): Promise<void> => {
+    write: async (input: SandboxRef & { path: string; content: string }, options?: RequestOptions) => {
       const bytes = new TextEncoder().encode(input.content);
       if (bytes.length > 32768) throw new RangeError("File writes are limited to 32 KiB.");
       let binary = "";
@@ -349,21 +349,16 @@ export class Armada {
     readOnly: boolean,
     options: RequestOptions = {},
     defaultTimeoutMs = 300000,
-  ): Promise<T> {
-    const result = await requestApi(
-      apiUrl(this.origin, `/api/v1/${route}`),
-      // Serialize each attempt within the shared deadline.
-      () => jsonPost(body),
-      {
-        fetch: (url, init) => this.fetcher(String(url), init),
-        token: this.#token,
-        timeoutMs: options.timeoutMs ?? this.timeoutMs ?? defaultTimeoutMs,
-        signal: options.signal,
-        combineSignal: true,
-        readOnly,
-        readRetries: this.retries,
-      },
-    );
+  ) {
+    const result = await requestApi(apiUrl(this.origin, `/api/v1/${route}`), () => jsonPost(body), {
+      fetch: (url, init) => this.fetcher(String(url), init),
+      token: this.#token,
+      timeoutMs: options.timeoutMs ?? this.timeoutMs ?? defaultTimeoutMs,
+      signal: options.signal,
+      combineSignal: true,
+      readOnly,
+      readRetries: this.retries,
+    });
     if (result.kind === "transport")
       throw new ArmadaError(result.failure.code, 0, undefined, result.failure.outcomeUnknown);
     const { response, payload, failure, bodyReadFailed } = result;
@@ -381,11 +376,11 @@ export class Armada {
     return payload as T;
   }
 }
-function shellPath(path: string): string {
+function shellPath(path: string) {
   if (!path || path.includes("\0")) throw new TypeError("A nonempty file path without NUL is required.");
   return `'${path.replace(/'/g, `'"'"'`)}'`;
 }
-function checkExec(result: ExecResult): void {
+function checkExec(result: ExecResult) {
   if (result.exitCode !== 0 || result.timedOut || result.truncated)
     throw new ArmadaError("unknown_response", 200, undefined, true);
 }
@@ -397,7 +392,7 @@ export async function verifyWebhookSignature(input: {
   headers: Headers | Record<string, string>;
   now?: number;
   toleranceSeconds?: number;
-}): Promise<boolean> {
+}) {
   const headers = new Headers(input.headers);
   const timestamp = headers.get("Armada-Webhook-Timestamp") ?? "";
   const id = headers.get("Armada-Webhook-Id") ?? "";
