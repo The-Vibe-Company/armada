@@ -209,7 +209,7 @@ test("local enqueue and result reach an idle socket and reply waiter with frozen
     abort.abort();
     await f.sockets.stop();
   }
-}, 900);
+});
 
 test("transaction-scoped enqueue wakes the socket on outer commit", async () => {
   const f = await fixture();
@@ -239,7 +239,7 @@ test("transaction-scoped enqueue wakes the socket on outer commit", async () => 
     unsubscribe();
     await f.sockets.stop();
   }
-}, 900);
+});
 
 test("socket and reply polls deliver writes from another process without wakes", async () => {
   const sleeping = Promise.withResolvers<number>();
@@ -279,4 +279,4 @@ test("socket and reply polls deliver writes from another process without wakes",
     abort.abort();
     await f.sockets.stop();
   }
-}, 900);
+});

@@ -4,23 +4,23 @@ import { createWakeBus } from "../src/wake-bus.ts";
 test("a wake releases all waiters for the notified key only", async () => {
   const bus = createWakeBus();
   const controller = new AbortController();
-  const delay = () => new Promise<void>(() => {});
+  const delays: AbortSignal[] = [];
+  const delay = (_ms: number, signal: AbortSignal) => {
+    delays.push(signal);
+    return new Promise<void>(() => {});
+  };
   const first = bus.wait("target", controller.signal, 1000, delay);
   const second = bus.wait("target", controller.signal, 1000, delay);
   const other = bus.wait("other", controller.signal, 1000, delay);
-  let unrelated = false;
-  void other.then(() => {
-    unrelated = true;
-  });
   try {
     bus.notify("target");
+    expect(delays.map((signal) => signal.aborted)).toEqual([true, true, false]);
     await Promise.all([first, second]);
-    expect(unrelated).toBe(false);
   } finally {
     controller.abort();
-    await other;
+    await Promise.all([first, second, other]);
   }
-}, 100);
+});
 
 test("aborted and timed-out waits detach from the bus", async () => {
   const bus = createWakeBus();
@@ -40,4 +40,4 @@ test("aborted and timed-out waits detach from the bus", async () => {
   await second;
   bus.notify("key");
   expect(delays.map((signal) => signal.aborted)).toEqual([true, false]);
-}, 100);
+});
