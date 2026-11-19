@@ -341,6 +341,34 @@ function modelChoice(
   }
 }
 
+const pinnedModalRefusals = new Map([
+  ["credential_busy", "conflict"],
+  ["credential_binding_required", "credential_binding_required"],
+  ["credential_refused", "credential_refused"],
+  ["unauthorized", "credential_refused"],
+  ["forbidden", "forbidden"],
+  ["not_found", "not_found"],
+  ["invalid", "invalid"],
+  ["invalid_request", "invalid_request"],
+  ["no_credentials", "no_credentials"],
+  ["unsupported", "unsupported"],
+  ["payment_required", "payment_required"],
+  ["provider_not_configured", "provider_not_configured"],
+  ["provider_routing_unavailable", "provider_routing_unavailable"],
+  ["rate_limited", "rate_limited"],
+  ["conflict", "conflict"],
+]);
+
+function pinnedModalFailure(receipt: Record<string, unknown>) {
+  const recorded = typeof receipt.reason === "string" ? pinnedModalRefusals.get(receipt.reason) : undefined;
+  const code = receipt.state === "failed" ? (recorded ?? "start_failed") : "outcome_unknown";
+  return new ToolApiError(
+    code,
+    launchFailureHelp(code) ?? "The pinned Modal launch was refused. Check the template and provider settings.",
+    typeof receipt.id === "string" ? { sandboxId: receipt.id } : undefined,
+  );
+}
+
 function configureDockerLaunch(options: ControlOptions, request: Request | undefined) {
   if (options.dockerLaunch && request) options.configureDockerLaunchRequest?.(request);
 }
@@ -501,12 +529,7 @@ export const launchRoutes = defineRoutes("launch", {
         "template_rest",
       );
       if (receipt.state === "succeeded") return launchOperation.output.parse(receipt.envelope);
-      const code = receipt.state === "failed" ? "start_failed" : "outcome_unknown";
-      throw new ToolApiError(
-        code,
-        launchFailureHelp(code)!,
-        typeof receipt.id === "string" ? { sandboxId: receipt.id } : undefined,
-      );
+      throw pinnedModalFailure(receipt);
     }
     scopedOrg(caller, launch.org);
     if ("runtimeVersion" in launch) {

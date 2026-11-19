@@ -7,6 +7,7 @@ import {
   createTemplateService,
   encryptSecret,
   type LaunchTemplate,
+  ProviderError,
   resolveModelChoice,
   type Sql,
 } from "@armada/core/server";
@@ -720,7 +721,7 @@ test.each(["modal", "boat"] as const)(
           await f.db.exec("set session_replication_role=origin");
         }
         await expect(
-          readRuntimeTemplateEnvironment(f.sql, { userId: f.people.owner, orgId: f.people.org }, launched.id, provider),
+          readRuntimeTemplateEnvironment(f.sql, { userId: f.people.owner, orgId: f.people.org }, sandboxId, provider),
         ).rejects.toMatchObject({
           code: "unavailable",
           message: "Frozen runtime readable configuration is unavailable.",
@@ -751,6 +752,34 @@ test("pinned Modal replay reports its reserved sandbox while the original reques
   });
   expect(f.physical.forks).toHaveLength(1);
   expect(f.prompts()).toBe(1);
+});
+
+test("pinned Modal persists a definite provider refusal and returns its typed code on replay", async () => {
+  const f = await fixture();
+  const template = await f.create();
+  const request = f.request(template.id);
+  let attempts = 0;
+  f.options.modalRuntimeHostFor = async () => {
+    attempts++;
+    throw new ProviderError({
+      provider: "modal",
+      code: "payment_required",
+      retryable: false,
+      message: "private provider diagnostics",
+    });
+  };
+  const first = await f.api(request);
+  expect(first.status).toBe(402);
+  const failure = await first.json();
+  expect(publishedFailure().parse(failure)).toMatchObject({
+    error: { code: "payment_required", details: { sandboxId: expect.any(String) } },
+  });
+  expect(JSON.stringify(failure)).not.toContain("private provider diagnostics");
+  const replay = await f.api(request);
+  expect(replay.status).toBe(402);
+  expect(await replay.json()).toEqual(failure);
+  expect(attempts).toBe(1);
+  expect(f.physical.forks).toHaveLength(0);
 });
 
 test("promptless Modal template freezes its manifest and replays the empty launch without inference", async () => {
