@@ -1475,10 +1475,11 @@ that ticket lands; this change does not add its own timing.
 
 ## Runtime installation and bootstrap
 
-The host installs the runtime on a trusted fresh machine after durably fencing
-its bootstrap job. The installer verifies the pinned public artifact's origin,
-size and digest before copying the binary from the private cache. Installation
-and bootstrap errors exposed by the host omit transport and Docker diagnostics.
+The host durably fences each bootstrap or resume job before starting the runtime.
+It uses the same installer for a fresh machine and after resuming a retained
+allocation. The installer verifies the pinned public artifact's origin, size
+and digest before copying the binary from the private cache. Installation and
+bootstrap errors exposed by the host omit transport and Docker diagnostics.
 
 The non-interactive launcher takes the enrolment payload on private stdin.
 The background process disconnects its output before the Docker exec shell
@@ -1508,8 +1509,9 @@ so a sandbox keeps today's guarantees without trusting the host or image.
   `/opt/armada/artifact-cache`. The daemon recreates the directory before
   every create/start. The mount uses the canonical state path. If the path
   contains Docker mount-field separators or the engine refuses the bind (for
-  example, with confinement or a remote engine), the container runs without it. Ownership always accepts that exact
-  read-only bind as the only extra mount, even when preparation fails;
+  example, with confinement or a remote engine), the container runs without
+  it. Ownership always accepts that exact read-only bind as the only extra
+  mount, even when preparation fails;
   containers created before the upgrade keep their single home volume and
   download as before.
 - Do not roll a host back to a daemon older than this change while containers
