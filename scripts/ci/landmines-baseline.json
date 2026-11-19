@@ -311,7 +311,6 @@
     "apps/dashboard/test/mcp-control.test.ts": 2,
     "apps/dashboard/test/model-accounts.test.ts": 17,
     "apps/dashboard/test/model-choice.test.ts": 1,
-    "apps/dashboard/test/model-connection-check.test.ts": 1,
     "apps/dashboard/test/model-picker.test.ts": 2,
     "apps/dashboard/test/outcome.test.ts": 4,
     "apps/dashboard/test/preserved-mutation-form.test.tsx": 2,
