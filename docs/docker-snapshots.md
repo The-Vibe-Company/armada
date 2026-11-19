@@ -234,7 +234,7 @@ Normal owner Docker launches (including snapshot launches) return their persiste
 sandbox reservation promptly: `sandbox.status: "starting"`, `runtime: null`, and
 no prompt receipt yet. The server's dedicated launch worker prepares the runtime,
 GitHub access, repository checkout and environment before admitting the first
-prompt. Replay the **identical** `sandbox/launch` request (same `requestId`) to
+prompt. Replay the **identical** `sandbox/launch` request (same `idempotencyKey`) to
 obtain the final prompt receipt, or inspect sandbox status for a plain failure
 reason. `scripts/smoke-docker-lifecycle.py` handles both accepted and older
 synchronous responses. A starting receipt is not proof that checkout succeeded.

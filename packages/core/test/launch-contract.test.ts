@@ -25,7 +25,7 @@ test.each([
   ["Modal dial-out", { ...modal, runtimeTransport: "dialout", runtimeVersion: 1 }],
   ["pinned Modal template", pinned],
   ["Docker host", docker],
-  ["Docker snapshot", { provider: "docker", snapshotId: id, requestId: id, harness: "codex" }],
+  ["Docker snapshot", { provider: "docker", snapshotId: id, idempotencyKey: key, harness: "codex" }],
 ] as const)("%s accepts a slug, UUID, or omitted org with an explicit harness", (_name, input) => {
   for (const org of [undefined, "team-slug", id]) {
     expect(schema.safeParse({ ...input, org }).success).toBe(true);
@@ -43,6 +43,8 @@ test.each([
   ["Docker missing source", { ...docker, hostId: undefined }],
   ["Docker snapshot with repository overrides", { ...docker, snapshotId: id, repos: [] }],
   ["Docker with both replay identities", { ...docker, requestId: id }],
+  ["Docker host with only requestId", { provider: "docker", hostId: id, harness: "codex", requestId: id }],
+  ["Docker snapshot with only requestId", { provider: "docker", snapshotId: id, harness: "codex", requestId: id }],
   ["Docker with a size override", { ...docker, size: "small" }],
   ["Docker with scoped access", { ...docker, armadaAccess: true }],
   ["Docker with org visibility", { ...docker, visibility: "org" }],

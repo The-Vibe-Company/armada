@@ -19,7 +19,7 @@ const run: Command["run"] = async (argv, { io, deps, auth }) => {
       "--max-active-children",
       "--host",
       "--image",
-      "--request-id",
+      "--idempotency-key",
       "--credential-version",
       "--variable",
       "--secret",
@@ -31,7 +31,7 @@ const run: Command["run"] = async (argv, { io, deps, auth }) => {
     return launchDocker(args, io, { ...auth, fetch: deps.fetch ?? auth.fetch });
   }
   if (
-    ["--host", "--image", "--request-id", "--credential-version", "--golden", "--variable", "--secret"].some(
+    ["--host", "--image", "--idempotency-key", "--credential-version", "--golden", "--variable", "--secret"].some(
       (key) => single(args, key) !== undefined,
     )
   )
@@ -117,7 +117,7 @@ export default {
   name: "launch",
   summary: "Launch an agent sandbox",
   usage: {
-    "docker-launch": `  armada launch [prompt] --provider docker [--host UUID|NAME | --golden snapshot-UUID] --agent claude|codex|opencode [--credential-id UUID] [--org NAME|UUID] [--repo owner/repo[@branch] ...] [--variable KEY:UUID:VERSION ...] [--secret KEY:UUID:VERSION ...] [--request-id UUID] [--json]
+    "docker-launch": `  armada launch [prompt] --provider docker [--host UUID|NAME | --golden snapshot-UUID] --agent claude|codex|opencode [--credential-id UUID] [--org NAME|UUID] [--repo owner/repo[@branch] ...] [--variable KEY:UUID:VERSION ...] [--secret KEY:UUID:VERSION ...] [--idempotency-key KEY] [--json]
                                            Docker launch through the normal Armada API using the official Armada environment.`,
     launch: `  armada launch <snapshot> --agent ${HARNESSES.join("|")} ["prompt"] [--model <id>] [--reasoning-effort <level>]
                                            [--armada-access [--credential-id <id>] [--max-active-children <1..100>]]
@@ -155,7 +155,7 @@ Docker form:
   armada launch [prompt] --provider docker --agent claude|codex|opencode [--org NAME|UUID]
     [--host UUID|NAME | --golden snapshot-UUID] [--credential-id UUID]
     [--repo owner/repo[@branch] ...] [--variable KEY:UUID:VERSION ...]
-    [--secret KEY:UUID:VERSION ...] [--request-id UUID] [--ttl <duration>] [--json]
+    [--secret KEY:UUID:VERSION ...] [--idempotency-key KEY] [--ttl <duration>] [--json]
     [--model <id>] [--reasoning-effort <level>] [--credential-version <version>]
     [--skill org/slug@version|slug@version ...] [--connections <id,...> | --no-connections]
 Uses the official Armada environment or an existing host-local snapshot.
@@ -163,7 +163,7 @@ A snapshot cannot be combined with --repo.
 Boat supports Claude/Codex natively and OpenCode when the server runtime is installed.
 OpenCode is also supported on Modal and Docker.
 --golden is the existing Docker snapshot selector, not a new snapshot command.
-Reuse a saved --request-id with identical input after an uncertain Docker outcome.
+Reuse a saved --idempotency-key with identical input after an uncertain Docker outcome.
 
 In an interactive terminal, bare armada launch opens the launcher.
 Use explicit arguments in scripts; bare noninteractive launch is not supported.

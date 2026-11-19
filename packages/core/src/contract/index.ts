@@ -10,7 +10,7 @@ import { sandboxRestOperations } from "./sandbox-rest.ts";
 import { sandboxViewerOperations } from "./sandbox-viewer.ts";
 
 export type { CreatedInboundTrigger } from "./inbound-trigger.ts";
-export type { LaunchInput } from "./launch.ts";
+export { dockerHostLaunchFields, dockerSnapshotLaunchFields, type LaunchInput } from "./launch.ts";
 export { type LaunchEnvelope, launchEnvelope, templateLaunchResponse } from "./launch-response.ts";
 export {
   DEFAULT_WAIT_SECONDS,

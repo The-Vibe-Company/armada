@@ -210,7 +210,8 @@ export type DockerLaunchRequest = {
   connections?: string[];
   skipSkillDefaults?: boolean;
   stopWhenWorkMerged?: boolean;
-} & ({ requestId: string; idempotencyKey?: never } | { idempotencyKey: string; requestId?: never });
+  idempotencyKey: string;
+};
 export interface DockerSandboxRecord extends Omit<SandboxRecord, "provider" | "goldenId" | "harness"> {
   provider: "docker";
   goldenId: null;

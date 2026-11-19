@@ -26,8 +26,9 @@ export class HarnessError extends Error {
   constructor(
     readonly code: HarnessErrorCode,
     readonly phase?: NativePhase,
+    options?: ErrorOptions,
   ) {
-    super(code);
+    super(code, options);
   }
 
   get reason(): string {
