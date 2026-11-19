@@ -26,7 +26,7 @@ export type JobResult = (
 
 export interface JobStore {
   claim(kind: string, owner: string, seconds: number, concurrency: number): Promise<Job | undefined>;
-  inspect(job: Job, owner: string): Promise<"dispatch" | "reconcile" | "stale" | "lost">;
+  inspect(job: Job, owner: string, tx?: Sql): Promise<"dispatch" | "reconcile" | "stale" | "lost">;
   retireStale(job: Job, owner: string, phase?: "before_handler"): Promise<void>;
   handoffGeneration(job: Job, owner: string, handoff: GenerationHandoff): Promise<string>;
   renew(job: Job, owner: string, seconds: number): Promise<boolean>;
@@ -35,7 +35,7 @@ export interface JobStore {
 
 interface JobContext {
   signal: AbortSignal;
-  canDispatch(): Promise<boolean>;
+  canDispatch(tx?: Sql): Promise<boolean>;
   handoffGeneration(handoff: GenerationHandoff): Promise<string>;
 }
 
@@ -43,6 +43,7 @@ export interface JobKind {
   prepare?(): Promise<boolean>;
   drain?(): Promise<void>;
   concurrency: number;
+  timeoutMs?: number;
   run(job: Job, context: JobContext): Promise<JobResult>;
 }
 
@@ -63,13 +64,17 @@ export function createJobsRunner(
   const registrations = Object.entries(kinds).map(([kind, handler]) => {
     if (!Number.isSafeInteger(handler.concurrency) || handler.concurrency <= 0)
       throw new Error("Invalid jobs concurrency.");
-    return { kind, handler };
+    return { kind, handler, active: 0 };
   });
   const pending = new Set<Promise<void>>();
   let nextKind = 0;
 
   async function run(job: Job, handler: JobKind, cancelClaimExpiry: () => void, lease: AbortController) {
-    const signal = AbortSignal.any([lease.signal, shutdown.signal]);
+    const ownership = AbortSignal.any([lease.signal, shutdown.signal]);
+    const deadline = handler.timeoutMs === undefined ? undefined : new AbortController();
+    const signal = deadline ? AbortSignal.any([ownership, deadline.signal]) : ownership;
+    const cancelDeadline =
+      handler.timeoutMs === undefined ? undefined : schedule(handler.timeoutMs, () => deadline?.abort());
     let cancelExpiry = cancelClaimExpiry;
     let renewal: Promise<void> | undefined;
     let cancelRenewal: (() => void) | undefined;
@@ -82,14 +87,14 @@ export function createJobsRunner(
           lease.abort();
           await store.retireStale(job, owner);
         }
-        if (signal.aborted) return;
+        if (ownership.aborted) return;
         cancelExpiry();
         cancelExpiry = cancelNextExpiry;
-        scheduleRenewal();
+        if (!signal.aborted) scheduleRenewal();
       } catch {
         lease.abort();
       } finally {
-        if (signal.aborted) cancelNextExpiry();
+        if (ownership.aborted) cancelNextExpiry();
       }
     }
     const scheduleRenewal = () => {
@@ -106,8 +111,8 @@ export function createJobsRunner(
       scheduleRenewal();
       const result = await handler.run(job, {
         signal,
-        async canDispatch() {
-          return !signal.aborted && (await store.inspect(job, owner)) === "dispatch" && !signal.aborted;
+        async canDispatch(tx) {
+          return !signal.aborted && (await store.inspect(job, owner, tx)) === "dispatch" && !signal.aborted;
         },
         async handoffGeneration(handoff) {
           signal.throwIfAborted();
@@ -123,10 +128,11 @@ export function createJobsRunner(
           return generation;
         },
       });
-      if (!signal.aborted && !(await store.complete(job, owner, result))) await store.retireStale(job, owner);
+      if (!ownership.aborted && !(await store.complete(job, owner, result))) await store.retireStale(job, owner);
     } finally {
       lease.abort();
       cancelExpiry();
+      cancelDeadline?.();
       cancelRenewal?.();
       await renewal;
     }
@@ -138,6 +144,7 @@ export function createJobsRunner(
         const registration = registrations[nextKind]!;
         nextKind = (nextKind + 1) % registrations.length;
         const { kind, handler } = registration;
+        if (handler.timeoutMs !== undefined && registration.active >= handler.concurrency) continue;
         if (handler.prepare && !(await handler.prepare())) continue;
         if (signal.aborted || shutdown.signal.aborted) return false;
         const lease = new AbortController();
@@ -147,9 +154,13 @@ export function createJobsRunner(
           const job = await store.claim(kind, owner, LEASE_SECONDS, handler.concurrency);
           if (!job || signal.aborted || shutdown.signal.aborted) continue;
           claimed = true;
+          registration.active++;
           const work = run(job, handler, cancelExpiry, lease)
             .catch(() => log("armada: job execution unavailable; durable lease remains fenced."))
-            .finally(() => pending.delete(work));
+            .finally(() => {
+              registration.active--;
+              pending.delete(work);
+            });
           pending.add(work);
           return true;
         } finally {

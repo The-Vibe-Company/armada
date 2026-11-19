@@ -79,7 +79,6 @@ export function registerServer(modules: readonly ServerModule[]) {
               const core = startServerWorkers(
                 managed.map(({ lane }) => lane),
                 options.logError,
-                services.goldenRetirements,
                 isolated.map(({ lane }) => lane),
               );
               const started = background.map(({ start }) => start());
