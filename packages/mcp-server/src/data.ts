@@ -352,13 +352,26 @@ export function createSqlData(
         );
         // Usage may arrive before the accepted RPC receipt. Reconcile that already stored observation
         // after its authoritative pre-work context is captured, without changing any existing quote.
-        const rows = await sql.query<{ usage: Pick<SandboxUsage, "turnCount" | "turns"> | null }>(
-          `select s.usage_turns as usage from public.sandboxes s where ${SANDBOX_VISIBLE} and s.id=$3::uuid`,
-          [...scope, id],
+        const rows = await sql.query<{
+          usage: Pick<SandboxUsage, "turnCount" | "turns"> | null;
+          awaiting_spend: boolean;
+        }>(
+          `select s.usage_turns as usage, exists(
+            select 1 from public.account_spend_turns t
+            where t.sandbox_id=s.id and t.prompt_id=$4 and t.account_id is null
+          ) as awaiting_spend from public.sandboxes s where ${SANDBOX_VISIBLE} and s.id=$3::uuid`,
+          [...scope, id, promptId],
         );
-        const usage = rows.rows[0]?.usage;
-        const pending = usage?.turns.filter((turn) => turn.promptId === promptId && !turn.pricing) ?? [];
-        if (usage && pending.length) await sandboxes.recordUsage!(id, usage, { observations: pending });
+        const row = rows.rows[0];
+        if (!row?.usage) return;
+        const shares = row.usage.turns.filter((turn) => turn.promptId === promptId);
+        const pending = shares.filter((turn) => !turn.pricing);
+        if (row.awaiting_spend && !shares.length) {
+          const unmeasured = unmeasuredUsage(promptId);
+          await sandboxes.recordUsage!(id, { ...row.usage, turns: [unmeasured] }, { observations: [unmeasured] });
+        } else if (pending.length) {
+          await sandboxes.recordUsage!(id, row.usage, { observations: pending });
+        }
       },
       async recordAccountRateLimit(id, promptId, retryAt) {
         if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");

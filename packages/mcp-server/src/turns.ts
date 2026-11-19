@@ -587,7 +587,11 @@ export async function collectSandboxUsage(
         turnCount: history === null && knownTurns === 0 ? null : knownTurns,
         turns: [...rows.values()],
       },
-      { observations, completed: completedUsageTurns(events) },
+      {
+        observations,
+        // Native Boat rewrites prompt status without a reliable completion timestamp.
+        ...(provider.id !== "boat" || sandbox.boatRuntime ? { completed: completedUsageTurns(events) } : {}),
+      },
     );
   } catch {
     /* Optional telemetry never changes lifecycle success. */
