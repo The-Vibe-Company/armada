@@ -1898,7 +1898,6 @@
     "scripts/template-skill-smoke.ts": 2,
     "scripts/test-support/github-audit.ts": 1,
     "scripts/test-support/migrated-database.ts": 3,
-    "scripts/testflight/app-store-connect.ts": 10,
     "scripts/vault-smoke.test.ts": 1,
     "scripts/vault-smoke.ts": 3,
     "scripts/verify-changed.ts": 4
