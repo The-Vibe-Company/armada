@@ -10,7 +10,6 @@ async function DiscoveredLimits() {
   return option ? <DockerLimitList unavailable={dockerUnavailable(option)} /> : null;
 }
 
-/** The existing server discovery streams separately from the settings and launch trigger. */
 export function DockerLaunchLimitList() {
   return (
     <Suspense fallback={null}>

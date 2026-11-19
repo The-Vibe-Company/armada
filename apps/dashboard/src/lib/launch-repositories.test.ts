@@ -8,7 +8,7 @@ import {
   launchRepositoryTemplates,
 } from "./launch-repositories";
 
-function start(id: string, createdAt: string, url: string, reason?: string): LaunchStartTarget {
+function start(id: string, createdAt: string, url: string, reason?: string) {
   return {
     id,
     createdAt,
@@ -18,7 +18,7 @@ function start(id: string, createdAt: string, url: string, reason?: string): Lau
     group: "Boat cloud",
     ...(reason ? { reason } : {}),
     repositories: [{ url, dir: id }],
-  };
+  } satisfies LaunchStartTarget;
 }
 
 test("counts each ready snapshot once for the same repository identity", () => {
