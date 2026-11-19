@@ -48,7 +48,7 @@ another install's lock, within its 45-second subprocess budget.
 Run as the sandbox's owner:
 
 ```sh
-armada github refresh <sandbox>
+armada github refresh SANDBOX_UUID
 ```
 
 The HTTP operation is owner-only.
@@ -72,7 +72,7 @@ Private pinned SSH/stdin carries the token; never paste one into `exec`, prompts
 argv, logs or repository files. The repair installs token-aware `gh` and `git`
 wrappers so even already-running agents' inherited stale `GH_TOKEN` is overridden
 on the next tool invocation. The token lives in ephemeral `/run`, outside the
-persisted home and golden snapshot. If the file is absent or expired, wrappers
+persisted home and snapshot. If the file is absent or expired, wrappers
 pass through the inherited environment; unsafe ownership/symlinks still fail closed.
 With the legacy automatic flag enabled, before each authorized Boat prompt
 (including after resume), Armada resolves the
@@ -110,8 +110,9 @@ availability policy does not make a stale inherited token valid.
 2. Launch twelve idle sandboxes as one owner, mixing concurrent and sequential
    launches. Run `gh api user --jq .login` in each; record status and login only.
 3. Launch a thirteenth, then recheck all thirteen. Every login must still match.
-4. In an isolated staging account, enable the legacy automatic flag for the
-   coordinator check, verify actual image/SSH/sudo behavior, and exercise expiry-driven renewal. Confirm the
+4. For an on-demand Boat check, the coordinator uses a dedicated test account and
+   enables the legacy automatic flag for the check. Verify actual image/SSH/sudo
+   behavior and exercise expiry-driven renewal. Confirm the
    next prompt automatically repairs every older running Boat sandbox, without
    relaunching or twelve manual repair commands. Also check the explicit refresh
    command for an already-active turn,
