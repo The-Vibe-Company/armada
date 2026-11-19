@@ -159,7 +159,7 @@ describe("launch through the Armada API", () => {
           out: () => undefined,
           err: () => undefined,
           env: { ARMADA_TOKEN: token },
-          fetch: async () => Response.json(response),
+          fetch: async () => Response.json({ ...response, sandbox: { ...response.sandbox, repositoryDir: "web" } }),
           now: () => new Date(),
           open: () => undefined,
           session: memorySessionStore(),
@@ -169,6 +169,7 @@ describe("launch through the Armada API", () => {
     expect(code).toBe(0);
     expect(out).toContain("Sandbox: 11111111-1111-4111-8111-111111111111");
     expect(out).not.toContain("Size:");
+    expect(out).toContain("Repository context: web (initial agent working directory, not an isolation boundary).");
     expect(out).toContain("Stops by itself at 2026-11-08T16:00:00.000Z (TTL 1800s).");
   });
   test("retired launch sizing flags are rejected before allocation", async () => {
