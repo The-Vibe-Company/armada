@@ -52,7 +52,7 @@ function tokenRouteFailure(error: unknown, revoking = false): Response {
 
 const { listServiceTokens: list, createServiceToken: create, revokeServiceToken: revoke } = tokenOperations;
 
-function parseTokenInput<T>(schema: z.ZodType<T>, input: unknown): T {
+function parseTokenInput<T>(schema: z.ZodType<T>, input: unknown) {
   const parsed = schema.safeParse(input);
   if (!parsed.success) throw new VaultError("invalid", parsed.error.issues[0]!.message);
   return parsed.data;
