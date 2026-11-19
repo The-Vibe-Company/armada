@@ -43,9 +43,9 @@ existing Codex subscription broker are reused; no provider credential is a model
 Defaults pending later owner decisions: host credential has no expiry and is
 revocable; default sandbox TTL is the existing four hours; no disk quota. Ordinary
 owner-trusted Docker only. The historical plain-image preview excludes snapshot
-builds, resume, gVisor and multi-tenancy. That preview admits **one native conversation per sandbox**, with follow-up through the normal send route
-using the returned conversationId. Retries reuse the same request UUID and input;
-a new request without that conversation or for another conversation is refused.
+builds, resume, gVisor and multi-tenancy. Each preview sandbox has one conversation.
+Send follow-up prompts through `sandbox/send` and reuse the same request UUID and
+input when reconciling uncertain delivery.
 Wait for the previous turn's acknowledged finished event before sending a follow-up.
 Unresolved RPC admission blocks new requests; the runtime owns busy-turn refusal.
 
@@ -147,9 +147,8 @@ bun run armada launch --provider docker --org "$ARMADA_ORG" \
   --agent codex --json 'Reply with exactly DOCKER_OK.'
 ```
 
-Normal follow-up and retained stop/resume are available; see
-[the current contract](#normal-follow-up-and-stopresume-1422). The private
-preview sandboxes also use the normal send route.
+Normal follow-up and retained stop/resume are described in
+[the current contract](#normal-follow-up-and-stopresume-1422).
 
 ### Repository history for direct launches
 
@@ -536,7 +535,7 @@ Expected: binary --help prints usage and exits zero, not a failure message.
 The helper **starts the stopped daemon**, reuses the registration, creates a fresh
 sandbox and sends two prompts in one returned conversation. Only the first prompt
 contains a random DOCKER_MEMORY marker; the second asks it to recall that marker
-without resending it. Require two distinct native prompt IDs, the same conversation
+without resending it. Require two distinct prompt IDs, the same conversation
 ID, both answers and reported tokens in the acknowledged journal. It then confirms
 stop/delete and prints `PASS: same-conversation follow-up recalled marker; both turns
 reported tokens; stop/delete ACKed.` The host/daemon remain for inspection and may

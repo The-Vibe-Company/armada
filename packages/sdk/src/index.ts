@@ -238,7 +238,6 @@ export interface DockerSendInput extends SandboxRef {
   prompt: string;
   /** Supply it to make a retry replay instead of queuing the prompt again. */
   request_id?: string;
-  /** A lowercase conversation UUID of the sandbox. Default: the latest. */
   model?: never;
   reasoning_effort?: never;
 }

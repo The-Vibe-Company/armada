@@ -491,7 +491,6 @@ function createToolServer(
   ) => {
     const invoke: (args: ToolArgs<In>) => Promise<CallToolResult> = async (args) => {
       try {
-        if (name === "send") refuseConversationSelector(args);
         if (["send", "steer", "exec", "interrupt"].includes(name)) {
           const input = args as Record<string, unknown>;
           const found = data.sandboxes.controlState
@@ -1618,20 +1617,16 @@ function createToolServer(
           mode: steerTool.output.mode.optional(),
         },
       },
-      async ({ steer, ...args }) => {
-        if (!steer) return sendTool.invoke(args);
-        if (args.model !== undefined || args.reasoning_effort !== undefined)
-          return invalidToolInput("send", "Model and effort overrides require a new turn.");
+      async ({ steer, id, prompt, request_id, model, reasoning_effort, ...extra }) => {
         try {
-          refuseConversationSelector(args);
+          refuseConversationSelector(extra);
         } catch (error) {
           return errorResult(error, "send", context.logError ?? console.error);
         }
-        return steerTool.invoke({
-          id: args.id,
-          text: args.prompt,
-          request_id: args.request_id,
-        });
+        if (!steer) return sendTool.invoke({ id, prompt, request_id, model, reasoning_effort });
+        if (model !== undefined || reasoning_effort !== undefined)
+          return invalidToolInput("send", "Model and effort overrides require a new turn.");
+        return steerTool.invoke({ id, text: prompt, request_id });
       },
     );
 

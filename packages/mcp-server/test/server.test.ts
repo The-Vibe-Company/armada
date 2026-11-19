@@ -1186,6 +1186,7 @@ describe("tools", () => {
       steer: true,
       prompt: "Use bun",
       conversation_id: "selected-conversation",
+      model: "gpt-5.4",
     });
     expect(selected.isError).toBe(true);
     expect(selected.text).toContain("Launch another sandbox");

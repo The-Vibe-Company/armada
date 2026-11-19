@@ -564,15 +564,23 @@ def main():
         def turn(text, expected_answer, conversation=None, receipt=None, require_mcp=False, prove_github=False):
             nonlocal cursor
             prove_environment = receipt is None or receipt is launch_receipt
+            deadline = time.monotonic() + args.timeout
             if receipt is None:
                 text = secret_task + variable_task + snapshot_proof_task + (github_task if prove_github else "") + text
                 prompt_id = str(uuid.uuid4())
                 print("PROMPT_REQUEST_ID=" + prompt_id, flush=True)
-                receipt = api("sandbox/send", {"id": sandbox_id, "request_id": prompt_id, "prompt": text}, normal=True)
+                body = {"id": sandbox_id, "request_id": prompt_id, "prompt": text}
+                receipt = api("sandbox/send", body, normal=True)
+                public_prompt = receipt["promptId"]
+                while receipt.get("status") == "queued" and receipt["promptId"] == prompt_id:
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError("Docker prompt admission timed out; retain printed request ID")
+                    time.sleep(2)
+                    receipt = api("sandbox/send", body, normal=True)
+            else:
+                public_prompt = receipt["promptId"]
             if conversation is not None and receipt["conversationId"] != conversation:
                 raise RuntimeError("Follow-up changed conversation identity")
-            native_prompt = receipt["promptId"]
-            deadline = time.monotonic() + args.timeout
             answer, finished, used_mcp = False, False, False
             matching_mcp_calls = set()
             repository_proven = not ((args.snapshot and prove_environment) or (args.repository and receipt is launch_receipt))
@@ -591,10 +599,10 @@ def main():
                     raise RuntimeError("Repository proof requires the archived Armada runtime journal")
                 cursor = page["cursor"]
                 for event in page["events"]:
-                    if require_mcp and event.get("promptId") == native_prompt:
+                    if require_mcp and event.get("promptId") == public_prompt:
                         used_mcp = successful_mcp_tool(event.get("tools", []), matching_mcp_calls,
                                                        harness, args.mcp, args.mcp_tool) or used_mcp
-                    if event.get("promptId") != native_prompt:
+                    if event.get("promptId") != public_prompt:
                         continue
                     if event.get("kind") == "message" and expected_answer in event.get("text", ""):
                         answer = True
@@ -657,7 +665,7 @@ def main():
                             raise RuntimeError("Agent turn failed/interrupted; inspect retained journal")
                         finished |= event.get("status") == "finished"
                 turns = (page.get("usage") or {}).get("turns", [])
-                usage = next((t for t in turns if t.get("promptId") == native_prompt
+                usage = next((t for t in turns if t.get("promptId") == public_prompt
                               and isinstance(t.get("inputTokens"), int)
                               and isinstance(t.get("outputTokens"), int)), None)
                 if answer and finished and usage and repository_proven and snapshot_proven and snapshot_github and github_proven and variable_proven and secret_proven and (not require_mcp or used_mcp):
@@ -670,8 +678,8 @@ def main():
                         if not status.get("configured") or status.get("credentialRequests", 0) < 1:
                             raise RuntimeError("GitHub proof requires current-epoch broker credential delivery")
                     if args.cost:
-                        check_cost(page["usage"], native_prompt)
-                    print(json.dumps({"answer": expected_answer, "promptId": native_prompt,
+                        check_cost(page["usage"], public_prompt)
+                    print(json.dumps({"answer": expected_answer, "promptId": public_prompt,
                                       "conversationId": receipt["conversationId"],
                                       "inputTokens": usage["inputTokens"], "outputTokens": usage["outputTokens"]}),
                           flush=True)

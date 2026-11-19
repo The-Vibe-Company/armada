@@ -251,7 +251,9 @@ this order:
 Send opens or continues the sandbox's conversation. Send and runtime resume
 refuse conversation selectors with HTTP 409 `conflict`. Launch another sandbox
 for a separate conversation. An identical retry of an admitted account-queued
-send can still retrieve its original receipt.
+send can still retrieve its original receipt. For a send originally submitted
+with a selector, use `sandbox/status` with its original request UUID as
+`prompt_id` to reconcile the outcome.
 
 Sends that pass these checks to a sandbox with a pinned model account, which
 includes every Docker sandbox, then pass through the account turn queue. For runtime and Docker
