@@ -1,7 +1,6 @@
 import type { AuthStore } from "@armada/auth";
 import {
   goldenForSettings,
-  PUBLIC_CONTROL_ROUTES,
   parseMachineSizePolicy,
   providerRateLimitDetails,
   VERSION,
@@ -63,14 +62,6 @@ import { controlRoutes } from "./modules.ts";
 import type { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import type { ProviderValidator } from "./org-provider.ts";
 import type { ProviderMetadataFor } from "./provider-metadata.ts";
-import {
-  authMethodsRoute,
-  authorizeRoute,
-  emailStartRoute,
-  emailVerifyRoute,
-  exchangeRoute,
-  refreshRoute,
-} from "./public-auth-control.ts";
 import { recordOperatorFailure } from "./request-observability.ts";
 import { measureRequestPhase, RequestTiming, withRequestTiming } from "./request-timing.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
@@ -79,7 +70,6 @@ import type { RuntimeGitHub } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
 import type { RuntimeResume } from "./runtime-resume.ts";
 import type { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
-import { tokenCreateRoute, tokenListRoute, tokenRevokeRoute } from "./token-control.ts";
 import { ToolApiError } from "./tool-api.ts";
 import { describeToolFailure } from "./tool-failure.ts";
 
@@ -209,30 +199,11 @@ async function timedControlRequest(
   const url = new URL(request.url);
   const timing = options.timing;
   const route = url.pathname.slice(CONTROL_PREFIX.length);
-  const publicHandlers: Record<keyof typeof PUBLIC_CONTROL_ROUTES, () => Response | Promise<Response>> = {
-    "auth/methods": () => authMethodsRoute(request, options),
-    "auth/authorize": () => authorizeRoute(request, options),
-    "auth/exchange": () => exchangeRoute(request, options),
-    "auth/email/start": () => emailStartRoute(request, options),
-    "auth/email/verify": () => emailVerifyRoute(request, options),
-    "auth/refresh": () => refreshRoute(request, options),
-    "github/oauth/callback": () =>
-      options.githubAccount
-        ? options.githubAccount.callback(request)
-        : fail(503, "dependency_unavailable", "GitHub account authorization is not configured."),
-  };
-  if (Object.hasOwn(PUBLIC_CONTROL_ROUTES, route)) {
-    const publicRoute = route as keyof typeof PUBLIC_CONTROL_ROUTES;
-    const methods: readonly string[] = PUBLIC_CONTROL_ROUTES[publicRoute];
-    if (!methods.includes(request.method)) return fail(405, "invalid", `Use ${methods.join(" or ")}.`);
-    return publicHandlers[publicRoute]();
-  }
-  if (route === "token/list") return tokenListRoute(request, options);
-  if (route === "token/create") return tokenCreateRoute(request, options);
-  if (route === "token/revoke") return tokenRevokeRoute(request, options);
+  const registered = controlRoutes.get(route);
   const deletion = /^sandboxes\/([0-9a-f-]+)$/i.exec(route);
-  const method = deletion ? "DELETE" : (controlRoutes.get(route)?.method ?? "POST");
-  if (request.method !== method) return fail(405, "invalid", `Use ${method}.`);
+  const methods: readonly string[] = deletion ? ["DELETE"] : (registered?.methods ?? ["POST"]);
+  if (!methods.includes(request.method)) return fail(405, "invalid", `Use ${methods.join(" or ")}.`);
+  if (registered && "respond" in registered) return registered.respond(request, options);
   try {
     const caller = await timing.measure("auth", () => authenticatedCaller(request, options));
     if (vaultControlRoute(route) && url.search)
@@ -306,7 +277,7 @@ export async function dispatchControlCommand(
   options: ControlOptions,
 ): Promise<unknown> {
   const registered = controlRoutes.get(route);
-  if (registered) return registered.handler({ route, caller, body, options });
+  if (registered && "handler" in registered) return registered.handler({ route, caller, body, options });
   if (route.startsWith("skills/defaults/")) {
     if (!options.skillDefaults) throw new VaultError("unavailable", "Skill defaults unavailable.");
     return options.skillDefaults.command(caller, route.slice("skills/defaults/".length), body);
