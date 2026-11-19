@@ -50,10 +50,14 @@ export class Journal {
   get hasShortApplicationSecrets() {
     return this.applicationSecrets.size > 0;
   }
+  redactLiteralText(text: string) {
+    const scrubbed: string = JSON.parse(this.redact(JSON.stringify(text)));
+    return scrubbed;
+  }
   redactCommandOutput(capture: { text: string; truncated: boolean }, limit: number) {
     const mask = this.redactShortApplicationText;
     if (this.hasApplicationSecrets && capture.truncated) return { text: "[REDACTED]", truncated: true };
-    const scrubbed = this.redact(capture.text);
+    const scrubbed = this.redactLiteralText(this.redact(capture.text));
     const text = mask ? maskText(capture.text, scrubbed, mask) : scrubbed;
     if (text.length > limit) return { text: "[REDACTED]", truncated: true };
     return { text, truncated: capture.truncated };

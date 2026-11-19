@@ -1622,7 +1622,7 @@
     "packages/agent-runtime/src/skills.ts": 1,
     "packages/agent-runtime/src/state.ts": 8,
     "packages/agent-runtime/src/tool-cache.ts": 1,
-    "packages/agent-runtime/src/workspace-exec.ts": 2,
+    "packages/agent-runtime/src/workspace-exec.ts": 1,
     "packages/agent-runtime/test/configure-mcp.test.ts": 1,
     "packages/agent-runtime/test/github-parent.test.ts": 1,
     "packages/agent-runtime/test/runtime.test.ts": 1,
