@@ -59,7 +59,7 @@ function feed(db: PGlite) {
   );
 }
 
-function ingest(db: PGlite) {
+function ingest(db: Pick<PGlite, "query">) {
   return db.query(
     `insert into runtime_events (sandbox_id, sequence, epoch, event_enc)
      values ($1, 1, 1, decode('01','hex')), ($1, 2, 1, decode('02','hex'))
@@ -73,7 +73,10 @@ test("committed transition and runtime references share one increasing org curso
   await seedSandbox(db, "starting");
 
   await transition(db, ["starting"], "running", "runtime_enrolment", []);
-  await ingest(db);
+  await db.transaction(async (tx) => {
+    await ingest(tx);
+    expect((await tx.query("select id from event_log where kind = 'runtime_event'")).rows).toEqual([]);
+  });
   await ingest(db);
 
   const journal = await db.query<{ id: string }>("select id::text from sandbox_transitions");
@@ -112,7 +115,13 @@ test("physical sandbox deletion expires the feed with the runtime archive", asyn
   await ingest(db);
   expect((await feed(db)).rows).toHaveLength(2);
   await db.exec("reset role");
-  await db.query("delete from sandboxes where id = $1", [sandbox]);
+  await db.transaction(async (tx) => {
+    await tx.query(
+      "insert into runtime_events (sandbox_id, sequence, epoch, event_enc) values ($1, 3, 1, decode('03','hex'))",
+      [sandbox],
+    );
+    await tx.query("delete from sandboxes where id = $1", [sandbox]);
+  });
   expect((await db.query("select sequence from runtime_events")).rows).toEqual([]);
   expect((await feed(db)).rows).toEqual([]);
 });

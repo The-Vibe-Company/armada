@@ -26,11 +26,17 @@ language plpgsql security definer set search_path = '' as $$
 declare
   event_org_id uuid;
 begin
-  select s.org_id into strict event_org_id
+  select s.org_id into event_org_id
     from public.sandboxes s where s.id = new.sandbox_id;
 
+  -- A sandbox deleted in the same transaction has already expired.
+  if not found then
+    return null;
+  end if;
+
   -- A sequence alone orders allocation, not commits. Serialize allocations
-  -- until commit within each org so a cursor cannot skip a late lower ID.
+  -- near commit, after the producer's other work, so an org cursor cannot
+  -- skip a late lower ID.
   perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('armada.event_log:' || event_org_id, 0));
 
   if tg_table_name = 'sandbox_transitions' then
@@ -46,10 +52,12 @@ $$;
 revoke all on function public.append_sandbox_event_log() from public, anon, authenticated, service_role;
 
 -- Follow the canonical inserts, including during the server deploy overlap.
-create trigger sandbox_transitions_event_log
+create constraint trigger sandbox_transitions_event_log
   after insert on public.sandbox_transitions
+  deferrable initially deferred
   for each row execute function public.append_sandbox_event_log();
 
-create trigger runtime_events_event_log
+create constraint trigger runtime_events_event_log
   after insert on public.runtime_events
+  deferrable initially deferred
   for each row execute function public.append_sandbox_event_log();
