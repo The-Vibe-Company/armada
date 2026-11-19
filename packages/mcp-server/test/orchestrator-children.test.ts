@@ -392,6 +392,65 @@ test("revocation between reservation and dispatch cancels queued allocation", as
   }
 });
 
+test("revocation after snapshot admission releases a child allocation that never reached the provider", async () => {
+  const { close, db, sql, id, authority, token, selection } = await fixture();
+  try {
+    const boat = fakeBoat();
+    const admissionSql: Sql = {
+      query: sql.query,
+      async transaction(work) {
+        const result = await sql.transaction!(work);
+        await authority.revoke(id);
+        return result;
+      },
+    };
+    const children = createSandboxChildren(sql, authority, {
+      async launch(operation, selected) {
+        return launchSandboxChild({
+          sql,
+          provider: boat.provider,
+          operation,
+          selection: selected,
+          stores: {
+            goldens: createSqlGoldenStore(admissionSql),
+            sandboxes: createSqlSandboxStore(sql),
+            credentials: {
+              async resolve() {
+                throw Error("no legacy fallback");
+              },
+            },
+          },
+          namedCredentials: launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY),
+        });
+      },
+      async read() {
+        throw Error("unexpected");
+      },
+      async message() {
+        throw Error("unexpected");
+      },
+      async stop() {
+        throw Error("unexpected");
+      },
+      async reconcile(op) {
+        return { operationId: op.id, sandboxId: op.sandboxId, state: "unknown" };
+      },
+    });
+    const receipt = await children.launch(token, "revoked-after-admission", selection);
+    expect(receipt.state).toBe("failed");
+    expect(boat.forks).toHaveLength(0);
+    expect(
+      (
+        await db.query("select sandbox_id from ordinary_launch_snapshot_intents where sandbox_id=$1", [
+          receipt.sandboxId,
+        ])
+      ).rows,
+    ).toEqual([]);
+  } finally {
+    await close();
+  }
+});
+
 test("missing actual named-account schema fails before fork without an uncertain allocation reservation", async () => {
   const { close, db, sql, authority, token, selection } = await fixture("running", "anthropic");
   try {

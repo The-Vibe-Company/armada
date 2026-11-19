@@ -32,7 +32,7 @@ import {
   withUsageTotals,
 } from "@armada/core";
 import type { Provider } from "@armada/core/server";
-import { assertGoldenBackendBinding, assertSqlGoldenMutation } from "@armada/core/server";
+import { assertGoldenBackendBinding, assertSqlGoldenMutation, beginSnapshotLaunch } from "@armada/core/server";
 import { beginGoldenOperation, reconcileGoldenOperations } from "../../core/src/golden-store.ts";
 import { recordNativeAccountExhaustion } from "./account-exhaustion.ts";
 import { publishAccountSpend, unmeasuredUsage } from "./account-spend.ts";
@@ -40,7 +40,7 @@ import type { Caller } from "./caller.ts";
 import { scopedOrg } from "./control-caller.ts";
 import { createResourceStore, type ResourceStore } from "./resource-store.ts";
 import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
-import { recordObservedRuntimeState } from "./sandbox-lifecycle.ts";
+import { recordObservedRuntimeState, settleRuntimeTurn } from "./sandbox-lifecycle.ts";
 import { SANDBOX_MEMBER, SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 import { admittedTurnContexts, stampTurnPricing, withServerCost } from "./turn-pricing.ts";
 import { preserveBeforeStop, readWorkRecovery, type StopAuthority } from "./work-preservation.ts";
@@ -265,6 +265,12 @@ export function createSqlData(
       },
       reconcileOperations: (golden, actor) => reconcileGoldenOperations(sql, golden, actor),
       beginOperation: (id, expected) => beginGoldenOperation(sql, id, expected),
+      beginSnapshotLaunch(golden, actor, sandboxId) {
+        ownOrg(golden.orgId);
+        if (actor.userId !== caller.userId || actor.orgId !== golden.orgId)
+          throw new GoldenError("forbidden", "Caller mismatch.");
+        return beginSnapshotLaunch(sql, golden, actor, sandboxId);
+      },
       assertBackendBinding: (golden, provider) => assertGoldenBackendBinding(sql, golden, provider),
       async assertMutation(golden, actor) {
         if (actor.userId !== caller.userId || !orgIds.includes(golden.orgId))
@@ -446,6 +452,10 @@ export function createSqlData(
            ), snapshot_reference as (
              insert into public.sandbox_source_snapshots (sandbox_id,snapshot_id)
              select id,$27::text from inserted where $27::text is not null
+             returning sandbox_id
+           ), consumed_intent as (
+             delete from public.ordinary_launch_snapshot_intents i using snapshot_reference r
+             where i.sandbox_id=r.sandbox_id
            )
            select * from inserted`,
           [
@@ -954,6 +964,18 @@ export function createSqlData(
               [...scope, id],
             );
             return locked.rows.length ? applyUpdate(tx) : { rows: [] };
+          });
+        } else if (
+          patch.taskPromptId &&
+          patch.expectedGeneration !== undefined &&
+          (patch.status === "running" || patch.turnActivity === "finish") &&
+          sql.transaction
+        ) {
+          const generation = patch.expectedGeneration + (patch.finishActivity ? 1 : 0);
+          result = await sql.transaction(async (tx) => {
+            const published = await applyUpdate(tx);
+            if (published.rows[0]?.id) await settleRuntimeTurn(tx, id, generation);
+            return published;
           });
         } else {
           result = await applyUpdate(sql);

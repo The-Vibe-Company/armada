@@ -1,5 +1,5 @@
 // What the landing says that the code decides (THE-887, restored from
-// armada-v1-final by #564, retold by #587). test/landing.test.ts holds each of
+// armada-v1-final by #564, retold by #587). landing.test.ts holds each of
 // these to its source: the CLI's help, the README's install line, the GitHub
 // token's lifetime and the vault's cipher.
 import { VERSION as CORE_VERSION } from "@armada/core";

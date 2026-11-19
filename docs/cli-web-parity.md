@@ -22,7 +22,7 @@ Commands below start with `armada`. Select an organization with `org use NAME|UU
 | Snapshot builds | Build/rebuild workflow | Use `snapshot update` for Boat/Modal or `snapshot rebuild` for Docker |
 | Snapshot visibility | Owner/admin visibility controls | `snapshot visibility UUID --visibility private\|org` |
 | Launch | Snapshot, agent, model, effort, TTL and MCP connections | `launch PRIVATE_SNAPSHOT --provider boat --agent claude\|codex\|opencode [PROMPT] --model ID --reasoning-effort LEVEL --ttl 4h --connections UUID,UUID`. Ordinary cloud launches inherit snapshot visibility. |
-| Repository context | Select a configured repository directory | `launch ... --repo DIR` or `--repo owner/repo`; persisted native cwd, including idle launches |
+| Repository context | Select a configured repository directory for a Boat or Modal snapshot | `launch ... --repo DIR` or `--repo owner/repo`; persisted initial working directory, including idle launches |
 | Sandbox list | Authorized filters and pages | `list --status STATUS --agent HARNESS --golden UUID --owner UUID\|me --page N --limit N [--json] [--page-info]` |
 | Sandbox detail / status | Sandbox page and prompt status | `detail ID`, `status ID`; actual stored privacy and repository context |
 | Agent turns | Send, steer and interrupt | `send ID PROMPT`, `steer ID TEXT`, `interrupt ID`; model/effort overrides where supported |
@@ -81,7 +81,7 @@ Boat and Modal builds use durable server jobs. Create/update returns an admissio
 
 A snapshot's provider is immutable. Same-name Boat and Modal snapshots are distinct; an ambiguous CLI selection requires `--provider`. Rebuild reads the stored target and preserves ownership/visibility. Unconfigured providers fail explicitly; Modal never falls back to Boat. A reported capacity is metadata, not a guarantee that a build will be admitted.
 
-Repository context is a real native working directory, persisted per sandbox. It is not filesystem confinement. It cannot be changed by later send/steer operations or by editing the source snapshot. See [repository context](repository-context.md).
+Repository context sets the initial working directory and is persisted per sandbox. It is not filesystem confinement. It cannot be changed by later send/steer operations or by editing the source snapshot. See [repository context](repository-context.md).
 
 MCP connections are prepared before a new agent turn, including after sandbox resume. Restored sandboxes receive fresh access while retaining the conversation. See the [MCP lifecycle](mcp-bootstrap.md) for native configuration, concurrent resume and revocation behavior.
 

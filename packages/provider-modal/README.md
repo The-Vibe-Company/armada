@@ -334,8 +334,8 @@ credentials/sessions/bootstrap/host keys. Named snapshot deletion records a dura
 tombstone first; source leases protect concurrent private/org fork reservations.
 Images remain while any non-deleted fork references their lineage, including after
 restore changes its current working Image. Last-fork deletion performs GC across
-those references, with idempotent Image deletion/tombstone purge. collectGarbage()
-retries interrupted GC explicitly. Server events remain readable after deletion.
+those references, with idempotent Image deletion/tombstone purge. `collectRetiredSnapshot(name)`
+retries collection for a specific retired snapshot. Server events remain readable after deletion.
 Control tables are server-only/RLS-enabled. Secure golden org-admin authorization
 remains upstream, in addition to live membership/owner/binding checks here.
 

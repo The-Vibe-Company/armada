@@ -124,7 +124,6 @@ export interface ModalProvider extends Provider {
   configureMcp(request: { sandboxId: string; configuration: McpConfiguration }): Promise<{ revision: string }>;
   restoreGoldenMaster(request: { sandboxId?: string; snapshotId: string }): Promise<SandboxInfo>;
   resourceReceipts(): Promise<ModalResourceReceipt[]>;
-  collectGarbage(): Promise<void>;
   collectRetiredSnapshot: NonNullable<Provider["collectRetiredSnapshot"]>;
   sshKey(request: {
     sandboxId: string;
@@ -689,10 +688,6 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       return { status: "deleted" };
     },
     delete: deleteSandbox,
-    async collectGarbage() {
-      await bound();
-      await collectImages();
-    },
     async sshKey({ sandboxId, key }) {
       const row = await ready(sandboxId);
       return store.lease(sandboxId, async (current) => {

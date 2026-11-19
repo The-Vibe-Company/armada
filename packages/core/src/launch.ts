@@ -570,21 +570,18 @@ export async function launchSandbox(
   const strategy = plan.runtime ? runtimeLaunch(plan.runtime) : nativeLaunch;
   const id = (options.newId ?? (() => crypto.randomUUID()))();
   const templateAdmission = options.templateSnapshotAdmission;
-  const releaseOperation = templateAdmission
-    ? undefined
-    : await stores.goldens.beginOperation?.(golden.id, {
-        kind: "launch",
-        snapshotId: golden.providerSnapshotId,
-        sandboxId: golden.providerSandboxId,
-      });
-  let childRecorded = false;
+  let releaseSnapshotIntent: (() => Promise<void>) | undefined;
   let noAllocation = true;
   try {
     const forked = await launch.admit({
       actor,
       id,
       forkEnv: () => strategy.forkEnv(plan),
-      beforeAllocation: () => timing.mark("preallocation_admission"),
+      beforeAllocation: async () => {
+        if (templateAdmission) await templateAdmission.admit();
+        else releaseSnapshotIntent = await stores.goldens.beginSnapshotLaunch?.(golden, actor, id);
+        timing.mark("preallocation_admission");
+      },
       allocationRisk: (risk) => {
         noAllocation = !risk;
       },
@@ -638,7 +635,6 @@ export async function launchSandbox(
         ...(request.stopWhenWorkMerged === undefined ? {} : { stopWhenWorkMerged: request.stopWhenWorkMerged }),
         ...(request.externalRef === undefined ? {} : { externalRef: request.externalRef }),
       });
-      childRecorded = true;
     } catch (error) {
       await quietly(async () => {
         if (await deleteNeverStartedSandbox(provider, forked.id)) noAllocation = true;
@@ -852,12 +848,12 @@ export async function launchSandbox(
         );
       }
     }
-    if (noAllocation) templateAdmission?.confirmAbsence();
-    if (childRecorded || noAllocation) {
+    if (noAllocation) {
+      templateAdmission?.confirmAbsence();
       try {
-        await releaseOperation?.();
+        await releaseSnapshotIntent?.();
       } catch {
-        await quietly(async () => console.warn("Launch operation cleanup failed; fence reconciliation is required."));
+        await quietly(async () => console.warn("Launch snapshot intent cleanup failed; reconciliation is required."));
       }
     }
   }

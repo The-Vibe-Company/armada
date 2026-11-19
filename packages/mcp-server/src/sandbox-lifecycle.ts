@@ -1,5 +1,6 @@
 import type { SandboxStatus } from "@armada/core";
 import {
+  decryptSecret,
   HOST_CAPABILITIES,
   isFinalPromptStatus,
   isSandboxProvider,
@@ -37,6 +38,7 @@ interface SandboxTransition {
     | "resume_admission"
     | "runtime_enrolment"
     | "runtime_observation"
+    | "runtime_turn"
     | "owner"
     | "finish"
     | "expiry"
@@ -85,6 +87,72 @@ export async function transitionSandbox(tx: Sql, input: SandboxTransition) {
   if (!result.applied) return { kind: "conflict" } satisfies SandboxTransitionResult;
   if (result.generation === null) throw new Error("Applied sandbox transition did not return a generation.");
   return { kind: "applied", generation: Number(result.generation) } satisfies SandboxTransitionResult;
+}
+
+export async function settleRuntimeTurn(tx: Sql, sandboxId: string, generation: number | string, key?: string) {
+  const {
+    rows: [eligible],
+  } = await tx.query<{ needs_command_evidence: boolean; epoch: string }>(
+    `select s.provider='docker' as needs_command_evidence,r.epoch::text
+     from public.sandboxes s join public.runtime_enrolments r
+       on r.sandbox_id=s.id and r.lifecycle_generation=s.lifecycle_generation
+     where s.id=$1 and s.lifecycle_generation=$2 and s.status='running'
+       and s.stop_requested_at is null and s.stopped_at is null and s.deleted_at is null
+       and s.expires_at>clock_timestamp() and r.runtime_hash is not null
+       and case when s.provider='docker' then
+         $3::boolean and exists(select 1 from public.runtime_commands c
+           where c.sandbox_id=s.id and c.epoch=r.epoch and starts_with(c.request_id,'docker_prompt_'))
+         and not exists(
+           select 1 from public.runtime_commands c where c.sandbox_id=s.id and c.epoch=r.epoch
+             and starts_with(c.request_id,'docker_prompt_')
+             and (c.result_enc is null or (c.accepted_prompt_id is not null and not exists(
+               select 1 from public.runtime_idle_turns t where t.sandbox_id=s.id
+                 and t.prompt_id=c.accepted_prompt_id::text and t.settled))))
+       else
+         ((s.provider='boat' and s.boat_runtime) or (s.provider='modal' and s.runtime_transport='dialout'))
+         and exists(select 1 from public.runtime_idle_turns t where t.sandbox_id=s.id
+           and t.prompt_id=s.task_prompt_id and t.settled)
+       end`,
+    [sandboxId, generation, key !== undefined],
+  );
+  if (!eligible) return;
+  if (eligible.needs_command_evidence && key !== undefined) {
+    const ambiguousReplies = await tx.query<{ result_enc: Uint8Array<ArrayBuffer> }>(
+      `select c.result_enc from public.runtime_commands c
+       where c.sandbox_id=$1 and c.epoch=$2 and starts_with(c.request_id,'docker_prompt_')
+         and c.sequence>coalesce((select max(p.sequence) from public.runtime_commands p
+           where p.sandbox_id=$1 and p.epoch=$2 and starts_with(p.request_id,'docker_prompt_')
+             and p.accepted_prompt_id is not null),0)
+       order by c.sequence desc`,
+      [sandboxId, eligible.epoch],
+    );
+    for (const { result_enc } of ambiguousReplies.rows) {
+      const reply = JSON.parse(await decryptSecret(result_enc, key));
+      if (
+        (reply.status === 400 || reply.status === 409) &&
+        ["conversation_busy", "invalid_request"].includes(reply.body?.error)
+      )
+        continue;
+      if (reply.status !== 200) return;
+      const promptId = reply.body?.result?.promptId;
+      if (typeof promptId !== "string") return;
+      const settled = await tx.query(
+        "select 1 from public.runtime_idle_turns where sandbox_id=$1 and prompt_id=$2 and settled",
+        [sandboxId, promptId],
+      );
+      if (!settled.rows.length) return;
+      break;
+    }
+  }
+  await transitionSandbox(tx, {
+    sandboxId,
+    expectedGeneration: generation,
+    fromStates: ["running"],
+    toState: "ready",
+    actor: "runtime_turn",
+    code: "runtime_turn_settled",
+    effects: [],
+  });
 }
 
 export async function recordDockerCleanupReceipt(

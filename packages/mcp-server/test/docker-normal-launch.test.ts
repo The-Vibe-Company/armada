@@ -1180,28 +1180,70 @@ test("the normal HTTP route accepts the dashboard body and returns a launched sa
       status: "finished",
     },
   ];
-  const journal = await createRuntimeEvents(authority, key).route(
-    new Request("https://armada.example/api/runtime/events", {
-      method: "POST",
-      headers: { authorization: `Bearer ${session.runtimeToken}`, "x-armada-runtime-epoch": session.epoch },
-      body: JSON.stringify({
-        sandboxId: f.body.requestId,
-        generation: session.epoch,
-        events: events.map((event, index) => ({ sequence: index + 1, event })),
+  const scope = { org: f.actor.orgId };
+  const complete = (batch: AgentEvent[], sequence: number) =>
+    createRuntimeEvents(authority, key).route(
+      new Request("https://armada.example/api/runtime/events", {
+        method: "POST",
+        headers: { authorization: `Bearer ${session.runtimeToken}`, "x-armada-runtime-epoch": session.epoch },
+        body: JSON.stringify({
+          sandboxId: f.body.requestId,
+          generation: session.epoch,
+          events: batch.map((event, index) => ({ sequence: sequence + index, event })),
+        }),
       }),
+    );
+  await sql.query("update runtime_commands set accepted_prompt_id=null where sandbox_id=$1", [f.body.requestId]);
+  expect(await (await complete(events.slice(0, 2), 1))?.json()).toEqual({ acknowledgedSequence: 2 });
+  expect(await post("sandbox/status", { ...scope, id: f.body.requestId })).toMatchObject({ status: "running" });
+  const busyRequest = randomUUID();
+  expect(
+    await createDockerRuntimeLifecycle(sql, key, { enabled: true }).prompt(f.actor, f.body.requestId, {
+      requestId: busyRequest,
+      text: "Competing prompt",
+      conversationId: f.receipt.conversationId,
     }),
-  );
+  ).toMatchObject({ state: "pending" });
+  const competing = createRuntimeCommands(authority, key);
+  const rejectBusy = () =>
+    competing.complete(session.runtimeToken, session.epoch, {
+      epoch: session.epoch,
+      requestId: `docker_prompt_${busyRequest}`,
+      status: 409,
+      body: { version: 1, requestId: `docker_prompt_${busyRequest}`, error: "conversation_busy" },
+    });
+  const journal = await complete(events.slice(2), 3);
   expect(journal?.status).toBe(200);
   expect(await journal?.json()).toEqual({ acknowledgedSequence: 3 });
-  const scope = { org: f.actor.orgId };
-  const listed = (await post("sandbox/list", scope)) as { sandboxes: SandboxListMetadata[] };
+  expect(await post("sandbox/status", { ...scope, id: f.body.requestId })).toMatchObject({ status: "running" });
+  await database().exec(
+    "alter table sandbox_transitions add constraint test_reject_settlement check (code <> 'runtime_turn_settled') not valid",
+  );
+  try {
+    await expect(rejectBusy()).rejects.toThrow();
+    expect(await competing.result(f.actor.userId, f.body.requestId, `docker_prompt_${busyRequest}`)).toEqual({
+      state: "pending",
+    });
+  } finally {
+    await database().exec("alter table sandbox_transitions drop constraint test_reject_settlement");
+  }
+  await rejectBusy();
+  const listed = (await post("sandbox/list", { ...scope, status: ["ready"] })) as {
+    sandboxes: SandboxListMetadata[];
+  };
   expect(listed.sandboxes).toHaveLength(1);
-  expect(listed.sandboxes[0]).toMatchObject({ id: f.body.requestId, provider: "docker", boatId: null });
+  expect(listed.sandboxes[0]).toMatchObject({
+    id: f.body.requestId,
+    provider: "docker",
+    boatId: null,
+    status: "ready",
+  });
   const status = (await post("sandbox/status", { ...scope, id: f.body.requestId })) as DockerSandboxStatus;
   expect(status).toMatchObject({
     id: f.body.requestId,
     provider: "docker",
     golden: null,
+    status: "ready",
     settled: true,
     prompt: { promptId: f.receipt.promptId, state: "finished" },
   });
