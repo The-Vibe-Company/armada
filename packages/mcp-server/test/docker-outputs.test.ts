@@ -9,7 +9,7 @@ import { observeRequest } from "../src/request-observability.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeSelfFinish, selfFinishToken } from "../src/sandbox-finish.ts";
-import { createSandboxOutputs } from "../src/sandbox-outputs.ts";
+import { outputJobFixture } from "./output-job.fixture.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
@@ -96,7 +96,7 @@ async function fixture() {
     });
   }
   const reader = createDockerOutputReader(sql, ENCRYPTION_KEY, clock);
-  const service = createSandboxOutputs(
+  const service = outputJobFixture(
     sql,
     ENCRYPTION_KEY,
     async () => {
