@@ -119,6 +119,18 @@ export function dockerLaunchBlocker(
 export const UNKNOWN_DOCKER_LAUNCH =
   "The Armada server did not confirm the launch. Launch again without changing anything: the server recognises the same request and does not start a second sandbox.";
 
+const DOCKER_LAUNCH_KEY_PREFIX = "docker:";
+
+export function createDockerLaunchKey(): string {
+  return DOCKER_LAUNCH_KEY_PREFIX + crypto.randomUUID();
+}
+
+export function isDockerLaunchKey(key: string): boolean {
+  return key.startsWith(DOCKER_LAUNCH_KEY_PREFIX) && isUuid(key.slice(DOCKER_LAUNCH_KEY_PREFIX.length));
+}
+
+export const PREVIOUS_DOCKER_LAUNCH = "Inspect the sandbox from the previous launch before submitting a new request.";
+
 /** Where the dialog keeps one host's unconfirmed launch key, across closing and reopening it. */
 export function dockerLaunchKeyStorage(hostId: string): string {
   return `armada-docker-launch:${hostId}`;
@@ -169,8 +181,8 @@ export type DockerLaunchArgs = {
 
 /** The `sandbox/launch` body for a Docker host: an agent in the official Armada environment, private, with no image override. */
 export function dockerLaunchBody(args: DockerLaunchArgs): DockerLaunchRequest {
-  if (![args.org, args.hostId, args.credentialId, args.idempotencyKey].every(isUuid))
-    throw new Error("Docker launch identifiers must be UUIDs.");
+  if (![args.org, args.hostId, args.credentialId].every(isUuid) || !isDockerLaunchKey(args.idempotencyKey))
+    throw new Error("Docker launch identifiers or launch key are invalid.");
   return {
     org: args.org,
     provider: "docker",

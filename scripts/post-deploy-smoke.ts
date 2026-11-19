@@ -118,8 +118,8 @@ type DockerModelCase = Pick<SmokeCase, "org" | "model" | "modelAccountId"> & {
 type RealModelCase = SmokeCase | DockerModelCase;
 type RealModelLaunchSource = { golden: string; connections: [] } | { hostId: string };
 const smokeLaunch = {
-  modal: { keyField: "idempotencyKey", ready: ["ready"] },
-  docker: { keyField: "requestId", ready: ["ready", "running"] },
+  modal: { ready: ["ready"] },
+  docker: { ready: ["ready", "running"] },
 };
 interface SmokeIo {
   fetch: (url: string, init: RequestInit) => Promise<Response>;
@@ -615,13 +615,13 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
       record(result);
       if (sandboxLaunch) {
         const provider = smokeReceiptProvider(result);
-        const input = body as { provider?: string; requestId?: string };
-        if (!input.requestId && provider === "boat") fail("invalid_response");
+        const input = body as { provider?: string };
+        if (provider === "boat") fail("invalid_response");
         if (provider !== input.provider)
           throw new SmokeFailure("invalid_response", response.status, undefined, launchResponse);
         if (typeof result?.sandbox?.id !== "string" || !result.sandbox.id)
           throw new SmokeFailure("invalid_response", response.status, undefined, launchResponse);
-        if (input.requestId && (id !== input.requestId || result.sandbox.provider !== input.provider))
+        if (input.provider === "docker" && result.sandbox.provider !== "docker")
           throw new SmokeFailure("invalid_response", response.status, undefined, launchResponse);
       }
       if (
@@ -759,15 +759,13 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     requiresLaunchReceipt = false,
   ) {
     const path = "sandbox/launch";
-    const requestId = crypto.randomUUID();
-    const requestKey = `post-deploy-smoke:${requestId}`;
+    const requestKey = `post-deploy-smoke:${crypto.randomUUID()}`;
     const launch = smokeLaunch[item.provider];
-    const expectedId = launch.keyField === "requestId" ? requestId : undefined;
     return launches.track(path, async (record) => {
       const launchBody = {
         ...body,
         org: item.org,
-        [launch.keyField]: expectedId ?? requestKey,
+        idempotencyKey: requestKey,
         externalRef: requestKey,
       };
       try {
@@ -796,7 +794,6 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
               typeof row?.id === "string" &&
               SANDBOX_ID.test(row.id) &&
               row.provider === item.provider &&
-              (!expectedId || row.id === expectedId) &&
               row.externalRef === requestKey
             ) {
               if (observedId === undefined) {
@@ -1791,18 +1788,10 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
       if (!launch) return io.fetch(url, init);
       const body = JSON.parse(String(init.body));
       const key = body.externalRef;
-      const keyedDockerLaunch =
-        url.endsWith("/sandbox/launch") &&
-        body.provider === "docker" &&
-        typeof body.requestId === "string" &&
-        SANDBOX_ID.test(body.requestId) &&
-        key === `post-deploy-smoke:${body.requestId}`;
       const requestKey =
         typeof key === "string" &&
         /^post-deploy-smoke:[0-9a-f-]{36}$/.test(key) &&
-        (key === body.idempotencyKey ||
-          (url.endsWith("/templates/launch") && key === body.requestKey) ||
-          keyedDockerLaunch)
+        (key === body.idempotencyKey || (url.endsWith("/templates/launch") && key === body.requestKey))
           ? key
           : `post-deploy-smoke:${crypto.randomUUID()}`;
       const org = body.org;
@@ -1823,16 +1812,13 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         state?: unknown;
         id?: unknown;
       } | null;
+      const keyedDockerLaunch = url.endsWith("/sandbox/launch") && requestKey === key && body.provider === "docker";
       const keyedModalLaunch = args[0] === "--parity" && requestKey === key && body.provider === "modal";
       const keyedLaunch = keyedModalLaunch || keyedDockerLaunch;
       const id = keyedLaunch ? result?.sandbox?.id : (result?.sandbox?.id ?? result?.id);
       const provider = smokeReceiptProvider(result);
       const unverifiedLaunch =
-        keyedLaunch &&
-        (!response.ok ||
-          provider !== body.provider ||
-          result?.sandbox?.provider !== body.provider ||
-          (keyedDockerLaunch && id !== body.requestId));
+        keyedLaunch && (!response.ok || provider !== body.provider || result?.sandbox?.provider !== body.provider);
       if (!unverifiedLaunch && typeof id === "string" && SANDBOX_ID.test(id) && typeof org === "string") {
         const row: SmokeSandboxReceipt = {
           requestKey,

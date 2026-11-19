@@ -919,7 +919,7 @@ omission on those paths is refused, not silently billed to another account (#157
 Coordinator verification after normal deployment: mark a personal Codex
 subscription default while retaining a personal API-key account, launch on the
 owned Docker host without `--credential-id`, and inspect the returned pin. Repeat
-the same request ID after changing the default: it must return the same sandbox
+the same idempotency key after changing the default: it must return the same sandbox
 without allocation/rebilling. An explicit API-key account must remain explicit.
 This procedure is not evidence that live subscription auth has passed.
 
@@ -1208,7 +1208,7 @@ Production prerequisites to compare with the passing staging environment:
   proves polling/authentication, not any of the above runtime prerequisites.
 
 After release, the coordinator must retry the owner's normal CLI launch with
-its original body/request ID, inspect any retained reservation first, then verify
+its original body and idempotency key, inspect any retained reservation first, then verify
 host create, runtime enrolment/readiness and an actual harness reply. Neither
 unit tests nor passing staging probes establish that production is configured.
 

@@ -1054,7 +1054,7 @@ test("canonical Docker admission replays a scoped key and makes the external ref
 
 test("the normal HTTP route accepts the dashboard body and returns a launched sandbox readable through normal controls", async () => {
   const f = await fixture();
-  const idempotencyKey = f.body.requestId;
+  const idempotencyKey = `docker:${f.body.requestId}`;
   f.body.requestId = dockerLaunchRequestId(key, f.actor.userId, f.actor.orgId, idempotencyKey);
   const body = dockerLaunchBody({
     org: f.actor.orgId,

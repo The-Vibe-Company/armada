@@ -16,7 +16,7 @@ import { readDockerLaunchOption, readSelectedDockerHosts } from "@/lib/data/dock
 import { listSelectedAccounts } from "@/lib/data/model-accounts";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { requireViewer } from "@/lib/data/viewer";
-import { UNKNOWN_DOCKER_LAUNCH } from "@/lib/docker-launch";
+import { isDockerLaunchKey, PREVIOUS_DOCKER_LAUNCH, UNKNOWN_DOCKER_LAUNCH } from "@/lib/docker-launch";
 import { snapshotBuildHostBlocker } from "@/lib/docker-snapshots";
 import { mcpUrl } from "@/lib/env";
 import { launchFailureMessage, postSandboxLaunch } from "@/lib/launch";
@@ -90,7 +90,9 @@ export async function launchFromDockerSnapshot(_previous: ActionResult | null, d
     idempotencyKey = formString(data, LAUNCH_KEY_FIELD),
     harness = formString(data, "harness") as Harness;
   if (!selected || org !== selected.org.id) return fail("Switch to that organization first.");
-  if (!isUuid(snapshotId) || !isUuid(idempotencyKey) || !HARNESSES.includes(harness))
+  if (isUuid(idempotencyKey))
+    return fail(PREVIOUS_DOCKER_LAUNCH, { href: `/sandboxes/${idempotencyKey}`, label: "Inspect previous sandbox" });
+  if (!isUuid(snapshotId) || !isDockerLaunchKey(idempotencyKey) || !HARNESSES.includes(harness))
     return fail("That launch request is not valid.");
   if (formString(data, "armada_access")) return fail("Armada delegation is not supported for host snapshots yet.");
   const ttl = ttlChoice(formString(data, "ttl"), "docker");

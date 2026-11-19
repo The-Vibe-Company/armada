@@ -17,7 +17,14 @@ import {
   HOSTS_PATH,
   hostNameInput,
 } from "@/lib/docker-hosts";
-import { dockerHarnesses, dockerLaunchBlocker, dockerLaunchBody, UNKNOWN_DOCKER_LAUNCH } from "@/lib/docker-launch";
+import {
+  dockerHarnesses,
+  dockerLaunchBlocker,
+  dockerLaunchBody,
+  isDockerLaunchKey,
+  PREVIOUS_DOCKER_LAUNCH,
+  UNKNOWN_DOCKER_LAUNCH,
+} from "@/lib/docker-launch";
 import { mcpUrl } from "@/lib/env";
 import { HARNESS_LABELS } from "@/lib/labels";
 import { postSandboxLaunch } from "@/lib/launch";
@@ -115,7 +122,10 @@ export async function launchOnDockerHost(
   const org = formString(data, "org");
   const hostId = formString(data, "hostId");
   const idempotencyKey = formString(data, LAUNCH_KEY_FIELD);
-  if (!isUuid(org) || !isUuid(hostId) || !isUuid(idempotencyKey)) return fail("That request is not valid.");
+  if (!isUuid(org) || !isUuid(hostId)) return fail("That request is not valid.");
+  if (isUuid(idempotencyKey))
+    return fail(PREVIOUS_DOCKER_LAUNCH, { href: `/sandboxes/${idempotencyKey}`, label: "Inspect previous sandbox" });
+  if (!isDockerLaunchKey(idempotencyKey)) return fail("That launch key is not valid.");
   if (!(await isSelectedOrganization(org))) return fail("Switch to that organization first.");
   const [hosts, option, accounts] = await Promise.all([
     readSelectedDockerHosts(),

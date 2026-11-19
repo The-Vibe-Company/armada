@@ -48,13 +48,17 @@ test.each([
       const body = JSON.parse(String(init.body));
       switch (new URL(url).pathname) {
         case "/api/v1/sandbox/launch":
+          if (body.provider === "docker") {
+            expect(body.idempotencyKey).toBe(body.externalRef);
+            expect(body).not.toHaveProperty("requestId");
+          }
           launches.push({ provider: body.provider, credentialId: body.credentialId });
           if (body.provider === "docker" && scenario === "recovered Docker launch receipt") {
-            dockerAllocation = { id: body.requestId, externalRef: body.externalRef };
+            dockerAllocation = { id: id(7), externalRef: body.externalRef };
             return Response.json({ sandbox: { id: id(6) } });
           }
           return Response.json({
-            sandbox: { id: body.provider === "docker" ? body.requestId : id(5), provider: body.provider },
+            sandbox: { id: body.provider === "docker" ? id(7) : id(5), provider: body.provider },
           });
         case "/api/v1/sandbox/list":
           expect(body.externalRef).toBe(dockerAllocation?.externalRef);
