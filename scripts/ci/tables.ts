@@ -9,6 +9,7 @@ const owners = [
     "sandboxes sandbox_transitions",
     [`${core}/sandbox.ts`, `${server}/sandbox-lifecycle.ts`, `${server}/sandbox-finish.ts`],
   ],
+  ["triggers trigger_deliveries", [`${server}/inbound-trigger-store.ts`]],
   ["jobs", [`${server}/jobs/store.ts`]],
   ["runtime_resumes", [`${server}/runtime-resume.ts`, `${server}/sandbox-lifecycle.ts`]],
   ["runtime_*", [`${server}/runtime-*.ts`]],
