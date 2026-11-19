@@ -42,7 +42,7 @@ test("a golden build receipt and its shared job commit or roll back together", a
   await db.query(`${admit} on conflict (owner_id, org_id, idempotency_key) do nothing`, [queued, org, owner]);
   expect(
     (
-      await db.query(`select id, kind, org_id, idem_key, state, sandbox_id, generation, payload_enc
+      await db.query(`select id, kind, org_id, idem_key, state, sandbox_id, generation, payload_enc, max_attempts, deadline_at
                       from public.jobs`)
     ).rows,
   ).toEqual([
@@ -55,6 +55,8 @@ test("a golden build receipt and its shared job commit or roll back together", a
       sandbox_id: null,
       generation: null,
       payload_enc: null,
+      max_attempts: 1,
+      deadline_at: null,
     },
   ]);
 });
@@ -87,10 +89,10 @@ test("golden build backfill enqueues each outstanding receipt and skips terminal
         [failed],
       );
       await tx.exec(await Bun.file(migration).text());
-      expect((await tx.query("select id from public.jobs order by id")).rows).toEqual([
-        { id: queued },
-        { id: running },
-        { id: recovering },
+      expect((await tx.query("select id, max_attempts, deadline_at from public.jobs order by id")).rows).toEqual([
+        { id: queued, max_attempts: 1, deadline_at: null },
+        { id: running, max_attempts: 1, deadline_at: null },
+        { id: recovering, max_attempts: 1, deadline_at: null },
       ]);
       throw checked;
     }),
