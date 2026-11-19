@@ -446,7 +446,7 @@ export class GoldenBuildJobs {
     if (row) await this.recoverReceipt(row);
   }
 
-  private async recoverReceipt(row: Job): Promise<void> {
+  private async recoverReceipt(row: Job) {
     const reservationRecovery = HOST_CAPABILITIES[row.provider].goldenBuilderRecovery === "dispose-reservation";
     // Fairness bookkeeping only: retained, unauthorized or temporarily unavailable heads
     // must not starve other abandoned jobs. Never change their fence/state/capacity/proof.
@@ -611,7 +611,7 @@ export class GoldenBuildJobs {
     return true;
   }
 
-  private async claimOne(): Promise<Job | undefined> {
+  private async claimOne() {
     await this.options.sql.query(
       "update public.golden_build_jobs set state='recovery_required',error_code='build_failed',updated_at=now() where state='running' and (lease_until<=clock_timestamp() or deadline<=clock_timestamp())",
     );
@@ -650,7 +650,7 @@ export class GoldenBuildJobs {
     });
   }
 
-  private async executeReceipt(job: Job): Promise<void> {
+  private async executeReceipt(job: Job) {
     let safeToRelease = true;
     // The candidate this attempt tried to record before publication, kept even when that record
     // failed: an unsafe outcome retries it under the fence in the final write.
