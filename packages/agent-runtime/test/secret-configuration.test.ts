@@ -367,8 +367,8 @@ test("many colliding Claude usage keys stay bounded and stable after masking", (
   const journal = new Journal(":memory:", (text) => text);
   try {
     const modelUsage = Object.fromEntries(
-      Array.from({ length: 230 }, (_, index) => [
-        index.toString(2).padStart(10, "0").replaceAll("0", "a").replaceAll("1", "b"),
+      Array.from({ length: 4098 }, (_, index) => [
+        index.toString(2).padStart(13, "0").replaceAll("0", "a").replaceAll("1", "b"),
         { inputTokens: index + 1 },
       ]),
     );
@@ -377,19 +377,19 @@ test("many colliding Claude usage keys stay bounded and stable after masking", (
       at: 1,
       kind: "other",
       type: "result",
-      data: { modelUsage: { model: { inputTokens: 300 }, ...modelUsage } },
+      data: { modelUsage: { "model[[REDACTED]]": { inputTokens: 5000 }, ...modelUsage } },
     } satisfies AgentEvent;
     journal.append(event);
-    journal.registerApplicationSecrets(["a", "b", "REDACTED"]);
+    journal.registerApplicationSecrets(["a", "b", "REDACTED", "model[R"]);
     journal.append(event);
 
     const stored = journal.events()[1]!.event;
-    expect(stored).toMatchObject({ type: "result", data: { modelUsage: { model: { inputTokens: 300 } } } });
+    expect(stored).toMatchObject({ type: "result", data: { modelUsage: { "[REDACTED]": { inputTokens: 5000 } } } });
     if (stored.kind !== "other") throw Error("expected a result event");
     const counterRows = Object.values((stored.data as typeof event.data).modelUsage);
     expect(counterRows.map(({ inputTokens }) => inputTokens).sort((a, b) => a - b)).toEqual([
-      ...Array.from({ length: 230 }, (_, index) => index + 1),
-      300,
+      ...Array.from({ length: 4098 }, (_, index) => index + 1),
+      5000,
     ]);
     expect(journal.redactEvent(stored)).toEqual(stored);
     journal.sanitize();

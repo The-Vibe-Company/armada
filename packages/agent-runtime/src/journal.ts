@@ -7,7 +7,7 @@ import type { CheckpointIdentity, StoredPrompt } from "./protocol.ts";
 import { createRedactor, createShortSecretTextRedactor } from "./state.ts";
 
 const MAX_EVENT_BYTES = 262144;
-const MAX_COLLISION_ALIASES = 4096;
+const MAX_COLLISION_ALIASES = MAX_EVENT_BYTES / 4;
 const CLAUDE_RESULT_PAYLOAD_FIELDS = [
   "result",
   "errors",
@@ -181,7 +181,15 @@ const maskShapedPayload: (
   ) {
     const fields = shape?.fields;
     const values = scrubbed as Record<string, unknown>;
-    const maskKey = shape?.entries ? (key: string) => mask(key).replace(/\[+REDACTED\]+/g, "[REDACTED]") : mask;
+    const collapseMarkers = (text: string) => text.replace(/\[+REDACTED\]+/g, "[REDACTED]");
+    const maskKey = shape?.entries
+      ? (key: string) => {
+          const masked = mask(key);
+          if (masked === key) return key;
+          const collapsed = collapseMarkers(masked);
+          return collapseMarkers(mask(collapsed)) === collapsed ? collapsed : "[REDACTED]";
+        }
+      : mask;
     const entries = Object.entries(original).map(([key, value]) => {
       const fixed = fields && Object.hasOwn(fields, key);
       return {
