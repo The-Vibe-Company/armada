@@ -1,4 +1,3 @@
-import type { z } from "zod";
 import type { ApplicationVaultActor } from "./application-vault.ts";
 import { skillDefaultOperations } from "./contract/skill-defaults.ts";
 import type { GoldenActor, GoldenRecord } from "./golden.ts";
@@ -70,16 +69,17 @@ export function createSkillDefaultsService(sql: Sql) {
     ): Promise<{ skills: string[] }> {
       if (operation !== "get" && operation !== "set") invalid();
       const { readSkillDefaults, setSkillDefaults } = skillDefaultOperations;
-      const schema: z.ZodType<{ org: string; scope: Scope; goldenId?: string; skills?: string[] }> =
-        operation === "set" ? setSkillDefaults.input.body : readSkillDefaults.input.body;
-      const parsed = schema.safeParse(input);
+      const replacement = operation === "set" ? setSkillDefaults.input.body.safeParse(input) : undefined;
+      const parsed = replacement ?? readSkillDefaults.input.body.safeParse(input);
       if (!parsed.success) invalid();
-      const { org: orgId, scope, goldenId, skills } = parsed.data;
+      const target = parsed.data;
+      const { org: orgId, scope } = target;
+      const skills = replacement?.data?.skills;
       if (!actor.orgs.some((org) => org.orgId === orgId))
         throw new VaultError("forbidden", "Skill defaults access denied.");
       return transaction(async (tx) => {
         const role = await membership(tx, actor.userId, orgId);
-        const golden = goldenId ? await goldenAccess(tx, actor.userId, orgId, goldenId) : undefined;
+        const golden = scope === "golden" ? await goldenAccess(tx, actor.userId, orgId, target.goldenId) : undefined;
         if (operation === "set" && (scope === "org" || golden?.visibility === "org") && role !== "admin")
           throw new VaultError("forbidden", "Skill defaults administrator permission required.");
         const key = scope === "personal" ? actor.userId : (goldenId ?? orgId);
