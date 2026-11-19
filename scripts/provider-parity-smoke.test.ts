@@ -451,6 +451,14 @@ for (const mode of [
             return Response.json(
               mode.startsWith("idle_") ? { idlePauseDelayMs: mode === "idle_budget" ? 35 * 60_000 : 1000 } : {},
             );
+          if (init.method === "DELETE") {
+            const target = new URL(url);
+            const provider = target.searchParams.get("org") as "modal" | "docker";
+            const id = target.pathname.split("/").at(-1);
+            expect(id).toBe(dockerLaunchScenario ? sandboxId(provider) : recoveredSandbox);
+            expect(states.get(provider)).toBe("deleted");
+            return Response.json({ id, status: "deleted" });
+          }
           const path = url.split("/api/v1/")[1]!;
           const body = JSON.parse(String(init.body));
           const p = body.org;

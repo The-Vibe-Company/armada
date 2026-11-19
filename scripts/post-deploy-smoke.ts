@@ -4,7 +4,6 @@ import { providerParitySmoke } from "./provider-parity-smoke.ts";
 import {
   deleteSmokeReceipts,
   readSmokeJournal,
-  SMOKE_CLEANUP_BUDGET_MS,
   type SmokeSandboxReceipt,
   STAGING_ORIGIN,
   saveSmokeJournal,
@@ -299,12 +298,7 @@ async function verifyRecovery(archive: string, repo: string, commit: string) {
 }
 
 /** Operator entrypoint; injected I/O also permits fake-API validation without compute. */
-async function runPostDeploySmoke(
-  env: NodeJS.ProcessEnv,
-  args: readonly string[],
-  io: SmokeIo,
-  cleanupEnd?: number,
-): Promise<boolean> {
+async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[], io: SmokeIo): Promise<boolean> {
   function report(index: number, step: string, error?: unknown, elapsedMs?: number, lane?: Lane) {
     io.out(
       JSON.stringify({
@@ -473,11 +467,7 @@ async function runPostDeploySmoke(
     report(0, "configure", error instanceof SmokeFailure ? error : new SmokeFailure("invalid_configuration"));
     return false;
   }
-  // Keep the existing work/local-cleanup allowance, then reserve both ordered journal cleanup waves.
-  const deadline = Math.min(
-    io.now() + 35 * 60_000,
-    (cleanupEnd ?? Number.POSITIVE_INFINITY) - SMOKE_CLEANUP_BUDGET_MS - 5 * 60_000,
-  );
+  const deadline = io.now() + 35 * 60_000;
   const cleanupDeadline = deadline + 5 * 60_000;
   const protectedCanaries = new Set<string>();
   const launches = createLaunchTracker();
@@ -1480,12 +1470,7 @@ async function runPostDeploySmoke(
   }
 }
 
-async function runAllowedSmoke(
-  env: NodeJS.ProcessEnv,
-  args: readonly string[],
-  io: SmokeIo,
-  cleanupEnd?: number,
-): Promise<boolean> {
+async function runAllowedSmoke(env: NodeJS.ProcessEnv, args: readonly string[], io: SmokeIo): Promise<boolean> {
   if (args[0] === "--parity") return providerParitySmoke(env, io, args.slice(1));
   let cases: unknown[];
   try {
@@ -1494,7 +1479,7 @@ async function runAllowedSmoke(
     io.out(JSON.stringify({ step: "configure", pass: false, code: "invalid_configuration" }));
     return false;
   }
-  return runPostDeploySmoke({ ...env, ARMADA_SMOKE_CASES: JSON.stringify(cases) }, args, io, cleanupEnd);
+  return runPostDeploySmoke({ ...env, ARMADA_SMOKE_CASES: JSON.stringify(cases) }, args, io);
 }
 
 /** Persist handles before callers inspect receipts; cleanup also runs after failed probes. */
@@ -1545,21 +1530,9 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         requiresOperator: true,
       }),
     );
-  const cleanupIo = {
-    fetch: io.fetch,
-    out: io.out,
-    now: io.now,
-    sleep: io.sleep,
-    deadline: io.now() + SMOKE_CLEANUP_BUDGET_MS,
-  };
-  rows = await deleteSmokeReceipts(STAGING_ORIGIN, env.ARMADA_TOKEN, rows, cleanupIo);
+  rows = await deleteSmokeReceipts(STAGING_ORIGIN, env.ARMADA_TOKEN, rows, io, { stopFirst: true });
   await saveSmokeJournal(path, [...deferred, ...rows]);
   const earlierRows = rows;
-  // Historical reconciliation must not spend this run's work or final-cleanup reserve.
-  // Standard release modes: up to 20m historical + 35m work + 5m local + 20m final cleanup.
-  // The existing staging job still caps the whole job at 85m; no cleanup call exceeds its caller deadline.
-  const cleanupEnd = io.now() + 40 * 60_000 + SMOKE_CLEANUP_BUDGET_MS;
-  cleanupIo.deadline = cleanupEnd;
   rows = [];
   let passed = false;
   let unknownLaunch = false;
@@ -1634,12 +1607,12 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
     },
   };
   try {
-    passed = await runAllowedSmoke(env, args, trackedIo, cleanupEnd);
+    passed = await runAllowedSmoke(env, args, trackedIo);
   } finally {
     unknownLaunch ||= unacknowledgedLaunches.size > 0;
     deferred.push(...rows.filter((row) => row.provider !== "modal" && row.provider !== "docker"));
     rows = rows.filter((row) => row.provider === "modal" || row.provider === "docker");
-    rows = await deleteSmokeReceipts(STAGING_ORIGIN, env.ARMADA_TOKEN, rows, cleanupIo, 64);
+    rows = await deleteSmokeReceipts(STAGING_ORIGIN, env.ARMADA_TOKEN, rows, io, { limit: 64 });
     rows = [...earlierRows, ...rows];
     await saveSmokeJournal(path, [...deferred, ...rows]);
     io.out(
