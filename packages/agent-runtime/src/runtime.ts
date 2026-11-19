@@ -3,6 +3,7 @@ import type { ExecRequest, ExecResult, Harness } from "@armada/core";
 import { HARNESSES, validOutputChunk } from "@armada/core";
 import { PRIVATE_SKILL_FAILURES } from "../../core/src/private-skill-error.ts";
 import { ChildOwner } from "./children.ts";
+import { captureCommandOutput, commandOutputLimit } from "./command-output.ts";
 import { validateHarnessCwd } from "./cwd.ts";
 import { HarnessError, RequestRefused } from "./errors.ts";
 import { execCredentialValues, validateExecEnvironment, validateExecReadables } from "./exec-env.ts";
@@ -862,24 +863,11 @@ export class Runner {
     });
     child.stdin.on("error", () => {});
     child.stdin.end(r.command);
-    const outputLimit = 65536;
     const output = {
-      stdout: { text: "", truncated: false },
-      stderr: { text: "", truncated: false },
+      stdout: captureCommandOutput(child.stdout),
+      stderr: captureCommandOutput(child.stderr),
     };
     let timedOut = false;
-    for (const stream of ["stdout", "stderr"] as const) {
-      child[stream].setEncoding("utf8");
-      child[stream].on("data", (text: string) => {
-        const capture = output[stream];
-        if (capture.truncated) return;
-        capture.text += text;
-        if (capture.text.length > outputLimit) {
-          capture.text = capture.text.slice(0, outputLimit);
-          capture.truncated = true;
-        }
-      });
-    }
     await new Promise<void>((resolve, reject) => {
       child.once("spawn", resolve);
       child.once("error", reject);
@@ -928,8 +916,8 @@ export class Runner {
           resolve(safe);
           return;
         }
-        const stdout = this.journal.redactCommandOutput(output.stdout, outputLimit);
-        const stderr = this.journal.redactCommandOutput(output.stderr, outputLimit);
+        const stdout = this.journal.redactCommandOutput(output.stdout, commandOutputLimit);
+        const stderr = this.journal.redactCommandOutput(output.stderr, commandOutputLimit);
         const result: ExecResult = {
           detached: false,
           exitCode,
