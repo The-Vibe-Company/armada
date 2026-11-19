@@ -4,7 +4,7 @@ import { HARNESSES, isFinalPromptStatus } from "@armada/core";
 import { HarnessError } from "./errors.ts";
 import { checkpointIdentity, checkpointIdentityKey } from "./identity.ts";
 import type { CheckpointIdentity, StoredPrompt } from "./protocol.ts";
-import { createRedactor } from "./state.ts";
+import { createRedactor, createShortSecretTextRedactor } from "./state.ts";
 
 /** Cut a preview without splitting a surrogate pair into a lone UTF-16 code unit. */
 function boundedPreview(text: string, limit: number): string {
@@ -16,8 +16,15 @@ export class Journal {
   readonly db: Database;
   readonly redact: (text: string) => string;
   private dynamicRedactor = createRedactor([]);
+  private applicationSecrets = new Set<string>();
+  private redactShortApplicationText: ((text: string) => string) | undefined;
   registerSecrets(values: readonly string[]) {
     this.dynamicRedactor.register(values);
+  }
+  registerApplicationSecrets(values: readonly string[]) {
+    this.registerSecrets(values);
+    for (const value of values) if (value.length > 0 && value.length < 8) this.applicationSecrets.add(value);
+    this.redactShortApplicationText = createShortSecretTextRedactor([...this.applicationSecrets]);
   }
   constructor(path: string, redact: (text: string) => string) {
     this.redact = (text) => this.dynamicRedactor(redact(text));
@@ -43,6 +50,23 @@ export class Journal {
     )
       control = { ...event, text: `${boundedPreview(this.redact(event.text), 16000)}… [truncated]` };
     let body = this.redact(JSON.stringify(control));
+    const redactShort = this.redactShortApplicationText;
+    if (redactShort && (event.kind === "message" || (event.kind === "other" && event.type === "harness_stderr"))) {
+      const masked = JSON.parse(body) as { text?: unknown; data?: { text?: unknown } | null };
+      const redactText = (original: string, scrubbed: string) => {
+        const short = redactShort(original);
+        if (short === original || short === scrubbed) return scrubbed;
+        return original === scrubbed ? short : "[REDACTED]";
+      };
+      if (event.kind === "message" && typeof masked.text === "string")
+        masked.text = redactText(event.text, masked.text);
+      if (event.kind === "other") {
+        const data = masked.data;
+        const original = (event.data as { text?: unknown } | null)?.text;
+        if (typeof original === "string" && typeof data?.text === "string") data.text = redactText(original, data.text);
+      }
+      body = JSON.stringify(masked);
+    }
     const oversized = Buffer.byteLength(body) > 262144;
     if (oversized)
       body = JSON.stringify({

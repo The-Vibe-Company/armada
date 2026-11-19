@@ -9,17 +9,25 @@ const grant = {
 };
 const command = { version: 1 as const, requestId: "configure_fixture", sandboxId: grant.sandboxId };
 
-test("marked launch values reach the selected harness and are redacted from its published events", async () => {
+test.each([
+  { secret: 'opaque_fixture_\n"value', prefix: "", suffix: "" },
+  { secret: "ess", prefix: "prefix", suffix: "suffix" },
+  { secret: "stderr", prefix: "prefix", suffix: "suffix" },
+  { secret: "abc", prefix: "prefix", suffix: "suffix", overlap: "bc12345", extension: "12345" },
+  { secret: "abc", prefix: "", suffix: "suffix", overlap: "bc!xyz", extension: "!xyz", wholeField: true },
+])("masks marked values in event text ($secret)", async (fixture) => {
+  const { secret, prefix, suffix, overlap, extension = "", wholeField } = fixture;
   const journal = new Journal(":memory:", (text) => text);
-  const secret = 'opaque_fixture_\n"value';
-  const variables = { APP_TOKEN: secret, APP_REGION: "fixture_region" };
+  const variables = { APP_TOKEN: secret, APP_REGION: "fixture_region", ...(overlap ? { APP_OTHER: overlap } : {}) };
   let environment: Record<string, string> = {};
   const driver: Driver = {
     configureReadableVariables(values) {
       environment = values;
     },
     start({ emit }) {
-      emit({ kind: "other", type: "harness_stderr", data: { text: Object.values(environment).join(" ") } });
+      const text = `${prefix}${environment.APP_TOKEN}${extension}${suffix} ${environment.APP_REGION}`;
+      emit({ kind: "other", type: "harness_stderr", data: { text } });
+      emit({ kind: "message", text, partial: false, tools: [], messageId: "message_fixture" });
       return { done: Promise.resolve("finished"), async interrupt() {}, async steer() {} };
     },
     async close() {},
@@ -31,7 +39,7 @@ test("marked launch values reach the selected harness and are redacted from its 
       op: "configureReadableVariables",
       harness: "codex",
       variables,
-      secretKeys: ["APP_TOKEN"],
+      secretKeys: overlap ? ["APP_TOKEN", "APP_OTHER"] : ["APP_TOKEN"],
     });
     expect(ack.status).toBe(200);
     expect(await ack.json()).toEqual({ version: 1, requestId: command.requestId, result: { acknowledged: true } });
@@ -45,14 +53,18 @@ test("marked launch values reach the selected harness and are redacted from its 
     expect(prompt.status).toBe(200);
     const events = await runner.handleDialout({ ...command, requestId: "events_fixture", op: "events" });
     const body = await events.json();
+    const text = wholeField ? "[REDACTED]" : `${prefix}[REDACTED]${suffix} fixture_region`;
     expect(body).toMatchObject({
       result: {
         events: expect.arrayContaining([
-          expect.objectContaining({ type: "harness_stderr", data: { text: "[REDACTED] fixture_region" } }),
+          expect.objectContaining({ kind: "other", data: { text } }),
+          expect.objectContaining({ kind: "message", text, messageId: "message_fixture" }),
         ]),
       },
     });
-    expect(JSON.stringify(body)).not.toContain(JSON.stringify(secret).slice(1, -1));
+    expect(JSON.stringify(journal.events())).not.toContain(
+      JSON.stringify(`${prefix}${secret}${extension}${suffix}`).slice(1, -1),
+    );
     expect(journal.db.query("select 1 from requests where id=?").get(command.requestId)).toBeNull();
   } finally {
     await runner.close();
