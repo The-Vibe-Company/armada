@@ -1308,11 +1308,8 @@
     "scripts/verify-changed.ts": 2
   },
   "landmines-testing/no-test-doubles": {
-    "apps/dashboard/src/lib/bounded-enrichment.test.ts": 1,
     "apps/dashboard/test/control.test.ts": 1,
     "apps/dashboard/test/model-connection-check.test.ts": 1,
-    "apps/dashboard/test/resource-row-tags.test.tsx": 1,
-    "apps/dashboard/test/stats.test.ts": 1,
     "apps/dashboard/test/templates.test.ts": 1,
     "packages/agent-runtime/test/harness-cache.test.ts": 1,
     "packages/agent-runtime/test/runtime.test.ts": 2,
