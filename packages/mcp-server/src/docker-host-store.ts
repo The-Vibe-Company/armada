@@ -466,7 +466,6 @@ export function createDockerHostStore(sql: Sql, key: string) {
     );
   }
   return {
-    /** Called under the authenticated ticket's host and sandbox locks. */
     async refuseResume(tx: Sql, sandboxId: string, generation: string) {
       const refused = (
         await tx.query<StoredJob>(

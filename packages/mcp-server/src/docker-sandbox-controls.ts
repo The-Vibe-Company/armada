@@ -674,8 +674,8 @@ export function createDockerSandboxControls(
       if (requested.state === "claiming") requested = await options.resume.resume(actor, row.id, requestId);
       // Host ACK is not runtime readiness.
       const state = (
-        await sql.query<{ outcome: string | null; status_reason: string | null }>(
-          `select ${DOCKER_JOB_REQUEST_OUTCOME_SQL} as outcome,s.status_reason
+        await sql.query<{ outcome: string | null; status_reason: string | null; lifecycle_generation: string }>(
+          `select ${DOCKER_JOB_REQUEST_OUTCOME_SQL} as outcome,s.status_reason,s.lifecycle_generation::text
            from public.docker_host_jobs j join public.sandboxes s on s.id=j.bound_sandbox_id
            where j.request_id=$1 and j.bound_sandbox_id=$2 and j.bound_operation='resume'`,
           [requestId, row.id],
@@ -689,7 +689,7 @@ export function createDockerSandboxControls(
             : "Docker resume failed.",
         );
       if (state?.outcome === "completed") {
-        const ready = await runtime.ready(actor, row.id, requestId);
+        const ready = await runtime.ready(actor, row.id, requestId, true, state.lifecycle_generation);
         if (ready.state === "ready") {
           await createDockerLaunchEnvironment(sql, key, clock)(caller, row.id);
           await options.github?.prepareTurn(caller, row.id);
