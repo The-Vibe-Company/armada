@@ -28,7 +28,7 @@ type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ?
 type Assert<T extends true> = T;
 
 export type LogsInputContract = Assert<
-  Equal<Extract<keyof Parameters<Armada["logs"]>[0], "conversationId" | "conversation_id">, never>
+  Equal<Extract<"conversationId" | "conversation_id", keyof Parameters<Armada["logs"]>[0]>, never>
 >;
 
 export type GoldenReceiptContract = Assert<

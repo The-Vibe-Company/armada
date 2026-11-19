@@ -676,7 +676,7 @@ test("normal API and MCP accept Docker list/status/logs rows and acknowledge cle
     prompt: { promptId, state: "finished" },
   });
   expect(await callSharedTool(context, "status", { id: f.sandbox.id })).toEqual(status);
-  const logs = (await post("logs/read", { id: f.sandbox.id, follow: true })) as {
+  const logs = (await post("logs/read", { id: f.sandbox.id, follow: true, conversationId: randomUUID() })) as {
     events: AgentEvent[];
     cursor: string;
   };
