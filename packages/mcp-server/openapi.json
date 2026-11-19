@@ -2147,7 +2147,7 @@
             }
           },
           "400": {
-            "description": "Invalid request, including a serialized body over 8192 bytes. Nothing was dispatched.",
+            "description": "The request could not be completed, including when the serialized body exceeds 8192 bytes.",
             "content": {
               "application/json": {
                 "schema": {

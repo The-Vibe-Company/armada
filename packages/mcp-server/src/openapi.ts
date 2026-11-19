@@ -279,7 +279,9 @@ export function generateOpenApi(table: readonly OpenApiOperation[] = Object.valu
         ...(request && !viewerControl && oversizedStatus === 400
           ? {
               "400": {
-                description: `Invalid request, including a serialized body over ${maxBodyBytes} bytes. Nothing was dispatched.`,
+                description: operation.errorOutput
+                  ? `The request could not be completed, including when the serialized body exceeds ${maxBodyBytes} bytes.`
+                  : `Invalid request, including a serialized body over ${maxBodyBytes} bytes. Nothing was dispatched.`,
                 content: operation.errorOutput
                   ? outputFailure(operation.errorOutput)
                   : { "application/json": { schema: { $ref: "#/components/schemas/Failure" } } },
