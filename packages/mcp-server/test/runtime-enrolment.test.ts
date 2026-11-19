@@ -7,7 +7,7 @@ import { ENCRYPTION_KEY } from "./support.ts";
 
 const connection = rowOnlyConnection();
 
-async function fixture() {
+async function fixture(provider: "boat" | "modal" = "boat") {
   const db = await connection();
   const people = { org: crypto.randomUUID(), owner: crypto.randomUUID(), member: crypto.randomUUID() };
   // Enrolment needs sandbox ownership and membership, not model/provider credentials.
@@ -18,16 +18,21 @@ async function fixture() {
     people.owner,
     people.member,
   ]);
-  await db.query("insert into goldens(org_id,owner_id,name,visibility) values($1,$2,'enrolment-source','private')", [
-    people.org,
-    people.owner,
-  ]);
+  await db.query(
+    `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,
+      modal_workspace,modal_environment,modal_app_id)
+    select $1,$2,'enrolment-source','private',p,'master','image',
+      case when p='modal' then 'workspace' end,case when p='modal' then 'main' end,case when p='modal' then 'app' end
+    from (values ($3::sandbox_provider)) as target(p)`,
+    [people.org, people.owner, provider],
+  );
   const id = crypto.randomUUID();
   await db.query(
-    `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,provider_sandbox_id,harness,status,boat_runtime)
-   select $1,id,org_id,owner_id,'runtime-native','runtime-native','codex','ready',true from goldens
+    `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status,boat_runtime,runtime_transport)
+   select $1,id,org_id,owner_id,$3::sandbox_provider,'runtime-native','codex','ready',
+    $3::sandbox_provider='boat',case when $3::sandbox_provider='modal' then 'dialout' end from goldens
    where owner_id=$2 and visibility='private' limit 1`,
-    [id, people.owner],
+    [id, people.owner, provider],
   );
   const sql: Sql = {
     query: (q, v) => db.query(q, v),
@@ -103,7 +108,7 @@ test("enrolment is single-use across replicas and replacement epochs fence every
 });
 
 test("replacement ticket issue atomically fences a scoped parent's old bearer", async () => {
-  const f = await fixture();
+  const f = await fixture("modal");
   const authority = new DelegatedAuthority(f.sql, async () => {});
   const initial = await f.service().enrol((await f.issue()).enrolmentToken);
   await f.db.query("update sandboxes set visibility='private',access_owner_id=owner_id where id=$1", [f.id]);
@@ -130,24 +135,28 @@ test("replacement ticket issue atomically fences a scoped parent's old bearer", 
   );
   const admit = () => authority.admit(bearer, { method: "finish" }, async () => true);
   const oldSession = () => f.request("session", initial.runtimeToken, initial.epoch);
-  const interrupted = createRuntimeEnrolments(
-    {
-      ...f.sql,
-      transaction: (work) =>
-        f.sql.transaction!((tx) =>
-          work({
-            async query(statement, values) {
-              if (statement.startsWith("insert into public.runtime_enrolments")) throw Error("ticket write failed");
-              return tx.query(statement, values);
-            },
-          }),
-        ),
-    },
-    ENCRYPTION_KEY,
-  );
-  await expect(interrupted.issue({ sandboxId: f.id, ownerId: f.people.owner, configuration: {} })).rejects.toThrow(
-    "ticket write failed",
-  );
+  const issueWithFault = (fault: "parent locked" | "ticket write failed") =>
+    createRuntimeEnrolments(
+      {
+        ...f.sql,
+        transaction: (work) =>
+          f.sql.transaction!((tx) =>
+            work({
+              async query(statement, values) {
+                if (fault === "parent locked" && statement.endsWith("for update skip locked")) return { rows: [] };
+                if (fault === "ticket write failed" && statement.startsWith("insert into public.runtime_enrolments"))
+                  throw Error(fault);
+                return tx.query(statement, values);
+              },
+            }),
+          ),
+      },
+      ENCRYPTION_KEY,
+    ).issue({ sandboxId: f.id, ownerId: f.people.owner, configuration: {} });
+  await expect(issueWithFault("parent locked")).rejects.toThrow("runtime_enrolment_denied");
+  await expect(admit()).resolves.toBe(true);
+  expect((await oldSession()).status).toBe(200);
+  await expect(issueWithFault("ticket write failed")).rejects.toThrow("ticket write failed");
   await expect(admit()).resolves.toBe(true);
   expect((await oldSession()).status).toBe(200);
 

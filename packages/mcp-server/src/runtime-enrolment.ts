@@ -156,7 +156,6 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
         )
       ).rows[0];
       if (parent) {
-        // Scoped admission may already hold the parent lock while waiting on the sandbox.
         const locked = await tx.query(
           "select id from public.armada_access_parents where id=$1 for update skip locked",
           [parent.id],
