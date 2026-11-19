@@ -11,6 +11,20 @@ test("creds list shows monthly API spend and flags unknown pricing for personal 
       user: [
         { id: "user-api", name: "Personal API", kind: "openai", status: "active" },
         { id: "user-sub", name: "Subscription", kind: "codex_auth", status: "active" },
+        {
+          id: "zero-api",
+          name: "Zero spend",
+          kind: "opencode",
+          status: "active",
+          monthlySpend: { periodStart: "2026-11-01", usd: "0", unpricedTurns: 0 },
+        },
+        {
+          id: "unpriced-api",
+          name: "Unknown spend",
+          kind: "openai",
+          status: "active",
+          monthlySpend: { periodStart: "2026-11-01", usd: "0", unpricedTurns: 1 },
+        },
       ],
       orgs: [
         {
@@ -38,6 +52,8 @@ test("creds list shows monthly API spend and flags unknown pricing for personal 
   const lines = output.split("\n");
   expect(lines.find((line) => line.includes("user-api"))).toContain("API: — USD this month");
   expect(lines.find((line) => line.includes("user-sub"))).not.toContain("USD this month");
+  expect(lines.find((line) => line.includes("zero-api"))).toContain("API: 0 USD this month");
+  expect(lines.find((line) => line.includes("unpriced-api"))).toContain("API: — USD this month (1 unpriced turn)");
   expect(lines.find((line) => line.includes("org-api"))).toContain(
     "API: 312.00000000000000001 USD this month (2 unpriced turns)",
   );
