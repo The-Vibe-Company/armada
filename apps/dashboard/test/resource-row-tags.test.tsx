@@ -6,7 +6,7 @@ import { ResourceTags } from "../src/components/resource-tags";
 import { roundTripRsc } from "./fixtures/rsc";
 
 test("tag groups retain one identity across Flight transport without missing-key warnings", async () => {
-  const errors = spyOn(console, "error").mockImplementation(() => {});
+  const errors = spyOn(console, "error");
   try {
     const { tags } = await roundTripRsc({
       tags: (
