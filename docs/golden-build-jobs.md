@@ -32,10 +32,16 @@ idle timer. Poll failures never resubmit builds. Resume with:
 
 ## Worker and atomic publication
 
-armada-server owns a tracked, awaited worker loop independent of HTTP requests.
-Claims use FOR UPDATE SKIP LOCKED, a unique fence, renewable 60-second lease and
-fixed 60-minute job deadline. Heartbeats cannot resurrect expired leases. The job
-ID is the buildId in existing allowlisted phase/failure logs.
+Admission adds a `golden_build` job in the same transaction as the receipt.
+The shared jobs runner dispatches one golden build at a time using the receipt UUID
+and the current job lease epoch. Dispatch locks the receipt to arbitrate with
+cancellation and older replicas during deployment overlap. Execution still uses
+the receipt's unique fence, renewable 60-second lease and fixed 60-minute deadline.
+An active receipt still occupies the build slot if the shared lease expires.
+The isolated recovery worker expires and reconciles those receipts. A successor
+shared claim can dispatch a still-queued receipt after a pre-dispatch crash.
+It waits for active receipts and completes terminal ones without provider calls.
+The receipt ID is the buildId in existing allowlisted phase/failure logs.
 
 Execution resolves current credentials, revalidates membership/role and verifies
 the admitted provider account. Every phase checks ownership. Publication locks
