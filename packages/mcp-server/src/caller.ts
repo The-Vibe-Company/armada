@@ -9,6 +9,7 @@ import { verifySessionJwt } from "./session-jwt.ts";
 export interface Caller {
   userId: string;
   orgs: readonly { orgId: string; role: MemberRole }[];
+  orgNames?: Readonly<Record<string, string>>;
   via: "service" | "mcp" | "supabase";
 }
 
@@ -89,6 +90,7 @@ export async function authenticateCaller(
           caller: {
             userId: session.userId,
             orgs: memberships.map(({ orgId, role }) => ({ orgId, role })),
+            orgNames: Object.fromEntries(memberships.map(({ orgId, name }) => [orgId, name])),
             via: "supabase",
           },
         };
@@ -107,7 +109,12 @@ export async function authenticateCaller(
   }
   return {
     ok: true,
-    caller: { userId, orgs: memberships.map(({ orgId, role }) => ({ orgId, role })), via: "supabase" },
+    caller: {
+      userId,
+      orgs: memberships.map(({ orgId, role }) => ({ orgId, role })),
+      orgNames: Object.fromEntries(memberships.map(({ orgId, name }) => [orgId, name])),
+      via: "supabase",
+    },
   };
 }
 

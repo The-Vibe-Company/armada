@@ -37,7 +37,12 @@ test("explicit report validates the latest finished turn and persists through AP
     const { client, token, people, boat, db } = server;
     const bearer = await token(people.member);
     const mcp = await client(bearer);
-    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude", prompt: "work" });
+    const launched = await call(mcp, "launch", {
+      provider: "boat",
+      golden: "shared",
+      harness: "claude",
+      prompt: "work",
+    });
     expect(launched.isError).toBe(false);
     const id = launched.data.id;
     const report = (outcome: unknown, prompt_id = "prompt_1") => call(mcp, "report", { id, prompt_id, outcome });
@@ -110,7 +115,12 @@ test("send and steer clear outcomes before admission and fence replacement recei
   try {
     const { client, token, people, boat, db } = server;
     const mcp = await client(await token(people.member));
-    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude", prompt: "first" });
+    const launched = await call(mcp, "launch", {
+      provider: "boat",
+      golden: "shared",
+      harness: "claude",
+      prompt: "first",
+    });
     const id = launched.data.id;
     finishMatched(boat, "prompt_1");
     expect((await call(mcp, "report", { id, prompt_id: "prompt_1", outcome: { state: "ready" } })).isError).toBe(false);
@@ -178,7 +188,8 @@ test("a restart steer registers its replacement run so settlement exports it", a
   try {
     const { client, token, people, boat, db } = server;
     const mcp = await client(await token(people.member));
-    const id = (await call(mcp, "launch", { golden: "shared", harness: "codex", prompt: "first" })).data.id;
+    const id = (await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "codex", prompt: "first" }))
+      .data.id;
     await db.query("insert into org_langfuse(org_id,enabled,content_mode,config_enc) values($1,true,'metadata',$2)", [
       people.org,
       await encryptSecret("{}", ENCRYPTION_KEY),
@@ -216,7 +227,8 @@ test("a new restart steer preserves an older unresolved replacement across downt
   try {
     const { client, token, people, boat, db } = server;
     const mcp = await client(await token(people.member));
-    const id = (await call(mcp, "launch", { golden: "shared", harness: "codex", prompt: "first" })).data.id;
+    const id = (await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "codex", prompt: "first" }))
+      .data.id;
     await db.query("insert into org_langfuse(org_id,enabled,content_mode,config_enc) values($1,true,'metadata',$2)", [
       people.org,
       await encryptSecret("{}", ENCRYPTION_KEY),
@@ -280,7 +292,8 @@ for (const stopFirst of [false, true])
     try {
       const { client, token, people, boat, db } = server;
       const mcp = await client(await token(people.member));
-      const id = (await call(mcp, "launch", { golden: "shared", harness: "codex", prompt: "first" })).data.id;
+      const id = (await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "codex", prompt: "first" }))
+        .data.id;
       await db.query("insert into org_langfuse(org_id,enabled,content_mode,config_enc) values($1,true,'metadata',$2)", [
         people.org,
         await encryptSecret("{}", ENCRYPTION_KEY),

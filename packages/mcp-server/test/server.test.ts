@@ -124,6 +124,7 @@ describe("http", () => {
   test("a Supabase session drives the dashboard's tools, checked by Supabase on every request", async () => {
     const { handler, session, signOut, supabaseCalls, people, boat, client, token } = await start();
     const launched = await call(await client(await token(people.member)), "launch", {
+      provider: "boat",
       golden: "shared",
       harness: "claude",
       prompt: "go",
@@ -208,7 +209,7 @@ describe("when the auth lookup fails", () => {
   test("the memberships of a Supabase session come from the server's own database connection", async () => {
     const { handler, session, people } = await start({ authStore: (db) => createSqlAuthStore(db) });
     const jwt = session(people.member, []);
-    const started = await rpc(handler, jwt).tool("launch", { golden: "shared", harness: "claude" });
+    const started = await rpc(handler, jwt).tool("launch", { provider: "boat", golden: "shared", harness: "claude" });
     expect(started.result?.isError).toBeUndefined();
     expect(started.result?.structuredContent).toMatchObject({ id: expect.any(String) });
   });
@@ -222,7 +223,7 @@ describe("on the database client production uses", () => {
     });
     const mcp = await client(session(people.member, []));
 
-    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude", prompt: "go" });
+    const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude", prompt: "go" });
     expect(launched.isError).toBe(false);
 
     const listed = await call(mcp, "list");
@@ -290,7 +291,7 @@ describe("tools", () => {
     const mcp = await client(await token(people.member));
     // The SDK validates callTool receipts against the schemas cached by listTools.
     await mcp.listTools();
-    const launched = await call(mcp, "launch", { golden: "shared", harness: "codex", prompt: "go" });
+    const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "codex", prompt: "go" });
     const status = await call(mcp, "status", { id: launched.data.id });
     expect(status.isError).not.toBe(true);
     expect(status.data).toMatchObject({ usage: { tokenTotals: { incomplete: true } } });
@@ -315,6 +316,7 @@ describe("tools", () => {
           `update goldens set helper_receipt='{"version":"old","digest":"old","protocol":0,"platform":"x86_64","capabilities":[],"snapshotId":"old"}' where name='shared'`,
         );
       const refused = await call(helperClient, "launch", {
+        provider: "boat",
         golden: "shared",
         harness: "claude",
         helperCapabilities: ["diagnose"],
@@ -333,6 +335,7 @@ describe("tools", () => {
     );
     const mcp = await client(await token(people.member));
     const launched = await call(mcp, "launch", {
+      provider: "boat",
       golden: "shared",
       harness: "claude",
       prompt: "Fix the build",
@@ -355,6 +358,7 @@ describe("tools", () => {
   test("launch reports GitHub as not connected, without failing, when the caller never connected it", async () => {
     const { token, client, people, boat } = await start();
     const launched = await call(await client(await token(people.member)), "launch", {
+      provider: "boat",
       golden: "shared",
       harness: "claude",
     });
@@ -399,7 +403,7 @@ describe("tools", () => {
         message: expect.stringContaining("Repository private needs a GitHub connection"),
       },
     });
-    const mcp = await call(await s.client(bearer), "launch", { golden: "shared", harness: "claude" });
+    const mcp = await call(await s.client(bearer), "launch", { provider: "boat", golden: "shared", harness: "claude" });
     expect(mcp.isError).toBe(true);
     expect(mcp.text).toContain("armada github connect");
     expect(s.boat.forks).toHaveLength(0);
@@ -411,7 +415,7 @@ describe("tools", () => {
     await github.connect(people.member, "octocat", 583231);
     const mcp = await client(await token(people.member));
 
-    const first = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    const first = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
     expect(first.data.github).toEqual({
       status: "connected",
       login: "octocat",
@@ -426,7 +430,7 @@ describe("tools", () => {
     expect(boat.execs[0]?.command).toContain("user.email '583231+octocat@users.noreply.github.com'");
     expect(first.text).not.toContain("ghu_access_octocat");
 
-    const second = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    const second = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
     expect(second.data.github).toMatchObject({ status: "connected" });
     expect(github.refreshed).toEqual(["ghr_refresh_octocat_0"]);
     const stored = await db.query<{ refresh_token_enc: Uint8Array }>(
@@ -441,20 +445,20 @@ describe("tools", () => {
     github.revokeEverything();
     const mcp = await client(await token(people.member));
 
-    const first = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    const first = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
     expect(first.isError).toBe(false);
     expect(first.data.github).toMatchObject({ status: "revoked", login: null });
     expect((first.data.github as { message: string }).message).toContain("Reconnect GitHub");
     expect(boat.forks[0]?.env).toEqual({ CLAUDE_CODE_OAUTH_TOKEN: SECRETS.orgClaude });
 
-    await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
     expect(github.refreshed).toHaveLength(1);
   });
 
   test("exec output masks GitHub and narrow MCP gateway credentials", async () => {
     const { token, client, people, boat } = await start();
     const mcp = await client(await token(people.member));
-    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
     const narrow = `armada_gw_${Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64url")}`;
     boat.setExecOutput({ stdout: `GH_TOKEN=ghu_${"0123456789abcdefghijABCDEFGHIJ0123"} MCP=${narrow}` });
     const ran = await call(mcp, "exec", { id: launched.data.id, command: "env" });
@@ -465,6 +469,7 @@ describe("tools", () => {
   test("launch of a private golden uses its owner's own credential and personal boat key", async () => {
     const { token, client, people, boat } = await start();
     const launched = await call(await client(await token(people.owner)), "launch", {
+      provider: "boat",
       golden: "mine",
       harness: "claude",
     });
@@ -476,24 +481,29 @@ describe("tools", () => {
   test("launch of someone else's private golden is refused like a missing one, before any fork", async () => {
     const { token, client, people, boat } = await start();
     const refused = await call(await client(await token(people.admin)), "launch", {
+      provider: "boat",
       golden: "mine",
       harness: "claude",
     });
     expect(refused.isError).toBe(true);
-    expect(refused.text).toContain("No golden named 'mine'");
+    expect(refused.text).toContain("No boat golden named 'mine'");
     expect(boat.forks).toHaveLength(0);
   });
 
   test("launch refuses a harness Armada does not run", async () => {
     const { token, client, people } = await start();
-    const refused = await call(await client(await token(people.member)), "launch", { golden: "shared", harness: "pi" });
+    const refused = await call(await client(await token(people.member)), "launch", {
+      provider: "boat",
+      golden: "shared",
+      harness: "pi",
+    });
     expect(refused.isError).toBe(true);
   });
 
   test("list exposes safe org metadata while member interior operations make no provider calls", async () => {
     const { token, client, people, boat } = await start();
     const owner = await client(await token(people.owner));
-    const mine = await call(owner, "launch", { golden: "mine", harness: "claude" });
+    const mine = await call(owner, "launch", { provider: "boat", golden: "mine", harness: "claude" });
     const member = await client(await token(people.member));
     const listed = await call(member, "list");
     expect(listed.data.sandboxes).toMatchObject([{ id: mine.data.id, canOpen: false, canManage: false }]);
@@ -533,7 +543,12 @@ describe("tools", () => {
     test(`turn error does not fail the machine: ${reason}`, async () => {
       const { token, client, people, boat, db } = await start();
       const mcp = await client(await token(people.member));
-      const launched = await call(mcp, "launch", { golden: "shared", harness: "codex", prompt: "go" });
+      const launched = await call(mcp, "launch", {
+        provider: "boat",
+        golden: "shared",
+        harness: "codex",
+        prompt: "go",
+      });
       boat.finish("bx_1", "prompt_1", "failed");
       const event = boat.sandbox("bx_1").events.find((event) => event.kind === "prompt");
       if (event?.kind !== "prompt") throw Error("Missing prompt fixture");
@@ -566,7 +581,7 @@ describe("tools", () => {
   test("status reads getPrompt: a usage limit fails the turn, not the machine", async () => {
     const { token, client, people, boat, db } = await start();
     const mcp = await client(await token(people.member));
-    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude", prompt: "go" });
+    const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude", prompt: "go" });
     boat.sandbox("bx_1").events.push({
       id: "ev_limit",
       at: 5,
@@ -659,12 +674,12 @@ describe("tools", () => {
   test("launch takes the org that has the golden for a session in several orgs", async () => {
     const { session, client, people, boat, db } = await start();
     const mcp = await client(session(people.member, [people.org, people.otherOrg]));
-    const elsewhere = await call(mcp, "launch", { golden: "elsewhere", harness: "claude" });
+    const elsewhere = await call(mcp, "launch", { provider: "boat", golden: "elsewhere", harness: "claude" });
     expect(elsewhere.isError).toBe(true);
     expect(elsewhere.text).toContain("error code: missing_credential");
     expect(boat.forks).toHaveLength(0);
 
-    const shared = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    const shared = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
     expect(shared.isError).toBe(false);
     expect(boat.keys.at(-1)).toBe(SECRETS.orgBoat);
 
@@ -673,18 +688,28 @@ describe("tools", () => {
        select $1, 'shared', 'org', $2, $3, config from goldens where name = 'shared'`,
       [people.otherOrg, people.member, `a${"4".repeat(62)}`],
     );
-    const ambiguous = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    const ambiguous = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
     expect(ambiguous.text).toContain("several of your orgs");
-    const chosen = await call(mcp, "launch", { golden: "shared", harness: "claude", org: people.org });
+    const chosen = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude", org: "example" });
     expect(chosen.isError).toBe(false);
-    const outsider = await call(mcp, "launch", { golden: "shared", harness: "claude", org: crypto.randomUUID() });
+    const outsider = await call(mcp, "launch", {
+      provider: "boat",
+      golden: "shared",
+      harness: "claude",
+      org: crypto.randomUUID(),
+    });
     expect(outsider.text).toContain("not a member");
   });
 
   test("Codex without response models and legacy turns stay finished with neutral evidence", async () => {
     const { token, client, people, boat, db } = await start();
     const mcp = await client(await token(people.member));
-    const launched = await call(mcp, "launch", { golden: "shared", harness: "codex", prompt: "work" });
+    const launched = await call(mcp, "launch", {
+      provider: "boat",
+      golden: "shared",
+      harness: "codex",
+      prompt: "work",
+    });
     boat.finish("bx_1", "prompt_1", "finished");
     const store = createSqlData(db)({
       userId: people.member,
@@ -812,6 +837,7 @@ describe("tools", () => {
     const { token, client, people, boat } = await start();
     const mcp = await client(await token(people.member));
     const launched = await call(mcp, "launch", {
+      provider: "boat",
       golden: "shared",
       harness: "claude",
       model: "chosen",
@@ -873,7 +899,12 @@ describe("tools", () => {
     await db.exec(
       `create function reject_model_record() returns trigger language plpgsql as $$ begin raise exception 'record unavailable'; end $$; create trigger reject_model_record before insert on sandbox_turn_models for each row execute function reject_model_record();`,
     );
-    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude", prompt: "work" });
+    const launched = await call(mcp, "launch", {
+      provider: "boat",
+      golden: "shared",
+      harness: "claude",
+      prompt: "work",
+    });
     expect(launched.isError).toBe(false);
     expect(boat.stops).toHaveLength(0);
     const sent = await call(mcp, "send", { id: launched.data.id, prompt: "next" });
@@ -887,6 +918,7 @@ describe("tools", () => {
     const { token, client, people, boat, db } = await start();
     const mcp = await client(await token(people.member));
     const launched = await call(mcp, "launch", {
+      provider: "boat",
       golden: "shared",
       harness: "claude",
       model: "claude-fable-5-2",
@@ -957,7 +989,7 @@ describe("tools", () => {
   test("wait returns once the turn ends, and timedOut when it does not", async () => {
     const { token, client, people, boat, clock } = await start();
     const mcp = await client(await token(people.member));
-    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude", prompt: "go" });
+    const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude", prompt: "go" });
     const before = clock.now.getTime();
     const waiting = await call(mcp, "wait", { id: launched.data.id, timeout_seconds: 3 });
     expect(waiting.data).toMatchObject({ timedOut: true, settled: false, status: "running" });
@@ -976,7 +1008,7 @@ describe("tools", () => {
   test("logs pass the cursor through and keep one body per event id, the newest", async () => {
     const { token, client, people, boat } = await start();
     const mcp = await client(await token(people.member));
-    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude", prompt: "go" });
+    const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude", prompt: "go" });
     const events = boat.sandbox("bx_1").events;
     events.push({ id: "ev_msg", at: 2, kind: "message", text: "Wor", partial: true, tools: [] });
     events.push({ id: "ev_msg", at: 2, kind: "message", text: "Working", partial: false, tools: [] });
@@ -996,7 +1028,7 @@ describe("tools", () => {
   test("logs reads every page only when all is requested and advances the cursor", async () => {
     const { token, client, people, boat } = await start();
     const mcp = await client(await token(people.member));
-    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude", prompt: "go" });
+    const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude", prompt: "go" });
     const events = boat.sandbox("bx_1").events;
     for (let index = 0; index < 205; index += 1) {
       events.push({
@@ -1034,7 +1066,12 @@ describe("tools", () => {
       value: "other-subscription",
     });
     const mcp = await client(await token(people.member));
-    const launched = await call(mcp, "launch", { golden: "shared", harness: "codex", credentialId: first.id });
+    const launched = await call(mcp, "launch", {
+      provider: "boat",
+      golden: "shared",
+      harness: "codex",
+      credentialId: first.id,
+    });
     expect(launched.isError).not.toBe(true);
     expect(
       (await db.query("select credential_id,credential_version from sandboxes where id=$1", [launched.data.id]))
@@ -1082,7 +1119,7 @@ describe("tools", () => {
   test("a stop without a retained recovery disk remains terminal on later sends", async () => {
     const { token, client, people, boat } = await start();
     const mcp = await client(await token(people.member));
-    const launched = await call(mcp, "launch", { golden: "shared", harness: "codex" });
+    const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "codex" });
     const get = boat.provider.get.bind(boat.provider);
     boat.provider.get = async (id) => {
       const info = await get(id);
@@ -1098,16 +1135,22 @@ describe("tools", () => {
   test("an idle launch keeps its model and effort for every send, across stop, and an override lasts one turn", async () => {
     const { token, client, people, boat, db } = await start();
     const mcp = await client(await token(people.member));
-    const refused = await call(mcp, "launch", { golden: "shared", harness: "codex", reasoning_effort: "extreme" });
+    const refused = await call(mcp, "launch", {
+      provider: "boat",
+      golden: "shared",
+      harness: "codex",
+      reasoningEffort: "extreme",
+    });
     expect(refused.isError).toBe(true);
     expect(refused.text).toContain("Use one of: low, medium, high, xhigh, max, ultra");
     expect(boat.forks).toHaveLength(0);
 
     const launched = await call(mcp, "launch", {
+      provider: "boat",
       golden: "shared",
       harness: "codex",
       model: "gpt-6.1-terra",
-      reasoning_effort: "high",
+      reasoningEffort: "high",
     });
     expect(launched.data).toMatchObject({ model: "gpt-6.1-terra", reasoningEffort: "high", status: "ready" });
     expect(boat.prompts).toHaveLength(0);
@@ -1135,11 +1178,11 @@ describe("tools", () => {
   test("steer reports restart for Codex and native for Claude, and asks for send when nothing runs", async () => {
     const { token, client, people, boat, db } = await start();
     const mcp = await client(await token(people.member));
-    const codex = await call(mcp, "launch", { golden: "shared", harness: "codex", prompt: "go" });
+    const codex = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "codex", prompt: "go" });
     expect((await call(mcp, "steer", { id: codex.data.id, text: "Use bun" })).data).toMatchObject({
       delivery: "restart",
     });
-    const claude = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    const claude = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
     // The list can see ready while a background observation owns the SQL lease.
     expect((await call(mcp, "list")).data.sandboxes).toContainEqual(
       expect.objectContaining({ id: claude.data.id, status: "ready" }),
@@ -1181,7 +1224,7 @@ describe("tools", () => {
   test("exec redacts the agent's credentials from the output", async () => {
     const { token, client, people, boat } = await start();
     const mcp = await client(await token(people.member));
-    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
     boat.setExecOutput({ stdout: `CLAUDE_CODE_OAUTH_TOKEN=${SECRETS.orgClaude}\nok\n` });
     const ran = await call(mcp, "exec", { id: launched.data.id, command: "env" });
     expect(ran.data).toMatchObject({ exitCode: 0, stdout: "CLAUDE_CODE_OAUTH_TOKEN=***\nok\n" });
@@ -1193,7 +1236,12 @@ describe("tools", () => {
     async (state) => {
       const { token, client, people, boat, db } = await start();
       const mcp = await client(await token(people.member));
-      const launched = await call(mcp, "launch", { golden: "shared", harness: "claude", prompt: "work" });
+      const launched = await call(mcp, "launch", {
+        provider: "boat",
+        golden: "shared",
+        harness: "claude",
+        prompt: "work",
+      });
       if (state === "failed")
         await db.query("update sandboxes set status='failed', status_reason='original failure' where id=$1", [
           launched.data.id,
@@ -1257,7 +1305,7 @@ describe("tools", () => {
   test("ordinary exec commands stay concurrent without changing lifecycle generation", async () => {
     const { token, client, people, boat, db } = await start();
     const mcp = await client(await token(people.member));
-    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
     const id = launched.data.id;
     const before = (
       await db.query<{ lifecycle_generation: string | number | bigint }>(
@@ -1314,7 +1362,12 @@ describe("tools", () => {
       },
     });
     const mcp = await client(await token(people.member));
-    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude", prompt: "work" });
+    const launched = await call(mcp, "launch", {
+      provider: "boat",
+      golden: "shared",
+      harness: "claude",
+      prompt: "work",
+    });
     const id = launched.data.id;
     boat.setExecOutput({ stdout: '{"status":"clean"}' });
     boat.provider.stop = async () => {
@@ -1348,7 +1401,7 @@ describe("tools", () => {
   test("explicit new work cancels a pending stop receipt before the next stop", async () => {
     const { token, client, people, boat, db } = await start();
     const mcp = await client(await token(people.member));
-    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
     const id = launched.data.id;
     boat.setExecOutput({ stdout: '{"status":"clean"}' });
     const stop = boat.provider.stop;
@@ -1376,7 +1429,7 @@ describe("tools", () => {
   test("native send hands a fresh pre-dispatch retention refusal to the stop reconciler", async () => {
     const { token, client, people, boat, db } = await start();
     const mcp = await client(await token(people.member));
-    const { data } = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    const { data } = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
     expect((await call(mcp, "stop", { id: data.id })).data.status).toBe("stopped");
     boat.provider.prompt = async () => {
       boat.sandbox("bx_1").info.retainedSnapshot = "unconfirmed";
@@ -1399,7 +1452,7 @@ describe("tools", () => {
   test("user stop leaves an unverified archive in worker custody without dispatching another stop", async () => {
     const { token, client, people, boat } = await start();
     const mcp = await client(await token(people.member));
-    const { data } = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    const { data } = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
     const machine = boat.sandbox("bx_1");
     machine.info = { ...machine.info, state: "stopped", providerState: "archived", retainedSnapshot: "unconfirmed" };
     expect((await call(mcp, "stop", { id: data.id })).data.status).toBe("stopping");
@@ -1413,7 +1466,7 @@ describe("tools", () => {
       const { token, client, people, boat, db, auth, clock } = await start();
       const bearer = await token(people.member);
       const mcp = await client(bearer);
-      const launched = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+      const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
       const id = launched.data.id;
       const archive = Buffer.from("private local-only commit recovery fixture").toString("base64");
       boat.setExecOutput({ stdout: JSON.stringify({ status: result }) });
@@ -1506,7 +1559,7 @@ describe("tools", () => {
   test("user-stop trace places capture before physical dispatch", async () => {
     const { token, client, people, boat } = await start();
     const mcp = await client(await token(people.member));
-    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
     boat.setExecOutput({ stdout: '{"status":"clean"}' });
     const log = spyOn(console, "info").mockImplementation(() => {});
     try {
@@ -1533,7 +1586,7 @@ describe("tools", () => {
   test("stop without a provider timestamp retains observed compute time", async () => {
     const { token, client, people, boat, db, clock } = await start();
     const mcp = await client(await token(people.member));
-    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
     await db.query("update sandboxes set usage_running_since=$2::timestamptz - interval '12 seconds' where id=$1", [
       launched.data.id,
       clock.now.toISOString(),
@@ -1552,6 +1605,7 @@ describe("tools", () => {
   test("a member of another org sees none of this org's sandboxes", async () => {
     const { token, client, people } = await start();
     const launched = await call(await client(await token(people.member)), "launch", {
+      provider: "boat",
       golden: "shared",
       harness: "claude",
     });
@@ -1571,7 +1625,7 @@ test("MCP launch preserves the closed busy account code and safe action", async 
     },
   });
   const mcp = await client(await token(people.owner));
-  const result = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+  const result = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
   expect(result.isError).toBe(true);
   expect(result.text).toContain("error code: credential_busy");
   expect(result.text).toContain("The model account is unavailable. Check its current credentials.");
@@ -1587,6 +1641,12 @@ test("public MCP inventory and schemas expose operation contracts", async () => 
   );
   for (const tool of tools) expect(tool.outputSchema).toBeDefined();
   const launch = tools.find((tool) => tool.name === "launch");
-  expect(launch?.inputSchema.properties?.repo).toMatchObject({ type: "string" });
-  expect(launch?.inputSchema.required ?? []).not.toContain("repo");
+  expect(launch?.inputSchema.anyOf).toEqual(
+    ["boat", "modal"].map((provider) =>
+      expect.objectContaining({
+        properties: expect.objectContaining({ provider: expect.objectContaining({ const: provider }) }),
+        required: expect.arrayContaining(["provider", "harness", "golden"]),
+      }),
+    ),
+  );
 });
