@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { PROTOCOL_VERSION } from "@armada/agent-runtime";
 import { DelegatedAuthority, type Sql } from "@armada/core/server";
+import { createSqlData } from "../src/data.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { rowOnlyConnection } from "./row-only-database.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
@@ -106,6 +107,61 @@ test("enrolment is single-use across replicas and replacement epochs fence every
     "runtime_enrolment_denied",
   );
 });
+
+test.each(["boat", "modal"] as const)(
+  "promptless %s launch journals readiness for the enrolled generation",
+  async (provider) => {
+    const f = await fixture(provider);
+    const activityToken = crypto.randomUUID();
+    await f.db.query(
+      `update sandboxes set status='starting',activity_lease_id=$2,
+      activity_until=now()+interval '1 minute' where id=$1`,
+      [f.id, activityToken],
+    );
+    const ticket = await f.issue();
+    const session = await f.service().enrol(ticket.enrolmentToken);
+    const owner = { userId: f.people.owner, orgs: [{ orgId: f.people.org, role: "member" }], via: "service" } as const;
+    const expectedGeneration = Number(ticket.lifecycleGeneration);
+    const patch = { status: "ready", finishActivity: true, activityToken, expectedGeneration } as const;
+    const store = createSqlData(f.sql)({ ...owner, orgs: [...owner.orgs] }).sandboxes;
+    const journal = async () =>
+      (
+        await f.db.query(
+          "select from_status,to_status,actor,code,generation::text from sandbox_transitions where sandbox_id=$1",
+          [f.id],
+        )
+      ).rows;
+
+    await expect(store.update(f.id, { ...patch, expectedGeneration: expectedGeneration + 1 })).rejects.toThrow();
+    expect(await journal()).toEqual([]);
+
+    await f.db.exec(`alter table sandboxes add constraint test_readiness_lease_release
+      check (status <> 'ready' or activity_lease_id is not null) not valid`);
+    try {
+      await expect(store.update(f.id, patch)).rejects.toThrow("test_readiness_lease_release");
+    } finally {
+      await f.db.exec("alter table sandboxes drop constraint test_readiness_lease_release");
+    }
+    expect(await journal()).toEqual([]);
+    expect(await store.get(f.id)).toMatchObject({ status: "starting", lifecycleGeneration: expectedGeneration });
+
+    await store.update(f.id, patch);
+    expect(await store.get(f.id)).toMatchObject({ status: "ready", lifecycleGeneration: expectedGeneration });
+    expect(
+      (await f.db.query("select activity_lease_id,activity_until from sandboxes where id=$1", [f.id])).rows,
+    ).toEqual([{ activity_lease_id: null, activity_until: null }]);
+    expect(await journal()).toEqual([
+      {
+        from_status: "starting",
+        to_status: "ready",
+        actor: "runtime_enrolment",
+        code: "runtime_enrolled",
+        generation: ticket.lifecycleGeneration,
+      },
+    ]);
+    expect((await f.request("session", session.runtimeToken, session.epoch)).status).toBe(200);
+  },
+);
 
 test("replacement ticket issue atomically fences a scoped parent's old bearer", async () => {
   const f = await fixture("modal");
