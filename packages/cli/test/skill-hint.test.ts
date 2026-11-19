@@ -10,7 +10,6 @@ afterEach(async () => {
   for (const path of temps.splice(0)) await rm(path, { recursive: true, force: true });
 });
 
-// Keep terminal wiring at the entrypoint; exercise local discovery/cooldown policy directly.
 test("terminal-only skill advice is occasional, silenceable and stops after discovery", async () => {
   const root = await mkdtemp(join(tmpdir(), "armada-hint-"));
   temps.push(root);
@@ -65,12 +64,10 @@ test("terminal-only skill advice is occasional, silenceable and stops after disc
       await rm(skill, { recursive: true });
     }
   }
-  // An old named pipe is not a cooldown file; advice must not open it in blocking mode.
   expect(Bun.spawnSync(["mkfifo", receipt]).exitCode).toBe(0);
   await utimes(receipt, new Date(0), new Date(0));
   expect(cli(["--version"])).not.toContain("silence:");
   await rm(receipt);
-  // Read-only/unusable state cannot repeatedly print advice or fail the command.
   await rm(join(state, "armada"), { recursive: true });
   await writeFile(join(state, "armada"), "not a directory");
   expect(cli(["--version"])).not.toContain("silence:");

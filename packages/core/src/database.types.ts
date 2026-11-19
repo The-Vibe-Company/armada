@@ -4847,6 +4847,29 @@ export type Database = {
           },
         ];
       };
+      sandbox_source_snapshots: {
+        Row: {
+          sandbox_id: string;
+          snapshot_id: string;
+        };
+        Insert: {
+          sandbox_id: string;
+          snapshot_id: string;
+        };
+        Update: {
+          sandbox_id?: string;
+          snapshot_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "sandbox_source_snapshots_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: true;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       sandbox_transitions: {
         Row: {
           id: number;

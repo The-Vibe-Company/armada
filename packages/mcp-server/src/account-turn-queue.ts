@@ -43,6 +43,11 @@ type Entry = {
   result_enc: Uint8Array<ArrayBuffer> | null;
   conversation_id: string;
 };
+const UNSETTLED_TASK = `s.task_prompt_id is not null
+  and (s.status='running' or (s.status='ready' and ${RUNTIME_LANE} and s.provider<>'docker'))
+  and not exists(select 1 from public.runtime_idle_turns t
+    where t.sandbox_id=s.id and t.prompt_id=s.task_prompt_id and t.settled)`;
+
 /** Durable encrypted sends. Account locking serializes FIFO admission across server replicas.
  * Native dispatches are never retried: native providers have no idempotent prompt protocol.
  * Runtime-backed lanes reconcile the same durable request under a bounded dispatch lease.
@@ -66,8 +71,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
       }>(
         `select c.name,c.max_agents,coalesce(q.model,s.model) as model,(c.model_limits->>coalesce(q.model,s.model))::integer as model_limit,${accountWorkingCountSql("c.id", "$2", "q.model")} as model_working,${accountWorkingCountSql("c.id")} as working,
           (s.reconcile_lease_until>now() or s.activity_lease_id is not null
-            or (s.task_prompt_id is not null and s.status='running' and not exists(
-              select 1 from public.runtime_idle_turns t where t.sandbox_id=s.id and t.prompt_id=s.task_prompt_id and t.settled))
+            or (${UNSETTLED_TASK})
             or exists(select 1 from public.account_turn_queue active where active.sandbox_id=s.id and active.state='dispatching')) as busy,
           ((${ACCOUNT_WORKING_PREDICATE}) or exists(
             select 1 from public.account_agent_reservations r where r.sandbox_id=s.id and r.account_id=c.id)) as has_slot
@@ -459,7 +463,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
             const busy = await tx.query(
               `select 1 from public.account_turn_queue where sandbox_id=$1 and state='dispatching'
              union all select 1 from public.sandboxes s where s.id=$1 and (s.reconcile_lease_until>now() or s.activity_lease_id is not null
-             or (s.task_prompt_id is not null and s.status='running' and not exists(select 1 from public.runtime_idle_turns t where t.sandbox_id=s.id and t.prompt_id=s.task_prompt_id and t.settled))) limit 1`,
+             or (${UNSETTLED_TASK})) limit 1`,
               [candidate.sandbox_id],
             );
             if (!recovering && busy.rows.length) return null;
