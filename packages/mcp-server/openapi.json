@@ -12207,7 +12207,7 @@
                         "description": "Child launch admission requires a non-blank model."
                       },
                       "skills": {
-                        "description": "Skills require distinct org/slug@exact-version or slug@exact-version pins (maximum 20).",
+                        "description": "Skills require distinct org/slug@exact-version or slug@exact-version pins (maximum 20). Pin strings may be at most 256 characters. The armada-tools slug is reserved.",
                         "maxItems": 20,
                         "type": "array",
                         "items": {

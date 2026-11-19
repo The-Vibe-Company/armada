@@ -16,7 +16,13 @@ const selection = z
     credentialId: z.uuid(),
     credentialVersion: z.number().int().positive().safe(),
     model: z.string().min(1).max(200).describe("Child launch admission requires a non-blank model."),
-    skills: z.array(z.string()).max(20).optional().describe(INVALID_SKILL_PINS_MESSAGE),
+    skills: z
+      .array(z.string())
+      .max(20)
+      .optional()
+      .describe(
+        `${INVALID_SKILL_PINS_MESSAGE} Pin strings may be at most 256 characters. The armada-tools slug is reserved.`,
+      ),
     reasoningEffort: z
       .string()
       .min(1)
