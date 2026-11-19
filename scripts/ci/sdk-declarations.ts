@@ -6,7 +6,7 @@ const root = join(import.meta.dir, "../..");
 const consumer = "/armada-sdk-smoke";
 
 /** Check the smoke as an ESM consumer of the published package in a virtual install. */
-export function checkSdkDeclarations(declarations: string, smoke: string): readonly ts.Diagnostic[] {
+export function checkSdkDeclarations(declarations: string, smoke: string) {
   const smokePath = posix.join(consumer, "smoke.ts");
   const sdkDir = posix.join(consumer, "node_modules", SDK_PACKAGE);
   const files = new Map([
