@@ -114,7 +114,6 @@ export function createProviderReaperLane(
             overdue++;
             if (source.provider === "modal" || source.provider === "docker") {
               overdueMachineIds.push(machine.machineId);
-              // Preserve the observation even if deletion is interrupted.
               if (source.deleteMachine || overdueMachineIds.length === OVERDUE_LOG_BATCH_SIZE) reportOverdueMachines();
             }
           }
