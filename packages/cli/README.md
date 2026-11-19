@@ -44,8 +44,9 @@ Arbitrary provider and guest text stays out of diagnostics. The terminal list
 renders the safe list response without looking up sandbox internals and
 replaces control characters in labels and owners before displaying them.
 
-Launch looks up optional resource advice with a two-second budget and quietly
-omits it when the route or evidence is unavailable.
+After a successful Boat or Modal launch in text mode, the CLI looks up
+optional resource advice with a two-second budget and quietly omits it when
+the route or evidence is unavailable.
 
 A closed stdout pipe ends the CLI with status zero, including during a follow
 operation. Check a submitted mutation's outcome before retrying it. The exit
