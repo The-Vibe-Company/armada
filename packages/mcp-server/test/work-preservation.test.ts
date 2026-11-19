@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, expect, spyOn, test } from "bun:test";
+import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { decryptSecret, ProviderError } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
@@ -8,15 +8,13 @@ import { encryptedRecoveryExec } from "./fixtures/recovery-exec.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 import { bunLikeSql, ENCRYPTION_KEY, fakeBoat, seedDatabase } from "./support.ts";
 
-let fixture: (Awaited<ReturnType<typeof seedDatabase>> & { goldenId: string; modalGoldenId: string }) | undefined;
+let fixture: (Awaited<ReturnType<typeof seedDatabase>> & { modalGoldenId: string }) | undefined;
 
 beforeAll(async () => {
   const db = await migratedDatabase();
   try {
     await db.exec("set search_path=public");
     const seeded = await seedDatabase(db);
-    const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0];
-    if (!golden) throw new Error("Missing golden fixture");
     const modalGolden = (
       await db.query<{ id: string }>(
         `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,
@@ -27,15 +25,11 @@ beforeAll(async () => {
       )
     ).rows[0];
     if (!modalGolden) throw new Error("Missing Modal golden fixture");
-    fixture = { ...seeded, goldenId: golden.id, modalGoldenId: modalGolden.id };
+    fixture = { ...seeded, modalGoldenId: modalGolden.id };
   } catch (error) {
     await db.close();
     throw error;
   }
-});
-
-afterEach(async () => {
-  await fixture?.db.exec("delete from sandboxes");
 });
 
 afterAll(async () => {
@@ -52,15 +46,15 @@ function sharedDatabase() {
 // Primary owner for encrypted persistence and recovery authorization. Collector behavior
 // (including actual Git reconstruction) belongs to core's work-preservation test.
 test("recovery receipts retain encrypted versions and only current interior owners/admins can retrieve them", async () => {
-  const { db, people, goldenId } = sharedDatabase();
+  const { db, people, sharedGoldenId: goldenId } = sharedDatabase();
   const oldKey = process.env.ARMADA_ENCRYPTION_KEY;
   process.env.ARMADA_ENCRYPTION_KEY = ENCRYPTION_KEY;
   try {
     const sql = bunLikeSql(db);
     const id = crypto.randomUUID();
     await db.query(
-      `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status)
-      values($1,$2,$3,$4,'boat','bx_recovery','claude','running')`,
+      `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status,outputs_failure_reasons)
+      values($1,$2,$3,$4,'boat','bx_recovery','claude','running',array['collector_unsupported'])`,
       [id, goldenId, people.org, people.owner],
     );
     const data = (userId: string, orgId = people.org) =>
@@ -161,19 +155,20 @@ test("recovery receipts retain encrypted versions and only current interior owne
 test.each(["observe", "quiesce", "capture", "known_capture"])(
   "the stop deadline fences late %s work",
   async (stage) => {
-    const { db, people, goldenId } = sharedDatabase();
+    const { db, people, sharedGoldenId: goldenId } = sharedDatabase();
     const originalTimeout = globalThis.setTimeout;
     try {
       const sql = bunLikeSql(db);
       const id = crypto.randomUUID();
+      const physical = `bx_late_recovery_${id}`;
       await db.query(
         `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status)
-      values($1,$2,$3,$4,'boat','bx_late_recovery','claude','running')`,
-        [id, goldenId, people.org, people.owner],
+      values($1,$2,$3,$4,'boat',$5,'claude','running')`,
+        [id, goldenId, people.org, people.owner, physical],
       );
       const boat = fakeBoat();
       const info = {
-        id: "bx_late_recovery",
+        id: physical,
         name: "late",
         state: "ready" as const,
         providerState: "running",
@@ -243,7 +238,7 @@ test.each(["observe", "quiesce", "capture", "known_capture"])(
         }
         return originalTimeout(callback, ms, ...args);
       }) as typeof setTimeout;
-      const stopped = preserveBeforeStop(sql, provider, id, "bx_late_recovery");
+      const stopped = preserveBeforeStop(sql, provider, id, physical);
       await boundary;
       if (!expire || !release) throw new Error("Expected pending provider observation and deadline");
       expire();
@@ -275,32 +270,35 @@ async function withPreservationRow(
     db: Awaited<ReturnType<typeof sharedDatabase>>["db"];
     sql: ReturnType<typeof bunLikeSql>;
     id: string;
+    physical: string;
     boat: ReturnType<typeof fakeBoat>;
     provider: ReturnType<typeof fakeBoat>["provider"];
   }) => Promise<void>,
-  modalBinding?: string,
+  machine: "boat" | "modal" = "boat",
 ) {
-  const { db, people, goldenId, modalGoldenId } = sharedDatabase();
+  const { db, people, sharedGoldenId: goldenId, modalGoldenId } = sharedDatabase();
   const id = crypto.randomUUID();
+  const modal = machine === "modal";
+  const physical = modal ? `modal_machine_${id}` : `bx_policy_${id}`;
   await db.query(
-    `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status,runtime_transport)
-    values($1,$2,$3,$4,$5,$6,$7,'running',$8)`,
+    `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status,runtime_transport,outputs_failure_reasons)
+    values($1,$2,$3,$4,$5,$6,$7,'running',$8,array['collector_unsupported'])`,
     [
       id,
-      modalBinding ? modalGoldenId : goldenId,
+      modal ? modalGoldenId : goldenId,
       people.org,
       people.owner,
-      modalBinding ? "modal" : "boat",
-      modalBinding ?? "bx_policy",
-      modalBinding ? "codex" : "claude",
-      modalBinding ? "dialout" : null,
+      machine,
+      physical,
+      modal ? "codex" : "claude",
+      modal ? "dialout" : null,
     ],
   );
   const boat = fakeBoat();
   const provider = {
     ...boat.provider,
     get: async () => ({
-      id: "bx_policy",
+      id: physical,
       name: "policy",
       state: "ready" as const,
       providerState: "idle",
@@ -308,13 +306,13 @@ async function withPreservationRow(
     }),
     quiesce: async () => {},
   };
-  await work({ db, id, boat, provider, sql: bunLikeSql(db) });
+  await work({ db, id, physical, boat, provider, sql: bunLikeSql(db) });
 }
 
 test("confirmed work at risk records a closed stage/reason and owner action", async () => {
-  await withPreservationRow(async ({ db, id, sql, boat, provider }) => {
+  await withPreservationRow(async ({ db, id, physical, sql, boat, provider }) => {
     boat.setExecOutput({ stdout: JSON.stringify({ status: "failed", reason: "size_limit", workAtRisk: true }) });
-    await preserveBeforeStop(sql, provider, id, "bx_policy");
+    await preserveBeforeStop(sql, provider, id, physical);
     expect(
       (await db.query<{ preservation_note: string }>("select preservation_note from sandboxes where id=$1", [id]))
         .rows[0]?.preservation_note,
@@ -327,7 +325,7 @@ test("confirmed work at risk records a closed stage/reason and owner action", as
 test.each(["get", "quiesce", "exec"] as const)(
   "unknown work after %s failure keeps an informational owner notice",
   async (method) => {
-    await withPreservationRow(async ({ db, id, sql, provider }) => {
+    await withPreservationRow(async ({ db, id, physical, sql, provider }) => {
       const log = spyOn(console, "warn").mockImplementation(() => {});
       try {
         await preserveBeforeStop(
@@ -346,7 +344,7 @@ test.each(["get", "quiesce", "exec"] as const)(
             },
           },
           id,
-          "bx_policy",
+          physical,
         );
         expect(
           (
@@ -371,7 +369,7 @@ test.each(["get", "quiesce", "exec"] as const)(
 );
 
 test("refused collector exec preserves conditional guidance when risk cannot be checked", async () => {
-  await withPreservationRow(async ({ db, id, sql, provider }) => {
+  await withPreservationRow(async ({ db, id, physical, sql, provider }) => {
     await preserveBeforeStop(
       sql,
       {
@@ -386,7 +384,7 @@ test("refused collector exec preserves conditional guidance when risk cannot be 
         },
       },
       id,
-      "bx_policy",
+      physical,
     );
     const row = (
       await db.query<{ preservation_note: string | null }>("select preservation_note from sandboxes where id=$1", [id])
@@ -398,7 +396,7 @@ test("refused collector exec preserves conditional guidance when risk cannot be 
 });
 
 test("a successful clean check stays silent if clearing the receipt must be retried", async () => {
-  await withPreservationRow(async ({ db, id, boat, provider }) => {
+  await withPreservationRow(async ({ db, id, physical, boat, provider }) => {
     boat.setExecOutput({ stdout: '{"status":"clean"}' });
     let failed = false;
     const sql = bunLikeSql(db, (text) => {
@@ -407,7 +405,7 @@ test("a successful clean check stays silent if clearing the receipt must be retr
         throw new Error("Synthetic cleanup failure");
       }
     });
-    await preserveBeforeStop(sql, provider, id, "bx_policy");
+    await preserveBeforeStop(sql, provider, id, physical);
     expect(
       (
         await db.query<{ preservation_note: string | null }>("select preservation_note from sandboxes where id=$1", [
@@ -419,7 +417,7 @@ test("a successful clean check stays silent if clearing the receipt must be retr
 });
 
 test("a late failed pass cannot overwrite a concurrent successful stop receipt", async () => {
-  await withPreservationRow(async ({ db, id, sql, boat, provider }) => {
+  await withPreservationRow(async ({ db, id, physical, sql, boat, provider }) => {
     await db.query("update sandboxes set stop_requested_at='2026-11-11T08:00:00Z',stop_generation=1 where id=$1", [id]);
     let release: (() => void) | undefined;
     let entered: (() => void) | undefined;
@@ -431,7 +429,7 @@ test("a late failed pass cannot overwrite a concurrent successful stop receipt",
       get: () =>
         new Promise<Awaited<ReturnType<typeof provider.get>>>((resolve) => {
           release = () => {
-            void provider.get("bx_policy").then(resolve);
+            void provider.get(physical).then(resolve);
           };
           entered?.();
         }),
@@ -444,10 +442,10 @@ test("a late failed pass cannot overwrite a concurrent successful stop receipt",
         });
       },
     };
-    const failed = preserveBeforeStop(sql, late, id, "bx_policy", "lifecycle_stop");
+    const failed = preserveBeforeStop(sql, late, id, physical, "lifecycle_stop");
     await ready;
     boat.setExecOutput({ stdout: '{"status":"clean"}' });
-    await preserveBeforeStop(sql, provider, id, "bx_policy", "user_stop");
+    await preserveBeforeStop(sql, provider, id, physical, "user_stop");
     release?.();
     await failed;
     expect(
@@ -461,13 +459,13 @@ test("a late failed pass cannot overwrite a concurrent successful stop receipt",
 });
 
 test("a fresh stop epoch does not reuse an earlier clean capture", async () => {
-  await withPreservationRow(async ({ db, id, sql, boat, provider }) => {
+  await withPreservationRow(async ({ db, id, physical, sql, boat, provider }) => {
     boat.setExecOutput({ stdout: '{"status":"clean"}' });
     await db.query("update sandboxes set stop_requested_at='2026-11-11T08:00:00Z',stop_generation=1 where id=$1", [id]);
-    await preserveBeforeStop(sql, provider, id, "bx_policy");
+    await preserveBeforeStop(sql, provider, id, physical);
     const count = boat.execs.length;
     await db.query("update sandboxes set stop_requested_at='2026-11-11T09:00:00Z',stop_generation=2 where id=$1", [id]);
-    await preserveBeforeStop(sql, provider, id, "bx_policy");
+    await preserveBeforeStop(sql, provider, id, physical);
     expect(boat.execs.length).toBe(count + 1);
   });
 });
@@ -489,32 +487,27 @@ test("a user JWT cannot forge stop receipts or write application-secret taint", 
 });
 
 test("an unavailable receipt lookup defers stop without provider work", async () => {
-  await withPreservationRow(async ({ db, id, provider }) => {
-    const sql = bunLikeSql(db, (text) => {
-      if (/^\s*select/i.test(text)) throw new Error("Synthetic receipt outage");
-    });
-    let reads = 0;
-    expect(
-      await preserveBeforeStop(
-        sql,
-        {
-          ...provider,
-          get: async () => {
-            reads++;
-            return provider.get("bx_policy");
-          },
-        },
-        id,
-        "bx_policy",
-      ),
-    ).toBe("pending");
-    expect(reads).toBe(0);
-  });
+  const sql = {
+    async query(): Promise<never> {
+      throw new Error("Synthetic receipt outage");
+    },
+  };
+  const boat = fakeBoat();
+  let reads = 0;
+  const provider = {
+    ...boat.provider,
+    async get() {
+      reads++;
+      throw new Error("Must defer before observing the machine");
+    },
+  };
+  expect(await preserveBeforeStop(sql, provider, crypto.randomUUID(), "bx_policy")).toBe("pending");
+  expect(reads).toBe(0);
 });
 
 // The real persistence boundary owns this no-archive contract, including restart.
 test("application-secret taint permanently disables collection and recovery, purging older archives", async () => {
-  const { db, people, goldenId } = sharedDatabase();
+  const { db, people, sharedGoldenId: goldenId } = sharedDatabase();
 
   const id = crypto.randomUUID();
   await db.query(
@@ -576,8 +569,7 @@ test.each([
   "quiescence_rejected",
   "lost_receipt_response",
 ] as const)("Modal runtime stop preserves work independently of journal retention: %s", async (scenario) => {
-  const physical = "modal_machine_fixture";
-  await withPreservationRow(async ({ db, id, sql, provider }) => {
+  await withPreservationRow(async ({ db, id, physical, sql, provider }) => {
     const activity = crypto.randomUUID();
     const reconcile = crypto.randomUUID();
     const archive = Buffer.from("dirty Modal workspace fixture").toString("base64");
@@ -682,5 +674,5 @@ test.each([
       if (oldKey === undefined) delete process.env.ARMADA_ENCRYPTION_KEY;
       else process.env.ARMADA_ENCRYPTION_KEY = oldKey;
     }
-  }, physical);
+  }, "modal");
 });
