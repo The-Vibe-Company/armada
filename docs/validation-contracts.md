@@ -354,6 +354,26 @@ cases run in process. The browser login tests inject the browser opener, and
 the local host tests inject their command runner. `binary.release.ts` is
 explicit release validation outside unit discovery.
 
+## Process-spawning unit cases in Docker Host
+
+The process-test allowlist identifies `cli.test.ts` and
+`runtime-install.test.ts` by direct spawn syntax. The daemon state test also
+spawns on Linux through `fileStore().lock()`. Whole-case timings below come
+from focused Linux runs with Bun 1.4.2 on main at `2cbf531e`.
+
+| File under `packages/docker-host/test` | Case | Local subprocess boundary | Local |
+| --- | --- | --- | ---: |
+| `cli.test.ts` | Docker host help succeeds without registration, state or Docker access | Starts the Bun CLI for each of eight help invocations, with an unusable home and executable search path. | 183.57 ms |
+| `cli.test.ts` | Docker host status identifies an unregistered installation without Docker access | Starts the Bun CLI with an empty temporary home and an unusable executable search path. | 25.17 ms |
+| `runtime-install.test.ts` | runtime starter delivers only enrolment on private stdin and detaches runtime output | Runs the bootstrap shell with a local executable fixture that reads stdin through `sha256sum`. | 6.00 ms |
+| `daemon.test.ts` | private native state survives reopening, excludes concurrent owners and rejects unsafe existing files | On Linux, the native file store starts `sh` and `flock` for acquisition and contention. The successful lease uses `cat` to hold the lock until stdin closes. | 12.99 ms |
+
+PR #3193 recorded the first three cases in CI at 189.34 ms, 798.25 ms,
+and 16.41 ms respectively. PR #3227 replaced the 2,298.20 ms managed-service
+CLI case with direct service calls using injected systemd operations. The
+other two runtime installer cases use in-process machine and fetch fixtures.
+The daemon archive case replaces `Bun.spawn` with a mock.
+
 ## Evidence owed after merge
 
 Run the existing publishing release validation on the exact release SHA. Verify

@@ -12,6 +12,9 @@ import { createAccountTurnQueue } from "./account-turn-queue.ts";
 import type { Caller } from "./caller.ts";
 import { currentRequestId, observeRequest } from "./request-observability.ts";
 
+import { callSharedTool } from "./tool-api.ts";
+import type { ToolContext } from "./tools.ts";
+
 let connection: PGlite | undefined;
 
 function database() {
@@ -304,7 +307,7 @@ test.each(["modal", "boat", "docker"])("a pre-activation %s wake refusal fails t
   queue.setDispatch(async () => {
     throw new VaultError("conflict", "No current synchronized checkpoint");
   });
-  const log = spyOn(console, "info");
+  const log = spyOn(console, "error");
   try {
     expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
     await queue.drain();
@@ -312,16 +315,80 @@ test.each(["modal", "boat", "docker"])("a pre-activation %s wake refusal fails t
       failed: true,
       message: "Queued prompt rejected before dispatch; inspect sandbox and account settings before resending.",
     });
-    expect(
-      log.mock.calls.map(([line]) => String(line)).filter((line) => line.includes("sandbox_resume_dispatch_refused")),
-    ).toEqual([
-      JSON.stringify({
-        event: "sandbox_resume_dispatch_refused",
+    const lines = log.mock.calls.map(([line]) => String(line));
+    expect(lines.map((line) => JSON.parse(line))).toEqual([
+      expect.objectContaining({
+        event: "operator_failure",
+        phase: "account_turn.dispatch.send",
         sandboxId: input.id,
-        requestId: input.request_id,
+        operationSequence: expect.any(String),
         code: "conflict",
+        errorClass: "VaultError",
       }),
     ]);
+    expect(lines.join("\n")).not.toContain(input.request_id);
+  } finally {
+    log.mockRestore();
+  }
+});
+
+test("a rejected first Modal turn logs bounded evidence and releases its reservation", async () => {
+  const input = { id: ids[1]!, request_id: requests[0]!, prompt: "private instruction" };
+  await database().query("update sandboxes set provider='modal',runtime_transport='dialout' where id=$1", [input.id]);
+  let requestId: string | undefined;
+  await observeRequest(
+    async () => {
+      requestId = currentRequestId();
+      await queue.accept(caller, input);
+      return undefined;
+    },
+    () => {},
+  );
+  queue.setDispatch((actor, request) =>
+    callSharedTool(
+      {
+        caller: actor,
+        now: () => new Date(0),
+        data: {
+          sandboxes: {
+            get: async () => ({
+              id: input.id,
+              provider: "modal",
+              status: "ready",
+              credentialId: account,
+              runtimeTransport: "dialout",
+            }),
+          },
+        },
+        async runtimeSend() {
+          throw new VaultError("invalid", "private upstream detail");
+        },
+      } as unknown as ToolContext,
+      "send",
+      { ...request },
+    ),
+  );
+  const log = spyOn(console, "error");
+  try {
+    expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
+    await queue.drain();
+    expect(await queue.status(caller, input.id, input.request_id)).toMatchObject({ failed: true });
+    expect((await database().query("select sandbox_id from account_agent_reservations")).rows).toEqual([]);
+    const lines = log.mock.calls.map(([line]) => String(line));
+    expect(lines.map((line) => JSON.parse(line))).toEqual([
+      expect.objectContaining({
+        event: "operator_failure",
+        phase: "account_turn.dispatch.send",
+        code: "invalid",
+        errorClass: "VaultError",
+        sandboxId: input.id,
+        operationSequence: expect.any(String),
+        requestId: expect.any(String),
+      }),
+    ]);
+    expect(JSON.parse(lines[0]!).requestId).toBe(requestId);
+    expect(lines.join("\n")).not.toContain("private");
+    expect(lines.join("\n")).not.toContain(input.request_id);
   } finally {
     log.mockRestore();
   }

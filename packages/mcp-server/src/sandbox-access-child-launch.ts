@@ -1,22 +1,60 @@
 import {
   createSqlSandboxStore,
+  DelegatedAuthorityDenied,
+  failureDiagnostic,
   type GoldenActor,
+  GoldenError,
   type Harness,
   type HarnessCredentials,
   isNonMutatingProviderRefusal,
+  LaunchError,
   type LaunchOptions,
   type LaunchStores,
   launchSandbox,
   type Provider,
+  ProviderError,
   type Sql,
+  VaultError,
 } from "@armada/core/server";
+import { recordOperatorDiagnostic } from "./request-observability.ts";
 import type { ChildLaunchSelection, ChildOperation } from "./sandbox-access-children.ts";
 
 /** Local proof that this executor never attempted allocation, or the SDK explicitly refused
  * without mutation. Never reconstructed from guest JSON or absence in provider listings. */
 export class ChildLaunchNotAllocated extends Error {
-  constructor(readonly reason: "preallocation_rejected" | "provider_refused") {
-    super("Child launch was not allocated.");
+  constructor(
+    readonly reason: "preallocation_rejected" | "provider_refused",
+    readonly guard = "admission",
+    cause?: unknown,
+  ) {
+    super("Child launch was not allocated.", { cause });
+  }
+
+  record(operation: Pick<ChildOperation, "id" | "sandboxId">) {
+    const error = this.cause;
+    const code =
+      error instanceof VaultError ||
+      error instanceof LaunchError ||
+      error instanceof GoldenError ||
+      error instanceof ProviderError
+        ? error.code
+        : this.reason;
+    const diagnostic = failureDiagnostic(error ?? this);
+    const errorClass =
+      error instanceof GoldenError
+        ? "GoldenError"
+        : error instanceof DelegatedAuthorityDenied
+          ? "DelegatedAuthorityDenied"
+          : diagnostic.errorClass;
+    recordOperatorDiagnostic(
+      `scoped.child_launch.${this.guard}`,
+      { ...diagnostic, errorClass },
+      {
+        sandboxId: operation.sandboxId,
+        operationId: operation.id,
+        code,
+      },
+    );
   }
 }
 
@@ -49,6 +87,7 @@ export async function launchSandboxChild(input: {
   selection: ChildLaunchSelection;
 }): Promise<{ providerSandboxId: string }> {
   const { sql, provider, operation: op, selection, runtime } = input;
+  let guard = "reservation";
   let allocationAttempted = false;
   let providerRefused = false;
   try {
@@ -70,16 +109,16 @@ export async function launchSandboxChild(input: {
       if (!row) throw new Error("Child launch admission is no longer current.");
     };
     // Actual #612/202 binding columns must exist BEFORE any billable allocation.
-    try {
-      await sql.query(`select credential_id,credential_version from public.sandboxes limit 0`);
-    } catch {
-      throw new Error("Child named account schema unavailable; no allocation was attempted.");
-    }
+    guard = "account_schema";
+    await sql.query(`select credential_id,credential_version from public.sandboxes limit 0`);
+    guard = "parent_authority";
     await assertCurrent();
+    guard = "golden";
     const actor: GoldenActor = { userId: op.ownerId, orgId: op.orgId, role: "member" };
     const golden = (await input.stores.goldens.list(op.orgId)).find((g) => g.id === selection.goldenId);
     if (!golden || golden.orgId !== op.orgId || provider.id !== golden.provider)
       throw new Error("Child golden unavailable.");
+    guard = "named_account";
     const credentials = await input.namedCredentials.resolve(
       actor,
       selection.harness,
@@ -96,7 +135,9 @@ export async function launchSandboxChild(input: {
       get(target, key) {
         if (key === "fork")
           return async (request: Parameters<Provider["fork"]>[0]) => {
+            guard = "parent_authority";
             await assertCurrent();
+            guard = "provider_fork";
             allocationAttempted = true;
             const result = await target
               .fork({
@@ -183,6 +224,7 @@ export async function launchSandboxChild(input: {
         return typeof value === "function" ? value.bind(target) : value;
       },
     });
+    guard = "launch_admission";
     const launched = await launchSandbox(
       routed,
       {
@@ -242,7 +284,7 @@ export async function launchSandboxChild(input: {
     return { providerSandboxId: launched.sandbox.providerSandboxId };
   } catch (error) {
     if (!allocationAttempted || providerRefused)
-      throw new ChildLaunchNotAllocated(providerRefused ? "provider_refused" : "preallocation_rejected");
+      throw new ChildLaunchNotAllocated(providerRefused ? "provider_refused" : "preallocation_rejected", guard, error);
     throw error;
   }
 }
