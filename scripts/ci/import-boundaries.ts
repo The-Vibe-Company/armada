@@ -6,6 +6,9 @@ import boat from "../../packages/provider-boat/package.json";
 import modal from "../../packages/provider-modal/package.json";
 
 const coreSource = "packages/core/src/";
+const coreEntries = Object.entries(core.exports).map(
+  ([key, value]) => [core.name + key.slice(1), join("packages/core", value)] as const,
+);
 const providers: ReadonlyMap<string, Readonly<Record<string, string>>> = new Map([
   [boat.name, boat.exports],
   [modal.name, modal.exports],
@@ -17,7 +20,15 @@ const existingProviderImports = new Set([
   "packages/agent-runtime/test/github-parent.test.ts -> ../../provider-boat/src/native-cwd.ts",
   "packages/core/test/golden-os.probe.ts -> ../../provider-modal/src/ssh.ts",
   "packages/core/test/golden-snapshot-retirement.release.ts -> ../../provider-modal/src/store.ts",
+  "packages/mcp-server/test/exec-selected-org-api.test.ts -> ../../provider-boat/test/support.ts",
+  "packages/mcp-server/test/lifecycle-driver-postgres.release.ts -> ../../provider-boat/test/support.ts",
+  "packages/mcp-server/test/lifecycle-review.test.ts -> ../../provider-boat/test/support.ts",
+  "packages/mcp-server/test/mcp-before-resume.test.ts -> ../../provider-boat/test/support.ts",
   "packages/mcp-server/test/mcp-codex-bridge-fixture.ts -> ../../provider-boat/src/native-cwd.ts",
+  "packages/mcp-server/test/runtime-resume.test.ts -> ../../provider-boat/test/support.ts",
+  "packages/mcp-server/test/sandbox-activity.test.ts -> ../../provider-boat/test/support.ts",
+  "packages/mcp-server/test/sandbox-lifecycle.test.ts -> ../../provider-boat/test/support.ts",
+  "packages/mcp-server/test/server-workers.test.ts -> ../../provider-boat/test/support.ts",
   "scripts/golden-os-image.ts -> ../packages/provider-modal/src/index.ts",
 ]);
 
@@ -33,20 +44,39 @@ function providerInternal(file: string, specifier: string, target: string) {
   for (const [name, entries] of providers) {
     const directory = `packages/${name.slice("@armada/".length)}/`;
     if (file.startsWith(directory)) continue;
-    if (target.startsWith(`${directory}src/`)) return true;
+    if (target.startsWith(directory) && target !== `${directory}package.json`) return true;
     if (specifier.startsWith(`${name}/`) && !Object.hasOwn(entries, `.${specifier.slice(name.length)}`)) return true;
   }
   return false;
 }
 
-function resolveCoreModule(target: string, modules: ReadonlyMap<string, unknown>) {
+function resolveModule(target: string, modules: ReadonlyMap<string, unknown>) {
   const stem = target.replace(sourceExtension, "");
   return [target, ...extensions.map((ext) => stem + ext), ...extensions.map((ext) => `${target}/index${ext}`)].find(
     (candidate) => modules.has(candidate),
   );
 }
 
-export function checkImportBoundaries(sources: ReadonlyMap<string, string>) {
+function addTypeScriptImports(file: string, source: string, imports: Set<string>) {
+  function visit(node: ts.Node) {
+    let specifier: ts.Node | undefined;
+    if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
+      specifier = node.moduleSpecifier;
+    } else if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument)) {
+      specifier = node.argument.literal;
+    } else if (ts.isExternalModuleReference(node)) {
+      specifier = node.expression;
+    }
+    if (specifier && ts.isStringLiteralLike(specifier)) imports.add(specifier.text);
+    ts.forEachChild(node, visit);
+  }
+  visit(ts.createSourceFile(file, source, ts.ScriptTarget.Latest));
+}
+
+export function checkImportBoundaries(
+  sources: ReadonlyMap<string, string>,
+  workspaceEntries: ReadonlyMap<string, string> = new Map(coreEntries),
+) {
   const transpilers = {
     ts: new Bun.Transpiler({ loader: "ts" }),
     tsx: new Bun.Transpiler({ loader: "tsx" }),
@@ -56,12 +86,10 @@ export function checkImportBoundaries(sources: ReadonlyMap<string, string>) {
   const report = (file: string, specifier: string, rule: string) => errors.push(`${file}: ${rule}: ${specifier}`);
 
   for (const [file, source] of sources) {
-    const transpiler = /\.[jt]sx$/.test(file) ? transpilers.tsx : transpilers.ts;
+    const transpiler = /\.(?:tsx|jsx?)$/.test(file) ? transpilers.tsx : transpilers.ts;
     const runtimeImports = new Set(transpiler.scanImports(source.replace(/^#![^\n]*/, "")).map(({ path }) => path));
-    const imports = new Set([
-      ...runtimeImports,
-      ...ts.preProcessFile(source, true, false).importedFiles.map(({ fileName }) => fileName),
-    ]);
+    const imports = new Set(runtimeImports);
+    addTypeScriptImports(file, source, imports);
     const client = /^packages\/(cli|sdk)\/src\//.test(file);
     const dashboard = file.startsWith("apps/dashboard/src/");
     for (const specifier of imports) {
@@ -82,8 +110,10 @@ export function checkImportBoundaries(sources: ReadonlyMap<string, string>) {
         dashboard &&
         (coreServer ||
           server ||
-          /^(?:@armada\/core\/src|packages\/core\/src)\/vault-store(?:\.|$)/.test(target) ||
-          /^(?:@armada\/auth\/src|packages\/auth\/src)\/sql(?:\.|$)/.test(target))
+          /^(?:@armada\/core\/src|packages\/core\/src)\/(?:vault-store|golden-create|routine-service|template-service)(?:\.|$)/.test(
+            target,
+          ) ||
+          /^(@armada\/auth|packages\/auth\/src)(?:\/|$)/.test(target))
       ) {
         report(file, specifier, "dashboard-service-import");
       }
@@ -91,12 +121,11 @@ export function checkImportBoundaries(sources: ReadonlyMap<string, string>) {
         report(file, specifier, "provider-private-import");
       }
     }
-    if (file.startsWith(coreSource)) modules.set(file, { imports, runtimeImports });
+    modules.set(file, { imports, runtimeImports });
   }
 
-  const entries = new Map(Object.entries(core.exports).map(([key, value]) => [key, join("packages/core", value)]));
-  const serverEntry = entries.get("./server");
-  const pending = [...entries.values()].filter((file) => file !== serverEntry);
+  const serverEntry = join("packages/core", core.exports["./server"]);
+  const pending = coreEntries.map(([, file]) => file).filter((file) => file !== serverEntry);
   const visited = new Set<string>();
   for (const file of pending) {
     if (visited.has(file)) continue;
@@ -104,15 +133,10 @@ export function checkImportBoundaries(sources: ReadonlyMap<string, string>) {
     const module = modules.get(file);
     if (!module) continue;
     for (const specifier of module.imports) {
-      const key =
-        specifier === core.name
-          ? "."
-          : specifier.startsWith(`${core.name}/`)
-            ? `.${specifier.slice(core.name.length)}`
-            : specifier;
-      const target = entries.get(key) ?? localTarget(file, specifier.replace(/^@armada\/core\/src\//, coreSource));
-      const resolved = resolveCoreModule(target, modules);
-      if (specifier.startsWith("node:") || (resolved === serverEntry && resolved !== undefined)) {
+      const target =
+        workspaceEntries.get(specifier) ?? localTarget(file, specifier.replace(/^@armada\/core\/src\//, coreSource));
+      const resolved = resolveModule(target, modules);
+      if (specifier.startsWith("node:") || target === serverEntry || resolved === serverEntry) {
         report(file, specifier, "browser-core-import");
       } else if (resolved && module.runtimeImports.has(specifier)) {
         pending.push(resolved);
@@ -131,7 +155,17 @@ if (import.meta.main) {
     if (/(?:^|\/)(?:node_modules|dist)\//.test(path)) continue;
     sources.set(path, readFileSync(path, "utf8"));
   }
-  const errors = checkImportBoundaries(sources);
+  const workspaceEntries = new Map<string, string>(coreEntries);
+  for (const path of new Bun.Glob("packages/*/package.json").scanSync({ onlyFiles: true })) {
+    const manifest: { name: string; exports?: string | Record<string, string> } = JSON.parse(
+      readFileSync(path, "utf8"),
+    );
+    const entries = typeof manifest.exports === "string" ? { ".": manifest.exports } : (manifest.exports ?? {});
+    for (const [key, value] of Object.entries(entries)) {
+      workspaceEntries.set(manifest.name + key.slice(1), join(dirname(path), value));
+    }
+  }
+  const errors = checkImportBoundaries(sources, workspaceEntries);
   if (errors.length) {
     console.error(errors.join("\n"));
     process.exitCode = 1;

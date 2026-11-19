@@ -44,13 +44,15 @@ test("enforces provider exports across packages, including relative paths and dy
           `import "@armada/provider-modal";
          import "@armada/provider-modal/embedded";
          import("@armada/provider-modal/src/store");
-         export * from "../../provider-boat/src/native-cwd.ts";`,
+         export * from "../../provider-boat/src/native-cwd.ts";
+         import "../../provider-boat/test/support";`,
         ],
         ["packages/provider-boat/test/probe.ts", 'import "../src/native-cwd.ts";'],
       ]),
     ),
   ).toEqual([
     "packages/mcp-server/src/provider.ts: provider-private-import: ../../provider-boat/src/native-cwd.ts",
+    "packages/mcp-server/src/provider.ts: provider-private-import: ../../provider-boat/test/support",
     "packages/mcp-server/src/provider.ts: provider-private-import: @armada/provider-modal/src/store",
   ]);
 });
@@ -77,12 +79,35 @@ test("keeps the dashboard on public Supabase credentials and rejects service-rol
           file,
           `import "@supabase/supabase-js";
             import "@armada/core/server";
+            import "@armada/auth";
+            import "../../../../packages/core/src/golden-create.ts";
             import "../../../../packages/core/src/vault-store.ts";`,
         ],
       ]),
     ),
   ).toEqual([
+    `${file}: dashboard-service-import: ../../../../packages/core/src/golden-create.ts`,
     `${file}: dashboard-service-import: ../../../../packages/core/src/vault-store.ts`,
+    `${file}: dashboard-service-import: @armada/auth`,
     `${file}: dashboard-service-import: @armada/core/server`,
   ]);
+});
+
+test("follows browser imports across workspace package boundaries", () => {
+  const file = "packages/agent-runtime/src/cwd.ts";
+  expect(
+    checkImportBoundaries(
+      new Map([
+        ["packages/core/src/index.ts", 'export * from "@armada/agent-runtime";'],
+        ["packages/agent-runtime/src/index.ts", 'export * from "./cwd";'],
+        [file, 'import "node:fs";'],
+      ]),
+      new Map([["@armada/agent-runtime", "packages/agent-runtime/src/index.ts"]]),
+    ),
+  ).toEqual([`${file}: browser-core-import: node:fs`]);
+});
+
+test("ignores import-like text in a regex literal", () => {
+  const source = String.raw`const example = /import "@armada\/core\/server"/;`;
+  expect(checkImportBoundaries(new Map([["packages/cli/src/example.ts", source]]))).toEqual([]);
 });
