@@ -158,18 +158,39 @@ test("a second generation advance before inspection requeues the same pending se
     { requestId },
     {
       orgId: people.org,
-      maxAttempts: 3,
+      maxAttempts: 1,
     },
   );
   await db.query("update sandboxes set lifecycle_generation=3 where id=$1", [sandboxId]);
-  const owner = crypto.randomUUID();
-  const job = (await store.claim("turn_dispatch", owner, 30, 1))!;
-  expect(job.generation).toBe("3");
-  await db.query("update sandboxes set lifecycle_generation=4 where id=$1", [sandboxId]);
-  expect(await store.inspect(job, owner)).toBe("stale");
-  await store.retireStale(job, owner);
-  const successor = (await store.claim("turn_dispatch", crypto.randomUUID(), 30, 1))!;
-  expect(successor).toMatchObject({ id, generation: "4", attempts: 2, payload: { requestId } });
+  const dispatched: Job[] = [];
+  const runner = createJobsRunner(
+    {
+      ...store,
+      async inspect(job, owner) {
+        if (job.generation === "3")
+          await db.query("update sandboxes set lifecycle_generation=4 where id=$1", [sandboxId]);
+        return store.inspect(job, owner);
+      },
+    },
+    {
+      turn_dispatch: {
+        concurrency: 1,
+        async run(job, context) {
+          if (await context.canDispatch()) dispatched.push(job);
+          return { status: "done" };
+        },
+      },
+    },
+    () => {},
+    () => () => {},
+  );
+  expect(await runner.reconcileOne(signal)).toBe(true);
+  await runner.drain();
+  expect(dispatched).toEqual([]);
+  expect(await runner.reconcileOne(signal)).toBe(true);
+  await runner.drain();
+  expect(dispatched).toHaveLength(1);
+  expect(dispatched[0]).toMatchObject({ id, generation: "4", attempts: 1, payload: { requestId } });
 });
 
 test("receipt lock contention releases the claim without spending a dispatch attempt", async () => {
