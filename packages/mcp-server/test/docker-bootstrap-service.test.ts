@@ -994,6 +994,7 @@ test.each(refusalOrders)(
         throw Error("unexpected daemon operation");
       };
       const resumeCompute = mock(async () => {});
+      const startRuntime = mock(async () => {});
       await tick(
         store,
         {
@@ -1007,12 +1008,13 @@ test.each(refusalOrders)(
           delete: unexpected,
           stopIfExpired: async () => false,
           resume: resumeCompute,
-          startRuntime: unexpected,
+          startRuntime,
         },
         false,
         () => enrolmentDeadline.getTime() + 1,
       );
       expect(resumeCompute).not.toHaveBeenCalled();
+      expect(startRuntime).not.toHaveBeenCalled();
     } else if (order !== "ACK first" && !failedAckFirst) {
       expect((await reservations.get(f.actor, id)).status).toBe("starting");
       expect((await hosts.poll(f.hostToken, f.installationId))?.requestId).toBe(job.requestId);
