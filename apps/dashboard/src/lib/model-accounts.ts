@@ -49,7 +49,7 @@ export interface ModelAccount {
   models?: ConnectionModelInfo[];
 }
 
-export type KindInfo = {
+type KindInfo = {
   label: string;
   harness: Harness;
   harnessLabel: string;
@@ -116,11 +116,10 @@ export const KIND_INFO = Object.fromEntries(
   }),
 ) as Record<AccountKind, KindInfo>;
 
-export const STATUS_INFO: Record<AccountStatus, { label: string; tone: "ok" | "warn" | "error" | "muted" }> = {
-  active: { label: "Active", tone: "ok" },
-  revoked: { label: "Revoked", tone: "error" },
-  deleted: { label: "Removed", tone: "error" },
-  unknown: { label: "Status unknown", tone: "warn" },
+const ACCOUNT_PROBLEM_LABELS: Record<Exclude<AccountStatus, "active">, string> = {
+  revoked: "Revoked",
+  deleted: "Removed",
+  unknown: "Status unknown",
 };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -328,7 +327,7 @@ export const HARNESS_PATH = "/harness";
 /** The harness sections of the Harness page and the add dialog, in this order. */
 export const HARNESS_ORDER: readonly Harness[] = HARNESSES;
 
-export type Billing = KindInfo["billing"];
+type Billing = KindInfo["billing"];
 
 /** The account kind that signs `harness` in with `billing`: a subscription (the default) or an API key. */
 export function kindFor(harness: Harness, billing?: Billing): AccountKind {
@@ -350,7 +349,7 @@ export function accountsFor(accounts: readonly ModelAccount[], harness: Harness)
 
 /** Why a launch cannot use an account now, in a word or two ("expired", "removed"), or null when it can. */
 export function accountProblem(account: Pick<ModelAccount, "status" | "expiresAt">, now: number): string | null {
-  if (account.status !== "active") return STATUS_INFO[account.status].label.toLowerCase();
+  if (account.status !== "active") return ACCOUNT_PROBLEM_LABELS[account.status].toLowerCase();
   if (account.expiresAt !== null && Date.parse(account.expiresAt) <= now) return "expired";
   return null;
 }
@@ -367,7 +366,7 @@ type AccountState = {
 export function accountState(account: Pick<ModelAccount, "status" | "expiresAt">, now: number): AccountState {
   const problem = accountProblem(account, now);
   if (problem === null) return { label: "Ready", tone: "ok", needsAction: false };
-  if (account.status === "unknown") return { label: STATUS_INFO.unknown.label, tone: "warn", needsAction: true };
+  if (account.status === "unknown") return { label: ACCOUNT_PROBLEM_LABELS.unknown, tone: "warn", needsAction: true };
   return { label: problem.charAt(0).toUpperCase() + problem.slice(1), tone: "error", needsAction: true };
 }
 
