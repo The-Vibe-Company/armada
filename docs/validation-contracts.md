@@ -95,6 +95,32 @@ Repository-wide search includes `skipIf`, `test.skip`, conditional test aliases,
   probe (`packages/mcp-server/test/mcp-codex-bridge.release.probe.ts`) requires
   the pinned binary and a successful process exit.
 
+## Process-spawning unit cases in the Agent Runtime allowlist
+
+The six Agent Runtime entries in the [process-test allowlist](../scripts/ci/process-tests.txt)
+contain nine cases that reach a subprocess. Timings are for whole cases from a
+focused Linux run using Bun 1.4.2 on main at `62a28af3`, after
+`bun scripts/prepare-runtime.ts`.
+
+| File under `packages/agent-runtime/test` | Case | Local subprocess boundary | Local |
+| --- | --- | --- | ---: |
+| `exec-env.test.ts` | private exec env authenticates the real core Git helper without model keys, argv credentials or journal token bytes | Locates Git and sends commands through Runner to Bash and the real Git credential helper. | 40.36 ms |
+| `exec-env.test.ts` | exec close sanitizes output before replying, recording the process or replaying the command | Runner starts Bash to write synthetic auth state and emit output for redaction. | 5.89 ms |
+| `github-bootstrap.test.ts` | actual Boat broker artifact consumes only private stdin and installs credential-free tool files | Bun starts the built broker with a private stdin pipe and checks the local Unix socket. | 56.58 ms |
+| `github-parent.test.ts` | actual Boat Claude and Codex parent pipes redact arbitrary current and retired leaves before forwarding | Runs the local installer with sudo and Bun, then Bash launches the installed proxy around Python fixtures for both harnesses. | 205.96 ms |
+| `github-parent.test.ts` | native proxy forwards termination signals and reaps its actual original child | Uses the same installer and launches the proxy around a waiting Python fixture for each signal. | 217.06 ms |
+| `github-parent.test.ts` | native proxy preserves large newline-free binary output and redacts chunk-spanning leaves | Uses the same installer and launches the proxy around a Python stdin-to-stdout fixture. | 181.71 ms |
+| `github-selection.test.ts` | managed gh resolves positional repository shapes without Git or network | Python evaluates the repository selection logic with stubbed Git and HTTP calls. | 16.79 ms |
+| `harness-cache.test.ts` | only regular archive entries become files: symlinks neither appear in cache nor affect outside paths | Runs tar to build the archive with symlink entries. Extraction runs in process. | 8.46 ms |
+| `skills.test.ts` | aborting private installation terminates its owned process group before returning | The Bash installer runs a local Bun fixture that owns a child. A Unix socket signals readiness and ps checks process state after abort. | 32.85 ms |
+
+The other cases in these six files run in process. The corrupt Skillpack
+download fails digest verification before any tool self-test or installer
+shell starts. The Boat broker and parent cases use local fixtures and no
+deployed Boat service. Tests outside these six files that invoke real processes
+indirectly still need case-level timings, including Runner exec, harness driver
+fixtures and runtime tool version checks.
+
 ## Process-spawning unit cases in `provider-modal`
 
 The [process-test allowlist](../scripts/ci/process-tests.txt) records matching
