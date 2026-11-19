@@ -851,7 +851,6 @@ export class GoldenSnapshotRetirements {
           state: "pending",
           sealed: false,
           delete_started: false,
-          claim_id: null,
         };
         const prior = (
           await sql.query<Proof>(

@@ -20,7 +20,12 @@ const database = migratedDatabase();
 
 const KEY = Buffer.alloc(32, 29).toString("base64");
 const absent = () => new ProviderError({ provider: "boat", code: "not_found", retryable: false, message: "absent" });
-async function fixture(sql: Sql, placement: "boat" | "modal" = "boat", visibility: "org" | "private" = "org") {
+async function fixture(
+  sql: Sql,
+  placement: "boat" | "modal" = "boat",
+  visibility: "org" | "private" = "org",
+  beforeOldSnapshot?: () => Promise<void>,
+) {
   const user = crypto.randomUUID(),
     org = crypto.randomUUID();
   await sql.query("insert into auth.users(id) values($1)", [user]);
@@ -93,6 +98,7 @@ async function fixture(sql: Sql, placement: "boat" | "modal" = "boat", visibilit
     backendIdentity: async () => ({ id: account }),
     managementIdentity: async () => authority,
     getSnapshot: async (name: string) => {
+      if (name === old) await beforeOldSnapshot?.();
       const info = snapshots.get(name);
       if (!info) throw absent();
       return info;
@@ -402,17 +408,16 @@ test.each(["success", "absent", "refusal", "busy", "unknown"])(
 
 test("a job whose lease expires during inspection cannot leave a delete intent", async () => {
   const db = database();
-  const f = await fixture(db);
-  await f.publish();
-  const getSnapshot = f.provider.getSnapshot;
-  f.provider.getSnapshot = async (name) => {
-    if (name === f.old)
+  let expire = false;
+  const f = await fixture(db, "boat", "org", async () => {
+    if (expire)
       await db.query("update jobs set lease_until=now()-interval '1 second' where kind='snapshot_retirement'");
-    return getSnapshot(name);
-  };
+  });
+  await f.publish();
+  expire = true;
   await runRetirementJob(db, f.retirement, f.now);
   expect(f.deleted).toEqual([]);
-  f.provider.getSnapshot = getSnapshot;
+  expire = false;
   await runRetirementJob(db, f.retirement, f.now);
   expect(f.deleted).toEqual([f.old]);
 });
