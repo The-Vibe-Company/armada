@@ -693,6 +693,10 @@ nativeTest.each(["closed", "after-abort", "unclosed", "wrong-session", "corrupt"
         JSON.stringify({ type: "event_msg", payload: { type: "task_started", turn_id: "recorded-fresh" } }),
         JSON.stringify({
           type: "event_msg",
+          payload: { type: "user_message", message: "history\u2028text\u2029continues" },
+        }),
+        JSON.stringify({
+          type: "event_msg",
           payload: {
             type: "token_count",
             info: {

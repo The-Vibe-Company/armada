@@ -191,6 +191,12 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       return;
     }
     if (params.input[0]?.type === "text" && params.input[0].text === "message-semantics") {
+      notify("item/agentMessage/delta", {
+        threadId: "reviewer-thread",
+        turnId: "reviewer-turn",
+        itemId: "reviewer-answer",
+        delta: "review\u2028output\u2029continues",
+      });
       for (const id of ["answer-a", "answer-b"]) {
         notify("item/agentMessage/delta", { threadId: thread, turnId: `turn-${turn}`, itemId: id, delta: "Hello" });
         notify("item/completed", {
