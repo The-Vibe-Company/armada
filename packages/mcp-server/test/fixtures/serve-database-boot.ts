@@ -164,9 +164,14 @@ try {
     const recovered = await fetch(`http://127.0.0.1:${server.port}/healthz`);
     assert.equal(recovered.status, 200);
     assert.equal(((await recovered.json()) as { ok: boolean }).ok, true);
-    const stream = await fetch(`http://127.0.0.1:${server.port}/stream-fixture`, { method: "POST" });
+    const drain = new AbortController();
+    const stream = await fetch(`http://127.0.0.1:${server.port}/stream-fixture`, {
+      method: "POST",
+      signal: drain.signal,
+    });
     const streamText = stream.text();
-    const request = fetch(`http://127.0.0.1:${server.port}/drain-fixture`);
+    const request = fetch(`http://127.0.0.1:${server.port}/drain-fixture`, { signal: drain.signal });
+    const drained = Promise.allSettled([request, streamText]);
     try {
       await Promise.race([
         entered.promise,
@@ -184,7 +189,8 @@ try {
     } finally {
       release.resolve();
       streamed.resolve();
-      await Promise.allSettled([request, streamText]);
+      drain.abort();
+      await drained;
     }
   } finally {
     await server.stop(true);
