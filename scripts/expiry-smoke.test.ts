@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { postDeploySmoke } from "./post-deploy-smoke.ts";
+import deadlines from "./smoke-deadlines.json";
 
 const ownedWorker = "12345678-1234-1234-1234-123456789abc";
 const origin = "https://armada-mcp-staging.up.railway.app";
@@ -245,7 +246,7 @@ test("ambiguous expiry launch is not replayed and retained IDs still get cleanup
     if (fault === "lost_launch") {
       const launch = fake.calls.find((call) => call.path === "sandbox/launch");
       expect(fake.reports.find((line) => line.step === "expiry_launch")).toMatchObject({
-        elapsedMs: 242_000,
+        elapsedMs: 122_000 + deadlines.expiry_launch,
         code: "request_failed",
         launchResponse: { requestKey: launch?.body.idempotencyKey },
       });

@@ -1,5 +1,6 @@
 import type { Harness } from "../packages/core/src/contract.ts";
 import { redactForLog } from "../packages/mcp-server/src/log.ts";
+import { observeSmokeLaunch } from "./smoke-launch.ts";
 /** Ordinary sandbox access probe. The owner API only observes and safely cleans up; the native model exercises MCP. */
 export interface ScopedProbeCase {
   org: string;
@@ -11,7 +12,10 @@ export interface ScopedProbeCase {
   reasoningEffort?: string;
 }
 export interface ScopedProbeIo {
-  request<T>(path: string, body: object): Promise<T>;
+  request<T>(path: string, body: object, timeoutMs?: number): Promise<T>;
+  now(): number;
+  sleep(ms: number): Promise<void>;
+  deadline: number;
   poll<T>(read: () => Promise<T>, done: (value: T) => boolean): Promise<T>;
   step<T>(name: string, action: () => Promise<T>): Promise<T>;
   withCleanup<T>(action: () => Promise<T>): Promise<T>;
@@ -137,7 +141,7 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
     }
     return fail("scoped_incomplete_snapshot");
   }
-  async function logs(id: string) {
+  async function logs(id: string, until?: number) {
     // Re-read from the start: providers can complete a tool in an existing event.
     let cursor: string | undefined;
     const cursors = new Set<string>();
@@ -151,7 +155,9 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
       };
       let result: { events: Row[]; cursor: string | null; hasMore: boolean };
       try {
-        result = await api("logs/read", options);
+        const remaining = until === undefined ? undefined : until - io.now();
+        if (remaining !== undefined && remaining <= 0) fail("scoped_incomplete_logs");
+        result = await io.request("logs/read", { org: item.org, ...options }, remaining);
       } catch (error) {
         // Never serialize errors, cursor values, provider responses or tool text.
         const status = row(error).status;
@@ -357,7 +363,20 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
         await logs(id);
         evidenceUnknown = false;
         adopt();
-        const tools = calls(true);
+        let tools = calls(true);
+        if (
+          enabled &&
+          launchUnknown &&
+          tools.some((call) => call.name === "launch" && call.input.idempotencyKey === launchKey)
+        ) {
+          const until = Math.min(io.deadline, io.now() + 10_000);
+          const updated = await observeSmokeLaunch(until, io, async () => {
+            await logs(id, until);
+            adopt();
+            return launchUnknown ? undefined : calls(true);
+          });
+          if (updated) tools = updated;
+        }
         const launches = tools.filter((call) => call.name === "launch");
         const launch = launches[0];
         const correctLaunch =

@@ -27,6 +27,9 @@ function fixture(mode: string, provider: "modal" | "docker" | "boat" = "modal") 
   };
   const io: RoutineProbeIo = {
     now: () => clock,
+    sleep: async (ms) => {
+      clock += ms;
+    },
     deadline: clock + 300_000,
     claim: async (id) => {
       claims.add(id);

@@ -3,6 +3,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createKeyedQueue, createLaunchTracker, postDeploySmoke } from "./post-deploy-smoke.ts";
+import deadlines from "./smoke-deadlines.json";
 
 const boatNotice = "boat: not part of the release gate";
 
@@ -1851,10 +1852,10 @@ test("an ambiguous expiry launch reports bounded HTTP correlation without replay
       step: "expiry_launch",
       pass: false,
       code: "outcome_unknown",
-      elapsedMs: 232_848,
+      elapsedMs: 112_848 + deadlines.expiry_launch,
       launchResponse: {
         httpStatus: 503,
-        timeoutMs: 120_000,
+        timeoutMs: deadlines.expiry_launch,
         requestKey: launches[0]?.body.idempotencyKey,
         ...(header === requestId ? { requestId } : {}),
       },

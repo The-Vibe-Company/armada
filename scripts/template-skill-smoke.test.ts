@@ -68,6 +68,11 @@ function fixture(
     origin: "https://skillpack.app/v1",
   });
   const io: TemplateSkillIo = {
+    now: () => 0,
+    sleep: async () => {},
+    deadline: 0,
+    launchTimeout: () => 600_000,
+    isAmbiguousLaunch: () => false,
     async request<T>(path: string, body: object) {
       const input = body as Record<string, unknown>;
       calls.push({ path, body: input });

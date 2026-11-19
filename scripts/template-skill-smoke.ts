@@ -1,6 +1,7 @@
 import type { Harness } from "../packages/core/src/contract.ts";
 import { PRIVATE_SKILL_FAILURES } from "../packages/core/src/private-skill-error.ts";
 import { TEMPLATE_REFUSAL_HELP } from "../packages/core/src/templates.ts";
+import { observeSmokeLaunch } from "./smoke-launch.ts";
 
 /** API-only deployed template/skill checks. Readable canaries are never printed. */
 export interface TemplateSkillCase {
@@ -53,7 +54,13 @@ function fail(code: TemplateSkillCode): never {
   throw new TemplateSkillSmokeFailure(code);
 }
 export interface TemplateSkillIo {
-  request<T>(path: string, body: object): Promise<T>;
+  request<T>(path: string, body: object, timeoutMs?: number): Promise<T>;
+  now(): number;
+  sleep(ms: number): Promise<void>;
+  deadline: number;
+  launchTimeout(step: string): number;
+  recordSandbox?(id: string, requestKey: string): Promise<void>;
+  isAmbiguousLaunch(error: unknown): boolean;
   poll<T>(read: () => Promise<T>, done: (value: T) => boolean): Promise<T>;
   step<T>(name: string, action: () => Promise<T>): Promise<T>;
   out(line: string): void;
@@ -151,7 +158,7 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
         name: `smoke-${run}-${kind}`,
         attempted: false,
         launchAttempted: false,
-        requestKey: `smoke-${run}-${kind}`,
+        requestKey: `post-deploy-smoke:${crypto.randomUUID()}`,
         uncertain: false,
         stopConfirmed: false,
       };
@@ -179,7 +186,7 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
       const result = await io.step(`${label}_launch`, async () => {
         record.launchAttempted = true;
         record.uncertain = true;
-        const result = await api<{
+        type LaunchReceipt = {
           state: string;
           reason?: unknown;
           requestId?: string;
@@ -187,15 +194,55 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
           promptId?: string;
           provider?: string;
           manifest?: { skillReceipts?: unknown };
-        }>("templates/launch", {
+        };
+        const body = {
+          org: item.org,
           id: record.resource!.id,
           revision: record.resource!.currentRevision,
           requestKey: record.requestKey,
+          ...(item.provider === "modal" ? { externalRef: record.requestKey } : {}),
           ttlSeconds: 900,
           // Explicit template pins are isolated from the separate defaults probe.
           skipSkillDefaults: true,
           prompt: `Read the environment variable ${key} using your terminal tool. Reply with only its exact value, with no formatting or other text. Do not modify files.`,
-        });
+        };
+        const timeout = io.launchTimeout(`${label}_launch`);
+        let result: LaunchReceipt;
+        try {
+          result = await io.request<LaunchReceipt>("templates/launch", body, timeout);
+        } catch (error) {
+          if (item.provider === "modal" && io.isAmbiguousLaunch(error)) {
+            const until = Math.min(io.deadline, io.now() + timeout);
+            const sandboxId = await observeSmokeLaunch(until, io, async (remaining) => {
+              const inventory = await io
+                .request<{
+                  sandboxes: { id: string; provider: string; externalRef: string }[];
+                }>(
+                  "sandbox/list",
+                  { org: item.org, owner: "me", externalRef: record.requestKey },
+                  Math.min(5_000, remaining),
+                )
+                .catch((readError: unknown) => {
+                  if (io.isAmbiguousLaunch(readError)) return undefined;
+                  throw readError;
+                });
+              const sandboxes = inventory?.sandboxes;
+              const sandbox = sandboxes?.[0];
+              if (
+                sandboxes?.length === 1 &&
+                sandbox?.provider === item.provider &&
+                sandbox.externalRef === record.requestKey &&
+                /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(sandbox.id)
+              )
+                return sandbox.id;
+            });
+            if (sandboxId) {
+              record.sandboxId = sandboxId;
+              await io.recordSandbox?.(sandboxId, record.requestKey);
+            }
+          }
+          throw error;
+        }
         if (typeof result?.id === "string" && result.id) record.sandboxId = result.id;
         if (typeof result?.requestId === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(result.requestId))
           record.requestId = result.requestId;

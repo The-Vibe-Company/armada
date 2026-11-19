@@ -68,7 +68,13 @@ function fixture(enabled = true) {
         : { structuredContent: { result } },
     },
   });
+  let clock = 0;
   const io: ScopedProbeIo = {
+    now: () => clock,
+    sleep: async (ms) => {
+      clock += ms;
+    },
+    deadline: Number.POSITIVE_INFINITY,
     async request<T>(path: string, input: object): Promise<T> {
       const body = input as Obj;
       requests.push({ path, body });

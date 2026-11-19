@@ -667,11 +667,11 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       };
     }
 
-    async function launchOrdinary(provider: "modal" | "docker") {
+    async function launchWithObservation(provider: "modal" | "docker") {
       const started = io.now();
       const launchId = crypto.randomUUID();
       const requestKey = `post-deploy-smoke:${launchId}`;
-      const step = `parity_${provider}_launch`;
+      const step = dockerSnapshot ? "parity_docker_snapshot_launch" : `parity_${provider}_launch`;
       const timeoutMs = launchTimeouts[step] ?? 600_000;
       const budget = Math.min(deadline, requestDeadline ?? deadline);
       const remaining = budget - started;
@@ -730,7 +730,8 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             if (row.id === id && (row.status === "ready" || (provider === "docker" && row.status === "running")))
               return row;
           });
-          if (sandbox) result = { sandbox };
+          // Owner inventory identifies the allocation but omits snapshot provenance.
+          if (sandbox && !dockerSnapshot) result = { sandbox };
           else {
             keyedLaunchUnconfirmed = id === undefined;
             throw new ParityError({ ...detail, requestKey });
@@ -740,7 +741,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       if (typeof result.sandbox?.id !== "string" || !result.sandbox.id || result.sandbox.provider !== provider)
         throw new Error("invalid_launch_receipt");
       if (!id) await claim(result.sandbox.id);
-      io.out(JSON.stringify({ step, provider, pass: true, elapsedMs: io.now() - started }));
+      if (!dockerSnapshot) io.out(JSON.stringify({ step, provider, pass: true, elapsedMs: io.now() - started }));
       return result;
     }
     const readableUntil = Math.min(deadline, io.now() + 110_000);
@@ -1900,6 +1901,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
                         { ...c, template },
                         {
                           now: io.now,
+                          sleep: io.sleep,
                           deadline,
                           poll,
                           out: io.out,
@@ -2101,8 +2103,8 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
                     mcp?.verifyManifest(manifest);
                     return { sandbox: { id, provider: receipt.provider } };
                   })()
-                : c.provider === "modal" || (c.provider === "docker" && !dockerSnapshot)
-                  ? await launchOrdinary(c.provider)
+                : c.provider === "modal" || c.provider === "docker"
+                  ? await launchWithObservation(c.provider)
                   : await api<{
                       sandbox: {
                         id: string;
@@ -2121,15 +2123,13 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
                       credentialId: c.modelAccountId,
                       visibility: "private",
                       ttlSeconds: 1800,
-                      ...(c.provider === "docker"
-                        ? dockerLaunchInput(crypto.randomUUID())
-                        : { golden: c.golden, connections: [] }),
+                      golden: c.golden,
+                      connections: [],
                     });
           if (typeof result.sandbox?.id !== "string" || !result.sandbox.id || result.sandbox.provider !== c.provider)
             throw new Error("invalid_launch_receipt");
           id = result.sandbox.id;
           if (dockerSnapshot) {
-            await io.recordSandbox?.(c.org, id, `post-deploy-smoke:${crypto.randomUUID()}`, "docker");
             const receipt = result.sandbox as {
               snapshotId?: string;
               hostId?: string;
@@ -2147,6 +2147,14 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
               receipt.visibility !== "private"
             )
               throw new Error("invalid_snapshot_source");
+            io.out(
+              JSON.stringify({
+                step: "parity_docker_snapshot_launch",
+                provider: c.provider,
+                pass: true,
+                elapsedMs: io.now() - operationStarted,
+              }),
+            );
           }
         } else {
           if (!id) throw new Error("launch_not_available");
