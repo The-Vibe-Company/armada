@@ -1,3 +1,4 @@
+import { bindCredential, mcp } from "../operation-commands.ts";
 import account from "./account.ts";
 import advice from "./advice.ts";
 import api from "./api.ts";
@@ -60,6 +61,8 @@ export const commands: readonly Command[] = [
   github,
   vars,
   secrets,
+  mcp,
+  bindCredential,
 ];
 
 const byName = new Map(commands.map((command) => [command.name, command]));
