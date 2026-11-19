@@ -15,10 +15,10 @@ import { createRuntimeHistory } from "../src/runtime-history.ts";
 import { createRuntimeResume } from "../src/runtime-resume.ts";
 import { createRuntimeServing } from "../src/runtime-serving.ts";
 import { createSandboxArmadaAccess } from "../src/sandbox-armada-access.ts";
-import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
+import { createSandboxLifecycle, transitionSandbox } from "../src/sandbox-lifecycle.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { runtimeFixture, scopedRuntimeFixture } from "./runtime.fixture.ts";
-import { ENCRYPTION_KEY, PUBLIC_URL } from "./support.ts";
+import { bunLikeSql, ENCRYPTION_KEY, PUBLIC_URL } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
 
@@ -544,7 +544,7 @@ test.each(interruptedResumeProofs)(
   },
 );
 
-test("rollback of an observed Boat archive handoff remains recoverable", async () => {
+test.each(["transition", "abandonment"])("an interrupted resume rolls back when %s fails", async (fault) => {
   const f = await stopped();
   try {
     const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => ({
@@ -566,31 +566,88 @@ test("rollback of an observed Boat archive handoff remains recoverable", async (
       { body: { sandbox: retainedSandbox(archive) } },
       { body: { sandbox: retainedSandbox({ ...archive, snapshotAvailable: true }) } },
     );
-    let archiveHandoffs = 0;
     const rollback = Error("Injected handoff rollback");
-    const workerSql: typeof f.sql = {
-      ...f.sql,
-      transaction: (work) =>
-        f.sql.transaction!(async (tx) => {
-          const result = await work(tx);
-          if (result === true && ++archiveHandoffs === 1) throw rollback;
-          return result;
-        }),
-    };
+    let injectFault = true;
+    const workerSql = bunLikeSql(f.db, (statement) => {
+      const isFaultPoint =
+        fault === "transition"
+          ? statement.includes("from public.sandbox_transition(")
+          : statement.startsWith("update public.runtime_resumes set phase='abandoned'");
+      if (injectFault && isFaultPoint) {
+        injectFault = false;
+        throw rollback;
+      }
+    });
+    const readHandoff = async () =>
+      (
+        await f.db.query(
+          `select r.phase, s.lifecycle_generation::int as generation, s.stop_generation::int as stop_generation,
+            (select count(*)::int from public.sandbox_transitions t where t.sandbox_id=s.id
+              and t.from_status='starting' and t.to_status='stopping'
+              and t.actor='runtime_resume' and t.code='runtime_resume_unenrolled') as edges
+           from public.runtime_resumes r join public.sandboxes s on s.id=r.sandbox_id where s.id=$1`,
+          [f.row.id],
+        )
+      ).rows[0];
+    const before = await readHandoff();
+    expect(before).toMatchObject({ phase: "dispatched", edges: 0 });
     const worker = createSandboxLifecycle(workerSql, async () => provider);
 
     await expect(worker.reconcileOne()).rejects.toBe(rollback);
-    expect(archiveHandoffs).toBe(1);
+    expect(await readHandoff()).toEqual(before);
     expect((await store.get(f.row.id))?.status).toBe("starting");
     expect(await worker.reconcileOne()).toBe(false);
 
     await f.db.query("update sandboxes set reconcile_lease_until=now()-interval '1 second' where id=$1", [f.row.id]);
     expect(await worker.reconcileOne()).toBe(true);
     expect((await store.get(f.row.id))?.status).toBe("stopping");
+    expect(await readHandoff()).toEqual({
+      phase: "abandoned",
+      generation: Number(before?.generation) + 1,
+      stop_generation: Number(before?.stop_generation) + 1,
+      edges: 1,
+    });
 
     expect(await worker.reconcileOne()).toBe(true);
     expect((await store.get(f.row.id))?.status).toBe("stopped");
     expect(requests.map(({ method }) => method)).toEqual(["GET", "GET", "GET"]);
+  } finally {
+    await f.close();
+  }
+});
+
+test("an expired reconcile lease cannot commit an interrupted resume stop", async () => {
+  const f = await stopped();
+  try {
+    const lease = crypto.randomUUID();
+    const {
+      rows: [starting],
+    } = await f.db.query<{ generation: number }>(
+      `update public.sandboxes set status='starting', activity_until=now()-interval '1 minute',
+         reconcile_lease=$2, reconcile_lease_until=now()-interval '1 minute'
+       where id=$1 returning lifecycle_generation::int as generation`,
+      [f.row.id, lease],
+    );
+    if (!starting) throw Error("Missing starting sandbox.");
+    expect(
+      await transitionSandbox(f.sql, {
+        sandboxId: f.row.id,
+        expectedGeneration: starting.generation,
+        fromStates: ["starting"],
+        toState: "stopping",
+        actor: "runtime_resume",
+        code: "runtime_resume_unenrolled",
+        effects: [],
+        settlement: { lease, statusReason: null, stopRequestedAt: null, stoppedAt: null },
+      }),
+    ).toEqual({ kind: "conflict" });
+    expect(
+      (
+        await f.db.query("select status, lifecycle_generation::int as generation from public.sandboxes where id=$1", [
+          f.row.id,
+        ])
+      ).rows[0],
+    ).toEqual({ status: "starting", generation: starting.generation });
   } finally {
     await f.close();
   }
