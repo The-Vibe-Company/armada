@@ -319,7 +319,7 @@ export class ClaudeDriver implements Driver {
               throw new HarnessError(claudeResultFailureCode(failed.stop_reason, failed.errors));
             }
             return "finished" as const;
-          } else c.emit({ kind: "other", type: event.type, data: event });
+          } else c.emit({ kind: "other", type: event.type, data: event, rawDiagnostic: true });
         }
         if (interrupted) return "interrupted" as const;
         throw Error("claude_stream_closed_without_result");

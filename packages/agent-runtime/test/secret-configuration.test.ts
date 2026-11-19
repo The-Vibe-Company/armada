@@ -27,6 +27,7 @@ test.each([
     start({ emit }) {
       const text = `${prefix}${environment.APP_TOKEN}${extension}${suffix} ${environment.APP_REGION}`;
       emit({ kind: "other", type: "harness_stderr", data: { text } });
+      emit({ kind: "other", type: "raw_diagnostic_fixture", data: { text }, rawDiagnostic: true });
       emit({ kind: "message", text, partial: false, tools: [], messageId: "message_fixture" });
       return { done: Promise.resolve("finished"), async interrupt() {}, async steer() {} };
     },
@@ -62,6 +63,12 @@ test.each([
         ]),
       },
     });
+    const diagnostics = journal
+      .events()
+      .flatMap(({ event }) => (event.kind === "other" && event.type === "raw_diagnostic_fixture" ? [event] : []));
+    if (secret.length < 8) expect(diagnostics).toHaveLength(0);
+    else expect(diagnostics).toEqual([expect.objectContaining({ data: { text } })]);
+    expect(JSON.stringify(journal.events())).not.toContain("rawDiagnostic");
     expect(JSON.stringify(journal.events())).not.toContain(
       JSON.stringify(`${prefix}${secret}${extension}${suffix}`).slice(1, -1),
     );

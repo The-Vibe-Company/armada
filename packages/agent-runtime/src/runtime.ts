@@ -703,14 +703,17 @@ export class Runner {
         ...(sessionId ? { sessionId } : {}),
         ...(this.mcp ? { mcp: this.mcp } : {}),
         session: (id) => this.journal.saveSession(p.conversationId, p.request.harness, id),
-        emit: (event) =>
+        emit: (event) => {
+          if (event.kind === "other" && event.rawDiagnostic && this.journal.hasShortApplicationSecrets) return;
+          const fields = event.kind === "other" ? { kind: event.kind, type: event.type, data: event.data } : event;
           this.journal.append({
-            ...event,
+            ...fields,
             id: crypto.randomUUID(),
             at: Date.now(),
             conversationId: p.conversationId,
             promptId: p.promptId,
-          }),
+          });
+        },
       });
       const active = { turn, controller, prompt: p, done: Promise.resolve(), terminal: false };
       const publish = async () => {
