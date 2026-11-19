@@ -92,10 +92,14 @@ test("the shared jobs lane claims only configured job kinds", async () => {
   jobsModule({ workers: { managed } } as Parameters<typeof jobsModule>[0]);
   const createLane = managed.get("jobs")!;
   for (const { githubApp, encryptionKey, expected } of [
-    { githubApp: null, encryptionKey: undefined, expected: ["webhook"] },
-    { githubApp: {}, encryptionKey: undefined, expected: ["webhook", "pr_scan"] },
-    { githubApp: null, encryptionKey: "test", expected: ["webhook", "outputs_capture"] },
-    { githubApp: {}, encryptionKey: "test", expected: ["webhook", "pr_scan", "outputs_capture"] },
+    { githubApp: null, encryptionKey: undefined, expected: ["snapshot_retirement", "webhook"] },
+    { githubApp: {}, encryptionKey: undefined, expected: ["snapshot_retirement", "webhook", "pr_scan"] },
+    { githubApp: null, encryptionKey: "test", expected: ["snapshot_retirement", "webhook", "outputs_capture"] },
+    {
+      githubApp: {},
+      encryptionKey: "test",
+      expected: ["snapshot_retirement", "webhook", "pr_scan", "outputs_capture"],
+    },
   ]) {
     const claimed = new Set<string>();
     const lane = createLane({

@@ -358,17 +358,17 @@ test("retirement defers for a fence-free template allocation until absence is se
   const sandbox = await templateReference(db, f, { state: "allocating" });
   await f.publish();
 
-  await f.retirement.runOne();
+  await runRetirementJob(f.sql, f.retirement, f.now);
   expect(f.deleted).toEqual([]);
 
   await db.query("update template_launch_requests set state='reconciling' where sandbox_id=$1", [sandbox]);
   await f.due();
-  await f.retirement.runOne();
+  await runRetirementJob(f.sql, f.retirement, f.now);
   expect(f.deleted).toEqual([]);
 
   await db.query("update template_launch_requests set state='failed' where sandbox_id=$1", [sandbox]);
   await f.due();
-  await f.retirement.runOne();
+  await runRetirementJob(f.sql, f.retirement, f.now);
   expect(f.deleted).toEqual([f.old]);
 });
 
