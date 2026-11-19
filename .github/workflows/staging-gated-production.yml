@@ -160,10 +160,25 @@ jobs:
         if: (steps.evidence.outputs.reused != 'true')
         run: |
           [[ "$ARMADA_URL" == 'https://armada-mcp-staging.up.railway.app' ]]
-          timeout 30s railway logs --deployment --json --since 15m --lines 500 \
-            --project "$RAILWAY_PROJECT_ID" --environment "$RAILWAY_ENVIRONMENT_ID" --service "$RAILWAY_SERVICE_ID" \
-            --filter '((@provider:modal OR @provider:docker) AND (@metric:reaper_unknown_machines OR @event:reaper_overdue_machines)) OR (@event:provider_reaper_retry AND @phase:discovery)' \
-            | env -i PATH="$PATH" bun .release-tools/scripts/release/smoke-reaper-evidence.ts
+          scope=(--project "$RAILWAY_PROJECT_ID" --environment "$RAILWAY_ENVIRONMENT_ID" --service "$RAILWAY_SERVICE_ID")
+          deployments=$(timeout 15s railway deployment list --json --limit 20 "${scope[@]}")
+          ids=$(jq -er '
+            sort_by(.createdAt) | reverse
+            | (map(.status) | index("SUCCESS")) as $current | select($current != null) | .[$current:]
+            | map(select(.status == "SUCCESS" or .status == "REMOVED" or .status == "REMOVING"))
+            | .[:2][] | .id | if test("^[a-f0-9-]{36}$") then . else error("invalid deployment ID") end
+          ' <<< "$deployments")
+          mapfile -t deployment_ids <<< "$ids"
+          filter='((@provider:modal OR @provider:docker) AND (@metric:reaper_unknown_machines OR @event:reaper_overdue_machines)) OR (@event:provider_reaper_retry AND @phase:discovery)'
+          read_logs() {
+            timeout 15s railway logs "$1" --deployment --json --since 15m --lines 500 "${scope[@]}" --filter "$filter"
+          }
+          {
+            read_logs "${deployment_ids[0]}" &&
+              if [[ -n "${deployment_ids[1]:-}" ]]; then
+                read_logs "${deployment_ids[1]}" | jq -c '. + {previousDeployment: true}'
+              fi
+          } | env -i PATH="$PATH" bun .release-tools/scripts/release/smoke-reaper-evidence.ts
       # Stamp the checked-out SHA in ordinary wakeup evidence. GitHub run metadata
       # can describe an older main tip than the source resolved under the lock.
       - name: Migrate then deploy pinned server and dashboard${{ github.event_name == 'workflow_run' && inputs.source_sha == '' && format(' ({0})', env.RELEASE_SHA) || '' }}

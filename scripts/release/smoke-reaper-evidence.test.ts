@@ -38,7 +38,7 @@ test("reports prior-run physical IDs even after a clean Modal sweep", () => {
     modal,
     docker,
     metric("modal", "app", 8 * minute, true, 1),
-    ids("modal", ["sb-orphan", "sb-orphan"]),
+    { ...ids("modal", ["sb-orphan", "sb-orphan"]), previousDeployment: true },
     ids("docker", ["armada-orphan"]),
     ids("boat", ["unrelated"]),
   );
@@ -78,4 +78,10 @@ test("fails when Railway returns the maximum number of records", () => {
   const result = evidence(modal, ...Array.from({ length: reaperLogLimit - 1 }, () => docker));
   expect(result.pass).toBe(false);
   expect(result.problems).toContain("log_limit_reached");
+});
+
+test("only the live deployment can prove fresh inventory coverage", () => {
+  const result = evidence(modal, { ...docker, previousDeployment: true });
+  expect(result.pass).toBe(false);
+  expect(result.problems).toContain("missing_reaper_evidence:docker");
 });

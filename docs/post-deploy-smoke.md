@@ -1951,15 +1951,16 @@ before checking the child's answer.
 
 ### Provider inventory preflight
 
-Ordinary and pinned staging smoke inspect the live staging server's Railway
-deployment logs before replacing it. The check uses the staging project,
+Ordinary and pinned staging smoke inspect Railway logs from the live staging
+server and its immediate predecessor before replacing the live deployment. The check uses the staging project,
 environment and service already configured for deployment. Modal and Docker
-each need a complete reaper observation within five minutes. Every observed
+each need a complete reaper observation from the live deployment within five minutes. Every observed
 source must have a fresh, complete latest observation. Missing, incomplete or
 truncated evidence fails the smoke before any probe launches. The staging server
 can still be replaced so a new deployment can restore missing observations.
 
-The check reports physical machine IDs observed overdue in the last 15 minutes,
+The check reports physical machine IDs observed overdue in either deployment
+in the last 15 minutes,
 even if the Modal reaper subsequently deleted the machine. Docker's inventory
 path reports overdue containers. Both providers need to be reporting on staging
 before this preflight is enabled. After remediation, the overdue observation

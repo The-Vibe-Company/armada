@@ -13,7 +13,7 @@ export function checkReaperEvidence(jsonl: string, now: number) {
   const latest = { modal: new Map<string, Observation>(), docker: new Map<string, Observation>() };
   let discoveryFailure = -Infinity;
 
-  if (lines.length >= reaperLogLimit) problems.add("log_limit_reached");
+  const volume = { current: 0, previous: 0 };
   for (const line of lines) {
     let record: Record<string, unknown>;
     try {
@@ -24,13 +24,15 @@ export function checkReaperEvidence(jsonl: string, now: number) {
       problems.add("invalid_log_record");
       continue;
     }
+    const previousDeployment = record.previousDeployment === true;
+    volume[previousDeployment ? "previous" : "current"]++;
     const timestamp = typeof record.timestamp === "string" ? Date.parse(record.timestamp) : NaN;
     if (!Number.isFinite(timestamp)) {
       problems.add("invalid_log_timestamp");
       continue;
     }
     if (timestamp < now - windowMs || timestamp > now) continue;
-    if (record.event === "provider_reaper_retry" && record.phase === "discovery") {
+    if (!previousDeployment && record.event === "provider_reaper_retry" && record.phase === "discovery") {
       discoveryFailure = Math.max(discoveryFailure, timestamp);
       continue;
     }
@@ -58,12 +60,14 @@ export function checkReaperEvidence(jsonl: string, now: number) {
       continue;
     }
     if (overdue > 0) problems.add(`overdue_machines:${provider}`);
+    if (previousDeployment) continue;
     const healthy = record.complete === true && overdue === 0;
     const previous = latest[provider].get(record.source);
     if (!previous || timestamp > previous.timestamp || (timestamp === previous.timestamp && !healthy)) {
       latest[provider].set(record.source, { timestamp, healthy });
     }
   }
+  if (Math.max(volume.current, volume.previous) >= reaperLogLimit) problems.add("log_limit_reached");
   if (
     Number.isFinite(discoveryFailure) &&
     ![...latest.modal.values()].some((observation) => observation.healthy && observation.timestamp > discoveryFailure)
