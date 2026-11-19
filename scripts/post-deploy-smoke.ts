@@ -675,70 +675,72 @@ async function runPostDeploySmoke(
       },
     );
   }
+  function launchWithObservation<T>(
+    item: SmokeCase,
+    body: object,
+    timeoutMs: number,
+    request: ReturnType<typeof createLane>["request"],
+    keepHandle: (id: string) => void,
+  ) {
+    const path = "sandbox/launch";
+    const requestKey = `post-deploy-smoke:${crypto.randomUUID()}`;
+    return launches.track(path, async (record) => {
+      const launchBody = { ...body, org: item.org, idempotencyKey: requestKey, externalRef: requestKey };
+      try {
+        return await transport<T>(false, path, launchBody, undefined, timeoutMs, record, true);
+      } catch (error) {
+        if (!(error instanceof SmokeFailure)) throw error;
+        const lostReceipt = error.code === "invalid_response" && error.launchResponse !== undefined;
+        if (lostReceipt || ["outcome_unknown", "request_failed"].includes(error.code) || (error.status ?? 0) >= 500) {
+          let observedId: string | undefined;
+          const sandbox = await observeSmokeLaunch(Math.min(deadline, io.now() + timeoutMs), io, async (remaining) => {
+            const result = await request<{
+              sandboxes: { id: string; provider: string; externalRef: string; status: string }[];
+            }>(
+              "sandbox/list",
+              { org: launchBody.org, owner: "me", externalRef: requestKey },
+              undefined,
+              Math.min(5_000, remaining),
+            ).catch((readError: unknown) => {
+              if (readError instanceof SmokeFailure) return undefined;
+              throw readError;
+            });
+            const rows = result?.sandboxes;
+            const row = rows?.[0];
+            if (
+              rows?.length === 1 &&
+              typeof row?.id === "string" &&
+              SANDBOX_ID.test(row.id) &&
+              row.provider === item.provider &&
+              row.externalRef === requestKey
+            ) {
+              if (observedId === undefined) {
+                observedId = row.id;
+                keepHandle(row.id);
+                record({ sandbox: row });
+                await io.recordSandbox?.(launchBody.org, row.id, requestKey, item.provider);
+              }
+              if (row.id === observedId && row.status === "ready") return row;
+            }
+          });
+          if (sandbox) return { sandbox } as T;
+        }
+        throw new SmokeFailure(error.code, error.status, undefined, {
+          timeoutMs,
+          ...error.launchResponse,
+          requestKey,
+        });
+      }
+    });
+  }
   function expiryUnit(index: number, item: SmokeCase): Promise<boolean> {
     const { request, withCleanup, out, step } = unit(index, "expiry");
     const timeoutMs = (deadlines as Record<string, number>).expiry_launch ?? 120_000;
-    const launch = <T>(body: object, keepHandle: (id: string) => void) => {
-      const path = "sandbox/launch";
-      const requestKey = `post-deploy-smoke:${crypto.randomUUID()}`;
-      return launches.track(path, async (record) => {
-        const launchBody = { ...body, org: item.org, idempotencyKey: requestKey, externalRef: requestKey };
-        try {
-          return await transport<T>(false, path, launchBody, undefined, timeoutMs, record, true);
-        } catch (error) {
-          if (!(error instanceof SmokeFailure)) throw error;
-          const lostReceipt = error.code === "invalid_response" && error.launchResponse !== undefined;
-          if (lostReceipt || ["outcome_unknown", "request_failed"].includes(error.code) || (error.status ?? 0) >= 500) {
-            let observedId: string | undefined;
-            const sandbox = await observeSmokeLaunch(
-              Math.min(deadline, io.now() + timeoutMs),
-              io,
-              async (remaining) => {
-                const result = await request<{
-                  sandboxes: { id: string; provider: string; externalRef: string; status: string }[];
-                }>(
-                  "sandbox/list",
-                  { org: launchBody.org, owner: "me", externalRef: requestKey },
-                  undefined,
-                  Math.min(5_000, remaining),
-                ).catch((readError: unknown) => {
-                  if (readError instanceof SmokeFailure) return undefined;
-                  throw readError;
-                });
-                const rows = result?.sandboxes;
-                const row = rows?.[0];
-                if (
-                  rows?.length === 1 &&
-                  typeof row?.id === "string" &&
-                  SANDBOX_ID.test(row.id) &&
-                  row.provider === item.provider &&
-                  row.externalRef === requestKey
-                ) {
-                  if (observedId === undefined) {
-                    observedId = row.id;
-                    keepHandle(row.id);
-                    record({ sandbox: row });
-                    await io.recordSandbox?.(launchBody.org, row.id, requestKey, item.provider);
-                  }
-                  if (row.id === observedId && row.status === "ready") return row;
-                }
-              },
-            );
-            if (sandbox) return { sandbox } as T;
-          }
-          throw new SmokeFailure(error.code, error.status, undefined, {
-            timeoutMs,
-            ...error.launchResponse,
-            requestKey,
-          });
-        }
-      });
-    };
     // A ready sandbox with no task no longer counts against its model account, so the expiry
     // lane gives the account back before its TTL wait, which then overlaps the other lanes.
     return accountSlot(item.modelAccountId, (release) =>
       runExpiryCase(item, {
-        launch,
+        launch: (body, keepHandle) => launchWithObservation(item, body, timeoutMs, request, keepHandle),
         request,
         now: io.now,
         sleep: io.sleep,
@@ -909,7 +911,7 @@ async function runPostDeploySmoke(
         io.out(JSON.stringify({ case: index, step: "scoped_access", skip: true, reason: "codex_only" }));
       await step("launch", async () => {
         launchAttempted = true;
-        const result = await sandbox<{
+        type LaunchReceipt = {
           sandbox: {
             id: string;
             provider: string;
@@ -924,22 +926,31 @@ async function runPostDeploySmoke(
           armadaAccess?: { enabled?: boolean; maxActiveChildren?: number };
           golden?: { id: string };
           promptId?: string;
-        }>(
-          "launch",
-          {
-            ...(scopedPair && !dirty ? { armadaAccessVersion: 1, armadaAccess: { maxActiveChildren: 1 } } : {}),
-            golden: item.golden,
-            provider: item.provider,
-            harness: item.harness,
-            model: item.model,
-            credentialId: item.modelAccountId,
-            ...(item.reasoningEffort ? { reasoningEffort: item.reasoningEffort } : {}),
-            connections: [],
-            ...((defaultSkills || scopedPair) && dirty ? { skipSkillDefaults: true } : {}),
-            ttlSeconds: 1800,
-          },
-          600_000,
-        );
+        };
+        const body = {
+          ...(scopedPair && !dirty ? { armadaAccessVersion: 1, armadaAccess: { maxActiveChildren: 1 } } : {}),
+          golden: item.golden,
+          provider: item.provider,
+          harness: item.harness,
+          model: item.model,
+          credentialId: item.modelAccountId,
+          ...(item.reasoningEffort ? { reasoningEffort: item.reasoningEffort } : {}),
+          connections: [],
+          ...((defaultSkills || scopedPair) && dirty ? { skipSkillDefaults: true } : {}),
+          ttlSeconds: 1800,
+        };
+        const requiresLaunchReceipt = defaultSkills || scopedPair;
+        const result = requiresLaunchReceipt
+          ? await sandbox<LaunchReceipt>("launch", body, 600_000)
+          : await launchWithObservation<LaunchReceipt>(
+              item,
+              body,
+              (deadlines as Record<string, number>).launch ?? 600_000,
+              request,
+              (id) => {
+                sandboxId = id;
+              },
+            );
         // Retain the cleanup handle even if later response validation fails.
         if (typeof result?.sandbox?.id === "string" && result.sandbox.id) sandboxId = result.sandbox.id;
         if (!sandboxId || result.sandbox.provider !== item.provider || result.promptId) fail("invalid_response");
