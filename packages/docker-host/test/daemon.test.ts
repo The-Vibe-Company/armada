@@ -743,7 +743,8 @@ test.each([
   ["verified retention", true, true, "exited false", true],
   ["volume without a container", true, true, "", false],
   ["container without its owned workspace", true, false, "exited false", false],
-  ["container still running", true, false, "running true", false],
+  ["container still running", true, true, "running true", false],
+  ["container replaced during inspection", true, true, "replaced", false],
   ["server without the capability", false, true, "exited false", false],
 ] as const)(
   "failed stop reports %s through the negotiated results route",
@@ -769,6 +770,52 @@ test.each([
       return new Response(null, { status: 204 });
     }) as typeof fetch);
     let stops = 0;
+    let inspections = 0;
+    const state = f.state();
+    const request = f.job.request;
+    const name = `armada-${state.installationId}-${state.hostId}-${request.sandboxId}-${request.generation}`;
+    const labels = Object.fromEntries(
+      Object.entries({
+        host: state.hostId,
+        installation: state.installationId,
+        sandbox: request.sandboxId,
+        generation: request.generation,
+        image: request.image,
+        "ttl-seconds": String(request.ttlSeconds),
+        "created-at": "1000",
+        "expires-at": "61000",
+      }).map(([key, value]) => [`dev.armada.machine.${key}`, value]),
+    );
+    const cli: Parameters<typeof observeRetainedStop>[0] = {
+      async run(args) {
+        const container = args[0] === "container";
+        const resourceName = container ? name : `${name}-home`;
+        if (args[1] === "ls")
+          return { exitCode: 0, stdout: container ? JSON.stringify(name) : owned ? JSON.stringify(resourceName) : "" };
+        expect(args.at(-1)).toBe(resourceName);
+        if (args[2] === "--format") {
+          const replaced = status === "replaced";
+          const id = (replaced && ++inspections > 1 ? "b" : "a").repeat(64);
+          return { stdout: `${id} ${replaced ? "exited false" : status}`, exitCode: status ? 0 : 1 };
+        }
+        const resource = container
+          ? {
+              Name: `/${name}`,
+              Config: { Image: request.image, User: "1000:1000", Labels: labels },
+              HostConfig: { Privileged: false },
+              Mounts: [{ Type: "volume", Name: `${name}-home`, Destination: "/home/user", RW: true }],
+              State: { Running: false },
+            }
+          : { Name: resourceName, Driver: "local", Options: {}, Labels: labels };
+        return { stdout: JSON.stringify([resource]), exitCode: 0 };
+      },
+    };
+    const machine = createDockerMachineExecutor({
+      hostId: state.hostId,
+      installationId: state.installationId,
+      cli,
+      now: () => 1000,
+    });
     const executor: Executor = {
       ...f.executor,
       async stop() {
@@ -776,20 +823,7 @@ test.each([
         throw new Error("stop response unknown");
       },
       isRetainedStop(request) {
-        return observeRetainedStop(
-          {
-            async run(args) {
-              const state = f.state();
-              expect(args.at(-1)).toBe(
-                `armada-${state.installationId}-${state.hostId}-${request.sandboxId}-${request.generation}`,
-              );
-              return { stdout: status, exitCode: status ? 0 : 1 };
-            },
-          },
-          f.state(),
-          request,
-          async () => owned,
-        );
+        return observeRetainedStop(cli, state, request, machine.isStopped);
       },
     };
     if (proof) {

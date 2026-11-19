@@ -424,13 +424,18 @@ export async function observeRetainedStop(
   isStopped: (request: DockerMachineRequest) => Promise<boolean>,
 ) {
   const ids = [state.installationId, state.hostId, request.sandboxId, request.generation];
-  if (!ids.every(validId) || !(await isStopped(request))) return false;
-  const inspected = await cli.run(
-    ["container", "inspect", "--format", "{{.State.Status}} {{.State.Running}}", `armada-${ids.join("-")}`],
-    undefined,
-    { timeoutMs: 3000 },
-  );
-  return inspected.exitCode === 0 && inspected.stdout.trim() === "exited false";
+  if (!ids.every(validId)) return false;
+  async function exitedContainerId() {
+    const report = await cli.run(
+      ["container", "inspect", "--format", "{{.Id}} {{.State.Status}} {{.State.Running}}", `armada-${ids.join("-")}`],
+      undefined,
+      { timeoutMs: 3000 },
+    );
+    if (report.exitCode !== 0) return undefined;
+    return /^([a-f0-9]{64}) exited false$/.exec(report.stdout.trim())?.[1];
+  }
+  const containerId = await exitedContainerId();
+  return !!containerId && (await isStopped(request)) && (await exitedContainerId()) === containerId;
 }
 
 /** Never a shell, never inherited output; inspect can contain secrets. */

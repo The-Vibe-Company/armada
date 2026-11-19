@@ -103,7 +103,7 @@ export interface Api {
       /** Request IDs still executing here; the server hands out other sandboxes' jobs. */
       running?: string[];
     },
-  ): Promise<DockerHostPollResponse & { retainedStopProof?: true }>;
+  ): Promise<DockerHostPollResponse & { retainedStopProof?: true | undefined }>;
   result(state: State, receipt: Receipt, expired?: true, retained?: true): Promise<void>;
   retainedOutputs?(state: State, requestId: string, read: () => Promise<Uint8Array<ArrayBuffer> | null>): Promise<void>;
   claim?(state: State, requestId: string, accepted: boolean): Promise<void>;
@@ -880,9 +880,7 @@ async function admitLocked(
       try {
         await store.save(state);
         await reportRetainedStop(state, report);
-      } catch {
-        // Keep the durable obligation and let other mailbox work continue.
-      }
+      } catch {}
     }
   }
 
