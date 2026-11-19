@@ -1,6 +1,12 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { DOCKER_LAUNCH_FAILURE_MESSAGES, DockerRetentionEnded, type Harness, type Sql } from "@armada/core";
+import {
+  DOCKER_HOST_PROTOCOL,
+  DOCKER_LAUNCH_FAILURE_MESSAGES,
+  DockerRetentionEnded,
+  type Harness,
+  type Sql,
+} from "@armada/core";
 import { createSqlVaultStore, decryptSecret, encryptSecret } from "@armada/core/server";
 import { type Api, type Executor, type State, type Store, tick } from "../../docker-host/src/daemon.ts";
 import { createDockerBootstrapService, DockerBootstrapDenied } from "../src/docker-bootstrap-service.ts";
@@ -78,6 +84,7 @@ async function fixture(ack = true, harness: Harness = "codex") {
   const registration = await hosts.issueRegistration(admin),
     installationId = randomUUID();
   const host = await hosts.exchangeRegistration(registration.registrationToken, installationId);
+  await db.query("update public.docker_hosts set daemon_protocol=$2 where id=$1", [host.hostId, DOCKER_HOST_PROTOCOL]);
   // Generated offline value, not an actual credential or an externally usable fixture secret.
   const secret = `offline-bootstrap-${randomUUID()}`,
     credentialId = randomUUID();
@@ -489,7 +496,6 @@ test.each([false, true])("idle checkpoint fences Docker stop and retained restor
   if (boot?.operation !== "bootstrap") throw Error("missing bootstrap");
   const session = await authority.enrol(boot.bootstrap.enrolmentToken);
   await hosts.complete(f.hostToken, f.installationId, { requestId: f.requestId, outcome: "completed" });
-  await db.query("update public.docker_hosts set daemon_version='2.28.0' where id=$1", [f.hostId]);
   await db.query("update public.sandboxes set status='ready' where id=$1", [f.sandbox.id]);
   const conversationId = randomUUID(),
     promptId = randomUUID(),
