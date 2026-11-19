@@ -37,3 +37,42 @@ test.each([true, false])(
     );
   },
 );
+
+test.each([
+  { provider: "boat", machine: "running", prompt: "finished" },
+  { provider: "modal", machine: "ready", prompt: "running" },
+] as const)("live $provider runtime status reports $prompt without changing the machine", async (scenario) => {
+  const boat = fakeBoat();
+  const provider = { ...boat.provider, id: scenario.provider };
+  const machine = await provider.fork({ from: "snapshot" });
+  const turn = await provider.prompt({ sandboxId: machine.id, harness: "codex", text: "work" });
+  if (scenario.prompt === "finished") boat.finish(machine.id, turn.promptId, "finished");
+
+  const sandbox = {
+    id: "sandbox",
+    provider: scenario.provider,
+    boatRuntime: scenario.provider === "boat",
+    runtimeTransport: scenario.provider === "modal" ? "dialout" : undefined,
+    harness: "codex",
+    providerSandboxId: machine.id,
+    status: scenario.machine,
+    statusReason: null,
+    lifecycleGeneration: 2,
+    stoppedAt: null,
+    taskPromptId: turn.promptId,
+    conversationIds: [],
+  } as unknown as SandboxView;
+  const updates: SandboxPatch[] = [];
+  const store = {
+    update: async (_id: string, patch: SandboxPatch) => {
+      updates.push(patch);
+    },
+  } as unknown as ServerSandboxStore;
+
+  expect(await readStatus(provider, store, sandbox, { now: new Date(2000) })).toMatchObject({
+    status: scenario.machine,
+    settled: scenario.prompt === "finished",
+    prompt: { state: scenario.prompt },
+  });
+  expect(updates).toEqual([]);
+});
