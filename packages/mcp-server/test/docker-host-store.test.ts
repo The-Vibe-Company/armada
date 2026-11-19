@@ -384,8 +384,8 @@ async function boundFixture(registered?: Awaited<ReturnType<typeof fixture>>) {
   return { ...host, sandboxId, generation, owner, create };
 }
 
-function failPhysicalJobCommit(requestId: string, outcome: "failed" | null) {
-  const failure = new Error("Physical job transaction interrupted before commit");
+function failDockerJobCommit(requestId: string, outcome: "completed" | "failed" | null) {
+  const failure = new Error("Docker job transaction interrupted before commit");
   const faultingStore = createDockerHostStore(
     {
       query: sql.query,
@@ -416,7 +416,7 @@ test("a physical-delete enqueue interrupted before commit can be retried without
     machineId: "a".repeat(64),
     lifecycleGeneration: 1,
   };
-  const { faultingStore, failure } = failPhysicalJobCommit(deletion.requestId, null);
+  const { faultingStore, failure } = failDockerJobCommit(deletion.requestId, null);
   await expect(faultingStore.enqueueSandbox(a.owner, a.sandboxId, deletion)).rejects.toMatchObject({ cause: failure });
   const replacementIntent = { ...deletion, machineId: "b".repeat(64) };
   await store.enqueueSandbox(a.owner, a.sandboxId, replacementIntent);
@@ -445,7 +445,7 @@ test("physical deletion rechecks its lifecycle fence, while late receipts record
   expect(await poll()).toMatchObject({ requestId: deletion.requestId, machineId: deletion.machineId });
   await denied(store.cleaned(a.hostToken, a.installationId, { requestId: deletion.requestId }));
   await db.query(`update sandboxes set lifecycle_generation=2 where id=$1`, [a.sandboxId]);
-  const { faultingStore, failure } = failPhysicalJobCommit(deletion.requestId, "failed");
+  const { faultingStore, failure } = failDockerJobCommit(deletion.requestId, "failed");
   await expect(poll(faultingStore)).rejects.toMatchObject({ cause: failure });
   const receipt = () =>
     db.query(
@@ -489,7 +489,7 @@ test("uninstall cancels pending optional physical deletion even without a capabl
     lifecycleGeneration: 1,
   };
   await store.enqueueSandbox(a.owner, a.sandboxId, deletion);
-  const { faultingStore, failure } = failPhysicalJobCommit(deletion.requestId, "failed");
+  const { faultingStore, failure } = failDockerJobCommit(deletion.requestId, "failed");
   await expect(faultingStore.unregister(a.hostToken, a.installationId)).rejects.toMatchObject({ cause: failure });
   const state = () =>
     db.query(
@@ -1087,7 +1087,14 @@ test("uninstall drains bound machines through stop/delete ACKs before idempotent
   if (!stop) throw new Error("Missing stop");
   expect(await store.unregister(a.hostToken, a.installationId)).toBe(false);
   expect((await store.poll(a.hostToken, a.installationId))?.requestId).toBe(stop.requestId);
-  await store.complete(a.hostToken, a.installationId, { requestId: stop.requestId, outcome: "completed" });
+  const stopReceipt = { requestId: stop.requestId, outcome: "completed" as const };
+  const { faultingStore, failure } = failDockerJobCommit(stop.requestId, "completed");
+  await expect(faultingStore.complete(a.hostToken, a.installationId, stopReceipt)).rejects.toMatchObject({
+    cause: failure,
+  });
+  expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "stopping", stopped_at: null });
+  expect((await store.poll(a.hostToken, a.installationId))?.requestId).toBe(stop.requestId);
+  await store.complete(a.hostToken, a.installationId, stopReceipt);
   expect(await store.unregister(a.hostToken, a.installationId)).toBe(false);
   const remove = await store.poll(a.hostToken, a.installationId);
   expect(remove?.operation).toBe("delete");
@@ -1120,7 +1127,21 @@ test("a completed Docker delete proves exit and journals deletion of a failed sa
 
   const remove = { requestId: randomUUID(), operation: "delete" as const };
   await store.enqueueSandbox(a.owner, a.sandboxId, remove);
-  await store.complete(a.hostToken, a.installationId, { requestId: remove.requestId, outcome: "completed" });
+  const deleteReceipt = { requestId: remove.requestId, outcome: "completed" as const };
+  const db = database();
+  await db.query(
+    "alter table public.sandbox_transitions add constraint refuse_delete_journal check (code <> 'docker_delete_completed') not valid",
+  );
+  try {
+    await expect(store.complete(a.hostToken, a.installationId, deleteReceipt)).rejects.toMatchObject({
+      cause: { constraint: "refuse_delete_journal" },
+    });
+    expect(await lifecycle(a.sandboxId)).toEqual(failed);
+    expect((await store.poll(a.hostToken, a.installationId))?.requestId).toBe(remove.requestId);
+  } finally {
+    await db.query("alter table public.sandbox_transitions drop constraint refuse_delete_journal");
+  }
+  await store.complete(a.hostToken, a.installationId, deleteReceipt);
 
   expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "deleted", stopped_at: expect.anything() });
   expect(
