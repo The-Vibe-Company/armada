@@ -907,7 +907,7 @@
     "packages/mcp-server/test/golden-capacity.test.ts": 6,
     "packages/mcp-server/test/golden-list-parallel.test.ts": 1,
     "packages/mcp-server/test/golden-list-sql.test.ts": 2,
-    "packages/mcp-server/test/golden-removal.test.ts": 6,
+    "packages/mcp-server/test/golden-removal.test.ts": 3,
     "packages/mcp-server/test/golden-restore-api.test.ts": 2,
     "packages/mcp-server/test/golden-scoped-writes.test.ts": 2,
     "packages/mcp-server/test/health-commit.test.ts": 1,

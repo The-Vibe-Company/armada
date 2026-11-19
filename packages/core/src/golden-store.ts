@@ -269,32 +269,40 @@ export async function beginSnapshotLaunch(sql: Sql, golden: GoldenRecord, actor:
   const snapshot = golden.providerSnapshotId;
   const unavailable = () => new GoldenError("conflict", "Golden snapshot could not be admitted.");
   if (!snapshot || !sql.transaction) throw unavailable();
-  await sql.transaction(async (tx) => {
-    const current = await tx.query(
-      `select g.id from public.goldens g
-       where g.id=$1 and g.org_id=$2 and g.removed_at is null
-         and g.visibility=$3::public.visibility and (g.visibility='org' or g.owner_id=$4)
-         and g.provider=$5 and g.provider_snapshot_id=$6 and g.provider_sandbox_id is not distinct from $7
-       for share of g`,
-      [golden.id, actor.orgId, golden.visibility, actor.userId, golden.provider, snapshot, golden.providerSandboxId],
-    );
-    if (!current.rows.length) throw unavailable();
-    await tx.query("select public.lock_golden_snapshot($1,$2)", [golden.provider, snapshot]);
-    const sealed = await tx.query(
-      "select 1 from public.golden_snapshot_retirements where provider=$1 and old_snapshot=$2 and sealed",
-      [golden.provider, snapshot],
-    );
-    if (sealed.rows.length) throw unavailable();
-    const membership = await tx.query("select 1 from public.members where org_id=$1 and user_id=$2 for share", [
-      actor.orgId,
-      actor.userId,
-    ]);
-    if (!membership.rows.length) throw unavailable();
-    await tx.query(
-      "insert into public.ordinary_launch_snapshot_intents (sandbox_id,golden_id,provider,snapshot_id) values ($1,$2,$3,$4)",
-      [sandboxId, golden.id, golden.provider, snapshot],
-    );
-  });
+  try {
+    await sql.transaction(async (tx) => {
+      const current = await tx.query(
+        `select g.id from public.goldens g
+         where g.id=$1 and g.org_id=$2 and g.removed_at is null
+           and g.visibility=$3::public.visibility and (g.visibility='org' or g.owner_id=$4)
+           and g.provider=$5 and g.provider_snapshot_id=$6 and g.provider_sandbox_id is not distinct from $7
+         for share of g`,
+        [golden.id, actor.orgId, golden.visibility, actor.userId, golden.provider, snapshot, golden.providerSandboxId],
+      );
+      if (!current.rows.length) throw unavailable();
+      await tx.query("select public.lock_golden_snapshot($1,$2)", [golden.provider, snapshot]);
+      const sealed = await tx.query(
+        "select 1 from public.golden_snapshot_retirements where provider=$1 and old_snapshot=$2 and sealed",
+        [golden.provider, snapshot],
+      );
+      if (sealed.rows.length) throw unavailable();
+      const membership = await tx.query("select 1 from public.members where org_id=$1 and user_id=$2 for share", [
+        actor.orgId,
+        actor.userId,
+      ]);
+      if (!membership.rows.length) throw unavailable();
+      await tx.query(
+        "insert into public.ordinary_launch_snapshot_intents (sandbox_id,golden_id,provider,snapshot_id) values ($1,$2,$3,$4)",
+        [sandboxId, golden.id, golden.provider, snapshot],
+      );
+    });
+  } catch (error) {
+    if (error && typeof error === "object") {
+      const { code, errno } = error as { code?: unknown; errno?: unknown };
+      if (code === "42501" || errno === "42501") throw unavailable();
+    }
+    throw error;
+  }
   return async () => {
     await sql.query("delete from public.ordinary_launch_snapshot_intents where sandbox_id=$1", [sandboxId]);
   };
