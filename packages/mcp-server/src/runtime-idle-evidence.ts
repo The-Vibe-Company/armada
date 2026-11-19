@@ -3,7 +3,7 @@ import { type AgentEvent, decryptSecret, encryptSecret, isFinalPromptStatus, typ
 export function unsettledRuntimeCommands(sandboxId: string, generation: string) {
   return `select 1 from public.runtime_enrolments r
     join public.runtime_commands c on c.sandbox_id=r.sandbox_id and c.epoch=r.epoch
-    where r.sandbox_id=${sandboxId} and r.lifecycle_generation=${generation}
+    where r.sandbox_id=${sandboxId} and r.lifecycle_generation=${generation} and r.runtime_hash is not null
       and ((c.result_enc is null and not starts_with(c.request_id,'outputs_'))
         or (c.accepted_prompt_id is not null and not exists(
           select 1 from public.runtime_idle_turns t

@@ -522,63 +522,71 @@ test("bound bootstrap requires ACKed creation and the exact pending capability, 
   await denied(store.enqueueSandbox(a.owner, a.sandboxId, { ...selection, requestId: randomUUID() }));
 });
 
-test.each(["account", "docker", "runtime"] as const)("idle-only stop leaves accepted %s work intact", async (queue) => {
-  const db = database();
-  const a = await boundFixture();
-  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
-  await db.query("update public.sandboxes set status='ready' where id=$1", [a.sandboxId]);
-  const turn = randomUUID();
-  const sealed = await encryptSecret("queued turn", key);
-  if (queue === "account") {
-    const credential = randomUUID();
-    await db.query(
-      "insert into public.credentials(id,scope,owner_id,kind,value_enc) values($1,'user',$2,'openai',$3)",
-      [credential, a.owner.userId, sealed],
-    );
-    await db.query(
-      `insert into public.account_turn_queue
+test.each(["account", "docker", "runtime", "revoked runtime"] as const)(
+  "idle-only stop checks %s work",
+  async (queue) => {
+    const db = database();
+    const a = await boundFixture();
+    await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+    await db.query("update public.sandboxes set status='ready' where id=$1", [a.sandboxId]);
+    const turn = randomUUID();
+    const sealed = await encryptSecret("queued turn", key);
+    if (queue === "account") {
+      const credential = randomUUID();
+      await db.query(
+        "insert into public.credentials(id,scope,owner_id,kind,value_enc) values($1,'user',$2,'openai',$3)",
+        [credential, a.owner.userId, sealed],
+      );
+      await db.query(
+        `insert into public.account_turn_queue
         (sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id)
        values($1,$2,$3,$4,$5,1,1,$6,$7,'first')`,
-      [a.sandboxId, turn, credential, a.owner.userId, a.owner.orgId, "a".repeat(64), sealed],
-    );
-  } else if (queue === "docker") {
-    await db.query(
-      `insert into public.docker_queued_prompts
+        [a.sandboxId, turn, credential, a.owner.userId, a.owner.orgId, "a".repeat(64), sealed],
+      );
+    } else if (queue === "docker") {
+      await db.query(
+        `insert into public.docker_queued_prompts
         (sandbox_id,request_id,prompt_id,owner_id,actor_epoch,lifecycle_generation,input_hash,input_enc)
        select id,$2,$3,owner_id,1,lifecycle_generation,$4,$5 from public.sandboxes where id=$1`,
-      [a.sandboxId, turn, randomUUID(), "a".repeat(64), sealed],
-    );
-  }
-  if (queue === "runtime") {
-    await db.query(
-      `insert into public.runtime_enrolments(sandbox_id,lifecycle_generation,epoch)
-       select id,lifecycle_generation,1 from public.sandboxes where id=$1`,
-      [a.sandboxId],
-    );
-    await db.query("insert into public.runtime_commands(sandbox_id,request_id,epoch,request_enc) values($1,$2,1,$3)", [
-      a.sandboxId,
-      turn,
-      sealed,
-    ]);
-  }
-  const stop = { requestId: randomUUID(), operation: "stop" as const };
-  await denied(store.enqueueSandbox(a.owner, a.sandboxId, { ...stop, onlyIfIdle: true }));
-  expect(
-    (await db.query("select status,stop_requested_at from public.sandboxes where id=$1", [a.sandboxId])).rows,
-  ).toEqual([{ status: "ready", stop_requested_at: null }]);
-  expect((await db.query("select 1 from public.docker_host_jobs where request_id=$1", [stop.requestId])).rows).toEqual(
-    [],
-  );
-  if (queue === "runtime") {
-    await db.query(
-      "update public.runtime_commands set request_id='outputs_9999999999999_sample' where sandbox_id=$1 and request_id=$2",
-      [a.sandboxId, turn],
-    );
-    await store.enqueueSandbox(a.owner, a.sandboxId, { ...stop, onlyIfIdle: true });
-    return;
-  }
-  await store.enqueueSandbox(a.owner, a.sandboxId, stop);
-});
+        [a.sandboxId, turn, randomUUID(), "a".repeat(64), sealed],
+      );
+    }
+    if (queue === "runtime" || queue === "revoked runtime") {
+      await db.query(
+        `insert into public.runtime_enrolments(sandbox_id,lifecycle_generation,epoch,runtime_hash)
+       select id,lifecycle_generation,1,encode(sha256(uuid_send(id)),'hex')
+       from public.sandboxes where id=$1`,
+        [a.sandboxId],
+      );
+      await db.query(
+        "insert into public.runtime_commands(sandbox_id,request_id,epoch,request_enc) values($1,$2,1,$3)",
+        [a.sandboxId, turn, sealed],
+      );
+    }
+    const stop = { requestId: randomUUID(), operation: "stop" as const };
+    if (queue === "revoked runtime") {
+      await db.query("update public.runtime_enrolments set runtime_hash=null where sandbox_id=$1", [a.sandboxId]);
+      await store.enqueueSandbox(a.owner, a.sandboxId, { ...stop, onlyIfIdle: true });
+      return;
+    }
+    await denied(store.enqueueSandbox(a.owner, a.sandboxId, { ...stop, onlyIfIdle: true }));
+    expect(
+      (await db.query("select status,stop_requested_at from public.sandboxes where id=$1", [a.sandboxId])).rows,
+    ).toEqual([{ status: "ready", stop_requested_at: null }]);
+    expect(
+      (await db.query("select 1 from public.docker_host_jobs where request_id=$1", [stop.requestId])).rows,
+    ).toEqual([]);
+    if (queue === "runtime") {
+      await db.query(
+        "update public.runtime_commands set request_id='outputs_9999999999999_sample' where sandbox_id=$1 and request_id=$2",
+        [a.sandboxId, turn],
+      );
+      await store.enqueueSandbox(a.owner, a.sandboxId, { ...stop, onlyIfIdle: true });
+      return;
+    }
+    await store.enqueueSandbox(a.owner, a.sandboxId, stop);
+  },
+);
 
 test("stop commits runtime revocation once; cleanup retains the create deadline and ACKs only terminal transitions", async () => {
   const db = database();

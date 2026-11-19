@@ -895,8 +895,9 @@ test.each(["queued", "dispatching", "acknowledged"])("idle-only stop preserves %
   const promptId = crypto.randomUUID();
   if (state === "acknowledged") {
     await db.query(
-      `insert into public.runtime_enrolments(sandbox_id,lifecycle_generation,epoch)
-       select id,lifecycle_generation,1 from public.sandboxes where id=$1`,
+      `insert into public.runtime_enrolments(sandbox_id,lifecycle_generation,epoch,runtime_hash)
+       select id,lifecycle_generation,1,encode(sha256(uuid_send(id)),'hex')
+       from public.sandboxes where id=$1`,
       [id],
     );
     await db.query(
