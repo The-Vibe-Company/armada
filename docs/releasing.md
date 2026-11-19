@@ -65,7 +65,7 @@ resume the release to publish the main package using OIDC. Subsequent releases n
 
 The SDK package `@the-vibe-company/armada-sdk` is bootstrapped the same way before the first release
 that contains it: publish the exact `the-vibe-company-armada-sdk-<version>.tgz` from that release's
-`npm-tarballs-<version>-linux-x64` artifact with a maintainer session, then run `npm trust github` for it.
+`npm-tarballs-<version>-<sha>-linux-x64` artifact with a maintainer session, then run `npm trust github` for it.
 Until then that release's npm job fails after the CLI packages are published; rerunning it after the
 bootstrap skips the already-published versions and publishes nothing twice.
 
@@ -108,7 +108,7 @@ from the selected SHA before publishing them.
 
 When staging or production stopped mid-deploy, recovery keeps the exact-source
 migration checks. It reuses the server if the latest Railway deployment
-succeeded and live health reports the selected version and SHA. It reuses the
+succeeded with the selected image pin and live health reports the selected version and SHA. It reuses the
 dashboard if Vercel's ready production target reports the selected SHA.
 
 ## Installation and migration

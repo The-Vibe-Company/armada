@@ -144,8 +144,9 @@ test("binary and publish jobs use the validated release version for npm artifact
   expect(publish.needs).toContain("release-metadata");
   expect(collection?.env?.VERSION).toBe(version);
   expect(publish.env?.VERSION).toBe(version);
-  expect(artifact?.with?.name).toBe(`npm-tarballs-${version}-\${{ matrix.target }}`);
-  expect(download?.with?.pattern).toBe(`npm-tarballs-${version}-*`);
+  const sha = `\${{ needs.release-metadata.outputs.sha }}`;
+  expect(artifact?.with?.name).toBe(`npm-tarballs-${version}-${sha}-\${{ matrix.target }}`);
+  expect(download?.with?.pattern).toBe(`npm-tarballs-${version}-${sha}-*`);
 });
 
 const verifiedPublish = workflow.jobs.publish?.steps.find((step) => step.id === "verified-npm-publish");

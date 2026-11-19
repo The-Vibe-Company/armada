@@ -44,9 +44,11 @@ git archive "$RELEASE_SHA" | tar -x -C "$source_dir"
 # git archive intentionally omits generated release metadata. Carry only the
 # validated public pin into the source-built server, never the tooling checkout.
 pin=packages/core/src/official-sandbox-image.json
+pin_image=none
 if [[ -f "$pin" ]] && jq -e 'type == "object"' "$pin" >/dev/null; then
   jq -e --arg version "$RELEASE_VERSION" '.version == $version and (.image | test("^ghcr[.]io/the-vibe-company/armada-sandbox@sha256:[a-f0-9]{64}$"))' "$pin" >/dev/null \
     || fail 'Official sandbox image pin does not match this release.'
+  pin_image=$(jq -er '.image' "$pin")
   cp "$pin" "$source_dir/$pin"
 fi
 # Bundle the archive's identity, independent of Railway's optional/stale Git metadata.
@@ -86,11 +88,12 @@ list_deployments() {
   railway deployment list --json --project "$RAILWAY_PROJECT_ID" \
     --environment "$RAILWAY_ENVIRONMENT_ID" --service "$RAILWAY_SERVICE_ID"
 }
+deployment_message="Release $RELEASE_VERSION ($RELEASE_SHA), sandbox image: $pin_image"
 server_done=false
 dashboard_done=false
 if [[ "${RELEASE_RESUME:-}" == true ]]; then
   if deployments=$(list_deployments) \
-      && status=$(jq -r '.[0].status // empty' <<< "$deployments") \
+      && status=$(jq -er --arg message "$deployment_message" '.[0] | select(.meta.commitMessage == $message) | .status' <<< "$deployments") \
       && curl --fail --silent --show-error --max-time 15 "${ARMADA_SERVER_URL%/}/healthz" | bun "$skip_tool" server "$status"; then
     server_done=true
     echo "::notice::Skipping Railway upload: latest deployment succeeded and health reports $RELEASE_SHA."
@@ -103,7 +106,7 @@ fi
 if [[ "$server_done" == false ]]; then
   upload=$(railway up --detach --json --project "$RAILWAY_PROJECT_ID" \
     --environment "$RAILWAY_ENVIRONMENT_ID" --service "$RAILWAY_SERVICE_ID" \
-    --message "Release $RELEASE_VERSION ($RELEASE_SHA)")
+    --message "$deployment_message")
   deployment_id=$(jq -er '.deploymentId | select(type == "string" and length > 0)' <<< "$upload")
 fi
 wait_for_server() {

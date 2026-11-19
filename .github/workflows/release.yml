@@ -219,8 +219,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_SHA: ${{ steps.version.outputs.sha }}
         run: |
-          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/commits/$RELEASE_SHA/status?per_page=100" \
-            | jq -e --arg sha "$RELEASE_SHA" '
+          gh api --paginate "repos/$GITHUB_REPOSITORY/commits/$RELEASE_SHA/status?per_page=100" \
+            | jq -es --arg sha "$RELEASE_SHA" '
                 if length > 0 and all(.[]; .sha == $sha)
                 then {sha: $sha, statuses: [.[].statuses[]]}
                 else error("Release status response did not match source SHA") end' \
@@ -232,14 +232,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BINARY_RUN: ${{ steps.receipts.outputs.binaries }}
           VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_SHA: ${{ steps.version.outputs.sha }}
         run: |
           set -euo pipefail
           artifacts=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BINARY_RUN/artifacts?per_page=100")
           required=()
           for target in darwin-arm64 darwin-x64 linux-arm64 linux-x64; do
-            required+=("armada-$target" "npm-tarballs-$VERSION-$target")
+            required+=("armada-$RELEASE_SHA-$target" "npm-tarballs-$VERSION-$RELEASE_SHA-$target")
           done
-          if [[ -f images/sandbox/Dockerfile ]]; then required+=(official-sandbox-image); fi
+          if [[ -f images/sandbox/Dockerfile ]]; then required+=("official-sandbox-image-$RELEASE_SHA"); fi
           for name in "${required[@]}"; do
             if ! jq -e --arg name "$name" 'any(.artifacts[]; .name == $name and .expired == false)' <<< "$artifacts" >/dev/null; then
               echo "::notice::Binary receipt artifacts are unavailable; rebuilding binaries."
@@ -327,7 +328,7 @@ jobs:
           sudo unshare --pid --fork --mount-proc "$(which bun)" packages/provider-modal/test/checkpoint-process-conformance.ts
           sudo unshare --pid --fork --mount-proc "$(which bun)" packages/provider-modal/test/checkpoint-process-conformance.ts --native-pidfds
 
-      - name: Record release/check success
+      - name: Record release/check success (${{ needs.release-metadata.outputs.sha }})
         if: needs.release-metadata.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -375,7 +376,7 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         if: steps.foundation.outputs.enabled == 'true' && needs.release-metadata.outputs.binary-run != ''
         with:
-          name: official-sandbox-image
+          name: official-sandbox-image-${{ needs.release-metadata.outputs.sha }}
           path: packages/core/src
           github-token: ${{ github.token }}
           run-id: ${{ needs.release-metadata.outputs.binary-run }}
@@ -415,7 +416,7 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: steps.foundation.outputs.enabled == 'true'
         with:
-          name: official-sandbox-image
+          name: official-sandbox-image-${{ needs.release-metadata.outputs.sha }}
           path: packages/core/src/official-sandbox-image.json
           if-no-files-found: error
           overwrite: true
@@ -459,7 +460,7 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         if: needs.sandbox-image.outputs.enabled == 'true'
         with:
-          name: official-sandbox-image
+          name: official-sandbox-image-${{ needs.release-metadata.outputs.sha }}
           path: packages/core/src
       - run: bun run build --target ${{ matrix.target }}
       - name: npm pack and install
@@ -470,7 +471,7 @@ jobs:
           scripts/npm-smoke.sh dist/tarballs ${{ matrix.target }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: armada-${{ matrix.target }}
+          name: armada-${{ needs.release-metadata.outputs.sha }}-${{ matrix.target }}
           path: |
             dist/armada-${{ matrix.target }}
             dist/armada-server-${{ matrix.target }}
@@ -492,7 +493,7 @@ jobs:
           shasum -a 256 -- *.tgz > "SHA256SUMS-$TARGET"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: npm-tarballs-${{ needs.release-metadata.outputs.version }}-${{ matrix.target }}
+          name: npm-tarballs-${{ needs.release-metadata.outputs.version }}-${{ needs.release-metadata.outputs.sha }}-${{ matrix.target }}
           path: dist/npm-artifact
           compression-level: 0
           if-no-files-found: error
@@ -507,7 +508,7 @@ jobs:
     permissions:
       statuses: write
     steps:
-      - name: Record release/binaries success
+      - name: Record release/binaries success (${{ needs.release-metadata.outputs.sha }})
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_SHA: ${{ needs.release-metadata.outputs.sha }}
@@ -649,7 +650,7 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         if: hashFiles('images/sandbox/Dockerfile') != ''
         with:
-          name: official-sandbox-image
+          name: official-sandbox-image-${{ needs.release-metadata.outputs.sha }}
           path: packages/core/src
       - name: Reject superseded releases
         run: |
@@ -680,7 +681,7 @@ jobs:
           RELEASE_ENVIRONMENT: production
           RELEASE_RESUME: 'true'
         run: bash .release-tools/scripts/release/deploy-production.sh
-      - name: Record release/production success
+      - name: Record release/production success (${{ needs.release-metadata.outputs.sha }})
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_SHA: ${{ needs.release-metadata.outputs.sha }}
@@ -729,7 +730,7 @@ jobs:
         with:
           github-token: ${{ github.token }}
           run-id: ${{ needs.release-metadata.outputs.binary-run || github.run_id }}
-          pattern: npm-tarballs-${{ needs.release-metadata.outputs.version }}-*
+          pattern: npm-tarballs-${{ needs.release-metadata.outputs.version }}-${{ needs.release-metadata.outputs.sha }}-*
           path: dist/tarballs
           merge-multiple: true
       - name: Verify and publish the smoke-tested tarballs
@@ -747,7 +748,7 @@ jobs:
           LC_ALL=C sort SHA256SUMS.actual | diff -u <(LC_ALL=C sort SHA256SUMS) -
           bash ../../.release-tools/scripts/publish-npm.sh "$main" "$sdk" "${platforms[@]}"
 
-      - name: Record release/npm success
+      - name: Record release/npm success (${{ needs.release-metadata.outputs.sha }})
         if: needs.release-metadata.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
