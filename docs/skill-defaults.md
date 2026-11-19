@@ -71,7 +71,7 @@ Apply `20261111160000_skill_defaults.sql` through the normal deployment
 process before running the new server. Workers do not apply it to staging or
 production. No new credentials or Skillpack changes are needed.
 
-On **Boat and Modal**, coordinator:
+The coordinator can run these checks on Modal staging. Boat checks are on demand.
 1. Set a personal and snapshot default, plain-launch and inspect both receipts.
 2. Add conflicting org/personal/template/explicit versions of the same slug;
    verify the documented winner, including a public/private slug collision.

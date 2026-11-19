@@ -62,7 +62,7 @@ environment to `skillpack auth status` and `skillpack install`, then discarded;
 no `auth login`, profile write, argv secret or provider command journal is used.
 The freshly authorized SSH key is removed under the shared `authorized_keys`
 lock **before** the installer runs, including on refused/missing-skill paths;
-unrelated keys and file metadata are preserved. Snapshot builds installs the trusted native CLI automatically; the base
+unrelated keys and file metadata are preserved. Snapshot builds install the trusted native CLI automatically; the base
 image must supply Node, Bash and `flock`. A read-only key limits authority during the install window; broader keys do not
 provide that capability fence.
 
@@ -70,7 +70,7 @@ See [default pins](skill-defaults.md) for how Armada resolves skills at launch. 
 install is used in verification; fake SSH/CLI tests execute the actual guest
 script and check receipt validation, error sanitization and command-local auth.
 
-## Ordinary launch staging parity (#983)
+## Ordinary launch parity (#983)
 
 The coordinator can run the ordinary `armada launch` command above for Modal
 Codex on staging with a private pin and a configured Skillpack credential. Run

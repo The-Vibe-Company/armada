@@ -1,4 +1,4 @@
-# Boat runtime skills staging check (#1161)
+# Boat runtime skills on-demand check (#1161)
 
 The opt-in Boat runtime now uses the **existing** launch `skills` pins and
 `skipSkillDefaults` policy (snapshot → organization → personal → explicit
@@ -18,7 +18,7 @@ runtime closes its journal. Old runtime artifacts refuse before key delivery.
 Resume retains project files, including user edits, without reinstalling.
 Arbitrary enrolled `exec` remains disabled.
 
-## ONE staging launch, batched with MCP / GitHub / checkpoint / resume
+## Coordinator-only Boat check with MCP, GitHub, checkpoint and resume
 
 Use the **armada-server staging HTTPS origin** and the same existing Armada
 login/token, organization, snapshot and Codex credential inputs documented in
