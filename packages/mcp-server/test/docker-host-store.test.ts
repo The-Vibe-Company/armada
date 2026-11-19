@@ -383,41 +383,124 @@ async function boundFixture(registered?: Awaited<ReturnType<typeof fixture>>) {
   return { ...host, sandboxId, generation, owner, create };
 }
 
-test("bound physical deletion records an older generation receipt without deleting the current sandbox", async () => {
-  const db = database();
-  const a = await boundFixture();
-  const requestId = randomUUID();
-  const payload = await encryptSecret(
-    JSON.stringify({
-      bound: 1,
-      job: {
-        operation: "deletePhysical",
-        machineId: "a".repeat(64),
-        request: { ...job().request, sandboxId: a.sandboxId },
-      },
-    }),
+function failPhysicalJobCommit(requestId: string, outcome: "failed" | null) {
+  const failure = new Error("Physical job transaction interrupted before commit");
+  const faultingStore = createDockerHostStore(
+    {
+      query: sql.query,
+      transaction: (work) =>
+        database().transaction(async (tx) => {
+          const result = await work({ query: (query, params) => tx.query(query, params) });
+          const written = await tx.query(
+            `select 1 from docker_host_jobs where request_id=$1 and outcome is not distinct from $2::text`,
+            [requestId, outcome],
+          );
+          if (written.rows.length) throw failure;
+          return result;
+        }),
+    },
     key,
   );
-  await db.query(
-    `insert into docker_host_jobs(request_id,host_id,input_enc,bound_sandbox_id,bound_actor_id,bound_actor_epoch,bound_operation)
-     values ($1,$2,$3,$4,$5,1,'deletePhysical')`,
-    [requestId, a.hostId, payload, a.sandboxId, a.owner.userId],
-  );
+  return { faultingStore, failure };
+}
+
+test("a physical-delete enqueue interrupted before commit can be retried without a conflicting intent", async () => {
+  const a = await boundFixture();
+  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+  await store.complete(a.hostToken, a.installationId, { requestId: a.create.requestId, outcome: "completed" });
+  await database().query("update sandboxes set status='failed' where id=$1", [a.sandboxId]);
+  const deletion = {
+    requestId: randomUUID(),
+    operation: "deletePhysical" as const,
+    machineId: "a".repeat(64),
+    lifecycleGeneration: 1,
+  };
+  const { faultingStore, failure } = failPhysicalJobCommit(deletion.requestId, null);
+  await expect(faultingStore.enqueueSandbox(a.owner, a.sandboxId, deletion)).rejects.toMatchObject({ cause: failure });
+  const replacementIntent = { ...deletion, machineId: "b".repeat(64) };
+  await store.enqueueSandbox(a.owner, a.sandboxId, replacementIntent);
+  await store.enqueueSandbox(a.owner, a.sandboxId, replacementIntent);
+  await denied(store.enqueueSandbox(a.owner, a.sandboxId, deletion));
+});
+
+test("physical deletion rechecks its lifecycle fence, while late receipts record only physical facts", async () => {
+  const db = database();
+  const a = await boundFixture();
+  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+  await store.complete(a.hostToken, a.installationId, { requestId: a.create.requestId, outcome: "completed" });
+  const deletion = {
+    requestId: randomUUID(),
+    operation: "deletePhysical" as const,
+    machineId: "a".repeat(64),
+    lifecycleGeneration: 1,
+  };
   await db.query(`update sandboxes set status='stopped',stopped_at=now() where id=$1`, [a.sandboxId]);
-  const result = { requestId, outcome: "completed" as const };
+  await denied(store.enqueueSandbox(a.owner, a.sandboxId, deletion));
+  await db.query(`update sandboxes set status='failed' where id=$1`, [a.sandboxId]);
+  await denied(store.enqueueSandbox(a.owner, a.sandboxId, { ...deletion, lifecycleGeneration: 2 }));
+  await store.enqueueSandbox(a.owner, a.sandboxId, deletion);
+  const poll = (mailbox = store) =>
+    mailbox.poll(a.hostToken, a.installationId, undefined, false, undefined, undefined, null, null, [], null, true);
+  expect(await poll()).toMatchObject({ requestId: deletion.requestId, machineId: deletion.machineId });
+  await denied(store.cleaned(a.hostToken, a.installationId, { requestId: deletion.requestId }));
+  await db.query(`update sandboxes set lifecycle_generation=2 where id=$1`, [a.sandboxId]);
+  const { faultingStore, failure } = failPhysicalJobCommit(deletion.requestId, "failed");
+  await expect(poll(faultingStore)).rejects.toMatchObject({ cause: failure });
+  const receipt = () =>
+    db.query(
+      `select j.outcome,j.cancelled_at,s.status,s.lifecycle_generation::text as generation,s.docker_generation from docker_host_jobs j
+       join sandboxes s on s.id=j.bound_sandbox_id where j.request_id=$1`,
+      [deletion.requestId],
+    );
+  expect((await receipt()).rows).toEqual([
+    { outcome: null, cancelled_at: null, status: "failed", generation: "2", docker_generation: a.generation },
+  ]);
+  expect(await poll()).toBeNull();
+  expect((await receipt()).rows).toEqual([
+    {
+      outcome: "failed",
+      cancelled_at: expect.anything(),
+      status: "failed",
+      generation: "2",
+      docker_generation: a.generation,
+    },
+  ]);
+  const result = { requestId: deletion.requestId, outcome: "completed" as const };
   await denied(store.complete(a.hostToken, randomUUID(), result));
   await store.complete(a.hostToken, a.installationId, result);
   await store.complete(a.hostToken, a.installationId, result);
   await denied(store.complete(a.hostToken, a.installationId, { ...result, outcome: "failed" }));
-  expect(
-    (
-      await db.query(
-        `select j.outcome,s.status,s.docker_generation from docker_host_jobs j
-       join sandboxes s on s.id=j.bound_sandbox_id where j.request_id=$1`,
-        [requestId],
-      )
-    ).rows,
-  ).toEqual([{ outcome: "completed", status: "stopped", docker_generation: a.generation }]);
+  expect((await receipt()).rows).toEqual([
+    { outcome: "completed", cancelled_at: null, status: "failed", generation: "2", docker_generation: a.generation },
+  ]);
+});
+
+test("uninstall cancels pending optional physical deletion even without a capable poll", async () => {
+  const db = database();
+  const a = await boundFixture();
+  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+  await store.complete(a.hostToken, a.installationId, { requestId: a.create.requestId, outcome: "completed" });
+  await db.query(`update sandboxes set status='deleted',deleted_at=now() where id=$1`, [a.sandboxId]);
+  const deletion = {
+    requestId: randomUUID(),
+    operation: "deletePhysical" as const,
+    machineId: "a".repeat(64),
+    lifecycleGeneration: 1,
+  };
+  await store.enqueueSandbox(a.owner, a.sandboxId, deletion);
+  const { faultingStore, failure } = failPhysicalJobCommit(deletion.requestId, "failed");
+  await expect(faultingStore.unregister(a.hostToken, a.installationId)).rejects.toMatchObject({ cause: failure });
+  const state = () =>
+    db.query(
+      `select j.outcome,j.cancelled_at,h.draining_at,h.revoked_at from docker_host_jobs j
+        join docker_hosts h on h.id=j.host_id where j.request_id=$1`,
+      [deletion.requestId],
+    );
+  expect((await state()).rows).toEqual([{ outcome: null, cancelled_at: null, draining_at: null, revoked_at: null }]);
+  expect(await store.unregister(a.hostToken, a.installationId)).toBe(true);
+  expect((await state()).rows).toEqual([
+    { outcome: "failed", cancelled_at: expect.anything(), draining_at: null, revoked_at: expect.anything() },
+  ]);
 });
 
 // The migrated SQL boundary owns binding, actor fencing, lifecycle intent and capabilities.
