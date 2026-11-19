@@ -39,8 +39,8 @@ class NormalLaunchReceiptTest(unittest.TestCase):
     def test_pending_launch_replays_the_same_request_until_its_original_receipt(self):
         from unittest.mock import patch
         request = {"idempotencyKey": "original-launch-key", "prompt": "original prompt"}
-        pending = {"sandbox": {"id": "sandbox", "provider": "docker", "status": "starting"}, "runtime": None}
-        complete = {"sandbox": {"id": "sandbox", "provider": "docker", "status": "running"},
+        pending = {"sandbox": {"id": "00000000-0000-4000-8000-000000000001", "provider": "docker", "status": "starting"}, "runtime": None}
+        complete = {"sandbox": {"id": "00000000-0000-4000-8000-000000000001", "provider": "docker", "status": "running"},
                     "runtime": {"kind": "armada", "epoch": "1"},
                     "promptId": "original-prompt", "conversationId": "original-conversation"}
         calls, admissions, replies = [], [], iter([pending, complete])
@@ -51,12 +51,12 @@ class NormalLaunchReceiptTest(unittest.TestCase):
             self.assertEqual(module.normal_launch_receipt(api, request, 10, on_admission=admissions.append), complete)
         self.assertEqual(calls, [("sandbox/launch", request, True)] * 2)
         self.assertTrue(all(body is request for _, body, _ in calls))
-        self.assertEqual(admissions, ["sandbox"])
+        self.assertEqual(admissions, ["00000000-0000-4000-8000-000000000001"])
         sleep.assert_called_once_with(2)
 
     def test_failed_preparation_reports_the_plain_reason_without_another_launch(self):
         from unittest.mock import Mock
-        api = Mock(return_value={"sandbox": {"id": "sandbox", "provider": "docker", "status": "failed",
+        api = Mock(return_value={"sandbox": {"id": "00000000-0000-4000-8000-000000000001", "provider": "docker", "status": "failed",
                                              "statusReason": "Repository checkout failed or timed out."}})
         with self.assertRaisesRegex(RuntimeError, "Repository checkout failed or timed out"):
             module.normal_launch_receipt(api, {"idempotencyKey": "original-launch-key"}, 10)
@@ -64,7 +64,7 @@ class NormalLaunchReceiptTest(unittest.TestCase):
 
     def test_github_proof_reports_the_launch_connection_reason_before_misattributing_a_missing_tool(self):
         from unittest.mock import Mock
-        receipt = {"sandbox": {"id": "sandbox", "provider": "docker", "status": "running"},
+        receipt = {"sandbox": {"id": "00000000-0000-4000-8000-000000000001", "provider": "docker", "status": "running"},
                    "promptId": "prompt", "conversationId": "conversation",
                    "github": {"status": "not_connected", "message": "This caller has no GitHub connection."}}
         api = Mock(return_value=receipt)
@@ -76,7 +76,7 @@ class NormalLaunchReceiptTest(unittest.TestCase):
 
     def test_pending_preparation_has_a_bounded_deadline(self):
         from unittest.mock import Mock, patch
-        api = Mock(return_value={"sandbox": {"id": "sandbox", "provider": "docker", "status": "starting"},
+        api = Mock(return_value={"sandbox": {"id": "00000000-0000-4000-8000-000000000001", "provider": "docker", "status": "starting"},
                                 "runtime": None})
         with patch.object(module.time, "monotonic", side_effect=[0, 10]), patch.object(module.time, "sleep") as sleep:
             with self.assertRaisesRegex(RuntimeError, "preparation timed out; retain sandbox ID and launch key"):

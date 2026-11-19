@@ -34,6 +34,10 @@ def successful_mcp_tool(tools, matching_calls, harness, connection, name):
     return success
 
 
+def is_sandbox_id(value):
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", value) is not None
+
+
 def normal_launch_receipt(api, launch, timeout, require_github=False, on_admission=None):
     """Replay one admitted request until preparation yields its original first-prompt receipt."""
     deadline = time.monotonic() + timeout
@@ -42,7 +46,7 @@ def normal_launch_receipt(api, launch, timeout, require_github=False, on_admissi
         result = api("sandbox/launch", launch, normal=True)
         sandbox = result.get("sandbox", {})
         received_id = sandbox.get("id")
-        if not isinstance(received_id, str) or not received_id or sandbox.get("provider") != "docker":
+        if not is_sandbox_id(received_id) or sandbox.get("provider") != "docker":
             raise RuntimeError("Normal launch outcome unknown; retain sandbox ID and launch key")
         if sandbox_id is None:
             sandbox_id = received_id
@@ -430,6 +434,7 @@ def main():
     launch = {"hostId": host_id, "credentialId": args.credential}
     if args.normal_launch:
         launch["idempotencyKey"] = str(uuid.uuid4())
+        launch["externalRef"] = launch["idempotencyKey"]
         print("LAUNCH_KEY=" + launch["idempotencyKey"], flush=True)
     else:
         sandbox_id = str(uuid.uuid4())
@@ -517,6 +522,7 @@ def main():
         sandbox_id = admitted_id
         print("SANDBOX_ID=" + sandbox_id, flush=True)
 
+    submitted_normal_launch = False
     try:
         launch_receipt = None
         if args.normal_launch:
@@ -528,6 +534,7 @@ def main():
                 raise RuntimeError("Requested Docker harness is not advertised by launch/options")
             launch.update({"provider": "docker", "harness": harness, "visibility": "private",
                            "prompt": initial_task})
+            submitted_normal_launch = True
             launched = normal_launch_receipt(api, launch, args.timeout,
                                              require_github=args.snapshot or args.github,
                                              on_admission=record_admission)
@@ -784,6 +791,16 @@ def main():
                 raise RuntimeError("Resume changed host or conversation identity")
             turn(secret_task + variable_task + github_task + "Reply with exactly the marker I asked you to remember.", marker, conversation, prove_github=args.github)
     finally:
+        if submitted_normal_launch and sandbox_id is None:
+            try:
+                rows = api("sandbox/list", {"owner": "me", "externalRef": launch["externalRef"]}, normal=True)["sandboxes"]
+                if (len(rows) == 1 and rows[0].get("provider") == "docker"
+                        and rows[0].get("externalRef") == launch["externalRef"] and is_sandbox_id(rows[0].get("id"))):
+                    record_admission(rows[0]["id"])
+            except (RuntimeError, KeyError, TypeError):
+                pass
+            if sandbox_id is None:
+                print("Launch unconfirmed; look it up using the printed launch key as externalRef.", file=sys.stderr)
         if sandbox_id is not None:
             # Never delete an unconfirmed running allocation. Offline cleanup remains honest/pending.
             try:

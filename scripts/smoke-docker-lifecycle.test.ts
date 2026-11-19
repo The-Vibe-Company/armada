@@ -77,6 +77,7 @@ class Opener:
             value = {"state": "ready" if path.endswith("ready") else "completed"}
         elif path == "sandbox/launch":
             uuid.UUID(body["idempotencyKey"])
+            assert body["externalRef"] == body["idempotencyKey"]
             assert "requestId" not in body
             sandbox = "00000000-0000-4000-8000-000000000001"
             assert timeout == 600
