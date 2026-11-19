@@ -722,7 +722,7 @@ for (const proof of [
 
 test("production scoped MCP/API gateway uses epoch child authority and never owner dispatch", async () => {
   const { close, sql, p, id, parent, authority, token, selection } = await fixture("ready");
-  const { ORCHESTRATOR_SCOPED_PATH } = await import("../src/sandbox-access-scoped-gateway.ts");
+  const { ORCHESTRATOR_SCOPED_PATH } = await import("@armada/core/contract");
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
   const { StreamableHTTPClientTransport } = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
   const { createSandboxScopedGateway } = await import("../src/sandbox-access-scoped-gateway.ts");
@@ -848,7 +848,28 @@ test("production scoped MCP/API gateway uses epoch child authority and never own
           body: JSON.stringify(payload),
         }),
       )) ?? new Response(null, { status: 404 });
-    expect((await api("launch", { selection: { ...selection, size: "small" } }, token, "mcp-child")).status).toBe(200);
+    const { publishedResponse } = await import("./published-response.ts");
+    const launchResponse = await api("launch", { selection: { ...selection, size: "small" } }, token, "mcp-child");
+    expect(launchResponse.status).toBe(200);
+    expect(publishedResponse("orchestrator-tools/launch").safeParse(await launchResponse.json()).success).toBe(true);
+    const services = createSandboxAccessServices({
+      sql,
+      providers: { resolve: async () => boat.provider },
+      credentials: launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY),
+      connections: undefined,
+      encryptionKey: ENCRYPTION_KEY,
+      scopedMcpUrl: "https://armada.example/mcp",
+    });
+    const readResponse = await services.scopedToolsRoute(
+      new Request(`https://armada.example.com${ORCHESTRATOR_SCOPED_PATH}/read`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ sandboxId: receipt.sandboxId }),
+      }),
+    );
+    if (!readResponse) throw new Error("Scoped read did not dispatch.");
+    expect(readResponse.status).toBe(200);
+    expect(publishedResponse("orchestrator-tools/read").safeParse(await readResponse.json()).success).toBe(true);
     expect(boat.forks).toHaveLength(1);
     expect((await api("stop", { sandboxId: receipt.sandboxId }, token, "api-child-stop")).status).toBe(200);
     expect((await api("stop", { sandboxId: receipt.sandboxId }, token, "api-child-stop")).status).toBe(200);
