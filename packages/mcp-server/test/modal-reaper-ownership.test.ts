@@ -30,6 +30,7 @@ beforeAll(async () => {
       org_id uuid, owner_id uuid, golden_id uuid
     );
     create table modal_machines (scope text, id text, record jsonb, org_id uuid, owner_id uuid);
+    create table ordinary_launch_receipts (id uuid, response jsonb, failure jsonb);
     create table modal_server_scopes (scope text primary key, context jsonb);
 
     insert into goldens values
@@ -59,6 +60,7 @@ beforeAll(async () => {
        '30000000-0000-0000-0000-000000000001','40000000-0000-0000-0000-000000000001'),
       ('second_scope','modal_duplicate','{"physicalId":"sb-duplicate-other","generation":1}',
        '30000000-0000-0000-0000-000000000001','40000000-0000-0000-0000-000000000001');
+    alter table modal_machines add column request_key text, add column lease_until timestamptz;
   `);
 });
 
@@ -102,6 +104,14 @@ test("the live Modal reaper excludes conflicting logical ownership from the over
     { query: (statement, params) => db.query(statement, params) },
     "https://armada.test",
     async (_registration, _binding, deploymentId) => ({
+      async openSandbox() {
+        return {
+          async terminate() {},
+          async waitForTermination() {
+            return 137;
+          },
+        };
+      },
       async *listInventory() {
         yield { ...machine, deploymentId, sandboxId: "modal_wrong_app", machineId: "sb-unmapped" };
         yield { ...machine, deploymentId, sandboxId: "modal_orphan", machineId: "sb-orphan" };
