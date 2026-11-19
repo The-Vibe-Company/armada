@@ -90,7 +90,7 @@ test("launch sends a Docker request and returns the Docker receipt without a gol
     provider: "docker",
     hostId: "00000000-0000-4000-8000-000000000002",
     harness: "codex",
-    requestId: "00000000-0000-4000-8000-000000000003",
+    idempotencyKey: "customer_launch_1",
     prompt: "Work",
     repos: [{ url: "https://github.com/acme/app", branch: "main" }],
   } satisfies DockerLaunchInput;
@@ -138,7 +138,7 @@ test("the SDK Docker launch type admits exactly the host and snapshot sources th
     provider: "docker",
     hostId: "00000000-0000-4000-8000-000000000002",
     harness: "codex",
-    requestId: "00000000-0000-4000-8000-000000000003",
+    idempotencyKey: "customer_launch_1",
     repos: [{ url: "https://github.com/acme/app" }],
   } as const;
   const snapshotId = "00000000-0000-4000-8000-000000000004";

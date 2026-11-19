@@ -433,15 +433,12 @@ export const launchRoutes = defineRoutes("launch", {
       if (!dockerLaunch) throw new VaultError("unavailable", "Normal Docker launch is not configured.");
       const organization = await resolveOrg(store, userId, org);
       const selected = { ...caller, orgs: caller.orgs.filter((item) => item.orgId === organization.id) };
-      const launchDocker = (request: Record<string, unknown>) =>
-        dockerLaunch.launch(selected, { ...request, org: organization.id });
-      if ("idempotencyKey" in launch) {
-        if (!encryptionKey) throw new VaultError("unavailable", "Docker launch replay keys are unavailable.");
-        const { idempotencyKey, ...request } = launch;
-        const requestId = dockerLaunchRequestId(encryptionKey, userId, organization.id, idempotencyKey);
-        return canonicalLaunchResponse(await launchDocker({ ...request, requestId }));
-      }
-      return canonicalLaunchResponse(await launchDocker(launch));
+      if (!encryptionKey) throw new VaultError("unavailable", "Docker launch replay keys are unavailable.");
+      const { idempotencyKey, ...request } = launch;
+      const requestId = dockerLaunchRequestId(encryptionKey, userId, organization.id, idempotencyKey);
+      return canonicalLaunchResponse(
+        await dockerLaunch.launch(selected, { ...request, org: organization.id, requestId }),
+      );
     }
     if ("id" in launch) {
       const template = launch;
