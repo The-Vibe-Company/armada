@@ -1511,23 +1511,27 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         });
       }
       if (githubRefresh && !dirty) {
-        await step("github_refresh_unsupported", async () => {
-          try {
-            await request("github/refresh", { org: item.org, id: sandboxId });
-          } catch (error) {
-            if (error instanceof SmokeFailure && error.code === "unsupported" && error.status === 400) return;
-            throw error;
-          }
-          fail("invalid_receipt");
+        await step("github_refresh", async () => {
+          const receipt = await request<{
+            id: string;
+            status: string;
+            login: unknown;
+            runtime?: { kind: string; epoch: unknown };
+            revision?: unknown;
+          }>("github/refresh", { org: item.org, id: sandboxId });
+          if (
+            receipt?.id !== sandboxId ||
+            receipt.status !== "connected" ||
+            typeof receipt.login !== "string" ||
+            !receipt.login ||
+            receipt.runtime?.kind !== "armada" ||
+            typeof receipt.runtime.epoch !== "string" ||
+            !/^[1-9][0-9]*$/.test(receipt.runtime.epoch) ||
+            typeof receipt.revision !== "string" ||
+            !/^[1-9][0-9]*$/.test(receipt.revision)
+          )
+            fail("invalid_receipt");
         });
-        io.out(
-          JSON.stringify({
-            case: index,
-            step: "github_refresh_idempotency",
-            skip: true,
-            reason: "not_part_of_release_gate",
-          }),
-        );
       }
       if (github) {
         await nativeTurn(true);
