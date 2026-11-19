@@ -310,7 +310,7 @@ export function createRuntimeResume(
               await environment.deliver(found.provider, actor, found.id, admitted.op.target_epoch, signal);
             await prepareGitHub?.(caller, found.id);
             await prepareMcp?.(caller, found.id, signal);
-            if (found.provider === "modal")
+            if (found.runtimeTransport === "dialout")
               await restoreScopedAccess?.(
                 caller.userId,
                 found.id,

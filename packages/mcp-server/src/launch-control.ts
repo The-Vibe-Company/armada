@@ -124,7 +124,7 @@ async function launchGolden(
     );
     timing.checkpoint("account_resolution");
     const scopedModalDefault =
-      armadaAccess && !runtime && golden.provider === "modal" ? account.options.modalRuntimeDefault : undefined;
+      armadaAccess && account.runtimeDefault?.policy.supportsScopedAccess ? account.runtimeDefault : undefined;
     if (scopedModalDefault) {
       const provider = await scopedModalDefault.provider(actor, target);
       if (provider.id !== golden.provider)

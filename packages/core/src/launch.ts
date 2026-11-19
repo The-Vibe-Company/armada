@@ -196,6 +196,7 @@ export interface LaunchOptions extends GoldenLimits {
   /** Trusted per-launch opt-in for common-runtime routes; private bootstrap, never a native-agent fallback. */
   runtime?: LaunchOptions["boatRuntime"];
   boatRuntime?: {
+    supportsScopedAccess?: true;
     start(input: {
       host: Provider;
       actor: GoldenActor;
@@ -343,7 +344,7 @@ async function resolveGoldenLaunch(
       "invalid_request",
       "The experimental runtime supports ordinary Boat or Modal Codex/Claude/OpenCode workers only.",
     );
-  if (runtime && provider.id !== "modal" && options.privateVisibility && options.beforeStart)
+  if (runtime && !runtime.supportsScopedAccess && options.privateVisibility && options.beforeStart)
     throw new LaunchError("invalid_request", "Scoped access requires grant delivery over the enrolled runtime.");
   const prompt = checkPrompt(request.prompt);
   request = applyLaunchAccountDefaults(request, await stores.credentials.defaults?.(actor, harness));

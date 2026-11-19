@@ -3255,6 +3255,7 @@ test.each([
       };
       if (ordinary) options.providers = { resolve: async () => native };
       options.modalRuntimeLaunch = {
+        supportsScopedAccess: true,
         async start(input) {
           starts++;
           expect(input.sandbox.provider).toBe("modal");

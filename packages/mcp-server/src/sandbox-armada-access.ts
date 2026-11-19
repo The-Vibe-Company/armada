@@ -213,8 +213,7 @@ export function createSandboxArmadaAccess(input: {
       skillRevision: "0".repeat(40),
     };
     if (sandbox.runtimeTransport === "dialout") {
-      if (!input.commands || !runtime || provider.id !== "modal")
-        throw new VaultError("unavailable", "Scoped runtime delivery is unavailable.");
+      if (!input.commands || !runtime) throw new VaultError("unavailable", "Scoped runtime delivery is unavailable.");
       await bootstrapSandboxAccess(provider, {
         ...bootstrap,
         exec: runtime.exec,
