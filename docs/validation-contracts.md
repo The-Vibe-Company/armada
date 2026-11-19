@@ -920,10 +920,10 @@ Bash runs the guest probe against a local executable or a download stub.
 
 ### `scripts/post-deploy-smoke.test.ts`
 
-The preservation suite runs Git once in its shared setup to create a local
-bundle. An isolated run of a case that stops before bundle verification took 56
-ms end to end, including Bun startup and that setup. The table marks cases that
-also start local Git in the bundle verifier. The workflow case runs the
+The preservation suite creates one local bundle in shared setup using six Git
+commands. An isolated run of a case that stops before bundle verification took
+56 ms end to end, including Bun startup and that setup. The table marks cases
+that also start local Git in the bundle verifier. The workflow case runs the
 workflow shell step with a stub Bun executable.
 
 | Case | Local (ms) | Git in verifier |
