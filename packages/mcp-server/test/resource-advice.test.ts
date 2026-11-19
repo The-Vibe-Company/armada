@@ -21,6 +21,7 @@ test("The advice API collects bounded samples, pins project identity and abstain
   const token = await server.token(server.people.owner);
   const client = await server.client(token);
   const launched = await call(client, "launch", {
+    provider: "boat",
     golden: "shared",
     org: server.people.org,
     harness: "claude",

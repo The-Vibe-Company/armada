@@ -42,7 +42,7 @@ test("MCP allocation before failed registration returns a receipt ID and fences 
     ordinaryLaunchReceipts: createOrdinaryLaunchReceipts(sql),
     logError: () => {},
   } as unknown as ToolContext;
-  const input = { golden: "shared", harness: "claude", idempotencyKey: "mcp-uncertainty-key" };
+  const input = { provider: "boat", golden: "shared", harness: "claude", idempotencyKey: "mcp-uncertainty-key" };
   await expect(callSharedTool(context, "launch", input)).rejects.toMatchObject({ code: "outcome_unknown" });
   expect(logical).not.toBe("");
   await expect(callSharedTool(context, "launch", input)).rejects.toMatchObject({

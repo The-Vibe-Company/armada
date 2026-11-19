@@ -584,7 +584,7 @@ test("managed exec holds stop admission through secret publication while indepen
       return { id, physical: machine.id, accountId: account.id };
     };
     const ownerClient = await server.client(await server.token(actor.userId));
-    const claude = await call(ownerClient, "launch", { golden: "shared", harness: "claude" });
+    const claude = await call(ownerClient, "launch", { provider: "boat", golden: "shared", harness: "claude" });
     expect(claude.isError).toBe(false);
     const peerClient = await server.client(await server.token(server.people.member));
     server.boat.setExecOutput({ stdout: SECRETS.ownerClaude });

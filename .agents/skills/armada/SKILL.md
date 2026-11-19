@@ -46,6 +46,9 @@ any receipt UUID returned.
   revision specifying a golden, harness and configuration. Use IDs if names clash.
   Use `armada snapshot capabilities --json` for provider capacity and the
   authenticated REST adoption endpoint for canonical Boat golden adoption.
+- For MCP `launch`, choose `provider: "boat"` or `provider: "modal"` from discovery,
+  specify `harness`, and use `ttlSeconds` and `reasoningEffort` for launch overrides.
+  For scoped tokens, omit `org` or use the scoped org UUID.
 - Choose Boat or Modal explicitly when ambiguous. A golden built on one provider
   is not automatically available on the other. Check
   `armada snapshot capabilities --provider boat --json` (or substitute modal).

@@ -106,7 +106,7 @@ describe("provider routing", () => {
     expect(JSON.stringify(body)).not.toContain(PAIR.token_secret);
 
     const ambiguous = await call(mcp, "launch", { golden: "shared", harness: "claude" });
-    expect(ambiguous.text).toContain("exists on boat and modal");
+    expect(ambiguous.text).toContain("error code: invalid");
     const unconfigured = await call(mcp, "launch", { golden: "shared", provider: "modal", harness: "claude" });
     expect(unconfigured.isError).toBe(true);
     expect(unconfigured.text).toContain("error code: provider_routing_unavailable");
@@ -136,9 +136,10 @@ describe("provider routing", () => {
       golden: "shared",
       provider: "modal",
       harness: "claude",
-      ttl_seconds: 172_800,
+      ttlSeconds: 172_800,
     });
-    expect(tooLong.text).toContain("24 hours on modal");
+    expect(tooLong.text).toContain("error code: invalid");
+    expect(calls).toEqual([]);
     expect(modal.forks).toEqual([]);
 
     await server.db.query("insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'modal',$2)", [
@@ -189,7 +190,7 @@ describe("provider routing", () => {
     expect(modal.prompts.map((prompt) => prompt.text)).toEqual(["next"]);
     // Every call is pinned to the golden's App; only the token follows the rotation.
     expect(calls.every(({ binding }) => JSON.stringify(binding) === JSON.stringify(BINDING))).toBe(true);
-    expect(calls.map(({ tokens }) => tokens.tokenId)).toEqual([PAIR.token_id, PAIR.token_id, ROTATED.token_id]);
+    expect(calls.map(({ tokens }) => tokens.tokenId)).toEqual([PAIR.token_id, ROTATED.token_id]);
     expect(server.boat.prompts).toEqual([]);
   });
 

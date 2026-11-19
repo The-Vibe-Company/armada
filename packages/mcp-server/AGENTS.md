@@ -38,7 +38,7 @@ Scope: `packages/mcp-server/src/control.ts`, `packages/mcp-server/src/control-to
 Authority: `docs/api/README.md`, `docs/sdk.md`.
 
 1. **The schema is what the handler does.** Every shape a handler can return, including refusals, `retryAfter`, nulls and every provider variant, is in its output schema. A test passes the handler's real responses through the published schema.
-2. **One schema per request and response.** Never write a second validator or TypeScript type for the same shape; import the existing one.
+2. **One schema per request and response.** Never write a second validator or TypeScript type for the same shape; import the existing one. MCP launch projects the supported golden variants from the launch operation in `@armada/core/contract`.
 3. **No compatibility** (root rule 1). Replacing a route, tool or field deletes the old one. Older released clients may break.
 4. **Admin operations** belong in the dashboard. Add no dedicated MCP tool or CLI command for them.
 5. **The SDK is published.** Changing a public type updates `packages/sdk/test/npm-smoke.types.ts` and `docs/sdk.md` in the same PR.
