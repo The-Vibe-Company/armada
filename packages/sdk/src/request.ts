@@ -155,9 +155,7 @@ export const requestApi: (
     if (text !== undefined) {
       try {
         payload = JSON.parse(text);
-      } catch {
-        // The caller decides whether an empty or malformed success body is valid.
-      }
+      } catch {}
     }
     if (response.ok) return { kind: "response", response, payload, bodyReadFailed };
 
@@ -173,7 +171,6 @@ export const requestApi: (
         failure: { code: "unavailable", serverCode: error, outcomeUnknown: false, retryAfterSeconds },
       };
     }
-    // A server-requested delay belongs to the caller's scheduler.
     if (
       readOnly &&
       retryStatuses.has(status) &&
@@ -205,7 +202,6 @@ export const requestApi: (
   }
 };
 
-/** Accept only a delay in seconds or an HTTP date (header), or a whole number of seconds (failure body). */
 function retryAfter(header: string | null, error: unknown) {
   const seconds = (value: number) => (Number.isFinite(value) && value >= 0 ? Math.ceil(value) : undefined);
   if (header !== null) {

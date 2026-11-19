@@ -20,8 +20,7 @@
         "packages/mcp-server/test/github-boat-os.test.ts",
         "packages/mcp-server/test/mcp-codex-bridge.release.ts",
         "packages/provider-boat/test/integration.coordinator.ts",
-        "packages/provider-modal/test/artifact.release.ts",
-        "packages/provider-modal/test/ssh-os.test.ts"
+        "packages/provider-modal/test/artifact.release.ts"
       ],
       "rules": {
         "landmines-testing/no-flake-masking": [
@@ -33,8 +32,7 @@
               "packages/mcp-server/test/github-boat-os.test.ts": 1,
               "packages/mcp-server/test/mcp-codex-bridge.release.ts": 1,
               "packages/provider-boat/test/integration.coordinator.ts": 1,
-              "packages/provider-modal/test/artifact.release.ts": 1,
-              "packages/provider-modal/test/ssh-os.test.ts": 1
+              "packages/provider-modal/test/artifact.release.ts": 1
             }
           }
         ]
