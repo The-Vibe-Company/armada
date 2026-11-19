@@ -2,6 +2,7 @@ import { LogOutIcon } from "lucide-react";
 import { type CSSProperties, type ReactNode, Suspense } from "react";
 import { AppSidebar, DesktopSidebarTrigger } from "@/components/app-sidebar";
 import { CommandMenu } from "@/components/command-menu";
+import { DockerLaunchLimitList } from "@/components/docker-launch-limit-list";
 import { NavLinks } from "@/components/nav-links";
 import { OrgSwitcher } from "@/components/org-switcher";
 import { SandboxLaunchAction } from "@/components/sandbox-launch-action";
@@ -39,7 +40,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
       </div>
       <ShellSearch />
       <div className="[&_button]:h-8 [&_button]:w-full [&_button]:justify-start [&_button]:bg-transparent [&_button]:px-2.5 [&_button]:text-[13px] [&_button]:text-foreground [&_button]:shadow-none [&_button:hover]:bg-[var(--raised)]">
-        <SandboxLaunchAction shortcut />
+        <SandboxLaunchAction shortcut dockerLimits={<DockerLaunchLimitList />} />
       </div>
     </div>
   );

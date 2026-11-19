@@ -317,9 +317,8 @@ SSH executor. It validates an Ed25519 public key and provisions actual OpenSSH o
 port2222 through Modal's raw TCP tunnel; SSH itself encrypts/authenticates traffic.
 It generates a per-generation Ed25519 host key and returns its real public key for
 strict pinning. Client authorizations expire after15 minutes. Password/agent/TCP/X11 paths are disabled; root key-only login is golden-only. Private host keys never leave the machine.
-`prepareSsh` delegates to this exact same leased implementation: neither public
-path can recreate authorization/host keys after checkpoint/scrub. Both require
-current active admission and generation under the lifecycle lease.
+SSH provisioning requires active admission and the current generation under the
+lifecycle lease, so it cannot recreate authorization or host keys after checkpoint/scrub.
 
 Stop: durable checkpoint phase -> runner drain/auth scrub -> exact SQL ACK watermark
 verification -> close SSH and all user-owned writers -> remove keys/auth audit ->

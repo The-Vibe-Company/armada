@@ -39,7 +39,7 @@ function parseSelector(value: string): string {
   return `${match[1].toLowerCase()}/${match[2].toLowerCase()}`;
 }
 
-function repositoryIdentity(url: string): string | null {
+export function repositoryIdentity(url: string): string | null {
   let path: string;
   try {
     path = new URL(url).pathname;

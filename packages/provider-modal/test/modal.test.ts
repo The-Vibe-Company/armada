@@ -1510,14 +1510,13 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(f.log).not.toContain("terminate");
     expect(f.creates).toBe(1);
   });
-  test("prepareSsh cannot reprovision authorization or a hostkey between snapshot scrub and save", async () => {
+  test("sshKey cannot reprovision authorization or a hostkey between snapshot scrub and save", async () => {
     const f = fixture();
     const row = await f.provider.createGolden({});
     await f.provider.sshKey({ sandboxId: row.id, key: "synthetic" });
     expect(f.provisioned).toBe(true);
     f.onScrub(async () => {
       expect(f.provisioned).toBe(false);
-      await expect(f.provider.prepareSsh(row.id, "synthetic")).rejects.toMatchObject({ code: "sandbox_not_ready" });
       await expect(f.provider.sshKey({ sandboxId: row.id, key: "synthetic" })).rejects.toMatchObject({
         code: "sandbox_not_ready",
       });

@@ -9,6 +9,7 @@
     "./contract": "./src/contract/index.ts",
     "./docker": "./src/docker-api.ts",
     "./launch": "./src/launch.ts",
+    "./launch-workdir": "./src/launch-workdir.ts",
     "./runtime": "./src/runtime-startup-failure.ts",
     "./server": "./src/server.ts"
   },

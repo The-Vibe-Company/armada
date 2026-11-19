@@ -9,8 +9,9 @@ import {
   runtimeBootstrapScript,
 } from "@armada/core/server";
 import type { ModalClient, Sandbox } from "modal";
+import { boundModalApp } from "./client.ts";
 import { modalError, refusal } from "./errors.ts";
-import { boundModalApp, listModalInventory } from "./provider.ts";
+import { listModalInventory } from "./inventory.ts";
 
 type Create = Parameters<Machine["create"]>[0];
 type Bootstrap = Parameters<Machine["bootstrap"]>[0];
