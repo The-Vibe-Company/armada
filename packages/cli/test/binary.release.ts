@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { VERSION } from "@armada/core";
+import { launchEnvelope } from "@armada/core/contract";
 import { compile, hostTarget } from "../../../scripts/build.ts";
 
 let dir: string;
@@ -40,6 +41,26 @@ test("compiled invitation CLI is discoverable and rejects token argv without ser
 test("compiled launch preserves account selection and owner defaults without allocating resources", async () => {
   const requests: { path: string; body: Record<string, unknown> }[] = [];
   const credentialId = "33333333-3333-4333-8333-333333333333";
+  const receipt = launchEnvelope.parse({
+    sandbox: {
+      id: "sandbox",
+      provider: "boat",
+      providerSandboxId: "bx_fixture",
+      harness: "codex",
+      status: "ready",
+      conversationIds: [],
+      credentialId,
+      credentialVersion: 2,
+    },
+    golden: { id: "golden", name: "fixture", visibility: "org" },
+    github: { status: "not_connected" },
+    ttlSeconds: 600,
+    expiresAt: null,
+    promptId: null,
+    conversationId: null,
+    helper: null,
+    runtime: null,
+  });
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -47,21 +68,7 @@ test("compiled launch preserves account selection and owner defaults without all
       const path = new URL(request.url).pathname;
       requests.push({ path, body: (await request.json()) as Record<string, unknown> });
       if (path !== "/api/v1/sandbox/launch") return Response.json({}, { status: 404 });
-      return Response.json({
-        sandbox: {
-          id: "sandbox",
-          provider: "boat",
-          providerSandboxId: "bx_fixture",
-          harness: "codex",
-          status: "ready",
-          conversationIds: [],
-          credentialId,
-          credentialVersion: 2,
-        },
-        golden: { name: "fixture", visibility: "org" },
-        github: { status: "not_connected" },
-        ttlSeconds: 600,
-      });
+      return Response.json(receipt);
     },
   });
   try {
@@ -98,10 +105,7 @@ test("compiled launch preserves account selection and owner defaults without all
         child.exited,
       ]);
       expect(code, stderr).toBe(0);
-      expect(JSON.parse(stdout)).toMatchObject({
-        sandbox: { providerSandboxId: "bx_fixture", credentialId, credentialVersion: 2 },
-      });
-      expect(JSON.parse(stdout)).not.toHaveProperty("visibility");
+      expect(JSON.parse(stdout)).toEqual(receipt);
       expect(stderr).toContain("deprecated and ignored");
       const request = requests.at(-1)!;
       expect(request.path).toBe("/api/v1/sandbox/launch");
