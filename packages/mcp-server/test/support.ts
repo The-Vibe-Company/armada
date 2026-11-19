@@ -440,7 +440,7 @@ export async function harness(
   options: HarnessOptions = {},
   /** Caller-owned seeded database; its owner closes it after all clients are done. */
   fixture?: Awaited<ReturnType<typeof database>>,
-): Promise<TestServer> {
+) {
   const seeded = fixture ?? (await database());
   try {
     return createTestServer(options, seeded, fixture === undefined);
@@ -454,7 +454,7 @@ function createTestServer(
   options: HarnessOptions,
   { db, people }: Awaited<ReturnType<typeof database>>,
   ownsDatabase: boolean,
-): TestServer {
+) {
   const boat = fakeBoat();
   const auth = createMemoryAuthStore();
   const clock = { now: new Date("2026-11-08T12:00:00.000Z") };
@@ -582,7 +582,7 @@ function createTestServer(
       for (const client of clients) await client.close();
       if (ownsDatabase) await db.close();
     },
-  };
+  } satisfies TestServer;
 }
 
 /** The structured result of a tool call, or the error text when it failed. */
