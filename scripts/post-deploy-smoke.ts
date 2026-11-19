@@ -651,8 +651,23 @@ async function runPostDeploySmoke(
     return runTemplateSkillCase(
       { ...item, goldenId: item.goldenId! },
       {
-        request: (path, body) =>
-          request(path, body, undefined, path === "templates/launch" ? TEMPLATE_LAUNCH_TIMEOUT_MS : 120_000),
+        request: (path, body, timeout) => request(path, body, undefined, timeout),
+        now: io.now,
+        sleep: io.sleep,
+        deadline,
+        launchTimeout: (name) => (deadlines as Record<string, number>)[name] ?? TEMPLATE_LAUNCH_TIMEOUT_MS,
+        trackLaunch: (action) =>
+          launches.track("templates/launch", (record) =>
+            action(
+              (body, timeout) => transport(false, "templates/launch", body, undefined, timeout, record),
+              (id) => record({ id }),
+            ),
+          ),
+        recordSandbox: (id, key) => io.recordSandbox?.(item.org, id, key, item.provider) ?? Promise.resolve(),
+        isAmbiguousLaunch: (error) =>
+          error instanceof SmokeFailure &&
+          (["outcome_unknown", "request_failed", "invalid_response"].includes(error.code) ||
+            (error.status ?? 0) >= 500),
         poll,
         step,
         out,
@@ -681,6 +696,7 @@ async function runPostDeploySmoke(
     timeoutMs: number,
     request: ReturnType<typeof createLane>["request"],
     keepHandle: (id: string) => void,
+    requiresLaunchReceipt = false,
   ) {
     const path = "sandbox/launch";
     const requestKey = `post-deploy-smoke:${crypto.randomUUID()}`;
@@ -723,7 +739,7 @@ async function runPostDeploySmoke(
               if (row.id === observedId && row.status === "ready") return row;
             }
           });
-          if (sandbox) return { sandbox } as T;
+          if (sandbox && !requiresLaunchReceipt) return { sandbox } as T;
         }
         throw new SmokeFailure(error.code, error.status, undefined, {
           timeoutMs,
@@ -804,7 +820,10 @@ async function runPostDeploySmoke(
     let parentCredentialVersion: number | undefined;
     const scoped = scopedPair
       ? createScopedProbe({ ...item, goldenId: item.goldenId! }, !dirty, {
-          request: (path, body) => request(path, { ...body, org: item.org }),
+          request: (path, body, timeoutMs) => request(path, { ...body, org: item.org }, undefined, timeoutMs),
+          now: io.now,
+          sleep: io.sleep,
+          deadline,
           recordSandbox: (id, key) => io.recordSandbox?.(item.org, id, key, item.provider) ?? Promise.resolve(),
           poll: (read, done) => poll(read, done, 300),
           step,
@@ -940,17 +959,16 @@ async function runPostDeploySmoke(
           ttlSeconds: 1800,
         };
         const requiresLaunchReceipt = defaultSkills || scopedPair;
-        const result = requiresLaunchReceipt
-          ? await sandbox<LaunchReceipt>("launch", body, 600_000)
-          : await launchWithObservation<LaunchReceipt>(
-              item,
-              body,
-              (deadlines as Record<string, number>).launch ?? 600_000,
-              request,
-              (id) => {
-                sandboxId = id;
-              },
-            );
+        const result = await launchWithObservation<LaunchReceipt>(
+          item,
+          body,
+          (deadlines as Record<string, number>).launch ?? 600_000,
+          request,
+          (id) => {
+            sandboxId = id;
+          },
+          requiresLaunchReceipt,
+        );
         // Retain the cleanup handle even if later response validation fails.
         if (typeof result?.sandbox?.id === "string" && result.sandbox.id) sandboxId = result.sandbox.id;
         if (!sandboxId || result.sandbox.provider !== item.provider || result.promptId) fail("invalid_response");
@@ -1546,7 +1564,9 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
       const requestKey =
         typeof key === "string" &&
         /^post-deploy-smoke:[0-9a-f-]{36}$/.test(key) &&
-        (key === body.idempotencyKey || keyedDockerParity)
+        (key === body.idempotencyKey ||
+          (url.endsWith("/templates/launch") && key === body.requestKey) ||
+          keyedDockerParity)
           ? key
           : `post-deploy-smoke:${crypto.randomUUID()}`;
       const org = body.org;

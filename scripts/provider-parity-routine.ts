@@ -1,3 +1,5 @@
+import { observeSmokeLaunch } from "./smoke-launch.ts";
+
 /** Coordinator-only scheduled execution proof; helper for the single --parity entrypoint. */
 export interface RoutineProbeCase {
   provider: "boat" | "modal" | "docker";
@@ -10,6 +12,7 @@ export interface RoutineProbeCase {
 }
 export interface RoutineProbeIo {
   now(): number;
+  sleep(ms: number): Promise<void>;
   deadline: number;
   request<T>(path: string, body: object, until: number): Promise<T>;
   poll<T>(read: () => Promise<T>, done: (value: T) => boolean, attempts: number, until: number): Promise<T>;
@@ -21,6 +24,7 @@ export class RoutineProbeError extends Error {
     readonly code:
       | "invalid_routine_receipt"
       | "routine_occurrence_failed"
+      | "routine_occurrence_unresolved"
       | "routine_due_outside_budget"
       | "routine_cleanup_unconfirmed",
   ) {
@@ -199,21 +203,22 @@ export async function probeRoutine(
       fail();
     if (due < io.now() || due >= until) throw new RoutineProbeError("routine_due_outside_budget");
     const version = routine.version;
-    const occurrence = await io.poll(
-      () => history(until),
-      (rows) => {
-        if (rows.length > 1) fail();
-        const run = rows[0];
-        if (!run) return false;
-        if (run.configurationVersion !== version || Date.parse(run.scheduledDueAt) !== due || io.now() < due) fail();
-        if (["failed", "skipped"].includes(run.state)) throw new RoutineProbeError("routine_occurrence_failed");
-        return run.state === "succeeded";
-      },
-      110,
-      until,
-    );
-    const run = occurrence[0];
-    if (!run || !uuid(run.sandboxId) || !uuid(run.templateRequestId) || run.reason !== null) fail();
+    const run = await observeSmokeLaunch(until, io, async () => {
+      const rows = await history(until);
+      if (rows.length > 1) fail();
+      const occurrence = rows[0];
+      if (!occurrence) return;
+      if (
+        occurrence.configurationVersion !== version ||
+        Date.parse(occurrence.scheduledDueAt) !== due ||
+        io.now() < due
+      )
+        fail();
+      if (["failed", "skipped"].includes(occurrence.state)) throw new RoutineProbeError("routine_occurrence_failed");
+      if (occurrence.state === "succeeded") return occurrence;
+    });
+    if (!run) throw new RoutineProbeError("routine_occurrence_unresolved");
+    if (!uuid(run.sandboxId) || !uuid(run.templateRequestId) || run.reason !== null) fail();
     const state = await request<{
       id: string;
       provider?: string;
