@@ -38,6 +38,8 @@ import type { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 
 export interface ControlOptions {
   listCredentialMetadata?: ReturnType<typeof createSqlCredentialList>;
+  eventFeed?: import("./event-feed.ts").EventFeed;
+  configureEventStreamRequest?: (request: Request) => void;
   scopedSandboxData?: (caller: Caller, ref: string) => ScopedData;
   listGoldenRecords?: (caller: Caller, ref: string | undefined) => Promise<GoldenRecord[]>;
   sandboxBillingAccount?: (

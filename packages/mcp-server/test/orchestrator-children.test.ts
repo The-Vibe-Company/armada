@@ -10,6 +10,7 @@ import {
   VaultError,
 } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
+import { createEventFeed } from "../src/event-feed.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { createNativeWebhookPrompts } from "../src/native-webhook-prompts.ts";
 import { observeRequest } from "../src/request-observability.ts";
@@ -1417,5 +1418,36 @@ test("scoped child message settles through the native receipt worker into Langfu
     ).toEqual([{ terminal_status: "finished" }]);
   } finally {
     await close();
+  }
+});
+
+test("the event feed grants a scoped bearer access only to its authorized child", async () => {
+  const f = await fixture();
+  try {
+    const child = await createSqlSandboxStore(f.sql).insert({
+      id: crypto.randomUUID(),
+      provider: "boat",
+      providerSandboxId: "event-feed-child",
+      goldenId: f.golden.id,
+      orgId: f.p.org,
+      ownerId: f.p.owner,
+      harness: "codex",
+      status: "ready",
+      visibility: "private",
+    });
+    await f.db.query("insert into orchestrator_children values($1,$2,$3,$4)", [child.id, f.id, f.p.org, f.p.owner]);
+    await f.db.query("insert into event_log(org_id,sandbox_id,kind,ref) values($1,$2,'transition',1)", [
+      f.p.org,
+      child.id,
+    ]);
+    const feed = createEventFeed(f.sql, f.authority);
+    expect(await feed.child(f.token, child.id)("0")).toEqual([
+      expect.objectContaining({ sandboxId: child.id, kind: "transition", sequence: null }),
+    ]);
+    expect(await feed.child(f.token, f.parent.id)("0")).toBeNull();
+    await f.db.query("update orchestrator_delegations set revoked_at=now() where orchestrator_id=$1", [f.id]);
+    expect(await feed.child(f.token, child.id)("0")).toBeNull();
+  } finally {
+    await f.close();
   }
 });

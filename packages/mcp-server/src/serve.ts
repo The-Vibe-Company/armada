@@ -54,6 +54,7 @@ export async function startServer(env: Record<string, string | undefined>, optio
   // remains bounded, and other providers/routes keep their existing timeouts.
   control.configureDockerLaunchRequest = (request) => server.timeout(ingressRequest(request), 0);
   // Archive validation and encrypted chunk publication have their own bounded deadline.
+  control.configureEventStreamRequest = (request) => server.timeout(ingressRequest(request), 30);
   configureDockerArchiveTimeout = (request) => server.timeout(ingressRequest(request), 45);
   services.configureAccountDispatch();
   const workers = assembly.planWorkers().start();

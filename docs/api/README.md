@@ -179,6 +179,19 @@ event ID. On `access-ended` or stream closure, reconnect or reauthorize as
 appropriate. See [sandbox viewers](sandbox-viewer.md) for proxy and polling
 details.
 
+## Stream sandbox events
+
+Use `GET /api/v1/events?sandbox=<UUID>` with `fetch` and an `Authorization: Bearer ...` header.
+The sandbox owner, an organization admin, and grants scoped to read that child or view that sandbox can subscribe.
+A refused caller receives HTTP 403 before the stream opens.
+
+Each SSE data frame contains an event-log reference. The decimal-string global `id` is also the SSE `id`.
+Runtime event references include the per-sandbox archive `sequence`. Transition references have a null `sequence`.
+Fetch the sandbox's logs or status when you need the referenced content.
+Reconnect with the last processed ID in `Last-Event-ID` or the `cursor` query parameter.
+The header takes precedence, and playback starts strictly after that ID.
+Without a cursor, the stream replays available history. Idle connections receive a heartbeat comment every 15 seconds.
+
 ## Drive a turn over MCP
 
 Call `launch_options` with `{}` to read the same server-wide launch catalog as

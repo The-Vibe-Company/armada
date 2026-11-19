@@ -6,6 +6,7 @@ import { githubCallbackOperations, publicAuthOperations } from "./public-auth.ts
 import { githubOperations, goldenOperations, launchTemplateOperation } from "./resources.ts";
 import { sandboxOperations } from "./sandbox.ts";
 import { sandboxCheckOperations } from "./sandbox-checks.ts";
+import { streamSandboxEvents } from "./sandbox-events.ts";
 import { sandboxOutputOperations } from "./sandbox-outputs.ts";
 import { launchOptionsOperation, readLogsOperation } from "./sandbox-reads.ts";
 import { sandboxRestOperations } from "./sandbox-rest.ts";
@@ -35,6 +36,7 @@ export function controlRouteKey<Path extends string>(route: { readonly path: `/a
 }
 
 export { sandboxCheckOperations } from "./sandbox-checks.ts";
+export { streamSandboxEvents } from "./sandbox-events.ts";
 export { MCP_OUTPUT_MAX_BYTES, sandboxOutputOperations } from "./sandbox-outputs.ts";
 export { launchOptionsOperation, MAX_LOG_PAGES, readLogsOperation } from "./sandbox-reads.ts";
 export { sandboxExtensionLifetime, sandboxRestOperations } from "./sandbox-rest.ts";
@@ -120,5 +122,6 @@ export const operations = {
   readViewerLogs: sandboxViewerOperations.logs,
   readViewerStatus: sandboxViewerOperations.status,
   sendViewerPrompt: sandboxViewerOperations.send,
+  streamSandboxEvents,
   streamViewerEvents: sandboxViewerOperations.events,
 } as const;
