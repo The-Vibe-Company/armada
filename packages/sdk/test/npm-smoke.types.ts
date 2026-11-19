@@ -12,6 +12,17 @@ const code: FailureCode = "outcome_unknown";
 const client = new Armada({ token: code });
 const boat = () => client.launch({ provider: "boat", golden: "worker", harness: "codex" });
 const modal = () => client.launch({ provider: "modal", golden: "worker", harness: "codex" });
+const pinnedModal = () =>
+  client.launch({
+    provider: "modal",
+    runtimeVersion: 1,
+    runtimeTransport: "dialout",
+    harness: "codex",
+    id: "revision-owner-template-id",
+    revision: 1,
+    idempotencyKey: "pinned-modal-smoke",
+    externalRef: "test:modal",
+  });
 const docker = () =>
   client.launch({
     org: "o",
@@ -33,6 +44,7 @@ export type SendInputContract = Assert<
 >;
 
 export type BoatReceiptContract = Assert<Equal<Awaited<ReturnType<typeof boat>>, LaunchResult>>;
+export type PinnedModalReceiptContract = Assert<Equal<Awaited<ReturnType<typeof pinnedModal>>, LaunchResult>>;
 export type ModalReceiptContract = Assert<Equal<Awaited<ReturnType<typeof modal>>, LaunchResult>>;
 export type DockerReceiptContract = Assert<Equal<Awaited<ReturnType<typeof docker>>, LaunchResult>>;
 export type LaunchFields = Assert<

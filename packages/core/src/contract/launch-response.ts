@@ -71,5 +71,3 @@ const TEMPLATE_LAUNCH_REFUSAL = z
 export const templateLaunchResponse = z
   .union([TEMPLATE_LAUNCH_RECEIPT, TEMPLATE_LAUNCH_REFUSAL])
   .describe("A receipt has requestId; a pre-admission refusal has none.");
-
-export const launchOutput = z.union([launchEnvelope, templateLaunchResponse]);

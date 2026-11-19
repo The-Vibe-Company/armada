@@ -7,8 +7,10 @@ import {
   createTemplateService,
   encryptSecret,
   type LaunchTemplate,
+  ProviderError,
   resolveModelChoice,
   type Sql,
+  VaultError,
 } from "@armada/core/server";
 import * as boatProvider from "@armada/provider-boat";
 import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
@@ -257,12 +259,18 @@ async function fixture(
   };
   const request = (id: string) => ({
     ...(provider === "modal" && entry === "explicit"
-      ? { runtimeVersion: 1, runtimeTransport: "dialout", provider, harness }
-      : {}),
+      ? {
+          runtimeVersion: 1,
+          runtimeTransport: "dialout",
+          provider,
+          harness,
+          idempotencyKey: `launch/${crypto.randomUUID()}`,
+          externalRef: "pinned:variable-proof",
+        }
+      : { requestKey: crypto.randomUUID() }),
     org: people.org,
     id,
     revision: 1,
-    requestKey: crypto.randomUUID(),
     prompt: "answer",
     skipSkillDefaults: true,
   });
@@ -306,15 +314,26 @@ for (const entry of ["explicit", "default"] as const)
       const launched = (await first.json()) as {
         id: string;
         state: string;
-        runtime: { kind: string; epoch: string };
         manifest: { variables: Record<string, string> };
+        sandbox: { id: string; templateManifest: { variables: Record<string, string> } };
       };
       if (entry === "explicit") publishedResponse("sandbox/launch").parse(launched);
-      expect(launched).toMatchObject({ state: "succeeded", runtime: { kind: "armada", epoch: "7" } });
+      const sandboxId = entry === "explicit" ? launched.sandbox.id : launched.id;
+      const manifest = entry === "explicit" ? launched.sandbox.templateManifest : launched.manifest;
+      expect(launched).toMatchObject({ runtime: { kind: "armada", epoch: "7" } });
+      if (entry === "explicit") {
+        expect(launched).toMatchObject({
+          sandbox: { id: sandboxId, provider: "modal", externalRef: "pinned:variable-proof" },
+          golden: { name: "variables-modal" },
+        });
+        expect(launched).not.toHaveProperty("state");
+      } else {
+        expect(launched.state).toBe("succeeded");
+      }
       expect(f.starts).toEqual([{ APP_REGION: "original\n$(not-a-command)" }]);
       const delivered = f.starts[0];
       if (!delivered) throw Error("Missing enrolled variable delivery");
-      expect(launched.manifest.variables).toEqual(delivered);
+      expect(manifest.variables).toEqual(delivered);
       await f.application.command(f.caller, "variable", "update", {
         org: f.people.org,
         id: f.variableId,
@@ -328,6 +347,8 @@ for (const entry of ["explicit", "default"] as const)
       if (entry === "explicit") {
         const mismatched = await f.api({ ...request, harness: "codex" });
         expect(mismatched.status).toBe(400);
+        const changed = await f.api({ ...request, externalRef: "pinned:different" });
+        expect(changed.status).toBe(409);
       }
       const tombstoneReplay = await f.api(request);
       expect(tombstoneReplay.status).toBe(200);
@@ -340,7 +361,7 @@ for (const entry of ["explicit", "default"] as const)
           await readRuntimeTemplateEnvironment(
             f.sql,
             { userId: f.people.owner, orgId: f.people.org },
-            launched.id,
+            sandboxId,
             "modal",
           )
         ).variables,
@@ -352,7 +373,7 @@ for (const entry of ["explicit", "default"] as const)
         .filter(({ event }) => event === "modal_golden_launch_timing");
       expect(samples).toHaveLength(1);
       const [sample] = samples;
-      expect(sample).toMatchObject({ surface: "template_rest", sandboxId: launched.id });
+      expect(sample).toMatchObject({ surface: "template_rest", sandboxId });
       expect(sample.stages.map(({ name }: { name: string }) => name)).toEqual([
         "admission",
         "provider_resolution",
@@ -491,8 +512,8 @@ test.each(["modal", "boat"] as const)(
       expect(reply.status).toBe(200);
       const receipt = await reply.text();
       expect(receipt.includes(canary)).toBe(false);
-      const { id, state } = JSON.parse(receipt);
-      expect(state).toBe("succeeded");
+      const launch = JSON.parse(receipt);
+      const id = provider === "modal" ? launch.sandbox.id : launch.id;
       if (boat) {
         expect(boat.handled.slice(0, 3)).toEqual(["health", "configureReadableVariables", "health"]);
         expect(boat.handled.at(-1)).toBe("prompt");
@@ -666,11 +687,12 @@ test.each(["modal", "boat"] as const)(
       const template = await f.create();
       const response = await f.api(f.request(template.id));
       expect(response.status).toBe(200);
-      const launched = (await response.json()) as { id: string };
+      const launched = (await response.json()) as { id: string; sandbox: { id: string } };
+      const sandboxId = provider === "modal" ? launched.sandbox.id : launched.id;
       const row = (
         await f.db.query<{ manifest: Record<string, unknown> & { definition: Record<string, unknown> } }>(
           "select manifest from template_launch_requests where sandbox_id=$1",
-          [launched.id],
+          [sandboxId],
         )
       ).rows[0]!;
       for (const manifest of [
@@ -693,14 +715,14 @@ test.each(["modal", "boat"] as const)(
         await f.db.exec("set session_replication_role=replica");
         try {
           await f.db.query("update template_launch_requests set manifest=$2::jsonb where sandbox_id=$1", [
-            launched.id,
+            sandboxId,
             JSON.stringify(manifest),
           ]);
         } finally {
           await f.db.exec("set session_replication_role=origin");
         }
         await expect(
-          readRuntimeTemplateEnvironment(f.sql, { userId: f.people.owner, orgId: f.people.org }, launched.id, provider),
+          readRuntimeTemplateEnvironment(f.sql, { userId: f.people.owner, orgId: f.people.org }, sandboxId, provider),
         ).rejects.toMatchObject({
           code: "unavailable",
           message: "Frozen runtime readable configuration is unavailable.",
@@ -712,23 +734,64 @@ test.each(["modal", "boat"] as const)(
   },
 );
 
-// The opt-in route strips transport headers before calling the shared service;
-// its trusted runtime selection must still be part of durable request identity.
-test("native template replay cannot adopt an enrolled request key", async () => {
+test("pinned Modal replay reports its reserved sandbox while the original request is claimed", async () => {
   const f = await fixture();
   const template = await f.create();
   const request = f.request(template.id);
-  const launched = await f.api(request);
-  expect(launched.status).toBe(200);
-  const native = Object.fromEntries(
-    Object.entries(request).filter(
-      ([key]) => !["runtimeVersion", "runtimeTransport", "provider", "harness"].includes(key),
-    ),
-  );
-  const replay = await f.api(native, "templates/launch");
-  expect(replay.status).toBe(409);
+  const resolve = f.options.modalRuntimeHostFor!;
+  let pending: Response | undefined;
+  f.options.modalRuntimeHostFor = async (golden, caller) => {
+    pending = await f.api(request);
+    return resolve(golden, caller);
+  };
+  const reply = await f.api(request);
+  expect(reply.status).toBe(200);
+  const launched = (await reply.json()) as { sandbox: { id: string } };
+  expect(pending?.status).toBe(503);
+  expect(publishedFailure().parse(await pending?.json())).toMatchObject({
+    error: { code: "outcome_unknown", details: { sandboxId: launched.sandbox.id } },
+  });
   expect(f.physical.forks).toHaveLength(1);
   expect(f.prompts()).toBe(1);
+});
+
+test.each([
+  {
+    code: "payment_required",
+    status: 402,
+    error: new ProviderError({
+      provider: "modal",
+      code: "payment_required",
+      retryable: false,
+      message: "private provider diagnostics",
+    }),
+  },
+  {
+    code: "conflict",
+    status: 409,
+    error: new VaultError("conflict", "Template launch refused: connection_version_changed."),
+  },
+])("pinned Modal replays a definite $code refusal without redispatch", async ({ code, status, error }) => {
+  const f = await fixture();
+  const template = await f.create();
+  const request = f.request(template.id);
+  let attempts = 0;
+  f.options.modalRuntimeHostFor = async () => {
+    attempts++;
+    throw error;
+  };
+  const first = await f.api(request);
+  expect(first.status).toBe(status);
+  const failure = await first.json();
+  expect(publishedFailure().parse(failure)).toMatchObject({
+    error: { code, details: { sandboxId: expect.any(String) } },
+  });
+  expect(JSON.stringify(failure)).not.toContain(error.message);
+  const replay = await f.api(request);
+  expect(replay.status).toBe(status);
+  expect(await replay.json()).toEqual(failure);
+  expect(attempts).toBe(1);
+  expect(f.physical.forks).toHaveLength(0);
 });
 
 test("promptless Modal template freezes its manifest and replays the empty launch without inference", async () => {
@@ -744,13 +807,11 @@ test("promptless Modal template freezes its manifest and replays the empty launc
   const response = await f.api(request);
   expect(response.status).toBe(200);
   const launched = (await response.json()) as {
-    id: string;
-    status: string;
+    sandbox: { id: string; status: string; templateManifest: { variables: Record<string, string> } };
     promptId: null;
     conversationId: null;
-    manifest: { variables: Record<string, string> };
   };
-  expect(launched).toMatchObject({ state: "succeeded", status: "ready", promptId: null, conversationId: null });
+  expect(launched).toMatchObject({ sandbox: { status: "ready" }, promptId: null, conversationId: null });
   expect(f.prompts()).toBe(0);
   expect(f.physical.forks).toHaveLength(1);
   const active = f.active();
@@ -770,9 +831,15 @@ test("promptless Modal template freezes its manifest and replays the empty launc
   expect(f.prompts()).toBe(0);
   expect(f.physical.forks).toHaveLength(1);
   expect(
-    (await readRuntimeTemplateEnvironment(f.sql, { userId: f.people.owner, orgId: f.people.org }, launched.id, "modal"))
-      .variables,
-  ).toEqual(launched.manifest.variables);
+    (
+      await readRuntimeTemplateEnvironment(
+        f.sql,
+        { userId: f.people.owner, orgId: f.people.org },
+        launched.sandbox.id,
+        "modal",
+      )
+    ).variables,
+  ).toEqual(launched.sandbox.templateManifest.variables);
 });
 
 for (const harness of ["codex", "claude"] as const)

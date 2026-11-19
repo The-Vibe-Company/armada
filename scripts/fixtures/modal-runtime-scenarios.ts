@@ -108,6 +108,7 @@ export type Defect =
   | "variables-old-prompt"
   | "variables-old-version"
   | "variables-receipt-mismatch"
+  | "variables-unrelated-launch"
   | "variables-resume-replay"
   | "variables-secrets"
   | "variables-wrapper"
@@ -2636,6 +2637,12 @@ export const scenarios: Scenario[] = [
     args: ["--variables"],
     defects: ["variables-old-prompt"],
     expected: expected.opencodeVariablesOldPrompt,
+  },
+  {
+    label: "variables-unrelated-launch",
+    args: ["--variables"],
+    defects: ["variables-unrelated-launch"],
+    expected: expected.lostLaunch,
   },
   {
     label: "variables-receipt-mismatch",
