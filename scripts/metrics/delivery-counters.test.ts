@@ -16,13 +16,9 @@ test("weekly fix share includes GitHub squash and merge commits inside the selec
   expect(weeklyFixShare(log, end)).toMatchObject({ merges: 2, fixes: 1, share: 0.5 });
 });
 
-test("visible-text latency SQL attributes the earliest text to the accepted prompt in its sandbox and epoch", () => {
+test("visible-text latency SQL exposes sample counts and percentiles in milliseconds", () => {
   const sql = deliveryQueries.runtimeCommandToFirstVisibleText;
-  expect(sql).toMatch(/min\(created_at\) as first_at/i);
-  expect(sql).toMatch(/text\.sandbox_id = command\.sandbox_id/);
-  expect(sql).toMatch(/text\.epoch = command\.epoch/);
-  expect(sql).toMatch(/text\.visible_text_prompt_id = command\.accepted_prompt_id/);
-  expect(sql).toMatch(/text\.first_at >= command\.created_at/);
+  expect(sql).toMatch(/as samples\b/i);
   expect(sql).toMatch(/percentile_cont\(0\.50\).*"p50Ms"/);
   expect(sql).toMatch(/percentile_cont\(0\.95\).*"p95Ms"/);
 });

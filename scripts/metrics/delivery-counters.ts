@@ -2,7 +2,8 @@ import { SQL } from "bun";
 import { countArchitecture, gitText, readArchitectureTree } from "./architecture-counters";
 
 const weekMs = 7 * 24 * 60 * 60 * 1000;
-const databaseHelp = "Pass --read-only and set ARMADA_METRICS_READ_ONLY_DATABASE_URL to a read-only PostgreSQL role.";
+const databaseHelp =
+  "Pass --read-only and set ARMADA_METRICS_READ_ONLY_DATABASE_URL to a read-only PostgreSQL role with unfiltered access to the metric columns.";
 
 export function weeklyFixShare(log: string, end: Date) {
   const until = end.getTime();
@@ -77,6 +78,8 @@ async function databaseCounters(url: string) {
   const client = new SQL(url, { max: 1, connectionTimeout: 10 });
   try {
     return await client.begin("READ ONLY", async (tx) => {
+      // Reject an aggregate if row-level security would silently filter its inputs.
+      await tx.unsafe("SET LOCAL row_security = off");
       const [schema] = await tx.unsafe<{ available: boolean }[]>(deliveryQueries.hasRuntimePromptAttribution);
       const [latency] = schema?.available
         ? await tx.unsafe<{ samples: number; p50Ms: number | null; p95Ms: number | null }[]>(
