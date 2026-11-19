@@ -34,6 +34,7 @@ export function CreateDialog({
   triggerAttrs,
   onCloseAutoFocus,
   dismissible = true,
+  showCloseButton = true,
   triggerVariant = "default",
   showPlus = true,
   fixedActions = false,
@@ -58,6 +59,7 @@ export function CreateDialog({
   onCloseAutoFocus?: (event: Event) => void;
   /** False while closing would lose something shown only once: Escape and an outside click then do not close it. */
   dismissible?: boolean;
+  showCloseButton?: boolean;
 }) {
   return (
     <Dialog {...(open === undefined ? {} : { open })} {...(onOpenChange ? { onOpenChange } : {})}>
@@ -68,6 +70,7 @@ export function CreateDialog({
       </DialogTrigger>
       <DialogContent
         data-create-dialog
+        showCloseButton={showCloseButton}
         className={cn(
           "max-h-[calc(100dvh-2rem)] gap-5 overflow-y-auto sm:max-w-xl",
           fixedActions && "flex flex-col overflow-hidden [&>form]:flex [&>form]:min-h-0 [&>form]:flex-col",
