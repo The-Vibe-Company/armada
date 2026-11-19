@@ -6,7 +6,6 @@
     "apps/dashboard/test/github-refresh-proxy.test.ts": 1,
     "apps/dashboard/test/landing.test.ts": 1,
     "apps/dashboard/test/routine-staging-transport.test.ts": 1,
-    "apps/dashboard/test/screens.test.ts": 1,
     "apps/dashboard/test/staging-check-route-parity.test.ts": 1,
     "apps/dashboard/test/stats-db.test.ts": 1,
     "packages/core/test/launch-contract.test.ts": 1
@@ -255,7 +254,6 @@
     "apps/dashboard/test/landing.test.ts": 8,
     "apps/dashboard/test/proxy.test.ts": 2,
     "apps/dashboard/test/routine-staging-transport.test.ts": 2,
-    "apps/dashboard/test/screens.test.ts": 3,
     "apps/dashboard/test/staging-check-route-parity.test.ts": 1,
     "apps/dashboard/test/stats-db.test.ts": 1,
     "apps/ios/scripts/generate-presentation.ts": 1,
@@ -1900,7 +1898,6 @@
     "scripts/template-skill-smoke.ts": 2,
     "scripts/test-support/github-audit.ts": 1,
     "scripts/test-support/migrated-database.ts": 3,
-    "scripts/testflight/app-store-connect.ts": 10,
     "scripts/vault-smoke.test.ts": 1,
     "scripts/vault-smoke.ts": 3,
     "scripts/verify-changed.ts": 4
