@@ -851,7 +851,6 @@ export async function launchSandbox(
         );
       }
     }
-    // An unrecorded physical outcome remains owned by this durable fence.
     if (noAllocation) templateAdmission?.confirmAbsence();
     if (childRecorded || noAllocation) {
       try {
