@@ -185,9 +185,12 @@ async function fixture(
   };
   const commands = createRuntimeCommands(authority, key, clock);
   async function step() {
-    for (const claim of await hosts.resumeClaimsForHost(host.hostToken, installationId))
-      await hosts.claimResume(host.hostToken, installationId, claim.requestId, true);
-    const job = await hosts.poll(host.hostToken, installationId, options.daemonVersion ?? "2.28.0");
+    let job: Awaited<ReturnType<typeof hosts.poll>> = null;
+    if (await hosts.mayHaveWork(host.hostToken, installationId, false, [], true)) {
+      for (const claim of await hosts.resumeClaimsForHost(host.hostToken, installationId))
+        await hosts.claimResume(host.hostToken, installationId, claim.requestId, true);
+      job = await hosts.poll(host.hostToken, installationId, options.daemonVersion ?? "2.28.0");
+    }
     if (job) {
       jobs.push(job);
       if (job.operation === "stop" || job.operation === "delete") session = undefined;
@@ -1916,21 +1919,43 @@ async function launchStages(id: string) {
   return rows.map((row) => row.stage);
 }
 
+async function repositoryFixture(checkoutExitCode = 0) {
+  const f = await fixture({ checkoutExitCode });
+  await database().query(
+    `insert into public.github_connections(user_id,github_id,login,name,refresh_token_enc,access_token_enc,access_expires_at)
+     values($1,123,'owner','Owner',$2,$3,now()+interval '1 hour')`,
+    [f.actor.userId, await encryptSecret("offline-refresh", key), await encryptSecret("offline-github-token", key)],
+  );
+  const repos = [{ url: "https://github.com/example/project.git", branch: "feature/work", dir: "project" }];
+  return { f, body: { ...f.body, repos } };
+}
+
+function configuredGitHubCapability(f: Fixture) {
+  const configured = (f.native as { op: string; configuration: { capability: string } }[]).findLast(
+    (command) => command.op === "configureGitHub",
+  );
+  if (!configured) throw Error("missing GitHub configuration");
+  return configured.configuration.capability;
+}
+
+function acquireGitHub(f: Fixture, capability: string, repository: string, operation: "git" | "gh" = "git") {
+  return f.github.route(
+    new Request("https://armada.example/api/runtime/github/credentials", {
+      method: "POST",
+      headers: { authorization: `Bearer ${capability}` },
+      body: JSON.stringify({ version: 1, repository, operation }),
+    }),
+  );
+}
+
 for (const checkoutExitCode of [0, 1])
-  test(`Docker checkout exit ${checkoutExitCode} gates its first prompt and scopes GitHub access`, async () => {
-    const db = database();
-    const f = await fixture({ checkoutExitCode });
-    await db.query(
-      `insert into public.github_connections(user_id,github_id,login,name,refresh_token_enc,access_token_enc,access_expires_at)
-    values($1,123,'owner','Owner',$2,$3,now()+interval '1 hour')`,
-      [f.actor.userId, await encryptSecret("offline-refresh", key), await encryptSecret("offline-github-token", key)],
-    );
+  test(`Docker checkout exit ${checkoutExitCode} gates its first prompt`, async () => {
+    const { f, body: repository } = await repositoryFixture(checkoutExitCode);
     const remote = await defaultRemote(f);
     const body = {
-      ...f.body,
+      ...repository,
       skills: ["catalog/repository@1.0.0"],
       connections: [remote.id],
-      repos: [{ url: "https://github.com/example/project.git", branch: "feature/work", dir: "project" }],
     };
     if (checkoutExitCode !== 0) {
       await rejected(f.service().launch(f.caller, body), "sandbox_not_ready");
@@ -2004,90 +2029,78 @@ for (const checkoutExitCode of [0, 1])
       await rejected(f.service().launch(f.caller, { ...fresh, repos }), "invalid_request");
     }
     expect(f.native).toHaveLength(before);
-    const controls = createDockerSandboxControls(sql, key, { clock: f.clock, resume: bootstrap, github: f.github });
-    const oldCapability = (f.native[1] as { configuration: { capability: string } }).configuration.capability;
-    const rest = restControl(f, { dockerControls: controls, runtimeGitHub: f.github });
-    const gitHubRef = { id: f.body.requestId, org: f.actor.orgId };
-    const refreshed = await rest.post("github/refresh", gitHubRef);
-    expect(publishedResponse("github/refresh").parse(refreshed)).toMatchObject({
-      status: "connected",
-      login: "owner",
-      runtime: { epoch: f.session()?.epoch },
-    });
-    const runtimeStatus = await rest.post("github/runtime-status", gitHubRef);
-    expect(publishedResponse("github/runtime-status").parse(runtimeStatus)).toMatchObject({
-      configured: true,
-      runtime: { epoch: f.session()?.epoch },
-    });
-    await expect(f.github.status({ ...f.caller, orgs: [] }, f.body.requestId)).rejects.toThrow();
-    const row = (
-      await db.query<{ id: string; org_id: string; owner_id: string; status: string; conversation_ids: string[] }>(
-        "select id,org_id,owner_id,status,conversation_ids from public.sandboxes where id=$1",
-        [f.body.requestId],
-      )
-    ).rows[0];
-    if (!row) throw Error("missing sandbox");
-    const beforeSend = f.native.length;
-    const sendArgs = { request_id: randomUUID(), prompt: "Continue" };
-    const sent = await createDockerNormalSend(sql, key, { enabled: true, clock: f.clock, github: f.github }).send(
-      f.caller,
-      sendArgs,
-      row,
-    );
-    const noGitHub = createDockerNormalSend(sql, key, {
-      enabled: true,
-      clock: f.clock,
-      github: {
-        prepareTurn: async () => {
-          throw Error("GitHub unavailable");
-        },
-      },
-    });
-    expect(await noGitHub.send(f.caller, sendArgs, row)).toEqual(sent);
-    await expect(noGitHub.send(f.caller, { ...sendArgs, prompt: "Changed" }, row)).rejects.toThrow();
-    expect((f.native.slice(beforeSend) as { op: string }[]).map((command) => command.op)).toEqual([
-      "configureGitHub",
-      "prompt",
-    ]);
-    const configured = (f.native as { op: string; configuration: { capability: string } }[]).findLast(
-      (command) => command.op === "configureGitHub",
-    );
-    if (!configured) throw Error("missing GitHub configuration");
-    let capability = configured.configuration.capability;
-    const acquire = async (repository: string) =>
-      f.github.route(
-        new Request("https://armada.example/api/runtime/github/credentials", {
-          method: "POST",
-          headers: { authorization: `Bearer ${capability}` },
-          body: JSON.stringify({ version: 1, repository, operation: "git" }),
-        }),
-      );
-    expect((await acquire("example/project"))?.status).toBe(200);
-    expect(
-      (
-        await f.github.route(
-          new Request("https://armada.example/api/runtime/github/credentials", {
-            method: "POST",
-            headers: { authorization: `Bearer ${oldCapability}` },
-            body: JSON.stringify({ version: 1, repository: "example/project", operation: "gh" }),
-          }),
-        )
-      )?.status,
-    ).toBe(403);
-    expect((await acquire("example/other"))?.status).toBe(403);
-    await controls.invoke(f.caller, "stop", { id: f.body.requestId });
-    await controls.invoke(f.caller, "resume", { id: f.body.requestId, request_id: randomUUID() });
-    expect((await f.github.status(f.caller, f.body.requestId)).configured).toBe(true);
-    expect((await acquire("example/project"))?.status).toBe(403);
-    const resumed = (f.native as { op: string; configuration: { capability: string } }[]).findLast(
-      (command) => command.op === "configureGitHub",
-    );
-    if (!resumed) throw Error("missing resumed GitHub configuration");
-    capability = resumed.configuration.capability;
-    expect((await acquire("example/project"))?.status).toBe(200);
-    await hosts.revoke(f.admin, f.hostId);
-    expect((await acquire("example/project"))?.status).toBe(403);
   });
+
+test("Docker GitHub refresh and follow-up send configure the runtime and replay an admitted send", async () => {
+  const { f, body } = await repositoryFixture();
+  const db = database();
+  await f.service().launch(f.caller, body);
+  const controls = createDockerSandboxControls(sql, key, { clock: f.clock, github: f.github });
+  const initialCapability = configuredGitHubCapability(f);
+  const rest = restControl(f, { dockerControls: controls, runtimeGitHub: f.github });
+  const gitHubRef = { id: f.body.requestId, org: f.actor.orgId };
+  const refreshed = await rest.post("github/refresh", gitHubRef);
+  expect(publishedResponse("github/refresh").parse(refreshed)).toMatchObject({
+    status: "connected",
+    login: "owner",
+    runtime: { epoch: f.session()?.epoch },
+  });
+  const runtimeStatus = await rest.post("github/runtime-status", gitHubRef);
+  expect(publishedResponse("github/runtime-status").parse(runtimeStatus)).toMatchObject({
+    configured: true,
+    runtime: { epoch: f.session()?.epoch },
+  });
+  await expect(f.github.status({ ...f.caller, orgs: [] }, f.body.requestId)).rejects.toThrow();
+  const row = (
+    await db.query<{ id: string; org_id: string; owner_id: string; status: string; conversation_ids: string[] }>(
+      "select id,org_id,owner_id,status,conversation_ids from public.sandboxes where id=$1",
+      [f.body.requestId],
+    )
+  ).rows[0];
+  if (!row) throw Error("missing sandbox");
+  const beforeSend = f.native.length;
+  const sendArgs = { request_id: randomUUID(), prompt: "Continue" };
+  const sent = await createDockerNormalSend(sql, key, { enabled: true, clock: f.clock, github: f.github }).send(
+    f.caller,
+    sendArgs,
+    row,
+  );
+  const noGitHub = createDockerNormalSend(sql, key, {
+    enabled: true,
+    clock: f.clock,
+    github: {
+      prepareTurn: async () => {
+        throw Error("GitHub unavailable");
+      },
+    },
+  });
+  expect(await noGitHub.send(f.caller, sendArgs, row)).toEqual(sent);
+  await expect(noGitHub.send(f.caller, { ...sendArgs, prompt: "Changed" }, row)).rejects.toThrow();
+  expect((f.native.slice(beforeSend) as { op: string }[]).map((command) => command.op)).toEqual([
+    "configureGitHub",
+    "prompt",
+  ]);
+  const followUpCapability = configuredGitHubCapability(f);
+  expect((await acquireGitHub(f, followUpCapability, "example/project"))?.status).toBe(200);
+  expect((await acquireGitHub(f, followUpCapability, "example/other"))?.status).toBe(403);
+  expect((await acquireGitHub(f, initialCapability, "example/project", "gh"))?.status).toBe(403);
+});
+
+test("Docker GitHub capabilities rotate on resume and expire on host revocation", async () => {
+  const { f, body } = await repositoryFixture();
+  await f.service().launch(f.caller, { ...body, prompt: undefined });
+  const controls = createDockerSandboxControls(sql, key, { clock: f.clock, resume: bootstrap, github: f.github });
+  const initialCapability = configuredGitHubCapability(f);
+  expect((await acquireGitHub(f, initialCapability, "example/project"))?.status).toBe(200);
+  await controls.invoke(f.caller, "stop", { id: f.body.requestId });
+  await controls.invoke(f.caller, "resume", { id: f.body.requestId, request_id: randomUUID() });
+  expect((await f.github.status(f.caller, f.body.requestId)).configured).toBe(true);
+  expect((await acquireGitHub(f, initialCapability, "example/project"))?.status).toBe(403);
+  const resumedCapability = configuredGitHubCapability(f);
+  expect((await acquireGitHub(f, resumedCapability, "example/project"))?.status).toBe(200);
+  await hosts.revoke(f.admin, f.hostId);
+  expect((await acquireGitHub(f, resumedCapability, "example/project"))?.status).toBe(403);
+});
 
 test("Docker freezes versioned readable bindings and re-delivers them before the first resumed prompt", async () => {
   const db = database();
