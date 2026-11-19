@@ -18,11 +18,12 @@ export default {
 Manage Docker machines registered with Armada, not individual sandboxes.
 
 Account commands (Armada login or ARMADA_TOKEN required):
-  add      Register a machine and obtain a one-use installer command.
-  list     Inspect host IDs, names, state and resources; supports --json.
-  show     Inspect one host by UUID or exact name; supports --json.
-  limits   Update host resource limits by UUID or exact name.
-  revoke   Revoke a host registration by UUID.
+  add        Register a machine and obtain a one-use installer command.
+  list       Inspect host IDs, names, state and resources; supports --json.
+  show       Inspect one host by UUID or exact name; supports --json.
+  limits     Update host resource limits by UUID or exact name.
+  retention  Update stopped sandbox retention by UUID or exact host name.
+  revoke     Revoke a host registration by UUID.
 Select an organization with armada org use or --org UUID.
 Use UUIDs from host list when names are ambiguous.
 

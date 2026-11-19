@@ -10,6 +10,27 @@ const fence = "j.id = $1 and j.lease_owner = $2 and j.lease_epoch = $3 and j.lea
 const claimIdentity = (job: Job, owner: string) => [job.id, owner, job.lease_epoch];
 const claimKey = (job: Job, owner: string) => [...claimIdentity(job, owner), job.generation];
 
+export async function withJobLease<T>(sql: Sql, job: Job, write: (tx: Sql) => Promise<T>) {
+  if (!sql.transaction) throw new Error("Job checkpoint requires a transaction.");
+  return sql.transaction(async (tx) => {
+    const { rows: sandboxes } = await tx.query(
+      "select id from public.sandboxes where id=$1 and lifecycle_generation=$2 for update",
+      [job.sandbox_id, job.generation],
+    );
+    if (!sandboxes.length) return;
+    const { rows: jobs } = await tx.query(
+      "select id from public.jobs where id=$1 and lease_epoch=$2 and lease_until > clock_timestamp() for update",
+      [job.id, job.lease_epoch],
+    );
+    if (jobs.length) return write(tx);
+  });
+}
+
+// WARNING: Only call inside a fenced job completion after requeueing the job.
+export async function rescheduleRecurringJob(tx: Sql, job: Job, after: Date) {
+  await tx.query("update public.jobs set attempts=0,run_after=$2 where id=$1", [job.id, after]);
+}
+
 interface EnqueueOptions {
   orgId: string;
   maxAttempts: number;

@@ -858,7 +858,9 @@ export function createSqlData(
           patch.status === "deleted";
         const idleAdmission = patch.onlyIfIdle === true && patch.stopRequested === true && patch.advanceGeneration;
         if (idleAdmission)
-          fence += ` and s.status='ready' and s.stop_requested_at is null
+          fence += ` and (s.status='ready' or (s.status='running' and
+            ((s.provider='boat' and s.boat_runtime) or (s.provider='modal' and s.runtime_transport='dialout'))))
+            and s.stop_requested_at is null
             and not exists(select 1 from public.account_turn_queue q
               where q.sandbox_id=s.id and q.state in ('queued','dispatching'))
             and not exists(${unsettledRuntimeCommands("s.id", "s.lifecycle_generation")})`;

@@ -53,7 +53,6 @@ PostgreSQL or explicit coordinator authorization and must not enter unit CI.
 - `packages/mcp-server/test/runtime-enrolment-postgres.release.ts`
 - `packages/mcp-server/test/runtime-native-auth-postgres.release.ts`
 - `packages/mcp-server/test/sql.release.ts`
-- `packages/provider-modal/test/artifact.release.ts`
 - `scripts/build-migration.release.ts`
 
 The full release unit command was deliberately not run: the delivery owner

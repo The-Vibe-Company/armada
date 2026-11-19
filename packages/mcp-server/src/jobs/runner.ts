@@ -39,7 +39,8 @@ interface JobContext {
   handoffGeneration(handoff: GenerationHandoff): Promise<string>;
 }
 
-interface JobKind {
+export interface JobKind {
+  prepare?(): Promise<boolean>;
   concurrency: number;
   run(job: Job, context: JobContext): Promise<JobResult>;
 }
@@ -136,6 +137,8 @@ export function createJobsRunner(
         const registration = registrations[nextKind]!;
         nextKind = (nextKind + 1) % registrations.length;
         const { kind, handler } = registration;
+        if (handler.prepare && !(await handler.prepare())) continue;
+        if (signal.aborted || shutdown.signal.aborted) return false;
         const lease = new AbortController();
         const cancelExpiry = schedule(LEASE_SECONDS * 1000, () => lease.abort());
         let claimed = false;

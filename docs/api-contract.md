@@ -216,7 +216,7 @@ and Docker host daemon protocol retain their own rollout rules.
 operations under D5. The bare `orchestrator-tools` path hosts no operation.
 The four versioned launch aliases were already removed by #2714.
 
-The inventory uses `public-control-routes.ts`, the dashboard
+The inventory uses the public sign-in entries in `@armada/core/contract`, the dashboard
 `control-proxy.ts`, `public-rest-routes.ts`, `control.ts`,
 `control-tool-routes.ts` and the direct mounts in `serve.ts` as inputs.
 The MCP transport, OAuth protocol endpoints outside `/api/v1/`, health,
