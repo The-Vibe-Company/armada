@@ -70,8 +70,11 @@ export async function executeWithReceipt(
   return new Response(body, { headers: { "content-type": "application/json" } });
 }
 
-function responseEnvelope(journal: Journal, requestId: string): { version: 1; requestId: string } {
-  return JSON.parse(journal.redact(JSON.stringify({ version: 1, requestId }), "requests"));
+function responseEnvelope(journal: Journal, requestId: string) {
+  const envelope: { version: 1; requestId: string } = JSON.parse(
+    journal.redact(JSON.stringify({ version: 1, requestId }), "requests"),
+  );
+  return envelope;
 }
 
 function eventsResponse(journal: Journal, requestId: string, selection: EventSelection) {

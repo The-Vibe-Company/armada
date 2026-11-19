@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import type { AgentEvent, PromptStatus } from "@armada/core";
-import { HARNESSES, isFinalPromptStatus, PROMPT_STATUSES, planLimitData } from "@armada/core";
+import { describeNativeFailure, HARNESSES, isFinalPromptStatus, PROMPT_STATUSES, planLimitData } from "@armada/core";
 import { HarnessError } from "./errors.ts";
 import { checkpointIdentity, checkpointIdentityKey } from "./identity.ts";
 import type { CheckpointIdentity, StoredPrompt } from "./protocol.ts";
@@ -97,12 +97,15 @@ const protocolText = {
     "payload/type",
     "payload/role",
     "payload/model",
+    "payload/call_id",
     "payload/content/#/type",
     "message/id",
     "message/type",
     "message/role",
     "message/model",
     "message/content/#/type",
+    "message/content/#/id",
+    "message/content/#/tool_use_id",
     "info/id",
     "info/projectID",
     "info/directory",
@@ -158,22 +161,29 @@ const controlStatuses = new Set<string>([
   "unknown_after_restart",
 ]);
 
-function maskJsonText(
+const maskJsonText: (
   original: unknown,
   scrubbed: unknown,
-  mask: (text: string) => string,
+  mask: ((text: string) => string) | undefined,
   context?: RedactionContext,
-  path = "",
-): unknown {
+  path?: string,
+) => unknown = (original, scrubbed, mask, context, path = "") => {
   if (typeof original === "string" && typeof scrubbed === "string") {
     if (
       ((context === "events" || context === "prompts" || context === "processes" || context === "requests") &&
         (path === "status" || path === "result/status") &&
         controlStatuses.has(original)) ||
-      (context === "requests" && path === "error" && runtimeErrorCodes.has(original))
+      (context === "requests" && path === "error" && runtimeErrorCodes.has(original)) ||
+      (context === "events" &&
+        path === "reason" &&
+        (original === "runner_restarted_outcome_unknown" ||
+          original === "native_auth_state_unacknowledged" ||
+          describeNativeFailure(original) !== null))
     )
       return original;
-    return context !== undefined && protocolText[context].has(path) ? scrubbed : maskText(original, scrubbed, mask);
+    return !mask || (context !== undefined && protocolText[context].has(path))
+      ? scrubbed
+      : maskText(original, scrubbed, mask);
   }
   if (Array.isArray(original) && Array.isArray(scrubbed))
     return scrubbed.map((value, index) => maskJsonText(original[index], value, mask, context, `${path}/#`));
@@ -185,7 +195,7 @@ function maskJsonText(
       return [key, maskJsonText(source[key], value, mask, context, path ? `${path}/${segment}` : segment)];
     }),
   );
-}
+};
 
 const maskPayload: (value: unknown, mask: (text: string) => string) => unknown = (value, mask) => {
   if (typeof value === "string") return mask(value);
@@ -484,13 +494,13 @@ export class Journal {
     this.redact = (text, context) => {
       const scrubbed = this.dynamicRedactor(redact(text));
       const mask = this.redactShortApplicationText;
-      if (!mask) return scrubbed;
-      if (!/^\s*["{[]/.test(text)) return maskText(text, scrubbed, mask);
+      if (!mask && (!context || scrubbed === text)) return scrubbed;
+      if (!/^\s*["{[]/.test(text)) return mask ? maskText(text, scrubbed, mask) : scrubbed;
       let original: unknown;
       try {
         original = JSON.parse(text);
       } catch {
-        return maskText(text, scrubbed, mask);
+        return mask ? maskText(text, scrubbed, mask) : scrubbed;
       }
       return JSON.stringify(maskJsonText(original, JSON.parse(scrubbed), mask, context));
     };

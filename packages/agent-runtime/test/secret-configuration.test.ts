@@ -125,6 +125,8 @@ test("prompt and process rows mask short text without changing recovery fields",
       ...prompt,
       request: { ...prompt.request, text: "prefix[REDACTED]" },
     });
+    journal.registerApplicationSecrets(["auth"]);
+    journal.transition(prompt, "failed", "authentication_failed:authentication");
     const process = {
       pid: 12,
       status: "running",
@@ -133,6 +135,10 @@ test("prompt and process rows mask short text without changing recovery fields",
     };
     journal.db.query("INSERT INTO processes VALUES(?,?)").run(process.pid, JSON.stringify(process));
     journal.sanitize();
+    expect(journal.events().at(-1)?.event).toMatchObject({
+      status: "failed",
+      reason: "authentication_failed:authentication",
+    });
     const row = journal.db.query("SELECT body FROM processes WHERE pid=?").get(process.pid) as { body: string };
     expect(JSON.parse(row.body)).toEqual({ ...process, stderr: "prefix[REDACTED]" });
   } finally {
@@ -144,6 +150,14 @@ test("receipts and command errors mask short text while retaining command correl
   const journal = new Journal(":memory:", (text) => text);
   const runner = new Runner(journal, grant, {});
   try {
+    const uncertain = { ...command, requestId: "uncertain", op: "interrupt" as const };
+    await expect(
+      executeWithReceipt(journal, uncertain, () => Promise.reject(Error("dispatch interrupted"))),
+    ).rejects.toThrow("dispatch interrupted");
+    journal.registerSecrets(["outcome"]);
+    const fenced = await executeWithReceipt(journal, uncertain, () => Promise.reject(Error("unexpected dispatch")));
+    expect(fenced.status).toBe(200);
+    expect(await fenced.json()).toMatchObject({ error: "request_outcome_unknown" });
     journal.registerApplicationSecrets(["value", "cursor"]);
     const request = { ...command, requestId: "value-request", op: "interrupt" as const };
     const first = await executeWithReceipt(journal, request, async () => ({ description: "prefixvalue" }));
@@ -156,15 +170,6 @@ test("receipts and command errors mask short text while retaining command correl
     });
     expect(refused.status).toBe(409);
     expect(await refused.json()).toEqual({ error: "prefix[REDACTED]" });
-    const uncertain = { ...request, requestId: "uncertain" };
-    await expect(
-      executeWithReceipt(journal, uncertain, () => Promise.reject(Error("dispatch interrupted"))),
-    ).rejects.toThrow("dispatch interrupted");
-    journal.registerSecrets(["outcome"]);
-    journal.registerApplicationSecrets(["outcome"]);
-    const fenced = await executeWithReceipt(journal, uncertain, () => Promise.reject(Error("unexpected dispatch")));
-    expect(fenced.status).toBe(200);
-    expect(await fenced.json()).toMatchObject({ error: "request_outcome_unknown" });
     const failed = await runner.handleDialout({ ...command, op: "events", cursor: "bad" });
     expect(failed.status).toBe(409);
     expect(await failed.json()).toEqual({ error: "invalid_cursor" });

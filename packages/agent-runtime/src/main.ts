@@ -254,7 +254,7 @@ async function main(dialout = false) {
       if (!committed) throw Error("native_auth_publication_conflict");
     }
   };
-  const state = new HarnessState(config.root, (text) => journal.redact(text, "transcript"));
+  const state = new HarnessState(config.root, journal.redact, (text) => journal.redact(text, "transcript"));
   const sourceIdentity = journal.assertRestoreSource(config.grant);
   const restore = config.restoreCheckpoint;
   if (restore) {

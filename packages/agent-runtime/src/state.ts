@@ -93,6 +93,7 @@ export class HarnessState {
   constructor(
     readonly root: string,
     private redact: (text: string) => string,
+    private redactTranscript = redact,
   ) {}
   private allowed(harness: string, path: string) {
     if (harness === "opencode") return /^sessions\/[A-Za-z0-9_-]+\.json$/.test(path);
@@ -123,9 +124,11 @@ export class HarnessState {
           const sanitized = rel.endsWith(".jsonl")
             ? text
                 .split("\n")
-                .map((line) => (line ? this.redact(line) : ""))
+                .map((line) => (line ? this.redactTranscript(line) : ""))
                 .join("\n")
-            : this.redact(text);
+            : harness === "opencode"
+              ? this.redactTranscript(text)
+              : this.redact(text);
           const target = join(destination, rel);
           await mkdir(join(target, ".."), { recursive: true, mode: 0o700 });
           await this.durableWrite(target, sanitized);
