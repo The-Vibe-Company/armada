@@ -65,6 +65,7 @@ export async function stopAndObserve(
   providerSandboxId: string,
   source: StopSource,
   signal: AbortSignal,
+  requireRetention = false,
 ) {
   if (provider.id === "boat") {
     const archived = await provider.get(providerSandboxId);
@@ -72,7 +73,7 @@ export async function stopAndObserve(
     if (archived.state === "stopped") return archived;
   }
   recordStopDispatch(sandboxId, providerSandboxId, source);
-  await provider.stop({ sandboxId: providerSandboxId });
+  await provider.stop({ sandboxId: providerSandboxId, ...(requireRetention ? { requireRetention } : {}) });
   signal.throwIfAborted();
   return provider.get(providerSandboxId);
 }

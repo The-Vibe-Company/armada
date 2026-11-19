@@ -4,6 +4,7 @@ import {
   type Harness,
   type HarnessCredentials,
   isNonMutatingProviderRefusal,
+  type LaunchOptions,
   type LaunchStores,
   launchSandbox,
   type Provider,
@@ -41,12 +42,13 @@ export async function launchSandboxChild(input: {
   extensionHeadroomSeconds?: number;
   sql: Sql;
   provider: Provider;
+  runtime?: NonNullable<LaunchOptions["runtime"]>;
   stores: LaunchStores;
   namedCredentials: PinnedModelAccountResolver;
   operation: ChildOperation;
   selection: ChildLaunchSelection;
 }): Promise<{ providerSandboxId: string }> {
-  const { sql, provider, operation: op, selection } = input;
+  const { sql, provider, operation: op, selection, runtime } = input;
   let allocationAttempted = false;
   let providerRefused = false;
   try {
@@ -113,7 +115,7 @@ export async function launchSandboxChild(input: {
             ]);
             return result;
           };
-        if (["exec", "prompt", "prepareNativeHarnessCwd", "configureMcp"].includes(String(key))) {
+        if (["exec", "prompt", "prepareNativeHarnessCwd", "configureMcp", "startRuntime"].includes(String(key))) {
           const method = Reflect.get(target, key);
           if (typeof method !== "function") return method;
           return async (...args: unknown[]) => {
@@ -202,6 +204,36 @@ export async function launchSandboxChild(input: {
       },
       {
         newId: () => op.sandboxId,
+        ...(runtime
+          ? {
+              privateVisibility: true as const,
+              runtime: {
+                async start(request) {
+                  await assertCurrent();
+                  const agent = await runtime.start(request);
+                  return {
+                    ...agent,
+                    async prompt(prompt) {
+                      await assertCurrent();
+                      return agent.prompt(prompt);
+                    },
+                    ...(agent.prepareWorkspace && {
+                      prepareWorkspace: async (...args: Parameters<NonNullable<typeof agent.prepareWorkspace>>) => {
+                        await assertCurrent();
+                        return agent.prepareWorkspace!(...args);
+                      },
+                    }),
+                    ...(agent.installSkills && {
+                      installSkills: async (...args: Parameters<NonNullable<typeof agent.installSkills>>) => {
+                        await assertCurrent();
+                        return agent.installSkills!(...args);
+                      },
+                    }),
+                  };
+                },
+              },
+            }
+          : {}),
         ...(input.extensionHeadroomSeconds === undefined
           ? {}
           : { extensionHeadroomSeconds: input.extensionHeadroomSeconds }),
