@@ -180,10 +180,10 @@ export function isRouteAbsent(error: { status: number | undefined; code: string 
 }
 
 /** How long a registration token works (the server's `registration_expires_at`). */
-export const REGISTRATION_TTL_MS = 5 * 60_000;
+const REGISTRATION_TTL_MS = 5 * 60_000;
 
 /** The first block of a host ID, which is what the page shows until hosts have names. */
-export function shortHostId(id: string): string {
+function shortHostId(id: string): string {
   return id.slice(0, 8);
 }
 
