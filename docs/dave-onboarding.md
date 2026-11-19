@@ -101,12 +101,12 @@ An org admin invites you by email, from the dashboard or with `armada org invita
 
 See [CLI invitation management and acceptance](cli-invitations.md) for the command workflow. Acceptance requires your personal login, not a service token.
 
-Once you are a member, check:
+Once you are a member, check using your org name in place of `my-team`:
 
 ```sh
 armada org list                          # your orgs: name, your role, id
-armada org members list --org <org>
-armada snapshot list --org <org>           # the snapshots you can launch
+armada org members list --org my-team
+armada snapshot list --org my-team           # the snapshots you can launch
 ```
 
 Admins also manage roles (`armada org members role <email> admin|member --org <org>`) and removal (`armada org members remove <email> --org <org>`). Anyone can create an org with `armada org create <name>` and becomes its first admin.
@@ -182,14 +182,14 @@ file-based login and recovery.
 
 The list shows account IDs, names, kinds and defaults, never secret values. Copy the
 actual IDs for "OpenAI API" and "Personal ChatGPT". After building `first-modal` below,
-choose deliberately on each launch (replace the UUID placeholders):
+choose the account for each launch by substituting its UUID below.
 
 ```sh
 armada launch first-modal --org my-team --provider modal --agent codex \
-  --credential-id <openai-api-account-uuid> "Summarize the repositories"
+  --credential-id OPENAI_API_ACCOUNT_UUID "Summarize the repositories"
 # OR use the subscription account:
 armada launch first-modal --org my-team --provider modal --agent codex \
-  --credential-id <chatgpt-account-uuid> "Summarize the repositories"
+  --credential-id CHATGPT_ACCOUNT_UUID "Summarize the repositories"
 ```
 
 For Claude, keep "Claude API" and run `claude setup-token` locally. Save the
@@ -299,10 +299,10 @@ for directory layout and project-specific initialization.
 
 Creation prints `Build job: <job-id>`. It normally waits up to 60 seconds. A completed
 build yields a snapshot; a queued/running build may instead print `Build is ...` with the
-next command. Keep that job ID and read its status:
+next command. Replace `BUILD_JOB_ID` with that ID to read its status:
 
 ```sh
-armada snapshot build-status <job-id>   # replace with the ID printed by create
+armada snapshot build-status BUILD_JOB_ID
 armada snapshot list --org my-team --provider modal
 ```
 
@@ -324,7 +324,7 @@ armada launch first-modal --org my-team --provider modal --agent codex \
 (`--json` prints the full record). Use that ID for `armada status <sandbox-id>`,
 `armada logs <sandbox-id>` and, when finished, `armada stop <sandbox-id>` to stop charges.
 Omit the prompt to leave the sandbox waiting for your first `armada send` instead. Optional `--repo` selects one repository already recorded in the
-snapshot, by `owner/repo` or by its configured directory, and starts the native agent there: the
+snapshot, by `owner/repo` or by its configured directory, and starts the agent there: the
 agent's real initial working directory, set after the pulls and init and before its first prompt,
 also for an idle launch. It is a starting directory, not confinement: the agent can still reach the
 other repositories. It is not a URL, and unlike `snapshot create --repo <url>[@branch]` it is given
@@ -346,15 +346,20 @@ The server accepts three kinds of bearer on `/mcp`:
 claude mcp add --transport http armada https://armada-mcp-production.up.railway.app/mcp
 ```
 
-**A service token**, for a coordinator or a headless client:
+**A service token**, for a coordinator or a headless client. Replace `my-team` with your organization.
 
 ```sh
-armada token create --org <org> --label coordinator    # prints the token once; Armada keeps only its hash
+armada token create --org my-team --label coordinator    # prints the token once; Armada keeps only its hash
 armada token list
-armada token revoke <id>                                # cuts it off at the next request
 ```
 
 Load the token into the client's environment as `ARMADA_TOKEN` through your secret store or CI secret injection. Do not type a literal token into a shell command, enable shell tracing (`set -x`), or pass a bearer header as a command argument: shell expansion exposes the value in argv even when history contains only a variable name.
+
+To revoke the token when it is no longer needed, replace `TOKEN_ID` with its ID from `armada token list`. Revocation takes effect on the next request.
+
+```sh
+armada token revoke TOKEN_ID
+```
 
 For **Claude Code**, edit the project's `.mcp.json` directly (merge this entry with any existing servers). Keep the variable reference literal in the file; Claude Code, not the shell, expands it:
 
@@ -384,12 +389,11 @@ bearer_token_env_var = "ARMADA_TOKEN"
 
 ## 8. Drive an agent through MCP
 
-The sandbox tools are `launch`, `list`, `status`, `logs`, `send`, `report`, `exec` and `stop`. Find and manage snapshots in the dashboard or through the REST API. For example, POST to `/api/v1/golden/list` to find the golden name and org ID. Example arguments:
+Common sandbox tools include `launch`, `list`, `status`, `logs`, `send`, `report`, `exec` and `stop`. Find and manage snapshots in the dashboard or through the REST API. For example, POST to `/api/v1/golden/list` to find the snapshot name and org ID. The launch request uses the field `golden` for the snapshot name. Use the returned `sandbox.id` for later calls. Example arguments:
 
 ```jsonc
 // launch: fork a snapshot and start the agent (leave out prompt for an idle, ready sandbox)
 { "provider": "boat", "golden": "<snapshot>", "harness": "claude", "prompt": "Fix the flaky test in packages/core", "ttlSeconds": 14400 }
-// → { "id": "<sandbox id>", "status": "running", "promptId": "…", "expiresAt": "…", … }
 // add "org": "<orgId>" when the snapshot name exists in several of your orgs
 
 // list: your sandboxes, newest first
@@ -406,12 +410,14 @@ The sandbox tools are `launch`, `list`, `status`, `logs`, `send`, `report`, `exe
 { "id": "<sandbox id>", "limit": 200 }
 { "id": "<sandbox id>", "since_cursor": "<cursor>" }
 
-// send: a new prompt (the first one, for a sandbox launched without one)
-{ "id": "<sandbox id>", "prompt": "Now open a pull request" }
+// send: start a new turn. Use a fresh request UUID for each new prompt.
+{ "id": "<sandbox id>", "prompt": "Now open a pull request", "request_id": "<request UUID>" }
 
 // stop: stop the machine when the agent is done, so it stops costing
 { "id": "<sandbox id>" }
 ```
+
+Supply `request_id` when sending a runtime follow-up so you can retry with the same ID and identical input if delivery is uncertain.
 
 A typical coordination loop is `launch` with a prompt, then `status` with `wait: true` until `settled`, then `logs` with `all: true` to collect final output, then `send` for a follow-up or `stop`. A turn that ends on a usage limit or an expired login marks the sandbox `failed`, and `statusReason` says why.
 
@@ -424,13 +430,13 @@ A typical coordination loop is `launch` with a prompt, then `status` with `wait:
 
 ### Organization provider setup and recovery
 
-After `armada org create`, connect at least one organization provider before creating new work:
+After `armada org create`, connect at least one organization provider before creating new work. Replace `my-team` and the private file paths with your own:
 
 ```sh
-armada org setup --org <org-id>
+armada org setup --org my-team
 # Read a Boat API key or Modal JSON token pair from stdin, or use --file:
-armada org connect boat --org <org-id> --file <private-key-file>
-armada org connect modal --org <org-id> --file <private-token-file>
+armada org connect boat --org my-team --file ~/.config/armada/boat-key
+armada org connect modal --org my-team --file ~/.config/armada/modal.json
 ```
 
 Modal input is JSON with `token_id` and `token_secret`. Never put secrets in command arguments.
