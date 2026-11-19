@@ -16,13 +16,9 @@ test("weekly fix share includes GitHub squash and merge commits inside the selec
   expect(weeklyFixShare(log, end)).toMatchObject({ merges: 2, fixes: 1, share: 0.5 });
 });
 
-test("latency SQL aggregates the first event within the command's sandbox, epoch and time window", () => {
-  const sql = deliveryQueries.runtimeCommandToFirstEvent;
-  expect(sql).toMatch(/min\(created_at\) filter \(where not is_command\)/i);
-  expect(sql).toMatch(
-    /partition by sandbox_id, epoch order by created_at desc\s+range between unbounded preceding and current row/i,
-  );
-  expect(sql).toMatch(/where is_command and event_at is not null\s+and \(next_at is null or event_at < next_at\)/i);
+test("visible-text latency SQL exposes sample counts and percentiles in milliseconds", () => {
+  const sql = deliveryQueries.runtimeCommandToFirstVisibleText;
+  expect(sql).toMatch(/as samples\b/i);
   expect(sql).toMatch(/percentile_cont\(0\.50\).*"p50Ms"/);
   expect(sql).toMatch(/percentile_cont\(0\.95\).*"p95Ms"/);
 });
