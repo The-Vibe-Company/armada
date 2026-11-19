@@ -397,6 +397,7 @@ test.each([
     const directory = await mkdtemp(join(tmpdir(), "smoke-template-excluded-"));
     const path = join(directory, "journal.json");
     const routes: string[] = [];
+    let clock = 0;
     try {
       expect(
         await postDeploySmoke(
@@ -420,8 +421,10 @@ test.each([
           },
           ["--templates-skills"],
           {
-            now: () => 0,
-            sleep: async () => {},
+            now: () => clock,
+            sleep: async (ms) => {
+              clock += ms;
+            },
             out: () => {},
             fetch: async (url) => {
               const route = url.split("/api/v1/")[1]!;
@@ -440,6 +443,7 @@ test.each([
                   provider,
                   manifest: { definition: { provider: manifestProvider } },
                 });
+              if (route === "sandbox/list") return Response.json({ sandboxes: [] });
               if (route === "templates/delete" || route === "variables/delete")
                 return Response.json({ item: { status: "deleted" } });
               throw Error(`unexpected route ${route}`);
@@ -448,7 +452,7 @@ test.each([
         ),
       ).toBe(false);
       expect(routes).toContain("templates/launch");
-      expect(routes.some((route) => route.startsWith("sandbox/") || route.startsWith("sandboxes/"))).toBe(false);
+      expect(routes.some((route) => route !== "sandbox/list" && /^sandboxes?\//.test(route))).toBe(false);
       const retained = await readSmokeJournal(path);
       expect(retained).toHaveLength(1);
       expect(retained[0]?.id).toBe(row.id);
