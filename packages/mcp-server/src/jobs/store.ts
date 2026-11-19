@@ -77,6 +77,8 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
           return job;
         }
         // WARNING: Owner stop can hold the sandbox lock while waiting for the receipt.
+        await tx.query("select id from public.sandboxes where id = $1 for update nowait", [sandboxId]);
+        // Use a post-lock snapshot so evidence committed by the previous lock holder is visible.
         const {
           rows: [sandbox],
         } = await tx.query<{ generation: string; cancelled: boolean; queued_with_evidence: boolean }>(
@@ -85,7 +87,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
                        else ${DISPATCHING_TURN_CANCELLED} end as cancelled,
                   (q.state = 'queued' and ${QUEUED_DISPATCH_EVIDENCE}) as queued_with_evidence
            from public.sandboxes s join public.account_turn_queue q on q.sandbox_id = s.id
-           where s.id = $1 and q.request_id = $2 for update of s nowait`,
+           where s.id = $1 and q.request_id = $2`,
           [sandboxId, requestId],
         );
         if (sandbox?.cancelled || sandbox?.queued_with_evidence) {
