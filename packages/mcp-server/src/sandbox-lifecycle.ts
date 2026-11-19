@@ -547,7 +547,13 @@ export function createSandboxLifecycle(
         }
         if (canDeferInterruptedResume && initialObservation && observing) {
           signal?.throwIfAborted();
-          if (caught instanceof ProviderError && caught.retryable && caught.code !== "not_found" && !authorityLost) {
+          // An unavailable GET cannot settle the activation, even without a retry hint.
+          if (
+            caught instanceof ProviderError &&
+            (caught.retryable || caught.code === "unavailable") &&
+            caught.code !== "not_found" &&
+            !authorityLost
+          ) {
             await deferInterruptedResume();
             return true;
           }
