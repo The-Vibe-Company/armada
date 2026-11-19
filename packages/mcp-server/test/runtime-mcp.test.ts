@@ -523,6 +523,20 @@ test("pinned stdio delivers its encrypted environment privately without a gatewa
         },
       ],
     });
+    f.journal.append({
+      id: "mcp-opencode-proof",
+      at: 1,
+      kind: "other",
+      type: "armada/opencodeMcp",
+      data: {
+        configurationRevision: receipt?.revision,
+        callId: "native-call",
+        result: { output: `prefix${secret}suffix`, isError: false },
+      },
+    });
+    expect(f.journal.events().find(({ event }) => event.id === "mcp-opencode-proof")?.event).toMatchObject({
+      data: { configurationRevision: receipt?.revision, callId: "native-call", result: { isError: false } },
+    });
     expect(lines.map((line) => JSON.parse(line))).toContainEqual(
       expect.objectContaining({ event: "provider_call", operation: "runtime.configureMcp", outcome: "ok" }),
     );

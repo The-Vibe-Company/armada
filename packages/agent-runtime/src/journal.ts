@@ -51,11 +51,25 @@ export class Journal {
       control = { ...event, text: `${boundedPreview(this.redact(event.text), 16000)}… [truncated]` };
     let body = this.redact(JSON.stringify(control));
     const redactShort = this.redactShortApplicationText;
-    if (redactShort && (event.kind === "message" || (event.kind === "other" && event.type === "harness_stderr"))) {
-      const masked = JSON.parse(body) as { text?: string; tools?: ToolCall[]; data?: { text?: unknown } | null };
+    if (
+      redactShort &&
+      (event.kind === "message" ||
+        (event.kind === "other" && ["harness_stderr", "armada/opencodeMcp"].includes(event.type)))
+    ) {
+      type ToolPayload = Pick<ToolCall, "input" | "result">;
+      const masked = JSON.parse(body) as {
+        text?: string;
+        tools?: ToolCall[];
+        data?: (ToolPayload & { text?: unknown }) | null;
+      };
       const redactPayload = (original: unknown, scrubbed: unknown) => {
         const serialized = JSON.stringify(original);
         return serialized !== undefined && redactShort(serialized) !== serialized ? "[REDACTED]" : scrubbed;
+      };
+      const redactTool = (original: ToolPayload | null | undefined, scrubbed: ToolPayload) => {
+        if (scrubbed.input !== undefined) scrubbed.input = redactPayload(original?.input, scrubbed.input);
+        if (scrubbed.result && original?.result)
+          scrubbed.result.output = redactPayload(original.result.output, scrubbed.result.output);
       };
       const redactText = (original: string, scrubbed: string) => {
         const short = redactShort(original);
@@ -64,17 +78,14 @@ export class Journal {
       };
       if (event.kind === "message") {
         if (typeof masked.text === "string") masked.text = redactText(event.text, masked.text);
-        masked.tools?.forEach((tool, index) => {
-          const original = event.tools[index];
-          if (tool.input !== undefined) tool.input = redactPayload(original?.input, tool.input);
-          if (tool.result && original?.result)
-            tool.result.output = redactPayload(original.result.output, tool.result.output);
-        });
-      }
-      if (event.kind === "other") {
-        const data = masked.data;
-        const original = (event.data as { text?: unknown } | null)?.text;
-        if (typeof original === "string" && typeof data?.text === "string") data.text = redactText(original, data.text);
+        masked.tools?.forEach((tool, index) => redactTool(event.tools[index], tool));
+      } else if (masked.data) {
+        if (event.type === "armada/opencodeMcp") redactTool(event.data as ToolPayload | null, masked.data);
+        else {
+          const original = (event.data as { text?: unknown } | null)?.text;
+          if (typeof original === "string" && typeof masked.data.text === "string")
+            masked.data.text = redactText(original, masked.data.text);
+        }
       }
       body = JSON.stringify(masked);
     }
