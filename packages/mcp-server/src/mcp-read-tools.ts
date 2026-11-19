@@ -9,7 +9,8 @@ import {
   sandboxListMetadata,
   statusOutput,
 } from "./sandbox-tool-schemas.ts";
-import type { ToolContext, ToolRegistrar } from "./tools.ts";
+import type { ToolRegistrar } from "./tool-registration.ts";
+import type { ToolContext } from "./tools.ts";
 import { isStatusReadFenced, readStatus, recordedStatus, type StatusReport, waitSettled } from "./turns.ts";
 
 export const DEFAULT_WAIT_SECONDS = 60;

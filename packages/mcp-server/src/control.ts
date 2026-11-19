@@ -114,7 +114,8 @@ import { dispatchSandboxRestControl, isSandboxRestControl } from "./sandbox-rest
 import { sandboxListInput } from "./sandbox-tool-schemas.ts";
 import { tokenCreateRoute, tokenListRoute, tokenRevokeRoute } from "./token-control.ts";
 import { callSharedTool, ToolApiError } from "./tool-api.ts";
-import { describeToolFailure, type ToolContext } from "./tools.ts";
+import { describeToolFailure } from "./tool-failure.ts";
+import type { ToolContext } from "./tools.ts";
 
 import { viewerControl } from "./viewer-control.ts";
 
