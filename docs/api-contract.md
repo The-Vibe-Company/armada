@@ -183,7 +183,6 @@ and Docker host daemon protocol retain their own rollout rules.
 | POST | `github/{refresh,runtime-status}` | Public entries | #2775 |
 | POST | `templates/launch` | `launchTemplate` (public) | #2775 |
 | POST | `golden/{list,capabilities,adopt}` | Public entries | #2775 |
-| POST | `launch/resolve` | Delete retired refusal stub | #2775 |
 | POST | `account/{logout,status}` | Admin entries | #2775 |
 | POST | `creds/{accounts/auth-capabilities,accounts/default,accounts/limits,accounts/models,accounts/remove,accounts/rename,accounts/set,accounts/usage,defaults/set,list,rm,set}` | Admin entries | #2775 |
 | POST | `docker/{hosts/limits,hosts/list,hosts/register-token,hosts/retention,hosts/revoke,snapshots/create,snapshots/get,snapshots/list,snapshots/rebuild}` | Admin entries | #2775 |

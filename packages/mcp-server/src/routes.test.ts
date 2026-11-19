@@ -60,7 +60,6 @@ test("registered command routes preserve their HTTP methods and names", () => {
       "POST /golden/update-add-repos",
       "POST /golden/visibility",
       "POST /launch/options",
-      "POST /launch/resolve",
       "POST /logs/read",
       "POST /mcp/catalog",
       "POST /mcp/connect",
