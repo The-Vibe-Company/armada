@@ -1544,7 +1544,6 @@ test("public MCP inventory and schemas expose operation contracts", async () => 
   const { tools } = await mcp.listTools();
   expect(tools.map((tool) => tool.name).sort()).toEqual(
     [
-      "extend",
       "exec",
       "github_refresh",
       "interrupt",
@@ -1553,7 +1552,6 @@ test("public MCP inventory and schemas expose operation contracts", async () => 
       "logs",
       "template_launch",
       "report",
-      "resume",
       "send",
       "runtime_github_status",
       "status",
@@ -1563,8 +1561,6 @@ test("public MCP inventory and schemas expose operation contracts", async () => 
     ].sort(),
   );
   for (const tool of tools) expect(tool.outputSchema).toBeDefined();
-  const resume = tools.find((tool) => tool.name === "resume");
-  expect(resume?.inputSchema.required).toEqual(["id", "request_id"]);
   const launch = tools.find((tool) => tool.name === "launch");
   expect(launch?.inputSchema.properties?.repo).toMatchObject({ type: "string" });
   expect(launch?.inputSchema.required ?? []).not.toContain("repo");

@@ -580,18 +580,10 @@ export async function dispatchControlCommand(
     return { id: found.id, test };
   }
   if (isSandboxRestControl(route)) {
-    const { data, providers } = options;
-    if (!data || !providers) throw new VaultError("unavailable", "Sandbox control is not configured.");
-    const scopedCaller = await selectedCaller(options, caller, optional(body, "org"));
-    return dispatchSandboxRestControl(route, scopedCaller, body, { ...options, data, providers });
-  }
-  const toolName = CONTROL_TOOL_ROUTES[route];
-  if (toolName) {
     if (route === "sandbox/extend") {
       if (Object.hasOwn(body, "ttlSeconds") && Object.hasOwn(body, "ttl_seconds"))
         throw new VaultError("invalid", "Send one lifetime field: ttlSeconds.");
-      const { ttlSeconds, ...fields } = body;
-      const ttl = Object.hasOwn(body, "ttlSeconds") ? ttlSeconds : fields.ttl_seconds;
+      const ttl = Object.hasOwn(body, "ttlSeconds") ? body.ttlSeconds : body.ttl_seconds;
       if (Number.isSafeInteger(ttl) && Number(ttl) > MAX_SANDBOX_EXTENSION_TTL_SECONDS)
         throw new ToolApiError("extension_maximum", "Requested lifetime exceeds the server maximum.");
       if (!Number.isSafeInteger(ttl) || Number(ttl) < 1)
@@ -599,8 +591,15 @@ export async function dispatchControlCommand(
           "invalid",
           "ttlSeconds must be a positive whole number of seconds within the server maximum.",
         );
-      body = { ...fields, ttl_seconds: ttl };
+      body = { ...body, ttlSeconds: ttl };
     }
+    const { data, providers } = options;
+    if (!data || !providers) throw new VaultError("unavailable", "Sandbox control is not configured.");
+    const scopedCaller = await selectedCaller(options, caller, optional(body, "org"));
+    return dispatchSandboxRestControl(route, scopedCaller, body, { ...options, data, providers });
+  }
+  const toolName = CONTROL_TOOL_ROUTES[route];
+  if (toolName) {
     if (!options.data || !options.providers) throw new VaultError("unavailable", "Sandbox control is not configured.");
     const ref = optional(body, "org");
     const listRef =
@@ -644,10 +643,6 @@ export async function dispatchControlCommand(
               ? options.providers.resolve(target, scopedCaller)
               : Promise.reject(new VaultError("unavailable", "Resource providers are not configured.")),
           ),
-        deletionProvider: (sandbox) =>
-          options.providers
-            ? options.providers.resolve(sandbox, { userId: sandbox.ownerId })
-            : Promise.reject(new VaultError("unavailable", "Resource providers are not configured.")),
         launchCredentials: launchCredentials(
           options.store,
           options.encryptionKey,
