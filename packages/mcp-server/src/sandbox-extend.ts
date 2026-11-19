@@ -7,7 +7,7 @@ import {
   type SandboxStore,
   sandboxActivity,
 } from "@armada/core/server";
-import { ToolError } from "./tools.ts";
+import { ToolError } from "./tool-error.ts";
 
 /** Caller resolves owner/admin interior access (or scoped own-child authority) before entry. */
 export async function extendSandbox(
