@@ -331,6 +331,13 @@ test("an unenrolled Boat resume returns to a confirmed retained stop before anot
 const observationErrors = new Map([
   ["transient observation failure", 503],
   ["unavailable observation without retry marker", 502],
+  ["non-retryable observation conflict", 409],
+]);
+
+const inconclusiveObservationStates = new Map([
+  ["unrecognized state", "unrecognized"],
+  ["archive in progress", "archiving"],
+  ["failed machine state without confirmed exit", "error"],
 ]);
 
 const interruptedResumeProofs = [
@@ -340,7 +347,7 @@ const interruptedResumeProofs = [
   "observed running",
   ...observationErrors.keys(),
   "cancelled observation",
-  "unrecognized state",
+  ...inconclusiveObservationStates.keys(),
 ];
 
 test.each(interruptedResumeProofs)(
@@ -374,13 +381,13 @@ test.each(interruptedResumeProofs)(
       const cancelled = proof === "cancelled observation" ? new AbortController() : undefined;
       const interruption = Error("Lifecycle lane cancelled");
       const observationError = observationErrors.get(proof);
-      const unrecognized = proof === "unrecognized state";
+      const inconclusiveState = inconclusiveObservationStates.get(proof);
       const { provider, requests } = fakeBoat(
         ...(observationError ? [{ status: observationError }] : []),
-        ...(unrecognized
-          ? [{ body: { sandbox: sdkSandbox({ id: f.row.providerSandboxId, state: "unrecognized" }) } }]
+        ...(inconclusiveState
+          ? [{ body: { sandbox: sdkSandbox({ id: f.row.providerSandboxId, state: inconclusiveState }) } }]
           : []),
-        ...(proof === "observed archive" || observationError || cancelled || unrecognized
+        ...(proof === "observed archive" || observationError || cancelled || inconclusiveState
           ? [{ body: { sandbox: retainedSandbox({ id: f.row.providerSandboxId, snapshotAvailable: false }) } }]
           : []),
         ...(proof === "observed running" ? [running, running, {}] : []),
@@ -401,10 +408,12 @@ test.each(interruptedResumeProofs)(
         expect((await store.get(f.row.id))?.status).toBe("starting");
         expect(outcome).toBe(interruption);
         expect(await worker.reconcileOne()).toBe(false);
-        await f.db.query("update sandboxes set reconcile_lease_until=now() where id=$1", [f.row.id]);
+        await f.db.query("update sandboxes set reconcile_lease_until=now()-interval '1 second' where id=$1", [
+          f.row.id,
+        ]);
       }
       expect(await worker.reconcileOne()).toBe(true);
-      if (observationError || unrecognized) {
+      if (observationError || inconclusiveState) {
         expect(requests.map(({ method }) => method)).toEqual(["GET"]);
         expect((await store.get(f.row.id))?.status).toBe("starting");
         expect(await worker.reconcileOne()).toBe(false);

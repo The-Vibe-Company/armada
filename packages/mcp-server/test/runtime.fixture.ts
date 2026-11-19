@@ -17,6 +17,7 @@ export async function runtimeFixture(
   provider: "boat" | "modal" = "boat",
   harness: "codex" | "claude" | "opencode" = "codex",
   idle = false,
+  commandGrantExpiresAt?: number,
 ) {
   const { db, people } = fixture ?? (await database());
   const root = await mkdtemp(join(tmpdir(), "runtime-followup-"));
@@ -73,7 +74,14 @@ export async function runtimeFixture(
   });
   const authority = createRuntimeEnrolments(sql, ENCRYPTION_KEY);
   let active = await authority.enrol(
-    (await authority.issue({ sandboxId: row.id, ownerId: people.owner, configuration: {} })).enrolmentToken,
+    (
+      await authority.issue({
+        sandboxId: row.id,
+        ownerId: people.owner,
+        configuration: {},
+        ...(commandGrantExpiresAt === undefined ? {} : { commandGrantExpiresAt }),
+      })
+    ).enrolmentToken,
   );
   const starts: (string | undefined)[] = [];
   const mcpSnapshots: (import("@armada/agent-runtime").McpConfiguration | undefined)[] = [];
@@ -108,7 +116,7 @@ export async function runtimeFixture(
     sandboxId: row.id,
     generation: active.epoch,
     token: active.runtimeToken,
-    expiresAt: Date.now() + 60000,
+    expiresAt: commandGrantExpiresAt ?? Date.now() + 60_000,
   };
   let state = new HarnessState(root, (value) => value);
   await state.restore(grant, journal.assertRestoreSource(grant));

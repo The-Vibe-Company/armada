@@ -37,6 +37,7 @@ export interface RuntimeSessionScope {
 /** Owner scopes also name the locked sandbox's provider for request-correlated command records. */
 export interface RuntimeOwnerScope extends RuntimeSessionScope {
   provider?: "boat" | "modal" | "docker";
+  commandGrantExpiresAt?: Date;
 }
 
 /** Reenter an owner-held transaction without opening another connection or changing the callback's SQL object. */
@@ -306,8 +307,10 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
       if (expectedLifecycleGeneration !== undefined && sandbox.lifecycle_generation !== expectedLifecycleGeneration)
         throw new RuntimeEnrolmentDenied();
       const row = (
-        await tx.query<LiveRuntime>(
-          `select epoch::text,runtime_protocol_version from public.runtime_enrolments where sandbox_id=$1
+        await tx.query<LiveRuntime & { command_grant_expires_at: Date | null }>(
+          `select epoch::text,runtime_protocol_version,
+         case when command_grant_epoch=epoch then command_grant_expires_at end as command_grant_expires_at
+         from public.runtime_enrolments where sandbox_id=$1
          and lifecycle_generation=$2 and runtime_hash is not null
          and docker_issuer_fence is not distinct from $3::text for update`,
           [sandbox.id, sandbox.lifecycle_generation, sandbox.docker_issuer_fence],
@@ -318,6 +321,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
         sandboxId: sandbox.id,
         epoch: row.epoch,
         provider: sandbox.provider as NonNullable<RuntimeOwnerScope["provider"]>,
+        ...(row.command_grant_expires_at ? { commandGrantExpiresAt: row.command_grant_expires_at } : {}),
       });
     });
   }

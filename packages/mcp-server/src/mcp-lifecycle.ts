@@ -351,6 +351,7 @@ export function createMcpLifecycle(options: {
         await sql.query<{ provider_sandbox_id: string; physical_generation: string; mcp_generation: number }>(
           `select s.provider_sandbox_id,b.physical_generation,s.mcp_generation from public.sandboxes s join public.mcp_bootstraps b on b.sandbox_id=s.id
         where s.id=$1::uuid and s.provider=$2 and b.configured and s.status not in ('stopped','deleted','failed')
+        and b.physical_generation not like 'runtime:%'
         and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id)`,
           [sandboxId, provider.id],
         )

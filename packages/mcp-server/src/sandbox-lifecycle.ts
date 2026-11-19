@@ -323,7 +323,7 @@ export function createSandboxLifecycle(
         if (
           canDeferInterruptedResume &&
           info.id === row.provider_sandbox_id &&
-          info.state === "starting" &&
+          ["starting", "stopping", "failed"].includes(info.state) &&
           !info.physicalExitConfirmed
         ) {
           handingOffObservedResume = true;
@@ -545,12 +545,7 @@ export function createSandboxLifecycle(
         }
         if (canDeferInterruptedResume && initialObservation && observing) {
           signal?.throwIfAborted();
-          if (
-            caught instanceof ProviderError &&
-            (caught.retryable || caught.code === "unavailable") &&
-            caught.code !== "not_found" &&
-            !authorityLost
-          ) {
+          if (caught instanceof ProviderError && caught.code !== "not_found" && !authorityLost) {
             await deferInterruptedResume();
             return true;
           }
