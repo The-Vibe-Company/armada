@@ -1,6 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { isHarness, ProviderError } from "@armada/core";
-import { recordOperatorFailure } from "./request-observability.ts";
+import { currentRequestId, recordOperatorFailure } from "./request-observability.ts";
 import { type createRuntimeEnrolments, RuntimeEnrolmentDenied } from "./runtime-enrolment.ts";
 import { logRuntimeStage } from "./runtime-progress.ts";
 
@@ -65,13 +65,32 @@ export function createRuntimeStartup(
     let diagnosticPhase: "ticket" | "bootstrap" | "enrolment" | "readiness" = "ticket";
     let epoch = "0";
     const startedAt = time.now();
+    const requestId = currentRequestId();
+    const entering = (phase: typeof diagnosticPhase | "readiness_fence", at: number) => {
+      try {
+        console.info(
+          JSON.stringify({
+            event: "armada.runtime.startup_phase",
+            requestId,
+            sandboxId,
+            epoch,
+            phase,
+            elapsedMs: at - startedAt,
+          }),
+        );
+      } catch {
+        // Diagnostics must not change the startup outcome.
+      }
+    };
     try {
       signal?.throwIfAborted();
+      entering("ticket", startedAt);
       const ticket = await authority.issue({ ownerId, sandboxId, configuration: input.configuration });
       epoch = ticket.epoch;
       signal?.throwIfAborted();
       diagnosticPhase = "bootstrap";
       const bootstrapAt = time.now();
+      entering("bootstrap", bootstrapAt);
       await ports.bootstrap({
         sandboxId: providerSandboxId,
         serverUrl,
@@ -82,6 +101,7 @@ export function createRuntimeStartup(
       signal?.throwIfAborted();
       diagnosticPhase = phase = "enrolment";
       const bootstrapDoneAt = time.now();
+      entering("enrolment", bootstrapDoneAt);
       const deadline = bootstrapDoneAt + timeout;
       const budget = AbortSignal.timeout(timeout);
       const admission = signal ? AbortSignal.any([signal, budget]) : budget;
@@ -106,11 +126,13 @@ export function createRuntimeStartup(
         if (epoch !== ticket.epoch) throw Error("runtime_startup_replaced");
         diagnosticPhase = phase = "readiness";
         const enrolledAt = time.now();
+        entering("readiness", enrolledAt);
         const ready = await ports.health(admission);
         admission.throwIfAborted();
         if (time.now() >= deadline || ready.runtime !== "armada" || ready.epoch !== ticket.epoch)
           throw Error("runtime_startup_wrong_health");
         // Do not publish a health response after stop/replacement while in flight.
+        entering("readiness_fence", time.now());
         await authority.withOwner(
           sandboxId,
           ownerId,

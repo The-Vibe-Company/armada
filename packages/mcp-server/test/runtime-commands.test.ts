@@ -758,6 +758,7 @@ test("runtime startup privately issues configuration, awaits enrolment and fence
       cwd: root,
       defaults: { model: "gpt-5.4", reasoningEffort: "high" },
     });
+    let bootstrapStart: unknown;
     let token: string | undefined;
     let now = 0;
     const configuration = { selectedHarness: "codex", privateMarker: "startup-private-configuration" };
@@ -772,6 +773,9 @@ test("runtime startup privately issues configuration, awaits enrolment and fence
       },
       {
         async bootstrap(input) {
+          bootstrapStart = logger.mock.calls
+            .map(([line]) => JSON.parse(String(line)))
+            .find((entry) => entry.event === "armada.runtime.startup_phase" && entry.phase === "bootstrap");
           token = input.enrolmentToken;
           now += 40;
           expect(Object.keys(input).sort()).toEqual([
@@ -851,6 +855,13 @@ test("runtime startup privately issues configuration, awaits enrolment and fence
         configuration,
       }),
     ).toEqual({ runtime: "armada", epoch: "2" });
+    expect(bootstrapStart).toEqual({
+      event: "armada.runtime.startup_phase",
+      sandboxId: f.id,
+      epoch: "2",
+      phase: "bootstrap",
+      elapsedMs: 10,
+    });
     const samples = logger.mock.calls.flatMap(([line]) =>
       String(line).includes('"event":"armada.runtime.startup_timing"') ? [JSON.parse(String(line))] : [],
     );
