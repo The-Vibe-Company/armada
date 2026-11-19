@@ -40,7 +40,6 @@ import { createArmadaServer, type ToolContext } from "./tools.ts";
 
 /** MCP input names that the REST adapters (`control.ts`, `control-logs.ts`) accept under another name. */
 export const REST_FIELD_NAMES: Readonly<Record<string, Readonly<Record<string, string>>>> = {
-  "sandbox/launch": { ttl_seconds: "ttlSeconds", reasoning_effort: "reasoningEffort" },
   "logs/read": { since_cursor: "cursor", conversation_id: "conversationId" },
 };
 /** REST routes whose contract is the named MCP tool, beyond the dispatcher's shared-tool table. */
@@ -375,7 +374,7 @@ export async function generateOpenApi() {
           }),
         };
         description +=
-          ' Docker uses the other request variants: provider "docker" with no golden, either on a hostId (optionally with repos) or from a snapshotId (no repos). launch/options reports each provider\'s launch sources. For Docker and pinned Modal template launches, personal sessions accept an org slug or UUID. Scoped tokens use their org UUID or omit org. Explicit pinned Modal template requests return a durable template launch receipt.';
+          ' Docker uses the other request variants: provider "docker" with no golden, either on a hostId (optionally with repos) or from a snapshotId (no repos). launch/options reports each provider\'s launch sources. Explicit pinned Modal template requests return a durable template launch receipt.';
       }
       if (route === "sandbox/send") {
         // One public path, two admissions chosen by the sandbox's provider: Docker

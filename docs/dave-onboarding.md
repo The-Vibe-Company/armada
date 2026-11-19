@@ -388,7 +388,7 @@ The sandbox tools are `launch`, `list`, `status`, `wait`, `logs`, `send`, `steer
 
 ```jsonc
 // launch: fork a snapshot and start the agent (leave out prompt for an idle, ready sandbox)
-{ "golden": "<snapshot>", "harness": "claude", "prompt": "Fix the flaky test in packages/core", "ttl_seconds": 14400 }
+{ "provider": "boat", "golden": "<snapshot>", "harness": "claude", "prompt": "Fix the flaky test in packages/core", "ttlSeconds": 14400 }
 // → { "id": "<sandbox id>", "status": "running", "promptId": "…", "expiresAt": "…", … }
 // add "org": "<orgId>" when the snapshot name exists in several of your orgs
 

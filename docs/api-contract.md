@@ -76,8 +76,9 @@ in the contract and keep model/account policy, source resolution and org
 authorization in admission. Docker REST and admission use the shared request
 schema, and the standalone Docker schema has been deleted. Pinned Modal REST
 launch also uses the shared schema and resolves the org to a UUID before
-template admission. The remaining cutover replaces the golden validators in
-`launch-control.ts` and `launch-request-schema.ts` and the MCP launch validator.
+template admission. MCP `launch` projects the ordinary Boat and Modal golden variants, excluding scoped
+Armada access, and publishes their camel-case fields. The remaining REST cutover
+replaces the golden validators in `launch-control.ts` and `launch-request-schema.ts`.
 The separate `templates/launch` endpoint keeps its `requestKey` and durable
 receipt, and shares applicable field schemas.
 
