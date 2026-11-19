@@ -15,6 +15,7 @@ import { createDockerMachineBindings } from "../src/docker-machine-bindings.ts";
 import { SNAPSHOT_COLUMNS } from "../src/docker-snapshot-data.ts";
 import { createSandboxAccessServices } from "../src/sandbox-access-services.ts";
 import { createFinishedDockerCleanup, selfFinishToken } from "../src/sandbox-finish.ts";
+import { transitionSandbox } from "../src/sandbox-lifecycle.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 
 let connection: Awaited<ReturnType<typeof migratedDatabase>> | undefined;
@@ -735,6 +736,11 @@ test("stop commits runtime revocation once; cleanup retains the create deadline 
   const ticket = await authority.issue({ sandboxId: a.sandboxId, ownerId: a.owner.userId, configuration: {} });
   const runtime = await authority.enrol(ticket.enrolmentToken);
   const stop = { requestId: randomUUID(), operation: "stop" as const };
+  const { faultingStore, failure } = failDockerJobCommit(stop.requestId, null);
+  const before = await lifecycle(a.sandboxId);
+  await expect(faultingStore.enqueueSandbox(a.actor, a.sandboxId, stop)).rejects.toMatchObject({ cause: failure });
+  expect(await lifecycle(a.sandboxId)).toEqual(before);
+  expect(await dockerJournal(a.sandboxId, "docker_stop_admitted")).toEqual([]);
   await store.enqueueSandbox(a.actor, a.sandboxId, stop);
   await denied(store.enqueueSandbox(a.owner, a.sandboxId, stop));
   await store.enqueueSandbox(a.actor, a.sandboxId, stop);
@@ -751,6 +757,10 @@ test("stop commits runtime revocation once; cleanup retains the create deadline 
   expect(intent?.status).toBe("stopping");
   expect(intent?.lifecycle_generation).toBe("2");
   expect(intent?.stop_requested_at).not.toBeNull();
+  expect(await dockerJournal(a.sandboxId, "docker_stop_admitted")).toEqual([
+    { from_status: before?.status, to_status: "stopping", generation: "2" },
+  ]);
+
   expect(
     (
       await db.query<{ runtime_hash: string | null }>(
@@ -837,6 +847,34 @@ async function lifecycle(sandboxId: string) {
   ).rows[0];
 }
 
+async function dockerJournal(sandboxId: string, code: string) {
+  return (
+    await database().query(
+      "select from_status,to_status,generation::text from public.sandbox_transitions where sandbox_id=$1 and code=$2",
+      [sandboxId, code],
+    )
+  ).rows;
+}
+
+test("a stale Docker mailbox transition leaves the current generation and journal intact", async () => {
+  const a = await boundFixture();
+  const before = await lifecycle(a.sandboxId);
+  const code = "docker_stop_admitted";
+  expect(before?.status).toBe("starting");
+  const result = await transitionSandbox(sql, {
+    sandboxId: a.sandboxId,
+    expectedGeneration: Number(before?.lifecycle_generation) + 1,
+    fromStates: ["starting"],
+    toState: "stopping",
+    actor: "owner",
+    code,
+    effects: [],
+  });
+  expect(result).toEqual({ kind: "conflict" });
+  expect(await lifecycle(a.sandboxId)).toEqual(before);
+  expect(await dockerJournal(a.sandboxId, code)).toEqual([]);
+});
+
 test("host-confirmed frozen expiry fences runtime once, survives owner removal and admits cleanup", async () => {
   const db = database();
   for (const operation of ["create", "bootstrap"] as const) {
@@ -857,6 +895,10 @@ test("host-confirmed frozen expiry fences runtime once, survives owner removal a
     );
     await createDockerHostStore(sql, key).expired(a.hostToken, a.installationId, { requestId: a.startup.requestId });
     expect(await lifecycle(a.sandboxId)).toEqual(stopped);
+    expect(await dockerJournal(a.sandboxId, "docker_expiry_observed")).toEqual([
+      { from_status: before?.status, to_status: "stopped", generation: stopped?.lifecycle_generation },
+    ]);
+
     // An unacknowledged startup must not be replayed after the terminal fact.
     expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
     expect(await lifecycle(a.sandboxId)).toEqual(stopped);
@@ -1195,6 +1237,7 @@ test("uninstall drains bound machines through stop/delete ACKs before idempotent
       )
     ).rows,
   ).toEqual([
+    { from_status: "starting", to_status: "stopping", actor: "owner", code: "docker_stop_admitted" },
     { from_status: "stopping", to_status: "stopped", actor: "lifecycle_runner", code: "docker_stop_completed" },
     { from_status: "stopped", to_status: "deleted", actor: "delete_job", code: "docker_delete_completed" },
   ]);
@@ -1315,6 +1358,7 @@ test("retention cleanup authenticates the bound host and permanently fences runt
   const a = await boundStartup("bootstrap");
   await denied(store.cleaned(a.hostToken, randomUUID(), { requestId: a.startup.requestId }));
   await denied(store.cleaned(a.hostToken, a.installationId, { requestId: randomUUID() }));
+  const before = await lifecycle(a.sandboxId);
   await store.cleaned(a.hostToken, a.installationId, {
     requestId: a.startup.requestId,
     cleanupReason: "disk_pressure",
@@ -1327,6 +1371,11 @@ test("retention cleanup authenticates the bound host and permanently fences runt
   );
   await store.cleaned(a.hostToken, a.installationId, { requestId: a.startup.requestId });
   expect(await lifecycle(a.sandboxId)).toEqual(deleted);
+  expect(Number(deleted?.lifecycle_generation)).toBe(Number(before?.lifecycle_generation) + 1);
+  expect(await dockerJournal(a.sandboxId, "disk_pressure")).toEqual([
+    { from_status: before?.status, to_status: "deleted", generation: deleted?.lifecycle_generation },
+  ]);
+
   expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
 });
 
