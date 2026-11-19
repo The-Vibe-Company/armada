@@ -275,6 +275,15 @@ function scopedGolden(handler: (context: ControlRouteContext) => Promise<unknown
   };
 }
 
+function goldenBuildRoute(handler: ReturnType<typeof scopedGolden>) {
+  return {
+    methods: ["POST"] as const,
+    handler,
+    responseStatus: (result: unknown) =>
+      typeof result === "object" && result !== null && "jobId" in result ? 202 : 200,
+  };
+}
+
 export const goldenRoutes = defineRoutes("golden", {
   "golden/capabilities": async ({ caller, body, options }) => {
     const selected = scopedOrg(caller, optional(body, "org"));
@@ -407,15 +416,21 @@ export const goldenRoutes = defineRoutes("golden", {
       caller.orgs.map((org) => org.orgId),
     );
   }),
-  "golden/create": scopedGolden(async ({ caller, body, options }) => {
-    return createGoldenRoute(options, caller, body);
-  }),
-  "golden/update": scopedGolden(async ({ caller, body, options }) => {
-    return updateGoldenRoute(options, caller, body);
-  }),
-  "golden/update-add-repos": scopedGolden(async ({ caller, body, options }) => {
-    return updateGoldenRoute(options, caller, body, true);
-  }),
+  "golden/create": goldenBuildRoute(
+    scopedGolden(async ({ caller, body, options }) => {
+      return createGoldenRoute(options, caller, body);
+    }),
+  ),
+  "golden/update": goldenBuildRoute(
+    scopedGolden(async ({ caller, body, options }) => {
+      return updateGoldenRoute(options, caller, body);
+    }),
+  ),
+  "golden/update-add-repos": goldenBuildRoute(
+    scopedGolden(async ({ caller, body, options }) => {
+      return updateGoldenRoute(options, caller, body, true);
+    }),
+  ),
   "golden/snapshot": scopedGolden(async ({ caller, body, options }) => {
     return snapshotGoldenRoute(options, caller, body);
   }),

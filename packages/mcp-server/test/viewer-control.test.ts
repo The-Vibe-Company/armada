@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import { createMemoryAuthStore, generateToken, sha256Hex } from "@armada/auth";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
-import { viewerControl } from "../src/viewer-control.ts";
+import { controlRoutes } from "../src/modules.ts";
+import { rejectUnroutedViewerRequest } from "../src/viewer-control.ts";
 
 async function fixture() {
   let time = new Date("2026-11-17T12:00:00Z");
@@ -18,6 +19,7 @@ async function fixture() {
     supabase: { supabaseUrl: "https://example.test", anonKey: "placeholder" },
     encryptionKey: Buffer.alloc(32, 7).toString("base64"),
     now: () => time,
+    store: {} as ControlOptions["store"],
   };
   const calls: { path: string; body: Record<string, unknown> }[] = [];
   let visible = true;
@@ -28,16 +30,17 @@ async function fixture() {
       ? Response.json({ events: [{ type: "message", text: "hello" }], cursor: "opaque_cursor", hasMore: true })
       : new Response(null, { status: 403 });
   };
-  const api = (path: string, bearer: string, body?: object) =>
-    viewerControl(
-      new Request(`https://example.test/api/v1/${path}`, {
-        method: path.split("?")[0]!.endsWith("events") ? "GET" : "POST",
-        headers: { authorization: `Bearer ${bearer}` },
-        ...(body ? { body: JSON.stringify(body) } : {}),
-      }),
-      options,
-      dispatch,
-    );
+  const api = (path: string, bearer: string, body?: object) => {
+    const request = new Request(`https://example.test/api/v1/${path}`, {
+      method: path.split("?")[0]!.endsWith("events") ? "GET" : "POST",
+      headers: { authorization: `Bearer ${bearer}` },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    const route = controlRoutes.get(path.split("?")[0]!);
+    return route && "earlyRespond" in route
+      ? route.earlyRespond(request, options, dispatch)
+      : rejectUnroutedViewerRequest(request, options, dispatch);
+  };
   const minted = await api("sandbox/viewer-token", token, { id });
   const grant = (await minted!.json()) as { token: string };
   calls.length = 0;

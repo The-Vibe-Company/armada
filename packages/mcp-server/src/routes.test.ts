@@ -8,9 +8,11 @@ test("registered command routes preserve their HTTP methods and names", () => {
     .sort();
   expect(routes).toMatchInlineSnapshot(`
     [
+      "DELETE /sandboxes/{id}",
       "GET /auth/authorize",
       "GET /auth/methods",
       "GET /github/oauth/callback",
+      "GET /viewer/events",
       "POST /account/logout",
       "POST /account/status",
       "POST /auth/email/start",
@@ -113,6 +115,7 @@ test("registered command routes preserve their HTTP methods and names", () => {
       "POST /sandbox/steer",
       "POST /sandbox/stop",
       "POST /sandbox/test-model-connection",
+      "POST /sandbox/viewer-token",
       "POST /sandbox/wait",
       "POST /secrets/commit",
       "POST /secrets/delete",
@@ -141,6 +144,9 @@ test("registered command routes preserve their HTTP methods and names", () => {
       "POST /variables/revoke",
       "POST /variables/set",
       "POST /variables/update",
+      "POST /viewer/logs",
+      "POST /viewer/send",
+      "POST /viewer/status",
     ]
   `);
 });

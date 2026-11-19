@@ -328,12 +328,17 @@ test("an unenrolled Boat resume returns to a confirmed retained stop before anot
   }
 });
 
+const observationErrors = new Map([
+  ["transient observation failure", 503],
+  ["unavailable observation without retry marker", 502],
+]);
+
 const interruptedResumeProofs = [
   "activation receipt",
   "pending ticket",
   "observed archive",
   "observed running",
-  "transient observation failure",
+  ...observationErrors.keys(),
   "cancelled observation",
   "unrecognized state",
 ];
@@ -368,9 +373,10 @@ test.each(interruptedResumeProofs)(
       const running = { body: { sandbox: sdkSandbox({ id: f.row.providerSandboxId, state: "running" }) } };
       const cancelled = proof === "cancelled observation" ? new AbortController() : undefined;
       const interruption = Error("Lifecycle lane cancelled");
+      const observationError = observationErrors.get(proof);
       const { provider, requests } = fakeBoat(
-        ...(proof === "transient observation failure" ? [{ status: 503 }] : []),
-        ...(proof === "observed archive" || proof === "transient observation failure" || cancelled
+        ...(observationError ? [{ status: observationError }] : []),
+        ...(proof === "observed archive" || observationError || cancelled
           ? [{ body: { sandbox: retainedSandbox({ id: f.row.providerSandboxId, snapshotAvailable: false }) } }]
           : []),
         ...(proof === "observed running" ? [running, running, {}] : []),
@@ -397,7 +403,7 @@ test.each(interruptedResumeProofs)(
         await f.db.query("update sandboxes set reconcile_lease_until=now() where id=$1", [f.row.id]);
       }
       expect(await worker.reconcileOne()).toBe(true);
-      if (proof === "transient observation failure") {
+      if (observationError) {
         expect((await store.get(f.row.id))?.status).toBe("starting");
         expect(await worker.reconcileOne()).toBe(false);
         await f.db.query("update sandboxes set reconcile_after=now() where id=$1", [f.row.id]);
