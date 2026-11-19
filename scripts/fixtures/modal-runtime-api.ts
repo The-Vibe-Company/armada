@@ -1,7 +1,6 @@
 interface RequestBody {
   command: string;
   connections: string[];
-  conversation_id: string;
   cursor?: string;
   goldenId: string;
   harness: string;
@@ -522,7 +521,7 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
     if (
       ++sends > (github && resume ? 2 : 1) ||
       body.id !== "worker" ||
-      body.conversation_id !== "conversation" ||
+      Object.hasOwn(body, "conversation_id") ||
       !/^[a-f0-9-]{36}$/.test(body.request_id) ||
       body.prompt.includes(memory)
     )
@@ -807,7 +806,7 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
       ++resumes !== 1 ||
       stops !== 1 ||
       body.id !== "worker" ||
-      body.conversation_id !== "conversation" ||
+      Object.hasOwn(body, "conversation_id") ||
       !body.request_id ||
       body.runtimeVersion !== 1 ||
       body.prompt.includes(memory)

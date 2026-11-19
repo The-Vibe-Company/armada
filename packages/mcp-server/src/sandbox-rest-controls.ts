@@ -7,6 +7,7 @@ import type { ControlOptions } from "./control.ts";
 import { measureRequestPhase } from "./request-timing.ts";
 import { summarizeResourceHistory } from "./resource-advice.ts";
 import { sandboxActivity } from "./sandbox-activity.ts";
+import { refuseConversationSelector } from "./sandbox-conversation.ts";
 import { extendSandbox } from "./sandbox-extend.ts";
 import { ToolApiError } from "./tool-api.ts";
 import { describeToolFailure, ToolError } from "./tools.ts";
@@ -61,7 +62,6 @@ export const SANDBOX_REST_CONTRACTS = {
   "sandbox/resume-runtime-v1": {
     input: runtimeRequest.extend({
       prompt: z.string().min(1),
-      conversation_id: z.string().min(1).optional(),
     }),
     output: z.object({
       id: z.string(),
@@ -209,6 +209,7 @@ export async function dispatchSandboxRestControl(
         return options.runtimeCheckpoint(caller, args);
       }
       case "sandbox/resume-runtime-v1": {
+        refuseConversationSelector(body);
         const args = parse(SANDBOX_REST_CONTRACTS[route].input);
         if (!options.runtimeResume) throw new ToolApiError("unsupported", "Runtime resume is unavailable.");
         return options.runtimeResume(caller, args);

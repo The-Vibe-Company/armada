@@ -861,7 +861,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         )
           throw new ClientSendError("dashboard", "client_send_conversation_unavailable");
         await probeClientSend(
-          { id, org: c.org, origin, token: env.ARMADA_TOKEN!, conversationId: conversations[0] },
+          { id, org: c.org, origin, token: env.ARMADA_TOKEN! },
           {
             fetch: io.fetch,
             now: io.now,

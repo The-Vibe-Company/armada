@@ -52,6 +52,8 @@ test("published OpenAPI matches current server contracts and preserves REST fiel
     expect(input).not.toHaveProperty("conversationId");
     expect(input).not.toHaveProperty("conversation_id");
   }
+  const sendInput = paths["/api/v1/sandbox/send"]!.post.requestBody.content["application/json"].schema;
+  expect(JSON.stringify(sendInput)).not.toContain('"conversation_id"');
   expect(logsInput.follow).toEqual({
     type: "boolean",
     description: "Follow events within the bounded HTTP request.",

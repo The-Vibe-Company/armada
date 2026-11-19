@@ -17,7 +17,7 @@ import { continueRequest, currentRequestId } from "./request-observability.ts";
 import type { RuntimeFollowupInput } from "./runtime-followup.ts";
 import { sandboxControlRefusal } from "./sandbox-control-refusal.ts";
 import { ToolApiError } from "./tool-api.ts";
-import { assertSendConversation, ToolError } from "./tools.ts";
+import { ToolError } from "./tools.ts";
 
 const RUNTIME_REQUEST_EVIDENCE = `(s.activity_lease_id=q.request_id
   or exists(select 1 from public.runtime_commands c where c.sandbox_id=s.id and c.request_id in ('follow_'||q.request_id::text,'docker_prompt_'||q.request_id::text,'resume_'||q.request_id::text))
@@ -86,7 +86,6 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
       id: input.id,
       request_id: requestId,
       prompt: input.prompt,
-      conversation_id: input.conversation_id,
       model: input.model,
       reasoning_effort: input.reasoning_effort,
     };
@@ -111,9 +110,8 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
           credential_id: string | null;
           credential_version: number;
           org_id: string;
-          conversation_ids: string[];
         }>(
-          `select s.status,s.status_reason,s.preservation_note,s.expires_at,s.harness,s.provider,s.boat_runtime,s.runtime_transport,s.model,s.reasoning_effort,s.credential_id,s.credential_version,s.org_id,s.conversation_ids from public.sandboxes s
+          `select s.status,s.status_reason,s.preservation_note,s.expires_at,s.harness,s.provider,s.boat_runtime,s.runtime_transport,s.model,s.reasoning_effort,s.credential_id,s.credential_version,s.org_id from public.sandboxes s
          join public.members m on m.org_id=s.org_id and m.user_id=$2
          where s.id=$1 and s.owner_id=$2 and s.deleted_at is null`,
           [input.id, caller.userId],
@@ -138,10 +136,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
       if (target.provider === "docker" && !DOCKER_SEND_REQUEST.safeParse(normalized).success)
         throw new ToolError("invalid_request", DOCKER_SEND_REFUSAL);
       if (!input.prompt.trim()) throw new VaultError("invalid", "The prompt is empty.");
-      if (!target.credential_id) {
-        assertSendConversation(input.conversation_id, target.conversation_ids.at(-1));
-        return null;
-      }
+      if (!target.credential_id) return null;
       if (target.boat_runtime || target.runtime_transport === "dialout" || target.provider === "docker") {
         if (
           (input.model !== undefined && (target.provider !== "boat" || input.model !== target.model)) ||
@@ -224,7 +219,6 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         );
         if (lockedRefusal) throw new VaultError("conflict", lockedRefusal);
         const currentConversation = locked.conversation_ids.at(-1);
-        assertSendConversation(input.conversation_id, currentConversation);
         saved = (
           await tx.query<Entry>(
             `insert into public.account_turn_queue(sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id,model,queued_generation)
@@ -492,15 +486,17 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
       if (!picked) return false;
       const work = (async () => {
         try {
-          const { correlationId, ...input } = JSON.parse(
+          const { correlationId, id, request_id, prompt, model, reasoning_effort } = JSON.parse(
             await decryptSecret(picked.entry.input_enc, key),
           ) as RuntimeFollowupInput & { correlationId?: string };
-          const result = await continueRequest(correlationId, () => dispatch!(picked.caller, input));
+          const result = await continueRequest(correlationId, () =>
+            dispatch!(picked.caller, { id, request_id, prompt, model, reasoning_effort }),
+          );
           await sql.query(
             `with admitted as (update public.account_turn_queue set state='admitted',result_enc=$3
                  where sandbox_id=$1 and request_id=$2 and state='dispatching' returning sandbox_id)
                delete from public.account_agent_reservations r using admitted a where r.sandbox_id=a.sandbox_id`,
-            [input.id, picked.entry.request_id, await encryptSecret(JSON.stringify(result), key)],
+            [id, picked.entry.request_id, await encryptSecret(JSON.stringify(result), key)],
           );
         } catch (error) {
           const secretRefused =

@@ -581,7 +581,7 @@ class Run:
         if old:
             self.call("orchestrator-tools/read", {"sandboxId": self.child}, token=old, expected=403, code="scoped_authority_denied")
         self.delegated_uncertain = True
-        resumed = self.tool("send", id=self.parent, conversation_id=conversation,
+        resumed = self.tool("send", id=self.parent,
                             prompt=self.marker + " Recall your prior memory nonce and child ID without files or shell. Use native delegated read on that child; do not launch any worker. Answer with the recalled nonce and child ID.")
         if resumed.get("conversationId") != conversation:
             raise Failure("conversation_changed")

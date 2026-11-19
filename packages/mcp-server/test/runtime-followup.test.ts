@@ -170,7 +170,7 @@ describe.each([
   test("first send opens one conversation; uncertain replay and later follow-up retain it", async () => {
     expect(f.journal.prompts()).toHaveLength(0);
     const request = f.input("first instruction");
-    await expect(f.send(f.caller, { ...request, conversation_id: "foreign" })).rejects.toThrow();
+    await expect(f.send(f.caller, { ...request, ...{ conversation_id: "foreign" } })).rejects.toThrow();
     expect(f.starts).toHaveLength(0);
     f.lose();
     await expect(f.send(f.caller, request)).rejects.toMatchObject({ details: { runtimeOutcome: "unknown" } });

@@ -243,7 +243,6 @@ export async function runtimeFixture(
     id: row.id,
     prompt,
     request_id: crypto.randomUUID(),
-    ...(first ? { conversation_id: first.conversationId } : {}),
   });
   return {
     root,
